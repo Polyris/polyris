@@ -1,0 +1,137 @@
+/* =============================================================================
+   History view — shared chrome (toggle, toolbar, search, pagination).
+   Merged All runs / All tasks. Uses the app's hex tokens (adapts via [data-theme]).
+   ============================================================================= */
+
+.hc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.hc-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.hc-toggle {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+}
+
+.hc-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+.hc-toggle-btn:hover { color: var(--text-primary); }
+
+.hc-toggle-btn.active {
+    background: var(--bg-primary);
+    border: 0.5px solid var(--border);
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.hc-search {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 160px;
+    height: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+}
+
+.hc-search input {
+    flex: 1;
+    padding: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+}
+
+.hc-search input::placeholder { color: var(--text-muted); }
+
+/* Count, pager and "Show older" share this row. It wraps rather than overflowing on
+   narrow screens (same treatment as .hc-toolbar) — the row grew a third control and
+   there is no @media rule for the History chrome to catch it. */
+.hc-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.hc-pagination-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+/* The sole variable-presence element (only rendered while `hasMore`) pushes itself to
+   the far right via its own auto margin — not via `justify-content` on the parent.
+   The row used to rely on `justify-content: space-between` across however many of
+   {counter, pager, button} happened to be present: stable at 3 children while the feed
+   still had more to load, but the button disappears once `hasMore` goes false, leaving
+   2 — `space-between` redistributes *those* to the row's two edges, so the pager
+   visibly jumped from wherever it sat to the far edge the button used to occupy.
+   `margin-left: auto` on the one element that actually comes and goes fixes this
+   because an auto margin consumes all the flex row's free space before
+   `justify-content` gets any left to distribute — verified directly (a real headless
+   Chrome render gives byte-identical coordinates whether the parent's own
+   `justify-content` is `flex-start` or `space-between`, so that value isn't actually
+   load-bearing here; kept at `flex-start` below because it states the real intent
+   instead of leaning on an auto-margin override of a contradictory-looking value). */
+.hc-pagination > button {
+    margin-left: auto;
+}
+
+.hc-pager {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.hc-pager-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.hc-pager-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
+.hc-pager-btn:disabled { opacity: 0.4; cursor: default; }

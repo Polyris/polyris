@@ -1,0 +1,31 @@
+{
+  "Comment": "Restart Helper - Starts new dependency wrapper execution",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Start_New_Wrapper",
+  "States": {
+    "Start_New_Wrapper": {
+      "Type": "Task",
+      "Comment": "Start new wrapper. wrapper_arn passed in input.",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Arguments": {
+        "StateMachineArn": "{% $states.input.wrapper_arn %}",
+        "Name": "{% $substring('restart-' & $string($millis()) & '-' & $states.input.task_name, 0, 80) %}",
+        "Input": "{% $states.input.original_input ~> |$| {'is_restart': true} | %}"
+      },
+      "Output": "{% { 'restarted': true, 'new_execution_arn': $exists($states.result.ExecutionArn) ? $states.result.ExecutionArn : 'unknown' } %}",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    }
+  }
+}

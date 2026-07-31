@@ -1,0 +1,178 @@
+[
+  {
+    "name": "simple",
+    "description_text": "No partitions/description/URI — minimal CREATE TABLE",
+    "input": {
+      "assetName": "orders",
+      "glueTable": "analytics.orders",
+      "description": "",
+      "uri": "",
+      "schema": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        },
+        {
+          "name": "amount",
+          "type": "decimal(10,2)",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        }
+      ]
+    },
+    "expected": "CREATE EXTERNAL TABLE analytics.orders (\n  `id` bigint,\n  `amount` decimal(10,2)\n)"
+  },
+  {
+    "name": "with_partition",
+    "description_text": "Partition column extracted into PARTITIONED BY",
+    "input": {
+      "assetName": "events",
+      "glueTable": "analytics.events",
+      "description": "",
+      "uri": "",
+      "schema": [
+        {
+          "name": "event_id",
+          "type": "string",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        },
+        {
+          "name": "payload",
+          "type": "string",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        },
+        {
+          "name": "event_date",
+          "type": "date",
+          "partition_key": true,
+          "nullable": true,
+          "description": ""
+        }
+      ]
+    },
+    "expected": "CREATE EXTERNAL TABLE analytics.events (\n  `event_id` string,\n  `payload` string\n)\nPARTITIONED BY (\n  `event_date` date\n)"
+  },
+  {
+    "name": "with_description",
+    "description_text": "Asset COMMENT + column COMMENT, single quotes doubled",
+    "input": {
+      "assetName": "users",
+      "glueTable": "analytics.users",
+      "description": "Master user table — Mike's working copy",
+      "uri": "",
+      "schema": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "partition_key": false,
+          "nullable": true,
+          "description": "User's primary key"
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "partition_key": false,
+          "nullable": true,
+          "description": "Verified email; nullable"
+        }
+      ]
+    },
+    "expected": "CREATE EXTERNAL TABLE analytics.users (\n  `id` bigint COMMENT 'User''s primary key',\n  `email` string COMMENT 'Verified email; nullable'\n)\nCOMMENT 'Master user table — Mike''s working copy'"
+  },
+  {
+    "name": "with_uri",
+    "description_text": "s3:// URI emitted as LOCATION",
+    "input": {
+      "assetName": "inventory",
+      "glueTable": "analytics.inventory",
+      "description": "",
+      "uri": "s3://my-lake/inventory/",
+      "schema": [
+        {
+          "name": "sku",
+          "type": "string",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        },
+        {
+          "name": "quantity",
+          "type": "int",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        }
+      ]
+    },
+    "expected": "CREATE EXTERNAL TABLE analytics.inventory (\n  `sku` string,\n  `quantity` int\n)\nLOCATION 's3://my-lake/inventory/'"
+  },
+  {
+    "name": "bare_name",
+    "description_text": "No glue_table → asset name in backticks",
+    "input": {
+      "assetName": "retail/orders",
+      "glueTable": "",
+      "description": "",
+      "uri": "",
+      "schema": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        },
+        {
+          "name": "total",
+          "type": "decimal(10,2)",
+          "partition_key": false,
+          "nullable": true,
+          "description": ""
+        }
+      ]
+    },
+    "expected": "CREATE EXTERNAL TABLE `retail/orders` (\n  `id` bigint,\n  `total` decimal(10,2)\n)"
+  },
+  {
+    "name": "all_features",
+    "description_text": "Partition + description + URI — full exercise",
+    "input": {
+      "assetName": "retail/sales",
+      "glueTable": "retail.sales",
+      "description": "Daily aggregated sales per SKU",
+      "uri": "s3a://lake/retail/sales/",
+      "schema": [
+        {
+          "name": "sku",
+          "type": "string",
+          "partition_key": false,
+          "nullable": true,
+          "description": "Product SKU"
+        },
+        {
+          "name": "total_amount",
+          "type": "decimal(12,2)",
+          "partition_key": false,
+          "nullable": true,
+          "description": "Sum of line item totals"
+        },
+        {
+          "name": "event_date",
+          "type": "date",
+          "partition_key": true,
+          "nullable": true,
+          "description": "UTC date"
+        }
+      ]
+    },
+    "expected": "CREATE EXTERNAL TABLE retail.sales (\n  `sku` string COMMENT 'Product SKU',\n  `total_amount` decimal(12,2) COMMENT 'Sum of line item totals'\n)\nPARTITIONED BY (\n  `event_date` date COMMENT 'UTC date'\n)\nCOMMENT 'Daily aggregated sales per SKU'\nLOCATION 's3a://lake/retail/sales/'"
+  }
+]

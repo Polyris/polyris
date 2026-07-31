@@ -1,0 +1,344 @@
+{
+  "Comment": "Notify pipelines subscribed to asset materialization events. Handles OR/AND trigger logic.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Query_Subscriptions",
+  "States": {
+    "Query_Subscriptions": {
+      "Type": "Task",
+      "Comment": "Find all pipelines subscribed to this asset",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:query",
+      "Arguments": {
+        "TableName": "${asset_subscriptions_table}",
+        "KeyConditionExpression": "asset_name = :asset",
+        "ExpressionAttributeValues": {
+          ":asset": {
+            "S": "{% $states.input.asset_name %}"
+          }
+        }
+      },
+      "Output": "{% {'asset_name': $states.input.asset_name, 'execution_date': $states.input.execution_date, 'source_task': $states.input.source_task, 'source_dag': $states.input.source_dag, 'subscriptions': $states.result.Items} %}",
+      "Next": "Check_Has_Subscriptions",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDb.ProvisionedThroughputExceededException",
+            "DynamoDb.ThrottlingException",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "DDB query failure - treat as no subscribers found",
+          "Output": "{% { 'asset_name': $states.input.asset_name, 'execution_date': $states.input.execution_date, 'source_task': $states.input.source_task, 'source_dag': $states.input.source_dag, 'subscriptions': [] } %}",
+          "Next": "Check_Has_Subscriptions"
+        }
+      ]
+    },
+    "Check_Has_Subscriptions": {
+      "Type": "Choice",
+      "Comment": "If no subscriptions, we're done",
+      "Choices": [
+        {
+          "Condition": "{% $count($states.input.subscriptions) > 0 %}",
+          "Next": "Process_Subscriptions"
+        }
+      ],
+      "Default": "Done_No_Subscribers"
+    },
+    "Done_No_Subscribers": {
+      "Type": "Pass",
+      "Comment": "No pipelines subscribed to this asset",
+      "Output": "{% {'status': 'no_subscribers', 'asset_name': $states.input.asset_name} %}",
+      "End": true
+    },
+    "Process_Subscriptions": {
+      "Type": "Map",
+      "Comment": "Process each subscribed pipeline - subscription already has sfn_arn, operator, assets",
+      "Items": "{% $states.input.subscriptions %}",
+      "MaxConcurrency": 5,
+      "ItemSelector": {
+        "pipeline_name": "{% $states.context.Map.Item.Value.pipeline_name.S %}",
+        "sfn_arn": "{% $states.context.Map.Item.Value.sfn_arn.S %}",
+        "operator": "{% $exists($states.context.Map.Item.Value.operator) ? $states.context.Map.Item.Value.operator.S : 'AND' %}",
+        "required_assets": "{% $exists($states.context.Map.Item.Value.assets) ? $parse($states.context.Map.Item.Value.assets.S) : [] %}",
+        "asset_name": "{% $states.input.asset_name %}",
+        "execution_date": "{% $states.input.execution_date %}",
+        "source_dag": "{% $states.input.source_dag %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Check_Self_Trigger",
+        "States": {
+          "Check_Self_Trigger": {
+            "Type": "Choice",
+            "Comment": "Prevent self-triggering (cycle)",
+            "Choices": [
+              {
+                "Condition": "{% $states.input.source_dag = $states.input.pipeline_name %}",
+                "Next": "Skip_Self_Trigger"
+              }
+            ],
+            "Default": "Check_Cascade_All"
+          },
+          "Skip_Self_Trigger": {
+            "Type": "Pass",
+            "Comment": "Skip - would create self-trigger cycle",
+            "Output": "{% {'status': 'skipped_cycle', 'pipeline_name': $states.input.pipeline_name} %}",
+            "End": true
+          },
+          "Check_Cascade_All": {
+            "Type": "Choice",
+            "Comment": "When cascade_all=true (set by backfill with cascade='all', ADR #57), bypass operator gate and trigger every consumer immediately. Default behavior preserves OR/AND operator semantics for normal scheduled runs.",
+            "Choices": [
+              {
+                "Condition": "{% $exists($states.input.cascade_all) and $states.input.cascade_all = true %}",
+                "Next": "Trigger_OR"
+              }
+            ],
+            "Default": "Check_Operator"
+          },
+          "Check_Operator": {
+            "Type": "Choice",
+            "Comment": "Route based on OR/AND operator",
+            "Choices": [
+              {
+                "Condition": "{% $states.input.operator = 'OR' %}",
+                "Next": "Trigger_OR"
+              }
+            ],
+            "Default": "Record_Asset_For_AND"
+          },
+          "Trigger_OR": {
+            "Type": "Task",
+            "Comment": "OR logic - trigger immediately",
+            "Resource": "arn:aws:states:::states:startExecution",
+            "Arguments": {
+              "StateMachineArn": "{% $states.input.sfn_arn %}",
+              "Name": "{% $states.input.pipeline_name & '-' & $states.input.execution_date & '-asset-' & $substring($string($toMillis($now())), 7) %}",
+              "Input": {
+                "triggered_by": "asset",
+                "trigger_assets": [
+                  "{% $states.input.asset_name %}"
+                ],
+                "source_dag": "{% $states.input.source_dag %}",
+                "execution_date": "{% $states.input.execution_date %}",
+                "variables": {
+                  "current_date": "{% $states.input.execution_date %}",
+                  "PARTITION_ARG": "{% $states.input.execution_date %}"
+                }
+              }
+            },
+            "Output": "{% {'status': 'triggered_or', 'pipeline_name': $states.input.pipeline_name} %}",
+            "End": true,
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "StepFunctions.ExecutionAlreadyExists"
+                ],
+                "Comment": "Already triggered - deduplicated",
+                "Output": "{% {'status': 'deduplicated', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              },
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Output": "{% {'status': 'trigger_failed', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              }
+            ]
+          },
+          "Record_Asset_For_AND": {
+            "Type": "Task",
+            "Comment": "AND logic - record asset as ready with conditional write",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+              "TableName": "${queued_asset_events_table}",
+              "Item": {
+                "dag_date": {
+                  "S": "{% $states.input.pipeline_name & '-' & $states.input.execution_date %}"
+                },
+                "asset_name": {
+                  "S": "{% $states.input.asset_name %}"
+                },
+                "recorded_at": {
+                  "S": "{% $now() %}"
+                },
+                "ttl": {
+                  "N": "{% $string($floor($toMillis($now()) / 1000) + (${queued_event_ttl_days} * 24 * 60 * 60)) %}"
+                }
+              },
+              "ConditionExpression": "attribute_not_exists(dag_date) OR attribute_not_exists(asset_name)"
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Update_AND_Counter",
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.ConditionalCheckFailedException"
+                ],
+                "Comment": "Asset already recorded - duplicate event",
+                "Output": "{% $states.input %}",
+                "Next": "Check_All_Assets_Ready"
+              },
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Output": "{% {'status': 'error', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              }
+            ]
+          },
+          "Update_AND_Counter": {
+            "Type": "Task",
+            "Comment": "Atomically increment counter",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${queued_asset_events_table}",
+              "Key": {
+                "dag_date": {
+                  "S": "{% $states.input.pipeline_name & '-' & $states.input.execution_date %}"
+                },
+                "asset_name": {
+                  "S": "_counter"
+                }
+              },
+              "UpdateExpression": "ADD #c :one SET #ttl = :ttl",
+              "ExpressionAttributeNames": {
+                "#c": "count",
+                "#ttl": "ttl"
+              },
+              "ExpressionAttributeValues": {
+                ":one": {
+                  "N": "1"
+                },
+                ":ttl": {
+                  "N": "{% $string($floor($toMillis($now()) / 1000) + (${queued_event_ttl_days} * 24 * 60 * 60)) %}"
+                }
+              },
+              "ReturnValues": "ALL_NEW"
+            },
+            "Output": "{% $merge([$states.input, {'current_count': $number($states.result.Attributes.count.N)}]) %}",
+            "Next": "Check_All_Assets_Ready"
+          },
+          "Check_All_Assets_Ready": {
+            "Type": "Choice",
+            "Comment": "Check if all required assets are ready",
+            "Choices": [
+              {
+                "Condition": "{% $exists($states.input.current_count) and $states.input.current_count >= $count($states.input.required_assets) %}",
+                "Next": "Try_Acquire_Lock"
+              }
+            ],
+            "Default": "Waiting_For_More_Assets"
+          },
+          "Waiting_For_More_Assets": {
+            "Type": "Pass",
+            "Comment": "Not all assets ready yet",
+            "Output": "{% {'status': 'waiting', 'pipeline_name': $states.input.pipeline_name, 'ready': $exists($states.input.current_count) ? $states.input.current_count : 'unknown', 'total': $count($states.input.required_assets)} %}",
+            "End": true
+          },
+          "Try_Acquire_Lock": {
+            "Type": "Task",
+            "Comment": "Try to acquire distributed lock to prevent duplicate triggers",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+              "TableName": "${queued_asset_events_table}",
+              "Item": {
+                "dag_date": {
+                  "S": "{% '_lock_' & $states.input.pipeline_name & '-' & $states.input.execution_date %}"
+                },
+                "asset_name": {
+                  "S": "_trigger_lock"
+                },
+                "locked_at": {
+                  "S": "{% $now() %}"
+                },
+                "ttl": {
+                  "N": "{% $string($floor($toMillis($now()) / 1000) + (5 * 60)) %}"
+                }
+              },
+              "ConditionExpression": "attribute_not_exists(dag_date)"
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Trigger_AND",
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "DynamoDB.ConditionalCheckFailedException"
+                ],
+                "Comment": "Lock already held - another instance is triggering",
+                "Output": "{% {'status': 'lock_not_acquired', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              },
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Output": "{% {'status': 'lock_error', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              }
+            ]
+          },
+          "Trigger_AND": {
+            "Type": "Task",
+            "Comment": "AND logic - all assets ready, trigger pipeline",
+            "Resource": "arn:aws:states:::states:startExecution",
+            "Arguments": {
+              "StateMachineArn": "{% $states.input.sfn_arn %}",
+              "Name": "{% $states.input.pipeline_name & '-' & $states.input.execution_date & '-asset-and' %}",
+              "Input": {
+                "triggered_by": "asset",
+                "trigger_assets": "{% $states.input.required_assets %}",
+                "source_dag": "{% $states.input.source_dag %}",
+                "execution_date": "{% $states.input.execution_date %}",
+                "variables": {
+                  "current_date": "{% $states.input.execution_date %}",
+                  "PARTITION_ARG": "{% $states.input.execution_date %}"
+                }
+              }
+            },
+            "Output": "{% {'status': 'triggered_and', 'pipeline_name': $states.input.pipeline_name, 'assets': $states.input.required_assets} %}",
+            "End": true,
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "StepFunctions.ExecutionAlreadyExists"
+                ],
+                "Comment": "Already triggered - deduplicated",
+                "Output": "{% {'status': 'deduplicated', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              },
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Output": "{% {'status': 'trigger_failed', 'pipeline_name': $states.input.pipeline_name} %}",
+                "Next": "Skip_Pipeline"
+              }
+            ]
+          },
+          "Skip_Pipeline": {
+            "Type": "Pass",
+            "Comment": "Skip this pipeline",
+            "Output": "{% $states.input %}",
+            "End": true
+          }
+        }
+      },
+      "Output": "{% {'status': 'processed', 'asset_name': $states.input.asset_name, 'results': $states.result} %}",
+      "End": true
+    }
+  }
+}

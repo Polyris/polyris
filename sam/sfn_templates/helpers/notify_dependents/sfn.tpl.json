@@ -1,0 +1,429 @@
+{
+  "Comment": "Notify Dependents Helper - Signal waiting tasks when dependencies complete",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Query_Subscriptions",
+  "States": {
+    "Query_Subscriptions": {
+      "Type": "Task",
+      "Comment": "Find all tasks waiting on this completed task (via Lambda because aws-sdk:dynamodb:query doesn't support JSONata)",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${query_subscriptions_lambda}",
+        "Payload": {
+          "task_name": "{% $states.input.task_name %}",
+          "pipeline_execution_short": "{% $states.input.pipeline_execution_short %}"
+        }
+      },
+      "Output": "{% { 'completed_task': $states.input, 'subscribers': $states.result.Payload.subscribers } %}",
+      "Next": "Has_Subscribers",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ]
+    },
+
+    "Has_Subscribers": {
+      "Type": "Choice",
+      "Comment": "Skip if no one is waiting",
+      "Choices": [
+        {
+          "Condition": "{% $count($states.input.subscribers) > 0 %}",
+          "Next": "Process_Subscribers"
+        }
+      ],
+      "Default": "Done"
+    },
+
+    "Process_Subscribers": {
+      "Type": "Map",
+      "Comment": "Process each waiting subscriber",
+      "Items": "{% $append([], $map($states.input.subscribers, function($s) { {'subscriber': $s, 'completed_task': $states.input.completed_task} })) %}",
+      "MaxConcurrency": 10,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Get_Subscriber_Record",
+        "States": {
+          "Get_Subscriber_Record": {
+            "Type": "Task",
+            "Comment": "Get subscriber's full record (dependencies, trigger_rule, tokens)",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Arguments": {
+              "TableName": "${tokens_table}",
+              "Key": {
+                "execution_name": {
+                  "S": "{% $states.input.subscriber.subscriber & '-' & $states.input.completed_task.date & '-' & $states.input.completed_task.pipeline_execution_short %}"
+                }
+              },
+              "ConsistentRead": true
+            },
+            "Output": "{% { 'subscriber_name': $states.input.subscriber.subscriber, 'wait_token': $states.input.subscriber.wait_token, 'dependency_key': $states.input.completed_task.task_name & '-' & $states.input.completed_task.pipeline_execution_short, 'completed_task': $states.input.completed_task, 'record': $states.result.Item } %}",
+            "Next": "Check_Record_Exists",
+            "Retry": [
+              {
+                "ErrorEquals": ["DynamoDB.ProvisionedThroughputExceededException"],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Comment": "GetItem or Output transformation failed - skip this subscriber",
+                "Output": "{% { 'subscriber_name': 'unknown', 'error': $states.errorOutput, 'action': 'get_record_failed' } %}",
+                "Next": "Subscriber_Done"
+              }
+            ]
+          },
+
+          "Check_Record_Exists": {
+            "Type": "Choice",
+            "Comment": "Skip if record not found (already processed or deleted)",
+            "Choices": [
+              {
+                "Condition": "{% $exists($states.input.record) %}",
+                "Next": "Evaluate_Dependencies"
+              }
+            ],
+            "Default": "Subscriber_Done"
+          },
+
+          "Evaluate_Dependencies": {
+            "Type": "Task",
+            "Comment": "Call Lambda to evaluate trigger_rule (BatchGetItem + complex logic)",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+              "FunctionName": "${evaluate_deps_lambda}",
+              "Payload": {
+                "dependencies": "{% $parse($states.input.record.dependencies.S) %}",
+                "trigger_rule": "{% $exists($states.input.record.trigger_rule.S) ? $states.input.record.trigger_rule.S : 'all_success' %}",
+                "date": "{% $states.input.completed_task.date %}",
+                "pipeline_execution_short": "{% $states.input.completed_task.pipeline_execution_short %}",
+                "pipeline_execution": "{% $exists($states.input.record.pipeline_execution.S) ? $states.input.record.pipeline_execution.S : ($exists($states.input.completed_task.pipeline_execution) ? $states.input.completed_task.pipeline_execution : '') %}",
+                "wait_for": "{% $exists($states.input.record.wait_for.S) ? $parse($states.input.record.wait_for.S) : [] %}",
+                "assets_ready": "{% $exists($states.input.record.assets_ready.BOOL) and $states.input.record.assets_ready.BOOL = true %}"
+              }
+            },
+            "Output": "{% $states.input ~> |$| { 'eval_result': $states.result.Payload } | %}",
+            "Next": "Route_Evaluation",
+            "Retry": [
+              {
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Comment": "Lambda failed - skip this subscriber, don't break the whole flow",
+                "Output": "{% $states.input ~> |$| { 'error': $states.errorOutput, 'skipped': true } | %}",
+                "Next": "Subscriber_Done"
+              }
+            ]
+          },
+
+          "Route_Evaluation": {
+            "Type": "Choice",
+            "Comment": "Route based on evaluation: ready, skip, blocked, paused, or waiting (ADR #115)",
+            "Choices": [
+              {
+                "Condition": "{% $states.input.eval_result.is_paused = true and $states.input.eval_result.deps_satisfied = true %}",
+                "Comment": "Deps ready but pipeline paused - wait for resume",
+                "Next": "Mark_Waiting_Paused"
+              },
+              {
+                "Condition": "{% $states.input.eval_result.is_ready = true %}",
+                "Comment": "All deps ready and not paused - signal to continue",
+                "Next": "Signal_Ready"
+              },
+              {
+                "Condition": "{% $states.input.eval_result.verdict = 'skip' %}",
+                "Comment": "ADR #115: blocked, but the rule's trigger condition simply never occurred (no real failure) - a legitimate no-op, not an error. Checked before the generic is_blocked branch so this never falls into Signal_Blocked.",
+                "Next": "Signal_Skip"
+              },
+              {
+                "Condition": "{% $states.input.eval_result.is_blocked = true %}",
+                "Comment": "All done, rule not satisfied, and a real failure caused it - signal blocked",
+                "Next": "Signal_Blocked"
+              }
+            ],
+            "Default": "Subscriber_Done"
+          },
+
+          "Mark_Waiting_Paused": {
+            "Type": "Task",
+            "Comment": "Mark as waiting_paused - save wait_token and dep_keys for resume",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${tokens_table}",
+              "Key": {
+                "execution_name": {
+                  "S": "{% $states.input.subscriber_name & '-' & $states.input.completed_task.date & '-' & $states.input.completed_task.pipeline_execution_short %}"
+                }
+              },
+              "UpdateExpression": "SET #s = :status, #wt = :wait_token, #dk = :dep_keys",
+              "ConditionExpression": "NOT (#s IN (:success, :failed, :skipped, :aborted, :upstream_failed))",
+              "ExpressionAttributeNames": {
+                "#s": "status",
+                "#wt": "wait_token",
+                "#dk": "pending_dependency_keys"
+              },
+              "ExpressionAttributeValues": {
+                ":status": {"S": "waiting_paused"},
+                ":wait_token": {"S": "{% $states.input.wait_token %}"},
+                ":dep_keys": {"L": "{% $append([], $map($parse($states.input.record.dependencies.S), function($d) { {'S': $d & '-' & $states.input.completed_task.pipeline_execution_short} })) %}"},
+                ":success": {"S": "success"},
+                ":failed": {"S": "failed"},
+                ":skipped": {"S": "skipped"},
+                ":aborted": {"S": "aborted"},
+                ":upstream_failed": {"S": "upstream_failed"}
+              }
+            },
+            "Output": "{% $states.input ~> |$| { 'action': 'waiting_paused' } | %}",
+            "Next": "Subscriber_Done",
+            "Catch": [
+              {
+                "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+                "Comment": "Already terminal - skip",
+                "Output": "{% $states.input ~> |$| { 'action': 'skipped_terminal' } | %}",
+                "Next": "Subscriber_Done"
+              }
+            ]
+          },
+
+          "Signal_Ready": {
+            "Type": "Task",
+            "Comment": "Signal subscriber to continue",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+            "Arguments": {
+              "TaskToken": "{% $states.input.wait_token %}",
+              "Output": "{% $string({ 'signal': 'deps_ready', 'triggered_by': $states.input.completed_task.task_name, 'trigger_rule': $states.input.eval_result.reason }) %}"
+            },
+            "Output": "{% $states.input ~> |$| { 'action': 'signaled_ready' } | %}",
+            "Next": "Update_Status_Ready",
+            "Catch": [
+              {
+                "ErrorEquals": ["States.TaskFailed"],
+                "Comment": "Token invalid/expired - continue to cleanup",
+                "Output": "{% $states.input ~> |$| { 'action': 'token_invalid', 'token_error': $string($states.errorOutput) } | %}",
+                "Next": "Delete_Subscription"
+              }
+            ]
+          },
+
+          "Update_Status_Ready": {
+            "Type": "Task",
+            "Comment": "Update subscriber status to deps_ready and remove wait_token",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${tokens_table}",
+              "Key": {
+                "execution_name": {
+                  "S": "{% $states.input.subscriber_name & '-' & $states.input.completed_task.date & '-' & $states.input.completed_task.pipeline_execution_short %}"
+                }
+              },
+              "UpdateExpression": "SET #s = :status REMOVE wait_token",
+              "ConditionExpression": "NOT (#s IN (:success, :failed, :skipped, :aborted, :upstream_failed))",
+              "ExpressionAttributeNames": {
+                "#s": "status"
+              },
+              "ExpressionAttributeValues": {
+                ":status": {"S": "deps_ready"},
+                ":success": {"S": "success"},
+                ":failed": {"S": "failed"},
+                ":skipped": {"S": "skipped"},
+                ":aborted": {"S": "aborted"},
+                ":upstream_failed": {"S": "upstream_failed"}
+              }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Delete_Subscription",
+            "Catch": [
+              {
+                "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+                "Comment": "Already terminal",
+                "Output": "{% $states.input %}",
+                "Next": "Delete_Subscription"
+              }
+            ]
+          },
+
+          "Signal_Skip": {
+            "Type": "Task",
+            "Comment": "ADR #115: signal subscriber that its rule's trigger condition never occurred (no real failure) - it resolves 'skipped', not 'upstream_failed'",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+            "Arguments": {
+              "TaskToken": "{% $states.input.wait_token %}",
+              "Output": "{% $string({ 'signal': 'deps_skip', 'triggered_by': $states.input.completed_task.task_name, 'reason': $states.input.eval_result.reason, 'dep_statuses': $states.input.eval_result.dep_statuses }) %}"
+            },
+            "Output": "{% $states.input ~> |$| { 'action': 'signaled_skip' } | %}",
+            "Next": "Update_Status_Skip",
+            "Catch": [
+              {
+                "ErrorEquals": ["States.TaskFailed"],
+                "Comment": "Token invalid/expired",
+                "Output": "{% $states.input ~> |$| { 'action': 'token_invalid', 'token_error': $string($states.errorOutput) } | %}",
+                "Next": "Delete_Subscription"
+              }
+            ]
+          },
+
+          "Update_Status_Skip": {
+            "Type": "Task",
+            "Comment": "ADR #115: update subscriber status to skipped (skip_origin=rule) and remove wait_token. skip_origin distinguishes this rule-triggered skip from a manual skip (skip_task route) so all_success's skip-cascade only cascades on rule-originated skips.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${tokens_table}",
+              "Key": {
+                "execution_name": {
+                  "S": "{% $states.input.subscriber_name & '-' & $states.input.completed_task.date & '-' & $states.input.completed_task.pipeline_execution_short %}"
+                }
+              },
+              "UpdateExpression": "SET #s = :status, #so = :skip_origin, finished_at = :finished REMOVE wait_token",
+              "ConditionExpression": "NOT (#s IN (:success, :failed, :skipped, :aborted, :upstream_failed))",
+              "ExpressionAttributeNames": {
+                "#s": "status",
+                "#so": "skip_origin"
+              },
+              "ExpressionAttributeValues": {
+                ":status": {"S": "skipped"},
+                ":skip_origin": {"S": "rule"},
+                ":finished": {"S": "{% $now() %}"},
+                ":success": {"S": "success"},
+                ":failed": {"S": "failed"},
+                ":skipped": {"S": "skipped"},
+                ":aborted": {"S": "aborted"},
+                ":upstream_failed": {"S": "upstream_failed"}
+              }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Delete_Subscription",
+            "Catch": [
+              {
+                "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+                "Comment": "Already terminal",
+                "Output": "{% $states.input %}",
+                "Next": "Delete_Subscription"
+              }
+            ]
+          },
+
+          "Signal_Blocked": {
+            "Type": "Task",
+            "Comment": "Signal subscriber that deps are blocked (all done but rule not satisfied)",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+            "Arguments": {
+              "TaskToken": "{% $states.input.wait_token %}",
+              "Output": "{% $string({ 'signal': 'deps_blocked', 'triggered_by': $states.input.completed_task.task_name, 'reason': $states.input.eval_result.reason, 'dep_statuses': $states.input.eval_result.dep_statuses }) %}"
+            },
+            "Output": "{% $states.input ~> |$| { 'action': 'signaled_blocked' } | %}",
+            "Next": "Update_Status_Blocked",
+            "Catch": [
+              {
+                "ErrorEquals": ["States.TaskFailed"],
+                "Comment": "Token invalid/expired",
+                "Output": "{% $states.input ~> |$| { 'action': 'token_invalid', 'token_error': $string($states.errorOutput) } | %}",
+                "Next": "Delete_Subscription"
+              }
+            ]
+          },
+
+          "Update_Status_Blocked": {
+            "Type": "Task",
+            "Comment": "Update subscriber status to upstream_failed and remove wait_token",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+              "TableName": "${tokens_table}",
+              "Key": {
+                "execution_name": {
+                  "S": "{% $states.input.subscriber_name & '-' & $states.input.completed_task.date & '-' & $states.input.completed_task.pipeline_execution_short %}"
+                }
+              },
+              "UpdateExpression": "SET #s = :status, #e = :error REMOVE wait_token",
+              "ConditionExpression": "NOT (#s IN (:success, :failed, :skipped, :aborted, :upstream_failed_val))",
+              "ExpressionAttributeNames": {
+                "#s": "status",
+                "#e": "error"
+              },
+              "ExpressionAttributeValues": {
+                ":status": {"S": "upstream_failed"},
+                ":error": {"S": "{% 'Dependencies blocked: ' & $states.input.eval_result.reason %}"},
+                ":success": {"S": "success"},
+                ":failed": {"S": "failed"},
+                ":skipped": {"S": "skipped"},
+                ":aborted": {"S": "aborted"},
+                ":upstream_failed_val": {"S": "upstream_failed"}
+              }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Delete_Subscription",
+            "Catch": [
+              {
+                "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"],
+                "Comment": "Already terminal",
+                "Output": "{% $states.input %}",
+                "Next": "Delete_Subscription"
+              }
+            ]
+          },
+
+          "Delete_Subscription": {
+            "Type": "Task",
+            "Comment": "Cleanup subscription record",
+            "Resource": "arn:aws:states:::dynamodb:deleteItem",
+            "Arguments": {
+              "TableName": "${subscriptions_table}",
+              "Key": {
+                "dependency_key": {
+                  "S": "{% $states.input.dependency_key %}"
+                },
+                "subscriber": {
+                  "S": "{% $states.input.subscriber_name %}"
+                }
+              }
+            },
+            "Output": "{% { 'subscriber': $states.input.subscriber_name, 'action': $states.input.action } %}",
+            "End": true,
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Comment": "Cleanup failed - log but don't fail",
+                "Output": "{% { 'subscriber': $states.input.subscriber_name, 'action': 'cleanup_failed' } %}",
+                "Next": "Subscriber_Done"
+              }
+            ]
+          },
+
+          "Subscriber_Done": {
+            "Type": "Pass",
+            "Comment": "Subscriber processing complete",
+            "Output": "{% { 'subscriber': $exists($states.input.subscriber_name) ? $states.input.subscriber_name : 'unknown', 'action': $exists($states.input.action) ? $states.input.action : 'skipped' } %}",
+            "End": true
+          }
+        }
+      },
+      "Output": "{% { 'completed_task': $states.input.completed_task.task_name, 'processed': $states.result } %}",
+      "Next": "Done",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Comment": "Map failed - log error but complete",
+          "Output": "{% { 'completed_task': $states.input.completed_task.task_name, 'error': $states.errorOutput } %}",
+          "Next": "Done"
+        }
+      ]
+    },
+
+    "Done": {
+      "Type": "Succeed"
+    }
+  }
+}

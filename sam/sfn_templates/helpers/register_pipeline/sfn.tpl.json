@@ -1,0 +1,145 @@
+{
+  "Comment": "Register pipeline in registry for UI discovery and asset triggers",
+  "StartAt": "RegisterPipeline",
+  "States": {
+    "RegisterPipeline": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "${registry_table}",
+        "Item": {
+          "pipeline_name": {
+            "S.$": "$.pipeline_name"
+          },
+          "sfn_arn": {
+            "S.$": "$.sfn_arn"
+          },
+          "arn": {
+            "S.$": "$.arn"
+          },
+          "description": {
+            "S.$": "$.description"
+          },
+          "pipeline_group": {
+            "S.$": "$.group"
+          },
+          "tasks": {
+            "S.$": "States.JsonToString($.tasks)"
+          },
+          "dag": {
+            "S.$": "States.JsonToString($.dag)"
+          },
+          "asset_schedule": {
+            "S.$": "States.JsonToString($.asset_schedule)"
+          },
+          "registered_at": {
+            "S.$": "$$.State.EnteredTime"
+          }
+        }
+      },
+      "ResultPath": "$.dynamodb_result",
+      "Next": "CheckAssetSchedule",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "CheckAssetSchedule": {
+      "Type": "Choice",
+      "Comment": "Check if pipeline has asset-based schedule",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.asset_schedule",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.asset_schedule.assets",
+              "IsPresent": true
+            }
+          ],
+          "Next": "PrepareSubscriptions"
+        }
+      ],
+      "Default": "Success"
+    },
+    "PrepareSubscriptions": {
+      "Type": "Pass",
+      "Comment": "Prepare data for Map iteration - pass context to each item",
+      "Parameters": {
+        "pipeline_name.$": "$.pipeline_name",
+        "sfn_arn.$": "$.sfn_arn",
+        "asset_schedule.$": "$.asset_schedule",
+        "assets.$": "$.asset_schedule.assets"
+      },
+      "Next": "RegisterAssetSubscriptions"
+    },
+    "RegisterAssetSubscriptions": {
+      "Type": "Map",
+      "Comment": "Register subscription for each asset (enables Query instead of Scan)",
+      "ItemsPath": "$.assets",
+      "MaxConcurrency": 10,
+      "ItemSelector": {
+        "asset_name.$": "$$.Map.Item.Value",
+        "pipeline_name.$": "$.pipeline_name",
+        "sfn_arn.$": "$.sfn_arn",
+        "operator.$": "$.asset_schedule.operator",
+        "all_assets.$": "$.asset_schedule.assets"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "WriteSubscription",
+        "States": {
+          "WriteSubscription": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+              "TableName": "${asset_subscriptions_table}",
+              "Item": {
+                "asset_name": {
+                  "S.$": "$.asset_name"
+                },
+                "pipeline_name": {
+                  "S.$": "$.pipeline_name"
+                },
+                "sfn_arn": {
+                  "S.$": "$.sfn_arn"
+                },
+                "operator": {
+                  "S.$": "$.operator"
+                },
+                "assets": {
+                  "S.$": "States.JsonToString($.all_assets)"
+                },
+                "registered_at": {
+                  "S.$": "$$.State.EnteredTime"
+                }
+              }
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.subscription_results",
+      "Next": "Success"
+    },
+    "Success": {
+      "Type": "Succeed",
+      "OutputPath": "$.pipeline_name"
+    }
+  }
+}

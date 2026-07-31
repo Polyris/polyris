@@ -1,0 +1,11 @@
+{
+  "name": "polyris-sfn-jsonata-tests",
+  "private": true,
+  "description": "JSONata expression tests for SFN templates",
+  "scripts": {
+    "test": "node test_jsonata.js"
+  },
+  "dependencies": {
+    "jsonata": "^2.0.0"
+  }
+}

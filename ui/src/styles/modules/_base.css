@@ -1,0 +1,110 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+    --space-xl: 2rem;
+    --space-2xl: 3rem;
+    --space-3xl: 4rem;
+    --font-mono: 'JetBrains Mono', monospace;
+    --bg-primary: #f8fafc;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #f1f5f9;
+    --bg-hover: #e2e8f0;
+    --border: #e2e8f0;
+    --border-strong: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --accent: #3b82f6;
+    --accent-light: #eff6ff;
+    --accent-medium: #dbeafe;
+    --success: #22c55e;
+    --success-light: #f0fdf4;
+    --warning: #f59e0b;
+    --warning-light: #fffbeb;
+    --error: #ef4444;
+    --error-light: #fef2f2;
+    --running: #3b82f6;
+    --running-light: #eff6ff;
+    --waiting: #64748b;
+    --waiting-light: #f8fafc;
+    --decision: #f97316;
+    --decision-light: #fff7ed;
+    --aborted: #f97316;
+    --aborted-light: #fff7ed;
+    --stopped: #d97706;
+    --stopped-light: #fffbeb;
+    --skipped: #64748b;
+    --skipped-light: #f1f5f9;
+    
+    /* Navigation tokens */
+    --nav-text: #475569;
+    --nav-text-hover: #1e293b;
+    --nav-text-active: #1d4ed8;
+    --nav-bg-hover: #e2e8f0;
+    --nav-bg-active: #dbeafe;
+    --nav-border-active: #3b82f6;
+    --nav-indicator: #3b82f6;
+}
+
+[data-theme="dark"] {
+    --bg-primary: #0f172a;
+    --bg-secondary: #1e293b;
+    --bg-tertiary: #334155;
+    --bg-hover: #475569;
+    --border: #334155;
+    --border-strong: #475569;
+    --text-primary: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-muted: #64748b;
+    --accent: #60a5fa;
+    --accent-light: #1e3a5f;
+    --accent-medium: #1e3a5f;
+    --success: #4ade80;
+    --success-light: #14532d;
+    --warning: #fbbf24;
+    --warning-light: #451a03;
+    --error: #f87171;
+    --error-light: #450a0a;
+    --running: #60a5fa;
+    --running-light: #1e3a5f;
+    --waiting: #94a3b8;
+    --waiting-light: #1e293b;
+    --decision: #fb923c;
+    --decision-light: #431407;
+    --aborted: #fb923c;
+    --aborted-light: #431407;
+    --stopped: #fbbf24;
+    --stopped-light: #451a03;
+    --skipped: #94a3b8;
+    --skipped-light: #334155;
+    
+    /* Navigation tokens */
+    --nav-text: #94a3b8;
+    --nav-text-hover: #e2e8f0;
+    --nav-text-active: #93c5fd;
+    --nav-bg-hover: #334155;
+    --nav-bg-active: #1e3a5f;
+    --nav-border-active: #60a5fa;
+    --nav-indicator: #60a5fa;
+}
+
+body {
+    font-family: var(--font-inter, 'Inter', -apple-system, BlinkMacSystemFont, sans-serif);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+}
+
+.app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+

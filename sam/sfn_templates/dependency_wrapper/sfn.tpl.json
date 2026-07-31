@@ -1,0 +1,719 @@
+{
+  "Comment": "Dependency Wrapper (Event-Driven) - Minimal wrapper using helpers",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Prepare_Inputs",
+  "States": {
+    "Prepare_Inputs": {
+      "Type": "Pass",
+      "Comment": "Build execution context with task_run_id for tracing",
+      "Output": "{% ( $today := $exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'); $ttl := $floor($toMillis($now()) / 1000) + ($exists($states.input.orchestration_timeout) and $states.input.orchestration_timeout > 2592000 ? $states.input.orchestration_timeout : 2592000) + 86400; $pipelineExec := $exists($states.input.pipeline_execution) ? $states.input.pipeline_execution : 'unknown'; $rawShort := $exists($states.input.pipeline_execution_short) ? $states.input.pipeline_execution_short : ($length($pipelineExec) > 20 ? $substring($pipelineExec, $length($pipelineExec) - 20) : $pipelineExec); $pipelineShort := $replace($replace($rawShort, '.', ''), ':', ''); $execName := $exists($states.input.execution_name_override) ? $states.input.execution_name_override : ($states.input.task_name & '-' & $today & '-' & $pipelineShort); $skipTasks := $exists($states.input.skip_tasks) ? $states.input.skip_tasks : []; $taskRunId := $exists($states.input.task_run_id) ? $states.input.task_run_id : ($execName & '-' & $substring($string($toMillis($now())), 7)); $attempt := $exists($states.input.attempt) ? $states.input.attempt : 1; $states.input ~> |$| { 'task_run_id': $taskRunId, 'attempt': $attempt, 'execution_name': $execName, 'date': $today, 'ttl': $ttl, 'orchestration_token': $exists($states.input.token) ? $states.input.token : '', 'dependencies': $exists($states.input.dependencies) ? $states.input.dependencies : [], 'cross_account_role': $exists($states.input.cross_account_role) ? $states.input.cross_account_role : 'same', 'pipeline_name': $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown', 'pipeline_execution': $pipelineExec, 'pipeline_execution_short': $pipelineShort, 'skip_tasks': $skipTasks, 'parent_execution_id': $pipelineExec, 'backfill_id': $exists($states.input.backfill_id) ? $states.input.backfill_id : '', 'partition_key': $exists($states.input.partition_key) ? $states.input.partition_key : $today, 'wrapper_execution_arn': $states.context.Execution.Id } | ) %}",
+      "Next": "Emit_Wrapper_Started"
+    },
+    "Emit_Wrapper_Started": {
+      "Type": "Task",
+      "Comment": "Record WRAPPER_STARTED event for timeline",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${task_events_table}",
+        "Item": {
+          "task_run_id": {
+            "S": "{% $states.input.task_run_id %}"
+          },
+          "event_time": {
+            "S": "{% $now() & '#00' %}"
+          },
+          "event_type": {
+            "S": "WRAPPER_STARTED"
+          },
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          },
+          "parent_execution_id": {
+            "S": "{% $states.input.parent_execution_id %}"
+          },
+          "backfill_id": {
+            "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+          },
+          "partition_key": {
+            "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "pipeline_name": {
+            "S": "{% $states.input.pipeline_name %}"
+          },
+          "attempt": {
+            "N": "{% $string($states.input.attempt) %}"
+          },
+          "ttl": {
+            "N": "{% $string($states.input.ttl) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Check_Skip_Tasks",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Emit_Wrapper_Started failed - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Check_Skip_Tasks"
+        }
+      ]
+    },
+    "Check_Skip_Tasks": {
+      "Type": "Choice",
+      "Comment": "Check if this task should be auto-skipped",
+      "Choices": [
+        {
+          "Condition": "{% $states.input.task_name in $states.input.skip_tasks %}",
+          "Next": "Auto_Skip_Register"
+        }
+      ],
+      "Default": "Wait_For_Dependencies"
+    },
+    "Auto_Skip_Register": {
+      "Type": "Task",
+      "Comment": "Register skipped task in DynamoDB",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Item": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "task_arn": {
+            "S": "{% $states.input.task_arn %}"
+          },
+          "status": {
+            "S": "skipped"
+          },
+          "dependencies": {
+            "S": "{% $string($states.input.dependencies) %}"
+          },
+          "date": {
+            "S": "{% $states.input.date %}"
+          },
+          "started_at": {
+            "S": "{% $now() %}"
+          },
+          "finished_at": {
+            "S": "{% $now() %}"
+          },
+          "ttl": {
+            "N": "{% $string($states.input.ttl) %}"
+          },
+          "pipeline_name": {
+            "S": "{% $states.input.pipeline_name %}"
+          },
+          "pipeline_execution": {
+            "S": "{% $states.input.pipeline_execution %}"
+          },
+          "pipeline_execution_short": {
+            "S": "{% $states.input.pipeline_execution_short %}"
+          },
+          "result": {
+            "S": "{}"
+          },
+          "skip_reason": {
+            "S": "auto_skipped"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Auto_Skip_Notify_Dependents",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Auto_Skip_Register failed - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Auto_Skip_Notify_Dependents"
+        }
+      ]
+    },
+    "Auto_Skip_Notify_Dependents": {
+      "Type": "Task",
+      "Comment": "Notify dependents that task was skipped (so they can proceed)",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+      "Arguments": {
+        "StateMachineArn": "${notify_dependents_helper_arn}",
+        "Input": {
+          "task_name": "{% $states.input.task_name %}",
+          "execution_name": "{% $states.input.execution_name %}",
+          "date": "{% $states.input.date %}",
+          "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+          "pipeline_execution": "{% $states.input.pipeline_execution %}",
+          "pipeline_execution_short": "{% $states.input.pipeline_execution_short %}",
+          "status": "skipped"
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Auto_Skip_Callback",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Notify failed - continue to callback",
+          "Output": "{% $states.input %}",
+          "Next": "Auto_Skip_Callback"
+        }
+      ]
+    },
+    "Auto_Skip_Callback": {
+      "Type": "Choice",
+      "Comment": "Send callback to pipeline if token exists",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}",
+          "Next": "Auto_Skip_Send_Success"
+        }
+      ],
+      "Default": "Done"
+    },
+    "Auto_Skip_Send_Success": {
+      "Type": "Task",
+      "Comment": "Callback success to pipeline",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+      "Arguments": {
+        "TaskToken": "{% $states.input.orchestration_token %}",
+        "Output": "{% '{\"status\":\"skipped\",\"task_name\":\"' & $states.input.task_name & '\"}' %}"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Token expired or invalid - continue anyway",
+          "Output": "{% $states.input %}",
+          "Next": "Done"
+        }
+      ],
+      "Next": "Done"
+    },
+    "Wait_For_Dependencies": {
+      "Type": "Task",
+      "Comment": "Register task and wait for dependencies via callback. Timeout configurable (default 24h).",
+      "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+      "Arguments": {
+        "StateMachineArn": "${registration_helper_arn}",
+        "Input": {
+          "wait_token": "{% $states.context.Task.Token %}",
+          "task_name": "{% $states.input.task_name %}",
+          "task_arn": "{% $states.input.task_arn %}",
+          "dependencies": "{% $states.input.dependencies %}",
+          "orchestration_token": "{% $states.input.orchestration_token %}",
+          "cross_account_role": "{% $states.input.cross_account_role %}",
+          "wait_before": "{% $exists($states.input.wait_before) ? $states.input.wait_before : 0 %}",
+          "trigger_rule": "{% $exists($states.input.trigger_rule) ? $states.input.trigger_rule : 'all_success' %}",
+          "execution_name": "{% $states.input.execution_name %}",
+          "date": "{% $states.input.date %}",
+          "current_date": "{% $exists($states.input.current_date) ? $states.input.current_date : $states.input.date %}",
+          "ttl": "{% $states.input.ttl %}",
+          "pipeline_name": "{% $states.input.pipeline_name %}",
+          "pipeline_execution": "{% $states.input.pipeline_execution %}",
+          "pipeline_execution_short": "{% $states.input.pipeline_execution_short %}",
+          "wrapper_execution_arn": "{% $states.context.Execution.Id %}",
+          "task_type": "{% $exists($states.input.task_type) ? $states.input.task_type : 'sfn' %}",
+          "task_config": "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}",
+          "outlets": "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}",
+          "wait_for": "{% $exists($states.input.wait_for) ? $states.input.wait_for : [] %}"
+        }
+      },
+      "Assign": {
+        "callback_signal": "{% ( $res := $type($states.result) = 'string' ? $parse($states.result) : $states.result; $exists($res.signal) ? $res.signal : 'deps_ready' ) %}",
+        "callback_reason": "{% ( $res := $type($states.result) = 'string' ? $parse($states.result) : $states.result; $exists($res.reason) ? $res.reason : '' ) %}"
+      },
+      "Output": "{% $states.input %}",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "Output": "{% $states.input ~> |$| {'error': {'Error': 'DependencyTimeout', 'Cause': 'Timed out waiting for dependencies'}} | %}",
+          "Next": "Handle_Failure"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput} | %}",
+          "Next": "Handle_Failure"
+        }
+      ],
+      "Next": "Check_Deps_Signal",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "TimeoutSeconds": "{% $exists($states.input.orchestration_timeout) ? $number($states.input.orchestration_timeout) : ${default_orchestration_timeout_seconds} %}"
+    },
+    "Check_Deps_Signal": {
+      "Type": "Choice",
+      "Comment": "Check if dependencies are ready, blocked, or a legitimate no-op skip (ADR #115)",
+      "Choices": [
+        {
+          "Condition": "{% $callback_signal = 'deps_skip' %}",
+          "Next": "Emit_Deps_Skip"
+        },
+        {
+          "Condition": "{% $callback_signal = 'deps_blocked' %}",
+          "Next": "Emit_Deps_Blocked"
+        }
+      ],
+      "Default": "Emit_Deps_Ready"
+    },
+    "Emit_Deps_Ready": {
+      "Type": "Task",
+      "Comment": "Record DEPS_READY event for timeline",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${task_events_table}",
+        "Item": {
+          "task_run_id": {
+            "S": "{% $states.input.task_run_id %}"
+          },
+          "event_time": {
+            "S": "{% $now() & '#05' %}"
+          },
+          "event_type": {
+            "S": "DEPS_READY"
+          },
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          },
+          "parent_execution_id": {
+            "S": "{% $states.input.parent_execution_id %}"
+          },
+          "backfill_id": {
+            "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+          },
+          "partition_key": {
+            "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "dependencies": {
+            "S": "{% $string($states.input.dependencies) %}"
+          },
+          "ttl": {
+            "N": "{% $string($states.input.ttl) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Check_Wait_Before",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Emit_Deps_Ready failed - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Check_Wait_Before"
+        }
+      ]
+    },
+    "Emit_Deps_Skip": {
+      "Type": "Task",
+      "Comment": "ADR #115: record DEPS_SKIPPED event for timeline. Status is already 'skipped' in DDB (written by notify_dependents's Update_Status_Skip) - this task's job is only to cascade the skip to its own dependents and callback its orchestration_token, reusing the same Auto_Skip_* chain the pre-execution skip_tasks path uses.",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${task_events_table}",
+        "Item": {
+          "task_run_id": {
+            "S": "{% $states.input.task_run_id %}"
+          },
+          "event_time": {
+            "S": "{% $now() & '#05' %}"
+          },
+          "event_type": {
+            "S": "DEPS_SKIPPED"
+          },
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          },
+          "parent_execution_id": {
+            "S": "{% $states.input.parent_execution_id %}"
+          },
+          "backfill_id": {
+            "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+          },
+          "partition_key": {
+            "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "reason": {
+            "S": "{% $exists($callback_reason) ? $callback_reason : 'Trigger rule condition did not occur' %}"
+          },
+          "ttl": {
+            "N": "{% $string($states.input.ttl) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Auto_Skip_Notify_Dependents",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Comment": "Emit_Deps_Skip failed - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Auto_Skip_Notify_Dependents"
+        }
+      ]
+    },
+
+    "Emit_Deps_Blocked": {
+      "Type": "Task",
+      "Comment": "Record DEPS_BLOCKED event for timeline",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${task_events_table}",
+        "Item": {
+          "task_run_id": {
+            "S": "{% $states.input.task_run_id %}"
+          },
+          "event_time": {
+            "S": "{% $now() & '#05' %}"
+          },
+          "event_type": {
+            "S": "DEPS_BLOCKED"
+          },
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          },
+          "parent_execution_id": {
+            "S": "{% $states.input.parent_execution_id %}"
+          },
+          "backfill_id": {
+            "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+          },
+          "partition_key": {
+            "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "reason": {
+            "S": "{% $exists($callback_reason) ? $callback_reason : 'Upstream task failed' %}"
+          },
+          "ttl": {
+            "N": "{% $string($states.input.ttl) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Handle_Deps_Blocked",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Emit_Deps_Blocked failed - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Handle_Deps_Blocked"
+        }
+      ]
+    },
+    "Handle_Deps_Blocked": {
+      "Type": "Pass",
+      "Comment": "Prepare error info for deps_blocked signal",
+      "Output": "{% $states.input ~> |$| {'error': {'Error': 'UpstreamFailed', 'Cause': $exists($callback_reason) ? $callback_reason : 'Upstream task failed'}} | %}",
+      "Next": "Handle_Failure"
+    },
+    "Check_Wait_Before": {
+      "Type": "Choice",
+      "Comment": "Check if task needs to wait before running",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.wait_before) and $number($states.input.wait_before) > 0 %}",
+          "Next": "Update_Status_Waiting_Delay"
+        }
+      ],
+      "Default": "Run_Task"
+    },
+    "Update_Status_Waiting_Delay": {
+      "Type": "Task",
+      "Comment": "Update status to waiting_delay with deterministic deadline",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, wait_delay_started_ms = if_not_exists(wait_delay_started_ms, :started_ms), wait_delay_until_ms = if_not_exists(wait_delay_until_ms, :until_ms)",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "waiting_delay"
+          },
+          ":started_ms": {
+            "N": "{% $string($millis()) %}"
+          },
+          ":until_ms": {
+            "N": "{% $string($millis() + ($number($states.input.wait_before) * 1000)) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Prepare_Wait_Before",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Update_Status_Waiting_Delay failed - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Prepare_Wait_Before"
+        }
+      ]
+    },
+    "Prepare_Wait_Before": {
+      "Type": "Pass",
+      "Comment": "Ensure wait_before is a valid number (fixes JSONata edge cases)",
+      "Output": "{% $states.input ~> |$| {'wait_before_seconds': $number($states.input.wait_before)} | %}",
+      "Next": "Wait_Before_Run"
+    },
+    "Wait_Before_Run": {
+      "Type": "Wait",
+      "Comment": "Wait specified seconds before running task",
+      "Seconds": "{% $states.input.wait_before_seconds %}",
+      "Next": "Run_Task"
+    },
+    "Run_Task": {
+      "Type": "Task",
+      "Comment": "Execute task via helper (handles success/failure, events, callbacks)",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
+      "Arguments": {
+        "StateMachineArn": "${run_task_helper_arn}",
+        "Input": "{% $states.input %}"
+      },
+      "Assign": {
+        "task_output": "{% $exists($states.result.Output) ? $states.result.Output : {} %}"
+      },
+      "Output": "{% ($exists($task_output) ? $task_output : {}) ~> |$| {'execution_name': $states.input.execution_name, 'task_name': $states.input.task_name} | %}",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput, 'helper_failed': true} | %}",
+          "Next": "Handle_Failure"
+        }
+      ],
+      "Next": "Resolve_PagerDuty",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Handle_Failure": {
+      "Type": "Task",
+      "Comment": "Handle any failure via helper (DynamoDB update, event, callback)",
+      "Resource": "arn:aws:states:::states:startExecution.sync:2",
+      "Arguments": {
+        "StateMachineArn": "${failure_handler_arn}",
+        "Input": "{% $states.input %}"
+      },
+      "Next": "Fail_State",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "If failure_handler itself fails, still proceed to Fail_State to end wrapper gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Fail_State"
+        }
+      ]
+    },
+    "Resolve_PagerDuty": {
+      "Type": "Task",
+      "Comment": "Resolve PagerDuty alert on successful task completion. Uses aws-sdk:sfn:startSyncExecution because PagerDutyResolverSfn is EXPRESS — startExecution.sync:2 fails silently on Express SFN per CLAUDE.md.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${notify_function_arn}",
+        "Payload": {
+          "action": "resolve_pagerduty",
+          "pipeline_name": "{% $states.input.pipeline_name %}",
+          "failure": {
+            "pipeline_name": "{% $states.input.pipeline_name %}",
+            "task_name": "{% $states.input.task_name %}",
+            "execution_name": "{% $states.input.execution_name %}",
+            "date": "{% $exists($states.input.date) ? $states.input.date : '' %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "PagerDuty resolve failed - continue to success anyway",
+          "Output": "{% $states.input %}",
+          "Next": "Done"
+        }
+      ],
+      "Next": "Done",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.TooManyRequests",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Done": {
+      "Type": "Succeed"
+    },
+    "Fail_State": {
+      "Type": "Fail",
+      "Error": "WrapperFailed",
+      "Cause": "Wrapper execution failed"
+    }
+  }
+}

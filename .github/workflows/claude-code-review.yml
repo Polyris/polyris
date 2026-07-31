@@ -1,0 +1,83 @@
+name: CLAUDE.md Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: claude-md-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      # No id-token: this review authenticates via github_token below, not the
+      # GitHub-App OIDC path, so it needs no external app install. (To use the
+      # official Claude GitHub App instead: add `id-token: write`, install
+      # github.com/apps/claude on the repo, and drop the github_token input.)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Review against CLAUDE.md
+        continue-on-error: true        # рев'ю не блокує PR — блокує тільки ci.yml
+        uses: anthropics/claude-code-action@v1
+        env:
+          # The prompt posts review comments through the `gh` CLI, which needs an
+          # auth token in the environment. GITHUB_TOKEN carries the
+          # pull-requests:write scope granted above — without this, every `gh api`
+          # call failed auth and (masked by continue-on-error) nothing was posted.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --model claude-sonnet-4-6
+            --allowed-tools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Read,Glob,Grep"
+          prompt: |
+            You are the CLAUDE.md compliance reviewer for this repository.
+
+            Repo:     ${{ github.repository }}
+            PR:       ${{ github.event.pull_request.number }}
+            Head SHA: ${{ github.event.pull_request.head.sha }}
+
+            ## 1. Load rules + diff
+            Read the root `CLAUDE.md`. Run `gh pr diff ${{ github.event.pull_request.number }}`
+            for the diff; use Read/Grep for surrounding context when a line alone is ambiguous.
+
+            ## 2. Judge ONLY these CLAUDE.md principles (judgment calls CI can't make)
+            - #1 no dead code (unused/unwired) · #2 no duplication · #8 no stubs
+            - #9 widen don't patch · #12 maximize reuse (reuse before custom)
+            - DAL repo pattern: no direct `dynamodb.Table()` in route handlers
+            - never edit `*.module.css`; edit the global CSS modules only
+            - pytest-mock `mocker` in tests, not `unittest.mock.patch`
+            - ADR required for architecture/API changes (`DESIGN_DECISIONS.md`)
+            Do NOT re-check ruff, version sync, enum/constant drift, or test results —
+            `ci.yml` already enforces those deterministically. Skip style/formatting.
+
+            ## 3. Post inline comments (dedupe first)
+            List your prior comments once:
+                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments" --paginate \
+                  --jq '[.[] | select(.body | startswith("<!-- claude-md")) | {path, line, body}]'
+            For each violation post ONE inline comment, but SKIP if the list above already
+            has one with the same principle marker on the same path within ~3 lines:
+                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments" \
+                  -f body="<!-- claude-md:#<principle> --> **CLAUDE.md #<principle>** — <what's wrong + the fix>" \
+                  -f path="<file>" -f commit_id="${{ github.event.pull_request.head.sha }}" \
+                  -F line=<line> -f side="RIGHT"
+
+            ## 4. One sticky summary
+            List PR-level comments:
+                gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" --paginate \
+                  --jq '[.[] | select(.body | startswith("<!-- claude-md-summary -->")) | {id}]'
+            Body: `<!-- claude-md-summary -->` then `CLAUDE.md: <N> violations` (if 0, add a line
+            saying the PR is compliant). If an id was found, PATCH it; else create it:
+                # update: gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<id>" -f body="..."
+                # create: gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" -f body="..."
+
+            Do not approve or request changes. Inline comments + the one summary are the entire output.

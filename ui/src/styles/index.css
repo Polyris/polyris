@@ -1,0 +1,50 @@
+/**
+ * polyris UI Styles
+ * 
+ * Modular CSS architecture for better maintainability.
+ * Each module handles a specific concern.
+ */
+
+/* Base: CSS reset, variables, theme tokens */
+@import './modules/_base.css';
+
+/* Navigation: Tabs, pills, nav components */
+@import './modules/_navigation.css';
+
+/* Layout: Header, sidebar, canvas structure */
+@import './modules/_layout.css';
+
+/* DAG: Graph visualization, nodes, edges */
+@import './modules/_dag.css';
+
+/* Modals: Dialog boxes, forms, overlays */
+@import './modules/_modals.css';
+
+/* Tasks: Task list, task details, execution */
+@import './modules/_tasks.css';
+
+/* Utilities: Helper classes, animations */
+@import './modules/_utilities.css';
+
+/* Assets: Asset orchestration UI */
+@import './modules/_assets.css';
+
+/* Accessibility: Focus states, screen reader */
+@import './modules/_accessibility.css';
+
+/* Pipeline Pause: Pause/resume functionality */
+@import './modules/_pipeline-pause.css';
+
+/* Enhanced UI: Latest UI improvements */
+@import './modules/_enhanced-ui.css';
+
+/* View Loader: Lazy loading states */
+@import './modules/_view-loader.css';
+
+/* Login: Authentication UI */
+@import './modules/login.css';
+@import './modules/_user-menu.css';
+@import './modules/_history.css';
+
+/* Mobile responsive (must be last to override) */
+@import './modules/_mobile.css';

@@ -1,0 +1,193 @@
+/* =============================================================================
+   User account menu (rail account trigger + dropdown).
+
+   Uses the app's hex design tokens (var(--*) from _base.css) so it inherits the
+   app's light/dark theming via [data-theme="dark"] — previously these styles lived
+   in login.css on shadcn HSL tokens, whose dark variants (.dark) never activated.
+   ============================================================================= */
+
+.um-user-menu {
+    position: relative;
+}
+
+.um-user-menu-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.um-user-menu-trigger:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
+}
+
+.um-user-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 0.813rem;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.um-user-avatar--lg {
+    width: 44px;
+    height: 44px;
+    font-size: 1rem;
+}
+
+.um-user-name {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.um-user-menu-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    min-width: 300px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 12px 28px -6px rgba(0, 0, 0, 0.18);
+    z-index: 100;
+    overflow: hidden;
+    animation: um-dropdown-enter 0.15s ease-out;
+}
+
+@keyframes um-dropdown-enter {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Rail placement: the account sits at the bottom of the left rail. The menu uses fixed
+   positioning so it escapes the rail's overflow clipping, opening just to the right of the
+   rail near the bottom. The avatar is enlarged for the rail context. */
+.um-user-menu--rail .um-user-menu-trigger { width: 100%; justify-content: center; padding: 6px; }
+.um-user-menu--rail .um-user-name { display: none; }
+.um-user-menu--rail .um-user-avatar { width: 40px; height: 40px; font-size: 0.95rem; }
+.um-user-menu--rail .um-user-menu-dropdown {
+    position: fixed;
+    top: auto;
+    right: auto;
+    bottom: 14px;
+    left: 92px;
+    min-width: 258px;
+    animation: um-dropdown-enter-up 0.15s ease-out;
+}
+@keyframes um-dropdown-enter-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Dark-mode toggle row inside the account menu */
+.um-user-menu-toggle { justify-content: space-between; }
+.um-toggle-label { display: inline-flex; align-items: center; gap: 12px; }
+.um-toggle-switch {
+    width: 34px; height: 20px; border-radius: 10px; flex-shrink: 0;
+    background: var(--border-strong); position: relative; transition: background 0.15s;
+}
+.um-toggle-switch.is-on { background: var(--accent); }
+.um-toggle-knob {
+    position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: left 0.15s;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.um-toggle-switch.is-on .um-toggle-knob { left: 16px; }
+
+/* Dropdown sections */
+.um-user-menu-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border);
+}
+
+.um-user-menu-identity {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.um-user-menu-name {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.um-user-menu-email {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.um-user-menu-content {
+    padding: 6px;
+}
+
+.um-user-menu-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 6px 8px;
+}
+
+.um-user-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.um-user-menu-item:hover {
+    background: var(--bg-hover);
+}
+
+.um-user-menu-item svg {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.um-user-menu-item.um-destructive {
+    color: var(--error);
+}
+
+.um-user-menu-item.um-destructive svg {
+    color: var(--error);
+}
+
+.um-user-menu-item.um-destructive:hover {
+    background: var(--error-light);
+}

@@ -1,0 +1,468 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+  Polyris test resources — one reusable resource per task type (Lambda, Step
+  Functions, Glue, Athena, ECS/Fargate, Batch/Fargate). Deploy once, then paste the
+  Outputs into the example pipelines to run them end-to-end. Everything here is
+  pay-per-use (billed only while a task runs). EMR is intentionally left out because
+  it carries a standing hourly cost; see README.md to test that task type separately.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: polyris-test
+    Description: Prefix applied to every resource name.
+
+  TaskRoleName:
+    Type: String
+    Default: ''
+    Description: >-
+      (Optional) Name of the polyris task role, e.g.
+      polyris-dev-oss-dev-polyris-default-task-role. If set, this stack grants that
+      role S3 access to the results bucket so @task.athena can write query results
+      (Athena writes under the caller's identity). Find it in the AccessDenied error
+      or in your platform stack outputs.
+
+Conditions:
+  GrantTaskRole: !Not [!Equals [!Ref TaskRoleName, '']]
+
+Resources:
+
+  # ------------------------------------------------------------------ networking
+  # Fargate (ECS + Batch) needs subnets with a route to the internet so the task
+  # can pull its container image. A tiny public VPC keeps the stack self-contained.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub '${NamePrefix}-vpc'}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: !Sub '${NamePrefix}-igw'}]
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub '${NamePrefix}-subnet-1'}]
+
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub '${NamePrefix}-subnet-2'}]
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  Subnet1RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet1
+      RouteTableId: !Ref RouteTable
+
+  Subnet2RouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet2
+      RouteTableId: !Ref RouteTable
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Polyris test tasks - outbound only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (image pulls, AWS APIs)
+
+  # --------------------------------------------------------------- shared bucket
+  # Holds the Glue script and Athena query results. 7-day lifecycle keeps it tidy.
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${NamePrefix}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-test-artifacts
+            Status: Enabled
+            ExpirationInDays: 7
+
+  # -------------------------------------------------- Glue script (custom resource)
+  # Glue needs its script in S3; a tiny inline Lambda writes a no-op script there.
+  ScriptWriterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: write-glue-script
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:DeleteObject]
+                Resource: !Sub '${Bucket.Arn}/*'
+
+  ScriptWriterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt ScriptWriterRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          SCRIPT = "print('polyris test glue job ran ok')\n"
+
+          def handler(event, context):
+              try:
+                  props = event['ResourceProperties']
+                  if event['RequestType'] != 'Delete':
+                      boto3.client('s3').put_object(
+                          Bucket=props['Bucket'], Key=props['Key'],
+                          Body=SCRIPT.encode('utf-8'),
+                      )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, props['Key'])
+              except Exception as exc:  # noqa: BLE001 - surface any failure to CFN
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'error': str(exc)})
+
+  GlueScript:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt ScriptWriterFunction.Arn
+      Bucket: !Ref Bucket
+      Key: scripts/test_glue_job.py
+
+  # ------------------------------------------------------------------------ Lambda
+  # Echoes the polyris context back and returns a small output, so downstream
+  # Lambda/SFN tasks see it under event["upstream"] and pull() has data to fetch.
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  TestLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${NamePrefix}-lambda'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              # Return a small, deterministic test output. Any upstream data and the
+              # injected run variables are echoed so you can see them in the console.
+              return {
+                  "ok": True,
+                  "rows": 1000,
+                  "path": "s3://example/test-output.json",
+                  "upstream": event.get("upstream", {}),
+                  "variables": event.get("variables", {}),
+              }
+
+  # --------------------------------------------------------------- Step Functions
+  # A nested state machine that succeeds immediately — what @task.sfn(arn=...) calls.
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: !Sub 'states.${AWS::Region}.amazonaws.com'}
+            Action: sts:AssumeRole
+
+  TestStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${NamePrefix}-sfn'
+      RoleArn: !GetAtt StateMachineRole.Arn
+      DefinitionString: |
+        {
+          "Comment": "polyris test — succeeds immediately, echoing its input",
+          "StartAt": "Done",
+          "States": {"Done": {"Type": "Pass", "End": true}}
+        }
+
+  # -------------------------------------------------------------------------- Glue
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: glue.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: read-glue-script
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub '${Bucket.Arn}/*'
+
+  TestGlueJob:
+    Type: AWS::Glue::Job
+    DependsOn: GlueScript
+    Properties:
+      Name: !Sub '${NamePrefix}-glue'
+      Role: !GetAtt GlueRole.Arn
+      GlueVersion: '1.0'
+      Command:
+        Name: pythonshell
+        PythonVersion: '3'
+        ScriptLocation: !Sub 's3://${Bucket}/scripts/test_glue_job.py'
+      MaxCapacity: 0.0625
+
+  # Database used by @task.athena (the example pipelines pass database="analytics").
+  AnalyticsDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: analytics
+        Description: Polyris test database for Athena queries
+
+  # ------------------------------------------------------------------------ Athena
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${NamePrefix}-wg'
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${Bucket}/athena-results/'
+
+  # --------------------------------------------------------------------------- ECS
+  # Fargate task with a container named "main" (matches the example's overrides).
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${NamePrefix}-ecs'
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  EcsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${NamePrefix}/ecs'
+      RetentionInDays: 7
+
+  EcsTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${NamePrefix}-task'
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: main
+          Image: public.ecr.aws/docker/library/busybox:latest
+          Command: ['sh', '-c', 'echo polyris test ecs ok']
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref EcsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: main
+
+  # ------------------------------------------------------------------------- Batch
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: batch.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+
+  BatchComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeResources:
+        Type: FARGATE
+        MaxvCpus: 4
+        Subnets: [!Ref Subnet1, !Ref Subnet2]
+        SecurityGroupIds: [!Ref TaskSecurityGroup]
+
+  BatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: !Sub '${NamePrefix}-queue'
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref BatchComputeEnvironment
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub '${NamePrefix}-jobdef'
+      Type: container
+      PlatformCapabilities: [FARGATE]
+      ContainerProperties:
+        Image: public.ecr.aws/docker/library/busybox:latest
+        Command: ['sh', '-c', 'echo polyris test batch ok']
+        ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+        ResourceRequirements:
+          - {Type: VCPU, Value: '0.25'}
+          - {Type: MEMORY, Value: '512'}
+        NetworkConfiguration:
+          AssignPublicIp: ENABLED
+
+  # ---------- Grant the polyris task role S3 access for Athena results (optional) --
+  # Athena writes query results under the identity that calls StartQueryExecution —
+  # the polyris task role. Without this, @task.athena fails with "Unable to
+  # verify/create output bucket". Only created when TaskRoleName is supplied.
+  TaskRoleAthenaS3Policy:
+    Type: AWS::IAM::Policy
+    Condition: GrantTaskRole
+    Properties:
+      PolicyName: polyris-test-athena-results
+      Roles: [!Ref TaskRoleName]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:PutObject
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub '${Bucket.Arn}/*'
+
+  # --------------------------------------------------------------- EMR (optional)
+  # EMR is intentionally omitted: unlike everything else here it has a standing
+  # hourly cost (a cluster must stay alive for @task.emr to add steps). To test the
+  # EMR task type, create a small cluster separately and pass its j-XXXX id.
+
+Outputs:
+
+  LambdaFunctionName:
+    Description: '@task.lambda_(function_name=...)'
+    Value: !Ref TestLambda
+
+  StateMachineArn:
+    Description: '@task.sfn(arn=...)'
+    Value: !Ref TestStateMachine
+
+  GlueJobName:
+    Description: '@task.glue(job_name=...)'
+    Value: !Ref TestGlueJob
+
+  AthenaDatabase:
+    Description: '@task.athena(database=...)'
+    Value: !Ref AnalyticsDatabase
+
+  AthenaWorkGroupName:
+    Description: '@task.athena(workgroup=...) — pass via workgroup if your task supports it'
+    Value: !Ref AthenaWorkGroup
+
+  AthenaOutputLocation:
+    Description: '@task.athena(output_location=...)'
+    Value: !Sub 's3://${Bucket}/athena-results/'
+
+  EcsClusterName:
+    Description: '@task.ecs(cluster=...)'
+    Value: !Ref EcsCluster
+
+  EcsTaskDefinitionArn:
+    Description: '@task.ecs(task_definition=...)'
+    Value: !Ref EcsTaskDefinition
+
+  BatchJobDefinitionArn:
+    Description: '@task.batch(job_definition=...)'
+    Value: !Ref BatchJobDefinition
+
+  BatchJobQueueArn:
+    Description: '@task.batch(job_queue=...)'
+    Value: !Ref BatchJobQueue
+
+  Subnets:
+    Description: '@task.ecs(subnets=[...]) — comma-separated'
+    Value: !Join [',', [!Ref Subnet1, !Ref Subnet2]]
+
+  SecurityGroup:
+    Description: '@task.ecs(security_groups=[...])'
+    Value: !Ref TaskSecurityGroup
+
+  Bucket:
+    Description: Shared S3 bucket (Glue script + Athena results)
+    Value: !Ref Bucket

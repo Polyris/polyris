@@ -1,0 +1,146 @@
+/* ============================================
+   Navigation Components (Tabs & Pills)
+   ============================================ */
+
+/* Base tab styles - underline variant */
+.nav-tab {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--nav-text);
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s ease;
+    background: none;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+}
+.nav-tab:hover {
+    color: var(--nav-text-hover);
+    background: var(--nav-bg-hover);
+}
+.nav-tab.active {
+    color: var(--nav-text-active);
+    border-bottom-color: var(--nav-indicator);
+    font-weight: 600;
+}
+
+/* Tab sizes */
+.nav-tab--sm { padding: 0.5rem 1rem; font-size: 0.8125rem; }
+.nav-tab--lg { padding: 0.875rem 1.5rem; font-size: 0.875rem; }
+
+/* Tab container */
+.nav-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+}
+
+/* Pill variant - bordered tabs */
+.nav-pill {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--nav-text);
+    border: 1px solid transparent;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.nav-pill:hover {
+    color: var(--nav-text-hover);
+    background: var(--nav-bg-hover);
+}
+.nav-pill.active {
+    color: var(--nav-text-active);
+    background: var(--bg-secondary);
+    border-color: var(--nav-border-active);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+/* Pill sizes */
+.nav-pill--md { padding: 0.5rem 1rem; font-size: 0.8125rem; }
+
+/* Badge — small count pill next to nav-pill label. Used by Backfills
+   tab to show active backfill count, in pattern of unread-message
+   indicators in Slack/GitHub/Linear. */
+.nav-pill-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0.4rem;
+    padding: 0 0.4rem;
+    min-width: 1.25rem;
+    height: 1.1rem;
+    background: var(--accent);
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 600;
+    border-radius: 0.6rem;
+    line-height: 1;
+}
+.nav-pill.active .nav-pill-badge {
+    background: var(--nav-text-active);
+    color: var(--bg-primary);
+}
+
+/* Pill container */
+.nav-pills {
+    display: flex;
+    gap: 0.5rem;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    padding: 0.25rem;
+}
+
+/* Definition + History — two independent buttons that sit next to each other
+   with the same spacing pattern as the other action groups in the canvas
+   header. Each button owns its own border and full radius; the wrapper only
+   provides the gap. ``overflow: visible`` is required so ExecutionDropdown's
+   absolutely-positioned history panel isn't clipped. */
+.structure-source-toggle {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0.5rem;
+    overflow: visible;
+}
+.structure-source-toggle-btn {
+    padding: 0.5rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.structure-source-toggle-btn:hover {
+    background: var(--bg-secondary);
+}
+.structure-source-toggle-btn.active {
+    background: var(--accent-light);
+    color: var(--accent);
+}
+/* Icon-only variant (the History book+count button) — same border and radius
+   as the Definition button, just tighter internal layout. */
+.structure-source-toggle-btn--icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+/* Plain variant - no background */
+.bf-nav-pills--plain {
+    background: transparent;
+    padding: 0;
+}
+
+/* Pill full-width variant for backfill mode */
+.bf-nav-pill--full { flex: 1; justify-content: center; }
+
+/* Header */
