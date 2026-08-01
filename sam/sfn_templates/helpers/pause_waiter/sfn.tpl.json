@@ -1,0 +1,50 @@
+{
+  "Comment": "Pause Waiter - Save pause token to DynamoDB and exit (parent waits for callback)",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Save_Pause_Token",
+  "States": {
+    "Save_Pause_Token": {
+      "Type": "Task",
+      "Comment": "Save task token and mark as waiting_paused",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, pause_token = :token, paused_at = :paused_at",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "waiting_paused"
+          },
+          ":token": {
+            "S": "{% $states.input.pause_token %}"
+          },
+          ":paused_at": {
+            "S": "{% $now() %}"
+          }
+        }
+      },
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    }
+  }
+}

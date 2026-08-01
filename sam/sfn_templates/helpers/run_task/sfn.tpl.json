@@ -1,0 +1,1528 @@
+{
+    "Comment": "Run Task Helper (Event-Driven) - Execute task, emit event on completion, callback to pipeline",
+    "QueryLanguage": "JSONata",
+    "StartAt": "Check_Should_Skip_Task",
+    "States": {
+        "Check_Should_Skip_Task": {
+            "Type": "Choice",
+            "Comment": "Skip this task if its task_name is in the skip_tasks list. Used by task_subset backfill (ADR #51) — backend computes the complement of user-supplied subset and passes it through bulk_backfill SFN → user pipeline ASL → here. Default branch preserves existing flow for normal scheduled runs.",
+            "Choices": [
+                {
+                    "Condition": "{% $exists($states.input.skip_tasks) and ($states.input.task_name in $states.input.skip_tasks) %}",
+                    "Next": "Task_Skipped"
+                }
+            ],
+            "Default": "Check_Execution_Paused"
+        },
+        "Task_Skipped": {
+            "Type": "Pass",
+            "Comment": "Task was in skip_tasks list — emit synthetic 'skipped' result so downstream tasks with trigger_rule 'all_done' proceed correctly.",
+            "Output": "{% { 'task_name': $states.input.task_name, 'pipeline_name': $states.input.pipeline_name, 'pipeline_execution': $states.input.pipeline_execution, 'status': 'skipped', 'date': $states.input.date, 'result': {} } %}",
+            "End": true
+        },
+        "Check_Execution_Paused": {
+            "Type": "Task",
+            "Comment": "Check if pipeline execution is paused",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% '_pause_' & $states.input.pipeline_execution %}"
+                    }
+                },
+                "ConsistentRead": true
+            },
+            "Output": "{% $states.input ~> |$| {'_pause_check': $states.result.Item} | %}",
+            "Next": "Route_Pause_Check",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Update_Status_Running"
+                }
+            ]
+        },
+        "Route_Pause_Check": {
+            "Type": "Choice",
+            "Comment": "If paused, wait for callback; otherwise continue",
+            "Choices": [
+                {
+                    "Condition": "{% $exists($states.input._pause_check.paused.BOOL) and $states.input._pause_check.paused.BOOL = true %}",
+                    "Next": "Save_Pause_Token_And_Wait"
+                }
+            ],
+            "Default": "Update_Status_Running"
+        },
+        "Save_Pause_Token_And_Wait": {
+            "Type": "Task",
+            "Comment": "Call pause_waiter helper and wait for Resume callback (12h timeout)",
+            "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+            "Arguments": {
+                "StateMachineArn": "${pause_waiter_arn}",
+                "Input": {
+                    "execution_name": "{% $states.input.execution_name %}",
+                    "pause_token": "{% $states.context.Task.Token %}"
+                }
+            },
+            "HeartbeatSeconds": ${pause_heartbeat_seconds},
+            "Output": "{% $states.input %}",
+            "Next": "Update_Status_Running",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.Timeout",
+                        "States.HeartbeatTimeout"
+                    ],
+                    "Output": "{% $states.input ~> |$| {'pause_timeout': true} | %}",
+                    "Next": "Update_Status_Running"
+                }
+            ],
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "StepFunctions.ExecutionLimitExceeded",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 5,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        },
+        "Update_Status_Running": {
+            "Type": "Task",
+            "Comment": "Update DynamoDB: status = running, record running_at timestamp and run_task_helper_arn. ConditionExpression guards against a ghost (prior-attempt) execution overwriting run_task_helper_arn or resetting the attempt counter for the current attempt. Uses <= (not strict <) for idempotency: same-attempt retries on DDB throttle can safely re-write the same values.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, task_arn = :task_arn, task_type = :task_type",
+                "ConditionExpression": "attribute_not_exists(attempt) OR attempt <= :expectedAttempt",
+                "ExpressionAttributeNames": {
+                    "#s": "status"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "running"
+                    },
+                    ":running_at": {
+                        "S": "{% $now() %}"
+                    },
+                    ":helper_arn": {
+                        "S": "{% $states.context.Execution.Id %}"
+                    },
+                    ":task_run_id": {
+                        "S": "{% $exists($states.input.task_run_id) ? $states.input.task_run_id : '' %}"
+                    },
+                    ":attempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    },
+                    ":task_arn": {
+                        "S": "{% $exists($states.input.task_arn) ? $states.input.task_arn : '' %}"
+                    },
+                    ":task_type": {
+                        "S": "{% $exists($states.input.task_type) ? $states.input.task_type : 'sfn' %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Output": "{% $states.input %}",
+            "Next": "Emit_Task_Started",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer attempt (restart) has already advanced past this attempt's status write — ghost write correctly rejected. End quietly so the current attempt's outcome is what downstream sees.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Started"
+                }
+            ]
+        },
+        "Emit_Task_Started": {
+            "Type": "Task",
+            "Comment": "Record TASK_STARTED event for timeline",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${task_events_table}",
+                "Item": {
+                    "task_run_id": {
+                        "S": "{% $exists($states.input.task_run_id) ? $states.input.task_run_id : $states.input.execution_name %}"
+                    },
+                    "event_time": {
+                        "S": "{% $now() & '#10' %}"
+                    },
+                    "event_type": {
+                        "S": "TASK_STARTED"
+                    },
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    },
+                    "parent_execution_id": {
+                        "S": "{% $exists($states.input.parent_execution_id) ? $states.input.parent_execution_id : $states.input.pipeline_execution %}"
+                    },
+                    "backfill_id": {
+                        "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+                    },
+                    "partition_key": {
+                        "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "task_type": {
+                        "S": "{% $exists($states.input.task_type) ? $states.input.task_type : 'sfn' %}"
+                    },
+                    "task_arn": {
+                        "S": "{% $states.input.task_arn %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Output": "{% $states.input %}",
+            "Next": "Check_Has_Dependencies",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Check_Has_Dependencies"
+                }
+            ]
+        },
+        "Check_Has_Dependencies": {
+            "Type": "Choice",
+            "Comment": "If task has dependencies, read their outputs for upstream context",
+            "Choices": [
+                {
+                    "Condition": "{% $count($states.input.dependencies) > 0 %}",
+                    "Next": "Read_Upstream_Outputs"
+                }
+            ],
+            "Default": "Prepare_Task_Input"
+        },
+        "Read_Upstream_Outputs": {
+            "Type": "Map",
+            "Comment": "Read outputs from all dependencies",
+            "Items": "{% $append([], $map($states.input.dependencies, function($dep) { {'dep': $dep, 'date': $states.input.date, 'pipeline_name': $states.input.pipeline_name} })) %}",
+            "MaxConcurrency": 10,
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                    "Mode": "INLINE"
+                },
+                "StartAt": "Get_Dep_Output",
+                "States": {
+                    "Get_Dep_Output": {
+                        "Type": "Task",
+                        "Comment": "Get dependency output from DynamoDB",
+                        "Resource": "arn:aws:states:::dynamodb:getItem",
+                        "Arguments": {
+                            "TableName": "${tokens_table}",
+                            "Key": {
+                                "execution_name": {
+                                    "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.dep & '#' & $states.input.date %}"
+                                }
+                            },
+                            "ProjectionExpression": "task_name, #r, #s",
+                            "ExpressionAttributeNames": {
+                                "#r": "result",
+                                "#s": "status"
+                            }
+                        },
+                        "Output": "{% ( $raw := $states.result.Item.result.S; $safe := $exists($raw) and $length($raw) > 25000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & ',\"_warning\":\"Output exceeded 25KB upstream limit. Full output preserved in DynamoDB. Use S3 pointers for large data.\"}' : $raw; $isJson := $exists($safe) and ($safe = '{}' or $safe = '[]' or $substring($safe, 0, 2) = '{\"' or $substring($safe, 0, 2) = '[\"' or $substring($safe, 0, 2) = '[{'); $parsed := $isJson ? $parse($safe) : {'_raw': $safe}; { 'task_name': $states.input.dep, 'output': $exists($safe) ? $parsed : {}, 'status': $exists($states.result.Item.status.S) ? $states.result.Item.status.S : 'unknown' } ) %}",
+                        "End": true
+                    }
+                }
+            },
+            "Output": "{% ( $upstreamMap := $merge($append([], $map($states.result, function($r) { {$r.task_name: {'output': $r.output, 'status': $r.status}} }))); $states.input ~> |$| {'upstream': $upstreamMap} | ) %}",
+            "Next": "Prepare_Task_Input",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Read_Upstream_Outputs Map failed - continue",
+                    "Output": "{% $states.input %}",
+                    "Next": "Prepare_Task_Input"
+                }
+            ]
+        },
+        "Prepare_Task_Input": {
+            "Type": "Pass",
+            "Comment": "Compute date variables (like backfill) and build final task input with upstream context",
+            "Assign": {
+                "retry_attempt": "{% 0 %}"
+            },
+            "Output": "{% ( $cd := $states.input.current_date; $dt := $toMillis($cd & 'T00:00:00Z'); $dateVars := { 'current_date': $cd, 'PARTITION_ARG': $exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : $cd, 'date_iso': $cd, 'date_compact': $replace($cd, '-', ''), 'date_slash': $substring($cd,0,4) & '/' & $substring($cd,5,2) & '/' & $substring($cd,8,2), 'date_underscore': $replace($cd, '-', '_'), 'year': $substring($cd, 0, 4), 'month': $substring($cd, 5, 2), 'day': $substring($cd, 8, 2), 'day_of_week': (['thursday','friday','saturday','sunday','monday','tuesday','wednesday'])[$floor($dt / 86400000) % 7], 'previous_date': $fromMillis($dt - 86400000, '[Y0001]-[M01]-[D01]'), 'next_date': $fromMillis($dt + 86400000, '[Y0001]-[M01]-[D01]'), 'minus_7_days': $fromMillis($dt - 604800000, '[Y0001]-[M01]-[D01]'), 'minus_14_days': $fromMillis($dt - 1209600000, '[Y0001]-[M01]-[D01]'), 'minus_30_days': $fromMillis($dt - 2592000000, '[Y0001]-[M01]-[D01]'), 'minus_7_days_compact': $replace($fromMillis($dt - 604800000, '[Y0001]-[M01]-[D01]'), '-', ''), 'minus_30_days_compact': $replace($fromMillis($dt - 2592000000, '[Y0001]-[M01]-[D01]'), '-', ''), 'partition_key': $exists($states.input.partition_key) ? $states.input.partition_key : $cd, 'backfill_id': $exists($states.input.backfill_id) ? $states.input.backfill_id : '', 'is_backfill': $exists($states.input.is_backfill) ? $states.input.is_backfill : false, 'ALLOW_UNSUCCESSFUL_SPIDER_RUN': 'True' }; $vars := $exists($states.input.variables) ? $states.input.variables : {}; $merged := $merge([$dateVars, $vars]); $states.input ~> |$| {'variables': $merged, 'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}} | ) %}",
+            "Next": "Save_Task_Input"
+        },
+        "Save_Task_Input": {
+            "Type": "Task",
+            "Comment": "Save task_input (upstream+variables) as soon as the task actually starts, independent of eventual success/failure/waiting_decision — Save_Canonical_Output only fires on the success path, which previously meant running/failed/manually-resolved tasks never had a recorded input to debug from. Deliberately updateItem, not putItem like Save_Canonical_Output: this key (output#pipeline#task#date) is shared across same-day runs of this task, so a blind full-item replace here could momentarily blank out a prior successful run's real 'result' while this run is still in flight. SET only touches task_input/updated_at; ttl is set only if not already present, so it isn't reset by every subsequent run.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "UpdateExpression": "SET task_name = :tn, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
+                "ExpressionAttributeNames": {
+                    "#ttl_field": "ttl"
+                },
+                "ExpressionAttributeValues": {
+                    ":tn": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    ":ti": {
+                        "S": "{% ( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti ) %}"
+                    },
+                    ":ua": {
+                        "S": "{% $now() %}"
+                    },
+                    ":ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Check_Task_Type",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution; input recording is best-effort, same pattern as every other status write in this template",
+                    "Output": "{% $states.input %}",
+                    "Next": "Check_Task_Type"
+                }
+            ]
+        },
+        "Check_Task_Type": {
+            "Type": "Choice",
+            "Comment": "Route to appropriate runner based on task_type. Default is 'sfn' for backward compatibility.",
+            "Choices": [
+                {
+                    "Condition": "{% $states.input.task_type = 'lambda' %}",
+                    "Next": "Run_Task_Lambda"
+                },
+                {
+                    "Condition": "{% $states.input.task_type = 'glue' %}",
+                    "Next": "Run_Task_Glue"
+                },
+                {
+                    "Condition": "{% $states.input.task_type = 'ecs' %}",
+                    "Next": "Run_Task_ECS"
+                },
+                {
+                    "Condition": "{% $states.input.task_type = 'athena' %}",
+                    "Next": "Run_Task_Athena"
+                },
+                {
+                    "Condition": "{% $states.input.task_type = 'emr' %}",
+                    "Next": "Run_Task_EMR"
+                },
+                {
+                    "Condition": "{% $states.input.task_type = 'batch' %}",
+                    "Next": "Run_Task_Batch"
+                }
+            ],
+            "Default": "Run_Task_SFN"
+        },
+        "Run_Task_SFN": {
+            "Type": "Task",
+            "Comment": "Execute the actual task SFN with cross-account support",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": {
+                "StateMachineArn": "{% $states.input.task_arn %}",
+                "Name": "{% $substring(($exists($states.input.attempt) and $states.input.attempt > 1 ? 'restart-' : '') & $states.input.execution_name & '-' & $substring($string($toMillis($now())), 7), 0, 80) %}",
+                "Input": "{% $merge([{'current_date': $states.input.current_date, 'PARTITION_ARG': $states.input.PARTITION_ARG, 'pipeline_name': $states.input.pipeline_name, 'date': $states.input.date, '_polyris_table': '${tokens_table}'}, $exists($states.input.variables) ? $states.input.variables : {}, $exists($states.input.upstream) and $count($keys($states.input.upstream)) > 0 ? {'upstream': $states.input.upstream} : {}]) %}"
+            },
+            "Output": "{% ( $raw := $exists($states.result.Output) ? $string($states.result.Output) : '{}'; $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.ExecutionArn) ? $states.result.ExecutionArn : ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "StepFunctions.ExecutionLimitExceeded",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 5,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        },
+        "Run_Task_Lambda": {
+            "Type": "Task",
+            "Comment": "Execute Lambda function directly",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": {
+                "FunctionName": "{% $states.input.task_arn %}",
+                "Payload": "{% $merge([$exists($states.input.task_config.payload) ? $states.input.task_config.payload : {}, {'current_date': $states.input.current_date, 'PARTITION_ARG': $states.input.PARTITION_ARG, 'pipeline_name': $states.input.pipeline_name, 'date': $states.input.date, '_polyris_table': '${tokens_table}'}, $exists($states.input.variables) ? $states.input.variables : {}, $exists($states.input.upstream) and $count($keys($states.input.upstream)) > 0 ? {'upstream': $states.input.upstream} : {}]) %}"
+            },
+            "Output": "{% ( $raw := $exists($states.result.Payload) ? $string($states.result.Payload) : '{}'; $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException",
+                        "Lambda.Unknown",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 3,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        },
+        "Run_Task_Glue": {
+            "Type": "Task",
+            "Comment": "Execute Glue job (sync - waits for completion)",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": "{% $merge([{'JobName': $states.input.task_config.job_name, 'Arguments': $merge([$exists($states.input.task_config.arguments) ? $states.input.task_config.arguments : {}, {'--POLYRIS_PIPELINE_NAME': $states.input.pipeline_name, '--POLYRIS_RUN_DATE': $states.input.date, '--POLYRIS_TOKENS_TABLE': '${tokens_table}'}])}, $exists($states.input.task_config.worker_type) ? {'WorkerType': $states.input.task_config.worker_type, 'NumberOfWorkers': $states.input.task_config.number_of_workers} : {}, $exists($states.input.task_config.allocated_capacity) ? {'AllocatedCapacity': $states.input.task_config.allocated_capacity} : {}]) %}",
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.JobRunId) ? $states.result.JobRunId : ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success"
+        },
+        "Run_Task_ECS": {
+            "Type": "Task",
+            "Comment": "Execute ECS/Fargate task (sync - waits for completion)",
+            "Resource": "arn:aws:states:::ecs:runTask.sync",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": "{% $merge([{'Cluster': $states.input.task_config.cluster, 'TaskDefinition': $states.input.task_config.task_definition, 'LaunchType': $exists($states.input.task_config.launch_type) ? $states.input.task_config.launch_type : 'FARGATE', 'Overrides': ($ov := $exists($states.input.task_config.overrides) ? $states.input.task_config.overrides : {}; $penv := [{'Name': 'POLYRIS_PIPELINE_NAME', 'Value': $states.input.pipeline_name}, {'Name': 'POLYRIS_RUN_DATE', 'Value': $states.input.date}, {'Name': 'POLYRIS_TOKENS_TABLE', 'Value': '${tokens_table}'}]; $exists($ov.ContainerOverrides) ? $merge([$ov, {'ContainerOverrides': [$map($ov.ContainerOverrides, function($co) { $merge([$co, {'Environment': $append($exists($co.Environment) ? $co.Environment : [], $penv)}]) })]}]) : $ov)}, ($exists($states.input.task_config.subnets) and $count($states.input.task_config.subnets) > 0) ? {'NetworkConfiguration': {'AwsvpcConfiguration': {'Subnets': $states.input.task_config.subnets, 'SecurityGroups': $exists($states.input.task_config.security_groups) ? $states.input.task_config.security_groups : [], 'AssignPublicIp': $exists($states.input.task_config.assign_public_ip) ? $states.input.task_config.assign_public_ip : 'DISABLED'}}} : {}]) %}",
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.Tasks) and $count($states.result.Tasks) > 0 ? $states.result.Tasks[0].TaskArn : ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success"
+        },
+        "Run_Task_Athena": {
+            "Type": "Task",
+            "Comment": "Execute Athena query (sync - waits for completion)",
+            "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": "{% $merge([{'QueryString': $states.input.task_config.query_string, 'QueryExecutionContext': {'Database': $states.input.task_config.database}, 'WorkGroup': $exists($states.input.task_config.workgroup) ? $states.input.task_config.workgroup : 'primary'}, ($exists($states.input.task_config.output_location) and $states.input.task_config.output_location != '') ? {'ResultConfiguration': {'OutputLocation': $states.input.task_config.output_location}} : {}]) %}",
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.QueryExecutionId) ? $states.result.QueryExecutionId : ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success"
+        },
+        "Run_Task_EMR": {
+            "Type": "Task",
+            "Comment": "Execute EMR step (sync). Step is expanded into literal fields — not an opaque '{% task_config.step %}' expression — so Step Functions' deploy-time schema validation can see the required Step.Name and Step.HadoopJarStep.Jar. Values still come from the user's emr_step (task_config.step); ADR #106 owns the runtime contract.",
+            "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": {
+                "ClusterId": "{% $states.input.task_config.cluster_id %}",
+                "Step": {
+                    "Name": "{% $states.input.task_config.step.Name %}",
+                    "ActionOnFailure": "{% $exists($states.input.task_config.step.ActionOnFailure) ? $states.input.task_config.step.ActionOnFailure : 'CONTINUE' %}",
+                    "HadoopJarStep": {
+                        "Jar": "{% $states.input.task_config.step.HadoopJarStep.Jar %}",
+                        "Args": "{% $exists($states.input.task_config.step.HadoopJarStep.Args) ? $states.input.task_config.step.HadoopJarStep.Args : [] %}",
+                        "Properties": "{% $exists($states.input.task_config.step.HadoopJarStep.Properties) ? $states.input.task_config.step.HadoopJarStep.Properties : [] %}"
+                    }
+                }
+            },
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.StepId) ? $states.result.StepId : ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success"
+        },
+        "Run_Task_Batch": {
+            "Type": "Task",
+            "Comment": "Execute AWS Batch job (sync - waits for completion)",
+            "Resource": "arn:aws:states:::batch:submitJob.sync",
+            "Credentials": {
+                "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
+            },
+            "Arguments": {
+                "JobDefinition": "{% $states.input.task_config.job_definition %}",
+                "JobName": "{% $states.input.execution_name %}",
+                "JobQueue": "{% $states.input.task_config.job_queue %}",
+                "Parameters": "{% $exists($states.input.task_config.parameters) ? $states.input.task_config.parameters : {} %}",
+                  "ContainerOverrides": "{% {'Environment': [{'Name': 'POLYRIS_PIPELINE_NAME', 'Value': $states.input.pipeline_name}, {'Name': 'POLYRIS_RUN_DATE', 'Value': $states.input.date}, {'Name': 'POLYRIS_TOKENS_TABLE', 'Value': '${tokens_table}'}]} %}"
+            },
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.JobId) ? $states.result.JobId : ''} | ) %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% ( $errObj := $states.errorOutput; $errStr := $string($errObj); $truncErr := $length($errStr) > 50000 ? $substring($errStr, 0, 50000) & '...[truncated]' : $errStr; $causeStr := $exists($errObj.Cause) ? $string($errObj.Cause) : ''; $taskArn := $contains($causeStr, 'ExecutionArn') ? ($parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '') : ''; $states.input ~> |$| {'error': $truncErr, 'error_obj': $errObj, 'task_execution_arn': $taskArn} | ) %}",
+                    "Next": "Check_Should_Retry"
+                }
+            ],
+            "Next": "Save_Success"
+        },
+        "Check_Should_Retry": {
+            "Type": "Choice",
+            "Comment": "Retry the task in-place while attempts remain (ADR #107); otherwise fall through to the existing failure path.",
+            "Choices": [
+                {
+                    "Condition": "{% $retry_attempt < ($exists($states.input.task_config.retries) ? $states.input.task_config.retries : 0) %}",
+                    "Next": "Wait_Before_Retry"
+                }
+            ],
+            "Default": "Save_Error_Waiting"
+        },
+        "Wait_Before_Retry": {
+            "Type": "Wait",
+            "Comment": "Wait between retries. Base = fixed retry_delay, or exponential min(retry_delay*2^attempt, max_retry_delay) when retry_backoff. With retry_jitter, apply equal jitter: a random value in [base/2, base) (ADR #107).",
+            "Seconds": "{% ($base := ($exists($states.input.task_config.retry_backoff) and $states.input.task_config.retry_backoff) ? $min([$states.input.task_config.retry_delay * $power(2, $retry_attempt), ($exists($states.input.task_config.max_retry_delay) ? $states.input.task_config.max_retry_delay : 3600)]) : ($exists($states.input.task_config.retry_delay) ? $states.input.task_config.retry_delay : 0); ($exists($states.input.task_config.retry_jitter) and $states.input.task_config.retry_jitter) ? $floor($base * (0.5 + $random() * 0.5)) : $base) %}",
+            "Next": "Increment_Retry"
+        },
+        "Increment_Retry": {
+            "Type": "Pass",
+            "Comment": "Bump the attempt counter and strip the prior error before re-dispatching via Check_Task_Type.",
+            "Assign": {
+                "retry_attempt": "{% $retry_attempt + 1 %}"
+            },
+            "Output": "{% $states.input ~> |$|{}, ['error', 'error_obj', 'task_execution_arn']| %}",
+            "Next": "Check_Task_Type"
+        },
+        "Save_Error_Waiting": {
+            "Type": "Task",
+            "Comment": "Save error and set status to waiting_decision BEFORE sending Slack - so UI shows task is awaiting human decision",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, #e = :error, task_execution_arn = :taskArn",
+                "ConditionExpression": "attempt = :expectedAttempt",
+                "ExpressionAttributeNames": {
+                    "#s": "status",
+                    "#e": "error"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "waiting_decision"
+                    },
+                    ":error": {
+                        "S": "{% ( $err := $string($states.input.error); $length($err) > 50000 ? $substring($err, 0, 50000) & '...[truncated]' : $err ) %}"
+                    },
+                    ":taskArn": {
+                        "S": "{% $exists($states.input.task_execution_arn) ? $states.input.task_execution_arn : '' %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Get_Decision_Timeout",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer attempt (restart) has already progressed past this attempt's status - this write was correctly rejected. End quietly rather than telling Slack/the UI this attempt is awaiting a decision, which would be stale and misleading now that a newer attempt is in flight.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Get_Decision_Timeout"
+                }
+            ]
+        },
+        "Stale_Attempt_Superseded": {
+            "Type": "Succeed",
+            "Comment": "§9: a newer attempt (restart) has already progressed past this attempt's own status write - this execution's outcome is superseded and must not report itself as finished, waiting, or failed. Ends quietly with no further side effects (no TASK_FINISHED event, no dependent notification, no Slack message) - the newer attempt's own eventual outcome is what downstream should see."
+        },
+        "Save_Success": {
+            "Type": "Task",
+            "Comment": "Update DynamoDB: status = success, save result and task_execution_arn (truncates large results)",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, #r = :result, finished_at = :finished, task_execution_arn = :taskArn",
+                "ConditionExpression": "attempt = :expectedAttempt",
+                "ExpressionAttributeNames": {
+                    "#s": "status",
+                    "#r": "result"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "success"
+                    },
+                    ":result": {
+                        "S": "{% ( $to := $string($states.input.task_output); $length($to) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($to)) & '}' : $to ) %}"
+                    },
+                    ":finished": {
+                        "S": "{% $now() %}"
+                    },
+                    ":taskArn": {
+                        "S": "{% $exists($states.input.task_execution_arn) ? $states.input.task_execution_arn : '' %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input ~> |$| {'final_status': 'success'} | %}",
+            "Next": "Save_Canonical_Output",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer attempt (restart) has already progressed past this attempt's status - this write was correctly rejected. End quietly rather than saving canonical output / notifying dependents with an outcome that's already been superseded.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - skip canonical, continue",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Success"
+                }
+            ]
+        },
+        "Save_Canonical_Output": {
+            "Type": "Task",
+            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this.",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                    "execution_name": {
+                        "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "status": {
+                        "S": "success"
+                    },
+                    "result": {
+                        "S": "{% ( $to := $string($states.input.task_output); $length($to) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($to)) & '}' : $to ) %}"
+                    },
+                    "task_input": {
+                        "S": "{% ( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti ) %}"
+                    },
+                    "updated_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Emit_Task_Finished_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Canonical save failed - continue (best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Success"
+                }
+            ]
+        },
+        "Emit_Task_Finished_Success": {
+            "Type": "Task",
+            "Comment": "Record TASK_FINISHED event for timeline (success)",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${task_events_table}",
+                "Item": {
+                    "task_run_id": {
+                        "S": "{% $exists($states.input.task_run_id) ? $states.input.task_run_id : $states.input.execution_name %}"
+                    },
+                    "event_time": {
+                        "S": "{% $now() & '#20' %}"
+                    },
+                    "event_type": {
+                        "S": "TASK_FINISHED"
+                    },
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    },
+                    "parent_execution_id": {
+                        "S": "{% $exists($states.input.parent_execution_id) ? $states.input.parent_execution_id : $states.input.pipeline_execution %}"
+                    },
+                    "backfill_id": {
+                        "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+                    },
+                    "partition_key": {
+                        "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "status": {
+                        "S": "success"
+                    },
+                    "ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Notify_Dependents",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Notify_Dependents"
+                }
+            ]
+        },
+        "Notify_Dependents": {
+            "Type": "Task",
+            "Comment": "Notify waiting tasks via SFN helper (sync - ensure delivery)",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+            "Arguments": {
+                "StateMachineArn": "${notify_dependents_helper_arn}",
+                "Input": {
+                    "task_name": "{% $states.input.task_name %}",
+                    "execution_name": "{% $states.input.execution_name %}",
+                    "date": "{% $states.input.date %}",
+                    "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+                    "pipeline_execution": "{% $states.input.pipeline_execution %}",
+                    "pipeline_execution_short": "{% $states.input.pipeline_execution_short %}",
+                    "status": "success"
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Check_Has_Outlets",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "StepFunctions.ExecutionLimitExceeded",
+                        "StepFunctions.ServiceException",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 5,
+                    "BackoffRate": 2
+                },
+                {
+                    "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException",
+                        "Lambda.SdkClientException"
+                    ],
+                    "Comment": "Retry transient Lambda errors inside notify_dependents",
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Notify failed after retries - fail the task (visible error)",
+                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'NotifyDependentsFailed', 'Cause': $string($states.errorOutput)}} | %}",
+                    "Next": "Notify_Dependents_Failed"
+                }
+            ]
+        },
+        "Check_Has_Outlets": {
+            "Type": "Choice",
+            "Comment": "Emit asset events only if (a) task has outlets AND (b) caller did NOT set _suppress_asset_event=true. Suppression is used by cascade='none' backfills (ADR #57) to run an isolated backfill without triggering downstream consumers.",
+            "Choices": [
+                {
+                    "Condition": "{% $exists($states.input.outlets) and $count($states.input.outlets) > 0 and ($exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event != true : true) %}",
+                    "Next": "Emit_Asset_Events"
+                }
+            ],
+            "Default": "Check_Orchestration_Token_Success"
+        },
+        "Emit_Asset_Events": {
+            "Type": "Map",
+            "Comment": "Record asset events and notify consumers via SFN",
+            "Items": "{% $append([], $map($states.input.outlets, function($o) { {'name': $o.name, 'uri': $exists($o.uri) ? $o.uri : ''} })) %}",
+            "MaxConcurrency": 5,
+            "ItemProcessor": {
+                "ProcessorConfig": {
+                    "Mode": "INLINE"
+                },
+                "StartAt": "Record_Asset_Event",
+                "States": {
+                    "Record_Asset_Event": {
+                        "Type": "Task",
+                        "Comment": "Record asset event in DynamoDB for UI staleness and pull-based consumers",
+                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Arguments": {
+                            "TableName": "${asset_events_table}",
+                            "Item": {
+                                "asset_name": {
+                                    "S": "{% $states.input.name %}"
+                                },
+                                "event_time": {
+                                    "S": "{% $now() %}"
+                                },
+                                "uri": {
+                                    "S": "{% $exists($states.input.uri) ? $states.input.uri : '' %}"
+                                },
+                                "source_task": {
+                                    "S": "{% $states.context.Execution.Input.task_name %}"
+                                },
+                                "source_dag": {
+                                    "S": "{% $states.context.Execution.Input.pipeline_name %}"
+                                },
+                                "execution_date": {
+                                    "S": "{% $states.context.Execution.Input.date %}"
+                                },
+                                "ttl": {
+                                    "N": "{% $string($floor($toMillis($now()) / 1000) + (${asset_event_ttl_days} * 24 * 60 * 60)) %}"
+                                }
+                            }
+                        },
+                        "Output": "{% $states.input %}",
+                        "Next": "Notify_Asset_Consumers_SFN",
+                        "Retry": [
+                            {
+                                "ErrorEquals": [
+                                    "DynamoDB.ProvisionedThroughputExceededException"
+                                ],
+                                "IntervalSeconds": 1,
+                                "MaxAttempts": 3,
+                                "BackoffRate": 2
+                            }
+                        ]
+                    },
+                    "Notify_Asset_Consumers_SFN": {
+                        "Type": "Task",
+                        "Comment": "Notify pipelines subscribed to this asset (sync - ensure delivery). Uses aws-sdk:sfn:startSyncExecution because NotifyAssetConsumersSfn is EXPRESS — startExecution.sync:2 fails silently on Express SFN per CLAUDE.md.",
+                        "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+                        "Arguments": {
+                            "StateMachineArn": "${notify_asset_consumers_sfn_arn}",
+                            "Input": "{% $string({'asset_name': $states.input.name, 'execution_date': $states.context.Execution.Input.date, 'source_task': $states.context.Execution.Input.task_name, 'source_dag': $states.context.Execution.Input.pipeline_name, 'cascade_all': $exists($states.context.Execution.Input.cascade_all) ? $states.context.Execution.Input.cascade_all : false}) %}"
+                        },
+                        "End": true,
+                        "Retry": [
+                            {
+                                "ErrorEquals": [
+                                    "StepFunctions.ServiceException",
+                                    "StepFunctions.TooManyRequests",
+                                    "States.Timeout"
+                                ],
+                                "IntervalSeconds": 2,
+                                "MaxAttempts": 5,
+                                "BackoffRate": 2
+                            }
+                        ]
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Notify_Asset_Subscribers",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Asset event emission failed - fail the task",
+                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'EmitAssetEventsFailed', 'Cause': $string($states.errorOutput)}} | %}",
+                    "Next": "Notify_Dependents_Failed"
+                }
+            ]
+        },
+        "Notify_Asset_Subscribers": {
+            "Type": "Task",
+            "Comment": "Notify tasks waiting for these assets (pull-based, sync)",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+                "FunctionName": "${notify_asset_subscribers_lambda_arn}",
+                "Payload": {
+                    "outlets": "{% $states.input.outlets %}",
+                    "source_task": "{% $states.input.task_name %}",
+                    "source_dag": "{% $states.input.pipeline_name %}",
+                    "event_time": "{% $now() %}"
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Check_Orchestration_Token_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 5,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Asset notify failed - fail the task",
+                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'NotifyAssetSubscribersFailed', 'Cause': $string($states.errorOutput)}} | %}",
+                    "Next": "Notify_Dependents_Failed"
+                }
+            ]
+        },
+        "Check_Orchestration_Token_Success": {
+            "Type": "Choice",
+            "Comment": "Only send callback if orchestration_token exists",
+            "Choices": [
+                {
+                    "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}",
+                    "Next": "Send_Pipeline_Success"
+                }
+            ],
+            "Default": "Done"
+        },
+        "Send_Pipeline_Success": {
+            "Type": "Task",
+            "Comment": "Callback to pipeline: sendTaskSuccess with orchestration_token",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+            "Arguments": {
+                "TaskToken": "{% $states.input.orchestration_token %}",
+                "Output": "{% '{\"status\":\"success\",\"task_name\":\"' & $states.input.task_name & '\"}' %}"
+            },
+            "Output": "{% $states.input %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Token expired, invalid, or already used - continue anyway",
+                    "Output": "{% $states.input %}",
+                    "Next": "Done"
+                }
+            ],
+            "Next": "Done",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        },
+        "Interactive_Slack": {
+            "Type": "Task",
+            "Comment": "Send Slack notification with Skip/Restart/Fail buttons",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+                "FunctionName": "${notify_function_arn}",
+                "Payload": {
+                    "action": "interactive_slack",
+                    "pipeline_name": "{% $states.input.pipeline_name %}",
+                    "console_api_endpoint": "${console_api_endpoint}",
+                    "failure": {
+                        "pipeline_name": "{% $states.input.pipeline_name %}",
+                        "task_name": "{% $states.input.task_name %}",
+                        "execution_name": "{% $states.input.execution_name %}",
+                        "error": "{% $exists($states.input.error_obj.Error) ? $states.input.error_obj.Error : 'TaskFailed' %}",
+                        "date": "{% $exists($states.input.date) ? $states.input.date : '' %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "If Slack fails, record in DDB then wait for decision (can use API/Console)",
+                    "Output": "{% $states.input ~> |$| {'slack_failed': true} | %}",
+                    "Next": "Save_Slack_Failed"
+                }
+            ],
+            "Next": "Send_PagerDuty_Alert",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "StepFunctions.ExecutionLimitExceeded",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 5,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        },
+        "Save_Slack_Failed": {
+            "Type": "Task",
+            "Comment": "Record Slack notification failure in DynamoDB so UI can show warning",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Output": "{% $states.input %}",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET notification_failed = :nf",
+                "ExpressionAttributeValues": {
+                    ":nf": {
+                        "BOOL": true
+                    }
+                }
+            },
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "If DDB update fails, still continue to wait",
+                    "Output": "{% $states.input %}",
+                    "Next": "Send_PagerDuty_Alert"
+                }
+            ],
+            "Next": "Send_PagerDuty_Alert"
+        },
+        "Wait_For_Decision": {
+            "Type": "Wait",
+            "Comment": "Wait for user action via Slack buttons",
+            "Seconds": "{% $decision_timeout_seconds %}",
+            "Next": "Save_Failed"
+        },
+        "Save_Failed": {
+            "Type": "Task",
+            "Comment": "Update DynamoDB: status = failed, save error",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn",
+                "ConditionExpression": "attempt = :expectedAttempt",
+                "ExpressionAttributeNames": {
+                    "#s": "status",
+                    "#e": "error"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "failed"
+                    },
+                    ":error": {
+                        "S": "{% $string($states.input.error) %}"
+                    },
+                    ":finished": {
+                        "S": "{% $now() %}"
+                    },
+                    ":taskArn": {
+                        "S": "{% $exists($states.input.task_execution_arn) ? $states.input.task_execution_arn : '' %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input ~> |$| {'final_status': 'failed'} | %}",
+            "Next": "Emit_Task_Finished_Failed",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer attempt (restart) has already progressed past this attempt's status - this write was correctly rejected. End quietly rather than notifying dependents/alerting with a failure outcome that's already been superseded by a restart.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Failed"
+                }
+            ]
+        },
+        "Emit_Task_Finished_Failed": {
+            "Type": "Task",
+            "Comment": "Record TASK_FINISHED event for timeline (failed)",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${task_events_table}",
+                "Item": {
+                    "task_run_id": {
+                        "S": "{% $exists($states.input.task_run_id) ? $states.input.task_run_id : $states.input.execution_name %}"
+                    },
+                    "event_time": {
+                        "S": "{% $now() & '#20' %}"
+                    },
+                    "event_type": {
+                        "S": "TASK_FINISHED"
+                    },
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    },
+                    "parent_execution_id": {
+                        "S": "{% $exists($states.input.parent_execution_id) ? $states.input.parent_execution_id : $states.input.pipeline_execution %}"
+                    },
+                    "backfill_id": {
+                        "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+                    },
+                    "partition_key": {
+                        "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "status": {
+                        "S": "failed"
+                    },
+                    "error_summary": {
+                        "S": "{% ( $err := $string($states.input.error); $length($err) > 500 ? $substring($err, 0, 500) & '...' : $err ) %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Notify_Dependents_Failed",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution (status update is best-effort)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Notify_Dependents_Failed"
+                }
+            ]
+        },
+        "Notify_Dependents_Failed": {
+            "Type": "Task",
+            "Comment": "Notify waiting tasks of failure (critical for trigger_rules like all_done)",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+            "Arguments": {
+                "StateMachineArn": "${notify_dependents_helper_arn}",
+                "Input": {
+                    "task_name": "{% $states.input.task_name %}",
+                    "execution_name": "{% $states.input.execution_name %}",
+                    "date": "{% $states.input.date %}",
+                    "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+                    "pipeline_execution": "{% $states.input.pipeline_execution %}",
+                    "pipeline_execution_short": "{% $states.input.pipeline_execution_short %}",
+                    "status": "failed"
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Check_Orchestration_Token_Failure",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "StepFunctions.ExecutionLimitExceeded",
+                        "StepFunctions.ServiceException",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 5,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Notify failed - still send failure callback to pipeline",
+                    "Output": "{% $states.input ~> |$| {'error': $merge([$states.input.error, {'notify_error': $states.errorOutput}])} | %}",
+                    "Next": "Check_Orchestration_Token_Failure"
+                }
+            ]
+        },
+        "Check_Orchestration_Token_Failure": {
+            "Type": "Choice",
+            "Comment": "Only send failure callback if orchestration_token exists",
+            "Choices": [
+                {
+                    "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}",
+                    "Next": "Send_Pipeline_Failure"
+                }
+            ],
+            "Default": "Fail_State"
+        },
+        "Send_Pipeline_Failure": {
+            "Type": "Task",
+            "Comment": "Callback to pipeline: sendTaskFailure",
+            "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
+            "Arguments": {
+                "TaskToken": "{% $states.input.orchestration_token %}",
+                "Error": "TaskFailed",
+                "Cause": "{% $string($states.input.error) %}"
+            },
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Token expired, invalid, or already used - continue to fail state",
+                    "Output": "{% $states.input %}",
+                    "Next": "Fail_State"
+                }
+            ],
+            "Next": "Fail_State",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        },
+        "Done": {
+            "Type": "Pass",
+            "Comment": "Task completed successfully",
+            "Output": "{% {'status': 'success', 'task_name': $states.input.task_name, 'result': $exists($states.input.task_output) ? $states.input.task_output : {}} %}",
+            "End": true
+        },
+        "Fail_State": {
+            "Type": "Fail",
+            "Error": "TaskFailed",
+            "Cause": "Task execution failed"
+        },
+        "Get_Decision_Timeout": {
+            "Type": "Task",
+            "Comment": "Read the global decision-wait timeout from the reserved __global_settings__ registry record (ADR #103 1b). One value for the whole deployment; the Team UI can edit it, the free tier shows it read-only. Degrades to the 18000s (5h) default on any miss so the wait always has a value.",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Arguments": {
+                "TableName": "${pipeline_registry_table}",
+                "Key": {
+                    "pipeline_name": {
+                        "S": "__global_settings__"
+                    }
+                }
+            },
+            "Assign": {
+                "decision_timeout_seconds": "{% $exists($states.result.Item.decision_timeout_seconds.N) ? $number($states.result.Item.decision_timeout_seconds.N) : 18000 %}"
+            },
+            "Output": "{% $states.input %}",
+            "Catch": [
+                {
+                    "ErrorEquals": ["States.ALL"],
+                    "Comment": "Registry read failed - use the default timeout",
+                    "Assign": {
+                        "decision_timeout_seconds": "{% 18000 %}"
+                    },
+                    "Output": "{% $states.input %}",
+                    "Next": "Check_Is_Backfill"
+                }
+            ],
+            "Next": "Check_Is_Backfill"
+        },
+        "Check_Is_Backfill": {
+            "Type": "Choice",
+            "Comment": "Skip alerting for backfill runs - but still wait for user decision via UI",
+            "Choices": [
+                {
+                    "Condition": "{% $exists($states.input.variables.is_backfill) and $states.input.variables.is_backfill = true %}",
+                    "Next": "Wait_For_Decision"
+                }
+            ],
+            "Default": "Interactive_Slack"
+        },
+        "Send_PagerDuty_Alert": {
+            "Type": "Task",
+            "Comment": "Send PagerDuty alert immediately so on-call can act during 5h wait window. Uses aws-sdk:sfn:startSyncExecution because PagerDutyAlerterSfn is EXPRESS — startExecution.sync:2 fails silently on Express SFN per CLAUDE.md.",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+                "FunctionName": "${notify_function_arn}",
+                "Payload": {
+                    "action": "live_pagerduty",
+                    "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+                    "failure": {
+                        "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+                        "task_name": "{% $states.input.task_name %}",
+                        "execution_name": "{% $states.input.execution_name %}",
+                        "error": "{% $exists($states.input.error_obj.Error) ? $states.input.error_obj.Error : 'TaskFailed' %}",
+                        "date": "{% $exists($states.input.date) ? $states.input.date : '' %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "PagerDuty failed - continue to wait (best-effort alerting)",
+                    "Output": "{% $states.input %}",
+                    "Next": "Wait_For_Decision"
+                }
+            ],
+            "Next": "Wait_For_Decision",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "StepFunctions.TooManyRequests",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 5,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ]
+        }
+    }
+}

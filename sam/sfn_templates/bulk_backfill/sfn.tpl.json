@@ -1,0 +1,296 @@
+{
+  "Comment": "Bulk Backfill orchestrator — runs N pipeline executions for a backfill request. Per ADR #51 + #54.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Initialize",
+  "States": {
+    "Initialize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Comment": "Mark backfill record as running and capture pipeline DAG hash at start.",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": { "S": "{% $states.input.backfill_id %}" }
+        },
+        "UpdateExpression": "SET #status = :running, started_at = :now",
+        "ConditionExpression": "attribute_exists(execution_name)",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":running": { "S": "running" },
+          ":now": { "S": "{% $now() %}" }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "LoadPipelineDagHash"
+    },
+
+    "LoadPipelineDagHash": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Comment": "Fetch current pipeline registry record for DAG hash (mid-run redeploy detection — ADR #51 Q5/D).",
+      "Arguments": {
+        "TableName": "${pipeline_registry_table}",
+        "Key": {
+          "pipeline_name": { "S": "{% $states.input.target_pipeline %}" }
+        },
+        "ConsistentRead": true
+      },
+      "Output": "{% $states.input ~> |$| { 'pipeline_dag_hash': $exists($states.result.Item.dag_hash) ? $states.result.Item.dag_hash.S : 'unknown', 'target_pipeline_sfn_arn': $exists($states.result.Item.sfn_arn) ? $states.result.Item.sfn_arn.S : ($exists($states.result.Item.arn) ? $states.result.Item.arn.S : '') } | %}",
+      "Next": "UpdateBackfillWithHash"
+    },
+
+    "UpdateBackfillWithHash": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": { "S": "{% $states.input.backfill_id %}" }
+        },
+        "UpdateExpression": "SET pipeline_dag_hash = :h",
+        "ExpressionAttributeValues": {
+          ":h": { "S": "{% $states.input.pipeline_dag_hash %}" }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "TierMap"
+    },
+
+    "TierMap": {
+      "Type": "Map",
+      "Comment": "Outer Map over dependency tiers (ADR #90). MaxConcurrency=1 runs tiers strictly in order — deepest cross-pipeline upstream first, target last. A one-tier plan (upstream=off) behaves exactly like the pre-Phase-3 single Map.",
+      "Items": "{% $states.input.tiers %}",
+      "MaxConcurrency": 1,
+      "ItemSelector": {
+        "tier": "{% $states.context.Map.Item.Value %}",
+        "backfill_id": "{% $states.input.backfill_id %}",
+        "options": "{% $states.input.options %}",
+        "skip_task_ids": "{% $exists($states.input.skip_task_ids) ? $states.input.skip_task_ids : [] %}",
+        "variables": "{% $exists($states.input.options.variables) ? $states.input.options.variables : {} %}",
+        "cascade": "{% $exists($states.input.cascade) ? $states.input.cascade : 'auto' %}"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "CheckTierGate",
+        "States": {
+          "CheckTierGate": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Comment": "Failure-safety gate (ADR #90): read aggregate status + failed count before running this tier. The first tier sees failed=0 and runs; any later tier is skipped if an earlier tier failed, so a downstream/target is never run on a failed upstream.",
+            "Arguments": {
+              "TableName": "${tokens_table}",
+              "Key": {
+                "execution_name": { "S": "{% $states.input.backfill_id %}" }
+              },
+              "ConsistentRead": true
+            },
+            "Output": "{% $states.input ~> |$| { 'current_backfill_status': $exists($states.result.Item.status) ? $states.result.Item.status.S : 'unknown', 'failed_so_far': $exists($states.result.Item.failed_partitions) ? $number($states.result.Item.failed_partitions.N) : 0 } | %}",
+            "Next": "TierGateChoice"
+          },
+          "TierGateChoice": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $states.input.current_backfill_status = 'canceled' or $states.input.failed_so_far > 0 %}",
+                "Next": "TierSkipped"
+              }
+            ],
+            "Default": "PartitionMap"
+          },
+          "TierSkipped": {
+            "Type": "Pass",
+            "Comment": "Tier skipped: backfill canceled or an earlier tier had failures.",
+            "Output": "{% { 'result': 'tier_skipped' } %}",
+            "End": true
+          },
+          "PartitionMap": {
+            "Type": "Map",
+            "Comment": "Inner Map over this tier's items, parallel up to max_parallel — same per-partition execution as the pre-Phase-3 Map, but each item carries its own pipeline + sfn_arn so cross-pipeline upstream runs correctly.",
+            "Items": "{% $states.input.tier %}",
+            "MaxConcurrency": "{% $exists($states.input.options.max_parallel) ? $number($states.input.options.max_parallel) : 5 %}",
+            "ItemSelector": {
+              "backfill_id": "{% $states.input.backfill_id %}",
+              "partition_key": "{% $states.context.Map.Item.Value.partition_key %}",
+              "target_pipeline_sfn_arn": "{% $states.context.Map.Item.Value.sfn_arn %}",
+              "target_pipeline": "{% $states.context.Map.Item.Value.pipeline %}",
+              "reused": "{% $exists($states.context.Map.Item.Value.reused) ? $states.context.Map.Item.Value.reused : false %}",
+              "skip_task_ids": "{% $states.input.skip_task_ids %}",
+              "options": "{% $states.input.options %}",
+              "variables": "{% $states.input.variables %}",
+              "cascade": "{% $states.input.cascade %}"
+            },
+            "ItemProcessor": {
+              "ProcessorConfig": { "Mode": "INLINE" },
+              "StartAt": "CheckBackfillCanceled",
+              "States": {
+                "CheckBackfillCanceled": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::dynamodb:getItem",
+                  "Comment": "Cooperative cancel: read backfill record before starting child (ADR #54).",
+                  "Arguments": {
+                    "TableName": "${tokens_table}",
+                    "Key": {
+                      "execution_name": { "S": "{% $states.input.backfill_id %}" }
+                    },
+                    "ConsistentRead": true
+                  },
+                  "Output": "{% $states.input ~> |$| { 'current_backfill_status': $exists($states.result.Item.status) ? $states.result.Item.status.S : 'unknown' } | %}",
+                  "Next": "IsCanceledChoice"
+                },
+                "IsCanceledChoice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Condition": "{% $states.input.current_backfill_status = 'canceled' %}",
+                      "Next": "PartitionSkippedCanceled"
+                    }
+                  ],
+                  "Default": "CheckReused"
+                },
+                "CheckReused": {
+                  "Type": "Choice",
+                  "Comment": "Smart-fill (ADR #88/#90): a reused upstream partition already exists — skip execution, do not count it as work.",
+                  "Choices": [
+                    {
+                      "Condition": "{% $states.input.reused = true %}",
+                      "Next": "PartitionReused"
+                    }
+                  ],
+                  "Default": "StartChildSFN"
+                },
+                "PartitionReused": {
+                  "Type": "Pass",
+                  "Output": "{% { 'partition_key': $states.input.partition_key, 'result': 'reused' } %}",
+                  "End": true
+                },
+                "PartitionSkippedCanceled": {
+                  "Type": "Pass",
+                  "Output": "{% { 'partition_key': $states.input.partition_key, 'result': 'skipped_canceled' } %}",
+                  "End": true
+                },
+                "StartChildSFN": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::states:startExecution.sync:2",
+                  "Comment": "Start child pipeline execution for this item. .sync2 waits for terminal state and returns Output.Status. Pipeline + ARN come from the item, so cross-pipeline upstream runs against its own state machine.",
+                  "Arguments": {
+                    "StateMachineArn": "{% $states.input.target_pipeline_sfn_arn %}",
+                    "Name": "{% $states.input.target_pipeline & '-' & $states.input.partition_key & '-bf-' & $substring($states.input.backfill_id, 3, 8) %}",
+                    "Input": {
+                      "backfill_id": "{% $states.input.backfill_id %}",
+                      "partition_key": "{% $states.input.partition_key %}",
+                      "current_date": "{% $states.input.partition_key %}",
+                      "is_backfill": true,
+                      "skip_tasks": "{% $exists($states.input.skip_task_ids) ? $states.input.skip_task_ids : [] %}",
+                      "variables": "{% $states.input.variables %}",
+                      "cascade_all": "{% $states.input.cascade = 'all' %}",
+                      "_suppress_asset_event": "{% $states.input.cascade = 'none' %}"
+                    }
+                  },
+                  "TimeoutSeconds": 86400,
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["States.TaskFailed"],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2.0
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": ["States.ALL"],
+                      "Next": "IncrementFailed",
+                      "Output": "{% $states.input ~> |$| { 'error': $states.errorOutput.Error, 'cause': $states.errorOutput.Cause } | %}"
+                    }
+                  ],
+                  "Output": "{% $states.input ~> |$| { 'child_status': $exists($states.result.Output) ? 'SUCCEEDED' : 'FAILED' } | %}",
+                  "Next": "ChildSucceededChoice"
+                },
+                "ChildSucceededChoice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Condition": "{% $states.input.child_status = 'SUCCEEDED' %}",
+                      "Next": "IncrementCompleted"
+                    }
+                  ],
+                  "Default": "IncrementFailed"
+                },
+                "IncrementCompleted": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::dynamodb:updateItem",
+                  "Arguments": {
+                    "TableName": "${tokens_table}",
+                    "Key": {
+                      "execution_name": { "S": "{% $states.input.backfill_id %}" }
+                    },
+                    "UpdateExpression": "ADD completed_partitions :one",
+                    "ExpressionAttributeValues": {
+                      ":one": { "N": "1" }
+                    }
+                  },
+                  "Output": "{% { 'partition_key': $states.input.partition_key, 'result': 'completed' } %}",
+                  "End": true
+                },
+                "IncrementFailed": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::dynamodb:updateItem",
+                  "Arguments": {
+                    "TableName": "${tokens_table}",
+                    "Key": {
+                      "execution_name": { "S": "{% $states.input.backfill_id %}" }
+                    },
+                    "UpdateExpression": "ADD failed_partitions :one",
+                    "ExpressionAttributeValues": {
+                      ":one": { "N": "1" }
+                    }
+                  },
+                  "Output": "{% { 'partition_key': $states.input.partition_key, 'result': 'failed' } %}",
+                  "End": true
+                }
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "Finalize"
+    },
+
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Comment": "Read final counters to compute aggregate status (ADR #56).",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": { "S": "{% $states.input.backfill_id %}" }
+        },
+        "ConsistentRead": true
+      },
+      "Output": "{% ( $completed := $exists($states.result.Item.completed_partitions) ? $number($states.result.Item.completed_partitions.N) : 0; $failed := $exists($states.result.Item.failed_partitions) ? $number($states.result.Item.failed_partitions.N) : 0; $currentStatus := $exists($states.result.Item.status) ? $states.result.Item.status.S : 'unknown'; $finalStatus := $currentStatus = 'canceled' ? 'canceled' : ($failed = 0 ? 'completed' : ($completed = 0 ? 'failed' : 'partial')); { 'backfill_id': $states.input.backfill_id, 'final_status': $finalStatus, 'completed': $completed, 'failed': $failed } ) %}",
+      "Next": "UpdateFinalStatus"
+    },
+
+    "UpdateFinalStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": { "S": "{% $states.input.backfill_id %}" }
+        },
+        "UpdateExpression": "SET #status = :final_status, finished_at = :now",
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":final_status": { "S": "{% $states.input.final_status %}" },
+          ":now": { "S": "{% $now() %}" }
+        }
+      },
+      "End": true
+    }
+  }
+}

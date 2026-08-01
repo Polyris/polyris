@@ -1,0 +1,140 @@
+
+/* ============================
+   Pipeline Pause Feature
+   ============================ */
+
+/* Pause banner */
+.pd-pause-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-bottom: 2px solid #f59e0b;
+    animation: pausePulse 2s ease-in-out infinite;
+}
+
+[data-theme="dark"] .pd-pause-banner {
+    background: linear-gradient(135deg, #451a03 0%, #78350f 100%);
+    border-color: #d97706;
+}
+
+@keyframes pausePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.85; }
+}
+
+.pd-pause-banner-icon {
+    font-size: 20px;
+    animation: pauseBounce 1s ease-in-out infinite;
+}
+
+@keyframes pauseBounce {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+}
+
+.pd-pause-banner-text {
+    flex: 1;
+    font-weight: 500;
+    color: #92400e;
+}
+
+[data-theme="dark"] .pd-pause-banner-text {
+    color: #fcd34d;
+}
+
+/* waiting_paused status - DAG nodes */
+.dag-node.waiting_paused rect {
+    fill: #fef3c7;
+    stroke: #f59e0b;
+    stroke-width: 2;
+    stroke-dasharray: 5 3;
+    animation: pausedStroke 1s linear infinite;
+}
+
+@keyframes pausedStroke {
+    to { stroke-dashoffset: -8; }
+}
+
+/* waiting_paused status - task icons */
+.task-icon-waiting_paused {
+    background: #fef3c7;
+    color: #d97706;
+    position: relative;
+}
+
+.task-icon-waiting_paused::after {
+    content: '⏸️';
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    font-size: 10px;
+}
+
+/* waiting_paused status - badge */
+.task-status-badge.waiting_paused {
+    background: #fef3c7;
+    color: #d97706;
+    border: 1px dashed #f59e0b;
+}
+
+/* waiting_paused in pipeline icon */
+.sb-pipeline-icon.waiting_paused {
+    background: #fef3c7;
+    color: #d97706;
+}
+@keyframes pausedNodePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+}
+
+/* Stat value for paused */
+.stat-value.paused {
+    color: #d97706;
+}
+
+/* Paused task message in details panel */
+.td-paused-task-message {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-radius: 8px;
+    border: 1px solid #f59e0b;
+}
+
+[data-theme="dark"] .td-paused-task-message {
+    background: linear-gradient(135deg, #451a03 0%, #78350f 100%);
+}
+
+.td-paused-task-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.td-paused-task-text {
+    flex: 1;
+}
+
+.td-paused-task-text strong {
+    display: block;
+    color: #92400e;
+    margin-bottom: 4px;
+}
+
+[data-theme="dark"] .td-paused-task-text strong {
+    color: #fcd34d;
+}
+
+.td-paused-task-text p {
+    margin: 0;
+    font-size: 12px;
+    color: #a16207;
+}
+
+[data-theme="dark"] .td-paused-task-text p {
+    color: #fbbf24;
+}

@@ -1,0 +1,494 @@
+
+/* ============================================
+   Utility Classes (replacing inline styles)
+   ============================================ */
+
+/* ============================================================
+   Shared "card surface" — all panel-like containers (asset views,
+   DAG container, command palette, notifications, lineage flow)
+   share this look. Per CLAUDE.md Principle #12 (maximize reuse),
+   defined ONCE here as a group selector — no copy-paste.
+   ============================================================ */
+.dag-container,
+.cp-command-palette,
+.ntf-notification-dropdown,
+.ntf-notification-toast,
+.adp-page,
+.av-catalog,
+.av-recent-events-panel,
+.alf-lineage-flow-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+/* Layout utilities */
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+
+/* Spacing utilities */
+.ml-md { margin-left: 0.5rem; }
+
+/* Typography utilities */
+.text-lg { font-size: 0.8rem; }
+.text-muted { color: var(--text-muted); }
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Border utilities */
+.rounded { border-radius: 4px; }
+
+/* Size utilities */
+.w-full { width: 100%; }
+.h-full { height: 100%; }
+.cursor-pointer { cursor: pointer; }
+
+/* Status dots for legend */
+.status-dot.success { background: var(--success); }
+.status-dot.error, .status-dot.failed { background: var(--error); }
+.status-dot.running { background: var(--running); }
+.status-dot.warning { background: var(--warning); }
+.status-dot.muted { background: var(--text-muted); }
+
+/* Legend item */
+
+/* Dropdown styles */
+.pd-dropdown-container {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+/* Run count, rendered inside the History button */
+.pd-history-count {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Runs from today, so "what just happened" stands out in a list that spans
+   every date we can still see. */
+.pd-dropdown-item.today {
+    border-left: 2px solid var(--accent);
+    background: var(--bg-tertiary);
+}
+
+.pd-exec-dropdown-more {
+    display: flex;
+    justify-content: center;
+    padding: 8px;
+    border-top: 1px solid var(--border);
+}
+.pd-dropdown-item:last-child { border-bottom: none; }
+.pd-dropdown-item:hover { background: var(--bg-hover); }
+.pd-dropdown-item.selected { background: var(--accent-light); }
+.pd-dropdown-item-title {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+.pd-dropdown-item-meta {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+
+/* Error boundary styles */
+/* Task icon with dynamic status */
+.task-icon-dynamic {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+}
+
+/* Duration stats box */
+.td-duration-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    padding: 1rem;
+    margin-top: 1rem;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    border-top: 1px solid var(--border);
+    margin-bottom: 1rem;
+}
+/* Metrics section */
+
+/* ============================================
+   Skeleton Loaders
+   ============================================ */
+
+.sk-skeleton-text {
+    height: 1rem;
+    margin-bottom: 0.5rem;
+}
+.sk-skeleton-text.sm { height: 0.75rem; width: 60%; }
+.sk-skeleton-text.lg { height: 1.25rem; width: 80%; }
+
+
+
+/* Pipeline list skeleton */
+.sk-skeleton-pipeline-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+.sk-skeleton-pipeline-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+}
+.sk-skeleton-pipeline-info {
+    flex: 1;
+}
+
+/* DAG skeleton */
+.sk-skeleton-dag {
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+}
+.sk-skeleton-dag-nodes {
+    display: flex;
+    gap: 2rem;
+}
+.sk-skeleton-dag-node {
+    width: 120px;
+    height: 50px;
+    border-radius: 8px;
+}
+.sk-skeleton-dag-edge {
+    width: 60px;
+    height: 4px;
+    margin-top: 23px;
+}
+
+/* Task details skeleton */
+.sk-skeleton-details {
+    padding: 1rem;
+}
+.sk-skeleton-details-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+.sk-skeleton-details-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+}
+.sk-skeleton-details-title {
+    flex: 1;
+}
+.sk-skeleton-details-section {
+    margin-bottom: 1rem;
+}
+
+/* Gantt skeleton */
+.sk-skeleton-gantt {
+    padding: 1rem;
+}
+.sk-skeleton-gantt-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+.sk-skeleton-gantt-label {
+    width: 120px;
+    height: 1rem;
+}
+.sk-skeleton-gantt-bar {
+    flex: 1;
+    height: 24px;
+    border-radius: 4px;
+}
+
+/* Mobile styles */
+/* Mobile styles → see modules/_mobile.css */
+
+/* ========================================
+   Utility Classes (replacing inline styles)
+   ======================================== */
+
+/* Padding utilities */
+.p-md { padding: 0.75rem; }
+.p-lg { padding: 1rem; }
+
+/* Margin utilities */
+.mt-sm { margin-top: 0.5rem; }
+.mb-sm { margin-bottom: 0.5rem; }
+.mb-md { margin-bottom: 0.75rem; }
+.ml-auto { margin-left: auto; }
+
+/* Border utilities */
+.border-b { border-bottom: 1px solid var(--border); }
+.border-t { border-top: 1px solid var(--border); }
+
+/* Cell/Table styles */
+.arv-table-cell { padding: 0.75rem; border-bottom: 1px solid var(--border); }
+.table-cell-mono { padding: 0.75rem; font-family: var(--font-mono); font-size: 0.8rem; }
+.table-header { background: var(--bg-tertiary); text-align: left; }
+.table-full { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+
+/* Text utilities */
+.text-mono { font-family: var(--font-mono); }
+.text-xs { font-size: 0.75rem; }
+.text-sm { font-size: 0.8rem; }
+.text-md { font-size: 0.875rem; }
+.text-center { text-align: center; }
+.font-medium { font-weight: 500; }
+.font-semibold { font-weight: 600; }
+
+/* Flex utilities */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-wrap { flex-wrap: wrap; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.justify-between { justify-content: space-between; }
+.gap-xs { gap: 0.25rem; }
+.gap-md { gap: 0.75rem; }
+.gap-lg { gap: 1rem; }
+
+/* Box utilities */
+.card { background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--border); overflow: auto; }
+.panel-section {
+    grid-column: 1 / -1;
+    padding: 1.5rem;
+    overflow: auto;
+    background: var(--bg-primary);
+    flex: 1;
+    min-height: 0;
+}
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem; text-align: center; color: var(--text-muted); }
+.empty-state-icon { font-size: 4rem; margin-bottom: 1rem; opacity: 0.3; }
+.empty-state-title { font-size: 1.125rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem; }
+.empty-state-text { font-size: 0.875rem; color: var(--text-muted); max-width: 300px; }
+
+/* Opacity */
+.opacity-50 { opacity: 0.5; }
+
+/* Legend items */
+.cal-legend-container { margin-top: 1rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+.cal-legend-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.status-dot.success { background: var(--success); }
+.status-dot.error { background: var(--error); }
+.status-dot.running { background: var(--running); }
+.status-dot.muted { background: var(--text-muted); }
+.status-dot.warning { background: var(--warning); }
+
+/* Input utilities */
+.input-sm { padding: 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); }
+
+/* Title styles */
+.section-title { font-weight: 600; margin-bottom: 0.75rem; font-size: 0.875rem; }
+.title-lg { margin: 0; font-size: 1.25rem; }
+
+/* Metrics */
+
+/* Filter bar for All Tasks / All Runs */
+.filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+.filter-bar .title-lg {
+    margin: 0;
+    margin-right: auto;
+}
+.filter-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.filter-controls .input-sm {
+    min-width: 120px;
+}
+
+/* Link styles */
+.td-link-primary { font-size: 0.8125rem; color: var(--accent); text-decoration: none; display: flex; align-items: center; gap: 0.375rem; }
+.td-link-muted { font-size: 0.8125rem; color: var(--text-muted); text-decoration: none; display: flex; align-items: center; gap: 0.375rem; }
+
+/* Position */
+.relative { position: relative; }
+
+/* Error boundary */
+.error-title { margin-bottom: 0.5rem; }
+
+/* Dropdown */
+.dropdown { position: absolute; top: 100%; right: 0; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 100; min-width: 280px; max-height: 400px; overflow: auto; }
+.pd-dropdown-item { padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid var(--border); }
+
+/* Color utilities */
+.text-accent { color: var(--accent); }
+.text-success { color: var(--success); }
+
+/* Clickable */
+.clickable { cursor: pointer; }
+.clickable:hover { opacity: 0.8; }
+
+
+/* Workspace metrics summary row (WorkspaceMetrics) — All Runs / All Tasks headers */
+.ws-metrics {
+    display: flex;
+    align-items: stretch;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0 0.25rem;
+}
+.ws-metric {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 72px;
+    padding: 0.5rem 0.875rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+.ws-metric-value { font-size: 1.25rem; font-weight: 700; line-height: 1.1; color: var(--text-primary); }
+.ws-metric-label {
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin-top: 0.125rem;
+    white-space: nowrap;
+}
+.ws-metric--success .ws-metric-value { color: var(--success); }
+.ws-metric--running .ws-metric-value { color: var(--running); }
+.ws-metric--failed .ws-metric-value { color: var(--error); }
+.ws-metric--warning .ws-metric-value { color: var(--warning); }
+
+/* Execution history dropdown — opens below the trigger button. Owns the pipeline's
+   date scope (date input + Today) and the execution list. Reuses .pd-dropdown-item. */
+.pd-exec-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 0.375rem;
+    width: 340px;
+    max-width: 90vw;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.pd-exec-dropdown-head {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+}
+.pd-exec-dropdown-title { font-weight: 600; font-size: 0.8125rem; }
+.pd-exec-dropdown-datebar {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.625rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+}
+.pd-exec-dropdown-list { max-height: 240px; overflow-y: auto; padding: 0.5rem; }
+.pd-exec-dropdown-empty {
+    padding: 1.5rem 1rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+}
+
+/* Active-filter chips on a workspace list (WorkspaceFilterChips) */
+.ws-filter-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; padding: 0.25rem 0 0.5rem; }
+.ws-filter-chip {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    padding: 0.1875rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.12s ease;
+}
+.ws-filter-chip:hover { border-color: var(--error); color: var(--error); }
+.ws-filter-chip-label { color: var(--text-muted); text-transform: uppercase; font-size: 0.625rem; letter-spacing: 0.04em; }
+.ws-filter-chip-value { font-weight: 500; }
+
+
+/* App-styled date picker (DatePicker component) — one calendar style everywhere. */
+.dp { position: relative; display: inline-block; }
+.dp-trigger {
+    display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+    height: 36px; min-width: 150px; padding: 0 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-primary); color: var(--text-primary);
+    font-size: 0.8125rem; cursor: pointer; transition: border-color 0.12s ease;
+}
+.dp-trigger:hover { border-color: var(--accent); }
+.dp-value { color: var(--text-primary); }
+.dp-placeholder { color: var(--text-muted); }
+.dp-popup {
+    /* position + top/left are set inline (portaled to <body>, fixed positioning). */
+    z-index: 9999; width: 260px; background: var(--bg-primary);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); padding: 12px;
+}
+.dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.dp-month { font-size: 0.8125rem; font-weight: 600; color: var(--text-primary); }
+.dp-nav {
+    width: 28px; height: 28px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-primary); color: var(--text-secondary); cursor: pointer;
+}
+.dp-nav:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.dp-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; }
+.dp-weekday { text-align: center; font-size: 0.6875rem; color: var(--text-muted); padding: 4px 0; }
+.dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.dp-cell {
+    text-align: center; font-size: 0.75rem; padding: 6px 0;
+    border: none; border-radius: 6px; background: transparent;
+    color: var(--text-primary); cursor: pointer;
+}
+.dp-cell:hover:not(.dp-cell--empty):not(.dp-cell--selected) { background: var(--bg-secondary); }
+.dp-cell--empty { cursor: default; }
+.dp-cell--selected { background: var(--accent); color: #fff; font-weight: 600; }
+.dp-cell--today { border: 1px solid var(--accent); color: var(--accent); }
+.dp-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.dp-foot-btn {
+    height: 30px; padding: 0 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-primary); color: var(--text-secondary);
+    font-size: 0.75rem; cursor: pointer;
+}
+.dp-foot-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* Auto-refresh badge spinner — deliberately very slow (8s per rotation) so the
+   header indicator is calm, not distracting. */
+.hdr-auto-spin { animation: hdr-auto-rotate 8s linear infinite; }
+@keyframes hdr-auto-rotate { to { transform: rotate(360deg); } }

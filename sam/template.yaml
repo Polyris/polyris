@@ -1,0 +1,2233 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Polyris — Serverless Data Pipeline Orchestration Platform.
+  Deploys shared infrastructure: Step Functions, DynamoDB, Lambda, API Gateway, Cognito, SSM.
+
+# =============================================================================
+# Parameters
+# =============================================================================
+Parameters:
+
+  Namespace:
+    Type: String
+    Description: Organization namespace used in resource naming (e.g. myorg)
+    Default: polyris
+
+  Stage:
+    Type: String
+    Description: Deployment stage (e.g. dev, prod)
+    Default: dev
+
+  AwsRegion:
+    Type: String
+    Description: AWS region
+    Default: us-east-1
+
+  PolyrisTier:
+    Type: String
+    Description: >
+      Paid tier this deployment runs as (ADR #100). Controls the team<->enterprise
+      entitlement boundary at runtime — both paid tiers ship in one build; this
+      value decides what is enabled. Ignored by the OSS build, which has no ee/ code.
+    AllowedValues:
+      - team
+      - enterprise
+    Default: team
+
+
+
+  DefaultSlackMentions:
+    Type: String
+    Description: Default Slack mentions (e.g. <@U12345>). Leave empty to disable.
+    Default: ""
+
+
+  SfnLogLevel:
+    Type: String
+    Description: Step Functions logging level for Standard state machines
+    Default: ERROR
+    AllowedValues: [ALL, ERROR, FATAL, "OFF"]
+
+  SfnExpressLogLevel:
+    Type: String
+    Description: Step Functions logging level for Express state machines (ALL recommended for observability)
+    Default: ALL
+    AllowedValues: [ALL, ERROR, FATAL, "OFF"]
+
+  LogRetentionDays:
+    Type: Number
+    Description: CloudWatch Logs retention in days for Standard SFN and Lambda
+    Default: 14
+
+  ExpressLogRetentionDays:
+    Type: Number
+    Description: CloudWatch Logs retention in days for Express SFN (ALL level = more logs)
+    Default: 7
+
+  EnablePitr:
+    Type: String
+    Description: Enable DynamoDB Point-in-Time Recovery
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+  EnableCognitoAuth:
+    Type: String
+    Description: Enable Cognito authentication for Console API
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+  ConsoleUrlOverride:
+    Type: String
+    Description: >-
+      Optional custom domain for the Console UI (e.g. https://polyris.myorg.com).
+      Leave empty to use the auto-generated CloudFront URL.
+      CloudFront URL is added to Cognito callbacks automatically.
+    Default: ""
+
+  EnableInfraMonitoring:
+    Type: String
+    Description: Enable CloudWatch alarms for infrastructure monitoring
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+  ConsoleUiBuildPath:
+    Type: String
+    Description: >
+      Local path to built UI files (relative to sam/ directory).
+      Run 'cd ui && npm run build' first, then set to '../ui/out'.
+    Default: "../ui/out"
+
+  # Tier 1 — Launch Stack parameters (auto-populated by release pipeline)
+  ReleasesBucket:
+    Type: String
+    Description: >
+      Public S3 bucket containing pre-built Polyris releases.
+      Leave empty for Tier 2 (manual SAM deploy).
+    Default: ""
+
+  ReleaseVersion:
+    Type: String
+    Description: >
+      Polyris release version to deploy (e.g. v1.0.0).
+      Leave empty for Tier 2 (manual SAM deploy).
+    Default: ""
+
+  LambdaReservedConcurrency:
+    Type: Number
+    Description: Reserved concurrent executions for Lambda functions (-1 = no limit)
+    Default: -1
+
+# =============================================================================
+# Globals
+# =============================================================================
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    Tags:
+      Environment: polyris
+      Stack: Data Orchestration
+      Stage: !Ref Stage
+      Namespace: !Ref Namespace
+      ManagedBy: cloudformation
+
+# =============================================================================
+# Conditions
+# =============================================================================
+Conditions:
+  EnablePitrCondition: !Equals [!Ref EnablePitr, "true"]
+  EnableCognitoAuthCondition: !Equals [!Ref EnableCognitoAuth, "true"]
+  HasReservedConcurrency: !Not [!Equals [!Ref LambdaReservedConcurrency, -1]]
+  HasConsoleUrlOverride: !Not [!Equals [!Ref ConsoleUrlOverride, ""]]
+  IsTier1: !Not [!Equals [!Ref ReleasesBucket, ""]]
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # DynamoDB Tables
+  # ---------------------------------------------------------------------------
+
+  PipelineTokensTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-pipeline-tokens"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: execution_name
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: execution_name
+          AttributeType: S
+        - AttributeName: pipeline_execution
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+        - AttributeName: pipeline_name
+          AttributeType: S
+        - AttributeName: backfill_id
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: pipeline-execution-index
+          KeySchema:
+            - AttributeName: pipeline_execution
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: date-pipeline-index
+          KeySchema:
+            - AttributeName: date
+              KeyType: HASH
+            - AttributeName: pipeline_name
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - status
+              - started_at
+              - finished_at
+              - running_at
+              - pipeline_execution
+              - pipeline_execution_short
+              - task_name
+              - dependencies
+              - wait_for
+              - wrapper_execution_arn
+              - error
+              - notification_failed
+        - IndexName: pipeline-date-index
+          # Inverse of date-pipeline-index: lets us ask "this pipeline's runs,
+          # newest first" in ONE query instead of looping a day at a time.
+          # Both key attributes are already written on every task row, so this
+          # index needs no write-path change and AWS backfills it from existing
+          # rows. Depth is then bounded only by the row TTL, not by a window
+          # constant (ADR: read runs by pipeline via inverted GSI).
+          KeySchema:
+            - AttributeName: pipeline_name
+              KeyType: HASH
+            - AttributeName: date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - status
+              - started_at
+              - finished_at
+              - pipeline_execution
+              - pipeline_execution_short
+              - task_name
+        - IndexName: backfill-id-index
+          KeySchema:
+            - AttributeName: backfill_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - status
+              - started_at
+              - finished_at
+              - pipeline_name
+              - pipeline_execution
+              - partition_key
+              - record_type
+              - target_pipeline
+              - total_partitions
+              - completed_partitions
+              - failed_partitions
+              - skipped_partitions
+              - cascade
+              - started_by
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [EnablePitrCondition, true, false]
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+        - Key: Name
+          Value: !Sub "${Namespace}-${Stage}-polyris-pipeline-tokens"
+
+  DependencySubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-dep-subscriptions"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: dependency_key
+          KeyType: HASH
+        - AttributeName: subscriber
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: dependency_key
+          AttributeType: S
+        - AttributeName: subscriber
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: subscriber-index
+          KeySchema:
+            - AttributeName: subscriber
+              KeyType: HASH
+            - AttributeName: dependency_key
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  PipelineRegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-pipeline-registry"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: pipeline_name
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: pipeline_name
+          AttributeType: S
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [EnablePitrCondition, true, false]
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  AssetEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-asset-events"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: asset_name
+          KeyType: HASH
+        - AttributeName: event_time
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: asset_name
+          AttributeType: S
+        - AttributeName: event_time
+          AttributeType: S
+        - AttributeName: execution_date
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: date-index
+          KeySchema:
+            - AttributeName: execution_date
+              KeyType: HASH
+            - AttributeName: event_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  QueuedAssetEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-queued-asset-events"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: dag_date
+          KeyType: HASH
+        - AttributeName: asset_name
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: dag_date
+          AttributeType: S
+        - AttributeName: asset_name
+          AttributeType: S
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  TaskEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-task-events"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: task_run_id
+          KeyType: HASH
+        - AttributeName: event_time
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: task_run_id
+          AttributeType: S
+        - AttributeName: event_time
+          AttributeType: S
+        - AttributeName: parent_execution_id
+          AttributeType: S
+        - AttributeName: execution_name
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: parent-execution-index
+          KeySchema:
+            - AttributeName: parent_execution_id
+              KeyType: HASH
+            - AttributeName: event_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: execution-name-index
+          KeySchema:
+            - AttributeName: execution_name
+              KeyType: HASH
+            - AttributeName: event_time
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  ApiTokensTable:
+    Type: AWS::DynamoDB::Table
+    # Personal Access Tokens (ADR #65). Dedicated table — keeps a security
+    # credential separate from operational data. On-demand: zero idle cost.
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-api-tokens"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: token_id
+          KeyType: HASH
+      AttributeDefinitions:
+        - AttributeName: token_id
+          AttributeType: S
+        - AttributeName: token_hash
+          AttributeType: S
+        - AttributeName: owner_sub
+          AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: hash-index
+          KeySchema:
+            - AttributeName: token_hash
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: owner-index
+          KeySchema:
+            - AttributeName: owner_sub
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  AssetSubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-asset-subscriptions"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: asset_name
+          KeyType: HASH
+        - AttributeName: pipeline_name
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: asset_name
+          AttributeType: S
+        - AttributeName: pipeline_name
+          AttributeType: S
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stack
+          Value: Data Orchestration
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  # ---------------------------------------------------------------------------
+  # S3 Bucket — task results (Claim Check pattern)
+  # ---------------------------------------------------------------------------
+
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Namespace}-${Stage}-polyris-results"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireResults
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  # ---------------------------------------------------------------------------
+  # IAM — Shared execution role for Step Functions, API Gateway, EventBridge
+  # ---------------------------------------------------------------------------
+
+
+  CrossAccountPipelineRole:
+    Type: AWS::IAM::Role
+    # The trust policy names OrchestrationRole by ARN-string (via !Sub, kept so it
+    # can be repointed at a role in another account — see Description). A string
+    # principal gives CFN no implicit dependency, so on a fresh stack this role
+    # could be created before OrchestrationRole exists → "Invalid principal in
+    # policy". DependsOn supplies the ordering CFN can't infer.
+    DependsOn: OrchestrationRole
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-default-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-orchestration-role"
+            Action: sts:AssumeRole
+      Description: >
+        Role assumed by orchestration when running task SFNs in same account.
+        For cross-account: replace with a role in the target account.
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  CrossAccountPipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${Namespace}-${Stage}-polyris-default-task-policy"
+      Roles:
+        - !Ref CrossAccountPipelineRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:*"
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource: !Sub "arn:aws:lambda:${AwsRegion}:${AWS::AccountId}:function:*"
+          - Effect: Allow
+            Action:
+              - glue:StartJobRun
+              - glue:GetJobRun
+              - glue:BatchStopJobRun
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ecs:RunTask
+              - ecs:StopTask
+              - ecs:DescribeTasks
+              - iam:PassRole
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+            Resource: "*"
+          # Athena runs queries under this role's identity: it reads source data and
+          # writes results to the query's output location — both user-chosen buckets.
+          # Granted broadly to match the service actions above so @task.athena works
+          # out of the box; scope the Resource to your specific buckets to tighten it.
+          - Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:PutObject
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - elasticmapreduce:RunJobFlow
+              - elasticmapreduce:DescribeCluster
+              - elasticmapreduce:TerminateJobFlows
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - batch:SubmitJob
+              - batch:DescribeJobs
+              - batch:TerminateJob
+            Resource: "*"
+
+  OrchestrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-orchestration-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+                - apigateway.amazonaws.com
+                - events.amazonaws.com
+                - scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Description: >
+        Step Functions execution role: states + lambda invoke + sts assume-role +
+        EventBridge managed rules + DynamoDB + CloudWatch logs
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  OrchestrationRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${Namespace}-${Stage}-polyris-orchestration-policy"
+      Roles:
+        - !Ref OrchestrationRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowStates
+            Effect: Allow
+            Action:
+              - states:StartExecution
+              - states:StartSyncExecution
+              - states:DescribeExecution
+              - states:StopExecution
+              - states:ListExecutions
+              - states:RedriveExecution
+              - states:InvokeHTTPEndpoint
+              - states:SendTaskSuccess
+              - states:SendTaskFailure
+              - states:SendTaskHeartbeat
+              - states:DescribeStateMachine
+              - states:ListStateMachines
+            Resource: "*"
+          - Sid: AllowLambdaInvoke
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource: "*"
+          - Sid: AllowDynamoDB
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:DeleteItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+              - dynamodb:ConditionCheckItem
+            Resource:
+              - !GetAtt PipelineTokensTable.Arn
+              - !Sub "${PipelineTokensTable.Arn}/index/*"
+              - !GetAtt DependencySubscriptionsTable.Arn
+              - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
+              - !GetAtt PipelineRegistryTable.Arn
+              - !Sub "${PipelineRegistryTable.Arn}/index/*"
+              - !GetAtt AssetEventsTable.Arn
+              - !Sub "${AssetEventsTable.Arn}/index/*"
+              - !GetAtt QueuedAssetEventsTable.Arn
+              - !Sub "${QueuedAssetEventsTable.Arn}/index/*"
+              - !GetAtt TaskEventsTable.Arn
+              - !Sub "${TaskEventsTable.Arn}/index/*"
+              - !GetAtt AssetSubscriptionsTable.Arn
+              - !Sub "${AssetSubscriptionsTable.Arn}/index/*"
+          - Sid: AllowS3Results
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub "${ResultsBucket.Arn}/*"
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogDelivery
+              - logs:GetLogDelivery
+              - logs:UpdateLogDelivery
+              - logs:DeleteLogDelivery
+              - logs:ListLogDeliveries
+              - logs:PutResourcePolicy
+              - logs:DescribeResourcePolicies
+              - logs:DescribeLogGroups
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Sid: AllowEventBridge
+            Effect: Allow
+            Action:
+              - events:PutTargets
+              - events:PutRule
+              - events:DescribeRule
+              - events:DeleteRule
+              - events:RemoveTargets
+              - events:PutEvents
+              - events:InvokeApiDestination
+              - events:RetrieveConnectionCredentials
+            Resource: "*"
+          - Sid: AllowAssumeRole
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: "*"
+          - Sid: AllowXRay
+            Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:GetSamplingRules
+              - xray:GetSamplingTargets
+            Resource: "*"
+          - Sid: AllowIamPassRole
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: "*"
+            Condition:
+              StringLike:
+                iam:PassedToService:
+                  - states.amazonaws.com
+                  - ecs-tasks.amazonaws.com
+                  - batch.amazonaws.com
+          - Sid: AllowTaskServices
+            Effect: Allow
+            Action:
+              - ecs:RunTask
+              - ecs:StopTask
+              - ecs:DescribeTasks
+              - batch:SubmitJob
+              - batch:TerminateJob
+              - batch:DescribeJobs
+              - glue:StartJobRun
+              - glue:GetJobRun
+              - glue:GetJobRuns
+              - glue:BatchStopJobRun
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetPartition
+              - glue:GetPartitions
+              - athena:StartQueryExecution
+              - athena:StopQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - elasticmapreduce:AddJobFlowSteps
+              - elasticmapreduce:CancelSteps
+              - elasticmapreduce:DescribeStep
+            Resource: "*"
+          - Sid: AllowSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+              - secretsmanager:DescribeSecret
+            Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Log Groups — Step Functions
+  # ---------------------------------------------------------------------------
+
+  DependencyWrapperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-dependency-wrapper"
+      RetentionInDays: !Ref LogRetentionDays
+
+  RunTaskHelperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-run-task-helper"
+      RetentionInDays: !Ref LogRetentionDays
+
+  RegistrationHelperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-registration-helper"
+      RetentionInDays: !Ref LogRetentionDays
+
+  FailureHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-failure-handler"
+      RetentionInDays: !Ref LogRetentionDays
+
+  NotifyDependentsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-notify-dependents"
+      RetentionInDays: !Ref LogRetentionDays
+
+
+  PauseWaiterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-pause-waiter"
+      RetentionInDays: !Ref LogRetentionDays
+
+  RestartWrapperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-wrapper"
+      RetentionInDays: !Ref LogRetentionDays
+
+  RestartTaskHelperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-task-helper"
+      RetentionInDays: !Ref LogRetentionDays
+
+  NotifyAssetConsumersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-notify-asset-consumers"
+      RetentionInDays: !Ref LogRetentionDays
+
+  BulkBackfillLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-bulk-backfill"
+      RetentionInDays: !Ref LogRetentionDays
+
+  TestSfnLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-test"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---------------------------------------------------------------------------
+  # Lambda Log Groups
+  # ---------------------------------------------------------------------------
+
+  EvaluateDepsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-evaluate-deps"
+      RetentionInDays: !Ref LogRetentionDays
+
+  NotifyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-notify"
+      RetentionInDays: !Ref LogRetentionDays
+
+  QuerySubscriptionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-query-subscriptions"
+      RetentionInDays: !Ref LogRetentionDays
+
+  CheckAssetsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-check-assets"
+      RetentionInDays: !Ref LogRetentionDays
+
+  NotifyAssetSubscribersLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-notify-asset-subscribers"
+      RetentionInDays: !Ref LogRetentionDays
+
+  ConsoleApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-console-api"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---------------------------------------------------------------------------
+  # Lambda Functions
+  # ---------------------------------------------------------------------------
+
+  EvaluateDepsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-evaluate-deps"
+      CodeUri: lambdas/evaluate_deps/
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt EvaluateDepsRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref EvaluateDepsLogGroup
+      Environment:
+        Variables:
+          TOKENS_TABLE: !Ref PipelineTokensTable
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  NotifyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-notify"
+      CodeUri: lambdas/notify/
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt NotifyRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref NotifyLogGroup
+      Environment:
+        Variables:
+          PIPELINES_TABLE: !Ref PipelineRegistryTable
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  QuerySubscriptionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-query-subscriptions"
+      CodeUri: lambdas/query_subscriptions/
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt QuerySubscriptionsRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref QuerySubscriptionsLogGroup
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  CheckAssetsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-check-assets"
+      CodeUri: lambdas/check_assets/
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt CheckAssetsRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref CheckAssetsLogGroup
+      Environment:
+        Variables:
+          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
+          SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          # Case B (Option J): when assets are already ready at registration,
+          # check_assets flips assets_ready=true on the subscriber's task
+          # record so evaluate_deps (called later when task_deps complete)
+          # sees a coherent view. Without this, a task with wait_for + pending
+          # task_deps hangs after task_deps complete.
+          TOKENS_TABLE: !Ref PipelineTokensTable
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  NotifyAssetSubscribersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-notify-asset-subscribers"
+      CodeUri: lambdas/notify_asset_subscribers/
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 128
+      Role: !GetAtt NotifyAssetSubscribersRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref NotifyAssetSubscribersLogGroup
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
+          QUEUED_ASSET_EVENTS_TABLE: !Ref QueuedAssetEventsTable
+          QUEUED_EVENT_TTL_DAYS: "7"
+          # Case B (task_deps + wait_for coordination): notify_asset_subscribers
+          # asks evaluate_deps whether task_deps are also satisfied before
+          # signaling wait_token. Without this, an asset arriving before the
+          # last task_dep completes wakes dep_wrapper too early.
+          TOKENS_TABLE: !Ref PipelineTokensTable
+          EVALUATE_DEPS_LAMBDA: !GetAtt EvaluateDepsFunction.Arn
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  ConsoleApiFunction:
+    Type: AWS::Serverless::Function
+    # polyris SDK is vendored as `polyris/` subdirectory before `sam build`
+    # via the top-level `make sam-build` target. Default Python builder
+    # then packages it like any other Lambda source file. See top-level
+    # Makefile :: sam-build and .gitignore for the contract.
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-console-api"
+      CodeUri: lambdas/console_api/
+      Handler: main.handler
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref LambdaReservedConcurrency, !Ref AWS::NoValue]
+      Role: !GetAtt ConsoleApiRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref ConsoleApiLogGroup
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref PipelineTokensTable
+          PIPELINES_TABLE: !Ref PipelineRegistryTable
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
+          QUEUED_EVENTS_TABLE: !Ref QueuedAssetEventsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
+          ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          API_TOKENS_TABLE: !Ref ApiTokensTable
+          # ADR #65/#66: auth enforcement is ENABLED by default. Every
+          # non-public request needs a Cognito token (browser) or a PAT; scope
+          # is enforced (read/write/admin). To disable, set to "false" and
+          # redeploy. Public paths: /api/health*, /api/metrics, /api/action/*.
+          AUTH_ENABLED: "true"
+          # Offline Cognito JWT verification (auth.py) — issuer + client binding.
+          # Empty when Cognito is not enabled in this deployment.
+          COGNITO_USER_POOL_ID: !If [EnableCognitoAuthCondition, !Ref CognitoUserPool, ""]
+          COGNITO_CLIENT_ID: !If [EnableCognitoAuthCondition, !Ref CognitoUserPoolClient, ""]
+          REGION: !Ref AwsRegion
+          ACCOUNT_ID: !Ref AWS::AccountId
+          # ADR #100: paid tier for the team<->enterprise entitlement boundary.
+          # Read only by ee/entitlements.py (absent in the OSS build).
+          POLYRIS_TIER: !Ref PolyrisTier
+          RESULTS_BUCKET: !Ref ResultsBucket
+          ASSET_EVENT_TTL_DAYS: "365"
+          RESTART_HELPER_ARN: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
+          NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
+          NOTIFY_ASSET_CONSUMERS_SFN_ARN: !Ref NotifyAssetConsumersSfn
+          NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
+          BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
+      Events:
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ConsoleApi
+            Path: /{proxy+}
+            Method: ANY
+        ApiRoot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ConsoleApi
+            Path: /
+            Method: ANY
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  # ---------------------------------------------------------------------------
+  # Lambda IAM Roles
+  # ---------------------------------------------------------------------------
+
+  EvaluateDepsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-evaluate-deps-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EvaluateDepsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+                  - !Sub "${PipelineTokensTable.Arn}/index/*"
+
+  NotifyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-notify-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: NotifyPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Read alert secrets (Slack webhook, PagerDuty key) from SSM
+              # SecureString. Scoped to the /polyris/alerts/ prefix.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/polyris/alerts/*"
+              # Read alert_config from the pipeline registry to fan out over
+              # enabled channels (ADR #103 Stage-1 consolidation).
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
+
+  QuerySubscriptionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-query-subscriptions-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QuerySubscriptionsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt DependencySubscriptionsTable.Arn
+                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
+
+  CheckAssetsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-check-assets-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CheckAssetsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt AssetEventsTable.Arn
+                  - !Sub "${AssetEventsTable.Arn}/index/*"
+              # Subscriptions writes: check_assets calls _save_asset_subscription
+              # via subscriptions_repo when assets aren't ready yet, and _delete_
+              # subscription when a recheck finds them ready. Without this
+              # statement those writes silently fail (best-effort catch).
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt AssetSubscriptionsTable.Arn
+              # Case B: flip assets_ready=true on the subscriber's task record
+              # when assets are already ready at registration time.
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+
+  NotifyAssetSubscribersRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-notify-asset-subscribers-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: NotifyAssetSubscribersPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt AssetSubscriptionsTable.Arn
+                  - !GetAtt QueuedAssetEventsTable.Arn
+              # Case B coordination: mark assets_ready on the subscriber's task
+              # record so evaluate_deps sees a coherent view.
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+              # Invoke evaluate_deps to check task_deps before signaling.
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt EvaluateDepsFunction.Arn
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                Resource: "*"
+
+  ConsoleApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-console-api-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ConsoleApiPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:ConditionCheckItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+                  - !Sub "${PipelineTokensTable.Arn}/index/*"
+                  - !GetAtt PipelineRegistryTable.Arn
+                  - !Sub "${PipelineRegistryTable.Arn}/index/*"
+                  - !GetAtt DependencySubscriptionsTable.Arn
+                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
+                  - !GetAtt AssetEventsTable.Arn
+                  - !Sub "${AssetEventsTable.Arn}/index/*"
+                  - !GetAtt QueuedAssetEventsTable.Arn
+                  - !GetAtt TaskEventsTable.Arn
+                  - !Sub "${TaskEventsTable.Arn}/index/*"
+                  - !GetAtt AssetSubscriptionsTable.Arn
+                  - !GetAtt ApiTokensTable.Arn
+                  - !Sub "${ApiTokensTable.Arn}/index/*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:StopExecution
+                  - states:DescribeExecution
+                  - states:ListExecutions
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                  - states:SendTaskHeartbeat
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "${ResultsBucket.Arn}/*"
+              # On-demand Glue schema sync — used by GET /api/assets/{name}/glue-schema.
+              # Read-only Catalog access; called only when a user opens an asset detail page.
+              - Effect: Allow
+                Action:
+                  - glue:GetTable
+                Resource: "*"
+              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C).
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt NotifyFunction.Arn
+
+  # ---------------------------------------------------------------------------
+  # API Gateway (HTTP API)
+  # ---------------------------------------------------------------------------
+
+  ConsoleApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Stage
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - "*"
+      # Auth: Cognito JWT authorizer - configured post-deploy if EnableCognitoAuth=true
+      # For SAM HttpApi, auth is attached per-route or via DefinitionBody
+      # Console API Lambda handles auth validation internally when COGNITO vars are set
+
+  # ---------------------------------------------------------------------------
+  # Cognito (optional)
+  # ---------------------------------------------------------------------------
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: EnableCognitoAuthCondition
+    Properties:
+      UserPoolName: !Sub "${Namespace}-${Stage}-polyris-console"
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      MfaConfiguration: "OFF"
+      UserPoolTags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: EnableCognitoAuthCondition
+    Properties:
+      ClientName: !Sub "${Namespace}-${Stage}-polyris-console-client"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      CallbackURLs:
+        - http://localhost:3000
+        - http://localhost:5173
+        - !Sub "https://${ConsoleUiDistribution.DomainName}"
+        - !If [HasConsoleUrlOverride, !Ref ConsoleUrlOverride, !Ref "AWS::NoValue"]
+      LogoutURLs:
+        - http://localhost:3000
+        - http://localhost:5173
+        - !Sub "https://${ConsoleUiDistribution.DomainName}"
+        - !If [HasConsoleUrlOverride, !Ref ConsoleUrlOverride, !Ref "AWS::NoValue"]
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      AccessTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        RefreshToken: days
+
+  # ---------------------------------------------------------------------------
+  # EventBridge — Slack connection
+  # ---------------------------------------------------------------------------
+
+
+
+  TestSuccessSfn:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      StateMachineName: !Sub "${Namespace}-${Stage}-polyris-test-success"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt OrchestrationRole.Arn
+      LoggingConfiguration:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt TestSfnLogGroup.Arn
+      Definition:
+        Comment: Test SFN - waits 20 seconds then succeeds
+        QueryLanguage: JSONata
+        StartAt: Wait20Seconds
+        States:
+          Wait20Seconds:
+            Type: Wait
+            Seconds: 20
+            Next: Success
+          Success:
+            Type: Succeed
+            Output:
+              status: completed
+              message: Test task finished successfully
+
+  TestFailureSfn:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      StateMachineName: !Sub "${Namespace}-${Stage}-polyris-test-failure"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt OrchestrationRole.Arn
+      LoggingConfiguration:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt TestSfnLogGroup.Arn
+      Definition:
+        Comment: Test SFN - waits 20 seconds then fails
+        StartAt: Wait20Seconds
+        States:
+          Wait20Seconds:
+            Type: Wait
+            Seconds: 20
+            Next: FailState
+          FailState:
+            Type: Fail
+            Error: TestError
+            Cause: This is a deliberate test failure to verify error handling
+
+  TestQuickSfn:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      StateMachineName: !Sub "${Namespace}-${Stage}-polyris-test-quick"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt OrchestrationRole.Arn
+      LoggingConfiguration:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt TestSfnLogGroup.Arn
+      Definition:
+        Comment: Test SFN - quick 5 second wait
+        QueryLanguage: JSONata
+        StartAt: Wait5Seconds
+        States:
+          Wait5Seconds:
+            Type: Wait
+            Seconds: 5
+            Next: Success
+          Success:
+            Type: Succeed
+            Output:
+              status: completed
+              message: Quick test finished
+              data:
+                value: 42
+
+  # ---------------------------------------------------------------------------
+  # Helper Step Functions (using Fn::Sub for ARN substitution)
+  # ---------------------------------------------------------------------------
+
+
+
+  PauseWaiterSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-pause-waiter"
+      Type: STANDARD
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt PauseWaiterLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+      DefinitionUri: sfn_templates/helpers/pause_waiter/sfn.tpl.json
+  RestartWrapperSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-restart-wrapper"
+      Type: EXPRESS
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt RestartWrapperLogGroup.Arn
+      DefinitionUri: sfn_templates/helpers/restart_wrapper/sfn.tpl.json
+
+  EvaluateDepsPermissionFromSfn:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt EvaluateDepsFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: states.amazonaws.com
+      SourceArn: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:*"
+
+  QuerySubscriptionsPermissionFromSfn:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt QuerySubscriptionsFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: states.amazonaws.com
+      SourceArn: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:*"
+
+  CheckAssetsPermissionFromSfn:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CheckAssetsFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: states.amazonaws.com
+      SourceArn: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:*"
+
+  NotifyAssetSubscribersPermissionFromSfn:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt NotifyAssetSubscribersFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: states.amazonaws.com
+      SourceArn: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:*"
+
+  ConsoleApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ConsoleApiFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AwsRegion}:${AWS::AccountId}:${ConsoleApi}/*"
+
+  NotifyDependentsSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-notify-dependents"
+      Type: EXPRESS
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt NotifyDependentsLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+        evaluate_deps_lambda: !GetAtt EvaluateDepsFunction.Arn
+        query_subscriptions_lambda: !GetAtt QuerySubscriptionsFunction.Arn
+        subscriptions_table: !Ref DependencySubscriptionsTable
+      DefinitionUri: sfn_templates/helpers/notify_dependents/sfn.tpl.json
+  NotifyAssetConsumersSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-notify-asset-consumers"
+      Type: EXPRESS
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt NotifyAssetConsumersLogGroup.Arn
+      DefinitionSubstitutions:
+        asset_subscriptions_table: !Ref AssetSubscriptionsTable
+        queued_asset_events_table: !Ref QueuedAssetEventsTable
+        queued_event_ttl_days: "7"
+      DefinitionUri: sfn_templates/helpers/notify_asset_consumers/sfn.tpl.json
+  RegistrationHelperSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-registration-helper"
+      Type: STANDARD
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
+      DefinitionSubstitutions:
+        registry_table: !Ref PipelineRegistryTable
+        asset_subscriptions_table: !Ref AssetSubscriptionsTable
+        subscriptions_table: !Ref DependencySubscriptionsTable
+        tokens_table: !Ref PipelineTokensTable
+        check_assets_lambda_arn: !GetAtt CheckAssetsFunction.Arn
+      DefinitionUri: sfn_templates/helpers/registration/sfn.tpl.json
+  RegisterPipelineSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-register-pipeline"
+      Type: EXPRESS
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
+      DefinitionSubstitutions:
+        registry_table: !Ref PipelineRegistryTable
+        asset_subscriptions_table: !Ref AssetSubscriptionsTable
+      DefinitionUri: sfn_templates/helpers/register_pipeline/sfn.tpl.json
+  RestartTaskHelperSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-restart-task-helper"
+      Type: EXPRESS
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnExpressLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt RestartTaskHelperLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+        task_events_table: !Ref TaskEventsTable
+        wrapper_arn: !Sub "arn:aws:states:${AwsRegion}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dependency-wrapper"
+      DefinitionUri: sfn_templates/helpers/restart_task/sfn.tpl.json
+  FailureHandlerSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-failure-handler"
+      Type: STANDARD
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt FailureHandlerLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+        task_events_table: !Ref TaskEventsTable
+        pipeline_registry_table: !Ref PipelineRegistryTable
+        notify_function_arn: !GetAtt NotifyFunction.Arn
+        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
+        default_slack_mentions: !Ref DefaultSlackMentions
+      DefinitionUri: sfn_templates/helpers/failure_handler/sfn.tpl.json
+  RunTaskHelperSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-dep-run-task-helper"
+      Type: STANDARD
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt RunTaskHelperLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+        pipeline_registry_table: !Ref PipelineRegistryTable
+        task_events_table: !Ref TaskEventsTable
+        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
+        asset_events_table: !Ref AssetEventsTable
+        notify_asset_subscribers_lambda_arn: !GetAtt NotifyAssetSubscribersFunction.Arn
+        notify_asset_consumers_sfn_arn: !Ref NotifyAssetConsumersSfn
+        notify_function_arn: !GetAtt NotifyFunction.Arn
+        console_api_endpoint: !Sub "https://${ConsoleApi}.execute-api.${AwsRegion}.amazonaws.com/${Stage}"
+        pause_waiter_arn: !Ref PauseWaiterSfn
+        asset_event_ttl_days: "365"
+        pause_heartbeat_seconds: "43200"
+        same_account_role_arn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-default-task-role"
+        aws_region: !Ref AwsRegion
+      DefinitionUri: sfn_templates/helpers/run_task/sfn.tpl.json
+  DependencyWrapperSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-dependency-wrapper"
+      Type: STANDARD
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt DependencyWrapperLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+        task_events_table: !Ref TaskEventsTable
+        registration_helper_arn: !Ref RegistrationHelperSfn
+        run_task_helper_arn: !Ref RunTaskHelperSfn
+        failure_handler_arn: !Ref FailureHandlerSfn
+        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
+        notify_function_arn: !GetAtt NotifyFunction.Arn
+        default_orchestration_timeout_seconds: "86400"
+      DefinitionUri: sfn_templates/dependency_wrapper/sfn.tpl.json
+
+  BulkBackfillSfn:
+    Type: AWS::Serverless::StateMachine
+    DependsOn: OrchestrationRolePolicy
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-bulk-backfill"
+      Type: STANDARD
+      Role: !GetAtt OrchestrationRole.Arn
+      Logging:
+        Level: !Ref SfnLogLevel
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt BulkBackfillLogGroup.Arn
+      DefinitionSubstitutions:
+        tokens_table: !Ref PipelineTokensTable
+        pipeline_registry_table: !Ref PipelineRegistryTable
+      DefinitionUri: sfn_templates/bulk_backfill/sfn.tpl.json
+  # ---------------------------------------------------------------------------
+  # SSM Parameters — read by polyris-deploy and pipeline tooling
+  # ---------------------------------------------------------------------------
+
+  SsmWrapperArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/wrapper_arn"
+      Type: String
+      Value: !Ref DependencyWrapperSfn
+      Description: ARN of the dependency wrapper Step Function
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  SsmBulkBackfillArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/bulk_backfill_arn"
+      Type: String
+      Value: !Ref BulkBackfillSfn
+      Description: ARN of the bulk-backfill Step Function (Backfill orchestrator)
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  SsmPipelineExecutionRoleArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/pipeline_execution_role_arn"
+      Type: String
+      Value: !GetAtt OrchestrationRole.Arn
+      Description: ARN of the IAM role for pipeline execution
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  SsmPipelineRegistryTable:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/pipeline_registry_table"
+      Type: String
+      Value: !Ref PipelineRegistryTable
+      Description: DynamoDB table name for pipeline registry
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  SsmPipelineTokensTable:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/pipeline_tokens_table"
+      Type: String
+      Value: !Ref PipelineTokensTable
+      Description: DynamoDB table name for pipeline executions (tokens)
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  SsmAssetSubscriptionsTable:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/asset_subscriptions_table"
+      Type: String
+      Value: !Ref AssetSubscriptionsTable
+      Description: DynamoDB table name for asset subscriptions
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  SsmResultsBucket:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/polyris/${Stage}/results_bucket"
+      Type: String
+      Value: !Ref ResultsBucket
+      Description: S3 bucket for task results and CFN pipeline templates
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+        ManagedBy: cloudformation
+
+  # ---------------------------------------------------------------------------
+  # Console UI — S3 + CloudFront (static export)
+  # ---------------------------------------------------------------------------
+
+  ConsoleUiBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Namespace}-${Stage}-polyris-console-ui"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+  ConsoleUiBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ConsoleUiBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${ConsoleUiBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${ConsoleUiDistribution}"
+
+  ConsoleUiOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${Namespace}-${Stage}-polyris-console-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ---------------------------------------------------------------------------
+  # CloudFront Function — SPA URL rewrite (ADR #41)
+  # ---------------------------------------------------------------------------
+  # Rewrites requests for path-based SPA routes (e.g. /pipelines/etl_main,
+  # /assets/retail/orders) to the corresponding pre-rendered index.html so
+  # S3 finds the file and CloudFront does not fall back to root /index.html.
+  # Without this, deep URLs returned root and the SPA boot loop'd.
+  #
+  # Logic: match /pipelines, /pipelines/, /pipelines/anything-without-extension
+  # (same for /assets, /tasks, /runs) → rewrite to /{view}/index.html.
+  # Anything with an extension (.html, .js, .css, etc.) or under /_next/ is
+  # passed through unchanged so static assets keep working.
+
+  ConsoleUiUrlRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-url-rewrite"
+      AutoPublish: true
+      FunctionConfig:
+        Runtime: cloudfront-js-2.0
+        Comment: SPA URL rewrite for Polyris path-based routing
+      FunctionCode: |
+        function handler(event) {
+          var req = event.request;
+          var uri = req.uri;
+          // Match /pipelines, /assets, /tasks, /runs, /backfills (with or
+          // without trailing path). Only when the path has no file
+          // extension — assets keep flowing through.
+          //
+          // ⚠️ Every top-level view registered in App.tsx mainView MUST
+          // be listed here, OR the route will 404 → CustomErrorResponse
+          // → /index.html → RootPage redirect to /pipelines/ (user sees
+          // "click X tab, get redirected to Pipelines"). Keep this in
+          // sync with ui/src/types/index.ts MAIN_VIEWS and ui/src/app/
+          // page.tsx validViews.
+          var match = uri.match(/^\/(pipelines|assets|tasks|runs|backfills)(\/[^.]*)?$/);
+          if (match) {
+            req.uri = '/' + match[1] + '/index.html';
+          }
+          return req;
+        }
+
+  # ---------------------------------------------------------------------------
+  # CloudFront response headers — security headers (ADR #96)
+  # ---------------------------------------------------------------------------
+  # next.config.mjs used to declare these via headers(), but `output: 'export'`
+  # has no Next.js server to apply them — they never reached the browser. They
+  # are applied here at the edge, on every response of the default cache
+  # behavior. X-XSS-Protection is intentionally omitted (deprecated, ignored by
+  # modern browsers, and can itself introduce issues — OWASP recommends against
+  # it). Cache-Control stays on the S3 objects (deploy-ui.sh), not here, so HTML
+  # and hashed assets keep their distinct policies.
+  ConsoleUiResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${Namespace}-${Stage}-polyris-security-headers"
+        Comment: Security headers for Polyris Console (ADR #96)
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Preload: false
+            Override: true
+
+  ConsoleUiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: !Sub "Polyris Console UI - ${Namespace} ${Stage}"
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ConsoleUiBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt ConsoleUiOAC.Id
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          ResponseHeadersPolicyId: !Ref ConsoleUiResponseHeadersPolicy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt ConsoleUiUrlRewriteFunction.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          # SPA fallback for any other 404 (e.g. genuinely missing path).
+          # SPA routes themselves are rewritten by the Function above, so this
+          # only fires for paths that don't match our route prefixes.
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+      Tags:
+        - Key: Environment
+          Value: polyris
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Namespace
+          Value: !Ref Namespace
+
+
+  # ---------------------------------------------------------------------------
+  # UI Bootstrap — Custom Resource (Tier 1 only)
+  # Copies pre-built UI from releases bucket to ConsoleUiBucket
+  # ---------------------------------------------------------------------------
+
+  UiBootstrapRole:
+    Type: AWS::IAM::Role
+    Condition: IsTier1
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-ui-bootstrap-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: UiBootstrapPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ReleasesBucket}"
+                  - !Sub "arn:aws:s3:::${ReleasesBucket}/*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ConsoleUiBucket.Arn
+                  - !Sub "${ConsoleUiBucket.Arn}/*"
+
+  UiBootstrapFunction:
+    Type: AWS::Serverless::Function
+    Condition: IsTier1
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-ui-bootstrap"
+      CodeUri: lambdas/ui_bootstrap/
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt UiBootstrapRole.Arn
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  UiBootstrap:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: IsTier1
+    Properties:
+      ServiceToken: !GetAtt UiBootstrapFunction.Arn
+      DestBucket: !Ref ConsoleUiBucket
+      SourceBucket: !Ref ReleasesBucket
+      SourcePrefix: !Sub "${ReleaseVersion}/ui"
+      ApiUrl: !Sub "https://${ConsoleApi}.execute-api.${AwsRegion}.amazonaws.com/${Stage}"
+      CognitoUserPoolId: !If [EnableCognitoAuthCondition, !Ref CognitoUserPool, ""]
+      CognitoClientId: !If [EnableCognitoAuthCondition, !Ref CognitoUserPoolClient, ""]
+      Region: !Ref AwsRegion
+      # Trigger update when version or config changes
+      Version: !Ref ReleaseVersion
+
+  # Managed policy that user task roles (Lambda/ECS/Glue/Batch) attach so their
+  # code can call xcom.pull() — least-privilege read of the output store and the
+  # results bucket. Polyris references user-owned compute by name/ARN and does not
+  # own those roles, so it publishes this policy for users to attach themselves.
+  PolyrisTaskReadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-task-read"
+      Description: >-
+        Read access to the Polyris output store and results bucket. Attach to the
+        execution role of any Lambda/ECS/Glue/Batch task that calls xcom.pull().
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PolyrisOutputStoreRead
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+            Resource:
+              - !GetAtt PipelineTokensTable.Arn
+          - Sid: PolyrisResultsBucketRead
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Sub "${ResultsBucket.Arn}/*"
+
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+
+  PolyrisTaskReadPolicyArn:
+    Description: Attach this managed policy to any task role that calls xcom.pull()
+    Value: !Ref PolyrisTaskReadPolicy
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-task-read-policy"
+
+  ConsoleApiUrl:
+    Description: API Gateway URL for Console UI
+    Value: !Sub "https://${ConsoleApi}.execute-api.${AwsRegion}.amazonaws.com/${Stage}"
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-console-api-url"
+
+  DependencyWrapperArn:
+    Description: ARN of the dependency wrapper Step Function
+    Value: !Ref DependencyWrapperSfn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-wrapper-arn"
+
+  OrchestrationRoleArn:
+    Description: ARN of the orchestration IAM role
+    Value: !GetAtt OrchestrationRole.Arn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-orchestration-role-arn"
+
+  PipelineRegistryTable:
+    Description: DynamoDB pipeline registry table name
+    Value: !Ref PipelineRegistryTable
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-registry-table"
+
+  PipelineTokensTable:
+    Description: DynamoDB pipeline tokens table name
+    Value: !Ref PipelineTokensTable
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-tokens-table"
+
+  AssetSubscriptionsTable:
+    Description: DynamoDB asset subscriptions table name
+    Value: !Ref AssetSubscriptionsTable
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-asset-subscriptions-table"
+
+  ResultsBucket:
+    Description: S3 bucket for task results
+    Value: !Ref ResultsBucket
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-results-bucket"
+
+  CognitoUserPoolId:
+    Condition: EnableCognitoAuthCondition
+    Description: Cognito User Pool ID for Console UI auth
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-cognito-pool-id"
+
+  CognitoClientId:
+    Condition: EnableCognitoAuthCondition
+    Description: Cognito App Client ID for Console UI auth
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-cognito-client-id"
+
+  TestQuickSfnArn:
+    Description: ARN of test-quick Step Function (for demo pipelines)
+    Value: !Ref TestQuickSfn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-test-quick-arn"
+
+  TestFailureSfnArn:
+    Description: ARN of test-failure Step Function (for demo pipelines)
+    Value: !Ref TestFailureSfn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-test-failure-arn"
+
+  ConsoleUiUrl:
+    Description: CloudFront URL for the Polyris Console UI
+    Value: !Sub "https://${ConsoleUiDistribution.DomainName}"
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-console-url"
+
+  ConsoleUiBucket:
+    Description: S3 bucket for Console UI static files
+    Value: !Ref ConsoleUiBucket
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-console-ui-bucket"
+
+  ConsoleUiDistributionId:
+    Description: CloudFront distribution ID (needed for cache invalidation)
+    Value: !Ref ConsoleUiDistribution
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-console-distribution-id"

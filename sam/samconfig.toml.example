@@ -1,0 +1,34 @@
+# Polyris SAM Configuration
+# ============================================================
+# Quick start:
+#   1. cp samconfig.toml.example samconfig.toml
+#   2. Edit parameter_overrides below
+#   3. sam build && sam deploy
+#   4. cd ../ui && npm ci && npm run build && cd ../sam
+#   5. cd ../ui && ./deploy.sh
+# ============================================================
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name        = "polyris-dev"
+region            = "us-east-1"
+profile           = "default"
+capabilities      = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+resolve_s3        = true    # SAM auto-manages the artifacts bucket
+confirm_changeset = false
+
+parameter_overrides = [
+  "Namespace=myorg",
+  "Stage=dev",
+  "AwsRegion=us-east-1",
+
+  # Slack / PagerDuty alerts are configured in the Console UI (Settings → Alerts),
+  # not via CloudFormation parameters (ADR #103).
+
+  # Optional — Cognito auth for Console UI (recommended for production)
+  "EnableCognitoAuth=true",
+
+  # Optional — custom domain (e.g. if you set up Route53 + ACM)
+  # "ConsoleUrlOverride=https://polyris.myorg.com",
+]

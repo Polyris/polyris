@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Polyris Release Infrastructure — deploy once to set up CI/CD pipeline.
+  Creates: GitHub OIDC provider, IAM release role, public S3 releases bucket.
+
+# =============================================================================
+# Parameters
+# =============================================================================
+Parameters:
+
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization or username (e.g. your-org)
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+    Default: polyris
+
+  ReleasesBucketName:
+    Type: String
+    Description: Name for the public S3 bucket that stores releases
+    Default: polyris-releases
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # GitHub OIDC Provider
+  # Only one per AWS account — if it already exists this will fail.
+  # In that case comment out this resource and set OidcProviderArn manually.
+  # ---------------------------------------------------------------------------
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # ---------------------------------------------------------------------------
+  # Public S3 bucket for releases
+  # Stores: packaged template.yaml, Lambda ZIPs, SFN templates, UI files
+  # ---------------------------------------------------------------------------
+
+  ReleasesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ReleasesBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      Tags:
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Purpose
+          Value: polyris-releases
+
+  ReleasesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReleasesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicRead
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${ReleasesBucket.Arn}/*"
+
+  # ---------------------------------------------------------------------------
+  # IAM Role for GitHub Actions (OIDC)
+  # ---------------------------------------------------------------------------
+
+  GitHubReleaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: polyris-github-release
+      Description: Assumed by GitHub Actions via OIDC to publish Polyris releases
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt GitHubOidcProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Only allow from your specific repo — main branch and tags
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/tags/*"
+                  - !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: PolyrisReleasePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Upload artifacts to releases bucket
+              - Sid: ReleasesS3
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt ReleasesBucket.Arn
+                  - !Sub "${ReleasesBucket.Arn}/*"
+              # SAM package needs a staging bucket for Lambda ZIPs
+              # SAM creates and manages this bucket automatically
+              - Sid: SamStagingBucket
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketVersioning
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    s3:prefix: "aws-sam-cli-*"
+              # SAM package — read local Lambda code and SFN templates
+              - Sid: SamPackage
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:GetTemplateSummary
+                Resource: "*"
+      Tags:
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Purpose
+          Value: polyris-github-release
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+
+  ReleasesBucketName:
+    Description: S3 bucket for Polyris releases
+    Value: !Ref ReleasesBucket
+
+  ReleasesBucketArn:
+    Description: ARN of releases bucket
+    Value: !GetAtt ReleasesBucket.Arn
+
+  GitHubReleaseRoleArn:
+    Description: >
+      IAM Role ARN for GitHub Actions.
+      Add to GitHub Secrets as AWS_RELEASE_ROLE_ARN.
+    Value: !GetAtt GitHubReleaseRole.Arn
+
+  GitHubOidcProviderArn:
+    Description: GitHub OIDC Provider ARN
+    Value: !GetAtt GitHubOidcProvider.Arn
+
+  SetupInstructions:
+    Description: Next steps after deploying this stack
+    Value: !Sub |
+      1. Add to GitHub Secrets (Settings → Secrets → Actions):
+         AWS_RELEASE_ROLE_ARN = ${GitHubReleaseRole.Arn}
+         RELEASES_BUCKET = ${ReleasesBucket}
+      2. Push a tag to trigger a release:
+         git tag v1.0.0 && git push origin v1.0.0

@@ -1,0 +1,216 @@
+{
+  "Comment": "Failure handler: record status, notify dependents (System 2), fan out alerts to enabled channels (ADR #103), then callback parent orchestration.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Ensure_Pipeline_Execution_Short",
+  "States": {
+    "Ensure_Pipeline_Execution_Short": {
+      "Type": "Pass",
+      "Comment": "CRITICAL: Ensure pipeline_execution_short has a valid value to prevent malformed dependency_keys",
+      "Output": "{% ( $short := $exists($states.input.pipeline_execution_short) and $states.input.pipeline_execution_short != '' ? $states.input.pipeline_execution_short : ($exists($states.input.pipeline_execution) and $states.input.pipeline_execution != '' ? $substring($states.input.pipeline_execution, $length($states.input.pipeline_execution) > 20 ? $length($states.input.pipeline_execution) - 20 : 0) : 'unknown'); $states.input ~> |$| {'pipeline_execution_short': $short} | ) %}",
+      "Next": "Truncate_Error"
+    },
+    "Truncate_Error": {
+      "Type": "Pass",
+      "Comment": "Truncate error to prevent exceeding DynamoDB/EventBridge limits (50KB max)",
+      "Output": "{% ( $err := $string($states.input.error); $truncErr := $length($err) > 50000 ? $substring($err, 0, 50000) & '...[truncated, original size: ' & $string($length($err)) & ']' : $err; $states.input ~> |$| {'error_truncated': $truncErr} | ) %}",
+      "Next": "Update_Status_Failed"
+    },
+    "Update_Status_Failed": {
+      "Type": "Task",
+      "Comment": "Update DynamoDB: status=failed",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "ConditionExpression": "attribute_exists(execution_name) AND NOT (#s = :s1 OR #s = :s2 OR #s = :s3 OR #s = :s4 OR #s = :s5)",
+        "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn",
+        "ExpressionAttributeNames": {
+          "#s": "status",
+          "#e": "error"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "failed"
+          },
+          ":error": {
+            "S": "{% $states.input.error_truncated %}"
+          },
+          ":finished": {
+            "S": "{% $now() %}"
+          },
+          ":taskArn": {
+            "S": "{% $exists($states.input.task_execution_arn) ? $states.input.task_execution_arn : '' %}"
+          },
+          ":s1": {
+            "S": "success"
+          },
+          ":s2": {
+            "S": "skipped"
+          },
+          ":s3": {
+            "S": "stopped"
+          },
+          ":s4": {
+            "S": "aborted"
+          },
+          ":s5": {
+            "S": "upstream_failed"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Notify_Dependents",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Status update failed - continue with notifications anyway",
+          "Output": "{% $states.input %}",
+          "Next": "Notify_Dependents"
+        }
+      ]
+    },
+    "Notify_Dependents": {
+      "Type": "Task",
+      "Comment": "Notify waiting tasks of failure (critical for trigger_rules like all_done)",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+      "Arguments": {
+        "StateMachineArn": "${notify_dependents_helper_arn}",
+        "Input": {
+          "task_name": "{% $states.input.task_name %}",
+          "execution_name": "{% $states.input.execution_name %}",
+          "date": "{% $states.input.date %}",
+          "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+          "pipeline_execution": "{% $exists($states.input.pipeline_execution) ? $states.input.pipeline_execution : '' %}",
+          "pipeline_execution_short": "{% $exists($states.input.pipeline_execution_short) ? $states.input.pipeline_execution_short : '' %}",
+          "status": "failed"
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Check_Is_Upstream_Failed",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "StepFunctions.ServiceException",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Notify failed - continue to alerts anyway",
+          "Output": "{% $states.input ~> |$| {'notify_error': $states.errorOutput} | %}",
+          "Next": "Check_Is_Upstream_Failed"
+        }
+      ]
+    },
+    "Check_Is_Upstream_Failed": {
+      "Type": "Choice",
+      "Comment": "Skip alerts for upstream_failed tasks - root cause already alerted",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.error.Error) and $states.input.error.Error = 'UpstreamFailed' %}",
+          "Next": "Check_Orchestration_Token"
+        }
+      ],
+      "Default": "Send_Alerts"
+    },
+    "Send_Alerts": {
+      "Type": "Task",
+      "Comment": "Send failure alerts via the notify Lambda (ADR #103, Stage-1 consolidation). The Lambda reads alert_config from the registry and fans out over enabled channels itself; an empty/missing config is a clean no-op. Never fails the handler \u2014 delivery problems are swallowed by the Lambda.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${notify_function_arn}",
+        "Payload": {
+          "pipeline_name": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}",
+          "failure": {
+            "task_name": "{% $states.input.task_name %}",
+            "execution_name": "{% $states.input.execution_name %}",
+            "error": "{% $states.input.error_truncated %}",
+            "date": "{% $exists($states.input.date) ? $states.input.date : '' %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Check_Orchestration_Token",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Alert delivery must never block the failure callback",
+          "Output": "{% $states.input %}",
+          "Next": "Check_Orchestration_Token"
+        }
+      ]
+    },
+    "Check_Orchestration_Token": {
+      "Type": "Choice",
+      "Comment": "Send failure callback if orchestration token exists AND helper didn't already handle it",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' and $not($states.input.helper_failed) %}",
+          "Next": "Send_Task_Failure"
+        }
+      ],
+      "Default": "Failure_Complete"
+    },
+    "Send_Task_Failure": {
+      "Type": "Task",
+      "Comment": "Callback to orchestration pipeline: sendTaskFailure",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
+      "Arguments": {
+        "TaskToken": "{% $states.input.orchestration_token %}",
+        "Error": "{% $exists($states.input.error.Error) ? $states.input.error.Error : 'TaskFailed' %}",
+        "Cause": "{% $states.input.error_truncated %}"
+      },
+      "Next": "Failure_Complete",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Token already used, expired, or invalid - continue gracefully",
+          "Output": "{% $states.input %}",
+          "Next": "Failure_Complete"
+        }
+      ]
+    },
+    "Failure_Complete": {
+      "Type": "Pass",
+      "Comment": "Failure handling complete",
+      "Output": {
+        "status": "failed",
+        "execution_name": "{% $states.input.execution_name %}",
+        "error": "{% $states.input.error_truncated %}"
+      },
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,263 @@
+{
+  "Comment": "{\"dag_id\": \"fan_out\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"extract\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"transform_a\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}, {\"task_id\": \"transform_b\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}, {\"task_id\": \"transform_c\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}], \"dag\": {\"nodes\": [{\"id\": \"extract\", \"name\": \"extract\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_a\", \"name\": \"transform_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_b\", \"name\": \"transform_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_c\", \"name\": \"transform_c\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"extract\", \"to\": \"transform_a\"}, {\"from\": \"extract\", \"to\": \"transform_b\"}, {\"from\": \"extract\", \"to\": \"transform_c\"}]}, \"polyris_version\": \"1.0\"}",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Register_Pipeline",
+  "States": {
+    "Register_Pipeline": {
+      "Type": "Task",
+      "Comment": "Register pipeline metadata for UI and asset triggers",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${registry_table}",
+        "Item": {
+          "pipeline_name": {
+            "S": "fan_out"
+          },
+          "sfn_arn": {
+            "S": "{% $states.context.StateMachine.Id %}"
+          },
+          "description": {
+            "S": ""
+          },
+          "pipeline_group": {
+            "S": ""
+          },
+          "tasks": {
+            "S": "[{\"task_id\": \"extract\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"transform_a\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}, {\"task_id\": \"transform_b\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}, {\"task_id\": \"transform_c\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}]"
+          },
+          "dag": {
+            "S": "{\"nodes\": [{\"id\": \"extract\", \"name\": \"extract\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_a\", \"name\": \"transform_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_b\", \"name\": \"transform_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_c\", \"name\": \"transform_c\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"extract\", \"to\": \"transform_a\"}, {\"from\": \"extract\", \"to\": \"transform_b\"}, {\"from\": \"extract\", \"to\": \"transform_c\"}]}"
+          },
+          "schedule": {
+            "S": ""
+          },
+          "asset_schedule": {
+            "S": "{}"
+          },
+          "registered_at": {
+            "S": "{% $now() %}"
+          },
+          "last_execution": {
+            "S": "{% $states.context.Execution.Name %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Save_DAG_Snapshot"
+    },
+    "Save_DAG_Snapshot": {
+      "Type": "Task",
+      "Comment": "Snapshot DAG structure for this execution (survives redeploys)",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Item": {
+          "execution_name": {
+            "S": "{% 'dag_snapshot::' & $states.context.Execution.Name %}"
+          },
+          "pipeline_name": {
+            "S": "fan_out"
+          },
+          "pipeline_execution": {
+            "S": "{% $states.context.Execution.Name %}"
+          },
+          "dag": {
+            "S": "{\"nodes\": [{\"id\": \"extract\", \"name\": \"extract\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_a\", \"name\": \"transform_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_b\", \"name\": \"transform_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform_c\", \"name\": \"transform_c\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"extract\", \"to\": \"transform_a\"}, {\"from\": \"extract\", \"to\": \"transform_b\"}, {\"from\": \"extract\", \"to\": \"transform_c\"}]}"
+          },
+          "snapshot_at": {
+            "S": "{% $now() %}"
+          },
+          "ttl": {
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 10368000) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Check_Register_Only"
+    },
+    "Check_Register_Only": {
+      "Type": "Choice",
+      "Comment": "Skip task execution if register_only=true (used by polyris-register CLI)",
+      "Choices": [
+        {
+          "Condition": "{% $states.input.register_only = true %}",
+          "Next": "Registration_Complete"
+        }
+      ],
+      "Default": "Run_All_Tasks"
+    },
+    "Registration_Complete": {
+      "Type": "Succeed",
+      "Comment": "Registration completed without running tasks"
+    },
+    "Run_All_Tasks": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Task_extract",
+          "States": {
+            "Task_extract": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+              "TimeoutSeconds": 86400,
+              "Arguments": {
+                "StateMachineArn": "${wrapper_arn}",
+                "Name": "{% $substring('extract-' & ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
+                "Input": {
+                  "task_name": "extract",
+                  "task_arn": "arn:aws:states:us-east-1:123:stateMachine:extract",
+                  "task_type": "sfn",
+                  "dependencies": [],
+                  "cross_account_role": "same",
+                  "token": "{% $states.context.Task.Token %}",
+                  "pipeline_name": "fan_out",
+                  "pipeline_execution": "{% $states.context.Execution.Name %}",
+                  "skip_tasks": "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}",
+                  "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
+                  "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
+                  "date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "current_date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "PARTITION_ARG": "{% $exists($states.input.variables.PARTITION_ARG) ? $states.input.variables.PARTITION_ARG : ($exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')))) %}",
+                  "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
+                  "orchestration_timeout": 86400,
+                  "wait_before": 0,
+                  "trigger_rule": "all_success",
+                  "pipeline_execution_short": "{% ( $exec := $states.context.Execution.Name; $short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; $replace($replace($short, '.', ''), ':', '') ) %}"
+                }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Task_transform_a",
+          "States": {
+            "Task_transform_a": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+              "TimeoutSeconds": 86400,
+              "Arguments": {
+                "StateMachineArn": "${wrapper_arn}",
+                "Name": "{% $substring('transform_a-' & ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
+                "Input": {
+                  "task_name": "transform_a",
+                  "task_arn": "arn:aws:states:us-east-1:123:stateMachine:a",
+                  "task_type": "sfn",
+                  "dependencies": [
+                    "extract"
+                  ],
+                  "cross_account_role": "same",
+                  "token": "{% $states.context.Task.Token %}",
+                  "pipeline_name": "fan_out",
+                  "pipeline_execution": "{% $states.context.Execution.Name %}",
+                  "skip_tasks": "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}",
+                  "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
+                  "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
+                  "date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "current_date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "PARTITION_ARG": "{% $exists($states.input.variables.PARTITION_ARG) ? $states.input.variables.PARTITION_ARG : ($exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')))) %}",
+                  "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
+                  "orchestration_timeout": 86400,
+                  "wait_before": 0,
+                  "trigger_rule": "all_success",
+                  "pipeline_execution_short": "{% ( $exec := $states.context.Execution.Name; $short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; $replace($replace($short, '.', ''), ':', '') ) %}"
+                }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Task_transform_b",
+          "States": {
+            "Task_transform_b": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+              "TimeoutSeconds": 86400,
+              "Arguments": {
+                "StateMachineArn": "${wrapper_arn}",
+                "Name": "{% $substring('transform_b-' & ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
+                "Input": {
+                  "task_name": "transform_b",
+                  "task_arn": "arn:aws:states:us-east-1:123:stateMachine:b",
+                  "task_type": "sfn",
+                  "dependencies": [
+                    "extract"
+                  ],
+                  "cross_account_role": "same",
+                  "token": "{% $states.context.Task.Token %}",
+                  "pipeline_name": "fan_out",
+                  "pipeline_execution": "{% $states.context.Execution.Name %}",
+                  "skip_tasks": "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}",
+                  "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
+                  "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
+                  "date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "current_date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "PARTITION_ARG": "{% $exists($states.input.variables.PARTITION_ARG) ? $states.input.variables.PARTITION_ARG : ($exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')))) %}",
+                  "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
+                  "orchestration_timeout": 86400,
+                  "wait_before": 0,
+                  "trigger_rule": "all_success",
+                  "pipeline_execution_short": "{% ( $exec := $states.context.Execution.Name; $short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; $replace($replace($short, '.', ''), ':', '') ) %}"
+                }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Task_transform_c",
+          "States": {
+            "Task_transform_c": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+              "TimeoutSeconds": 86400,
+              "Arguments": {
+                "StateMachineArn": "${wrapper_arn}",
+                "Name": "{% $substring('transform_c-' & ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
+                "Input": {
+                  "task_name": "transform_c",
+                  "task_arn": "arn:aws:states:us-east-1:123:stateMachine:c",
+                  "task_type": "sfn",
+                  "dependencies": [
+                    "extract"
+                  ],
+                  "cross_account_role": "same",
+                  "token": "{% $states.context.Task.Token %}",
+                  "pipeline_name": "fan_out",
+                  "pipeline_execution": "{% $states.context.Execution.Name %}",
+                  "skip_tasks": "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}",
+                  "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
+                  "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
+                  "date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "current_date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
+                  "PARTITION_ARG": "{% $exists($states.input.variables.PARTITION_ARG) ? $states.input.variables.PARTITION_ARG : ($exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')))) %}",
+                  "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
+                  "orchestration_timeout": 86400,
+                  "wait_before": 0,
+                  "trigger_rule": "all_success",
+                  "pipeline_execution_short": "{% ( $exec := $states.context.Execution.Name; $short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; $replace($replace($short, '.', ''), ':', '') ) %}"
+                }
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "End": true,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Pipeline_Failed"
+        }
+      ]
+    },
+    "Pipeline_Failed": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "Infrastructure error - wrapper did not handle"
+    }
+  }
+}

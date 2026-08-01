@@ -1,0 +1,37 @@
+{
+  "$comment": [
+    "Deterministic gates. CLAUDE.md asks the agent to run these; a hook makes it",
+    "impossible not to. Principle #21/#23 are enforced here rather than trusted.",
+    "",
+    "Stop  — fires when the agent finishes a turn. Runs only the gates the current",
+    "        changes require (scripts/verify-changed.sh scopes by git status), so",
+    "        the fast path stays seconds, not the ~4 minutes a full run costs.",
+    "PreToolUse — blocks the two destructive patterns that actually bit us:",
+    "        writing outside the repo, and rm -rf on a working tree."
+  ],
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/verify-changed.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/guard-destructive.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

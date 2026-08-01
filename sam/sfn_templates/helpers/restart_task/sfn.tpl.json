@@ -1,0 +1,173 @@
+{
+  "Comment": "Restart Task Helper - stops old wrapper, reads config from DynamoDB, starts new wrapper",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Get_Task_Config",
+  "States": {
+    "Get_Task_Config": {
+      "Type": "Task",
+      "Comment": "Read task configuration from DynamoDB",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        }
+      },
+      "Output": "{% { 'item': $exists($states.result.Item) ? $states.result.Item : {}, 'execution_name': $states.input.execution_name, 'task_config': $exists($states.input.task_config) ? $states.input.task_config : {}, 'outlets': $exists($states.input.outlets) ? $states.input.outlets : [] } %}",
+      "Next": "Check_Task_Exists",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Check_Task_Exists": {
+      "Type": "Choice",
+      "Comment": "Verify task was found",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.item.task_name) %}",
+          "Next": "Stop_Old_Outer_Wrapper"
+        }
+      ],
+      "Default": "Task_Not_Found"
+    },
+    "Stop_Old_Outer_Wrapper": {
+      "Type": "Task",
+      "Comment": "Stop the OLD outer dependency_wrapper execution first — an external StopExecution here does NOT trigger the wrapper's own internal Catch/Handle_Failure (that only fires for errors from WITHIN the execution, not from being stopped externally), so this cannot cascade a false 'task failed' notification to downstream tasks. Must happen before killing the inner run_task below, or the outer wrapper's synchronous Run_Task call would see its child aborted and incorrectly report a failure.",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:stopExecution",
+      "Arguments": {
+        "ExecutionArn": "{% $states.input.item.wrapper_execution_arn.S %}",
+        "Error": "RestartRequested",
+        "Cause": "Task restart requested via UI"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Ignore errors - outer wrapper may already be stopped or ARN missing",
+          "Output": "{% $states.input %}",
+          "Next": "Stop_Old_Inner_Wrapper"
+        }
+      ],
+      "Output": "{% $states.input %}",
+      "Next": "Stop_Old_Inner_Wrapper"
+    },
+    "Stop_Old_Inner_Wrapper": {
+      "Type": "Task",
+      "Comment": "Stop the old inner run_task execution second, now that the outer wrapper (which would otherwise catch this as a failure) is already stopped and can't react to it. Prevents run_task from being orphaned as a ghost, still counting down its own Wait_For_Decision timer indefinitely.",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:stopExecution",
+      "Arguments": {
+        "ExecutionArn": "{% $states.input.item.run_task_helper_arn.S %}",
+        "Error": "RestartRequested",
+        "Cause": "Task restart requested via UI"
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Ignore errors - inner wrapper may already be stopped or ARN missing",
+          "Output": "{% $states.input %}",
+          "Next": "Delete_Old_Record"
+        }
+      ],
+      "Output": "{% $states.input %}",
+      "Next": "Delete_Old_Record"
+    },
+    "Delete_Old_Record": {
+      "Type": "Task",
+      "Comment": "Delete old execution record to avoid conflicts",
+      "Resource": "arn:aws:states:::dynamodb:deleteItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Start_New_Wrapper",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Start_New_Wrapper": {
+      "Type": "Task",
+      "Comment": "Start new dependency wrapper with ALL original inputs from DynamoDB",
+      "Resource": "arn:aws:states:::states:startExecution",
+      "Arguments": {
+        "StateMachineArn": "${wrapper_arn}",
+        "Name": "{% $substring('restart-' & $string($millis()) & '-' & $states.input.item.task_name.S, 0, 80) %}",
+        "Input": {
+          "task_name": "{% $states.input.item.task_name.S %}",
+          "task_arn": "{% $states.input.item.task_arn.S %}",
+          "dependencies": "{% $exists($states.input.item.dependencies.S) ? $parse($states.input.item.dependencies.S) : [] %}",
+          "cross_account_role": "{% $exists($states.input.item.cross_account_role.S) ? $states.input.item.cross_account_role.S : 'same' %}",
+          "pipeline_name": "{% $exists($states.input.item.pipeline_name.S) ? $states.input.item.pipeline_name.S : 'unknown' %}",
+          "pipeline_execution": "{% $exists($states.input.item.pipeline_execution.S) ? $states.input.item.pipeline_execution.S : 'unknown' %}",
+          "pipeline_execution_short": "{% $exists($states.input.item.pipeline_execution_short.S) ? $states.input.item.pipeline_execution_short.S : 'unknown' %}",
+          "token": "{% $exists($states.input.item.orchestration_token.S) ? $states.input.item.orchestration_token.S : '' %}",
+          "execution_name_override": "{% $states.input.execution_name %}",
+          "current_date": "{% $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T') %}",
+          "date": "{% $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T') %}",
+          "trigger_rule": "{% $exists($states.input.item.trigger_rule.S) ? $states.input.item.trigger_rule.S : 'all_success' %}",
+          "wait_before": "{% $exists($states.input.item.wait_before.N) ? $number($states.input.item.wait_before.N) : 0 %}",
+          "task_type": "{% $exists($states.input.item.task_type.S) ? $states.input.item.task_type.S : 'sfn' %}",
+          "task_config": "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}",
+          "outlets": "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}",
+          "task_run_id": "{% $exists($states.input.item.task_run_id.S) ? $states.input.item.task_run_id.S : $states.input.execution_name %}",
+          "attempt": "{% ($exists($states.input.item.attempt.N) ? $number($states.input.item.attempt.N) : 1) + 1 %}"
+        }
+      },
+      "Output": {
+        "status": "restarted",
+        "task_name": "{% $states.input.item.task_name.S %}",
+        "old_execution": "{% $states.input.execution_name %}",
+        "new_execution_arn": "{% $exists($states.result.ExecutionArn) ? $states.result.ExecutionArn : 'unknown' %}"
+      },
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "StepFunctions.ExecutionLimitExceeded",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Task_Not_Found": {
+      "Type": "Fail",
+      "Error": "TaskNotFound",
+      "Cause": "Task configuration not found in DynamoDB"
+    }
+  }
+}

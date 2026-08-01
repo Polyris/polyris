@@ -1,0 +1,80 @@
+name: E2E
+
+# Runs SEPARATELY from the main CI (.github/workflows/ci.yml).
+# These tests hit a REAL deployed environment (live API Gateway + Step
+# Functions + DynamoDB), so they must NOT run on every push/PR:
+#   - `mode: health`  -> read-only /health probe, no token, ~free, safe.
+#   - `mode: full`    -> read-only routes + a real backfill (triggers a live
+#                        SFN execution, ~$0.001). Needs a Cognito token.
+#
+# Trigger it manually from the Actions tab ("Run workflow"), or it runs
+# automatically (health only) when you push a release tag like v1.0.0.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "health = probe only (no secrets) | full = routes + backfill (needs AWS + Cognito secrets)"
+        type: choice
+        options: [health, full]
+        default: health
+  push:
+    tags: ["v*"]
+
+# OIDC: lets the job assume an AWS role to fetch a fresh Cognito token.
+# (Alternative: drop this and set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# secrets, then remove the configure-aws-credentials `role-to-assume` line.)
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (${{ github.event.inputs.mode || 'health' }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install polyris
+        run: pip install -e ".[dev]"
+
+      # ---- health probe: always runs, no token needed -------------------
+      - name: Health probe
+        env:
+          POLYRIS_API_URL: ${{ secrets.POLYRIS_API_URL }}
+        run: python -m pytest tests/e2e/test_health.py -v
+
+      # ---- full run: only when mode=full --------------------------------
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ github.event.inputs.mode == 'full' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Fetch Cognito ID token
+        if: ${{ github.event.inputs.mode == 'full' }}
+        id: token
+        env:
+          COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
+          COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+        run: |
+          TOKEN="$(scripts/get-e2e-token.sh)"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only routes + backfill smoke
+        if: ${{ github.event.inputs.mode == 'full' }}
+        env:
+          POLYRIS_API_URL: ${{ secrets.POLYRIS_API_URL }}
+          POLYRIS_ID_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          python -m pytest tests/e2e/ -v -m "not write"
+          python -m pytest tests/e2e/test_backfill.py -v -m smoke

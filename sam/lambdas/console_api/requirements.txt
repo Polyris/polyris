@@ -1,0 +1,14 @@
+# Console API runtime dependencies (packaged by `sam build` from this CodeUri).
+# boto3 is provided by the Lambda runtime and is intentionally not pinned here.
+#
+# rsa — pure-Python RSASSA-PKCS1-v1_5/SHA-256 used by auth.py to verify Cognito
+# JWTs offline (RS256) against the pool JWKS. Pure Python (no native wheel), so
+# `sam build` works WITHOUT `--use-container`. See ADR #65.
+rsa>=4.9
+
+# polyris SDK core — provides the DSL/partition/granularity modules the console
+# imports (e.g. polyris.partitions). Previously vendored via the
+# `console_api/polyris` symlink; now pulled as a package so the repo split works
+# (ADR #102). Pin to a release tag. For local dev, `pip install -e .` from the
+# repo root shadows this with the live core.
+polyris @ git+https://github.com/Polyris/polyris@v0.93.0

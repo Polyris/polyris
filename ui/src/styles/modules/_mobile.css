@@ -1,0 +1,638 @@
+/* ===========================================
+   Mobile Responsive Styles
+   =========================================== */
+
+/* Hamburger button - hidden on desktop */
+.hdr-hamburger-btn {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    line-height: 0;
+}
+.hdr-hamburger-btn:hover {
+    background: var(--bg-hover);
+}
+
+/* Sidebar overlay - hidden on desktop */
+.sidebar-overlay {
+    display: none;
+}
+
+/* ===== Tablet (≤1024px) ===== */
+@media (max-width: 1024px) {
+    .main-top { grid-template-columns: 270px 1fr; }
+    .sidebar { min-width: 270px; }
+    
+    /* Hide breadcrumbs on tablet */
+    .hdr-breadcrumbs { display: none; }
+    
+    /* Compact nav pills */
+    .nav-pills .hdr-nav-pill-label { display: none; }
+    .nav-pills { gap: 2px; }
+    
+    /* Compact header controls */
+    .hdr-header-controls { gap: 6px; }
+    
+    /* Assets sidebar */
+    .av-assets-view { grid-template-columns: 270px 1fr; }
+}
+
+/* ===== Mobile (≤768px) ===== */
+@media (max-width: 768px) {
+    /* Show hamburger */
+    .hdr-hamburger-btn { display: flex; }
+    
+    /* Header: compact single row */
+    .header {
+        padding: 0.5rem 0.75rem;
+        gap: 0.5rem;
+        flex-wrap: nowrap;
+    }
+    .hdr-header-controls { gap: 4px; }
+    .hdr-header-controls .hdr-date-picker { display: none; }
+    .hdr-header-controls .hdr-status-badge { display: none; }
+    
+    /* User menu: always visible, compact on mobile */
+    .um-user-menu { display: flex !important; }
+    .um-user-name { display: none; }
+    .um-user-menu-trigger .transition-transform { display: none; }
+    .um-user-menu-trigger { padding: 4px; gap: 0; }
+    .um-user-avatar { width: 28px; height: 28px; font-size: 0.75rem; }
+    
+    /* Account menu dropdown (in the left rail) — pin above the rail account,
+       capped to the viewport so it can't run off-screen on small displays. */
+    .um-user-menu--rail .um-user-menu-dropdown {
+        position: fixed;
+        top: auto;
+        bottom: 4.5rem;
+        left: 0.5rem;
+        right: auto;
+        min-width: 0;
+        width: min(288px, calc(100vw - 1rem));
+    }
+    
+    /* Hide non-essential header controls on mobile */
+    .hdr-header-controls > button[title="Help & Documentation"] { display: none; }
+    .ntf-notification-bell-container { display: none; }
+    
+    /* Logo compact */
+    
+    /* Nav pills → icon only + compact */
+    .nav-pills {
+        margin-left: auto;
+        gap: 2px;
+    }
+    .nav-pills .nav-pill {
+        padding: 6px 8px;
+    }
+    .nav-pills .hdr-nav-pill-label { display: none; }
+    
+    /* Connection banner */
+    .connection-banner { font-size: 0.75rem; padding: 0.375rem 0.75rem; }
+    
+    /* Sidebar as drawer */
+    .main-top {
+        grid-template-columns: 1fr !important;
+        position: relative;
+    }
+    
+    .sidebar {
+        display: flex;
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 85vw;
+        max-width: 360px;
+        min-width: unset;
+        z-index: 200;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        box-shadow: none;
+    }
+    .sidebar.sidebar-open {
+        transform: translateX(0);
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Overlay */
+    .sidebar-overlay {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        z-index: 199;
+        animation: fadeIn 0.2s ease;
+    }
+    
+    /* Canvas (pipeline detail) takes full width */
+    .pd-canvas { min-width: 0; }
+    .pd-canvas-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+        padding: 0.75rem;
+    }
+    .pd-canvas-actions { flex-wrap: wrap; gap: 4px; }
+    .pd-canvas-title { font-size: 1rem; }
+    
+    /* Execution tabs compact */
+    
+    /* Tables: horizontal scroll wrapper */
+    .table-full {
+        display: block;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .table-full table {
+        min-width: 600px;
+    }
+    
+    /* Task list in pipeline detail */
+    
+    /* Modals */
+    .td-task-modal,
+    .adm-asset-modal {
+        max-width: 95vw !important;
+        max-height: 90vh;
+        margin: 1rem;
+    }
+    .detail-columns { grid-template-columns: 1fr !important; }
+    .td-task-modal-footer,
+    .adm-asset-modal-footer {
+        flex-direction: column;
+    }
+    .task-actions { width: 100%; justify-content: center; }
+    
+    /* Assets view: sidebar hidden by default, content full width */
+    .av-assets-view {
+        grid-template-columns: 1fr !important;
+    }
+    .av-assets-view .sidebar {
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        width: 85vw;
+        max-width: 360px;
+        min-width: unset;
+        z-index: 200;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+    }
+    .av-assets-view .sidebar.sidebar-open {
+        transform: translateX(0);
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Cards (catalog/detail/events/lineage) — smaller margin on mobile */
+    .av-catalog,
+    .av-recent-events-panel,
+    .av-main-content > .adp-page {
+        margin: 8px;
+    }
+    .av-lineage-wrapper {
+        margin: 8px;
+        padding: 8px;
+    }
+    
+    /* Gantt chart: horizontal scroll */
+    .gc-gantt-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .gc-gantt-chart {
+        min-width: 600px;
+    }
+    
+    /* Calendar: compact */
+    .cal-calendar-grid {
+        font-size: 0.8rem;
+    }
+    .cal-calendar-day {
+        min-height: 60px;
+        padding: 4px;
+    }
+    
+    /* Lineage graph container */
+    .alf-lineage-flow-container {
+        min-height: 300px;
+    }
+    /* Lineage panel — aggressively compact on tablet/mobile (Mike feedback)
+       at ~700px viewport, panel was ~280px wide; trim to ~180px max */
+    .alf-lineage-panel {
+        flex-direction: column;
+        padding: 6px;
+        gap: 4px;
+        max-width: 180px;
+        font-size: 0.7rem;
+    }
+    .alf-lineage-panel__search {
+        width: 100%;
+        font-size: 11px;
+        padding: 4px 6px;
+    }
+    .alf-lineage-panel__prefixes {
+        gap: 3px;
+    }
+    .alf-lineage-panel__filters {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+    .alf-lineage-panel__filter {
+        gap: 3px;
+    }
+    .alf-lineage-panel__filter input[type="checkbox"] {
+        width: 12px;
+        height: 12px;
+    }
+    .alf-lineage-panel__filter-label {
+        font-size: 0.65rem;
+        gap: 3px;
+    }
+    .alf-prefix-btn {
+        padding: 2px 5px;
+        font-size: 0.65rem;
+    }
+    /* MiniMap is too cramped on mobile — hide entirely (Mike feedback) */
+    .alf-lineage-flow-container .react-flow__minimap {
+        display: none;
+    }
+    .dag-container .react-flow__minimap {
+        display: none;
+    }
+    /* ReactFlow Panels — sticky to viewport edges, prevent off-screen */
+    .alf-lineage-flow-container .react-flow__panel.react-flow__panel-top.react-flow__panel-right {
+        max-width: calc(100% - 60px);
+    }
+    
+    /* DAG graph */
+    .dag-container {
+        min-height: 300px;
+    }
+    
+    /* Command palette */
+    .cp-command-palette {
+        max-width: 95vw;
+        top: 10%;
+    }
+    
+    /* Help modal */
+    .hm-help-modal {
+        max-width: 95vw;
+    }
+    
+    /* Backfill modal */
+    .bf-backfill-modal {
+        max-width: 95vw;
+    }
+    
+    /* Toast notifications */
+    .tst-toast-container {
+        left: 0.5rem;
+        right: 0.5rem;
+        bottom: 0.5rem;
+    }
+    
+    /* Pipeline group headers in sidebar */
+    .sb-pipeline-group-header {
+        padding: 8px 12px !important;
+        font-size: 12px !important;
+    }
+    
+    /* Pipeline item: ensure text doesn't overflow */
+    .sb-pipeline-name {
+        font-size: 0.8rem;
+    }
+    .sb-pipeline-meta {
+        font-size: 0.7rem;
+    }
+
+    /* AssetDetailPage — collapse sidebar, compact header, scrollable tabs */
+    .adp-body {
+        flex-direction: column;
+    }
+    .adp-sidebar {
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        padding: 12px;
+        order: 2;
+    }
+    .adp-main {
+        order: 1;
+        padding: 12px;
+    }
+    .adp-header {
+        padding: 8px 12px 12px;
+    }
+    .adp-tabs {
+        padding: 0 12px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        flex-wrap: nowrap;
+        scrollbar-width: thin;
+    }
+    .adp-tab {
+        padding: 10px 12px;
+        white-space: nowrap;
+        flex-shrink: 0;
+        min-height: 36px;
+    }
+    .adp-title {
+        font-size: 1rem;
+    }
+    .adp-events-split {
+        flex-direction: column;
+    }
+    .adp-events-list {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    /* ErrorBoundary — compact padding, vertical action buttons */
+    .eb-error-boundary-container {
+        padding: 1rem;
+        min-height: 200px;
+    }
+    .eb-error-boundary-icon {
+        font-size: 2.5rem;
+    }
+    .eb-error-boundary-title {
+        font-size: 1.25rem;
+    }
+    .eb-error-boundary-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .eb-error-boundary-actions button {
+        width: 100%;
+    }
+    .eb-error-boundary-stack {
+        font-size: 0.7rem;
+        word-break: break-all;
+    }
+
+    /* PipelineDetail error fallback */
+    .pd-error-fallback {
+        padding: 1rem;
+        text-align: center;
+    }
+    .pd-error-fallback button {
+        width: 100%;
+    }
+
+    /* Empty / unavailable-feature state */
+    .empty-state {
+        padding: 2rem 1rem;
+    }
+    .empty-state__action button {
+        width: 100%;
+    }
+
+    /* ActionModal — full-width textarea on mobile */
+    .am-params-textarea {
+        font-size: 0.75rem;
+    }
+    .am-run-details-content {
+        max-height: 30vh;
+    }
+
+    /* AllTasks/AllRuns filter-bar — compact on mobile */
+    .filter-bar {
+        padding: 0.75rem;
+        gap: 0.5rem;
+    }
+    .filter-bar .title-lg {
+        font-size: 1rem;
+        flex-basis: 100%;
+        margin-bottom: 0.25rem;
+    }
+    .filter-controls {
+        gap: 0.375rem;
+        width: 100%;
+    }
+    .filter-controls .input-sm {
+        flex: 1;
+        min-width: 100px;
+    }
+
+    /* AssetDetailModal — body padding compact */
+    .adm-asset-modal-header {
+        padding: 0.75rem;
+    }
+
+    /* Tap targets ≥36px on mobile per ADR #40 rule 4 */
+    .av-nav-item,
+    .nav-pill {
+        min-height: 36px;
+    }
+}
+
+/* ===== Small mobile (≤480px) ===== */
+@media (max-width: 480px) {
+    .header {
+        padding: 0.375rem 0.5rem;
+        gap: 0.375rem;
+    }
+    
+    /* Nav pills even more compact */
+    .nav-pills .nav-pill { padding: 5px 6px; }
+    
+    /* Canvas title */
+    .pd-canvas-title { font-size: 0.9rem; }
+    
+    /* Calendar even more compact */
+    .cal-calendar-day { min-height: 48px; }
+    
+    /* Sidebar wider on small screens */
+    .sidebar,
+    .av-assets-view .sidebar {
+        width: 90vw;
+    }
+
+    /* AssetDetailPage — minimal padding at 480px */
+    .adp-header {
+        padding: 6px 8px 8px;
+    }
+    .adp-main {
+        padding: 8px;
+    }
+    .adp-tab {
+        padding: 8px 10px;
+        font-size: 0.75rem;
+    }
+    .adp-title {
+        font-size: 0.9rem;
+    }
+
+    /* Filter bar — stack vertically on tiny screens */
+    .filter-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .filter-controls .input-sm {
+        width: 100%;
+    }
+
+    /* ErrorBoundary even more compact */
+    .eb-error-boundary-container {
+        padding: 0.5rem;
+    }
+    .eb-error-boundary-title {
+        font-size: 1.1rem;
+    }
+
+    /* ReactFlow Panels — single column to save horizontal space */
+    .alf-lineage-panel {
+        padding: 6px;
+    }
+    .alf-lineage-panel__search {
+        max-width: 140px;
+    }
+}
+
+/* ===== Animation ===== */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ===== Login Page Mobile ===== */
+@media (max-width: 768px) {
+    .lp-login-page {
+        padding: 1rem;
+        align-items: flex-start;
+        padding-top: 15vh;
+    }
+    .lp-login-container {
+        max-width: 100%;
+    }
+    .lp-login-card {
+        padding: 1.5rem 1.25rem;
+    }
+    .lp-login-logo {
+        font-size: 1.5rem;
+    }
+    .lp-login-logo-icon {
+        width: 40px;
+        height: 40px;
+    }
+    .lp-login-title {
+        font-size: 1.25rem;
+    }
+    .lp-login-header {
+        margin-bottom: 1.5rem;
+    }
+    .lp-login-form {
+        gap: 1rem;
+    }
+    .lp-login-button {
+        padding: 0.75rem;
+    }
+    .lp-login-footer {
+        font-size: 0.75rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .lp-login-page {
+        padding: 0.75rem;
+        padding-top: 10vh;
+    }
+    .lp-login-card {
+        padding: 1.25rem 1rem;
+    }
+    .lp-login-logo {
+        font-size: 1.25rem;
+    }
+    .lp-login-logo-icon {
+        width: 36px;
+        height: 36px;
+    }
+    .lp-login-title {
+        font-size: 1.1rem;
+    }
+    .lp-login-subtitle {
+        font-size: 0.8rem;
+    }
+}
+
+
+/* ─── Asset Matrix View — mobile (ADR #40) ──────────────────────────────
+ * Default 14-day range on desktop; tighten to 7 days at ≤768, 5 at ≤480.
+ * Cells shrink, header text reduces, asset name column narrows.
+ * ───────────────────────────────────────────────────────────────────────*/
+@media (max-width: 1024px) {
+    .amv-cell,
+    .amv-date-header {
+        min-width: 36px;
+        width: 36px;
+    }
+    .amv-corner,
+    .amv-asset-name {
+        width: 200px;
+        min-width: 200px;
+        max-width: 200px;
+    }
+}
+
+@media (max-width: 768px) {
+    .amv-toolbar {
+        padding: 8px 12px;
+        gap: 8px;
+    }
+    .amv-cell,
+    .amv-date-header {
+        min-width: 32px;
+        width: 32px;
+        height: 28px;
+    }
+    .amv-cell { padding: 0; }
+    .amv-corner,
+    .amv-asset-name {
+        width: 160px;
+        min-width: 160px;
+        max-width: 160px;
+        padding-left: 10px;
+        padding-right: 10px;
+        font-size: 0.75rem;
+    }
+    .amv-asset-link { font-size: 0.75rem; }
+    .amv-date-header { padding: 4px 2px; font-size: 0.625rem; }
+    .amv-date-weekday { font-size: 0.55rem; }
+    .amv-stats { padding: 6px 12px; gap: 12px; font-size: 0.6875rem; }
+    .amv-legend { padding: 6px 12px; gap: 10px; font-size: 0.625rem; }
+    .amv-legend-hint { display: none; }
+}
+
+@media (max-width: 480px) {
+    .amv-cell,
+    .amv-date-header {
+        min-width: 28px;
+        width: 28px;
+        height: 26px;
+    }
+    .amv-corner,
+    .amv-asset-name {
+        width: 130px;
+        min-width: 130px;
+        max-width: 130px;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    .amv-toolbar-label {
+        /* Hide repetitive labels — selects are self-explanatory */
+        display: none;
+    }
+    .amv-toolbar { padding: 6px 10px; }
+    .amv-refresh-btn { padding: 4px 8px; font-size: 0.75rem; }
+    .amv-refresh-btn span,
+    .amv-refresh-btn { gap: 4px; }
+    /* Hide weekday for ultra-tight rows */
+    .amv-date-weekday { display: none; }
+}

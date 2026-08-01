@@ -1,0 +1,628 @@
+.pd-canvas {
+    background: var(--bg-primary);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    height: 100%;
+    min-height: 0;
+}
+
+/* Loading overlay */
+.pd-loading-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--bg-secondary);
+    opacity: 0.8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    pointer-events: none;
+}
+.pd-loading-spinner {
+    font-size: 2rem;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.pd-canvas-header {
+    padding: 1rem 1.5rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+}
+.pd-canvas-title { font-size: 1.125rem; font-weight: 600; }
+.pd-canvas-subtitle { font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.125rem; }
+
+.pd-canvas-actions { display: flex; align-items: center; gap: 0.75rem; }
+.pd-action-group { display: flex; align-items: center; gap: 0.5rem; }
+/* Subtle divider between intent groups (utility | primary | danger) */
+.pd-action-group + .pd-action-group { padding-left: 0.75rem; border-left: 1px solid var(--border); }
+
+.pd-canvas-content {
+    flex: 1; 
+    overflow: hidden; 
+    padding: 1.5rem;
+    min-height: 0;
+}
+
+/* DAG Graph */
+.dag-container {
+    height: 100%;
+    min-height: 300px;
+}
+
+.dag-container.dag-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+
+/* ReactFlow overrides */
+.dag-container .react-flow__node {
+    cursor: pointer;
+}
+.dag-container .react-flow__controls {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    z-index: 10;
+}
+.dag-container .react-flow__controls button,
+.dag-container .react-flow__controls-button {
+    background: var(--bg-secondary);
+    border-color: var(--border);
+    color: var(--text-primary);
+    cursor: pointer !important;
+}
+.dag-container .react-flow__controls button:hover,
+.dag-container .react-flow__controls-button:hover {
+    background: var(--bg-hover);
+}
+.dag-container .react-flow__controls-button svg {
+    fill: currentColor;
+}
+.dag-container .react-flow__minimap {
+    z-index: 4;
+}
+.dag-container .react-flow__panel {
+    z-index: 3;
+}
+
+/* Global ReactFlow cursor fixes */
+.react-flow__controls {
+    pointer-events: auto !important;
+    z-index: 10 !important;
+}
+.react-flow__controls-button {
+    cursor: pointer !important;
+    pointer-events: auto !important;
+}
+.react-flow__pane {
+    cursor: grab;
+}
+.react-flow__pane:active {
+    cursor: grabbing;
+}
+.react-flow__pane.dragging {
+    cursor: grabbing;
+}
+/* Reset cursor when not dragging */
+.react-flow__renderer {
+    cursor: default;
+}
+
+.dag-empty {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; color: var(--text-muted);
+}
+.dag-empty-icon { font-size: 3rem; margin-bottom: 0.75rem; opacity: 0.5; }
+.dag-empty-text { font-size: 0.9375rem; }
+
+.dag-svg { width: 100%; height: 100%; min-height: 400px; }
+
+.dag-node {
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.dag-node:hover { filter: brightness(0.95); }
+.dag-node rect { rx: 8; ry: 8; stroke-width: 2; }
+.dag-node.waiting rect { fill: #f8fafc; stroke: #94a3b8; }
+.dag-node.waiting_delay rect { fill: #fef3c7; stroke: #f59e0b; stroke-width: 2; }
+.dag-node.running rect { fill: #eff6ff; stroke: #3b82f6; }
+.dag-node.success rect, .dag-node.succeeded rect { fill: #f0fdf4; stroke: #22c55e; }
+.dag-node.failed rect { fill: #fef2f2; stroke: #ef4444; }
+.dag-node.upstream_failed rect { fill: #fef2f2; stroke: #ef4444; }
+.dag-node.deps_ready rect { fill: #eff6ff; stroke: #3b82f6; }
+.dag-node.pending rect { fill: #f8fafc; stroke: #94a3b8; stroke-dasharray: 4 2; }
+.dag-node.stopped rect { fill: var(--stopped-light); stroke: var(--stopped); }
+.dag-node.skipped rect { fill: var(--skipped-light); stroke: var(--skipped); stroke-dasharray: 4 2; }
+.dag-node.aborted rect { fill: var(--aborted-light); stroke: var(--aborted); }
+.dag-node.waiting_decision rect, .dag-node.decision rect { 
+    fill: var(--decision-light); stroke: var(--decision); stroke-width: 3;
+    animation: pulse-border 2s ease-in-out infinite;
+}
+@keyframes pulse-border {
+    0%, 100% { stroke-opacity: 1; }
+    50% { stroke-opacity: 0.5; }
+}
+
+.dag-node text {
+    font-family: var(--font-inter, 'Inter', sans-serif);
+    font-size: 12px;
+    font-weight: 500;
+    fill: #0f172a;
+}
+
+.dag-edge {
+    fill: none;
+    stroke: #cbd5e1;
+    stroke-width: 2;
+}
+.dag-edge.active { stroke: #22c55e; stroke-width: 2.5; }
+
+/* Bottom Panel content */
+
+.gc-panel-empty {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--text-muted); text-align: center; padding: 1rem;
+}
+.gc-panel-empty-icon { font-size: 1.5rem; margin-bottom: 0.5rem; opacity: 0.5; }
+.gc-panel-empty-text { font-size: 0.8rem; }
+
+/* Task Details */
+.td-task-icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.25rem;
+}
+.task-icon-success, .task-icon-succeeded { background: var(--success-light); color: var(--success); }
+.task-icon-running { background: var(--running-light); color: var(--running); }
+.task-icon-failed { background: var(--error-light); color: var(--error); }
+.task-icon-upstream_failed { background: var(--error-light); color: var(--error); }
+.task-icon-waiting, .task-icon-pending { background: var(--waiting-light); color: var(--waiting); }
+.task-icon-waiting_delay { background: #fef3c7; color: #d97706; }
+.task-icon-deps_ready { background: var(--accent-light); color: var(--accent); }
+.task-icon-stopped { background: var(--stopped-light); color: var(--stopped); }
+.task-icon-aborted { background: var(--aborted-light); color: var(--aborted); }
+.task-icon-skipped { background: var(--skipped-light); color: var(--skipped); }
+.task-icon-waiting_decision, .task-icon-decision { background: var(--decision-light); color: var(--decision); }
+.td-task-title { font-weight: 600; font-size: 1rem; }
+.task-status-badge {
+    display: inline-block; padding: 0.25rem 0.625rem;
+    border-radius: 9999px; font-size: 0.75rem; font-weight: 500;
+    margin-top: 0.25rem;
+}
+.task-status-badge.success, .task-status-badge.succeeded { background: var(--success-light); color: var(--success); }
+.task-status-badge.running { background: var(--running-light); color: var(--running); }
+.task-status-badge.failed { background: var(--error-light); color: var(--error); }
+.task-status-badge.waiting, .task-status-badge.pending { background: var(--waiting-light); color: var(--waiting); }
+.task-status-badge.waiting_delay { background: #fef3c7; color: #d97706; }
+.task-status-badge.deps_ready { background: var(--accent-light); color: var(--accent); }
+.task-status-badge.stopped { background: var(--stopped-light); color: var(--stopped); }
+.task-status-badge.aborted { background: var(--aborted-light); color: var(--aborted); }
+.task-status-badge.skipped { background: var(--skipped-light); color: var(--skipped); }
+.task-status-badge.upstream_failed { background: var(--error-light); color: var(--error); }
+.task-status-badge.timed_out { background: var(--error-light); color: var(--error); }
+.task-status-badge.recovered { background: var(--warning-light); color: var(--warning); }
+.task-status-badge.waiting_paused { background: #fef3c7; color: #d97706; }
+.task-status-badge.waiting_decision, .task-status-badge.decision { 
+    background: var(--decision-light); color: var(--decision); 
+    animation: pulse-decision 2s ease-in-out infinite;
+}
+
+/* Execution status mini badge (for dropdowns) */
+.pd-exec-status-mini {
+    font-size: 0.7rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+.pd-exec-status-mini.success, .pd-exec-status-mini.succeeded { background: var(--success-light); color: var(--success); }
+.pd-exec-status-mini.failed { background: var(--error-light); color: var(--error); }
+.pd-exec-status-mini.upstream_failed { background: var(--error-light); color: var(--error); }
+.pd-exec-status-mini.running { background: var(--running-light); color: var(--running); }
+.pd-exec-status-mini.aborted { background: var(--aborted-light); color: var(--aborted); }
+.pd-exec-status-mini.stopped { background: var(--stopped-light); color: var(--stopped); }
+.pd-exec-status-mini.skipped { background: var(--skipped-light); color: var(--skipped); }
+.pd-exec-status-mini.pending, .pd-exec-status-mini.waiting { background: var(--waiting-light); color: var(--waiting); }
+
+@keyframes pulse-decision {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.detail-label {
+    font-size: 0.6875rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.375rem;
+}
+.detail-value { font-size: 0.875rem; color: var(--text-primary); }
+.detail-value.td-mono {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    background: var(--bg-tertiary);
+    padding: 0.5rem;
+    border-radius: 6px;
+    word-break: break-all;
+}
+
+.td-deps-list { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.td-dep-tag {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    padding: 0.25rem 0.5rem; background: var(--bg-tertiary);
+    border-radius: 4px; font-size: 0.75rem; color: var(--text-secondary);
+}
+.td-dep-tag.td-asset-dep {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+}
+.td-dep-tag .td-freshness-badge {
+    display: inline-flex; align-items: center; gap: 0.125rem;
+    margin-left: 0.25rem;
+    padding: 0.125rem 0.25rem;
+    background: var(--accent-light);
+    color: var(--accent);
+    border-radius: 3px;
+    font-size: 0.625rem;
+    font-weight: 500;
+}
+
+/* Logs */
+
+/* Status History (derived from DynamoDB) */
+.td-status-history-container {
+    padding: 0.5rem;
+}
+.td-status-history-disclaimer {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    border-left: 3px solid var(--accent);
+}
+.td-status-history-events {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.td-status-event {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.td-status-event:last-child {
+    border-bottom: none;
+}
+.td-event-badge {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+    min-width: 60px;
+    text-align: center;
+}
+.td-event-text {
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    flex: 1;
+}
+.td-event-started { background: var(--accent-light); color: var(--accent); }
+.td-event-waiting { background: var(--bg-tertiary); color: var(--text-muted); }
+.td-event-ready { background: var(--accent-light); color: var(--accent); }
+.td-event-running { background: var(--running-light); color: var(--running); }
+.td-event-success { background: var(--success-light); color: var(--success); }
+.td-event-failed { background: var(--error-light); color: var(--error); }
+.td-event-error { background: var(--error-light); color: var(--error); }
+.td-event-skipped { background: var(--skipped-light); color: var(--skipped); }
+.td-event-stopped { background: var(--stopped-light); color: var(--stopped); }
+.td-event-aborted { background: var(--aborted-light); color: var(--aborted); }
+.td-event-decision { background: #fff7ed; color: #f97316; }
+
+/* Empty States */
+/* Loading */
+.loading { display: flex; align-items: center; justify-content: center; padding: 2rem; }
+.spinner {
+    width: 24px; height: 24px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Error */
+.pd-error-banner {
+    background: var(--error-light);
+    border: 1px solid #fecaca;
+    color: var(--error);
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin: 1rem;
+    font-size: 0.875rem;
+    display: flex; align-items: center; gap: 0.5rem;
+}
+
+/* Connection Lost Banner */
+.connection-banner {
+    background: var(--warning);
+    color: #000;
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    animation: slideDown 0.3s ease;
+}
+.connection-banner button {
+    margin-left: 0.5rem;
+}
+@keyframes slideDown {
+    from { transform: translateY(-100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+/* Breadcrumbs */
+.hdr-breadcrumbs {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+.hdr-nav-left {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    margin-left: 1rem;
+}
+.hdr-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--accent);
+}
+.hdr-brand-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    background: var(--accent);
+    color: #fff;
+}
+.hdr-brand-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    flex-shrink: 0;
+}
+.hdr-breadcrumb-item {
+    color: var(--text-muted);
+}
+.hdr-breadcrumb-item.hdr-breadcrumb-current {
+    color: var(--text-primary);
+    font-weight: 500;
+    cursor: default;
+}
+.hdr-breadcrumb-item.clickable {
+    cursor: pointer;
+    color: var(--accent);
+}
+.hdr-breadcrumb-item.clickable:hover {
+    text-decoration: underline;
+}
+.hdr-breadcrumb-sep {
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+/* Modal */
+.bm-modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000;
+    animation: fadeIn 0.15s ease;
+    /* v0.79.8 (ADR #80) — breathing room so no modal touches the viewport
+     * edge on small screens. box-sizing keeps the 100vh inset honest. */
+    padding: 1rem;
+    box-sizing: border-box;
+}
+
+/* ─── DAGGraphFlow panels & legend (I1: inline→CSS) ──────────────────────── */
+.dag-panel { margin: 10px; }
+.dag-blueprint-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+}
+.dag-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.dag-legend-swatch--success { background: var(--success-light); border: 1px solid var(--success); }
+.dag-legend-swatch--running { background: var(--running-light); border: 1px solid var(--running); }
+.dag-legend-swatch--failed  { background: var(--error-light);   border: 1px solid var(--error); }
+.dag-legend-swatch--waiting { background: var(--bg-tertiary);   border: 1px solid var(--border); }
+.dag-empty-msg { font-size: 16px; font-weight: 500; }
+
+/* ─── DAG node internals ─────────────────────────────────────────────────── */
+.dag-node-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* trigger_rule badge — small, monospace, sits next to the task label.
+   Only rendered when the rule is non-default (e.g. all_done, one_failed),
+   so its presence itself is information. Yellow tone matches "watch out,
+   non-standard semantics" without being alarming. */
+.dag-node-trigger-rule {
+    font-size: 0.625rem;
+    font-family: var(--font-mono, monospace);
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(234, 179, 8, 0.18);
+    color: rgb(180, 130, 0);
+    border: 1px solid rgba(234, 179, 8, 0.35);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* AWS-style service badge on a DAG node — brand colour set inline (taskTypeBadge). */
+.dag-node-type-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.5625rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+    color: #fff;
+    flex-shrink: 0;
+    text-transform: uppercase;
+}
+
+
+/* ─── CountdownTimer (I1: inline→CSS) ────────────────────────────────────── */
+.ct-wrapper {
+    padding: 0.75rem;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+}
+.ct-wrapper--active {
+    background: rgba(234, 179, 8, 0.15);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+}
+.ct-wrapper--idle {
+    background: rgba(99, 102, 241, 0.1);
+}
+
+/* ─── AssetLineageFlow prefix buttons (I1: inline→CSS) ───────────────────── */
+.alf-prefix-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.alf-prefix-btn.active {
+    background: var(--accent);
+    color: white;
+}
+.alf-prefix-btn--upper { text-transform: uppercase; }
+
+/* ─── DAGGraphFlow Panel Classes (I1: inline→CSS) ────────────────────────── */
+.dag-stats-panel {
+    display: flex;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    font-size: 12px;
+    align-items: center;
+}
+.dag-stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.dag-stat-value { font-weight: 600; }
+.dag-stat-total { color: var(--text-muted); }
+.dag-stat-blueprint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+}
+
+.dag-legend-panel {
+    display: flex;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    font-size: 10px;
+    color: var(--text-muted);
+    align-items: center;
+}
+.dag-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+}
+.dag-legend-divider {
+    width: 1px;
+    background: var(--border);
+    height: 16px;
+}
+
+/* DAG TaskNode (I1: inline→CSS) */
+.dag-node-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.dag-node-label {
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100px;
+}
+.dag-node-duration {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+.dag-empty-title {
+    font-size: 16px;
+    font-weight: 500;
+}
+
+/* ─── CountdownTimer Classes (I1: inline→CSS) ────────────────────────────── */
+.ct-label--active { color: #eab308; }
+.ct-label--idle { color: #6366f1; }
+.ct-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    font-family: monospace;
+}
+.ct-progress-track {
+    margin-top: 0.5rem;
+    height: 4px;
+    background: rgba(234, 179, 8, 0.2);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.ct-progress-fill {
+    height: 100%;
+    background: #eab308;
+    transition: width 1s linear;
+}
+.pd-action-sep { width: 1px; height: 22px; background: var(--border); margin: 0 0.25rem; flex-shrink: 0; }
