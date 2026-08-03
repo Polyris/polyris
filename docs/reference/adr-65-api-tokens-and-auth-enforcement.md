@@ -208,7 +208,7 @@ enforcement **once, covering both auth types** through a single gate.
   auth-how-to.
 - **Update examples** to add `-H "Authorization: Bearer $POLYRIS_TOKEN"`:
   `docs/operations/API.md` (+ a short auth preamble), `README.md`,
-  `docs/getting-started/SETUP_FROM_SCRATCH.md` (first-token bootstrap),
+  `docs/getting-started/QUICKSTART.md` (first-token bootstrap),
   `docs/operations/TROUBLESHOOTING.md` (401s), `docs/tools/AI_ASSISTANT.md`, and
   the `questions` surface (confirm location). Per #1: link to api-tokens.md, do
   not copy the preamble into each file.

@@ -43,7 +43,7 @@ and AWS runs them. Pay per run; idle cost is near zero.
 | **Try polyris without AWS** (explore DSL locally) | [Try It Now](#try-it-now) below |
 | **Browse runnable examples** | [examples/](examples/) — hello-world → assets & lineage |
 | **Write a pipeline** (infra already deployed) | [Quick Start](#quick-start) below |
-| **Set up polyris from scratch** (blank AWS account) | [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md) |
+| **Set up polyris from scratch** (blank AWS account) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
 | **Learn step by step** with explanations | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) |
 | **Develop polyris itself** (fix bugs, add features) | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **Troubleshoot** a problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
@@ -75,7 +75,7 @@ Edit `dag.py` to experiment with task types, dependencies, trigger rules, and as
 
 ## Quick Start
 
-> Assumes shared infrastructure is already deployed. Starting from scratch? See [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md).
+> Assumes shared infrastructure is already deployed. Starting from scratch? See [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
 ### 1. Install
 
@@ -444,7 +444,7 @@ cd sam
 sam build && sam deploy
 ```
 
-See [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md) for full setup or [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for fast path.
+See [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for full setup.
 
 ---
 
@@ -452,7 +452,7 @@ See [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md) for full
 
 | Document | Description |
 |----------|-------------|
-| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | 5-minute setup guide |
+| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Complete setup guide (~30-45 min) |
 | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) | From zero to production guide |
 | [PROJECT_STRUCTURE.md](docs/getting-started/PROJECT_STRUCTURE.md) | Repository layouts, CI/CD |
 | [DSL.md](docs/features/DSL.md) | Python DSL reference |

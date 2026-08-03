@@ -14,9 +14,7 @@ This tutorial walks you through exploring polyris locally, then deploying your f
 
 **Time required:** ~30 minutes (5 min local + 25 min AWS)
 
-> **Just need commands?** See [QUICKSTART.md](QUICKSTART.md) for a 5-minute copy-paste version.
->
-> **Starting from blank AWS account?** See [SETUP_FROM_SCRATCH.md](SETUP_FROM_SCRATCH.md) for complete setup (~1 hour).
+> **Starting from blank AWS account?** See [QUICKSTART.md](QUICKSTART.md) for complete setup (~30-45 min).
 
 ---
 
