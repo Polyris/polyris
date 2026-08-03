@@ -151,7 +151,7 @@ npm ci && npm run build
 ./deploy.sh "$STACK_NAME" "$AWS_REGION" ./out --profile "$AWS_PROFILE"
 ```
 
-The script reads CloudFormation outputs, generates `config.js` with the real API Gateway URL and Cognito settings, uploads to S3, and invalidates CloudFront.
+The script reads CloudFormation outputs and generates `config.js` automatically — including auth settings. **To disable auth or change any SAM parameter, update `samconfig.toml`, run `sam deploy`, then rerun `./deploy.sh`. No frontend code changes needed.**
 
 Output:
 ```

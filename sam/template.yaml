@@ -1057,11 +1057,10 @@ Resources:
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           API_TOKENS_TABLE: !Ref ApiTokensTable
-          # ADR #65/#66: auth enforcement is ENABLED by default. Every
-          # non-public request needs a Cognito token (browser) or a PAT; scope
-          # is enforced (read/write/admin). To disable, set to "false" and
-          # redeploy. Public paths: /api/health*, /api/metrics, /api/action/*.
-          AUTH_ENABLED: "true"
+          # ADR #65/#66: auth enforcement follows EnableCognitoAuth — true when
+          # Cognito is enabled, false otherwise. Public paths: /api/health*,
+          # /api/metrics, /api/action/*.
+          AUTH_ENABLED: !If [EnableCognitoAuthCondition, "true", "false"]
           # Offline Cognito JWT verification (auth.py) — issuer + client binding.
           # Empty when Cognito is not enabled in this deployment.
           COGNITO_USER_POOL_ID: !If [EnableCognitoAuthCondition, !Ref CognitoUserPool, ""]
