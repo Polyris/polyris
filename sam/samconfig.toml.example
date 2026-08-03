@@ -11,7 +11,7 @@
 version = 0.1
 
 [default.deploy.parameters]
-stack_name        = "polyris-dev"
+stack_name        = "polyris-dev" # The Cloudformation stack name
 region            = "us-east-1"
 profile           = "default"
 capabilities      = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
@@ -19,12 +19,9 @@ resolve_s3        = true    # SAM auto-manages the artifacts bucket
 confirm_changeset = false
 
 parameter_overrides = [
-  "Namespace=myorg",
-  "Stage=dev",
+  "Namespace=myorg",  # prefix for all resources (e.g. S3 bucket, DynamoDB table, etc.)
+  "Stage=dev",        # stage name - part of the resource names (e.g. S3 bucket, DynamoDB table, etc.)
   "AwsRegion=us-east-1",
-
-  # Slack / PagerDuty alerts are configured in the Console UI (Settings → Alerts),
-  # not via CloudFormation parameters (ADR #103).
 
   # Optional — Cognito auth for Console UI (recommended for production)
   "EnableCognitoAuth=true",

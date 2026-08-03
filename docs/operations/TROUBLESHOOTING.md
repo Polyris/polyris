@@ -3,10 +3,10 @@
 Common issues and solutions for polyris operations.
 
 > **API auth (`AUTH_ENABLED=true`):** every API call below except `/api/health*`
-> and `/api/metrics` needs `-H "Authorization: Bearer <token>"` (a PAT `plrs_…`
-> or a Cognito token). The `curl` examples omit it for brevity. A **401
-> Unauthorized** means a missing/expired/revoked token — regenerate or revoke
-> via the Console (avatar → API Tokens). See `docs/features/api-tokens.md`.
+> and `/api/metrics` needs `-H "Authorization: Bearer <token>"` (a Cognito token).
+> The `curl` examples omit it for brevity. A **401 Unauthorized** means a
+> missing/expired token — sign out and sign in again to get a fresh one.
+> See `docs/features/authentication.md`.
 
 ---
 

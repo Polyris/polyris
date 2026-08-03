@@ -6,7 +6,7 @@ without it — but it exists because specific failures kept recurring, and each
 piece names the failure it prevents.
 
 Related: `CLAUDE.md` (the rules themselves), `CONTEXT.md` (vocabulary),
-`STATE.md` (current state).
+`docs/reference/STATE.md` (current state).
 
 ---
 
@@ -146,19 +146,19 @@ hypothetical use cases") are deliberately absent — they belong to review.
 
 ### `tests/sdk/test_context_terms.py`
 
-Every term in `CONTEXT.md` must still appear in the code; every path `STATE.md`
+Every term in `CONTEXT.md` must still appear in the code; every path `docs/reference/STATE.md`
 references must exist. Neither proves a definition is *right*, only that the
 vocabulary has not rotted. Terms that are deliberately prose-only carry a written
 exemption.
 
-### `CONTEXT.md` and `STATE.md`
+### `CONTEXT.md` and `docs/reference/STATE.md`
 
 `CONTEXT.md` is vocabulary only — the terms here that are near-synonyms and not
 interchangeable (`run` vs `execution` vs `pipeline_execution_short`; `partition`
 vs `granularity`; `measured core` vs total coverage). Confusing them has produced
 real bugs.
 
-`STATE.md` is twenty lines of where things stand: in flight, decided-but-not-
+`docs/reference/STATE.md` is twenty lines of where things stand: in flight, decided-but-not-
 done, measured debt, and the pre-tag smoke reminder. `CHANGELOG.md` is history;
 this is the present.
 

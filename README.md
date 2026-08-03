@@ -28,7 +28,7 @@ and AWS runs them. Pay per run; idle cost is near zero.
   (retry / mark success / skip / fail) instead of just falling over — fix it inline,
   in the same run, free (ADR #114)
 - 🎯 **Trigger rules** — `all_success`, `one_success`, `all_done`, and more ([details](docs/features/DSL.md#trigger-rules))
-- 🔗 **Automatic data passing** — outputs flow to downstream **lambda & SFN** tasks via a DynamoDB output store (up to 350KB); service tasks (glue/ecs/…) exchange data via S3
+- 🔗 **Automatic data passing** — `xcom.pull()` works in every task type (Lambda, SFN, ECS, Glue, Batch); outputs stored in DynamoDB, large payloads transparently offloaded to S3
 - 📊 **Web Console** — pipelines and DAG views for every run
 - 🧬 **Asset dependencies** — declare cross-pipeline asset inlets/outlets; inspect lineage from the CLI with `polyris-output --graph`
 - 🔗 **Pull-based deps** — `wait_for` with freshness and consecutive checks
@@ -43,7 +43,7 @@ and AWS runs them. Pay per run; idle cost is near zero.
 | **Try polyris without AWS** (explore DSL locally) | [Try It Now](#try-it-now) below |
 | **Browse runnable examples** | [examples/](examples/) — hello-world → assets & lineage |
 | **Write a pipeline** (infra already deployed) | [Quick Start](#quick-start) below |
-| **Set up polyris from scratch** (blank AWS account) | [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md) |
+| **Set up polyris from scratch** (blank AWS account) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
 | **Learn step by step** with explanations | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) |
 | **Develop polyris itself** (fix bugs, add features) | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **Troubleshoot** a problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
@@ -75,7 +75,7 @@ Edit `dag.py` to experiment with task types, dependencies, trigger rules, and as
 
 ## Quick Start
 
-> Assumes shared infrastructure is already deployed. Starting from scratch? See [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md).
+> Assumes shared infrastructure is already deployed. Starting from scratch? See [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
 ### 1. Install
 
@@ -444,7 +444,7 @@ cd sam
 sam build && sam deploy
 ```
 
-See [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md) for full setup or [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for fast path.
+See [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for full setup.
 
 ---
 
@@ -452,14 +452,13 @@ See [SETUP_FROM_SCRATCH.md](docs/getting-started/SETUP_FROM_SCRATCH.md) for full
 
 | Document | Description |
 |----------|-------------|
-| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | 5-minute setup guide |
+| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Complete setup guide (~30-45 min) |
 | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) | From zero to production guide |
 | [PROJECT_STRUCTURE.md](docs/getting-started/PROJECT_STRUCTURE.md) | Repository layouts, CI/CD |
 | [DSL.md](docs/features/DSL.md) | Python DSL reference |
 | [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration |
 | [ASSET_PULL_FEATURE.md](docs/features/ASSET_PULL_FEATURE.md) | wait_for / pull-based assets |
 | [authentication.md](docs/features/authentication.md) | Cognito auth setup |
-| [api-tokens.md](docs/features/api-tokens.md) | API tokens (PAT) for scripts/CI — 🔒 Team (OSS: use a Cognito access token) |
 | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) | Local testing (validate, dry_run, mock) |
 | [REGISTRATION.md](docs/tools/REGISTRATION.md) | Pipeline registration (CLI, auto) |
 | [API.md](docs/operations/API.md) | REST API reference (27 free endpoints; 63 in the full build) |

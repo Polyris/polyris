@@ -202,7 +202,7 @@ When running backfill, these variables are auto-generated:
 | `ALLOW_UNSUCCESSFUL_SPIDER_RUN` | True |
 
 ### Failure Handling During Backfill
-When a task fails during backfill, Slack and PagerDuty notifications are **suppressed** to avoid noise. The task enters `waiting_decision` status and waits up to 5 hours for a decision via the UI (skip, fail, or restart). If no action is taken, it auto-fails after timeout.
+When a task fails during backfill, the task enters `waiting_decision` status and waits up to 5 hours for a decision via the UI (skip, fail, or restart). If no action is taken, it auto-fails after timeout.
 
 ---
 
