@@ -11,32 +11,31 @@ Polyris uses AWS SAM (Serverless Application Model) to deploy shared infrastruct
 ## First-Time Setup
 
 ```bash
-# Create state/artifacts bucket (one time)
-# Replace <your-namespace> with your own prefix (e.g. your org or project name)
-aws s3 mb s3://<your-namespace>-polyris-state
-
 # Configure
 cd sam
 cp samconfig.toml.example samconfig.toml
-# Edit samconfig.toml — set stack_name, Namespace, Stage, SlackWebhookEndpoint, etc.
+# Edit samconfig.toml — set stack_name, Namespace, Stage, etc.
 
 # Deploy
 sam build
-sam deploy   # reads stack_name + all parameters from samconfig.toml
+sam deploy --profile <your-profile>   # reads stack_name + all parameters from samconfig.toml
 ```
 
-> **About the stack name in the commands below.** `polyris-dev` is an *example* —
-> replace it with your own `stack_name` from `samconfig.toml`. The `sam` commands
-> (`deploy`, `delete`) read that file automatically, so the single source of truth
-> is `samconfig.toml`. The commands that **don't** read it — `./deploy.sh` (UI) and
-> `aws cloudformation describe-stacks` — need the name passed explicitly, so keep it
+> **Shell variables used in the commands below.** Set them once in your terminal:
+> ```bash
+> STACK_NAME=polyris-dev     # = stack_name in samconfig.toml
+> AWS_REGION=us-east-1       # = AwsRegion in samconfig.toml
+> AWS_PROFILE=polyris-dev    # your AWS CLI profile
+> ```
+> `sam deploy` reads `stack_name` from `samconfig.toml` automatically. `./deploy.sh`
+> and `aws cloudformation describe-stacks` need it passed explicitly — keep it
 > identical to `samconfig.toml`.
 
 ## Subsequent Deploys
 
 ```bash
 cd sam
-sam build && sam deploy   # stack_name + parameters from samconfig.toml
+sam build && sam deploy --profile <your-profile>   # stack_name + parameters from samconfig.toml
 ```
 
 ## Parameters
@@ -47,10 +46,8 @@ All parameters are in `samconfig.toml`:
 |-----------|-------------|---------|----------|
 | `Namespace` | Organization prefix for resource naming | — | yes |
 | `Stage` | Deployment stage (dev, prod) | — | yes |
-| `SlackWebhookEndpoint` | Slack webhook URL | — | no |
-| `DefaultSlackChannel` | Default alert channel | — | no |
-| `PagerDutyRoutingKey` | PagerDuty routing key | — | no |
-| `EnableCognitoAuth` | Enable auth for Console UI | `false` | no |
+| `AwsRegion` | AWS region | — | yes |
+| `EnableCognitoAuth` | Enable Cognito auth for Console UI | `false` | no |
 | `ConsoleUrlOverride` | Custom domain for Cognito callbacks | — | no |
 | `SfnLogLevel` | CloudWatch log level for Standard SFNs | `ERROR` | no |
 | `SfnExpressLogLevel` | CloudWatch log level for Express SFNs | `ALL` | no |
@@ -93,9 +90,11 @@ sam/sfn_templates/
 
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name polyris-dev \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
   --query "Stacks[0].Outputs" \
-  --output table
+  --output table \
+  --profile "$AWS_PROFILE"
 ```
 
 Key outputs written to SSM automatically:
@@ -107,7 +106,7 @@ Key outputs written to SSM automatically:
 ## Destroy
 
 ```bash
-sam delete --stack-name polyris-dev
+sam delete --stack-name "$STACK_NAME" --region "$AWS_REGION" --profile "$AWS_PROFILE"
 ```
 
 ## Multiple Stages
@@ -116,7 +115,7 @@ Deploy to prod by creating a separate `samconfig.prod.toml`:
 
 ```bash
 sam build
-sam deploy --config-file samconfig.prod.toml
+sam deploy --config-file samconfig.prod.toml --profile <prod-profile>
 ```
 
 ## Deploying the Console UI
@@ -130,18 +129,18 @@ The UI is a static Next.js export served from S3 via CloudFront.
 cd ui && npm ci && npm run build
 
 # 2. Deploy infra
-cd ../sam && sam build && sam deploy
+cd ../sam && sam build && sam deploy --profile "$AWS_PROFILE"
 
 # 3. Upload UI — pass your stack name (= stack_name in samconfig.toml) and region.
 #    Omitting the stack name makes deploy.sh fall back to a `polyris-dev` default,
-#    which fails if you renamed the stack. Add `--profile NAME` for a named profile.
-cd ../ui && ./deploy.sh polyris-dev us-east-1 ./out
+#    which fails if you renamed the stack.
+cd ../ui && ./deploy.sh "$STACK_NAME" "$AWS_REGION" ./out --profile "$AWS_PROFILE"
 ```
 
 ### UI-only updates (no infra changes):
 
 ```bash
-cd ui && npm run build && ./deploy.sh polyris-dev us-east-1 ./out
+cd ui && npm run build && ./deploy.sh "$STACK_NAME" "$AWS_REGION" ./out --profile "$AWS_PROFILE"
 ```
 
 The script automatically:
@@ -154,7 +153,9 @@ The script automatically:
 After deploy:
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name polyris-dev \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='ConsoleUiUrl'].OutputValue" \
-  --output text
+  --output text \
+  --profile "$AWS_PROFILE"
 ```

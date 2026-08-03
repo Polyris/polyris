@@ -90,7 +90,7 @@ parameter_overrides = [
 ]
 ```
 
-Everything else in `samconfig.toml` (PagerDuty, custom domain, log levels) is optional.
+Everything else in `samconfig.toml` (custom domain, log levels) is optional.
 
 > **Your stack name lives in `samconfig.toml`** — the `stack_name` field (the
 > example sets `polyris-dev`). The `sam` commands read it straight from there, so
@@ -214,10 +214,8 @@ aws cognito-idp admin-set-user-password \
 
 Log in at the CloudFront URL.
 
-> **For API/CLI/CI access** (not the browser), generate a Personal Access Token
-> after logging in: avatar → **API Tokens** → Generate. Use it as
-> `Authorization: Bearer plrs_…`. See
-> [api-tokens.md](../features/api-tokens.md). (Auth is enforced only when
+> **For API/CLI/CI access** (not the browser), use a Cognito access token —
+> `scripts/get-e2e-token.sh` obtains one. (Auth is enforced only when
 > `AUTH_ENABLED=true`.)
 
 ---

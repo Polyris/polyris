@@ -1,22 +1,15 @@
 # polyris Console Authentication
 
-This document describes how the polyris Console authenticates: AWS Cognito for
-the browser UI (via Amplify) and polyris Personal Access Tokens (PATs) for
-scripts/CI. For day-to-day API usage and token management, see
-[api-tokens.md](./api-tokens.md).
-
-> **OSS vs Team.** The CE gate accepts **both** a Cognito access token and a PAT,
-> but *minting* PATs is **🔒 Team** (see api-tokens.md). On an OSS deployment,
-> authenticate scripts/CI with a **Cognito access token** —
-> `scripts/get-e2e-token.sh` obtains one from the deployment's user pool — or set
-> `AUTH_ENABLED=false`.
+This document describes how the polyris Console authenticates users via AWS Cognito
+(browser UI uses Amplify). For scripts/CI, authenticate with a Cognito access token —
+`scripts/get-e2e-token.sh` obtains one from the deployment's user pool — or set
+`AUTH_ENABLED=false`.
 
 > **How enforcement actually works (v0.87+, ADR #65).** Auth is enforced by a
 > single gate inside the `console-api` Lambda (`auth.authenticate`), **not** by
 > an API Gateway authorizer. The HTTP API uses a `/{proxy+}` integration, so
 > every request reaches the Lambda, and the gate runs there before route
-> dispatch. It accepts **either** a Cognito access token (browser) **or** a PAT
-> (`plrs_…`). Enforcement is gated by the `AUTH_ENABLED` env var and is **on by
+> dispatch. Enforcement is gated by the `AUTH_ENABLED` env var and is **on by
 > default** (the deployed template sets it `true`) — disabling it is a
 > deliberate step (see "Enabling enforcement" below). Health/metrics paths are
 > always public.
@@ -25,7 +18,7 @@ scripts/CI. For day-to-day API usage and token management, see
 
 - **AWS Amplify SDK** - Battle-tested authentication library with automatic token refresh
 - **Admin-only user creation** - No self-registration, users must be created by administrators
-- **Dual auth at the Lambda gate** - the `console-api` Lambda verifies a Cognito token **offline** (RS256 against the pool JWKS, bound to this deployment's app client) or a PAT (hash lookup) on every non-public request when `AUTH_ENABLED=true`
+- **Auth at the Lambda gate** - the `console-api` Lambda verifies a Cognito token **offline** (RS256 against the pool JWKS, bound to this deployment's app client) on every non-public request when `AUTH_ENABLED=true`
 - **MFA support** - Optional TOTP-based multi-factor authentication
 - **Strong password policies** - 12+ characters with mixed case, numbers, and symbols
 
@@ -46,7 +39,7 @@ Before enabling authentication, ensure you have:
 └─────────────────┘     └─────────────┘     └──────────────┘     └──────────────────────┘
         │                                    (no authorizer)              │
         │  Amplify.Auth                                                    │ verify JWT (JWKS)
-        ▼                                                                  │ or hash lookup (PAT)
+        ▼                                                                  │
 ┌───────────────────────────────────────────────────────┐                 │
 │     {namespace}-{stage}-polyris-console-users         │◀────────────────┘
 │  - Admin-only user creation                           │
@@ -63,7 +56,6 @@ All Cognito resources follow the pattern `{namespace}-{stage}-polyris-{resource}
 |----------|--------------|
 | User Pool | `{namespace}-{stage}-polyris-console-users` |
 | App Client | `{namespace}-{stage}-polyris-console-client` |
-| API Tokens table | `{namespace}-{stage}-polyris-api-tokens` (PATs, ADR #65) |
 | User Groups | `admins`, `viewers` |
 
 All resources are tagged with `Environment = "polyris"`.
@@ -361,8 +353,7 @@ These routes are accessible without authentication:
 ### 401 Unauthorized from API
 
 - Confirm `AUTH_ENABLED=true` is intended (when off, the API requires no token)
-- Check the token isn't expired or revoked; for a PAT, regenerate via the
-  Console (avatar → Settings → API Tokens)
+- Check the token isn't expired; sign out and sign in again to get a fresh token
 - Ensure `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` on the `console-api`
   Lambda match the pool/client the UI logs into (the gate binds tokens to this
   app client). Note: auth is enforced **in the Lambda gate**, not by an API

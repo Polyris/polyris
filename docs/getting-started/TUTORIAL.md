@@ -137,7 +137,7 @@ Shared infrastructure = the orchestration engine that runs all your pipelines.
 ```bash
 cd sam
 cp samconfig.toml.example samconfig.toml
-# Edit samconfig.toml — set Namespace, Stage, SlackWebhookEndpoint
+# Edit samconfig.toml — set Namespace, Stage, AwsRegion
 sam build && sam deploy
 ```
 

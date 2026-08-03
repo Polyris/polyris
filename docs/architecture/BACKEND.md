@@ -157,7 +157,7 @@ Start
   │
   ├─▶ Send_Alerts (lambda:invoke → notify Lambda, batch)
   │     └─▶ one call with {pipeline_name, failure}; the Lambda reads alert_config
-  │         and posts to every enabled channel (Slack restart-only + PagerDuty)
+  │         and posts to every configured alert channel
   │
   ├─▶ Check_Orchestration_Token (Choice)
   │
@@ -288,9 +288,7 @@ run_task_helper → Notify_Asset_Consumers_SFN (async StartExecution)
 
 REST API handler:
 
-**Endpoints:** 27 free (OSS build), 63 in the full build. Free routes cover
-pipelines, tasks, executions, assets, runs, and notifications. Paid (Team)
-routes add backfill, alert config, PATs, and observability.
+**Endpoints:** pipelines, tasks, executions, runs, notifications, and health.
 
 ### 2. evaluate_deps
 

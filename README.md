@@ -28,7 +28,7 @@ and AWS runs them. Pay per run; idle cost is near zero.
   (retry / mark success / skip / fail) instead of just falling over — fix it inline,
   in the same run, free (ADR #114)
 - 🎯 **Trigger rules** — `all_success`, `one_success`, `all_done`, and more ([details](docs/features/DSL.md#trigger-rules))
-- 🔗 **Automatic data passing** — outputs flow to downstream **lambda & SFN** tasks via a DynamoDB output store (up to 350KB); service tasks (glue/ecs/…) exchange data via S3
+- 🔗 **Automatic data passing** — `xcom.pull()` works in every task type (Lambda, SFN, ECS, Glue, Batch); outputs stored in DynamoDB, large payloads transparently offloaded to S3
 - 📊 **Web Console** — pipelines and DAG views for every run
 - 🧬 **Asset dependencies** — declare cross-pipeline asset inlets/outlets; inspect lineage from the CLI with `polyris-output --graph`
 - 🔗 **Pull-based deps** — `wait_for` with freshness and consecutive checks
@@ -459,7 +459,6 @@ See [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for full setup.
 | [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration |
 | [ASSET_PULL_FEATURE.md](docs/features/ASSET_PULL_FEATURE.md) | wait_for / pull-based assets |
 | [authentication.md](docs/features/authentication.md) | Cognito auth setup |
-| [api-tokens.md](docs/features/api-tokens.md) | API tokens (PAT) for scripts/CI — 🔒 Team (OSS: use a Cognito access token) |
 | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) | Local testing (validate, dry_run, mock) |
 | [REGISTRATION.md](docs/tools/REGISTRATION.md) | Pipeline registration (CLI, auto) |
 | [API.md](docs/operations/API.md) | REST API reference (27 free endpoints; 63 in the full build) |
