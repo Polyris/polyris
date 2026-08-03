@@ -22,7 +22,7 @@ When NOT to run this script:
     which one and update the renderer, not the fixture.
 
 Usage:
-    python3 tools/regen_ddl_parity.py
+    python3 scripts/regen_ddl_parity.py
 
 The script writes to `tests/fixtures/ddl_parity.json` (relative to the
 repo root) and prints a summary of the fixtures it generated.

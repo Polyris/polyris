@@ -10,7 +10,7 @@ If either renderer drifts from the fixture, exactly one of the two parity
 tests fails — pinpointing which side moved without ambiguity.
 
 How to update fixtures: edit the renderer (Python or TS), regenerate the
-fixture by running `tools/regen_ddl_parity.py` (or by hand-editing the
+fixture by running `scripts/regen_ddl_parity.py` (or by hand-editing the
 JSON file), and confirm both parity tests pass. The fixture is the
 contract — both renderers must conform to it.
 """
