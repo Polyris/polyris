@@ -133,4 +133,5 @@ examples_temp/
 
 # User pipeline definitions live outside the repo (were sample acme/shopmart;
 # real account IDs must never be published). Users create their own pipelines/.
-pipelines/
+# Leading slash anchors to the repo root — avoids matching ui/src/app/pipelines/.
+/pipelines/
