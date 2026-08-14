@@ -70,11 +70,16 @@ node -e "
   fs.writeFileSync('ui/package.json', JSON.stringify(p, null, 2) + '\n');
 "
 
+echo "→ bumping sam/lambdas/console_api/requirements.txt"
+sed -i "s|polyris @ git+https://github.com/Polyris/polyris@v[0-9]*\.[0-9]*\.[0-9]*|polyris @ git+https://github.com/Polyris/polyris@$VERSION|" \
+  sam/lambdas/console_api/requirements.txt
+
 make check-versions
 
 # ── Commit + tag ───────────────────────────────────────────────────────────────
 
-git add pyproject.toml polyris/__init__.py ui/package.json
+git add pyproject.toml polyris/__init__.py ui/package.json \
+  sam/lambdas/console_api/requirements.txt
 git commit -m "chore: release $VERSION"
 git tag "$VERSION"
 

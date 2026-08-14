@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polyris"
-version = "0.93.0"
+version = "0.94.0"
 description = "Serverless data pipeline orchestration on AWS Step Functions"
 readme = "README.md"
 requires-python = ">=3.11"
