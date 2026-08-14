@@ -527,7 +527,7 @@ def _run_localstack(
         
         # Get execution history for task results
         history = sfn.get_execution_history(executionArn=exec_arn)
-        task_results = _parse_execution_history(history['events'])
+        task_results = _parse_execution_history(history['events'])  # type: ignore[arg-type]
         
         print()
         print(f"✓ Execution completed: {status}")

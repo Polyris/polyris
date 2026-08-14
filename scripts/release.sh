@@ -41,6 +41,19 @@ fi
 
 echo "→ mode: $MODE   version: $VERSION"
 
+# ── Gates ──────────────────────────────────────────────────────────────────────
+# Run gates first — a failing gate must never leave version files modified.
+
+if [[ "$MODE" == "lib" ]]; then
+  echo "→ running library gates (sdk tests + mypy + ruff)"
+  make test-sdk
+  mypy polyris/ --ignore-missing-imports
+  ruff check polyris/
+else
+  echo "→ running full gates (make check)"
+  make check
+fi
+
 # ── Bump versions ──────────────────────────────────────────────────────────────
 
 echo "→ bumping pyproject.toml"
@@ -58,18 +71,6 @@ node -e "
 "
 
 make check-versions
-
-# ── Gates ──────────────────────────────────────────────────────────────────────
-
-if [[ "$MODE" == "lib" ]]; then
-  echo "→ running library gates (sdk tests + mypy + ruff)"
-  make test-sdk
-  mypy polyris/ --ignore-missing-imports
-  ruff check polyris/
-else
-  echo "→ running full gates (make check)"
-  make check
-fi
 
 # ── Commit + tag ───────────────────────────────────────────────────────────────
 
