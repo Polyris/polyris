@@ -133,6 +133,34 @@ class TestWatchStackEvents:
         # Must not raise.
         _watch_stack_events(cfn, "my-stack", seen, stop, poll_interval=0)
 
+    def test_does_not_exist_error_produces_no_output(self, mocker, capsys):
+        """The "does not exist" case during CREATE must be silently swallowed —
+        printing "progress poll skipped" here would confuse operators who see
+        it on every fresh-stack deploy before CloudFormation registers the stack."""
+        cfn = mocker.MagicMock()
+        cfn.describe_stack_events.side_effect = Exception("Stack does not exist")
+        seen = set()
+        stop = threading.Event()
+        stop.wait = lambda *a, **kw: stop.set()
+
+        _watch_stack_events(cfn, "my-stack", seen, stop, poll_interval=0)
+
+        assert capsys.readouterr().out == ""
+
+    def test_other_poll_errors_still_print_skipped_message(self, mocker, capsys):
+        """Non-"does not exist" errors (throttling, network, etc.) should still
+        surface via the "progress poll skipped" line so operators know polling
+        is degraded."""
+        cfn = mocker.MagicMock()
+        cfn.describe_stack_events.side_effect = Exception("Throttling: Rate exceeded")
+        seen = set()
+        stop = threading.Event()
+        stop.wait = lambda *a, **kw: stop.set()
+
+        _watch_stack_events(cfn, "my-stack", seen, stop, poll_interval=0)
+
+        assert "progress poll skipped" in capsys.readouterr().out
+
     def test_stops_promptly_when_stop_event_is_set(self, mocker):
         cfn = mocker.MagicMock()
         cfn.describe_stack_events.return_value = {"StackEvents": []}

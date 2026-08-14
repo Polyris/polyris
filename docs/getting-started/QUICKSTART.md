@@ -222,6 +222,23 @@ Log in at the CloudFront URL.
 
 ## Step 6: Deploy First Pipeline
 
+### Install the SDK
+
+If you cloned the repo in Step 2.1, install directly from your local checkout:
+
+```bash
+cd ..   # repo root (if you're still in sam/)
+pip install -e .
+```
+
+Or install a specific release from git without cloning the infrastructure repo:
+
+```bash
+pip install git+https://github.com/Polyris/polyris.git@v0.93.0
+```
+
+Replace `v0.93.0` with the latest tag from the [tags page](https://github.com/Polyris/polyris/tags).
+
 ### Configure config.py
 
 In the **pipelines repo root**, create `config.py`:
@@ -255,9 +272,6 @@ This is read by `polyris-deploy` when deploying pipelines.
 ### Deploy
 
 ```bash
-cd ..   # repo root
-pip install -e .
-
 # Create a demo pipeline
 cd pipelines
 polyris-init hello-world
@@ -304,7 +318,7 @@ polyris-deploy --stage prod --profile polyris-prod   # prod profile, not the dev
 ```bash
 # Remove pipelines first
 cd pipelines/hello-world
-polyris-deploy --destroy --stage dev
+polyris-destroy --stage dev
 
 # Remove infrastructure (set STACK_NAME/AWS_REGION/AWS_PROFILE as in Step 2.2 if
 # this is a fresh terminal).
