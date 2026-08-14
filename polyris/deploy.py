@@ -33,6 +33,7 @@ from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 
 import boto3
+from botocore.exceptions import ClientError, WaiterError
 
 from .generators import (
     generate_step_function_json,
@@ -390,7 +391,12 @@ def _watch_stack_events(
             # ADR #28's narrow rule is for paths whose failure means something;
             # this one's does not. What Principle #11 forbids is the *silent*
             # swallow this used to be (`pass`, no comment), so it now says so.
-            print(f"    (progress poll skipped: {e})")
+            #
+            # "does not exist" is expected on the first few polls of a CREATE:
+            # CloudFormation hasn't registered the stack yet. Suppress that
+            # specific case to avoid confusing "progress poll skipped" output.
+            if "does not exist" not in str(e):
+                print(f"    (progress poll skipped: {e})")
         stop_event.wait(poll_interval)
 
 
@@ -412,15 +418,17 @@ def deploy_pipeline(
 
     # Validate the DAG before touching AWS — fail fast on structural errors, the
     # same check polyris-validate runs. Deploying an invalid DAG only fails later
-    # (or ships a broken pipeline), so gate here.
-    from polyris.validation import validate_asl_from_dag
-    is_valid, validation_errors, _warnings = validate_asl_from_dag(dag, verbose=False)
-    if not is_valid:
-        print(f"\n❌ Validation failed for '{dag.dag_id}' — not deploying:")
-        for err_msg in validation_errors:
-            print(f"   - {err_msg}")
-        print("   Fix the errors above (or run polyris-validate) and retry.")
-        sys.exit(1)
+    # (or ships a broken pipeline), so gate here. Skipped on destroy: we only
+    # need dag_id to construct the stack name, not a valid pipeline definition.
+    if not destroy:
+        from polyris.validation import validate_asl_from_dag
+        is_valid, validation_errors, _warnings = validate_asl_from_dag(dag, verbose=False)
+        if not is_valid:
+            print(f"\n❌ Validation failed for '{dag.dag_id}' — not deploying:")
+            for err_msg in validation_errors:
+                print(f"   - {err_msg}")
+            print("   Fix the errors above (or run polyris-validate) and retry.")
+            sys.exit(1)
 
     stage = stage or polyris_config.stage
     region = region or polyris_config.region
@@ -492,15 +500,37 @@ def deploy_pipeline(
     if destroy:
         print(f"\nDestroying stack: {stack_name}")
         if not dry_run:
-            cmd = [
-                "aws", "cloudformation", "delete-stack",
-                "--stack-name", stack_name,
-                "--region", region,
-            ]
-            if profile:
-                cmd += ["--profile", profile]
-            subprocess.run(cmd, check=True)
-            print(f"✅ Stack deletion initiated: {stack_name}")
+            cfn = session.client("cloudformation")
+            seen_ids: set = set()
+            try:
+                existing = cfn.describe_stack_events(StackName=stack_name)["StackEvents"]
+                seen_ids.update(e["EventId"] for e in existing)
+            except Exception:
+                pass
+            try:
+                cfn.delete_stack(StackName=stack_name)
+            except ClientError as e:
+                print(f"\n❌ CloudFormation delete failed: {e}")
+                sys.exit(1)
+            stop_watching = threading.Event()
+            watcher_thread = threading.Thread(
+                target=_watch_stack_events,
+                args=(cfn, stack_name, seen_ids, stop_watching),
+                daemon=True,
+            )
+            watcher_thread.start()
+            try:
+                cfn.get_waiter("stack_delete_complete").wait(
+                    StackName=stack_name,
+                    WaiterConfig={"Delay": 5, "MaxAttempts": 120},
+                )
+            except WaiterError as e:
+                print(f"\n❌ CloudFormation delete failed: {e}")
+                sys.exit(1)
+            finally:
+                stop_watching.set()
+                watcher_thread.join(timeout=5)
+            print(f"✅ Stack deleted: {stack_name}")
         else:
             print(f"[dry-run] Would delete stack: {stack_name}")
         return
@@ -762,7 +792,7 @@ def _run_bulk(
     sys.exit(1 if failed else 0)
 
 
-def main():
+def main(force_destroy: bool = False) -> None:
     parser = argparse.ArgumentParser(
         description="Deploy Polyris pipeline via CloudFormation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -798,6 +828,7 @@ Examples:
                              help="Bulk mode: deploy/destroy only the listed subdirectories")
 
     args = parser.parse_args()
+    destroy = args.destroy or force_destroy
 
     if args.all or args.only:
         if args.file is not None:
@@ -812,7 +843,7 @@ Examples:
             stage=args.stage,
             region=args.region,
             dry_run=args.dry_run,
-            destroy=args.destroy,
+            destroy=destroy,
             log_level=args.log_level,
             log_retention_days=args.log_retention,
             profile=args.profile,
@@ -851,11 +882,16 @@ Examples:
             stage=args.stage,
             region=args.region,
             dry_run=args.dry_run,
-            destroy=args.destroy,
+            destroy=destroy,
             log_level=args.log_level,
             log_retention_days=args.log_retention,
             profile=args.profile,
         )
+
+
+def main_destroy() -> None:
+    """Entry point for `polyris-destroy` — identical to `polyris-deploy --destroy`."""
+    main(force_destroy=True)
 
 
 if __name__ == "__main__":

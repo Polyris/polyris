@@ -56,6 +56,7 @@ all = [
 [project.scripts]
 polyris = "polyris.cli:main"
 polyris-deploy = "polyris.deploy:main"
+polyris-destroy = "polyris.deploy:main_destroy"
 polyris-init = "polyris.init:main"
 polyris-output = "polyris.output:main"
 polyris-register = "polyris.register:main"
