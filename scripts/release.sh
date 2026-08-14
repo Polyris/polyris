@@ -80,7 +80,13 @@ make check-versions
 
 git add pyproject.toml polyris/__init__.py ui/package.json \
   sam/lambdas/console_api/requirements.txt
-git commit -m "chore: release $VERSION"
+
+if git diff --cached --quiet; then
+  echo "→ versions already at $BARE in git — skipping bump commit"
+else
+  git commit -m "chore: release $VERSION"
+fi
+
 git tag "$VERSION"
 
 echo ""
