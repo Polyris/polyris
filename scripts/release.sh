@@ -86,4 +86,45 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
   echo "✅ $VERSION pushed"
 else
   echo "ℹ️  not pushed — run when ready: git push origin main $VERSION"
+  exit 0
+fi
+
+# ── GitHub Release ─────────────────────────────────────────────────────────────
+
+if ! command -v gh &>/dev/null; then
+  echo "ℹ️  gh not found — skipping GitHub Release (create manually)"
+  exit 0
+fi
+
+PREV_TAG="$(git describe --tags --abbrev=0 "$VERSION^" 2>/dev/null || true)"
+
+if [[ -z "$PREV_TAG" ]]; then
+  echo "ℹ️  no previous tag — skipping release notes generation"
+  NOTES="Initial release."
+elif ! command -v claude &>/dev/null; then
+  echo "⚠️  Unable to generate description automatically (claude not found)."
+  echo "   Please enter release notes below. Finish with a single dot (.) on its own line:"
+  NOTES=""
+  while IFS= read -r line; do
+    [[ "$line" == "." ]] && break
+    NOTES="${NOTES}${line}"$'\n'
+  done
+else
+  echo "→ generating release notes with Claude (${PREV_TAG}..${VERSION})..."
+  GIT_LOG="$(git log --oneline "$PREV_TAG".."$VERSION")"
+  NOTES="$(printf '%s' "$GIT_LOG" | claude -p \
+    "These are git commits for a Python SDK release (polyris — serverless data pipeline orchestration on AWS Step Functions). Write concise GitHub release notes. Group changes under: **Features**, **Fixes**, **Docs** — omit empty sections. Skip the version header. Be brief.")"
+fi
+
+echo ""
+echo "── Release notes preview ──────────────────────────────────────────────────"
+echo "$NOTES"
+echo "───────────────────────────────────────────────────────────────────────────"
+echo ""
+read -r -p "Create GitHub Release with these notes? [y/N] " confirm
+if [[ "$confirm" =~ ^[Yy]$ ]]; then
+  gh release create "$VERSION" --title "$VERSION" --notes "$NOTES"
+  echo "✅ GitHub Release $VERSION created"
+else
+  echo "ℹ️  skipped — create manually: gh release create $VERSION"
 fi
