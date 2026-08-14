@@ -34,7 +34,7 @@ CLI:
 import json
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, cast
 from dataclasses import dataclass, field
 
 from .dag import DAG
@@ -527,7 +527,7 @@ def _run_localstack(
         
         # Get execution history for task results
         history = sfn.get_execution_history(executionArn=exec_arn)
-        task_results = _parse_execution_history(history['events'])  # type: ignore[arg-type]
+        task_results = _parse_execution_history(cast(List[Dict[str, Any]], history['events']))
         
         print()
         print(f"✓ Execution completed: {status}")
