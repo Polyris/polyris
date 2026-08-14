@@ -91,7 +91,9 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
   git push origin main "$VERSION"
   echo "✅ $VERSION pushed"
 else
-  echo "ℹ️  not pushed — run when ready: git push origin main $VERSION"
+  git tag -d "$VERSION"
+  git reset --soft HEAD~1
+  echo "ℹ️  rolled back — fix anything and re-run: ./scripts/release.sh $MODE $VERSION"
   exit 0
 fi
 
