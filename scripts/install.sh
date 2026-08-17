@@ -5,7 +5,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
 #
 # Env vars:
-#   POLYRIS_DIR   — clone destination (default: ~/polyris)
+#   POLYRIS_DIR   — clone destination (default: $PWD/polyris, matching
+#                   the way `git clone URL` puts things in ./URL_basename)
 #   POLYRIS_REF   — branch or tag to check out (git clone --branch, which
 #                   does NOT accept commit SHAs). If unset, defaults to the
 #                   latest GitHub release tag (queried from the API); falls
@@ -25,7 +26,7 @@
 # questions. Two-step is the safer UX.
 set -euo pipefail
 
-INSTALL_DIR="${POLYRIS_DIR:-$HOME/polyris}"
+INSTALL_DIR="${POLYRIS_DIR:-$PWD/polyris}"
 REPO_URL="https://github.com/Polyris/polyris.git"
 REPO_API="https://api.github.com/repos/Polyris/polyris"
 SELF_URL="https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh"
