@@ -11,4 +11,4 @@ rsa>=4.9
 # `console_api/polyris` symlink; now pulled as a package so the repo split works
 # (ADR #102). Pin to a release tag. For local dev, `pip install -e .` from the
 # repo root shadows this with the live core.
-polyris @ git+https://github.com/Polyris/polyris@v0.94.0
+polyris @ git+https://github.com/Polyris/polyris@v0.95.0
