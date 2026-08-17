@@ -88,8 +88,11 @@ class Notifier:
 class WebhookNotifier(Notifier):
     """Generic JSON webhook — POSTs the failure context to an arbitrary URL.
 
-    config: {"url_param": "/polyris/alerts/<pipeline>/webhook-url"}
+    config: {"url_param": "/polyris/alerts/<Namespace>/<Stage>/<pipeline>/webhook-url"}
     The URL is treated as a secret (it may embed a token), so it lives in SSM.
+    The Namespace/Stage prefix scopes the parameter to a specific deployment
+    so multiple polyris stacks in one account cannot cross-read each other's
+    alert secrets (see ADR #103 / template.yaml NotifyRole).
     Demonstrates how a new fire-and-forget channel slots in: one subclass.
     """
 

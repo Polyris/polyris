@@ -133,6 +133,9 @@ sam/*.Xtoml
 examples_temp/
 
 # User pipeline definitions live outside the repo (were sample acme/shopmart;
-# real account IDs must never be published). Users create their own pipelines/.
+# real account IDs must never be published). Users create their own pipelines/,
+# and scripts/setup-polyris.sh writes pipelines/config.py (with account_id
+# and profile) + a scaffolded pipelines/hello-world/dag.py — both get hidden
+# by this one line.
 # Leading slash anchors to the repo root — avoids matching ui/src/app/pipelines/.
 /pipelines/

@@ -102,14 +102,17 @@ At this point you understand the DSL. Ready to deploy? Continue below.
 
 ## Step 3: Configure Your Project (3 min)
 
-Go back to the project root and create `config.py`:
+Create `pipelines/config.py` — the single config file every pipeline reads:
 
 ```bash
-cd ..  # back to my-pipelines/
+cd ..                          # back to my-pipelines/
+polyris-init --project         # writes pipelines/config.py, creates pipelines/ if missing
 ```
 
+Or write it by hand:
+
 ```python
-# config.py
+# pipelines/config.py
 ENVIRONMENTS = {
     "dev": {
         "namespace": "mycompany",

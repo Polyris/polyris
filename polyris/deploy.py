@@ -15,11 +15,12 @@ Usage:
 
 Workflow:
     1. Reads dag.py (imports DAG)
-    2. Reads infra config from SSM (/polyris/{stage}/)
-    3. Generates ASL JSON
-    4. Generates CloudFormation template
-    5. aws cloudformation deploy
-    6. Calls SFN with register_only=true (pipeline registration)
+    2. Resolves environment config (config.py or CLI overrides)
+    3. Reads infra ARNs/tables from the SAM CloudFormation stack outputs
+    4. Generates ASL JSON
+    5. Generates CloudFormation template
+    6. aws cloudformation deploy
+    7. Calls SFN with register_only=true (pipeline registration)
 """
 
 import json
@@ -401,6 +402,131 @@ def _watch_stack_events(
 
 
 # =============================================================================
+# Config resolution + pre-deploy summary
+# =============================================================================
+
+# Names of the CloudFormation Outputs the SAM stack exports for pipeline
+# deploys. See sam/template.yaml. Kept as a constant so the reader here and any
+# tests import the same names — a rename in the template that misses this
+# constant is caught immediately (Principle #13).
+SAM_STACK_OUTPUT_KEYS = (
+    "DependencyWrapperArn",
+    "OrchestrationRoleArn",
+    "PipelineRegistryTable",
+    "PipelineTokensTable",
+    "AssetSubscriptionsTable",
+    "ResultsBucket",
+)
+
+
+def _read_sam_stack(session: "boto3.Session", stack_name: str) -> Tuple[dict, dict]:
+    """Return ({OutputKey: OutputValue}, {ParameterKey: ParameterValue}) for the SAM stack.
+
+    Raises ClientError with a wrapped, actionable message when the stack does
+    not exist — the user's likely mistake is that ``sam deploy`` was never run
+    with this name, or the name in config.py is stale.
+    """
+    cfn = session.client("cloudformation")
+    try:
+        stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+    except ClientError as e:
+        if "does not exist" in str(e):
+            print(f"\n❌ SAM stack '{stack_name}' not found in this account/region.")
+            print("   Two things to check:")
+            print(f"     1) Did you run `sam deploy` for this stack? "
+                  f"(from sam/samconfig.toml: stack_name = \"{stack_name}\")")
+            print("     2) Does the stack_name in your config.py match "
+                  "the one in sam/samconfig.toml?")
+            sys.exit(1)
+        raise
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
+    params = {p["ParameterKey"]: p["ParameterValue"] for p in stack.get("Parameters") or []}
+    return outputs, params
+
+
+def _warn_conflicts(*, cli: dict, config: dict) -> None:
+    """Print a warning per CLI arg that overrides a config.py value.
+
+    The user asked for explicit visibility (not a hard reject): we still deploy
+    with the CLI value — an occasional one-off override is legitimate — but the
+    override is loud. A silent override is what caused the "wrong region" class
+    of mistakes.
+    """
+    for key, cli_val in cli.items():
+        if cli_val is None:
+            continue
+        cfg_val = config.get(key)
+        if cfg_val is None or cli_val == cfg_val:
+            continue
+        print(f"⚠️  --{key} {cli_val} overrides config.py ({cfg_val}). Continuing.")
+
+
+def _print_deploy_summary(
+    *,
+    dag_id: str,
+    stage: str,
+    stack_name: str,
+    namespace: str,
+    region: str,
+    profile: Optional[str],
+    pipeline_stack: str,
+) -> None:
+    """Print the resolved deploy target before the first AWS write.
+
+    Shown once per deploy so the operator sees, at a glance, exactly what will
+    happen. Consistent field ordering (dag → stage → stack → namespace → region
+    → profile → pipeline stack) so tests can pin the exact format.
+    """
+    print("")
+    print("── Deploy target ──────────────────────────────────────────────────")
+    print(f"   dag:             {dag_id}")
+    print(f"   stage:           {stage}")
+    print(f"   sam stack:       {stack_name}    ← reads CloudFormation outputs from here")
+    print(f"   namespace:       {namespace}")
+    print(f"   region:          {region}")
+    print(f"   profile:         {profile or '(default)'}")
+    print(f"   pipeline stack:  {pipeline_stack}")
+    print("───────────────────────────────────────────────────────────────────")
+
+
+def _fail_no_stack_name(stage: str) -> None:
+    """Exit with a clear message when stack_name cannot be resolved.
+
+    The user has stage=X but nothing tells polyris which SAM CloudFormation
+    stack to read outputs from. The error names the exact config.py field to
+    add and points at samconfig.toml (the value must match). Also handles
+    the case where config.py doesn't exist yet — the "add stack_name" hint
+    is useless there, so we recommend polyris-init instead.
+    """
+    from polyris.config import _find_project_config
+    has_config = _find_project_config() is not None
+
+    print(f"\n❌ No SAM stack_name resolved for stage '{stage}'.")
+    print("")
+    if has_config:
+        print("   Add stack_name to your config.py:")
+        print("")
+        print("       ENVIRONMENTS = {")
+        print(f"           \"{stage}\": {{")
+        print("               \"stack_name\": \"<name-from-samconfig.toml>\",")
+        print("               ...")
+        print("           }")
+        print("       }")
+        print("")
+        print("   Or pass --stack <name> on the CLI (matches sam/samconfig.toml).")
+    else:
+        print("   No config.py was found walking up from the current directory.")
+        print("   Create one with:")
+        print("")
+        print("       polyris-init --project")
+        print("")
+        print("   then edit ENVIRONMENTS to add the stack_name from your")
+        print("   sam/samconfig.toml. Alternatively pass --stack <name> to")
+        print("   polyris-deploy directly.")
+    sys.exit(1)
+
+
+# =============================================================================
 # Main deploy function
 # =============================================================================
 
@@ -413,6 +539,7 @@ def deploy_pipeline(
     log_level: str = "ERROR",
     log_retention_days: int = 30,
     profile: Optional[str] = None,
+    stack: Optional[str] = None,
 ):
     """Deploy a single DAG via CloudFormation."""
 
@@ -430,13 +557,53 @@ def deploy_pipeline(
             print("   Fix the errors above (or run polyris-validate) and retry.")
             sys.exit(1)
 
-    stage = stage or polyris_config.stage
-    region = region or polyris_config.region
-    namespace = polyris_config.namespace
-    profile = profile or polyris_config.profile
+    # ── Resolve config ────────────────────────────────────────────────────
+    # Priority per field: CLI arg > env var > config.py > default.
+    # Pipeline naming (namespace / stage) is INDEPENDENT of the SAM stack's
+    # own Namespace / Stage — config.py owns pipeline naming, the SAM stack
+    # only provides ARNs / table names / bucket via CFN outputs.
+    cli_region = region
+    cli_profile = profile
+    cli_stack = stack
 
-    # Read infra config from SSM
-    print(f"\nReading infra config from SSM /polyris/{stage}/...")
+    stage = stage or polyris_config.stage
+    stage_config = polyris_config.for_stage(stage)
+
+    region = region or stage_config.region
+    profile = profile or stage_config.profile
+    namespace = stage_config.namespace
+
+    stack_name_from_config = stage_config.stack_name
+    sam_stack_name = cli_stack or stack_name_from_config
+    if not sam_stack_name:
+        _fail_no_stack_name(stage)
+    assert sam_stack_name  # narrow Optional for mypy after the exit above
+
+    pipeline_stack = f"{namespace}-{stage}-polyris-{dag.dag_id}"
+
+    _warn_conflicts(
+        cli={
+            "region": cli_region,
+            "profile": cli_profile,
+            "stack": cli_stack,
+        },
+        config={
+            "region": stage_config.region,
+            "profile": stage_config.profile,
+            "stack": stack_name_from_config,
+        },
+    )
+    _print_deploy_summary(
+        dag_id=dag.dag_id,
+        stage=stage,
+        stack_name=sam_stack_name,
+        namespace=namespace,
+        region=region,
+        profile=profile,
+        pipeline_stack=pipeline_stack,
+    )
+
+    # ── AWS session + credentials check ──────────────────────────────────
     try:
         session = boto3.Session(profile_name=profile, region_name=region)
         # Verify credentials work
@@ -453,7 +620,6 @@ def deploy_pipeline(
         caller_identity = None
 
     # Guard: verify we're deploying to the expected account
-    stage_config = polyris_config.for_stage(stage)
     expected_account = stage_config.get("account_id")
     if expected_account:
         if caller_identity is None:
@@ -470,31 +636,32 @@ def deploy_pipeline(
             print(f"   Actual:   {actual_account} (from credentials)")
             print("   Check your --profile or AWS credentials.")
             sys.exit(1)
-    ssm = session.client("ssm")
 
-    def get_ssm(name: str) -> Optional[str]:
-        try:
-            return ssm.get_parameter(
-                Name=f"/polyris/{stage}/{name}"
-            )["Parameter"]["Value"]
-        except ssm.exceptions.ParameterNotFound:
-            return None
+    # ── Read infra config from the SAM stack outputs ─────────────────────
+    # Only ARNs, table names, and bucket are pulled from SAM — those must
+    # match the real infra to work. The SAM stack's own Namespace / Stage
+    # are cosmetic (they name SAM's own resources); pipeline naming lives
+    # in config.py.
+    print(f"\nReading SAM stack outputs from '{sam_stack_name}'...")
+    outputs, _params = _read_sam_stack(session, sam_stack_name)
 
-    wrapper_arn = get_ssm("wrapper_arn")
-    role_arn = get_ssm("pipeline_execution_role_arn")
-    registry_table = get_ssm("pipeline_registry_table")
-    tokens_table = get_ssm("pipeline_tokens_table")
-    asset_subscriptions_table = get_ssm("asset_subscriptions_table")
-    results_bucket = get_ssm("results_bucket")
+    wrapper_arn = outputs.get("DependencyWrapperArn")
+    role_arn = outputs.get("OrchestrationRoleArn")
+    registry_table = outputs.get("PipelineRegistryTable")
+    tokens_table = outputs.get("PipelineTokensTable")
+    asset_subscriptions_table = outputs.get("AssetSubscriptionsTable")
+    results_bucket = outputs.get("ResultsBucket")
 
     if not wrapper_arn or not role_arn:
-        print("❌ SSM parameters not found. Run `sam deploy` first.")
-        print(f"   Missing: /polyris/{stage}/wrapper_arn or /polyris/{stage}/pipeline_execution_role_arn")
-        if not profile:
-            print("   Tip: if you have multiple AWS profiles, try: polyris-deploy --profile <your-profile>")
+        print(f"❌ SAM stack '{sam_stack_name}' is missing required outputs.")
+        missing = [k for k in ("DependencyWrapperArn", "OrchestrationRoleArn")
+                   if not outputs.get(k)]
+        print(f"   Missing outputs: {', '.join(missing)}")
+        print("   The stack may be from an older polyris/SAM version. "
+              "Redeploy sam/ from the current repo.")
         sys.exit(1)
 
-    stack_name = f"{namespace}-{stage}-polyris-{dag.dag_id}"
+    stack_name = pipeline_stack
 
     # Destroy
     if destroy:
@@ -646,8 +813,8 @@ def deploy_pipeline(
 
     # Get SFN ARN from stack outputs
     cfn = session.client("cloudformation")
-    stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
-    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    pipeline_cfn = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in pipeline_cfn.get("Outputs", [])}
     sfn_arn = outputs.get("StateMachineArn")
 
     # Register pipeline
@@ -721,6 +888,7 @@ def _run_bulk(
     log_level: str,
     log_retention_days: int,
     profile: Optional[str],
+    stack: Optional[str] = None,
 ) -> None:
     """Deploy or destroy every DAG found across target_dirs (--all / --only).
 
@@ -761,6 +929,7 @@ def _run_bulk(
                 deploy_pipeline(
                     dag=dag,
                     stage=stage,
+                    stack=stack,
                     region=region,
                     dry_run=dry_run,
                     destroy=destroy,
@@ -798,11 +967,12 @@ def main(force_destroy: bool = False) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  polyris-deploy                    # Deploy from current directory
-  polyris-deploy --stage prod       # Deploy to prod
-  polyris-deploy --dry-run          # Preview without deploying
-  polyris-deploy --destroy          # Remove pipeline stack
-  polyris-deploy --file my_dag.py   # Deploy specific file
+  polyris-deploy                          # Deploy from current directory (uses DEFAULT_STAGE)
+  polyris-deploy --stage prod             # Deploy to prod (config.py picks stack_name, region, profile)
+  polyris-deploy --stack polyris-dev      # Override the SAM stack to read outputs from
+  polyris-deploy --dry-run                # Preview without deploying
+  polyris-deploy --destroy                # Remove pipeline stack
+  polyris-deploy --file my_dag.py         # Deploy specific file
 
   # Bulk (run from the parent directory containing pipeline subdirectories):
   polyris-deploy --all                        # Deploy every subdirectory
@@ -812,6 +982,7 @@ Examples:
         """,
     )
     parser.add_argument("--stage", help="Deployment stage (default: from config.py DEFAULT_STAGE)")
+    parser.add_argument("--stack", help="SAM CloudFormation stack to read outputs from (default: from config.py ENVIRONMENTS[stage].stack_name)")
     parser.add_argument("--region", help="AWS region (default: from config.py ENVIRONMENTS)")
     parser.add_argument("--file", default=None, help="Pipeline file (default: dag.py). Not used with --all/--only.")
     parser.add_argument("--dry-run", action="store_true", help="Preview without deploying")
@@ -841,6 +1012,7 @@ Examples:
             target_dirs,
             select=args.select,
             stage=args.stage,
+            stack=args.stack,
             region=args.region,
             dry_run=args.dry_run,
             destroy=destroy,
@@ -880,6 +1052,7 @@ Examples:
         deploy_pipeline(
             dag=dag,
             stage=args.stage,
+            stack=args.stack,
             region=args.region,
             dry_run=args.dry_run,
             destroy=destroy,

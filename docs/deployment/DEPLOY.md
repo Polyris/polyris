@@ -54,7 +54,7 @@ State is managed by CloudFormation — create, update, and delete handled automa
 
 ## Prerequisites
 
-1. Shared infra deployed: `sam deploy` (writes SSM parameters)
+1. Shared infra deployed: `sam deploy` (its CloudFormation Outputs are what `polyris-deploy` reads via `describe_stacks`)
 2. AWS credentials configured: `aws configure`
 3. polyris installed: `pip install polyris`
 

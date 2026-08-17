@@ -18,13 +18,13 @@ Best for: Small teams, getting started, monorepo setups.
 ```
 mycompany-data/
 ├── pyproject.toml              # Python packaging + dev tools
-├── config.py                   # polyris project config (namespaces, stages, roles)
 ├── sam/
 │   └── shared/                 # Shared infrastructure
 │       ├── template.yaml    # SAM template
 │       └── ...
 │
-├── pipelines/
+├── pipelines/                  # (whole directory is gitignored — real
+│   ├── config.py               #  account_id / profile stay out of git)
 │   ├── acme-daily/
 │   │   ├── dag.py
 │   │   └── │   └── nexus-hourly/
@@ -35,9 +35,9 @@ mycompany-data/
         └── ci.yml
 ```
 
-**config.py** (root):
+**pipelines/config.py**:
 ```python
-# config.py
+# pipelines/config.py
 ENVIRONMENTS = {
     "dev": {
         "namespace": "mycompany",
@@ -86,8 +86,8 @@ polyris-infra/
 # Repo 3: Pipelines (data team)
 data-pipelines/
 ├── pyproject.toml              # Python packaging
-├── config.py                   # polyris project config
-├── pipelines/
+├── pipelines/                  # gitignored: config.py carries real
+│   ├── config.py               # account_id / profile
 │   ├── acme-daily/
 │   └── nexus-hourly/
 └── .github/workflows/ci.yml
@@ -185,12 +185,12 @@ jobs:
 
 ## Environment Management
 
-### Via config.py + Environment Variables
+### Via pipelines/config.py + Environment Variables
 
-`config.py` defines per-stage settings:
+`pipelines/config.py` defines per-stage settings:
 
 ```python
-# config.py
+# pipelines/config.py
 ENVIRONMENTS = {
     "dev": {"namespace": "mycompany", "stage": "dev", "region": "us-east-1"},
     "prod": {"namespace": "mycompany", "stage": "prod", "region": "us-east-1"},
@@ -222,7 +222,7 @@ f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-task"
 
 ## Best Practices
 
-1. **One config.py** at repo root with all polyris ENVIRONMENTS config
+1. **One `pipelines/config.py`** with all polyris ENVIRONMENTS config
 2. **One pipeline per folder** with a `dag.py`
 3. **Use full ARN strings directly** — explicit and transparent
 4. **Use environment variables** for stage/account overrides in CI

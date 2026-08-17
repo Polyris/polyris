@@ -81,11 +81,14 @@ class PipelinesRepo:
     #       "slack": {
     #           "channel": "#acme-alerts",          # not secret → here
     #           "mentions": ["@oncall"],            # not secret → here
-    #           "webhook_param": "/polyris/alerts/acme-daily/slack-webhook",  # SSM name
+    #           # SSM parameter name is scoped by /polyris/alerts/{Namespace}/{Stage}/{pipeline}/
+    #           # so two stacks in the same account can't collide on the same
+    #           # SSM key when they share a pipeline name.
+    #           "webhook_param": "/polyris/alerts/myorg/dev/acme-daily/slack-webhook",
     #       },
     #       "pagerduty": {
     #           "severity": "critical",             # not secret → here
-    #           "routing_key_param": "/polyris/alerts/acme-daily/pd-key",     # SSM name
+    #           "routing_key_param": "/polyris/alerts/myorg/dev/acme-daily/pd-key",
     #       },
     #       "email": {"recipients": [...]},         # future channels slot in
     #   }

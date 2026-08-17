@@ -37,7 +37,7 @@ class TestWebhookNotifier:
     def test_posts_failure_context(self, mocker, failure):
         from notifiers import WebhookNotifier
         post = mocker.patch('notifiers._http_post_json', return_value=200)
-        res = WebhookNotifier({'url_param': '/polyris/alerts/acme/hook'}).notify(failure)
+        res = WebhookNotifier({'url_param': '/polyris/alerts/myorg/dev/acme/hook'}).notify(failure)
         assert res['delivered'] is True
         payload = post.call_args.args[1]
         assert payload['event'] == 'pipeline_task_failed'

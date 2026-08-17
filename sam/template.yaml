@@ -118,6 +118,17 @@ Parameters:
     Description: Reserved concurrent executions for Lambda functions (-1 = no limit)
     Default: -1
 
+  AutoEmptyBucketsOnDelete:
+    Type: String
+    Description: >
+      DEV/TEST — deploy a small Lambda that empties ConsoleUiBucket and
+      ResultsBucket when the stack is deleted. Without this, `sam delete`
+      fails on non-empty S3 buckets and you have to empty them by hand.
+      NEVER enable in prod without a backup: turning this on means a
+      stack delete SILENTLY wipes every task result in ResultsBucket.
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
 # =============================================================================
 # Globals
 # =============================================================================
@@ -141,6 +152,7 @@ Conditions:
   HasReservedConcurrency: !Not [!Equals [!Ref LambdaReservedConcurrency, -1]]
   HasConsoleUrlOverride: !Not [!Equals [!Ref ConsoleUrlOverride, ""]]
   IsTier1: !Not [!Equals [!Ref ReleasesBucket, ""]]
+  AutoEmptyBucketsCondition: !Equals [!Ref AutoEmptyBucketsOnDelete, "true"]
 
 # =============================================================================
 # Resources
@@ -1067,6 +1079,13 @@ Resources:
           COGNITO_CLIENT_ID: !If [EnableCognitoAuthCondition, !Ref CognitoUserPoolClient, ""]
           REGION: !Ref AwsRegion
           ACCOUNT_ID: !Ref AWS::AccountId
+          # Namespace + Stage are read by ee/team/alert_secrets.py to scope
+          # the SSM alert-secret parameter path
+          # (/polyris/alerts/${Namespace}/${Stage}/<pipeline>/<key>). Absent
+          # in OSS-only builds; the env vars are still populated for
+          # consistency and future use.
+          NAMESPACE: !Ref Namespace
+          STAGE: !Ref Stage
           # ADR #100: paid tier for the team<->enterprise entitlement boundary.
           # Read only by ee/entitlements.py (absent in the OSS build).
           POLYRIS_TIER: !Ref PolyrisTier
@@ -1145,14 +1164,17 @@ Resources:
             Version: "2012-10-17"
             Statement:
               # Read alert secrets (Slack webhook, PagerDuty key) from SSM
-              # SecureString. Scoped to the /polyris/alerts/ prefix.
+              # SecureString. Scoped to /polyris/alerts/{Namespace}/{Stage}/*
+              # so two stacks in the same account/region cannot see each
+              # other's alert configs, and so pipelines with the same name
+              # across stacks don't collide on the same SSM key.
               - Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:PutParameter
                   - ssm:DeleteParameter
                 Resource:
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/polyris/alerts/*"
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/polyris/alerts/${Namespace}/${Stage}/*"
               # Read alert_config from the pipeline registry to fan out over
               # enabled channels (ADR #103 Stage-1 consolidation).
               - Effect: Allow
@@ -1340,6 +1362,19 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                 Resource: !Sub "${ResultsBucket.Arn}/*"
+              # Alert-secret SSM writes — the EE Team-tier alerts route
+              # (ee/team/alerts.py → alert_secrets.py) provisions Slack /
+              # PagerDuty secrets as SecureString parameters when the user
+              # saves a config in the console. Scoped to the same
+              # Namespace/Stage prefix as the Notify Lambda's read side
+              # (see NotifyRole above) so alerts stay isolated per stack.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/polyris/alerts/${Namespace}/${Stage}/*"
               # On-demand Glue schema sync — used by GET /api/assets/{name}/glue-schema.
               # Read-only Catalog access; called only when a user opens an asset detail page.
               - Effect: Allow
@@ -1781,101 +1816,6 @@ Resources:
         pipeline_registry_table: !Ref PipelineRegistryTable
       DefinitionUri: sfn_templates/bulk_backfill/sfn.tpl.json
   # ---------------------------------------------------------------------------
-  # SSM Parameters — read by polyris-deploy and pipeline tooling
-  # ---------------------------------------------------------------------------
-
-  SsmWrapperArn:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/wrapper_arn"
-      Type: String
-      Value: !Ref DependencyWrapperSfn
-      Description: ARN of the dependency wrapper Step Function
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  SsmBulkBackfillArn:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/bulk_backfill_arn"
-      Type: String
-      Value: !Ref BulkBackfillSfn
-      Description: ARN of the bulk-backfill Step Function (Backfill orchestrator)
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  SsmPipelineExecutionRoleArn:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/pipeline_execution_role_arn"
-      Type: String
-      Value: !GetAtt OrchestrationRole.Arn
-      Description: ARN of the IAM role for pipeline execution
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  SsmPipelineRegistryTable:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/pipeline_registry_table"
-      Type: String
-      Value: !Ref PipelineRegistryTable
-      Description: DynamoDB table name for pipeline registry
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  SsmPipelineTokensTable:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/pipeline_tokens_table"
-      Type: String
-      Value: !Ref PipelineTokensTable
-      Description: DynamoDB table name for pipeline executions (tokens)
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  SsmAssetSubscriptionsTable:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/asset_subscriptions_table"
-      Type: String
-      Value: !Ref AssetSubscriptionsTable
-      Description: DynamoDB table name for asset subscriptions
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  SsmResultsBucket:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/polyris/${Stage}/results_bucket"
-      Type: String
-      Value: !Ref ResultsBucket
-      Description: S3 bucket for task results and CFN pipeline templates
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-        ManagedBy: cloudformation
-
-  # ---------------------------------------------------------------------------
   # Console UI — S3 + CloudFront (static export)
   # ---------------------------------------------------------------------------
 
@@ -2106,6 +2046,84 @@ Resources:
       Region: !Ref AwsRegion
       # Trigger update when version or config changes
       Version: !Ref ReleaseVersion
+
+  # ---------------------------------------------------------------------------
+  # Bucket Cleanup — empties ConsoleUiBucket + ResultsBucket on stack delete
+  # so `sam delete` doesn't fail on non-empty buckets. Gated by the
+  # AutoEmptyBucketsOnDelete parameter (default false) — enabling this
+  # trades safety for `sam delete just works`. See parameter description
+  # above for the warning.
+  # ---------------------------------------------------------------------------
+
+  BucketCleanupRole:
+    Type: AWS::IAM::Role
+    Condition: AutoEmptyBucketsCondition
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-bucket-cleanup-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EmptyBuckets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !GetAtt ConsoleUiBucket.Arn
+                  - !GetAtt ResultsBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource:
+                  - !Sub "${ConsoleUiBucket.Arn}/*"
+                  - !Sub "${ResultsBucket.Arn}/*"
+              # DescribeStacks is how the Lambda tells "sam delete" (empty
+              # the buckets) apart from "sam deploy that toggled the flag
+              # off" (must NOT empty). See sam/lambdas/bucket_cleanup/index.py.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: "*"
+
+  BucketCleanupFunction:
+    Type: AWS::Serverless::Function
+    Condition: AutoEmptyBucketsCondition
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-bucket-cleanup"
+      CodeUri: lambdas/bucket_cleanup/
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt BucketCleanupRole.Arn
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  BucketCleanup:
+    # References both buckets so CloudFormation puts this resource *after*
+    # them in the create order and *before* them in the delete order — the
+    # Delete event on this resource fires before the buckets themselves are
+    # removed, which is exactly the ordering we need.
+    Type: AWS::CloudFormation::CustomResource
+    Condition: AutoEmptyBucketsCondition
+    Properties:
+      ServiceToken: !GetAtt BucketCleanupFunction.Arn
+      Buckets:
+        - !Ref ConsoleUiBucket
+        - !Ref ResultsBucket
 
   # Managed policy that user task roles (Lambda/ECS/Glue/Batch) attach so their
   # code can call xcom.pull() — least-privilege read of the output store and the

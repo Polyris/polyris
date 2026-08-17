@@ -5,7 +5,7 @@
 #   2. Edit parameter_overrides below
 #   3. sam build && sam deploy
 #   4. cd ../ui && npm ci && npm run build && cd ../sam
-#   5. cd ../ui && ./deploy.sh
+#   5. cd ../ui && ./deploy.sh <stack-name> <region> --profile <profile>
 # ============================================================
 
 version = 0.1
@@ -25,6 +25,12 @@ parameter_overrides = [
 
   # Optional — Cognito auth for Console UI (recommended for production)
   "EnableCognitoAuth=true",
+
+  # DEV/TEST ONLY — set to true to auto-empty ConsoleUiBucket + ResultsBucket
+  # on `sam delete`. Convenient for disposable stacks, but a `sam delete`
+  # (accidental or not) then wipes every task result. Leave `false` in prod
+  # and empty buckets manually before a real teardown.
+  "AutoEmptyBucketsOnDelete=false",
 
   # Optional — custom domain (e.g. if you set up Route53 + ACM)
   # "ConsoleUrlOverride=https://polyris.myorg.com",

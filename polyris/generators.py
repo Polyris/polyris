@@ -1196,7 +1196,8 @@ def _build_registration_chain(
         asset_subscriptions_table: DynamoDB table name for asset subscriptions
             (consumed by the platform's notify_asset_consumers SFN — must match
             its own ${asset_subscriptions_table} substitution, both ultimately
-            sourced from the same SSM parameter /polyris/{stage}/asset_subscriptions_table)
+            sourced from the SAM stack's AssetSubscriptionsTable output that
+            polyris-deploy reads via describe_stacks)
     
     Returns:
         Tuple of (states_dict, start_at_state_name)
@@ -1342,8 +1343,9 @@ def generate_step_function_json(
         asset_subscriptions_table: Name of the asset subscriptions table that
             asset-triggered pipelines register into (default:
             ${asset_subscriptions_table}). Must match the platform's own
-            AssetSubscriptionsTable — both are sourced from the SSM parameter
-            /polyris/{stage}/asset_subscriptions_table (see deploy.py).
+            AssetSubscriptionsTable — both are sourced from the SAM stack's
+            AssetSubscriptionsTable CFN output that polyris-deploy reads via
+            describe_stacks (see deploy.py).
     
     Features:
     - variables: Creates Define_Inputs Pass state at start

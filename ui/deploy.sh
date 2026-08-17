@@ -6,44 +6,66 @@
 #
 # Usage:
 #   cd ui
-#   ./deploy.sh [--profile NAME] [stack-name] [region] [ui-out-dir]   (--profile may go anywhere)
+#   ./deploy.sh <stack-name> <region>                       # profile defaults to `default`
+#   ./deploy.sh <stack-name> <region> ./out --profile X     # override ui-out and profile
+#   ./deploy.sh --stack polyris-dev --region us-east-1 --profile X    # named flags
 #
-# Example:
-#   ./deploy.sh polyris-dev us-east-1
-#   ./deploy.sh --profile polyris-dev
-#   ./deploy.sh polyris-dev us-east-1 ./out --profile my-profile
+# All values are read from the CLI — the script deliberately does NOT touch
+# config.py (that's a pipeline concern, not a UI-deploy concern) or
+# sam/samconfig.toml. Whoever calls this passes what it needs; the setup
+# script in scripts/setup-polyris.sh does the reading and passes explicit
+# args.
 
 set -e
+set -o pipefail
 
-# Parse args: --profile <name> may appear ANYWHERE (incl. first); everything
-# else is positional, in order: stack-name, region, ui-out-dir.
+STACK_NAME=""
+REGION=""
 AWS_PROFILE_FLAG=""
 positional=()
+
+# Parse args: --stack, --region, --profile may appear ANYWHERE.
+# Everything else is positional: stack-name, region, ui-out-dir.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --profile)
-      AWS_PROFILE_FLAG="--profile ${2:-}"
-      shift 2 2>/dev/null || shift
-      ;;
-    --profile=*)
-      AWS_PROFILE_FLAG="--profile ${1#*=}"
-      shift
-      ;;
-    *)
-      positional+=("$1")
-      shift
-      ;;
+    --stack)     STACK_NAME="${2:-}"; shift 2 2>/dev/null || shift ;;
+    --stack=*)   STACK_NAME="${1#*=}"; shift ;;
+    --region)    REGION="${2:-}"; shift 2 2>/dev/null || shift ;;
+    --region=*)  REGION="${1#*=}"; shift ;;
+    --profile)   AWS_PROFILE_FLAG="--profile ${2:-}"; shift 2 2>/dev/null || shift ;;
+    --profile=*) AWS_PROFILE_FLAG="--profile ${1#*=}"; shift ;;
+    *)           positional+=("$1"); shift ;;
   esac
 done
-STACK_NAME="${positional[0]:-polyris-dev}"
-REGION="${positional[1]:-us-east-1}"
+
+# Named flags win; otherwise fall back to positional (backward compat with the
+# original `./deploy.sh stack region ./out --profile X` form).
+STACK_NAME="${STACK_NAME:-${positional[0]:-}}"
+REGION="${REGION:-${positional[1]:-}}"
 UI_OUT_DIR="${positional[2]:-./out}"
+
+if [ -z "$STACK_NAME" ] || [ -z "$REGION" ]; then
+  echo "❌ stack-name and region are required." >&2
+  echo "   Usage: ./deploy.sh <stack-name> <region> [ui-out-dir] [--profile NAME]" >&2
+  exit 1
+fi
 
 if [ ! -d "$UI_OUT_DIR" ]; then
   echo "Error: UI build not found at $UI_OUT_DIR"
   echo "Run: cd ../ui && npm ci && npm run build"
   exit 1
 fi
+
+# Pre-deploy summary — shown before any AWS call so the operator sees exactly
+# where output goes. Kept short: one line per resolved field.
+echo ""
+echo "── Deploy target ──────────────────────────────────────────────────"
+echo "   sam stack:    $STACK_NAME"
+echo "   region:       $REGION"
+echo "   profile:      ${AWS_PROFILE_FLAG:-(default)}"
+echo "   ui build:     $UI_OUT_DIR"
+echo "───────────────────────────────────────────────────────────────────"
+echo ""
 
 echo "Fetching stack outputs for: $STACK_NAME"
 
@@ -58,14 +80,29 @@ get_output() {
 UI_BUCKET=$(get_output "ConsoleUiBucket")
 DIST_ID=$(get_output "ConsoleUiDistributionId")
 CONSOLE_URL=$(get_output "ConsoleUiUrl")
-API_URL=$(get_output "ConsoleApiUrl")/api
+API_URL_RAW=$(get_output "ConsoleApiUrl")
 COGNITO_POOL_ID=$(get_output "CognitoUserPoolId")
 COGNITO_CLIENT_ID=$(get_output "CognitoClientId")
 
-if [ -z "$UI_BUCKET" ]; then
-  echo "Error: ConsoleUiBucket not found in stack $STACK_NAME"
-  exit 1
-fi
+# Validate every output that we'll bake into config.js or use for
+# invalidation. Empty / "None" here means describe-stacks failed silently or
+# the stack really isn't polyris (wrong name / wrong region / wrong profile).
+# Missing this catches the failure mode where get_output returns "" and the
+# script cheerfully writes API_URL: '/api' into config.js.
+_require_output() {
+  local name="$1" value="$2"
+  if [ -z "$value" ] || [ "$value" = "None" ]; then
+    echo "❌ CloudFormation output \"$name\" is empty for stack $STACK_NAME." >&2
+    echo "   Check: --stack / --region / --profile point at a real polyris stack." >&2
+    exit 1
+  fi
+}
+
+_require_output "ConsoleUiBucket"         "$UI_BUCKET"
+_require_output "ConsoleUiDistributionId" "$DIST_ID"
+_require_output "ConsoleUiUrl"            "$CONSOLE_URL"
+_require_output "ConsoleApiUrl"           "$API_URL_RAW"
+API_URL="${API_URL_RAW}/api"
 
 # Generate config.js with real values — loaded at runtime in browser
 echo "Generating config.js with stack outputs..."

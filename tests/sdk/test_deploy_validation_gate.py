@@ -24,6 +24,19 @@ def test_deploy_rejects_invalid_dag_before_aws(mocker):
     boto.Session.assert_not_called()  # the gate fired before any AWS work
 
 
+def _stage_cfg(mocker, *, stack_name="acme-prod", **kw):
+    """Return a MagicMock shaped like polyris.config._StageConfig — the
+    attribute surface the deploy resolver reads."""
+    m = mocker.MagicMock()
+    m.stack_name = stack_name
+    m.namespace = kw.get("namespace", "acme")
+    m.region = kw.get("region", "us-east-1")
+    m.profile = kw.get("profile", None)
+    account = kw.get("account_id", "999999999999")
+    m.get = lambda k, default=None: {"account_id": account}.get(k, default)
+    return m
+
+
 def test_deploy_proceeds_past_gate_when_valid(mocker):
     dag = mocker.MagicMock()
     dag.dag_id = "ok"
@@ -31,6 +44,14 @@ def test_deploy_proceeds_past_gate_when_valid(mocker):
         "polyris.validation.validate_asl_from_dag",
         return_value=(True, [], []),
     )
+    # Config is resolved before boto3.Session is called; provide the minimum
+    # so the resolver doesn't exit early on stack_name being missing.
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    cfg.stage = "dev"
+    cfg.region = "us-east-1"
+    cfg.namespace = "acme"
+    cfg.profile = None
+    cfg.for_stage.return_value = _stage_cfg(mocker, stack_name="acme-dev")
     # Make the next step (credentials) exit so we don't reach real AWS, but prove
     # the validation gate did not block a valid DAG.
     boto = mocker.patch("polyris.deploy.boto3")
@@ -71,17 +92,18 @@ def test_deploy_refuses_when_account_cannot_be_verified(mocker):
     cfg.region = "us-east-1"
     cfg.namespace = "acme"
     cfg.profile = None
-    cfg.for_stage.return_value = {"account_id": "999999999999"}
+    cfg.for_stage.return_value = _stage_cfg(mocker, stack_name="acme-prod")
 
     with pytest.raises(SystemExit) as exc:
         deploy.deploy_pipeline(dag)
 
     assert exc.value.code == 1
-    # Must fail at the account-verification guard, not proceed to read SSM
-    # config for the (unverified) account.
+    # Must fail at the account-verification guard, not proceed to read the
+    # SAM stack outputs for the (unverified) account.
     session.client.assert_any_call("sts")
     assert not any(
-        call.args and call.args[0] == "ssm" for call in session.client.call_args_list
+        call.args and call.args[0] == "cloudformation"
+        for call in session.client.call_args_list
     )
 
 
@@ -100,15 +122,15 @@ def test_deploy_proceeds_when_account_matches(mocker):
     sts = mocker.MagicMock()
     sts.get_caller_identity.return_value = {"Account": "999999999999"}
 
-    class _ParamNotFound(Exception):
-        pass
-
-    ssm = mocker.MagicMock()
-    ssm.exceptions.ParameterNotFound = _ParamNotFound
-    ssm.get_parameter.side_effect = _ParamNotFound("no such param, as expected")
+    # SAM stack exists but returns no Outputs — simulates the "stack was
+    # deployed against an older polyris/SAM template that predates the
+    # required outputs" case. The point of this control test is to prove the
+    # code got past the account guard and reached the SAM read.
+    cfn = mocker.MagicMock()
+    cfn.describe_stacks.return_value = {"Stacks": [{"Outputs": [], "Parameters": []}]}
 
     def _client(name):
-        return {"sts": sts, "ssm": ssm}.get(name, mocker.MagicMock())
+        return {"sts": sts, "cloudformation": cfn}.get(name, mocker.MagicMock())
     session.client.side_effect = _client
 
     cfg = mocker.patch("polyris.deploy.polyris_config")
@@ -116,14 +138,15 @@ def test_deploy_proceeds_when_account_matches(mocker):
     cfg.region = "us-east-1"
     cfg.namespace = "acme"
     cfg.profile = None
-    cfg.for_stage.return_value = {"account_id": "999999999999"}
+    cfg.for_stage.return_value = _stage_cfg(mocker, stack_name="acme-prod")
 
     with pytest.raises(SystemExit) as exc:
         deploy.deploy_pipeline(dag)
 
-    # Passed the account guard (reached and called ssm), then correctly
-    # stopped later because get_ssm() legitimately found no parameters.
-    session.client.assert_any_call("ssm")
+    # Passed the account guard (reached cloudformation), then correctly
+    # stopped later because the SAM stack was missing required outputs.
+    session.client.assert_any_call("cloudformation")
+    cfn.describe_stacks.assert_called_with(StackName="acme-prod")
     assert exc.value.code == 1
 
 

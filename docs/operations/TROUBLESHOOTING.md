@@ -256,26 +256,32 @@ Check *why* the upstream was skipped:
 
 ## Deployment Issues
 
-### "SSM parameter not found" error
+### "SAM stack '…' is missing required outputs" error
 
-**Symptoms:** Pipeline deployment fails reading SSM parameters.
+**Symptoms:** `polyris-deploy` fails with the SAM stack missing outputs
+(`DependencyWrapperArn`, `OrchestrationRoleArn`, …). Historically this
+error was "SSM parameter not found"; polyris-deploy no longer reads SSM,
+it reads the SAM stack's CloudFormation Outputs directly.
 
 **Check:**
-1. Shared infrastructure is deployed:
+1. Shared infrastructure is deployed and the outputs are present:
    ```bash
-   cd sam
-   # (set Stage=dev in samconfig.toml)
-   aws cloudformation describe-stacks --stack-name polyris-dev --query "Stacks[0].Outputs"
+   aws cloudformation describe-stacks \
+     --stack-name "$STACK_NAME" \
+     --region "$AWS_REGION" \
+     --query "Stacks[0].Outputs[*].OutputKey" \
+     --output table
    ```
+   You should see `DependencyWrapperArn`, `OrchestrationRoleArn`,
+   `PipelineRegistryTable`, `PipelineTokensTable`,
+   `AssetSubscriptionsTable`, `ResultsBucket`.
 
-2. Run `sam deploy` first to write SSM parameters:
-   ```toml
-   # config.py ENVIRONMENTS
-   bucket = "your-actual-state-bucket"
-   role_arn = "arn:aws:iam::ACCOUNT:role/read-state"
-   ```
+2. The stack you're pointing at is the SAM stack, not a pipeline stack.
+   `config.py`'s `stack_name` must match `sam/samconfig.toml`'s
+   `stack_name`.
 
-3. IAM role can read state bucket.
+3. If outputs are missing, the stack was built from an older polyris/SAM
+   version. Redeploy `sam/` from the current repo.
 
 ---
 

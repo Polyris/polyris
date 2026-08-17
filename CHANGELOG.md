@@ -1,4 +1,225 @@
-## Unreleased
+## v0.95.0 (0.95.0) - 2026-08-17
+
+### Added — one-command onboarding and teardown
+
+Two new scripts for the monorepo layout (SAM + UI + pipelines in one
+checkout):
+
+**`scripts/install.sh`** — the curl-installable onboarding helper,
+advertised in the README:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
+```
+
+Checks prerequisites (git, python3, node, aws, sam) with per-OS install
+commands, `git clone`s the repo into `$POLYRIS_DIR` (default `~/polyris`)
+at `$POLYRIS_REF`, then prints the next command. Deliberately does NOT
+run the interactive installer itself — `curl | bash` consumes stdin so
+any follow-up `read` would fail; the two-step split is the safer UX.
+
+`$POLYRIS_REF` defaults to the **latest GitHub release tag** (queried
+from `api.github.com/repos/Polyris/polyris/releases/latest` at install
+time) so a fresh curl-install gives a reproducible, released version
+rather than whatever main happens to be. If the API is unreachable or
+returns no tag (a fresh repo with no releases, offline, rate-limited),
+the installer transparently falls back to `main` — better a working
+install off main than a broken installer.
+
+**`scripts/setup-polyris.sh`** — the interactive installer users run from
+inside the cloned repo. Modes:
+
+* **default** — prompts for AWS profile / region / namespace / stage /
+  stack name / (optional) Cognito admin email; writes
+  `sam/samconfig.toml` and `pipelines/config.py`; `pip install -e .` for
+  the SDK; runs `sam build && sam deploy`; builds and deploys the UI
+  (explicit positional args to `ui/deploy.sh`); scaffolds
+  `pipelines/hello-world/dag.py` — a minimal working pipeline pointing at
+  the built-in TestQuick SFN; creates the first Cognito admin user (only
+  if auth is enabled) with `--message-action SUPPRESS` so the temp
+  password is printed once in the terminal rather than emailed.
+* **`--create-user [--stack X --region Y --profile Z]`** — resolves the
+  Cognito User Pool from CFN outputs, then creates another user (temp
+  password or permanent password, prompted).
+* **`--delete [--stack X --region Y --profile Z]`** — `describe-stacks`
+  first so a second `--delete` reports "already gone" instead of
+  erroring, then runs `sam delete` in the background while polling
+  `describe-stack-events` in the foreground so the operator sees every
+  resource go by rather than a silent 10-minute wait. If the stack was
+  deployed with `AutoEmptyBucketsOnDelete=true` (the default is
+  `false`; setup asks interactively), the `BucketCleanup` custom
+  resource empties `ConsoleUiBucket` and `ResultsBucket` on the way
+  out. Otherwise `sam delete` will fail on non-empty buckets — empty
+  them manually first (`aws s3 rm --recursive`).
+
+For `--create-user` and `--delete`, values resolve from (in order): CLI
+flags → `sam/samconfig.toml` → interactive prompt. Neither depends on
+the file existing, so an operator can act on any stack from any
+checkout.
+
+Guardrails: profile is verified before any long-running step; the
+`Namespace + Stage ≤ 25 chars` invariant is checked up front (longest
+IAM role name in the template is 39 chars of suffix + 2 dashes = 41,
+IAM caps role names at 64); prerequisites are collected in one pass with
+per-OS install commands rather than failing on the first missing tool;
+modern distros with an externally-managed system Python get a clear
+"create a venv and re-run" message instead of a raw pip error mid-deploy.
+
+Full walkthrough in `docs/getting-started/QUICKSTART.md`.
+
+### Added — `AutoEmptyBucketsOnDelete` parameter + `BucketCleanup` Lambda
+
+A new SAM template parameter `AutoEmptyBucketsOnDelete` (default
+`false`) provisions a small custom-resource Lambda
+(`sam/lambdas/bucket_cleanup/`) that empties `ConsoleUiBucket` and
+`ResultsBucket` when the stack is deleted. Without this, `sam delete`
+fails on non-empty S3 buckets and the operator has to `aws s3 rm
+--recursive` them by hand.
+
+The Lambda includes a safety guard against silent data loss: on a
+Delete event it calls `describe_stacks(StackId)` on the parent stack
+and only empties the buckets when the stack is being **fully torn
+down** (`DELETE_IN_PROGRESS` or `ROLLBACK_IN_PROGRESS`). If the Delete
+event fires because someone toggled `AutoEmptyBucketsOnDelete=false`
+and ran `sam deploy` (an update), the parent stack is still around,
+the buckets are staying, and emptying them would wipe task results.
+Any error during `describe_stacks` defaults to skip (fail-safe: a
+non-empty bucket blocking `sam delete` is a fixable annoyance;
+silently wiping a real bucket is not).
+
+The Lambda also bundles a local `cfnresponse.py` (stdlib
+`urllib.request`) because AWS's built-in `cfnresponse` module is only
+injected for inline `ZipFile` functions — SAM `CodeUri` deploys don't
+get it, and the first time we tried without bundling the Lambda
+crashed at `import cfnresponse` and CloudFormation waited 1 h for a
+signal that never came.
+
+Enable it explicitly in production only with a backup strategy — see
+the parameter's `Description` in `sam/template.yaml` for the warning.
+
+### Changed — `polyris-deploy` reads CloudFormation outputs, not SSM
+
+`polyris-deploy` used to read the seven `/polyris/${Stage}/*` SSM
+parameters (wrapper ARN, orchestration role ARN, DDB table names,
+results bucket) to discover the deployed infra. It now calls
+`describe_stacks(<sam_stack_name>)` on the SAM stack and reads the
+same values from its `Outputs`. The SSM writes are gone (see the
+**Removed** entry below) — one source of truth, no more silent
+Stage collisions across stacks.
+
+New CLI knobs:
+* `--stack <name>` — explicit SAM stack to describe. Overrides the
+  `stack_name` field in config.py.
+* `stack_name` field in `config.py`'s `ENVIRONMENTS[stage]` — the SAM
+  stack to describe when only `--stage` is passed. **This is now a
+  required field** for `polyris-deploy` to work; the CLI prints an
+  actionable "add this to config.py, or pass --stack" error when it's
+  missing.
+
+New per-deploy visibility:
+* A pre-deploy summary is printed before the first AWS write:
+  ```
+  ── Deploy target ─────────────────────
+     dag:            <dag id>
+     stage:          <stage>
+     sam stack:      <stack_name>  ← reads CloudFormation outputs from here
+     namespace:      <namespace>
+     region:         <region>
+     profile:        <profile>
+     pipeline stack: <namespace>-<stage>-polyris-<dag_id>
+  ```
+* When a CLI flag overrides a config.py value (e.g., `--region
+  us-west-2` while config has `us-east-1`), a loud one-line warning
+  says exactly what got overridden — silent overrides used to be a
+  common source of "wait, why did it deploy to the wrong region"
+  debugging.
+
+Bug fixed on the way: `polyris-deploy` used to read `namespace` (and
+similar) from the *default* stage even when `--stage prod` was passed
+— because the module-level `polyris_config.namespace` accessor is
+scoped to `polyris_config.stage`, not the CLI arg. Every value is now
+read from `polyris_config.for_stage(<stage>)`.
+
+### Changed — `polyris-init --project` writes `pipelines/config.py` (one predictable location)
+
+Previously wrote `./config.py` — wherever the user ran the command. That drifted
+from what `scripts/setup-polyris.sh` produces (`pipelines/config.py`), so the
+same project ended up with two "canonical" config locations depending on how it
+was set up. The command now always writes `<cwd>/pipelines/config.py` and
+creates `pipelines/` if it doesn't exist. One rule, no filesystem-dependent
+branching — every layout agrees on the same path. The whole `pipelines/`
+directory is gitignored in the monorepo (real `account_id` / `profile` values
+never end up in commits).
+
+### Changed — `config.py` moves to `pipelines/config.py`; `ui/deploy.sh` no longer reads it
+
+`config.py` is a pipeline concern (it's what `polyris-deploy` walks up to
+find). Coupling `ui/deploy.sh` to it — the earlier `--stage` shortcut
+this changelog previously documented — was overengineering: a UI deploy
+targets one SAM stack, not a stage.
+
+Concrete changes:
+* `scripts/setup-polyris.sh` writes `pipelines/config.py` (not a
+  repo-root `config.py`). `/pipelines/` is already gitignored so real
+  `account_id` and `profile` values never get committed.
+* `ui/deploy.sh` no longer has a `--stage` flag or any dependency on
+  `polyris.config`. Interface: `./deploy.sh <stack> <region> [ui-out-dir]
+  [--profile NAME]`. The setup script passes explicit args.
+* The setup script now also scaffolds `pipelines/hello-world/dag.py` —
+  a minimal working pipeline pointing at the built-in TestQuick SFN the
+  SAM stack ships (ARN composed from `${Namespace}-${Stage}-polyris-test-quick`).
+  `cd pipelines/hello-world && polyris-deploy` works out of the box.
+
+### Changed — alert-secret SSM path is now scoped by Namespace + Stage
+
+The IAM permission on `NotifyRole` (and the SSM path shape produced by
+`ee/team/alert_secrets.py`) moved from the flat prefix
+`arn:aws:ssm:…:parameter/polyris/alerts/*` to
+`arn:aws:ssm:…:parameter/polyris/alerts/${Namespace}/${Stage}/*`. The
+flat prefix let two polyris stacks in the same account and region
+cross-read each other's alert secrets, and pipelines that happened to
+share a name across stacks collided on the same SSM keys. Namespace +
+Stage scoping closes both.
+
+`ConsoleApiFunction` now exposes `NAMESPACE` and `STAGE` env vars so
+the (EE) write side can prefix consistently.
+
+**Migration for existing users:** on `sam deploy` the narrower IAM
+takes effect. Any alert-secret SSM parameter you already provisioned
+under the old flat path (`/polyris/alerts/<pipeline>/<key>`) will no
+longer be readable — recreate it under
+`/polyris/alerts/<Namespace>/<Stage>/<pipeline>/<key>` (or delete and
+re-save the alert config in the console; the EE UI auto-writes the new
+shape). No polyris deployment prior to v0.94 shipped functioning alerts
+end-to-end, so this is essentially greenfield for real users.
+
+A regression test in `tests/sdk/test_reviewer_regressions_v078.py`
+pins the new IAM shape so a re-loosening fails CI.
+
+### Removed — legacy Stage-scoped SSM parameters
+
+The seven `AWS::SSM::Parameter` resources at path `/polyris/${Stage}/*`
+(`wrapper_arn`, `bulk_backfill_arn`, `pipeline_execution_role_arn`,
+`pipeline_registry_table`, `pipeline_tokens_table`,
+`asset_subscriptions_table`, `results_bucket`) are gone from
+`sam/template.yaml`. `polyris-deploy` no longer reads them — it uses the
+SAM stack's own CloudFormation Outputs via `describe_stacks`. The SSM
+copies had become dead-write and blocked a real deploy scenario: two
+CloudFormation stacks with the same `Stage` in one account/region
+collided on `/polyris/${Stage}/wrapper_arn` and CloudFormation's
+`AWS::EarlyValidation::ResourceExistenceCheck` refused the second
+changeset with no useful error.
+
+**Migration for existing users:** on your next `sam deploy` the seven
+SSM parameters will be deleted by CloudFormation. If you have external
+tooling (not polyris) that read `/polyris/${Stage}/*`, switch it to
+`aws cloudformation describe-stacks --query "Stacks[0].Outputs"` on the
+SAM stack. Alerts SSM secrets at `/polyris/alerts/*` are a separate
+feature and untouched.
+
+A regression test in `tests/sdk/test_reviewer_regressions_v078.py`
+locks in the removal so a re-introduction fails CI with a message
+pointing at this changelog entry.
 
 ### Fixed — hangs and stale-write hazards uncovered by a full-diff code review
 
@@ -940,8 +1161,6 @@ data" — no distinction between the graph's *structure* and a node's *current p
   upstream_failed, skipped, pending — that previously appeared in the table but weren't
   filterable). Added a drift-guard test asserting every Task/Execution status has a tone.
 
-## Unreleased
-
 ### Changed — merged All runs + All tasks into a single "History" view
 
 - The two list views are now one **History** destination in the nav rail, with a Runs/Tasks
@@ -958,10 +1177,6 @@ data" — no distinction between the graph's *structure* and a node's *current p
 - The Runs table's Backfill column, backfill status filters, and backfill detail links now render
   only when the paid surface provides the Backfills view, so the open-source build no longer
   advertises a backfill surface it doesn't ship.
-
-# Changelog
-
-## Unreleased
 
 ### Fixed — spacing between icon and label in buttons
 

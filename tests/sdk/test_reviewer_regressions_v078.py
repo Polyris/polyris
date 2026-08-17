@@ -296,3 +296,67 @@ def test_template_has_no_buildmethod_makefile_for_console_api():
         "ConsoleApiFunction has BuildMethod: makefile — that pattern was "
         "abandoned after the live-smoke failure. The SDK core comes from requirements.txt (ADR #102); the default Python builder handles it."
     )
+
+
+def test_template_has_no_stage_scoped_ssm_infra_params():
+    """The seven ``/polyris/${Stage}/*`` SSM params (wrapper_arn,
+    bulk_backfill_arn, pipeline_execution_role_arn, {pipeline_registry,
+    pipeline_tokens, asset_subscriptions}_table, results_bucket) were the
+    original pipe polyris-deploy used to discover infra. They collide
+    across stacks in the same region: two stacks with Stage=dev in the
+    same account both try to create /polyris/dev/wrapper_arn, and
+    CloudFormation's EarlyValidation blocks the second stack.
+
+    polyris-deploy now reads these from ``describe_stacks`` outputs
+    instead, so the SSM params are dead-write. This test locks in their
+    removal so nobody re-adds them without also re-solving the Stage
+    collision problem.
+
+    Note: the ``/polyris/alerts/*`` SSM parameters (Slack webhook,
+    PagerDuty key) are a *different* feature. They stay — the check below
+    matches only the Stage-scoped shape.
+    """
+    template = REPO_ROOT / "sam" / "template.yaml"
+    text = template.read_text()
+
+    # Match any AWS::SSM::Parameter whose Name embeds ``${Stage}`` in the path.
+    # A single hit is enough to fail.
+    hits = re.findall(r'Name:\s*!Sub\s*"/polyris/\$\{Stage\}/[^"]+"', text)
+    assert not hits, (
+        f"sam/template.yaml re-introduced Stage-scoped SSM params: {hits}. "
+        "polyris-deploy no longer reads these (it uses describe_stacks CFN "
+        "outputs). Two stacks with the same Stage in one account collide on "
+        "these — do not add them back. See CHANGELOG for the removal notes."
+    )
+
+
+def test_notify_role_ssm_permission_is_namespace_stage_scoped():
+    """The NotifyRole's SSM permission must be scoped to
+    ``/polyris/alerts/{Namespace}/{Stage}/*``, not the flat
+    ``/polyris/alerts/*`` prefix.
+
+    The flat prefix let two stacks in the same account/region cross-read
+    each other's alert secrets: a ``dev`` NotifyRole could grab
+    ``prod``'s Slack webhook + PagerDuty key, and pipelines that happened
+    to share a name across stacks collided on the same SSM keys. Scoping
+    by Namespace+Stage closes both.
+
+    Do not loosen this permission without also re-solving both problems.
+    """
+    template = REPO_ROOT / "sam" / "template.yaml"
+    text = template.read_text()
+
+    # Flat prefix — a match here is the regression we're guarding against.
+    assert 'parameter/polyris/alerts/*' not in text, (
+        "sam/template.yaml has a flat /polyris/alerts/* IAM Resource. "
+        "That prefix lets stacks in the same account/region cross-read "
+        "each other's alert secrets. Use "
+        "parameter/polyris/alerts/${Namespace}/${Stage}/* instead."
+    )
+
+    # And confirm the correct shape is present.
+    assert 'parameter/polyris/alerts/${Namespace}/${Stage}/*' in text, (
+        "NotifyRole IAM Resource is missing the expected "
+        "parameter/polyris/alerts/${Namespace}/${Stage}/* pattern. "
+        "The Notify Lambda reads alert secrets from that path."
+    )

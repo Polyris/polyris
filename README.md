@@ -36,6 +36,22 @@ and AWS runs them. Pay per run; idle cost is near zero.
 
 ---
 
+## Install
+
+One command — checks prerequisites, clones the latest release, and tells you
+what to run next:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
+```
+
+The installer picks the latest GitHub release tag automatically (falls back to
+`main` if no release exists yet). Pin a specific version with
+`POLYRIS_REF=v0.94.0` before the pipe, or use `main` for bleeding edge.
+
+Then follow the printed next step to deploy the SAM infra + UI. Full walkthrough
+including manual steps: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
+
 ## Where to Start
 
 | I want to... | Go to |
@@ -279,7 +295,7 @@ Full reference: [docs/reference/CLI.md](docs/reference/CLI.md)
 ## Project Structure
 
 ```
-├── pipelines/                    # Pipeline definitions
+├── pipelines/                    # Pipeline definitions (gitignored)
 │   ├── config.py                 # Shared config: ENVIRONMENTS, DEFAULT_STAGE
 │   └── my-pipeline/
 │       └── dag.py                # Pipeline definition

@@ -124,22 +124,40 @@ class TestScheduleResourceInTemplate:
         assert rule["Properties"]["Target"]["RoleArn"] == {"Fn::GetAtt": ["PipelineSchedulerRole", "Arn"]}
 
 
-class _FakeSSM:
-    class exceptions:
-        class ParameterNotFound(Exception):
-            pass
+_SAM_OUTPUTS = [
+    {"OutputKey": "DependencyWrapperArn", "OutputValue": ARN},
+    {"OutputKey": "OrchestrationRoleArn",
+     "OutputValue": "arn:aws:iam::000000000000:role/exec"},
+    {"OutputKey": "PipelineRegistryTable", "OutputValue": "registry"},
+    {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},
+    {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
+    {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
+]
 
-    def get_parameter(self, Name):
-        values = {
-            "wrapper_arn": ARN,
-            "pipeline_execution_role_arn": "arn:aws:iam::000000000000:role/exec",
-            "pipeline_registry_table": "registry",
-            "pipeline_tokens_table": "tokens",
-        }
-        key = Name.rsplit("/", 1)[-1]
-        if key not in values:
-            raise self.exceptions.ParameterNotFound(key)
-        return {"Parameter": {"Value": values[key]}}
+
+def _sam_stack_response():
+    return {"Stacks": [{"Outputs": _SAM_OUTPUTS, "Parameters": [
+        {"ParameterKey": "Stage", "ParameterValue": "dev"},
+        {"ParameterKey": "Namespace", "ParameterValue": "acme"},
+    ]}]}
+
+
+def _pipeline_stack_response(state_machine_arn):
+    return {"Stacks": [{"Outputs": [
+        {"OutputKey": "StateMachineArn", "OutputValue": state_machine_arn},
+    ]}]}
+
+
+def _stage_cfg_mock(mocker):
+    """Shape a MagicMock like polyris.config._StageConfig — the resolver reads
+    stack_name/namespace/region/profile as attributes and .get('account_id')."""
+    m = mocker.MagicMock()
+    m.stack_name = "acme-dev"
+    m.namespace = "acme"
+    m.region = "us-east-1"
+    m.profile = None
+    m.get = lambda k, default=None: {"account_id": "999999999999"}.get(k, default)
+    return m
 
 
 def _fake_current_schedule(state="ENABLED"):
@@ -167,16 +185,22 @@ class TestPostDeployScheduleStateEnforcement:
         boto.Session.return_value = session
         sts = mocker.MagicMock()
         sts.get_caller_identity.return_value = {"Account": "999999999999"}
-        ssm = _FakeSSM()
         cfn = mocker.MagicMock()
-        cfn.describe_stacks.return_value = {
-            "Stacks": [{"Outputs": [{"OutputKey": "StateMachineArn", "OutputValue": ARN}]}]
-        }
+
+        # describe_stacks is called for two stacks in a deploy: the SAM infra
+        # stack (returns wrapper ARN, tables, results bucket) and the pipeline
+        # stack itself (returns StateMachineArn after CloudFormation deploy).
+        def _describe_stacks(StackName):
+            if StackName == "acme-dev":
+                return _sam_stack_response()
+            return _pipeline_stack_response(ARN)
+        cfn.describe_stacks.side_effect = _describe_stacks
+
         scheduler = mocker.MagicMock()
         scheduler.get_schedule.return_value = _fake_current_schedule(current_schedule_state)
 
         def _client(name):
-            return {"sts": sts, "ssm": ssm, "cloudformation": cfn, "scheduler": scheduler}.get(
+            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
 
@@ -185,7 +209,7 @@ class TestPostDeployScheduleStateEnforcement:
         cfg.region = "us-east-1"
         cfg.namespace = "acme"
         cfg.profile = None
-        cfg.for_stage.return_value = {"account_id": "999999999999"}
+        cfg.for_stage.return_value = _stage_cfg_mock(mocker)
 
         mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
         mocker.patch("polyris.deploy._register_pipeline")
@@ -252,16 +276,19 @@ class TestPostDeployScheduleStateEnforcement:
         boto.Session.return_value = session
         sts = mocker.MagicMock()
         sts.get_caller_identity.return_value = {"Account": "999999999999"}
-        ssm = _FakeSSM()
         cfn = mocker.MagicMock()
-        cfn.describe_stacks.return_value = {
-            "Stacks": [{"Outputs": [{"OutputKey": "StateMachineArn", "OutputValue": ARN}]}]
-        }
+
+        def _describe_stacks(StackName):
+            if StackName == "acme-dev":
+                return _sam_stack_response()
+            return _pipeline_stack_response(ARN)
+        cfn.describe_stacks.side_effect = _describe_stacks
+
         scheduler = mocker.MagicMock()
         scheduler.get_schedule.side_effect = Exception("ThrottlingException")
 
         def _client(name):
-            return {"sts": sts, "ssm": ssm, "cloudformation": cfn, "scheduler": scheduler}.get(
+            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
 
@@ -270,7 +297,7 @@ class TestPostDeployScheduleStateEnforcement:
         cfg.region = "us-east-1"
         cfg.namespace = "acme"
         cfg.profile = None
-        cfg.for_stage.return_value = {"account_id": "999999999999"}
+        cfg.for_stage.return_value = _stage_cfg_mock(mocker)
         mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
         mocker.patch("polyris.deploy._register_pipeline")
 
