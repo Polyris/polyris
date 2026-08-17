@@ -104,41 +104,23 @@ else
 fi
 
 # ── GitHub Release ─────────────────────────────────────────────────────────────
+# Uses `gh release create --generate-notes`, which pulls PR titles + commit
+# subjects between the previous tag and this one and formats them itself
+# (contributor list + "Full Changelog" link included). No AI — straight from
+# git history, so the notes never claim work that wasn't done. Edit after
+# with `gh release edit $VERSION --notes-file <file>` if you want a custom
+# summary on top.
 
 if ! command -v gh &>/dev/null; then
-  echo "ℹ️  gh not found — skipping GitHub Release (create manually)"
+  echo "ℹ️  gh not found — skipping GitHub Release"
+  echo "   Create manually: gh release create $VERSION --title $VERSION --generate-notes"
   exit 0
 fi
 
-PREV_TAG="$(git describe --tags --abbrev=0 "$VERSION^" 2>/dev/null || true)"
-
-if [[ -z "$PREV_TAG" ]]; then
-  echo "ℹ️  no previous tag — skipping release notes generation"
-  NOTES="Initial release."
-elif ! command -v claude &>/dev/null; then
-  echo "⚠️  Unable to generate description automatically (claude not found)."
-  echo "   Please enter release notes below. Finish with a single dot (.) on its own line:"
-  NOTES=""
-  while IFS= read -r line; do
-    [[ "$line" == "." ]] && break
-    NOTES="${NOTES}${line}"$'\n'
-  done
-else
-  echo "→ generating release notes with Claude (${PREV_TAG}..${VERSION})..."
-  GIT_LOG="$(git log --oneline "$PREV_TAG".."$VERSION")"
-  NOTES="$(printf '%s' "$GIT_LOG" | claude -p \
-    "These are git commits for a Python SDK release (polyris — serverless data pipeline orchestration on AWS Step Functions). Write concise GitHub release notes. Group changes under: **Features**, **Fixes**, **Docs** — omit empty sections. Skip the version header. Be brief.")"
-fi
-
-echo ""
-echo "── Release notes preview ──────────────────────────────────────────────────"
-echo "$NOTES"
-echo "───────────────────────────────────────────────────────────────────────────"
-echo ""
-read -r -p "Create GitHub Release with these notes? [y/N] " confirm
+read -r -p "Create GitHub Release with auto-generated notes? [y/N] " confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
-  gh release create "$VERSION" --title "$VERSION" --notes "$NOTES"
+  gh release create "$VERSION" --title "$VERSION" --generate-notes
   echo "✅ GitHub Release $VERSION created"
 else
-  echo "ℹ️  skipped — create manually: gh release create $VERSION"
+  echo "ℹ️  skipped — create manually: gh release create $VERSION --title $VERSION --generate-notes"
 fi
