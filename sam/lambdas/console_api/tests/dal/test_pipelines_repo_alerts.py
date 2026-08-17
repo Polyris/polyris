@@ -20,9 +20,9 @@ class TestGetAlertConfig:
         cfg = {
             'enabled_channels': ['slack', 'pagerduty'],
             'slack': {'channel': '#acme-alerts', 'mentions': ['@oncall'],
-                      'webhook_param': '/polyris/alerts/p/slack-webhook'},
+                      'webhook_param': '/polyris/alerts/myorg/dev/p/slack-webhook'},
             'pagerduty': {'severity': 'critical',
-                          'routing_key_param': '/polyris/alerts/p/pd-key'},
+                          'routing_key_param': '/polyris/alerts/myorg/dev/p/pd-key'},
         }
         table = mocker.MagicMock()
         table.get_item.return_value = {'Item': {'pipeline_name': 'p', 'alert_config': cfg}}

@@ -430,22 +430,32 @@ CONFIG_PY_TEMPLATE = """# Polyris Project Configuration
 # Usage:
 #   polyris-deploy --stage dev
 #   polyris-deploy --stage prod --profile my-aws-profile
+#   cd ui && ./deploy.sh <stack-name> <region> --profile <profile>
+#
+# See docs/reference/CONFIGURATION.md for a per-field reference.
 # ============================================================
 
+# The dict KEYS ("dev", "prod") are the stage names. That's what --stage
+# picks. There is no separate "stage" field inside the dict.
 ENVIRONMENTS = {{
     "dev": {{
+        # SAM stack that `sam deploy` created (from sam/samconfig.toml).
+        # polyris-deploy and ui/deploy.sh both read outputs from this stack.
+        "stack_name": "{namespace}-dev",
+        # Prefix for pipeline stacks: "{{namespace}}-{{stage}}-polyris-{{dag_id}}"
         "namespace": "{namespace}",
-        "stage": "dev",
         "region": "us-east-1",
-        # "profile": "my-dev-profile",  # optional AWS profile
+        # "account_id": "111111111111",  # optional guard against wrong account
+        # "profile": "my-dev-profile",   # optional AWS profile
         # "roles": {{
         #     "etl": "arn:aws:iam::123456789012:role/etl-role",
         # }},
     }},
     "prod": {{
+        "stack_name": "{namespace}-prod",
         "namespace": "{namespace}",
-        "stage": "prod",
         "region": "us-east-1",
+        # "account_id": "222222222222",
         # "profile": "my-prod-profile",
         # "roles": {{
         #     "etl": "arn:aws:iam::123456789012:role/etl-role",
@@ -453,32 +463,43 @@ ENVIRONMENTS = {{
     }},
 }}
 
-# Default stage when --stage is not specified
+# Which stage KEY from ENVIRONMENTS is picked when --stage is not passed.
 DEFAULT_STAGE = "dev"
 """
 
 
 def init_project(base_dir: str = ".") -> None:
-    """Generate config.py template in the project root."""
-    config_path = Path(base_dir) / "config.py"
+    """Generate ``<base_dir>/pipelines/config.py``.
+
+    One rule, no conditional behaviour: the file always lands in a
+    ``pipelines/`` subdirectory (created if missing) so every layout — this
+    CLI, ``scripts/setup-polyris.sh``, and the docs — agree on exactly one
+    path. Pipelines already live under ``pipelines/`` next to it, and the
+    monorepo's ``.gitignore`` covers the whole directory so real
+    ``account_id`` / ``profile`` values never get committed.
+    """
+    base = Path(base_dir)
+    pipelines_dir = base / "pipelines"
+    config_path = pipelines_dir / "config.py"
 
     if config_path.exists():
         print(f"❌ config.py already exists: {config_path}")
         sys.exit(1)
 
-    # Ask for namespace
     namespace = input("  Project namespace (e.g. myorg): ").strip()
     if not namespace:
         namespace = "myorg"
 
+    pipelines_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(CONFIG_PY_TEMPLATE.format(namespace=namespace))
+
     print(f"""
 ✅ Project config created: {config_path}
 
 Next steps:
-  1. Edit config.py — set your namespace, region, AWS profiles
+  1. Edit {config_path} — set your namespace, region, AWS profiles
   2. Create your first pipeline:
-       polyris-init my-pipeline
+       cd pipelines && polyris-init my-pipeline
   3. Deploy infrastructure:
        polyris-deploy --stage dev
 """)

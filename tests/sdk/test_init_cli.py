@@ -166,25 +166,44 @@ class TestInteractiveInit:
 # ── init_project ─────────────────────────────────────────────────────────────
 
 class TestInitProject:
+    # Contract: config.py always lands at ``<base_dir>/pipelines/config.py``.
+    # One rule, no filesystem-dependent branching (was previously "put it
+    # wherever the caller ran the command", which drifted from what
+    # scripts/setup-polyris.sh writes).
 
     def test_writes_config_py_with_the_given_namespace(self, tmp_path, mocker):
         _inputs(mocker, "acme")
         init_project(base_dir=str(tmp_path))
-        cfg = (tmp_path / "config.py").read_text()
+        cfg = (tmp_path / "pipelines" / "config.py").read_text()
         assert "acme" in cfg
 
     def test_empty_namespace_falls_back_to_myorg(self, tmp_path, mocker):
         _inputs(mocker, "   ")
         init_project(base_dir=str(tmp_path))
-        assert "myorg" in (tmp_path / "config.py").read_text()
+        assert "myorg" in (tmp_path / "pipelines" / "config.py").read_text()
+
+    def test_creates_pipelines_dir_when_missing(self, tmp_path, mocker):
+        _inputs(mocker, "acme")
+        assert not (tmp_path / "pipelines").exists()
+        init_project(base_dir=str(tmp_path))
+        assert (tmp_path / "pipelines" / "config.py").exists()
+
+    def test_reuses_existing_pipelines_dir(self, tmp_path, mocker):
+        (tmp_path / "pipelines").mkdir()
+        (tmp_path / "pipelines" / "keepme.txt").write_text("kept\n")
+        _inputs(mocker, "acme")
+        init_project(base_dir=str(tmp_path))
+        assert (tmp_path / "pipelines" / "config.py").exists()
+        assert (tmp_path / "pipelines" / "keepme.txt").read_text() == "kept\n"
 
     def test_existing_config_exits_1_rather_than_overwriting(self, tmp_path, capsys):
-        (tmp_path / "config.py").write_text("# mine\n")
+        (tmp_path / "pipelines").mkdir()
+        (tmp_path / "pipelines" / "config.py").write_text("# mine\n")
         with pytest.raises(SystemExit) as e:
             init_project(base_dir=str(tmp_path))
         assert e.value.code == 1
         assert "already exists" in capsys.readouterr().out
-        assert (tmp_path / "config.py").read_text() == "# mine\n"
+        assert (tmp_path / "pipelines" / "config.py").read_text() == "# mine\n"
 
 
 # ── init_pipeline guard ──────────────────────────────────────────────────────
@@ -230,7 +249,7 @@ class TestMainDispatch:
     def test_project_flag_scaffolds_config_py(self, tmp_path, monkeypatch, mocker):
         _inputs(mocker, "acme")
         _run(monkeypatch, "--project", "--dir", str(tmp_path))
-        assert (tmp_path / "config.py").exists()
+        assert (tmp_path / "pipelines" / "config.py").exists()
 
     def test_missing_name_is_an_argparse_error(self, tmp_path, monkeypatch):
         with pytest.raises(SystemExit) as e:

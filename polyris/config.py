@@ -2,25 +2,29 @@
 Centralized configuration for polyris.
 
 Configuration is loaded from (in priority order):
-1. CLI arguments  (--stage, --profile, --namespace)
-2. Environment variables  (POLYRIS_NAMESPACE, POLYRIS_STAGE, POLYRIS_REGION)
+1. CLI arguments  (--stage, --stack, --profile, --namespace)
+2. Environment variables  (POLYRIS_NAMESPACE, POLYRIS_STAGE, POLYRIS_STACK, POLYRIS_REGION)
 3. config.py in project root  (ENVIRONMENTS dict)
 
 Example config.py in your pipelines repo:
 
+    # The dict KEYS ("dev", "prod") are the stage names — that's what
+    # --stage picks. Everything inside a stage's dict is the environment
+    # config for that stage.
     ENVIRONMENTS = {
         "dev": {
+            "stack_name": "polyris-dev",   # SAM stack name (matches samconfig.toml)
             "namespace": "acme",
-            "stage": "dev",
             "region": "us-east-1",
-            "profile": "my-dev-profile",  # optional
+            "profile": "my-dev-profile",   # optional
+            "account_id": "123456789012",  # optional guard
             "roles": {
                 "etl": "arn:aws:iam::123456789012:role/etl-role",
             },
         },
         "prod": {
+            "stack_name": "polyris-prod",
             "namespace": "acme",
-            "stage": "prod",
             "region": "us-east-1",
         },
     }
@@ -32,6 +36,7 @@ Usage:
 
     print(config.namespace)
     print(config.stage)
+    print(config.stack_name)
     print(config.profile)
     role = config.roles["etl"]
 
@@ -192,6 +197,13 @@ class PolyrisConfig:
         return self._env_config().get("profile", None)
 
     @property
+    def stack_name(self) -> Optional[str]:
+        env_value = os.environ.get("POLYRIS_STACK") or os.environ.get("POLYRIS_STACK_NAME")
+        if env_value:
+            return env_value
+        return self._env_config().get("stack_name", None)
+
+    @property
     def roles(self) -> _RolesDict:
         return _RolesDict(self._env_config().get("roles", {}))
 
@@ -243,6 +255,11 @@ class _StageConfig:
     def profile(self) -> Optional[str]:
         return (os.environ.get("POLYRIS_PROFILE") or os.environ.get("AWS_PROFILE")
                 or self._env_config().get("profile", None))
+
+    @property
+    def stack_name(self) -> Optional[str]:
+        return (os.environ.get("POLYRIS_STACK") or os.environ.get("POLYRIS_STACK_NAME")
+                or self._env_config().get("stack_name", None))
 
     @property
     def roles(self) -> _RolesDict:

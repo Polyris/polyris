@@ -139,7 +139,8 @@ the named entry points below for deployment workflows.
 Create a new pipeline or initialize project config.
 
 ```bash
-# Initialize project config.py (run once in project root)
+# Initialize project — writes pipelines/config.py (creates pipelines/ if missing).
+# Always writes to the same location so the layout matches scripts/setup-polyris.sh.
 polyris-init --project
 
 # Create a new pipeline (creates my-pipeline/dag.py)
@@ -162,7 +163,7 @@ polyris-init my-pipeline --dir ./pipelines
 | Option | Description |
 |--------|-------------|
 | `name` | Pipeline name (optional with `--project` or `-i`) |
-| `--project` | Generate `config.py` template in current directory |
+| `--project` | Generate `pipelines/config.py` (creates `pipelines/` if missing) |
 | `--local` | Create pipeline without AWS (for exploring DSL) |
 | `--schedule` | Cron schedule (default: `@daily`) |
 | `--dir` | Base directory (default: `.`) |

@@ -1,23 +1,15 @@
 # Complete Setup Guide (From Scratch)
 
-Deploy polyris to a blank AWS account. ~30-45 minutes.
+Deploy polyris to a blank AWS account. ~10-15 minutes.
+
+Two paths after the prerequisites: run the one-command script, or step
+through it manually. Same result either way — pick whichever fits.
 
 ---
 
-## Overview
+## Prerequisites
 
-```
-1. Prerequisites (5 min)     — AWS CLI, SAM CLI, Node.js
-2. Configure (5 min)         — samconfig.toml
-3. Deploy Infrastructure (10 min) — sam build && sam deploy
-4. Deploy UI (5 min)         — npm build + ui/deploy.sh
-5. Create first user (5 min) — Cognito (if auth enabled)
-6. Deploy first pipeline (5 min) — polyris-deploy
-```
-
----
-
-## Step 1: Prerequisites
+Same for both installation paths below.
 
 ### AWS CLI
 ```bash
@@ -54,18 +46,97 @@ nvm install 22 && nvm use 22
 node --version  # must be >= 18.18 (22 LTS recommended)
 ```
 
----
+### Clone the repo
 
-## Step 2: Configure
+Two ways: run the one-line installer, or `git clone` yourself.
 
-### 2.1 Clone the repo
+**Installer** — checks prereqs, clones into `~/polyris` (override with
+`POLYRIS_DIR`), then prints the next command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
+```
+
+**Manual clone** — same result, if you prefer:
 
 ```bash
 git clone https://github.com/Polyris/polyris.git
 cd polyris
 ```
 
-### 2.2 Create samconfig.toml
+Either way, after this step you're at the repo root and can proceed with
+Option A (script) or Option B (manual) below.
+
+---
+
+## Option A — one-command install
+
+Meant for the monorepo layout (SAM + UI + pipelines in one checkout).
+
+### Install infra + UI together
+
+```bash
+./scripts/setup-polyris.sh
+```
+
+Interactive. Prompts for AWS profile, region, namespace, stage, stack name,
+whether to enable Cognito auth (and if yes, admin email + username). Then:
+
+1. Writes `sam/samconfig.toml` and `pipelines/config.py`
+2. `pip install -e .` for the polyris SDK (so you get `polyris-init` and
+   `polyris-deploy` for the pipeline step)
+3. Runs `sam build && sam deploy` (~10-15 min)
+4. Builds and deploys the UI (`npm ci && npm run build`, then `ui/deploy.sh`
+   with explicit positional args)
+5. Scaffolds `pipelines/hello-world/dag.py` — a minimal, immediately-runnable
+   pipeline pointing at the built-in TestQuick SFN the SAM stack ships
+6. Creates the first Cognito admin user (only if auth is enabled) and prints
+   the temp password
+7. Prints the Console URL / API URL / login and the one command to deploy
+   the scaffolded pipeline
+
+The script re-prompts before overwriting existing files, so re-running is
+safe.
+
+### Add another Cognito user later
+
+```bash
+./scripts/setup-polyris.sh --create-user
+```
+
+Prompts for email + username and asks whether to set a permanent password
+now or generate a temp one. Reads `sam/samconfig.toml` for the stack.
+
+### Delete infra + UI together
+
+```bash
+./scripts/setup-polyris.sh --delete
+```
+
+Resolves stack / region / profile from CLI flags → `sam/samconfig.toml` →
+interactive prompt, asks for confirmation, then runs `sam delete`. If the
+stack was deployed with `AutoEmptyBucketsOnDelete=true` (setup asks for
+this; default is **no**), `ResultsBucket` and `ConsoleUiBucket` are
+auto-emptied by the built-in `BucketCleanup` Lambda. Otherwise `sam
+delete` will fail on the non-empty buckets and you must empty them
+manually first (`aws s3 rm --recursive s3://<bucket>`). Local
+`sam/samconfig.toml`, `pipelines/config.py`, and any pipelines you
+scaffolded are kept so you can redeploy.
+
+> **Warning:** deletion is permanent. `ResultsBucket` holds task xcom
+> output; once emptied it's gone.
+
+---
+
+## Option B — install each part separately
+
+The rest of this guide walks the same steps manually. Use this if you want
+to see what the script does, or if your layout isn't a monorepo (UI in a
+different repo, pipelines separate, …).
+
+---
+
+## Step 1: Configure
 
 ```bash
 cd sam
@@ -83,26 +154,36 @@ capabilities      = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
 resolve_s3        = true
 confirm_changeset = false
 parameter_overrides = [
-  "Namespace=myorg",         # prefix for all resource names: myorg-dev-polyris-*
-  "Stage=dev",               # dev | prod
+  "Namespace=myorg",              # prefix for all resource names: myorg-dev-polyris-*
+  "Stage=dev",                    # dev | prod
   "AwsRegion=us-east-1",
-  "EnableCognitoAuth=true",  # set false to skip auth during initial testing
+  "EnableCognitoAuth=true",       # set false to skip auth during initial testing
+  "AutoEmptyBucketsOnDelete=true",# DEV/TEST — lets `sam delete` clean up the
+                                  # S3 buckets automatically. NEVER enable in
+                                  # prod without a backup (silently wipes
+                                  # every task result in ResultsBucket).
 ]
 ```
+
+Namespace + Stage together must be **≤ 25 characters** — the longest IAM role
+name in the template is `{namespace}-{stage}-polyris-notify-asset-subscribers-role`,
+and AWS caps role names at 64. The script guardrails this; the manual path
+doesn't, so watch the length here.
 
 Everything else in `samconfig.toml` (custom domain, log levels) is optional.
 
 > **Your stack name lives in `samconfig.toml`** — the `stack_name` field (the
-> example sets `polyris-dev`). The `sam` commands read it straight from there, so
-> that file is the single source of truth. Two things **can't** read it, though:
-> the UI deploy (`./deploy.sh`) and the AWS CLI output lookups (`describe-stacks`).
-> Give them the same name or they fail with *"Stack … does not exist"*.
+> example above sets `myorg-dev`). The `sam` commands read it straight from
+> there, so that file is the single source of truth. Two things **can't** read
+> it, though: the UI deploy (`./deploy.sh`) and the AWS CLI output lookups
+> (`describe-stacks`). Give them the same name or they fail with
+> *"Stack … does not exist"*.
 
 Set your values as shell variables **once in this terminal** so the commands below
 stay copy-pasteable. Keep `STACK_NAME` equal to `stack_name` in `samconfig.toml`:
 
 ```bash
-STACK_NAME=polyris-dev     # = stack_name in samconfig.toml
+STACK_NAME=myorg-dev       # = stack_name in samconfig.toml
 AWS_REGION=us-east-1       # = AwsRegion in samconfig.toml
 AWS_PROFILE=polyris-dev    # the profile from `aws configure --profile …`
 ```
@@ -112,7 +193,7 @@ a hidden default. Opening a new terminal later? Set them again first.
 
 ---
 
-## Step 3: Deploy Infrastructure
+## Step 2: Deploy Infrastructure
 
 ```bash
 cd sam
@@ -127,9 +208,9 @@ First deploy takes ~5-10 minutes. Creates:
 - 6 Lambda functions
 - API Gateway, Cognito, S3, CloudFront
 
-All outputs are written to SSM automatically:
+Stack outputs (wrapper ARN, table names, bucket, Cognito IDs, …) are visible via:
+
 ```bash
-# View stack outputs
 aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
@@ -138,18 +219,25 @@ aws cloudformation describe-stacks \
   --profile "$AWS_PROFILE"
 ```
 
+`polyris-deploy` and `ui/deploy.sh` both read the same outputs at deploy time —
+you don't have to copy anything by hand.
+
 ---
 
-## Step 4: Deploy UI
+## Step 3: Deploy UI
 
 ```bash
 cd ../ui
 npm ci && npm run build
-# Pass the stack name explicitly — it must match `stack_name` in samconfig.toml.
-# (Omitting it makes deploy.sh fall back to a `polyris-dev` default, which breaks
-# if you renamed the stack.)
+# Pass the stack name + region positionally — deploy.sh does not read
+# samconfig.toml, so omitting either exits with "stack-name and region are required".
 ./deploy.sh "$STACK_NAME" "$AWS_REGION" ./out --profile "$AWS_PROFILE"
 ```
+
+> `ui/deploy.sh` takes stack + region positionally (and `--profile` as a
+> flag). It deliberately does **not** read `pipelines/config.py` — UI deploy
+> is a per-stack action; the pipeline config is a per-pipeline concern.
+> Pass the same values you used for `sam deploy`.
 
 The script reads CloudFormation outputs and generates `config.js` automatically — including auth settings. **To disable auth or change any SAM parameter, update `samconfig.toml`, run `sam deploy`, then rerun `./deploy.sh`. No frontend code changes needed.**
 
@@ -180,9 +268,24 @@ Open the URL in your browser. You should see the polyris Console.
 
 ---
 
-## Step 5: Create First User (Cognito)
+## Step 4: Create First User (Cognito)
 
 Skip if you set `EnableCognitoAuth=false`.
+
+### With the script (recommended)
+
+```bash
+./scripts/setup-polyris.sh --create-user
+```
+
+Interactive: prompts for email + username, then asks whether to set a
+permanent password immediately or generate a temp one (user changes on
+first login). Reads `sam/samconfig.toml` for stack / region / profile so
+you don't have to pass them.
+
+Run it as many times as you want to add more users.
+
+### Manually with the AWS CLI
 
 ```bash
 # Get User Pool ID
@@ -220,11 +323,23 @@ Log in at the CloudFront URL.
 
 ---
 
-## Step 6: Deploy First Pipeline
+## Deploy Your First Pipeline
+
+Applies to **both** installation paths. The infra + UI are up; pipelines are
+what actually do work.
 
 ### Install the SDK
 
-If you cloned the repo in Step 2.1, install directly from your local checkout:
+**If you used the script (Option A):** the SDK is already installed AND
+`pipelines/config.py` + `pipelines/hello-world/dag.py` are already
+scaffolded. You can skip straight to *Deploy* below:
+
+```bash
+cd pipelines/hello-world && polyris-deploy
+```
+
+**If you installed manually (Option B):** install directly from the
+checkout you made in Prerequisites:
 
 ```bash
 cd ..   # repo root (if you're still in sam/)
@@ -241,21 +356,27 @@ Replace `v0.93.0` with the latest tag from the [tags page](https://github.com/Po
 
 ### Configure config.py
 
-In the **pipelines repo root**, create `config.py`:
+**If you used the script (Option A):** `pipelines/config.py` already
+exists — skip to *Deploy* below.
+
+**If you installed manually (Option B):** create `pipelines/config.py`
+(polyris walks up from each pipeline directory to find it):
 
 ```python
-# config.py
+# pipelines/config.py
+# The dict KEYS ("dev", "prod") are the stage names — that's what --stage picks.
 ENVIRONMENTS = {
     "dev": {
-        "namespace": "myorg",
-        "stage": "dev",
-        "region": "us-east-1",
-        # "profile": "my-aws-profile",  # optional
+        "stack_name": "myorg-dev",     # matches sam/samconfig.toml stack_name
+        "namespace":  "myorg",
+        "region":     "us-east-1",
+        # "profile":    "my-aws-profile",  # optional
+        # "account_id": "111111111111",    # optional — guards against wrong account
     },
     "prod": {
-        "namespace": "myorg",
-        "stage": "prod",
-        "region": "us-east-1",
+        "stack_name": "myorg-prod",
+        "namespace":  "myorg",
+        "region":     "us-east-1",
     },
 }
 
@@ -267,7 +388,11 @@ Or generate it automatically:
 polyris-init --project
 ```
 
-This is read by `polyris-deploy` when deploying pipelines.
+Read by `polyris-deploy` — it pulls wrapper ARN, role ARN, DDB tables from
+the SAM stack named in `stack_name`. `ui/deploy.sh` does **not** read this
+file; it takes stack / region / profile as CLI args (see Step 3 above).
+
+See [CONFIGURATION.md](../reference/CONFIGURATION.md) for a per-field reference.
 
 ### Deploy
 
@@ -282,7 +407,7 @@ cd hello-world
 #   --region "$AWS_REGION" --profile "$AWS_PROFILE" \
 #   --query "Stacks[0].Outputs[?OutputKey=='TestQuickSfnArn'].OutputValue" --output text)
 
-polyris-deploy --stage dev --profile "$AWS_PROFILE"
+polyris-deploy --stage dev
 ```
 
 Open the Console → see `hello-world` in the pipeline list → click **Run**.
@@ -291,40 +416,57 @@ Open the Console → see `hello-world` in the pipeline list → click **Run**.
 
 ## Multiple Environments
 
-Each environment is a separate CloudFormation stack with its own `samconfig.toml`:
+Each environment is a separate CloudFormation stack with its own SAM config file.
 
 ```bash
 # dev — already done above
 
 # prod
 cp samconfig.toml samconfig.prod.toml
-# Edit samconfig.prod.toml: Stage=prod, Namespace=myorg, different Slack channel, etc.
+# Edit samconfig.prod.toml — change stack_name, profile, Stage=prod, and
+# whatever else differs (alert channel, log level, …).
 
-# Prod is a SEPARATE stack — give it its own name/profile (don't reuse the dev vars).
 sam build
-sam deploy --config-file samconfig.prod.toml \
-  --stack-name polyris-prod --region us-east-1 --profile polyris-prod
+sam deploy --config-file samconfig.prod.toml
+# sam reads stack_name / region / profile from the config-file, no need to
+# repeat them on the CLI.
 ```
 
-Pipelines target environments via `--stage`:
+Add a matching entry under `ENVIRONMENTS["prod"]` in `config.py` (with the
+prod stack name, profile, and roles). Pipelines then target the environment
+by stage key:
+
 ```bash
-polyris-deploy --stage prod --profile polyris-prod   # prod profile, not the dev one
+polyris-deploy --stage prod
 ```
 
 ---
 
 ## Clean Up
 
+If you installed with the script, tear down with:
+
+```bash
+./scripts/setup-polyris.sh --delete
+```
+
+Manual path:
+
 ```bash
 # Remove pipelines first
 cd pipelines/hello-world
 polyris-destroy --stage dev
 
-# Remove infrastructure (set STACK_NAME/AWS_REGION/AWS_PROFILE as in Step 2.2 if
+# Remove infrastructure (set STACK_NAME/AWS_REGION/AWS_PROFILE as in Step 1 if
 # this is a fresh terminal).
 cd sam
 sam delete --stack-name "$STACK_NAME" --region "$AWS_REGION" --profile "$AWS_PROFILE"
 ```
+
+`sam delete` empties `ConsoleUiBucket` and `ResultsBucket` automatically **only
+when `AutoEmptyBucketsOnDelete=true`** is set in `samconfig.toml` (see Step
+2.2). Without that flag it errors out on non-empty buckets and you have to
+`aws s3 rm --recursive` them first.
 
 ---
 

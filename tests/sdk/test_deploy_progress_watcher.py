@@ -193,24 +193,6 @@ class TestWatchStackEvents:
         assert out.index("FirstThing") < out.index("SecondThing")
 
 
-class _FakeSSM:
-    class exceptions:
-        class ParameterNotFound(Exception):
-            pass
-
-    def get_parameter(self, Name):
-        values = {
-            "wrapper_arn": ARN,
-            "pipeline_execution_role_arn": "arn:aws:iam::000000000000:role/exec",
-            "pipeline_registry_table": "registry",
-            "pipeline_tokens_table": "tokens",
-        }
-        key = Name.rsplit("/", 1)[-1]
-        if key not in values:
-            raise self.exceptions.ParameterNotFound(key)
-        return {"Parameter": {"Value": values[key]}}
-
-
 class TestDeployStillWorksExactlyAsBefore:
     """The watcher must never change the deploy's actual outcome. Each test
     here breaks the watcher in some way and confirms deploy_pipeline's own
@@ -223,11 +205,29 @@ class TestDeployStillWorksExactlyAsBefore:
         boto.Session.return_value = session
         sts = mocker.MagicMock()
         sts.get_caller_identity.return_value = {"Account": "999999999999"}
-        ssm = _FakeSSM()
         cfn = mocker.MagicMock()
-        cfn.describe_stacks.return_value = {
-            "Stacks": [{"Outputs": [{"OutputKey": "StateMachineArn", "OutputValue": ARN}]}]
-        }
+        # describe_stacks is called twice by deploy_pipeline: once for the SAM
+        # infra stack (to read wrapper ARN / role ARN / table names) and once
+        # for the pipeline stack (to read StateMachineArn after deploy). The
+        # side_effect switches on which stack was asked for.
+        _SAM_OUTPUTS = [
+            {"OutputKey": "DependencyWrapperArn", "OutputValue": ARN},
+            {"OutputKey": "OrchestrationRoleArn",
+             "OutputValue": "arn:aws:iam::000000000000:role/exec"},
+            {"OutputKey": "PipelineRegistryTable", "OutputValue": "registry"},
+            {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},
+            {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
+            {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
+        ]
+        _PIPELINE_OUTPUTS = [{"OutputKey": "StateMachineArn", "OutputValue": ARN}]
+
+        def _describe_stacks(StackName):
+            outs = _SAM_OUTPUTS if StackName == "acme-dev" else _PIPELINE_OUTPUTS
+            return {"Stacks": [{"Outputs": outs, "Parameters": [
+                {"ParameterKey": "Stage", "ParameterValue": "dev"},
+                {"ParameterKey": "Namespace", "ParameterValue": "acme"},
+            ]}]}
+        cfn.describe_stacks.side_effect = _describe_stacks
         if cfn_events_behavior:
             cfn_events_behavior(cfn)
         scheduler = mocker.MagicMock()
@@ -238,7 +238,7 @@ class TestDeployStillWorksExactlyAsBefore:
         }
 
         def _client(name):
-            return {"sts": sts, "ssm": ssm, "cloudformation": cfn, "scheduler": scheduler}.get(
+            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
 
@@ -247,7 +247,16 @@ class TestDeployStillWorksExactlyAsBefore:
         cfg.region = "us-east-1"
         cfg.namespace = "acme"
         cfg.profile = None
-        cfg.for_stage.return_value = {"account_id": "999999999999"}
+        # for_stage must return an object with the same attribute surface as
+        # _StageConfig — plain dicts don't work because the resolver reads
+        # .stack_name / .namespace / .region / .profile as attributes.
+        stage_cfg = mocker.MagicMock()
+        stage_cfg.stack_name = "acme-dev"
+        stage_cfg.namespace = "acme"
+        stage_cfg.region = "us-east-1"
+        stage_cfg.profile = None
+        stage_cfg.get = lambda k, default=None: {"account_id": "999999999999"}.get(k, default)
+        cfg.for_stage.return_value = stage_cfg
         mocker.patch("polyris.deploy._register_pipeline")
         return session
 

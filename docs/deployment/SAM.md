@@ -97,11 +97,17 @@ aws cloudformation describe-stacks \
   --profile "$AWS_PROFILE"
 ```
 
-Key outputs written to SSM automatically:
-- `/polyris/{stage}/wrapper_arn`
-- `/polyris/{stage}/pipeline_registry_table`
-- `/polyris/{stage}/pipeline_tokens_table`
-- `/polyris/{stage}/asset_subscriptions_table`
+Key outputs (all live on the SAM stack itself; `polyris-deploy` reads them
+via `describe_stacks` — no SSM copy is written anymore, see
+[CHANGELOG](../../CHANGELOG.md)):
+- `DependencyWrapperArn`
+- `OrchestrationRoleArn`
+- `PipelineRegistryTable`
+- `PipelineTokensTable`
+- `AssetSubscriptionsTable`
+- `ResultsBucket`
+- `ConsoleUiBucket`, `ConsoleUiDistributionId`, `ConsoleUiUrl`, `ConsoleApiUrl`
+- `CognitoUserPoolId`, `CognitoClientId` (only when `EnableCognitoAuth=true`)
 
 ## Destroy
 
