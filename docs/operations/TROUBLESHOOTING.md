@@ -155,7 +155,7 @@ curl -X POST https://api.example.com/api/execution-stop?id={arn}
 `none_skipped`) resolves `skipped`, and the run still shows `success`, even though
 nothing upstream failed.
 
-**This is expected behavior (ADR #115).** The task's trigger condition simply never
+**This is expected behavior (ADR #115).** The task's trigger condition never
 occurred — e.g. an `all_skipped` task with no skipped upstreams has nothing to react to.
 Before this fix, this case incorrectly showed `upstream_failed` (red) and marked the
 whole run `aborted`; it now correctly resolves as a no-op. No action needed — this is

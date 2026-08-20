@@ -72,9 +72,12 @@ document exactly what remains and why (backlog, TODO, comment).
 If asked a question — give the answer, don't jump into doing things.
 If asked to do something — do it. If something is unclear — ask, don't decide on your own.
 
-**9. Always keep documentation up to date**
+**9. Always keep documentation up to date — same commit as the code**
 Every change that affects behavior, API, config, or architecture must be reflected
-in the relevant docs in the same delivery. Stale docs are bugs.
+in the relevant docs in **the same commit**, not "in a follow-up" and not "in the
+same PR but separate commit". Reviewers reject a code change whose docstring,
+README, or `docs/` entry didn't get updated alongside. Stale docs are bugs, and
+they rot from the moment code lands ahead of them.
 
 **10. Documentation and code comments are always and only in English**
 All documentation, code comments, ADRs, README files, and CHANGELOG entries
@@ -446,6 +449,98 @@ Then end with a **completeness report** — mandatory, not optional:
 No report ⇒ not done. The maintainer may reject any "done" that lacks it, or simply ask
 **"show me the blast radius."** This gate reduces misses; it does not promise zero — which
 is exactly why the explicit report exists: so verification is auditable, not trusted blindly.
+
+**24. OSS describes what OSS ships — silence about everything else**
+
+Everything the OSS repo produces (docs, UI, code, comments, examples, help text, error
+messages, ADRs, CHANGELOG entries) must be evaluated by a single question: *would a
+user reading only this repo be able to use this?* If yes, document it. If no, do not
+mention it — not as "coming soon", not as "available in the paid tier", not as
+"greyed out in OSS", not as a marketing tease, not as a comparison. The paid overlay
+lives in a separate repo (`polyris-ee`) and owns its own docs and UI slots; the OSS
+repo shows OSS, whole stop.
+
+**Why:** The seam is physical (ADR #97/#98/#99/#100). The OSS user cannot buy, cannot
+unlock, cannot upgrade. Naming something they can't use is (a) dishonest UX and
+(b) muddies a boundary that every code-review already has to police. Every "just a
+tiny mention" gets copied by the next PR and the seam rots from the docs side inward.
+A concrete forbidden-features list would rot too — features move in and out of OSS,
+and the principle has to survive that.
+
+**How to apply the test:**
+- Editing something in this repo? Ask "does OSS ship this?" If no, remove the
+  reference — the paid overlay owns its own surface.
+- Adding a code path that only matters when a paid tier is present? It doesn't belong
+  here; put it in `polyris-ee`. If a shared abstraction needs a hook, the hook is
+  neutral (e.g. a slot on `PaidSurface` in `ee-contract.ts`, empty in OSS).
+- A CHANGELOG entry, ADR, or design note that discusses a non-OSS feature? Write it
+  in the `polyris-ee` repo's changelog / ADRs, not this one.
+- Help / tooltip / error text? Same rule. If a shortcut / view / setting only exists
+  in paid, its help entry lives in the paid overlay (ADR #99). OSS help lists only
+  what OSS ships.
+
+**Silence is the allowed pattern.** If a section would only make sense with a
+non-OSS feature, delete the section from OSS. If a parameter has no OSS-visible use,
+omit it from OSS docs regardless of whether the code technically still accepts it —
+the paid overlay's docs describe what the paid overlay's users see.
+
+**Watch for comparison phrases**, which sneak in even when the primary content is
+OSS-safe. Anything of the shape "X is not yet in OSS", "OSS build has no Y",
+"available in the paid tier", "compared to the full Z", "coming to OSS soon" — the
+comparison itself is the violation, not the specific feature name.
+
+**Experimental OSS features are OSS**, and you document them normally. "Experimental"
+just means the API may change; it does not mean "compare to the paid version" or
+"coming with a UI later". Say "experimental, API may change" and stop there.
+
+**Seam-defining ADRs are the one legitimate exception.** ADRs that document *how the
+OSS/paid boundary itself works* (the tier-entitlement mechanism, the OSS-scaffold /
+paid-overlay pattern, the `paidSurface` slot contract) necessarily discuss both sides
+— that's the topic. These stay in OSS because they define the seam from the OSS side.
+The distinguishing test: an ADR describing *a paid feature's behaviour* belongs in
+`polyris-ee`; an ADR describing *the mechanism that gates paid features* belongs here.
+Do not use this exception to smuggle marketing into a "seam" doc.
+
+**25. Documentation obeys Clear / Concise / Structured + Diátaxis**
+
+Every doc, docstring, code comment, error message, and UI string ships against four
+tenets — three about *how* to write and one about *what* the doc is for.
+
+The three writing tenets (from GitHub's "Documentation done right" guide):
+
+1. **Clear** — plain language for the target audience; define or replace acronyms
+   and jargon that the reader can't be assumed to know.
+2. **Concise** — document what a reader needs to succeed, not every edge case.
+   One topic per document; tangents go to a separate doc with a cross-link.
+3. **Structured** — most important information first; headings and (for longer
+   docs) a table of contents so a scanner can locate answers without reading top
+   to bottom; consistent styling across the repo; bold/lists used sparingly
+   (≲ 10% of the text) so the emphasis actually emphasises.
+
+The purpose tenet (Diátaxis framework):
+
+Every doc fits **exactly one** of these four purposes; a doc that tries to be more
+than one becomes bad at both.
+
+- **Tutorial** — learning-oriented (`docs/getting-started/TUTORIAL.md`).
+- **How-to guide** — goal-oriented, "how do I do X" (`docs/getting-started/QUICKSTART.md`,
+  `docs/deployment/*`).
+- **Reference** — technical specification, lookup (`docs/reference/*`,
+  `docs/features/DSL.md`).
+- **Explanation** — understanding-oriented, "why this design"
+  (`docs/architecture/*`, ADRs).
+
+When you start a new doc, name its Diátaxis category first; when you edit an
+existing one, notice if you're drifting across categories (a "how to configure X"
+doc that grows a "and here's the theory of X" section is drifting — split it).
+
+**Where the detailed application lives:** `docs/CLAUDE.md`. Read that before editing
+anything under `docs/`. This principle exists so the tenets have a name in this
+repo — future PRs and reviews can point at "#25 Structured" instead of debating
+style from scratch.
+
+**Documentation-specific rules** live in `docs/CLAUDE.md`. Read that before editing
+anything under `docs/`.
 
 ---
 

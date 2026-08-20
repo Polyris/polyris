@@ -27,13 +27,13 @@ aws cloudformation describe-stacks --stack-name polyris-test \
 
 | Output | Task decorator |
 |---|---|
-| `LambdaFunctionName` | `@task.lambda_(function_name=...)` |
+| `LambdaFunctionName` | `@task.lambda_function(function_name=...)` |
 | `StateMachineArn` | `@task.sfn(arn=...)` |
-| `GlueJobName` | `@task.glue(job_name=...)` |
-| `AthenaDatabase` / `AthenaOutputLocation` | `@task.athena(database=..., output_location=...)` |
-| `EcsClusterName` / `EcsTaskDefinitionArn` | `@task.ecs(cluster=..., task_definition=...)` |
-| `Subnets` / `SecurityGroup` | `@task.ecs(subnets=[...], security_groups=[...])` |
-| `BatchJobDefinitionArn` / `BatchJobQueueArn` | `@task.batch(job_definition=..., job_queue=...)` |
+| `GlueJobName` | `@task.glue_job(job_name=...)` |
+| `AthenaDatabase` / `AthenaOutputLocation` | `@task.athena_query(database=..., output_location=...)` |
+| `EcsClusterName` / `EcsTaskDefinitionArn` | `@task.ecs_task(cluster=..., task_definition=...)` |
+| `Subnets` / `SecurityGroup` | `@task.ecs_task(subnets=[...], security_groups=[...])` |
+| `BatchJobDefinitionArn` / `BatchJobQueueArn` | `@task.batch_job(job_definition=..., job_queue=...)` |
 
 For ECS, the test container is named **`main`** — matching
 `container_overrides={"ContainerOverrides": [{"Name": "main", ...}]}` in
@@ -76,9 +76,9 @@ and exit. That's enough for every task in a pipeline to run green.
 ## EMR is not included
 
 EMR is the one task type this stack leaves out, because a cluster costs money just
-by existing (it must stay running so `@task.emr` can add steps). To exercise the EMR
+by existing (it must stay running so `@task.emr_step` can add steps). To exercise the EMR
 task, create a small cluster yourself and pass its `j-XXXX` id to
-`@task.emr(emr_cluster_id=...)` — or just drop the EMR task from `04_task_types`
+`@task.emr_step(emr_cluster_id=...)` — or just drop the EMR task from `04_task_types`
 while smoke-testing.
 
 ## Clean up

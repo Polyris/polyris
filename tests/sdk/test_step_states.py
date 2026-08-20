@@ -309,7 +309,7 @@ class TestServiceTaskConstructionValidation:
             ECSTask(cluster="c")
 
     def test_ecs_fargate_requires_subnets(self):
-        """Same gap as @task.ecs()'s check (already tested elsewhere), found
+        """Same gap as @task.ecs_task()'s check (already tested elsewhere), found
         independently missing on this separate, direct-Step construction
         path — a user hitting either constructor gets the same guardrail."""
         with pytest.raises(ValueError, match="requires subnets"):

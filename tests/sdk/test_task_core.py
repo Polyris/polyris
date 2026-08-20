@@ -232,30 +232,30 @@ class TestDecorators:
             def s():
                 pass
 
-            @task.lambda_(function_name="my-fn")
+            @task.lambda_function(function_name="my-fn")
             def lam():
                 pass
 
-            @task.glue(job_name="my-job")
+            @task.glue_job(job_name="my-job")
             def g():
                 pass
 
-            @task.ecs(cluster="my-cluster", task_definition="my-td", subnets=["subnet-1"])
+            @task.ecs_task(cluster="my-cluster", task_definition="my-td", subnets=["subnet-1"])
             def e():
                 pass
 
-            @task.athena(query_string="SELECT 1", database="db")
+            @task.athena_query(query_string="SELECT 1", database="db")
             def at():
                 pass
 
-            @task.emr(
+            @task.emr_step(
                 emr_cluster_id="j-123",
                 emr_step={"Name": "step", "HadoopJarStep": {"Jar": "command-runner.jar"}},
             )
             def em():
                 pass
 
-            @task.batch(job_definition="jd", job_queue="jq")
+            @task.batch_job(job_definition="jd", job_queue="jq")
             def ba():
                 pass
 

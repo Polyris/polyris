@@ -67,7 +67,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         from polyris import task
 
         def build(dag):
-            @task.lambda_(function_name="fn", payload={"k": "v"}, **self.COMMON)
+            @task.lambda_function(function_name="fn", payload={"k": "v"}, **self.COMMON)
             def t():
                 pass
         expected = {TaskConfigKey.FUNCTION_NAME.value, TaskConfigKey.PAYLOAD.value} | self.RETRY
@@ -77,7 +77,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         from polyris import task
 
         def build(dag):
-            @task.glue(job_name="j", glue_arguments={"--a": "1"}, worker_type="G.1X",
+            @task.glue_job(job_name="j", glue_arguments={"--a": "1"}, worker_type="G.1X",
                        number_of_workers=2, **self.COMMON)
             def t():
                 pass
@@ -89,7 +89,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         from polyris import task
 
         def build(dag):
-            @task.ecs(cluster="c", task_definition="td", launch_type="FARGATE",
+            @task.ecs_task(cluster="c", task_definition="td", launch_type="FARGATE",
                       subnets=["s-1"], security_groups=["sg-1"], assign_public_ip="ENABLED",
                       container_overrides={"o": 1}, **self.COMMON)
             def t():
@@ -104,7 +104,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         from polyris import task
 
         def build(dag):
-            @task.athena(query_string="SELECT 1", database="db",
+            @task.athena_query(query_string="SELECT 1", database="db",
                          output_location="s3://b/", workgroup="wg", **self.COMMON)
             def t():
                 pass
@@ -116,7 +116,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         from polyris import task
 
         def build(dag):
-            @task.emr(emr_cluster_id="j-1", emr_step={"Name": "s", "HadoopJarStep": {"Jar": "x.jar"}},
+            @task.emr_step(emr_cluster_id="j-1", emr_step={"Name": "s", "HadoopJarStep": {"Jar": "x.jar"}},
                       **self.COMMON)
             def t():
                 pass
@@ -127,7 +127,7 @@ class TestWriterProducesOnlyDeclaredKeys:
         from polyris import task
 
         def build(dag):
-            @task.batch(job_definition="jd", job_queue="jq", batch_parameters={"p": "1"},
+            @task.batch_job(job_definition="jd", job_queue="jq", batch_parameters={"p": "1"},
                         **self.COMMON)
             def t():
                 pass
@@ -195,7 +195,7 @@ class TestBuildTaskConfigAndArnDirectly:
         from polyris import task
 
         def build(dag):
-            @task.lambda_(function_name="my-fn", payload={})
+            @task.lambda_function(function_name="my-fn", payload={})
             def t():
                 pass
         task_config, task_arn = _task_config_and_arn_for(build)
@@ -207,7 +207,7 @@ class TestBuildTaskConfigAndArnDirectly:
         from polyris import task
 
         def build(dag):
-            @task.lambda_(function_name="my-fn", payload={},
+            @task.lambda_function(function_name="my-fn", payload={},
                           arn="arn:aws:lambda:us-east-1:1:function:my-fn")
             def t():
                 pass
@@ -245,7 +245,7 @@ class TestBuildTaskConfigAndArnDirectly:
         from polyris import task
 
         def build(dag):
-            @task.glue(job_name="j", glue_arguments={})
+            @task.glue_job(job_name="j", glue_arguments={})
             def t():
                 pass
         task_config, _ = _task_config_and_arn_for(build)
@@ -257,7 +257,7 @@ class TestBuildTaskConfigAndArnDirectly:
         from polyris import task
 
         def build(dag):
-            @task.glue(job_name="j", glue_arguments={}, retries=2, retry_delay=timedelta(seconds=5))
+            @task.glue_job(job_name="j", glue_arguments={}, retries=2, retry_delay=timedelta(seconds=5))
             def t():
                 pass
         task_config, _ = _task_config_and_arn_for(build)
@@ -276,7 +276,7 @@ class TestBuildTaskConfigAndArnDirectly:
         from polyris.generators import _build_task_config_and_arn
 
         with DAG(dag_id="purity_dag", schedule="@daily") as dag:
-            @task.glue(job_name="j", glue_arguments={"--a": "1"}, worker_type="G.1X",
+            @task.glue_job(job_name="j", glue_arguments={"--a": "1"}, worker_type="G.1X",
                        number_of_workers=2, retries=2, retry_delay=timedelta(seconds=5))
             def t():
                 pass

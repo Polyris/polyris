@@ -1,6 +1,12 @@
 # Spike: Stop→Restart mechanics, event history, XCom, and the manual-action
 # escape hatch's real downstream consequences
 
+> **Historical analysis.** Snapshot of task-action lifecycle at time of
+> investigation. All findings shipped in code + tests. For current
+> task-action behaviour see [DATA_PASSING.md](../features/DATA_PASSING.md)
+> and the ADRs referenced below. Kept because `DESIGN_DECISIONS.md` cites
+> this analysis; do not read as current reference.
+
 **Question(s), as asked across this thread.** What happens, status-wise, when you
 Stop then Restart a `waiting_decision` task? Is everything tracked in the event
 history — and worth checking more broadly, not just those specific events? Does

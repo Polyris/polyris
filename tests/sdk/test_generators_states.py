@@ -281,7 +281,7 @@ class TestGeneratorEnrichmentBranches:
         from polyris.generators import generate_step_function_json
 
         with DAG("gluecfg", schedule=None) as dag:
-            @task.glue(job_name="j", worker_type="G.1X", number_of_workers=4)
+            @task.glue_job(job_name="j", worker_type="G.1X", number_of_workers=4)
             def run():
                 pass
             run()

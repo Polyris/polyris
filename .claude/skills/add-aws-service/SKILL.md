@@ -21,7 +21,7 @@ whether you touch the library:
   service integration (`arn:aws:states:::<service>:<action>[.sync]`). This is the
   dominant existing pattern (glue, ecs, athena, sns, sqs, s3, dynamodb,
   eventbridge, bedrock, http). **Requires the library work in Step 2.**
-- **Inside a Lambda** — the user's `@task.lambda_` / python function calls the
+- **Inside a Lambda** — the user's `@task.lambda_function` / python function calls the
   service via boto3. **No library change** — only an IAM grant on the Lambda role
   (Step 3), plus a SAM resource if Polyris owns it. Skip Step 2.
 

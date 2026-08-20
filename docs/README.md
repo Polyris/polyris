@@ -57,6 +57,5 @@
 | [CLI.md](reference/CLI.md) | Complete CLI reference — all commands and options |
 | [CONFIGURATION.md](reference/CONFIGURATION.md) | config.py settings, environments, cross-account roles |
 | [DESIGN_DECISIONS.md](reference/DESIGN_DECISIONS.md) | Key design decisions |
-| [ROADMAP.md](reference/ROADMAP.md) | Planned features and direction |
 | [STATE.md](reference/STATE.md) | Current state — in-flight, decided-but-not-done |
 | [TRADEMARK.md](reference/TRADEMARK.md) | Trademark and branding policy |

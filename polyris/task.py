@@ -458,17 +458,19 @@ def _validate_common_kwargs(decorator_name: str, common: Mapping[str, object]) -
 class TaskDecorator:
     """
     Task decorator with service-specific variants.
-    
-    IMPORTANT: Base @task is not allowed - you must use a service-specific decorator:
-    
-        @task.sfn(arn="${workflow_arn}")      # Nested Step Function
-        @task.lambda_(function_name="...")     # Lambda invocation
-        @task.glue(job_name="...")             # Glue job
-        @task.ecs(cluster="...", task_definition="...")  # ECS/Fargate
-        @task.athena(query_string="...", database="...")  # Athena query
-        @task.emr(emr_cluster_id="...", emr_step={...})   # EMR step
-        @task.batch(job_definition="...", job_queue="...") # AWS Batch
-    
+
+    IMPORTANT: Base @task is not allowed - you must use a service-specific decorator.
+    Every decorator orchestrates an *existing* AWS resource; polyris does not
+    provision the state machine / function / job / cluster on your behalf.
+
+        @task.sfn(arn="${workflow_arn}")                              # Step Function
+        @task.lambda_function(function_name="...")                    # Lambda
+        @task.glue_job(job_name="...")                                # Glue Job
+        @task.ecs_task(cluster="...", task_definition="...")          # ECS / Fargate
+        @task.athena_query(query_string="...", database="...")        # Athena
+        @task.emr_step(emr_cluster_id="...", emr_step={...})          # EMR step
+        @task.batch_job(job_definition="...", job_queue="...")        # AWS Batch
+
     All decorators share common parameters:
         - retries, retry_delay, execution_timeout
         - trigger_rule
@@ -492,13 +494,13 @@ class TaskDecorator:
         # Build helpful error message
         error_msg = (
             "Base @task decorator is not allowed. Use a service-specific decorator:\n"
-            "  @task.sfn(arn='${...}')              - Step Function\n"
-            "  @task.lambda_(function_name='...')   - Lambda\n"
-            "  @task.glue(job_name='...')           - Glue Job\n"
-            "  @task.ecs(cluster='...', task_definition='...') - ECS/Fargate\n"
-            "  @task.athena(query_string='...', database='...') - Athena\n"
-            "  @task.emr(emr_cluster_id='...', emr_step={...})  - EMR\n"
-            "  @task.batch(job_definition='...', job_queue='...') - Batch"
+            "  @task.sfn(arn='${...}')                              - Step Function\n"
+            "  @task.lambda_function(function_name='...')           - Lambda\n"
+            "  @task.glue_job(job_name='...')                       - Glue Job\n"
+            "  @task.ecs_task(cluster='...', task_definition='...') - ECS / Fargate\n"
+            "  @task.athena_query(query_string='...', database='...') - Athena\n"
+            "  @task.emr_step(emr_cluster_id='...', emr_step={...}) - EMR step\n"
+            "  @task.batch_job(job_definition='...', job_queue='...') - Batch"
         )
         
         if arn is not None:
@@ -696,7 +698,7 @@ class TaskDecorator:
             **common,
         )
     
-    def lambda_(
+    def lambda_function(
         self,
         _func: Optional[Callable] = None,
         *,
@@ -706,24 +708,25 @@ class TaskDecorator:
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
-        Lambda task decorator. Invokes Lambda directly (not via nested Step Function).
-        
+        Lambda task decorator. Invokes an existing Lambda function directly
+        (not via nested Step Function).
+
         Args:
             function_name: Lambda function name (required if arn not provided)
             arn: Full Lambda ARN (alternative to function_name)
             payload: Input payload for Lambda
-        
+
         Example:
-            @task.lambda_(function_name="process-data")
+            @task.lambda_function(function_name="process-data")
             def process(): pass
-            
-            @task.lambda_(arn="arn:aws:lambda:us-east-1:123:function:my-func")
+
+            @task.lambda_function(arn="arn:aws:lambda:us-east-1:123:function:my-func")
             def my_lambda(): pass
         """
         if not function_name and not arn:
-            raise ValueError("@task.lambda_ requires 'function_name' or 'arn'")
-        
-        _validate_common_kwargs("lambda_", common)
+            raise ValueError("@task.lambda_function requires 'function_name' or 'arn'")
+
+        _validate_common_kwargs("lambda_function", common)
         return self._create_task(
             _func=_func,
             task_type="lambda",
@@ -732,8 +735,8 @@ class TaskDecorator:
             payload=payload,
             **common,
         )
-    
-    def glue(
+
+    def glue_job(
         self,
         _func: Optional[Callable] = None,
         *,
@@ -745,16 +748,16 @@ class TaskDecorator:
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
-        Glue job task decorator.
-        
+        Glue job task decorator. Starts an existing Glue job run.
+
         Args:
             job_name: Glue job name (required)
             glue_arguments: Job arguments (--key=value)
             worker_type: G.1X, G.2X, etc.
             number_of_workers: Number of workers
-        
+
         Example:
-            @task.glue(job_name="etl-job", glue_arguments={"--date": "2024-01-01"})
+            @task.glue_job(job_name="etl-job", glue_arguments={"--date": "2024-01-01"})
             def etl_job(): pass
         """
         # Glue StartJobRun overrides: WorkerType + NumberOfWorkers go together,
@@ -763,14 +766,14 @@ class TaskDecorator:
         # boundary) rather than failing at the Glue API.
         if bool(worker_type) != bool(number_of_workers):
             raise ValueError(
-                "@task.glue worker_type and number_of_workers must be set together."
+                "@task.glue_job worker_type and number_of_workers must be set together."
             )
         if allocated_capacity is not None and (worker_type or number_of_workers):
             raise ValueError(
-                "@task.glue allocated_capacity is mutually exclusive with "
+                "@task.glue_job allocated_capacity is mutually exclusive with "
                 "worker_type/number_of_workers (different Glue capacity models)."
             )
-        _validate_common_kwargs("glue", common)
+        _validate_common_kwargs("glue_job", common)
         return self._create_task(
             _func=_func,
             task_type="glue",
@@ -781,8 +784,8 @@ class TaskDecorator:
             number_of_workers=number_of_workers,
             **common,
         )
-    
-    def ecs(
+
+    def ecs_task(
         self,
         _func: Optional[Callable] = None,
         *,
@@ -796,8 +799,9 @@ class TaskDecorator:
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
-        ECS/Fargate task decorator.
-        
+        ECS task decorator. Runs an existing ECS task definition
+        (Fargate or EC2 launch type).
+
         Args:
             cluster: ECS cluster name (required)
             task_definition: Task definition name:revision (required)
@@ -805,9 +809,9 @@ class TaskDecorator:
             subnets: VPC subnets for Fargate
             security_groups: Security groups
             container_overrides: Container override config
-        
+
         Example:
-            @task.ecs(
+            @task.ecs_task(
                 cluster="my-cluster",
                 task_definition="my-task:1",
                 container_overrides={"containerOverrides": [...]}
@@ -820,10 +824,10 @@ class TaskDecorator:
         # (bridge/host network mode), so this check is FARGATE-only.
         if launch_type == "FARGATE" and not subnets:
             raise ValueError(
-                "@task.ecs with launch_type='FARGATE' requires subnets "
+                "@task.ecs_task with launch_type='FARGATE' requires subnets "
                 "(Fargate tasks run in an ENI). Pass subnets=[...]."
             )
-        _validate_common_kwargs("ecs", common)
+        _validate_common_kwargs("ecs_task", common)
         return self._create_task(
             _func=_func,
             task_type="ecs",
@@ -836,8 +840,8 @@ class TaskDecorator:
             assign_public_ip=assign_public_ip,
             **common,
         )
-    
-    def athena(
+
+    def athena_query(
         self,
         _func: Optional[Callable] = None,
         *,
@@ -848,23 +852,24 @@ class TaskDecorator:
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
-        Athena query task decorator.
-        
+        Athena query task decorator. Runs a SQL query against an existing
+        Athena database.
+
         Args:
             query_string: SQL query (required)
             database: Athena database (required)
             output_location: S3 path for results
             workgroup: Athena workgroup
-        
+
         Example:
-            @task.athena(
+            @task.athena_query(
                 query_string="SELECT * FROM sales WHERE date = '{{ ds }}'",
                 database="analytics",
                 output_location="s3://bucket/athena-results/"
             )
             def run_query(): pass
         """
-        _validate_common_kwargs("athena", common)
+        _validate_common_kwargs("athena_query", common)
         return self._create_task(
             _func=_func,
             task_type="athena",
@@ -874,8 +879,8 @@ class TaskDecorator:
             workgroup=workgroup,
             **common,
         )
-    
-    def emr(
+
+    def emr_step(
         self,
         _func: Optional[Callable] = None,
         *,
@@ -884,14 +889,16 @@ class TaskDecorator:
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
-        EMR step task decorator.
-        
+        EMR step task decorator. Adds a step to an existing EMR cluster
+        (elasticmapreduce:addStep).
+
         Args:
             emr_cluster_id: EMR cluster ID (required)
-            emr_step: Step configuration (required)
-        
+            emr_step: Step configuration (required). AWS StepConfig dict;
+                see EMR AddJobFlowSteps API for the schema.
+
         Example:
-            @task.emr(
+            @task.emr_step(
                 emr_cluster_id="j-XXXXX",
                 emr_step={"Name": "Spark Job", "ActionOnFailure": "CONTINUE", ...}
             )
@@ -903,22 +910,22 @@ class TaskDecorator:
         # than failing opaquely at runtime with an empty Jar.
         if not isinstance(emr_step, dict):
             raise ValueError(
-                f"@task.emr emr_step must be a dict (AWS StepConfig), got "
+                f"@task.emr_step emr_step must be a dict (AWS StepConfig), got "
                 f"{type(emr_step).__name__}."
             )
         if "Steps" in emr_step:
             raise ValueError(
-                "@task.emr emr_step is a single StepConfig (addStep.sync), not a "
-                "list. Pass one step, e.g. "
+                "@task.emr_step emr_step is a single StepConfig (addStep.sync), "
+                "not a list. Pass one step, e.g. "
                 "emr_step={'Name': ..., 'HadoopJarStep': {'Jar': ...}}."
             )
         if not emr_step.get("HadoopJarStep", {}).get("Jar"):
             raise ValueError(
-                "@task.emr emr_step requires HadoopJarStep.Jar (e.g. "
+                "@task.emr_step emr_step requires HadoopJarStep.Jar (e.g. "
                 "'command-runner.jar' or an s3:// jar). Got HadoopJarStep="
                 f"{emr_step.get('HadoopJarStep')!r}."
             )
-        _validate_common_kwargs("emr", common)
+        _validate_common_kwargs("emr_step", common)
         return self._create_task(
             _func=_func,
             task_type="emr",
@@ -926,8 +933,8 @@ class TaskDecorator:
             emr_step=emr_step,
             **common,
         )
-    
-    def batch(
+
+    def batch_job(
         self,
         _func: Optional[Callable] = None,
         *,
@@ -937,21 +944,22 @@ class TaskDecorator:
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
-        AWS Batch job task decorator.
-        
+        AWS Batch job task decorator. Submits an existing Batch job definition
+        to a job queue.
+
         Args:
             job_definition: Batch job definition (required)
             job_queue: Batch job queue (required)
             batch_parameters: Job parameters
-        
+
         Example:
-            @task.batch(
+            @task.batch_job(
                 job_definition="my-job-def:1",
                 job_queue="my-queue"
             )
             def batch_job(): pass
         """
-        _validate_common_kwargs("batch", common)
+        _validate_common_kwargs("batch_job", common)
         return self._create_task(
             _func=_func,
             task_type="batch",

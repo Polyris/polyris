@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-constants sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-constants sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -118,9 +118,16 @@ e2e-smoke:
 
 # All checks before commit
 check: lint sync-constants sync-loggers check-generate-enums check-generate-variables \
-       check-sfn-templates check-backfill-parity check-no-paid typecheck check-versions \
-       smoke-pipelines test
+       check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck \
+       check-versions smoke-pipelines test
 	@echo "✅ All checks passed!"
+
+# OSS-purity gate — user-facing docs / examples must not advertise features
+# the OSS build doesn't ship (CLAUDE.md Principle #24), and every markdown
+# link in a user-facing doc must resolve. Seam-defining ADRs/spikes are
+# exempted; see scripts/check-oss-purity.sh for the exemption list.
+check-oss-purity:
+	@./scripts/check-oss-purity.sh
 
 # Python syntax + JSON template validation
 lint:

@@ -242,4 +242,4 @@ class TestTaskOperatorEdges:
 
     def test_lambda_without_target_raises(self):
         with pytest.raises(ValueError):
-            task.lambda_()
+            task.lambda_function()

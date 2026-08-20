@@ -30,7 +30,7 @@ with DAG(
     },
 ) as dag:
 
-    @task.lambda_(function_name="polyris-test-lambda")
+    @task.lambda_function(function_name="polyris-test-lambda")
     def ingest():
         """Land yesterday's raw events; return a manifest for downstream tasks.
 
@@ -42,7 +42,7 @@ with DAG(
         """
         pass
 
-    @task.glue(job_name="polyris-test-glue")
+    @task.glue_job(job_name="polyris-test-glue")
     def clean():
         """Dedupe and normalize.
 
@@ -53,7 +53,7 @@ with DAG(
         """
         pass
 
-    @task.athena(
+    @task.athena_query(
         query_string="SELECT 1",   # self-contained smoke query
         database="analytics",
         workgroup="polyris-test-wg",
@@ -63,7 +63,7 @@ with DAG(
         """Roll up into the gold daily table."""
         pass
 
-    @task.batch(job_definition="arn:aws:batch:us-east-1:000000000000:job-definition/polyris-test-jobdef:1", job_queue="arn:aws:batch:us-east-1:000000000000:job-queue/polyris-test-queue")
+    @task.batch_job(job_definition="arn:aws:batch:us-east-1:000000000000:job-definition/polyris-test-jobdef:1", job_queue="arn:aws:batch:us-east-1:000000000000:job-queue/polyris-test-queue")
     def build_report():
         """Render the executive report.
 
@@ -74,7 +74,7 @@ with DAG(
         """
         pass
 
-    @task.lambda_(function_name="polyris-test-lambda")
+    @task.lambda_function(function_name="polyris-test-lambda")
     def validate_freshness():
         """Guardrail: confirm the gold table is fresh before publishing.
 

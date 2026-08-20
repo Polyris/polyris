@@ -1,7 +1,6 @@
 """Assets — AND vs OR trigger logic with multiple assets (EXPERIMENTAL).
 
-⚠️  Assets are experimental (v0.93.0): the API may change, and the visual asset
-    console is not in the open-source build yet (engine + CLI lineage only).
+⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
 
 `12_assets_schedule_trigger` and `13_assets_wait_for` each depend on a single asset, so
 AND and OR behave identically there (nothing to distinguish them with only

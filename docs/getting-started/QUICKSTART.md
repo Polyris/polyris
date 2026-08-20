@@ -476,6 +476,7 @@ when `AutoEmptyBucketsOnDelete=true`** is set in `samconfig.toml` (see Step
 |---|---|
 | Write real pipelines | [TUTORIAL.md](TUTORIAL.md) |
 | Learn the Python DSL | [DSL.md](../features/DSL.md) |
+| Pass data between tasks (xcom) | [DATA_PASSING.md](../features/DATA_PASSING.md) |
 | Asset-based orchestration | [ASSETS.md](../features/ASSETS.md) |
 | SAM parameters reference | [SAM.md](../deployment/SAM.md) |
 | Something's broken | [TROUBLESHOOTING.md](../operations/TROUBLESHOOTING.md) |

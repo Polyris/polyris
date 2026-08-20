@@ -39,7 +39,7 @@ defaults on `_create_task`.
    already owned the `default_args` fallback logic.
 4. **Strict-kwargs preserved (D5):** `_validate_common_kwargs(name, common)`
    runs before every `_create_task` call and raises
-   `TypeError: task.glue() got an unexpected keyword argument 'retrys'` —
+   `TypeError: task.glue_job() got an unexpected keyword argument 'retrys'` —
    same exception class the pre-unification explicit signatures raised, now
    naming the decorator the user actually called instead of `_create_task`.
 5. **Base `@task` (`__call__`) untouched:** it keeps its documented generic

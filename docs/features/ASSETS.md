@@ -2,7 +2,7 @@
 
 > **⚠️ Experimental (v0.93.0).** Assets are an experimental feature — the API
 > (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may change
-> in a future release, and the open-source build has no visual asset console yet
+> in a future release
 > (inspect lineage with `polyris-output --graph`). Not recommended for production
 > pipelines.
 > Silence the runtime warning with
@@ -12,17 +12,36 @@
 
 ## Overview
 
-polyris supports asset-based orchestration, enabling cross-pipeline dependencies without hardcoded references.
+polyris supports asset-based orchestration — cross-pipeline dependencies
+without hardcoded references between pipelines.
 
 **Key concepts:**
-- **Asset**: A data artifact (file, table, dataset)
-- **Producer**: Task that creates an asset (`outlets`)
-- **Consumer**: DAG that triggers when asset is ready (`schedule`)
+- **Asset** — a data artifact (file, table, dataset)
+- **Producer** — task that creates an asset (via `outlets=[...]`)
+- **Consumer** — DAG that triggers when asset is ready (via `schedule=[...]`)
 
-> **Open-core note (ADR #105):** the asset *engine* described here — declaring
-> assets, producers, and consumers in pipelines — is part of the open-source
-> build. The asset *console* (the `/assets` UI and its read API) is not included
-> in this build.
+Inspect lineage from the CLI with `polyris-output --graph`.
+
+## On this page
+
+If you want to produce or consume assets, skip to
+[Producer tasks](#producer-tasks-outlets) and
+[Consumer DAGs](#consumer-dags-schedule).
+The schema-declaration sections that come right after "Defining Assets" are
+advanced — read them when you want Glue-catalog integration or typed schemas,
+not on first read.
+
+Order of the doc:
+
+1. [Defining assets](#defining-assets) — naming, minimal example
+2. Schema declaration (advanced — skip on first read)
+3. [Producer tasks (`outlets`)](#producer-tasks-outlets) ← what you probably want
+4. [Consumer DAGs (`schedule`)](#consumer-dags-schedule) ← what you probably want
+5. [AND / OR / mixed logic](#and-logic-all-assets-required)
+6. [Inlets](#inlets-documentation), [asset events](#asset-events),
+   [queue management](#queue-management)
+7. [Lineage graph](#asset-lineage-graph), [timeouts](#timeout-for-cross-pipeline-dependencies)
+8. [Complete example](#complete-example), [best practices](#best-practices)
 
 ---
 

@@ -310,7 +310,7 @@ Run from the parent directory containing your pipeline subdirectories (e.g.
 independently:
 
 1. Every `.py` file directly in the directory is loaded (non-recursive) —
-   not just `dag.py`. A directory with several independent pipeline files
+   not only `dag.py`. A directory with several independent pipeline files
    (`orders.py`, `inventory.py`, ...) has all of them deployed.
 2. Every DAG object found in every file is deployed — a file with several
    DAGs (see the multi-DAG-file note above) gets all of them, same as

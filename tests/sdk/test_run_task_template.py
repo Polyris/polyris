@@ -237,14 +237,14 @@ def _resolve_arguments(template, state_name, wrapper_input):
 
 
 def test_emr_step_reaches_addstep(template):
-    """@task.emr's emr_step must arrive intact as the addStep ``Step`` argument.
+    """@task.emr_step's emr_step must arrive intact as the addStep ``Step`` argument.
     Regression for the task_config schema mismatch (SDK emitted {cluster_id,
     step}; the wrapper read flat step_name/jar/... -> HadoopJarStep.Jar empty)."""
     from polyris import task
     jar = "s3://bucket/spark.jar"
 
     def build(dag):
-        @task.emr(
+        @task.emr_step(
             emr_cluster_id="j-ABC",
             emr_step={
                 "Name": "Spark",
@@ -268,12 +268,12 @@ def test_emr_step_reaches_addstep(template):
 
 
 def test_emr_rejects_step_without_jar():
-    """@task.emr must reject a step missing the required HadoopJarStep.Jar at
+    """@task.emr_step must reject a step missing the required HadoopJarStep.Jar at
     decoration time, not silently emit an invalid addStep call."""
     from polyris import DAG, task
     with DAG(dag_id="bad-emr", schedule="@daily"):
         with pytest.raises(ValueError, match="HadoopJarStep.Jar"):
-            @task.emr(emr_cluster_id="j-ABC", emr_step={"Name": "x", "HadoopJarStep": {}})
+            @task.emr_step(emr_cluster_id="j-ABC", emr_step={"Name": "x", "HadoopJarStep": {}})
             def step():
                 pass
 
@@ -283,7 +283,7 @@ def test_emr_rejects_plural_steps():
     from polyris import DAG, task
     with DAG(dag_id="bad-emr2", schedule="@daily"):
         with pytest.raises(ValueError, match="single StepConfig"):
-            @task.emr(emr_cluster_id="j-ABC",
+            @task.emr_step(emr_cluster_id="j-ABC",
                       emr_step={"Steps": [{"HadoopJarStep": {"Jar": "x"}}]})
             def step():
                 pass
@@ -316,7 +316,7 @@ def test_glue_sizing_reaches_startjobrun(template):
     from polyris import task
 
     def build(dag):
-        @task.glue(job_name="etl", worker_type="G.2X", number_of_workers=10,
+        @task.glue_job(job_name="etl", worker_type="G.2X", number_of_workers=10,
                    glue_arguments={"--date": "2026-01-01"})
         def j():
             pass
@@ -333,7 +333,7 @@ def test_glue_omits_sizing_when_unset(template):
     from polyris import task
 
     def build(dag):
-        @task.glue(job_name="etl")
+        @task.glue_job(job_name="etl")
         def j():
             pass
 
@@ -348,7 +348,7 @@ def test_glue_rejects_allocated_and_worker_together():
     from polyris import DAG, task
     with DAG(dag_id="bad-glue", schedule="@daily"):
         with pytest.raises(ValueError, match="mutually exclusive"):
-            @task.glue(job_name="x", worker_type="G.1X", number_of_workers=2,
+            @task.glue_job(job_name="x", worker_type="G.1X", number_of_workers=2,
                        allocated_capacity=5)
             def j():
                 pass
@@ -358,7 +358,7 @@ def test_glue_rejects_worker_type_without_count():
     from polyris import DAG, task
     with DAG(dag_id="bad-glue2", schedule="@daily"):
         with pytest.raises(ValueError, match="together"):
-            @task.glue(job_name="x", worker_type="G.1X")
+            @task.glue_job(job_name="x", worker_type="G.1X")
             def j():
                 pass
 
@@ -369,7 +369,7 @@ def test_ecs_assign_public_ip_reaches_runtask(template):
     from polyris import task
 
     def build(dag):
-        @task.ecs(cluster="c", task_definition="td:1", subnets=["subnet-1"],
+        @task.ecs_task(cluster="c", task_definition="td:1", subnets=["subnet-1"],
                   assign_public_ip="ENABLED")
         def e():
             pass
@@ -388,7 +388,7 @@ def test_ecs_ec2_without_subnets_omits_network_config(template):
     from polyris import task
 
     def build(dag):
-        @task.ecs(cluster="c", task_definition="td:1", launch_type="EC2")
+        @task.ecs_task(cluster="c", task_definition="td:1", launch_type="EC2")
         def e():
             pass
 
@@ -402,7 +402,7 @@ def test_ecs_fargate_requires_subnets():
     from polyris import DAG, task
     with DAG(dag_id="bad-ecs", schedule="@daily"):
         with pytest.raises(ValueError, match="subnets"):
-            @task.ecs(cluster="c", task_definition="td:1")  # FARGATE default, no subnets
+            @task.ecs_task(cluster="c", task_definition="td:1")  # FARGATE default, no subnets
             def e():
                 pass
 
@@ -413,7 +413,7 @@ def test_glue_allocated_capacity_reaches_startjobrun(template):
     from polyris import task
 
     def build(dag):
-        @task.glue(job_name="etl", allocated_capacity=8)
+        @task.glue_job(job_name="etl", allocated_capacity=8)
         def j():
             pass
 
@@ -428,7 +428,7 @@ def test_emr_rejects_non_dict_step():
     from polyris import DAG, task
     with DAG(dag_id="bad-emr3", schedule="@daily"):
         with pytest.raises(ValueError, match="must be a dict"):
-            @task.emr(emr_cluster_id="j-ABC", emr_step="not-a-dict")
+            @task.emr_step(emr_cluster_id="j-ABC", emr_step="not-a-dict")
             def step():
                 pass
 
@@ -443,7 +443,7 @@ def test_lambda_user_payload_merges_under_orchestration(template):
     from polyris import task
 
     def build(dag):
-        @task.lambda_(
+        @task.lambda_function(
             function_name="arn:aws:lambda:us-east-1:111111111111:function:fn",
             payload={"my_key": "v", "current_date": "SHOULD_NOT_WIN"},
         )
@@ -492,7 +492,7 @@ def test_role_credentials_apply_to_all_wrapper_types(template):
     arn = "arn:aws:iam::999999999999:role/cross"
 
     def build(dag):
-        @task.glue(job_name="etl", role=arn)
+        @task.glue_job(job_name="etl", role=arn)
         def j():
             pass
 
@@ -510,7 +510,7 @@ def test_role_same_falls_back_to_same_account(template):
     from polyris import task
 
     def build(dag):
-        @task.lambda_(function_name="fn", role="same")
+        @task.lambda_function(function_name="fn", role="same")
         def fn():
             pass
 
@@ -537,7 +537,7 @@ def test_retries_and_delay_reach_task_config():
     from polyris import task
 
     def build(dag):
-        @task.glue(job_name="etl", retries=3, retry_delay=timedelta(seconds=45))
+        @task.glue_job(job_name="etl", retries=3, retry_delay=timedelta(seconds=45))
         def j():
             pass
 
@@ -552,7 +552,7 @@ def test_no_retries_leaves_task_config_untouched():
     from polyris import task
 
     def build(dag):
-        @task.glue(job_name="etl")
+        @task.glue_job(job_name="etl")
         def j():
             pass
 
@@ -597,7 +597,7 @@ def test_decorators_reject_unknown_kwargs():
     from polyris import DAG, task
     with DAG(dag_id="strict", schedule="@daily"):
         with pytest.raises(TypeError, match="unexpected keyword argument"):
-            @task.glue(job_name="x", job_nmae="typo")
+            @task.glue_job(job_name="x", job_nmae="typo")
             def j():
                 pass
 
@@ -633,15 +633,15 @@ def test_all_task_types_wire_assets():
     consumed = Asset("cons", uri="s3://lake/cons/")
     specs = {
         "sfn": dict(arn="arn:aws:states:us-east-1:1:stateMachine:s"),
-        "lambda_": dict(function_name="fn"),
-        "glue": dict(job_name="j"),
-        "ecs": dict(cluster="c", task_definition="t:1", subnets=["subnet-x"]),
-        "athena": dict(query_string="SELECT 1", database="db"),
-        "emr": dict(
+        "lambda_function": dict(function_name="fn"),
+        "glue_job": dict(job_name="j"),
+        "ecs_task": dict(cluster="c", task_definition="t:1", subnets=["subnet-x"]),
+        "athena_query": dict(query_string="SELECT 1", database="db"),
+        "emr_step": dict(
             emr_cluster_id="j-1",
             emr_step={"Name": "s", "HadoopJarStep": {"Jar": "command-runner.jar", "Args": ["x"]}},
         ),
-        "batch": dict(job_definition="d:1", job_queue="q"),
+        "batch_job": dict(job_definition="d:1", job_queue="q"),
     }
     with DAG(dag_id="assets-all-types", schedule="@daily"):
         for name, kw in specs.items():
@@ -659,7 +659,7 @@ def test_athena_params_reach_query_execution(template):
     from polyris import task
 
     def build(dag):
-        @task.athena(query_string="SELECT 1", database="analytics",
+        @task.athena_query(query_string="SELECT 1", database="analytics",
                      output_location="s3://results/", workgroup="wg-x")
         def q():
             pass
@@ -676,7 +676,7 @@ def test_athena_workgroup_defaults_to_primary(template):
     from polyris import task
 
     def build(dag):
-        @task.athena(query_string="SELECT 1", database="db", output_location="s3://r/")
+        @task.athena_query(query_string="SELECT 1", database="db", output_location="s3://r/")
         def q():
             pass
 
@@ -691,7 +691,7 @@ def test_athena_omits_result_config_when_output_unset(template):
     from polyris import task
 
     def build(dag):
-        @task.athena(query_string="SELECT 1", database="db")  # workgroup-managed output
+        @task.athena_query(query_string="SELECT 1", database="db")  # workgroup-managed output
         def q():
             pass
 
@@ -706,7 +706,7 @@ def test_batch_params_reach_submit_job(template):
     from polyris import task
 
     def build(dag):
-        @task.batch(job_definition="jd:1", job_queue="jq", batch_parameters={"k": "v"})
+        @task.batch_job(job_definition="jd:1", job_queue="jq", batch_parameters={"k": "v"})
         def b():
             pass
 
@@ -721,7 +721,7 @@ def test_batch_parameters_default_empty(template):
     from polyris import task
 
     def build(dag):
-        @task.batch(job_definition="jd:1", job_queue="jq")
+        @task.batch_job(job_definition="jd:1", job_queue="jq")
         def b():
             pass
 
@@ -736,7 +736,7 @@ def test_ecs_overrides_launchtype_securitygroups_reach_runtask(template):
     from polyris import task
 
     def build(dag):
-        @task.ecs(cluster="c", task_definition="td:1", subnets=["s-1"],
+        @task.ecs_task(cluster="c", task_definition="td:1", subnets=["s-1"],
                   launch_type="FARGATE", security_groups=["sg-1"],
                   container_overrides={"containerOverrides": [{"name": "app"}]})
         def e():
@@ -755,7 +755,7 @@ def test_lambda_function_name_reaches_invoke(template):
     from polyris import task
 
     def build(dag):
-        @task.lambda_(function_name="my-fn")
+        @task.lambda_function(function_name="my-fn")
         def f():
             pass
 
@@ -801,7 +801,7 @@ def test_backoff_config_threaded_only_when_enabled():
     from polyris import task
 
     def build_on(dag):
-        @task.glue(job_name="etl", retries=3, retry_delay=timedelta(seconds=10),
+        @task.glue_job(job_name="etl", retries=3, retry_delay=timedelta(seconds=10),
                    retry_exponential_backoff=True, max_retry_delay=timedelta(seconds=60))
         def j():
             pass
@@ -811,7 +811,7 @@ def test_backoff_config_threaded_only_when_enabled():
     assert tc["max_retry_delay"] == 60
 
     def build_off(dag):
-        @task.glue(job_name="etl", retries=3, retry_delay=timedelta(seconds=10))
+        @task.glue_job(job_name="etl", retries=3, retry_delay=timedelta(seconds=10))
         def j():
             pass
 
@@ -827,7 +827,7 @@ def test_backoff_without_cap_omits_max_retry_delay():
     from polyris import task
 
     def build(dag):
-        @task.glue(job_name="etl", retries=2, retry_delay=timedelta(seconds=5),
+        @task.glue_job(job_name="etl", retries=2, retry_delay=timedelta(seconds=5),
                    retry_exponential_backoff=True)  # no max_retry_delay
         def j():
             pass
@@ -873,7 +873,7 @@ def test_jitter_config_threaded_only_when_enabled():
     from polyris import task
 
     def build_on(dag):
-        @task.glue(job_name="etl", retries=2, retry_delay=timedelta(seconds=10),
+        @task.glue_job(job_name="etl", retries=2, retry_delay=timedelta(seconds=10),
                    retry_jitter=True)
         def j():
             pass
@@ -881,7 +881,7 @@ def test_jitter_config_threaded_only_when_enabled():
     assert _wrapper_input_for(build_on)["task_config"]["retry_jitter"] is True
 
     def build_off(dag):
-        @task.glue(job_name="etl", retries=2, retry_delay=timedelta(seconds=10))
+        @task.glue_job(job_name="etl", retries=2, retry_delay=timedelta(seconds=10))
         def j():
             pass
 

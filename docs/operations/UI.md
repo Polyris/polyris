@@ -1,5 +1,28 @@
 # Web Console (UI)
 
+## Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Components](#components) — layout, sidebar, DAG viewer, task modal
+- [Task Actions](#task-actions)
+- [Backfill Modal](#backfill-modal)
+- [Auto-Refresh](#auto-refresh)
+- [Filtering](#filtering)
+- [Help Modal](#help-modal)
+- [Notifications Panel](#notifications-panel)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
+- [Technical Stack](#technical-stack)
+- [State Management](#state-management)
+- [Component Architecture](#component-architecture)
+- [Accessibility](#accessibility)
+- [Testing](#testing)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [Development](#development)
+- [Browser Support](#browser-support)
+- [Screenshots](#screenshots)
+
 ## Overview
 
 The polyris Web Console is a React-based single-page application for monitoring and managing pipelines.
@@ -443,7 +466,7 @@ npm run dev            # http://localhost:3000
 For **local development, use `ui/.env.local`** (below). Leave `ui/public/config.js`
 alone — its default empty `API_URL` falls through to your `.env.local`.
 `config.js` is the *runtime* file `ui/deploy.sh` generates for the **deployed**
-site; a non-empty `API_URL` there wins over `.env.local`, so for local work just
+site; a non-empty `API_URL` there wins over `.env.local`, so for local work
 use `.env.local`.
 
 **Without auth** (API deployed with `AUTH_ENABLED=false`):
@@ -465,7 +488,7 @@ NEXT_PUBLIC_COGNITO_REGION=us-east-1
 ```
 
 > Common gotcha: `NEXT_PUBLIC_API_URL` must be the **full** URL with **both** the
-> stage and `/api` (`…/dev/api`). Just the host, or just `/api`, or the stage
+> stage and `/api` (`…/dev/api`). The host alone, `/api` alone, or the stage
 > without `/api`, all 404. The variable is `NEXT_PUBLIC_API_URL` — not
 > `API_GATEWAY_URL` (that was the old Route-Handler proxy, removed with the static
 > export).

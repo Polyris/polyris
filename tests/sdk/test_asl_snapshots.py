@@ -229,7 +229,7 @@ def _build_lambda_task():
     from polyris import DAG, task
 
     with DAG("lambda_task", schedule=None) as dag:
-        @task.lambda_(
+        @task.lambda_function(
             function_name="my-processor",
             payload={"action": "process"}
         )
