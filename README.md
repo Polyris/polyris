@@ -58,7 +58,7 @@ including manual steps: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 |---|---|
 | **Try polyris without AWS** (explore DSL locally) | [Try It Now](#try-it-now) below |
 | **Browse runnable examples** | [examples/](examples/) — hello-world → assets & lineage |
-| **Write a pipeline** (infra already deployed) | [Quick Start](#quick-start) below |
+| **Write a pipeline** (infra already deployed) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) → *Deploy Your First Pipeline* |
 | **Set up polyris from scratch** (blank AWS account) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
 | **Learn step by step** with explanations | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) |
 | **Develop polyris itself** (fix bugs, add features) | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -85,7 +85,7 @@ polyris-output --graph        # Show DAG as ASCII graph
 
 Or browse [examples/](examples/) for 15 small, self-contained pipelines — hello-world through assets and lineage.
 
-Edit `dag.py` to experiment with task types, dependencies, trigger rules, and assets. When ready to deploy, see [Quick Start](#quick-start).
+Edit `dag.py` to experiment with task types, dependencies, trigger rules, and assets. When ready to deploy, see [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
 ---
 
