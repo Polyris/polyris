@@ -1,11 +1,64 @@
 # polyris Python DSL Reference
 
+## Contents
+
+- [Overview](#overview)
+- [How polyris relates to AWS](#how-polyris-relates-to-aws) — decorators orchestrate existing resources
+- [DAG Definition](#dag-definition)
+- [Schedule Options](#schedule-options)
+- [Task Types](#task-types) — `sfn`, `lambda_function`, `glue_job`, `ecs_task`, `athena_query`, `emr_step`, `batch_job`
+- [Common parameters](#common-parameters-apply-to-every-task-type) — retry, timeout, trigger rule, role, assets
+- [Task-type-specific parameters](#task-type-specific-parameters)
+- [Trigger Rules](#trigger-rules)
+- [Dependencies](#dependencies)
+- [Assets](#assets)
+- [Variables](#variables)
+- [Complete Example](#complete-example)
+- [CLI Usage](#cli-usage)
+
 ## Overview
 
 polyris provides a Python DSL for defining data pipelines that compile to AWS
 Step Functions. Use `@task` decorators, the `>>` dependency operator, and a
 `DAG()` context manager to describe pipelines — they execute as Step Functions
 state machines, with no scheduler or worker pool to operate.
+
+> Passing data between tasks is a separate topic — see
+> [DATA_PASSING.md](DATA_PASSING.md) for `xcom.pull`, upstream auto-injection,
+> and how each task type reads its predecessor's output.
+
+## How polyris relates to AWS
+
+**Every `@task.<service>` decorator orchestrates an AWS resource that already
+exists.** polyris does not provision the state machine, function, job, cluster,
+or database on your behalf — it only wires the deploy / trigger / retry /
+monitor logic.
+
+Before you write:
+
+```python
+@task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:my-workflow")
+```
+
+that Step Function state machine must already be in your AWS account, created
+by whatever provisioning tool you use (SAM, CDK, Terraform, hand-created).
+Same for Lambda functions, Glue jobs, ECS task definitions, Athena databases,
+EMR clusters, and Batch job definitions/queues — polyris expects them to be
+there, and calls them by their AWS identifier.
+
+The one thing polyris deploys is your pipeline itself (a set of Step Function
+state machines that glue your existing resources together into a DAG).
+
+### `namespace` is a resource-naming prefix, not a DSL concept
+
+`namespace` is set once per deployment in `pipelines/config.py` (or via the SAM
+`Namespace` parameter). It prefixes every AWS resource polyris creates (S3
+bucket, DDB tables, IAM roles) so multiple polyris installs in the same account
+don't collide. It **does not have to match** `Stage`, `dag_id`, or anything
+inside your DSL. See `docs/reference/CONFIGURATION.md` for the full lifecycle.
+
+Your `@task.sfn(arn=...)` values point at whatever ARNs you actually have in
+AWS — they're never derived from `namespace`.
 
 ---
 
@@ -35,7 +88,6 @@ with DAG(
 | `description` | str | No | Human-readable description |
 | `tags` | list | No | Tags for organization |
 | `variables` | dict | No | Pipeline variables |
-| `catchup` | bool | No | Enable backfill (default: True) |
 | `max_active_tasks` | int | No | Max concurrent tasks (default: 16) |
 | `default_args` | dict | No | Default params for all tasks (see below) |
 
@@ -131,111 +183,182 @@ DAG(schedule=None)  # No automatic trigger
 
 ## Task Types
 
-### Step Function Task
+Seven decorators are shipped. Each one orchestrates a specific AWS service. All
+of them accept the shared **common parameters** (retry / timeout / trigger rule
+/ role / assets — see [Common parameters](#common-parameters-apply-to-every-task-type)
+below) on top of their type-specific arguments.
+
+### `@task.sfn` — AWS Step Functions
+
+Executes a nested Step Function state machine.
+
+**Required:**
+- `arn` (str) — Full ARN of the state machine to invoke.
+
+**Type-specific (optional):** none.
 
 ```python
 @task.sfn(
     arn="arn:aws:states:us-east-1:123456789:stateMachine:my-sfn",
-    execution_timeout=timedelta(hours=1),
+    # Any common parameter is welcome here too:
     retries=2,
-    wait_before=60,
     trigger_rule="all_success",
-    outlets=[my_asset]
 )
 def my_task():
     pass
 ```
 
-### Lambda Task
+### `@task.lambda_function` — AWS Lambda
+
+Invokes an existing Lambda function directly (not via a nested Step Function).
+
+**Required (one of):**
+- `function_name` (str) — Function name in the current region.
+- `arn` (str) — Full function ARN (use this for cross-region / cross-account).
+
+**Type-specific (optional):**
+- `payload` (dict) — JSON input passed to the Lambda `event`.
 
 ```python
-@task.lambda_(
+@task.lambda_function(
     function_name="my-function",
-    payload={"key": "value"}
+    payload={"key": "value"},
 )
 def process_data():
     pass
 ```
 
-### Glue Task
+### `@task.glue_job` — AWS Glue
+
+Starts an existing Glue job run.
+
+**Required:**
+- `job_name` (str) — Glue job name.
+
+**Type-specific (optional):**
+- `glue_arguments` (dict[str, str]) — `--key value` overrides for the job.
+- `worker_type` + `number_of_workers` — must be set together (`G.1X` / `G.2X` / etc).
+- `allocated_capacity` (int) — Deprecated DPU model; mutually exclusive with worker settings.
 
 ```python
-@task.glue(
+@task.glue_job(
     job_name="my-etl-job",
-    arguments={"--key": "value"},
+    glue_arguments={"--date": "2024-01-01"},
     worker_type="G.1X",
-    number_of_workers=2
+    number_of_workers=2,
 )
 def etl_job():
     pass
 ```
 
-### ECS Task
+### `@task.ecs_task` — Amazon ECS (Fargate or EC2)
+
+Runs an existing ECS task definition.
+
+**Required:**
+- `cluster` (str) — ECS cluster name.
+- `task_definition` (str) — Task definition name (`name` or `name:revision`).
+
+**Type-specific (optional):**
+- `launch_type` (str, default `"FARGATE"`) — `FARGATE` or `EC2`.
+- `subnets` (list[str]) — **Required if `launch_type="FARGATE"`** (Fargate runs
+  in an ENI).
+- `security_groups` (list[str]).
+- `assign_public_ip` (str, `"ENABLED"` / `"DISABLED"`).
+- `container_overrides` (dict) — Passed through to `RunTask`.
 
 ```python
-@task.ecs(
+@task.ecs_task(
     cluster="my-cluster",
     task_definition="my-task:1",
-    launch_type="FARGATE",          # FARGATE requires at least one subnet
+    launch_type="FARGATE",
     subnets=["subnet-xxx"],
     security_groups=["sg-xxx"],
-    assign_public_ip="ENABLED",     # ENABLED for a public subnet without a NAT gateway
     container_overrides={
         "containerOverrides": [{
             "name": "main",
-            "command": ["python", "script.py"]
-        }]
-    }
+            "command": ["python", "script.py"],
+        }],
+    },
 )
 def container_job():
     pass
 ```
 
 `NetworkConfiguration` is sent only when `subnets` are provided; EC2 launch type
-with `bridge`/`host` networking can omit them.
+with `bridge` / `host` networking can omit them.
 
-### Athena Task
+### `@task.athena_query` — Amazon Athena
+
+Runs a SQL query against an existing Athena database.
+
+**Required:**
+- `query_string` (str) — SQL to execute.
+- `database` (str) — Athena database.
+
+**Type-specific (optional):**
+- `output_location` (str) — S3 URL for results. Omit to use the workgroup's
+  enforced output location.
+- `workgroup` (str, default `"primary"`).
 
 ```python
-@task.athena(
+@task.athena_query(
     query_string="SELECT * FROM my_table",
     database="my_database",
     output_location="s3://bucket/output/",
-    workgroup="primary"
+    workgroup="primary",
 )
 def run_query():
     pass
 ```
 
-Omit `output_location` to use the workgroup's enforced output location — the
-wrapper then omits `ResultConfiguration` rather than sending an empty
-`OutputLocation` (which `StartQueryExecution` rejects).
+Omitting `output_location` makes the wrapper skip `ResultConfiguration` entirely
+rather than sending an empty `OutputLocation` (which `StartQueryExecution`
+rejects).
 
-### EMR Task
+### `@task.emr_step` — Amazon EMR
+
+Adds a single step to an existing EMR cluster (`elasticmapreduce:addStep`).
+
+**Required:**
+- `emr_cluster_id` (str) — Existing EMR cluster ID (`j-XXXX...`).
+- `emr_step` (dict) — AWS `StepConfig` dict. Must contain `HadoopJarStep.Jar`.
+
+**Type-specific (optional):** none.
 
 ```python
-@task.emr(
+@task.emr_step(
     emr_cluster_id="j-XXXXXXXXXXXXX",
     emr_step={
         "Name": "Spark Job",
         "ActionOnFailure": "CONTINUE",
         "HadoopJarStep": {
             "Jar": "command-runner.jar",
-            "Args": ["spark-submit", "s3://bucket/script.py"]
-        }
-    }
+            "Args": ["spark-submit", "s3://bucket/script.py"],
+        },
+    },
 )
 def spark_job():
     pass
 ```
 
-### AWS Batch Task
+### `@task.batch_job` — AWS Batch
+
+Submits an existing Batch job definition to a job queue.
+
+**Required:**
+- `job_definition` (str) — Batch job definition (`name` or `arn`).
+- `job_queue` (str) — Batch job queue (`name` or `arn`).
+
+**Type-specific (optional):**
+- `batch_parameters` (dict[str, str]) — Substitution parameters passed to
+  `SubmitJob`.
 
 ```python
-@task.batch(
+@task.batch_job(
     job_definition="my-job-def",
     job_queue="my-queue",
-    batch_parameters={"param1": "value1"}
+    batch_parameters={"param1": "value1"},
 )
 def batch_job():
     pass
@@ -243,25 +366,28 @@ def batch_job():
 
 ---
 
-## Task Parameters
+## Common parameters (apply to every task type)
+
+Every `@task.<service>` accepts these — they control retry / timeout / trigger
+policy and are the same across `sfn`, `lambda_function`, `glue_job`,
+`ecs_task`, `athena_query`, `emr_step`, and `batch_job`.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `arn` | str | - | Step Function ARN (for sfn type) |
+| `task_id` | str | (inferred from function name) | Override the auto-inferred task id |
 | `execution_timeout` | timedelta | 24 hours | Max task execution time |
-| `orchestration_timeout` | timedelta | same as execution_timeout | Max time waiting for dependencies |
+| `orchestration_timeout` | timedelta | same as `execution_timeout` | Max time waiting for dependencies |
 | `retries` | int | 0 | Number of retry attempts |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
 | `retry_exponential_backoff` | bool | False | Double the wait each retry: `min(retry_delay·2^n, max_retry_delay)` |
 | `max_retry_delay` | timedelta | none (3600s cap) | Ceiling for exponential backoff |
 | `retry_jitter` | bool | False | Randomise each wait into `[base/2, base)` (avoids retry stampede) |
-| `wait_before` | int | 0 | Wait N seconds before executing |
-| `trigger_rule` | str | "all_success" | When to trigger task (see table below) |
-| `role` | str | "same" | Cross-account role: 'acq', 'etl', 'same' |
-| `outlets` | list | [] | Assets produced by this task |
-| `inlets` | list | [] | Assets consumed by this task |
-| `wait_for` | list | [] | Assets to wait for: `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
-| `skip_on_backfill` | bool | False | Skip this task by default during backfill |
+| `wait_before` | int (seconds) | 0 | Wait N seconds before executing (rate limiting) |
+| `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
+| `role` | str | `"same"` | Cross-account role key from `config.py` roles dict (`'acq'`, `'etl'`, `'processing'`, `'orchestration'`, `'same'`) |
+| `outlets` | list[Asset] | `[]` | Assets produced by this task |
+| `inlets` | list[Asset] | `[]` | Assets consumed by this task |
+| `wait_for` | list[Asset] | `[]` | Assets to wait for before running: `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
 
 ```python
 from datetime import timedelta
@@ -274,11 +400,18 @@ from datetime import timedelta
     retry_delay=timedelta(minutes=10),
     wait_before=60,
     trigger_rule="all_success",
-    outlets=[my_asset]
+    outlets=[my_asset],
 )
 def my_task():
     pass
 ```
+
+## Task-type-specific parameters
+
+Each task type ADDITIONALLY takes its own required / optional args on top of
+the common ones — see the [Task Types](#task-types) section above (each
+subsection lists them explicitly with "Required" / "Type-specific optional"
+labels).
 
 ---
 
@@ -287,7 +420,7 @@ def my_task():
 > **polyris is intervention-first, not autonomous (ADR #114).** A task that exhausts
 > its retries pauses for a human decision (`retry` / `mark_success` / `skip` / `fail`)
 > rather than propagating failure automatically. That's a deliberate differentiator —
-> most orchestrators just fail and stop; polyris lets you fix it inline, in the same
+> most orchestrators fail and stop; polyris lets you fix it inline, in the same
 > run. One consequence: a *confirmed* failure (resolved with `fail`) cancels the whole
 > pipeline's `Parallel` before any downstream `trigger_rule` ever evaluates — so a rule
 > whose only purpose is reacting to a confirmed failure can never fire. See ADR #117
@@ -297,13 +430,20 @@ polyris supports 5 trigger rules (ADR #117). Six additional rule names are
 **rejected at validation time** (`polyris-validate` / `polyris-deploy`), each
 with a specific suggestion for what to use instead.
 
+> **Scope of "upstream" here — the *declared direct* deps.** A trigger rule
+> looks at the tasks you connected to this task with `>>` or a function call,
+> **not** transitively through the whole DAG. For `extract >> transform >>
+> load`, `load`'s `trigger_rule` evaluates `transform` only — `extract` is
+> reflected indirectly (if `extract` failed, `transform` never succeeded), but
+> the rule never asks about `extract` directly.
+
 | Rule | Description | Use Case |
 |------|-------------|----------|
-| `all_success` | All deps must succeed (default) | Standard ETL: extract → transform → load |
-| `one_success` | At least one dep succeeded (immediate!) | Redundant sources: run if any data arrived |
-| `all_done` | All deps finished (any status) | Cleanup: run after the success path, or once `all_done` propagation ships (ADR #116) |
-| `all_skipped` | All deps skipped | Fallback for an entirely-optional branch |
-| `none_skipped` | No dep skipped | Only proceed if nothing upstream was intentionally skipped |
+| `all_success` | All **declared direct** deps must have ended `success`. Default. | Standard ETL: extract → transform → load |
+| `one_success` | At least one direct dep succeeded (fires immediately on the first one; doesn't wait for the rest) | Redundant sources: run once any input arrived |
+| `all_done` | All direct deps finished (any status). Note: a *confirmed* failure cancels the run's `Parallel` before this fires — see ADR #116 for the planned exception. | Cleanup after the success path |
+| `all_skipped` | All direct deps ended `skipped` | Fallback for an entirely-optional branch |
+| `none_skipped` | No direct dep ended `skipped` | Only proceed if nothing upstream was intentionally skipped |
 
 ### Removed rules (ADR #117) and what to use instead
 
@@ -326,10 +466,11 @@ at all:
 > `upstream_failed`/`aborted`. Only a rule that *requires* success (`all_success`,
 > `one_success`) blocked by a **genuine, resolved** failure resolves **`upstream_failed`**.
 >
-> **`all_done` and a confirmed failure.** `all_done` on the success path (no failures
-> at all) works today; reacting to a *resolved* failure specifically is a planned,
-> scoped exception (ADR #116), not yet shipped — a confirmed failure still cancels this
-> marker's branch before it can evaluate.
+> **`all_done` and a confirmed failure.** `all_done` fires only on the
+> success path (every upstream ended `success` or `skipped`). A confirmed
+> failure (an operator resolving a paused task with `fail`) cancels the
+> run's `Parallel` before `all_done` can evaluate — see ADR #116 for the
+> design.
 >
 > **Skip cascades for `all_success` (ADR #115).** A skipped upstream blocks
 > `all_success` — but only when the skip came from a *rule*
@@ -340,19 +481,39 @@ at all:
 ### Examples
 
 ```python
-# Redundant sources — one_success, no caveats
-@task.sfn(arn=..., trigger_rule="one_success")
-def merge_results():
-    """Runs as soon as any upstream source succeeds — doesn't wait for the rest."""
-    pass
+# all_success (default) — standard ETL
+@task.sfn(arn="...:extract")
+def extract(): pass
 
-# Cleanup that runs after the success path — all_done
-@task.sfn(arn=..., trigger_rule="all_done")
-def cleanup():
-    """Tears down resources once every upstream has finished. Reacting to a
-    *resolved failure* specifically is a planned exception (ADR #116), not yet
-    shipped — today this fires reliably once the success path completes."""
-    pass
+@task.sfn(arn="...:transform")
+def transform(): pass
+
+@task.sfn(arn="...:load")  # trigger_rule="all_success" implicit
+def load(): pass
+
+extract() >> transform() >> load()
+# `load` runs only if `transform` ended with status `success`.
+# If `extract` fails → `transform` never runs (or ends `upstream_failed`)
+# → `load`'s `all_success` isn't satisfied → `load` ends `upstream_failed`.
+
+# one_success — redundant sources, whoever wins first
+@task.sfn(arn="...", trigger_rule="one_success")
+def merge_results(): pass
+# Fires the moment ANY direct upstream ends `success`. Does not wait for
+# the others — they might still be running when `merge_results` starts.
+
+# all_skipped — fallback branch that runs when nothing else ran
+@task.sfn(arn="...", trigger_rule="all_skipped")
+def fallback_path(): pass
+# Runs only if every direct upstream ended `skipped` (e.g. a set of
+# optional branches were all skipped by their own rules).
+
+# all_done — cleanup that runs regardless of upstream success/skip
+@task.sfn(arn="...", trigger_rule="all_done")
+def cleanup(): pass
+# Runs after every direct upstream has terminated (success or skipped).
+# A CONFIRMED failure cancels the run's Parallel before cleanup evaluates
+# — ADR #116 tracks the planned exception to react to resolved failures.
 ```
 
 ---
@@ -471,6 +632,21 @@ with DAG(
 
 ## Variables
 
+### `default_args` vs `variables` — how to pick
+
+Both are DAG-level dicts, and at first glance they look the same. They aren't.
+
+| Question | `default_args` | `variables` |
+|----------|----------------|-------------|
+| What is it FOR? | Task **execution policy** — retry, timeout, role | Runtime **data** the task code / templates can read |
+| Fixed at DAG-definition time? | Yes | Yes (though values can be JSONata expressions computed at run start) |
+| Read by polyris internals? | Yes — merged into every task's common-parameter defaults | No — passed through to tasks as-is |
+| Read by your task code? | No | Yes (via templates / xcom pull) |
+| Example | `{"retries": 3, "execution_timeout": timedelta(hours=4)}` | `{"batch_size": 500, "environment": "prod"}` |
+
+**Rule of thumb.** If it configures HOW a task runs, use `default_args`. If it's
+DATA the task processes, use `variables`.
+
 ### Pipeline Variables
 
 ```python
@@ -478,28 +654,15 @@ with DAG(
     "my-pipeline",
     variables={
         "current_date": "{% $substringBefore($now(), 'T') %}",
-        "environment": "prod"
+        "environment": "prod",
     }
 ) as dag:
     ...
 ```
 
-### Auto Variables (in backfill)
-
-When running backfill, these variables are auto-generated:
-
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `current_date` | "2025-07-25" | Execution date |
-| `date_compact` | "20250725" | YYYYMMDD format |
-| `year` | "2025" | Year |
-| `month` | "07" | Month |
-| `day` | "25" | Day |
-| `day_of_week` | "friday" | Lowercase weekday |
-| `previous_date` | "2025-07-24" | Day before |
-| `minus_7_days` | "2025-07-18" | 7 days ago |
-| `minus_30_days` | "2025-06-25" | 30 days ago |
-| `is_backfill` | true | Backfill flag |
+`variables` values may be static strings/numbers, or JSONata expressions (the
+`{% ... %}` form) evaluated when the pipeline execution starts — the resolved
+values are then available to every task in the run.
 
 ---
 
@@ -524,7 +687,6 @@ with DAG(
     
     @task.sfn(
         arn=f"arn:aws:states:us-east-1:123456789:stateMachine:scrape-{STAGE}",
-        skip_on_backfill=True
     )
     def scrape():
         """Scrape product data."""
@@ -539,7 +701,7 @@ with DAG(
         """Process raw data."""
         pass
     
-    @task.glue(
+    @task.glue_job(
         job_name=f"transform-{STAGE}",
         outlets=[processed],
         trigger_rule="all_success"
@@ -548,7 +710,7 @@ with DAG(
         """Transform to final format."""
         pass
     
-    @task.lambda_(function_name=f"notify-{STAGE}", trigger_rule="all_done")
+    @task.lambda_function(function_name=f"notify-{STAGE}", trigger_rule="all_done")
     def notify():
         """Send completion notification."""
         pass

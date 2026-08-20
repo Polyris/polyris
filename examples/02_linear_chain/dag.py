@@ -9,6 +9,10 @@ Function, so each one receives its upstream's output in its input and reads it a
 ``$states.input.upstream.extract.output``. (A Lambda would read the same under
 ``event["upstream"]``; a Glue/ECS container would call ``xcom.pull("extract")``.)
 
+For the full data-passing guide — what's in a task's input, when to use
+``xcom.pull``, how each task type reads its predecessor's output — see
+``docs/features/DATA_PASSING.md``.
+
 Run it locally (no AWS):  polyris-validate -v
 """
 from polyris import DAG, task

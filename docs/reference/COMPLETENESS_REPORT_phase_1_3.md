@@ -1,9 +1,12 @@
 # Completeness Report — Phase 1.3 (canonical/alias reframing)
 
-Per CLAUDE.md Principle #23. Covers Phase 1.3 only — see
-`COMPLETENESS_REPORT_phase_0_and_1_1.md` and `COMPLETENESS_REPORT_phase_1_2.md` for
-the earlier phases. Delivered per `docs/reference/PLAN_intervention_and_trigger_rules.md`
-(1.3 section, scope corrected during execution), ADR #115 decision 4.
+> **Historical delivery record.** Snapshot of what shipped for Phase 1.3
+> (scope-corrected during execution). Kept because ADR #115 cites the
+> scope-correction rationale from this report. For the current trigger-rule
+> contract see [DSL.md](../features/DSL.md#trigger-rules) and ADR #117.
+
+Per CLAUDE.md Principle #23. Covers Phase 1.3 only. Delivered per ADR #115
+decision 4.
 
 ## Scope correction (read this first)
 

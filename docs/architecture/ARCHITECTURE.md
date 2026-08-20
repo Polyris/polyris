@@ -1,5 +1,23 @@
 # polyris Architecture
 
+## Contents
+
+- [High-Level Overview](#high-level-overview) — diagram
+- [Design Principles](#design-principles)
+- [Data Flow: "What Calls What"](#data-flow-what-calls-what)
+- [Failure Handling Flow](#failure-handling-flow)
+- [DynamoDB Tables](#dynamodb-tables)
+- [Trigger Rules](#trigger-rules)
+- [Task Statuses](#task-statuses)
+- [Step Functions Helpers](#step-functions-helpers)
+- [Backfill (lineage-aware)](#backfill-lineage-aware)
+- [Cost Model](#cost-model)
+- [Task Status Lifecycle](#task-status-lifecycle)
+- [UI Architecture (React Console)](#ui-architecture-react-console)
+- [Debugging Guide](#debugging-guide)
+- [Runbooks](#runbooks)
+- [Glossary](#glossary)
+
 ## High-Level Overview
 
 ```
@@ -34,8 +52,8 @@
 │  └───────────────────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────────────────────┐│
 │  │                        Web Console (React)                           ││
-│  │   • Pipeline list & status         • Asset lineage graph            ││
-│  │   • DAG / Gantt / Calendar         • Backfill with date range       ││
+│  │   • Pipeline list & status         • Task detail modal + logs       ││
+│  │   • DAG / Gantt / Calendar         • Execution history browser      ││
 │  │   • Auto-refresh (polling)         • Task actions (skip/restart)    ││
 │  └──────────────────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────────────────┘
@@ -399,7 +417,7 @@ could never fire at all — see `docs/features/DSL.md#trigger-rules`).
 A blocked rule (all deps terminal, condition not satisfied) resolves one of two ways
 (`evaluate_deps`'s `verdict` field, ADR #115): `upstream_failed` when a
 success/no-failure-requiring rule is blocked by a genuine failure; `skip` (the task
-resolves `skipped`, run stays `success`) when the condition simply never occurred —
+resolves `skipped`, run stays `success`) when the condition never occurred —
 not an error.
 
 ---

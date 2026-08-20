@@ -25,10 +25,10 @@ and AWS runs them. Pay per run; idle cost is near zero.
 - 🧪 **Local testing** — Validate, dry-run, mock execution
 - 🔔 **Failure notifications** — browser notifications on failure (the notify Lambda fans out to every enabled channel — no silent failures)
 - ⏸️ **Intervention-first failures** — a failing task pauses for a human decision
-  (retry / mark success / skip / fail) instead of just falling over — fix it inline,
+  (retry / mark success / skip / fail) instead of falling over — fix it inline,
   in the same run, free (ADR #114)
 - 🎯 **Trigger rules** — `all_success`, `one_success`, `all_done`, and more ([details](docs/features/DSL.md#trigger-rules))
-- 🔗 **Automatic data passing** — `xcom.pull()` works in every task type (Lambda, SFN, ECS, Glue, Batch); outputs stored in DynamoDB, large payloads transparently offloaded to S3
+- 🔗 **Data passing between tasks** — Lambda / SFN read upstream from the input dict; Glue / ECS / Batch / EMR call `xcom.pull()` inside the job. Outputs stored in DynamoDB, retained 120 days ([details](docs/features/DATA_PASSING.md))
 - 📊 **Web Console** — pipelines and DAG views for every run
 - 🧬 **Asset dependencies** — declare cross-pipeline asset inlets/outlets; inspect lineage from the CLI with `polyris-output --graph`
 - 🔗 **Pull-based deps** — `wait_for` with freshness and consecutive checks
@@ -58,7 +58,7 @@ including manual steps: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 |---|---|
 | **Try polyris without AWS** (explore DSL locally) | [Try It Now](#try-it-now) below |
 | **Browse runnable examples** | [examples/](examples/) — hello-world → assets & lineage |
-| **Write a pipeline** (infra already deployed) | [Quick Start](#quick-start) below |
+| **Write a pipeline** (infra already deployed) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) → *Deploy Your First Pipeline* |
 | **Set up polyris from scratch** (blank AWS account) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
 | **Learn step by step** with explanations | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) |
 | **Develop polyris itself** (fix bugs, add features) | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -85,7 +85,7 @@ polyris-output --graph        # Show DAG as ASCII graph
 
 Or browse [examples/](examples/) for 15 small, self-contained pipelines — hello-world through assets and lineage.
 
-Edit `dag.py` to experiment with task types, dependencies, trigger rules, and assets. When ready to deploy, see [Quick Start](#quick-start).
+Edit `dag.py` to experiment with task types, dependencies, trigger rules, and assets. When ready to deploy, see [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
 ---
 
@@ -118,7 +118,7 @@ configuration required.
 > (ADR #103). Passing `alerts={...}` raises a `TypeError`.
 
 ```python
-# No alert config in the DAG — just define the pipeline.
+# No alert config in the DAG — define the pipeline.
 with DAG("pipeline", schedule="@daily") as dag:
     ...
 ```
@@ -131,27 +131,27 @@ with DAG("pipeline", schedule="@daily") as dag:
 def my_task(): pass
 
 # Lambda
-@task.lambda_(function_name="my-function")
+@task.lambda_function(function_name="my-function")
 def process(): pass
 
 # Glue
-@task.glue(job_name="my-etl-job")
+@task.glue_job(job_name="my-etl-job")
 def etl(): pass
 
 # ECS (Fargate)
-@task.ecs(cluster="my-cluster", task_definition="my-task")
+@task.ecs_task(cluster="my-cluster", task_definition="my-task")
 def container_job(): pass
 
 # Athena
-@task.athena(query_string="SELECT * FROM table", database="my_db")
+@task.athena_query(query_string="SELECT * FROM table", database="my_db")
 def query(): pass
 
 # EMR
-@task.emr(emr_cluster_id="j-XXXXX", emr_step={...})
+@task.emr_step(emr_cluster_id="j-XXXXX", emr_step={...})
 def spark_job(): pass
 
 # AWS Batch
-@task.batch(job_definition="my-job", job_queue="my-queue")
+@task.batch_job(job_definition="my-job", job_queue="my-queue")
 def batch_job(): pass
 ```
 
@@ -198,9 +198,9 @@ DAG(schedule=None)
 
 ## Asset-Based Orchestration
 
-> **⚠️ Experimental (v0.93.0).** Assets are experimental — the API may change and
-> there's no visual asset console yet (`polyris-output --graph` shows lineage). Not
-> recommended for production yet. See [docs/features/ASSETS.md](docs/features/ASSETS.md).
+> **⚠️ Experimental.** Assets are experimental — the API may change. Inspect
+> lineage with `polyris-output --graph`. Not recommended for production yet.
+> See [docs/features/ASSETS.md](docs/features/ASSETS.md).
 > <!-- EXPERIMENTAL-ASSETS: remove when assets graduate to stable. -->
 
 Cross-pipeline dependencies without hardcoded references:

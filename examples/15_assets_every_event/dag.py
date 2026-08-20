@@ -1,7 +1,6 @@
 """Assets — trigger on every event, not once per day (EXPERIMENTAL).
 
-⚠️  Assets are experimental (v0.93.0): the API may change, and the visual asset
-    console is not in the open-source build yet (engine + CLI lineage only).
+⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
 
 Companion to `12_assets_schedule_trigger` — same trigger asset (`clean/orders`, produced
 by `11_assets_outlets_inlets`'s `orders-clean`), different subscription shape, so you

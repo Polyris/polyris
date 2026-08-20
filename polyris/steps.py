@@ -858,10 +858,10 @@ class ECSTask(Step):
             raise ValueError("ECSTask(...) requires 'cluster'.")
         if not self.task_definition:
             raise ValueError("ECSTask(...) requires 'task_definition'.")
-        # Mirrors @task.ecs()'s identical check (polyris/task.py) — Fargate
+        # Mirrors @task.ecs_task()'s identical check (polyris/task.py) — Fargate
         # tasks run in an ENI and require at least one subnet; an empty
         # Subnets list fails opaquely at runTask. This is a separate,
-        # independent construction path (a direct Step, not the @task.ecs
+        # independent construction path (a direct Step, not the @task.ecs_task
         # decorator) that previously had no such check at all.
         if self.launch_type == "FARGATE" and not self.subnets:
             raise ValueError(

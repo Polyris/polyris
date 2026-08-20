@@ -54,8 +54,7 @@ class ExperimentalWarning(UserWarning):
     graduate to stable — see docs/reference/EXPERIMENTAL_ASSETS.md.
 
     Assets work end to end (define, produce, wait on, asset-triggered schedules),
-    but the API is not yet frozen and the visual asset console is not in the
-    open-source build. Silence this warning with:
+    but the API is not yet frozen. Silence this warning with:
 
         import warnings, polyris
         warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)
@@ -153,8 +152,7 @@ class Asset:
     """
     Represents a logical data asset.
 
-    ⚠️  Experimental — the asset API may change in a future release, and the
-    visual asset console is not yet in the open-source build (engine only).
+    ⚠️  Experimental — the asset API may change in a future release.
     Constructing an Asset emits an ExperimentalWarning; silence it via
     ``warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)``.
 
@@ -286,8 +284,7 @@ class Asset:
             warnings.warn(
                 "polyris assets are experimental — the asset API (Asset, outlets, "
                 "wait_for, asset-triggered schedules) may change in a future release. "
-                "The visual asset console is not yet in the open-source build; "
-                "inspect lineage with `polyris-output --graph`.",
+                "Inspect lineage with `polyris-output --graph`.",
                 ExperimentalWarning,
                 stacklevel=2,
             )

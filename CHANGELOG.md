@@ -1,3 +1,72 @@
+## v0.96.0 (0.96.0) - 2026-08-19
+
+### Changed (breaking) — task decorator names now match the AWS service they orchestrate
+
+The six non-SFN task decorators were renamed to align with the AWS resource
+they operate on. Old names were either Python-keyword workarounds (`lambda_`
+with a trailing underscore) or ambiguous single words (`glue`, `ecs`, `athena`,
+`emr`, `batch`) that don't say what they run. Every decorator now reads as
+"task that runs an X":
+
+| Old                | New                    | AWS service       |
+|--------------------|------------------------|-------------------|
+| `@task.sfn`        | `@task.sfn`            | Step Functions (unchanged) |
+| `@task.lambda_`    | `@task.lambda_function`| AWS Lambda        |
+| `@task.glue`       | `@task.glue_job`       | AWS Glue          |
+| `@task.ecs`        | `@task.ecs_task`       | Amazon ECS        |
+| `@task.athena`     | `@task.athena_query`   | Amazon Athena     |
+| `@task.emr`        | `@task.emr_step`       | Amazon EMR        |
+| `@task.batch`      | `@task.batch_job`      | AWS Batch         |
+
+**Migration:** rename every call site — the internal task-type identifiers
+(`'lambda'`, `'glue'`, …) inside generated ASL and DDB are unchanged, so no
+data migration is needed. Only the public decorator names change.
+
+The rename surfaced during UAT: reviewers reading the DSL for the first time
+kept asking "what does `@task.glue` do?" and had to read code to figure out
+that `glue` meant "Glue job" (not "the AWS Glue service integration" as a
+whole). `_glue_job` (or the boto3 method name `add_job_flow_steps`) makes it
+obvious without a manual.
+
+### Changed — DSL reference restructured for OSS clarity
+
+`docs/features/DSL.md` was rewritten to address feedback from UAT:
+
+- **"How polyris relates to AWS"** is now the second paragraph. Every task
+  decorator orchestrates an *existing* AWS resource; polyris does not
+  provision the state machine / function / job / cluster. This was implicit in
+  the design but never stated explicitly; UAT reviewers assumed the opposite
+  and got confused when they had to hand-create their AWS resources.
+- **`namespace`** now has a short block explaining it's a deployment-time
+  naming prefix (nothing more) and doesn't have to match `Stage`, `dag_id`, or
+  anything else. UAT reviewers thought `namespace` was a DSL concept and tried
+  to keep it in sync with `Stage`.
+- **Common vs task-type-specific parameters** are now explicitly separated.
+  The old flat "Task Parameters" table implied every param applied everywhere;
+  it didn't. Common params are one section, task-type-specific are on each
+  task type's own subsection.
+- **Task types** section: every subsection now names the AWS service
+  explicitly, lists required vs optional params separately, and shows a
+  minimal example.
+- **`default_args` vs `variables`** — added a decision table at the top of the
+  Variables section explaining the difference. UAT reviewers said they "look
+  identical" from a glance; they're not.
+- **Trigger rules** — each rule's description now says "declared direct
+  upstream deps" explicitly (not transitively through the whole DAG), and the
+  Examples subsection has one concrete `success` / `skip` example per rule.
+
+### Added — OSS "no paid mention" principle (CLAUDE.md #24)
+
+Root `CLAUDE.md` gained Principle #24: OSS docs / UI / code / examples / help
+text / warnings never advertise paid features, not even as "coming soon" or
+"available in paid tier". Companion `docs/CLAUDE.md` details how to apply this
+when editing anything under `docs/`. Removed pre-existing violations of the
+rule from `polyris/assets.py`'s ExperimentalWarning, `README.md`,
+`docs/reference/EXPERIMENTAL_ASSETS.md`, `docs/getting-started/TUTORIAL.md`,
+`docs/features/ASSETS.md`, and `docs/features/ASSET_PULL_FEATURE.md`.
+
+---
+
 ## v0.95.0 (0.95.0) - 2026-08-17
 
 ### Added — one-command onboarding and teardown

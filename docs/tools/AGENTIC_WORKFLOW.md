@@ -98,7 +98,7 @@ Runs the gates the current `git status` says are relevant.
 
 A full run costs about four minutes, most of it the UI build. Scoping keeps the
 common path at seconds, which is the difference between a gate that runs and one
-that gets skipped "just this once". `--full` forces everything; outside a git
+that gets skipped "this once". `--full` forces everything; outside a git
 checkout it runs full, because it cannot scope safely.
 
 ### `.claude/settings.json`

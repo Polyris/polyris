@@ -1,5 +1,10 @@
 # Spike: Asset-trigger dedup is silently daily-only, regardless of schedule
 
+> **Historical analysis.** Snapshot of asset-trigger dedup behaviour at the
+> time of investigation. For the current asset contract see
+> [ASSETS.md](../features/ASSETS.md). Kept because `DSL.md`, `polyris/assets.py`,
+> and example DAGs cite this analysis; do not read as current reference.
+
 **Question.** A pipeline confirmed working: run `orders-clean` → `orders-analytics`
 auto-triggers (push model verified live, ADR on `asset_subscriptions_table` fix). Running
 `orders-clean` a **second time the same day** did not re-trigger `orders-analytics`. Is

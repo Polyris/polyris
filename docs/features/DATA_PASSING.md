@@ -1,98 +1,198 @@
 # Passing data between tasks
 
-A task sends data by **returning** it. How a downstream task reads it depends on
-size and task type — the common case needs zero setup.
+Task A returns some data. Task B reads it. This page shows how, per task type,
+in as little code as possible.
 
-## Default: it just arrives (zero setup)
+## Cheat sheet — how each task type reads upstream
 
-For a Lambda (or nested Step Function) downstream task, Polyris reads the upstream
-outputs for you and puts them in the task's input under `upstream`. Your task just
-reads them — no permissions, no extra calls:
+**`@task.lambda_function`** — arrives in the handler `event`, no setup needed:
 
 ```python
-@task.lambda_(function_name="extract")
-def extract(event):
-    return {"rows": 1240, "path": "s3://bucket/2026-07-07/data.parquet"}
-
-@task.lambda_(function_name="load")
 def load(event):
-    up = event["upstream"]["extract"]["output"]   # {"rows": 1240, "path": ...}
-    ...
-
-extract >> load
+    rows = event["upstream"]["extract"]["output"]["rows"]
 ```
 
-Polyris (which already has access to the output store) does the read under its own
-role, so **you add nothing** — this is the path for most pipelines.
+**`@task.sfn`** — arrives in `$states.input`, read via JSONata:
 
-Limits of the default: the injected payload is capped (~25 KB per upstream output),
-and it is only delivered to **Lambda** and **Step Function** tasks. For larger
-outputs or for **ECS / Glue / Batch** tasks, use `pull()` below.
+```json
+"Arguments": "{% $states.input.upstream.extract.output.rows %}"
+```
 
-## For large outputs or service tasks: `xcom.pull()`
-
-`pull()` fetches an upstream output directly from the store (up to ~350 KB per
-output) and works from any task type:
+**`@task.glue_job` / `@task.ecs_task` / `@task.batch_job` / `@task.emr_step`** —
+call `xcom.pull()` inside the job/container code:
 
 ```python
 from polyris import xcom
 
-@task.lambda_(function_name="load")
-def load(event):
-    data = xcom.pull("extract", event)   # any size; works in ECS/Glue/Batch too
+data = xcom.pull("extract")     # {"rows": 1240, ...}
+rows = data["rows"]
 ```
 
-How to call it per task type (only *how the context arrives* differs):
+**`@task.athena_query`** — SQL can't call `xcom.pull()`. Two workable patterns:
 
-| Task type | Call |
-|-----------|------|
-| Lambda    | `xcom.pull("upstream", event)` — pass the handler event |
-| ECS / Glue / Batch | `xcom.pull("upstream")` — context comes from the environment / job args |
+- Small values → put in `variables={...}` on the DAG and reference from the
+  query string.
+- Otherwise → put a Lambda in front that pulls and either builds the SQL or
+  calls Athena directly.
 
-Because `pull()` reads the store itself, the task's execution role needs read
-access. Polyris publishes a managed policy for this — `PolyrisTaskReadPolicy`
-(exported as `${Namespace}-${Stage}-polyris-task-read-policy`, least privilege:
-`dynamodb:GetItem` + `s3:GetObject`). Attach it to any task role that calls
-`pull()`:
+## The two paths
+
+- **Lambda + SFN** — polyris injects upstream output into their input. Zero
+  setup, no IAM, no `pull()`. Practical cap: ~25 KB per upstream output
+  (Step Functions payload divides ~256 KB across inputs, so plan around
+  25 KB when you have several upstreams).
+- **Service tasks (Glue / ECS / Batch / EMR)** — polyris cannot inject
+  arbitrary data into a Spark session / container / JVM. Your job code
+  calls `xcom.pull()`. Cap: ~350 KB per output.
+
+That's the entire mental model.
+
+## Full example — Lambda → Glue
+
+Lambda extracts, Glue aggregates. Both talk to xcom, in the two different
+ways from the cheat sheet:
+
+```python
+from polyris import DAG, task
+
+with DAG(
+    dag_id="sales-etl",
+    schedule="@daily",
+    variables={"batch_size": 500},     # pipeline-wide, resolved at run start
+) as dag:
+
+    @task.lambda_function(
+        function_name="sales-extract",
+        payload={"source": "internal-crm"},   # static task input
+    )
+    def extract(event):
+        # event has: your payload, upstream outputs (none here),
+        # polyris metadata (date, pipeline_name, ...), pipeline variables.
+        source = event["source"]                  # from payload=
+        date   = event["date"]                    # polyris metadata
+        batch  = event["batch_size"]              # pipeline variable
+
+        # ... run the extract ...
+
+        return {                                  # this is what Glue will pull
+            "rows": 1240,
+            "path": f"s3://lake/sales/{date}/data.parquet",
+        }
+
+    @task.glue_job(job_name="sales-aggregate")
+    def aggregate():
+        # Actual code runs on Spark, not in this file. It would do:
+        #
+        #     from polyris import xcom
+        #     up = xcom.pull("extract")   # {"rows": 1240, "path": "..."}
+        #     rows_path = up["path"]
+        pass
+
+    extract() >> aggregate()
+```
+
+## What actually gets stored, per task type
+
+**Read this before you plan a service task → something else hand-off.** The
+wrapper stores different things depending on task type:
+
+| Task type              | Stored `result`                                         |
+| ---------------------- | ------------------------------------------------------- |
+| `lambda_function`      | Your Lambda's **return value** (JSON)                   |
+| `sfn`                  | The nested SFN's **execution Output** (JSON)            |
+| `glue_job`             | AWS API response — `{"JobRunId": ...}`                  |
+| `ecs_task`             | AWS API response — `{"TaskArn": ...}`                   |
+| `athena_query`         | AWS API response — `{"QueryExecutionId": ...}`          |
+| `batch_job`            | AWS API response — `{"JobId": ...}`                     |
+| `emr_step`             | AWS API response — step identifier                      |
+
+So `xcom.pull("my-lambda")` returns your real data.
+`xcom.pull("my-glue-job")` returns `{"JobRunId": "..."}`, not your rows.
+
+**To pass real data FROM a service task, write it to S3:**
+
+```python
+# Inside the Glue job (Spark):
+df.write.parquet(f"s3://lake/etl/{polyris_date}/data.parquet")
+
+# In a downstream Lambda:
+def load(event):
+    path = f"s3://lake/etl/{event['date']}/data.parquet"
+    df = pandas.read_parquet(path)
+```
+
+There is no `xcom.push()` — service tasks can't write anything but the AWS API
+response through the wrapper. S3 by convention is the way.
+
+## What's in a task's input
+
+Every task input carries four pieces. Where you read each depends on task type:
+
+| Piece                     | Lambda / SFN                       | Glue / ECS / Batch / EMR              |
+| ------------------------- | ---------------------------------- | ------------------------------------- |
+| **Your static input**     | from `payload=` / SFN `Input`      | from `glue_arguments=` / container args |
+| **Upstream output**       | `event["upstream"][name]["output"]`| `xcom.pull(name)`                     |
+| **polyris metadata**      | `event["date"]`, `event["pipeline_name"]` | env: `POLYRIS_RUN_DATE`, `POLYRIS_PIPELINE_NAME`, `POLYRIS_TOKENS_TABLE` |
+| **Pipeline variables**    | `event["my_var"]`                  | you route via `glue_arguments=` etc.  |
+
+## Where the data lives
+
+- DynamoDB table `pipeline-tokens`, key `output#{pipeline}#{task}#{date}`.
+- **Retention: 120 days** (TTL attribute). Older rows are gone; `pull()` on
+  them raises `PullError` — no silent staleness.
+- **Same-date re-run overwrites.** A re-run is usually the answer to a broken
+  run, so downstream reads the fresh output, not the broken one.
+- **Different dates never collide** — a backfill and a live run don't touch
+  each other.
+- **Size limit ~350 KB** per output. Larger returns truncate; downstream
+  `pull()` raises `PullError`. For >350 KB, write to S3 yourself and return
+  the path.
+
+## IAM: what `pull()` needs
+
+**Only for `pull()`** — auto-injected `event["upstream"]` needs nothing.
+
+The task's execution role needs `PolyrisTaskReadPolicy` (`dynamodb:GetItem` +
+`s3:GetObject`, least-privilege):
 
 ```yaml
 ManagedPolicyArns:
   - !ImportValue <namespace>-<stage>-polyris-task-read-policy
 ```
 
-(You only need this for the `pull()` path — the default injected `upstream` needs
-nothing.)
+## `xcom.pull()` past a direct dependency
 
-## `task_name` doesn't have to be a declared dependency
-
-`pull()` looks up a task's output by name and date alone — it doesn't check
-your DAG's `dependencies`. So in a chain `extract >> transform >> load`,
-`load` can still reach past its direct dependency and read `extract` too:
+`pull()` looks up by task name + date only — it doesn't consult the DAG. So in
+`extract >> transform >> load`, `load` can still reach `extract`:
 
 ```python
-@task.lambda_(function_name="load")
 def load(event):
-    from_transform = event["upstream"]["transform"]["output"]  # declared dependency
-    from_extract = xcom.pull("extract", event)                 # not declared — reached anyway
-
-transform >> load   # extract is NOT in load's dependencies
+    from_transform = event["upstream"]["transform"]["output"]   # declared dep
+    from_extract   = xcom.pull("extract", event)                # not declared
 ```
 
-**The tradeoff:** declaring `extract >> load` is what tells Polyris to *wait*
-for `extract` before starting `load`. Skip the declaration and you skip that
-guarantee — `load` could start before `extract` has produced anything for
-this run date. If that happens, `pull()` raises `PullError` rather than
-returning stale or empty data, so the failure is loud, not silent — but
-you're the one responsible for making sure the ordering actually holds
-(here, it holds because `extract` runs before `transform`, which `load`
-already waits for).
+**Tradeoff:** the declaration is what makes polyris *wait* for the upstream.
+Skip it and you can start before the upstream produced anything — `pull()`
+raises `PullError` rather than returning stale data. Use this only when the
+ordering is already guaranteed by other dependencies (here, `extract` runs
+before `transform`, which `load` waits for).
 
-Reach for this when you need a value from a task that isn't your direct
-predecessor but definitely finished earlier in the same run — not as a way
-to avoid declaring a real dependency.
+## When `pull()` fails
+
+`xcom.pull()` raises `PullError` in exactly four cases:
+
+| Trigger                                                                       | Message                                                                            |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| No context (`event` not passed in Lambda; no `POLYRIS_*` env in ECS/Glue)     | `pull() needs the pipeline name. In a Lambda pass the event …`                     |
+| Upstream stored nothing (didn't return, or hasn't run for this date)         | `no output stored for task 'X' (pipeline 'Y', date 'Z') — did it return anything?` |
+| Stored `result` isn't valid JSON (rare — bad Lambda return)                  | `stored output for task 'X' is not readable JSON: <parse error>`                   |
+| Output truncated (exceeded 350 KB)                                           | `output for task 'X' was truncated and is unavailable …`                           |
+
+The first two cover >90% of the cases. Usually the fix is: copy the exact
+task_id from the DAG.
 
 ## Determinism
 
-Data flows from the logical run date, so both paths are deterministic and
-backfill-safe. Avoid making a task's stored output depend on wall-clock time
-(`now()`), which would make re-runs diverge.
+Data flows from the logical run date, not wall-clock time. Both paths
+(auto-injected and `pull()`) are deterministic and safe to re-run — as long as
+your task's return value doesn't include `now()` or similar.

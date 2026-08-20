@@ -1,7 +1,6 @@
 """Assets — cross-pipeline lineage and asset-triggered runs (EXPERIMENTAL).
 
-⚠️  Assets are experimental (v0.93.0): the API may change, and the visual asset
-    console is not in the open-source build yet (engine + CLI lineage only).
+⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
 
 This pipeline consumes `clean/orders` — the asset **produced by the
 `11_assets_outlets_inlets` pipeline** — and produces `analytics/orders_daily`. Because the

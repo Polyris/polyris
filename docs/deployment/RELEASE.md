@@ -82,7 +82,7 @@ git tag v1.0.0-beta.1
 git push origin v1.0.0-beta.1
 ```
 
-## Notes
+## Security model
 
 - **OIDC** — no long-lived AWS credentials stored in GitHub. GitHub gets temporary credentials per run.
 - **Scope** — role only allows pushes from your repo's tags and main branch.

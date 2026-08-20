@@ -1,5 +1,11 @@
 # Spike: Do the 11 trigger rules actually work?
 
+> **Superseded.** Analysis was of the pre-ADR-#117 taxonomy of 11 rules.
+> The current taxonomy is **5 canonical rules** (ADR #117), documented in
+> [DSL.md](../features/DSL.md#trigger-rules). Kept as design record because
+> ADRs #114/#115/#117 cite the reasoning here; do not read as current
+> reference.
+
 **Question.** We advertise 11 `trigger_rule`s. Do they work end-to-end
 with the status model and the SFN execution engine, or is the taxonomy partly aspirational?
 
