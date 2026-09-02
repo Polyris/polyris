@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"step_wrapper_lambda\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"extract\", \"task_type\": \"sfn\", \"dependencies\": []}], \"dag\": {\"nodes\": [{\"id\": \"extract\", \"name\": \"extract\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": []}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"parallel\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"task_a\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"task_b\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"task_c\", \"task_type\": \"sfn\", \"dependencies\": []}], \"dag\": {\"nodes\": [{\"id\": \"task_a\", \"name\": \"task_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"task_b\", \"name\": \"task_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"task_c\", \"name\": \"task_c\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": []}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

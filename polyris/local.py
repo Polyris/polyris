@@ -621,20 +621,20 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
     results = []
     task_starts = {}
     
-    for event in events:
+    for idx, event in enumerate(events):
         event_type = event['type']
         timestamp = event['timestamp']
-        
+
         if 'TaskStateEntered' in event_type:
             details = event.get('stateEnteredEventDetails', {})
             task_id = details.get('name', 'unknown')
             task_starts[task_id] = timestamp
-        
+
         elif 'TaskStateExited' in event_type:
             details = event.get('stateExitedEventDetails', {})
             task_id = details.get('name', 'unknown')
             output = json.loads(details.get('output', '{}'))
-            
+
             results.append(TaskResult(
                 task_id=task_id,
                 status='success',
@@ -642,15 +642,15 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
                 end_time=timestamp,
                 output=output,
             ))
-        
+
         elif 'TaskFailed' in event_type or 'ExecutionFailed' in event_type:
             details = event.get('taskFailedEventDetails', event.get('executionFailedEventDetails', {}))
             error = details.get('error', 'Unknown')
             cause = details.get('cause', '')
-            
+
             # Try to find which task failed
             task_id = 'unknown'
-            for e in reversed(events[:events.index(event)]):
+            for e in reversed(events[:idx]):
                 if 'TaskStateEntered' in e.get('type', ''):
                     task_id = e.get('stateEnteredEventDetails', {}).get('name', 'unknown')
                     break

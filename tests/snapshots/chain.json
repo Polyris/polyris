@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"chain\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"extract\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"transform\", \"task_type\": \"sfn\", \"dependencies\": [\"extract\"]}, {\"task_id\": \"load\", \"task_type\": \"sfn\", \"dependencies\": [\"transform\"]}], \"dag\": {\"nodes\": [{\"id\": \"extract\", \"name\": \"extract\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"transform\", \"name\": \"transform\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"load\", \"name\": \"load\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"extract\", \"to\": \"transform\"}, {\"from\": \"transform\", \"to\": \"load\"}]}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

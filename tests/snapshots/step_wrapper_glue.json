@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"step_wrapper_glue\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"prepare\", \"task_type\": \"sfn\", \"dependencies\": []}], \"dag\": {\"nodes\": [{\"id\": \"prepare\", \"name\": \"prepare\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"run_etl\", \"name\": \"run_etl\", \"type\": \"glue\"}], \"edges\": [{\"from\": \"prepare\", \"to\": \"run_etl\"}]}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

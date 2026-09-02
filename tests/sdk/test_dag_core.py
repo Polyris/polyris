@@ -78,6 +78,37 @@ class TestScheduling:
         dag = DAG("d", schedule=Asset("ns/z").consecutive(days=3))
         assert dag.is_asset_triggered is True
 
+    def test_invalid_schedule_type_raises(self):
+        """Regression: non-str, non-Asset schedule types must raise immediately.
+
+        Previously a timedelta/int/tuple/empty-list fell through both branches
+        in __post_init__ leaving _asset_schedule=None and
+        _eventbridge_schedule=None — the pipeline deployed but never ran.
+        """
+        import datetime
+        with pytest.raises(TypeError, match="schedule"):
+            DAG("d", schedule=datetime.timedelta(hours=1))
+
+    def test_invalid_schedule_int_raises(self):
+        with pytest.raises(TypeError, match="schedule"):
+            DAG("d", schedule=42)
+
+    def test_invalid_schedule_empty_list_raises(self):
+        with pytest.raises(TypeError, match="schedule"):
+            DAG("d", schedule=[])
+
+    def test_none_schedule_is_valid(self):
+        """schedule=None means manually-triggered — must not raise."""
+        dag = DAG("d", schedule=None)
+        assert dag.is_asset_triggered is False
+        assert dag._eventbridge_schedule is None
+
+    def test_invalid_trigger_mode_raises(self):
+        """B-17: trigger_mode must be 'all' or 'any'; anything else silently
+        defaulted to 'all' behaviour before this fix."""
+        with pytest.raises(ValueError, match="trigger_mode"):
+            DAG("d", trigger_assets=[Asset("ns/x")], trigger_mode="ANY")
+
     def test_asset_schedule_list_with_ref_as_first_element(self):
         """Regression test: DAG.__post_init__ previously only inspected
         `schedule[0]`'s type to decide is_asset_based for a list, and only

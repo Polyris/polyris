@@ -34,7 +34,13 @@ from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 
 import boto3
-from botocore.exceptions import ClientError, WaiterError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    NoCredentialsError,
+    ProfileNotFound,
+    WaiterError,
+)
 
 from .generators import (
     generate_step_function_json,
@@ -606,29 +612,26 @@ def deploy_pipeline(
     # ── AWS session + credentials check ──────────────────────────────────
     try:
         session = boto3.Session(profile_name=profile, region_name=region)
-        # Verify credentials work
         caller_identity = session.client("sts").get_caller_identity()
-    except Exception as e:
-        err = str(e)
-        if "credentials" in err.lower() or "access" in err.lower() or "AuthFailure" in err:
-            print(f"❌ AWS credentials error: {err}")
-            if not profile:
-                print("   Tip: try polyris-deploy --profile <your-profile>")
-                print("   Available profiles: check ~/.aws/credentials or ~/.aws/config")
-            sys.exit(1)
-        session = boto3.Session(region_name=region)
-        caller_identity = None
+    except ProfileNotFound as e:
+        print(f"❌ AWS profile not found: {e}")
+        print("   Check ~/.aws/config for available profiles.")
+        sys.exit(1)
+    except NoCredentialsError as e:
+        print(f"❌ No AWS credentials found: {e}")
+        if not profile:
+            print("   Tip: try polyris-deploy --profile <your-profile>")
+        sys.exit(1)
+    except ClientError as e:
+        print(f"❌ AWS credentials error: {e}")
+        sys.exit(1)
+    except BotoCoreError as e:
+        print(f"❌ AWS error: {e}")
+        sys.exit(1)
 
     # Guard: verify we're deploying to the expected account
     expected_account = stage_config.get("account_id")
     if expected_account:
-        if caller_identity is None:
-            print(f"❌ Could not verify the AWS account for stage '{stage}' "
-                  f"(sts:GetCallerIdentity failed for an unexpected reason, "
-                  f"not a credentials error). Stage '{stage}' expects account "
-                  f"{expected_account}; refusing to deploy without confirming "
-                  f"it, to avoid an accidental wrong-account deploy.")
-            sys.exit(1)
         actual_account = caller_identity["Account"]
         if actual_account != expected_account:
             print(f"❌ Account mismatch for stage '{stage}':")

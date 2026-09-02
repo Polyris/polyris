@@ -9,6 +9,8 @@ Covers three small modules (CLAUDE.md #13):
 """
 from __future__ import annotations
 
+import pytest
+
 import polyris.resolver as resolver_mod
 from polyris import DAG, task
 from polyris.helpers import chain, cross_downstream, Label
@@ -60,6 +62,18 @@ class TestChain:
         assert a in c.dependencies
         assert b in d.dependencies
         assert a not in d.dependencies
+
+    def test_chain_mismatched_lists_raises(self):
+        """B-6: chain([a, b], [c]) must raise — lengths differ."""
+        a, b, c, _ = _four_tasks()
+        with pytest.raises((ValueError, TypeError)):
+            chain([a, b], [c])
+
+    def test_chain_invalid_type_raises(self):
+        """B-7: hasattr guards removed — chain("x", task) must raise, not silently no-op."""
+        a, *_ = _four_tasks()
+        with pytest.raises((TypeError, AttributeError)):
+            chain("not_a_task", a)
 
 
 class TestCrossDownstream:

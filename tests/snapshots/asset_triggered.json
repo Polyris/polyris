@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"asset_triggered\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": {\"operator\": \"AND\", \"assets\": [\"raw/inventory\", \"raw/catalog\"]}, \"tasks\": [{\"task_id\": \"process\", \"task_type\": \"sfn\", \"dependencies\": []}], \"dag\": {\"nodes\": [{\"id\": \"process\", \"name\": \"process\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": []}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

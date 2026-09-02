@@ -322,7 +322,8 @@ class Asset:
         if uri is None:
             uri = ""
         
-        assert name is not None  # guaranteed: raised above when both name/uri missing; else derived from uri
+        if name is None:  # pragma: no cover — unreachable via public API: raised above when both None, derived from uri otherwise
+            raise ValueError("Internal invariant: name must be set at this point")
         self.name = name
         self.uri = uri
         self.group = group
@@ -919,11 +920,15 @@ class Asset:
             def process(): ...
             
         Raises:
-            ValueError: If no time parameters provided
+            ValueError: If no time parameters provided, or any argument is negative.
         """
         if hours == 0 and days == 0 and weeks == 0 and minutes == 0:
             raise ValueError("within() requires at least one of: hours, days, weeks, minutes")
-        
+        if any(v < 0 for v in (hours, days, weeks, minutes)):
+            raise ValueError(
+                f"within() arguments must be non-negative; got hours={hours}, "
+                f"days={days}, weeks={weeks}, minutes={minutes}"
+            )
         total_hours = hours + (days * 24) + (weeks * 24 * 7) + (minutes / 60 if minutes else 0)
         return AssetRef(asset=self, freshness_hours=total_hours)
 

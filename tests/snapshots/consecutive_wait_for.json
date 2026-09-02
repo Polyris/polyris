@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"consecutive_wait_for\", \"description\": \"\", \"group\": \"\", \"schedule\": \"cron(0 22 ? * SUN *)\", \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"mark_weekly_complete\", \"task_type\": \"sfn\", \"dependencies\": [], \"outlets\": [{\"name\": \"acme/weekly-complete\", \"uri\": \"\", \"granularity\": \"daily\"}], \"wait_for\": [{\"name\": \"acme/daily-complete\", \"consecutive_days\": 7}]}], \"dag\": {\"nodes\": [{\"id\": \"mark_weekly_complete\", \"name\": \"mark_weekly_complete\", \"type\": \"task\", \"task_type\": \"sfn\", \"outlets\": [{\"name\": \"acme/weekly-complete\", \"uri\": \"\", \"granularity\": \"daily\"}], \"wait_for\": [{\"name\": \"acme/daily-complete\", \"consecutive_days\": 7}]}], \"edges\": []}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"fan_in\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"task_a\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"task_b\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"task_c\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"load\", \"task_type\": \"sfn\", \"dependencies\": [\"task_a\", \"task_b\", \"task_c\"]}], \"dag\": {\"nodes\": [{\"id\": \"task_a\", \"name\": \"task_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"task_b\", \"name\": \"task_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"task_c\", \"name\": \"task_c\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"load\", \"name\": \"load\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"task_a\", \"to\": \"load\"}, {\"from\": \"task_b\", \"to\": \"load\"}, {\"from\": \"task_c\", \"to\": \"load\"}]}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

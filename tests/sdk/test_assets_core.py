@@ -98,6 +98,16 @@ class TestAssetCore:
         with pytest.raises(ValueError):
             Asset("ns/x").within()
 
+    def test_within_negative_hours_raises(self):
+        """B-21: within(hours=-5) previously produced freshness_hours=-5
+        and generated an unreachable window — asset was always 'stale'."""
+        with pytest.raises(ValueError, match="negative"):
+            Asset("ns/x").within(hours=-5)
+
+    def test_within_negative_days_raises(self):
+        with pytest.raises(ValueError, match="negative"):
+            Asset("ns/x").within(days=-1)
+
     def test_consecutive_builds_ref(self):
         ref = Asset("ns/x").consecutive(days=7)
         assert isinstance(ref, AssetConsecutiveRef)
@@ -106,6 +116,12 @@ class TestAssetCore:
     def test_consecutive_zero_raises(self):
         with pytest.raises(ValueError):
             Asset("ns/x").consecutive(days=0)
+
+    def test_no_name_no_uri_raises(self):
+        """N-1: the old `assert name is not None` was stripped by python -O;
+        must be a real ValueError so it fires in optimised mode too."""
+        with pytest.raises(ValueError):
+            Asset()  # type: ignore[call-arg]
 
     def test_to_dict_basic_and_producers(self):
         a = Asset("ns/orders", schema=[Column("id", t.bigint())])

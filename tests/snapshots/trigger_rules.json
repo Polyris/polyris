@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"trigger_rules\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"extract_a\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"extract_b\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"cleanup\", \"task_type\": \"sfn\", \"dependencies\": [\"extract_a\", \"extract_b\"]}], \"dag\": {\"nodes\": [{\"id\": \"extract_a\", \"name\": \"extract_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"extract_b\", \"name\": \"extract_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"cleanup\", \"name\": \"cleanup\", \"type\": \"task\", \"task_type\": \"sfn\", \"trigger_rule\": \"all_done\"}], \"edges\": [{\"from\": \"extract_a\", \"to\": \"cleanup\"}, {\"from\": \"extract_b\", \"to\": \"cleanup\"}]}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {
