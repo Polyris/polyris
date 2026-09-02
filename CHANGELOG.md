@@ -1,3 +1,44 @@
+## v0.97.0 - 2026-09-02
+
+### Fixed — SDK correctness: silent failures, type safety, and validation hardening
+
+Four batches of fixes across the SDK core. No breaking changes to the public API.
+
+**Graph identity and duplicate detection**
+- `Task`, `DAG`, and all `Step` subclasses now use identity-based `__eq__`/`__hash__`
+  (`@dataclass(eq=False)`). Previously value-based equality caused `if x not in deps`
+  to silently discard distinct graph edges (`Pass() == Pass()` was `True`).
+- `DAG.add_task` raises `ValueError` on duplicate `task_id`. Previously a duplicate
+  task was silently appended and one task disappeared from the execution graph.
+- `TaskGroup` duplicate check now runs after the group prefix is applied.
+
+**Validation hardening**
+- `DAG`: invalid schedule type raises `TypeError`; `trigger_mode` not in `{"all","any"}` raises `ValueError`.
+- `chain()`: mismatched list lengths raise `ValueError`.
+- `Asset.within()`: negative duration raises `ValueError`.
+- `Wait`: multiple conflicting duration fields raise at construction.
+- `DynamoDB`/`S3` steps: unknown operation raises `KeyError` instead of silently defaulting.
+- `assert` statements replaced with explicit `raise ValueError` throughout (safe under `python -O`).
+- ASL size guard: warning at 900 KB, error at 1 MB.
+- `register --json`: exits 1 on failure.
+
+**SDK silent failure fixes**
+- `--stage`: unknown stage raises `ValueError` immediately with the list of configured stages.
+- `_serialize_wait_for`: unsupported type raises `TypeError` instead of silently dropping the constraint.
+- Pipeline registration: `ExecutionAlreadyExists` is treated as success (idempotent).
+- `polyris-validate --test`: exits 1 when any callable raises.
+
+**Glue and ECS type safety**
+- `@task.glue_job`: new `max_capacity` (float) parameter for Python Shell jobs — supports
+  fractional DPU values (e.g. `0.0625` for 1/16 DPU). `allocated_capacity` now requires
+  an integer and raises if a float is passed, pointing to `max_capacity`.
+- `@task.glue_job`: `command_name="glueetl"` rejects `max_capacity`; `command_name="pythonshell"`
+  rejects `worker_type`/`number_of_workers`. `max_capacity` and `allocated_capacity` are
+  mutually exclusive.
+- `@task.ecs_task`: `launch_type` validated against `{"FARGATE", "EC2"}`; `assign_public_ip`
+  validated against `{"ENABLED", "DISABLED"}`. Previously invalid values reached the AWS API.
+- `TaskConfigKey.MAX_CAPACITY` added; `MaxCapacity` emitted in `run_task` SFN template.
+
 ## v0.96.0 (0.96.0) - 2026-08-19
 
 ### Changed (breaking) — task decorator names now match the AWS service they orchestrate
