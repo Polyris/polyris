@@ -489,6 +489,7 @@ class TaskConfigKey(str, Enum):
     WORKER_TYPE = "worker_type"
     NUMBER_OF_WORKERS = "number_of_workers"
     ALLOCATED_CAPACITY = "allocated_capacity"
+    MAX_CAPACITY = "max_capacity"
     # ecs
     CLUSTER = "cluster"
     TASK_DEFINITION = "task_definition"

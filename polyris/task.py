@@ -275,9 +275,11 @@ class Task:
     # === Glue-specific fields ===
     job_name: str = ""  # Glue job name
     glue_arguments: Optional[Dict[str, str]] = None  # --arg=value pairs
-    allocated_capacity: Optional[int] = None  # DPUs
-    worker_type: Optional[str] = None  # G.1X, G.2X, etc.
+    allocated_capacity: Optional[int] = None  # Integer DPUs (Python Shell, deprecated by AWS; use max_capacity for fractional values)
+    max_capacity: Optional[float] = None  # Float DPUs — supports 1/16 DPU (0.0625) for Python Shell; mutually exclusive with worker_type/number_of_workers
+    worker_type: Optional[str] = None  # G.1X, G.2X, etc. (PySpark only)
     number_of_workers: Optional[int] = None
+    command_name: Optional[str] = None  # "pythonshell" or "glueetl" — enables cross-type validation
     
     # === ECS-specific fields ===
     cluster: str = ""
@@ -536,8 +538,10 @@ class TaskDecorator:
         job_name: str = "",
         glue_arguments: Optional[Dict[str, str]] = None,
         allocated_capacity: Optional[int] = None,
+        max_capacity: Optional[float] = None,
         worker_type: Optional[str] = None,
         number_of_workers: Optional[int] = None,
+        command_name: Optional[str] = None,
         cluster: str = "",
         task_definition: str = "",
         launch_type: str = "FARGATE",
@@ -617,8 +621,10 @@ class TaskDecorator:
                 job_name=job_name,
                 glue_arguments=glue_arguments,
                 allocated_capacity=allocated_capacity,
+                max_capacity=max_capacity,
                 worker_type=worker_type,
                 number_of_workers=number_of_workers,
+                command_name=command_name,
                 # ECS-specific
                 cluster=cluster,
                 task_definition=task_definition,
@@ -743,8 +749,10 @@ class TaskDecorator:
         job_name: str,  # Required!
         glue_arguments: Optional[Dict[str, str]] = None,
         allocated_capacity: Optional[int] = None,
+        max_capacity: Optional[float] = None,
         worker_type: Optional[str] = None,
         number_of_workers: Optional[int] = None,
+        command_name: Optional[str] = None,
         **common: Unpack[CommonTaskKwargs],
     ) -> Union[Task, Callable]:
         """
@@ -753,13 +761,65 @@ class TaskDecorator:
         Args:
             job_name: Glue job name (required)
             glue_arguments: Job arguments (--key=value)
-            worker_type: G.1X, G.2X, etc.
-            number_of_workers: Number of workers
+            worker_type: G.1X, G.2X, etc. (PySpark / glueetl jobs)
+            number_of_workers: Number of workers (PySpark / glueetl jobs)
+            allocated_capacity: Integer DPUs (Python Shell, deprecated). Use max_capacity
+                instead — max_capacity supports fractional values (e.g. 0.0625 = 1/16 DPU).
+            max_capacity: Float DPUs (Python Shell). Supports 0.0625 (1/16 DPU) for the
+                minimum Python Shell allocation. Mutually exclusive with worker_type/number_of_workers.
+            command_name: "pythonshell" or "glueetl" — enables cross-type validation
 
         Example:
             @task.glue_job(job_name="etl-job", glue_arguments={"--date": "2024-01-01"})
             def etl_job(): pass
+
+            # Python Shell with fractional DPU (1/16)
+            @task.glue_job(job_name="light-job", max_capacity=0.0625)
+            def light_job(): pass
         """
+        _GLUE_VALID_COMMAND_NAMES = frozenset({"pythonshell", "glueetl"})
+        if command_name is not None and command_name not in _GLUE_VALID_COMMAND_NAMES:
+            raise ValueError(
+                f"@task.glue_job command_name must be 'pythonshell' or 'glueetl'; got {command_name!r}. "
+                f"Python Shell jobs use max_capacity or allocated_capacity; PySpark (glueetl) jobs use worker_type and number_of_workers."
+            )
+        if command_name == "pythonshell" and (worker_type or number_of_workers):
+            raise ValueError(
+                "@task.glue_job command_name='pythonshell' (Python Shell) is incompatible with "
+                "worker_type and number_of_workers — Python Shell jobs use max_capacity, not worker pools."
+            )
+        if command_name == "glueetl" and allocated_capacity is not None:
+            raise ValueError(
+                "@task.glue_job command_name='glueetl' (PySpark) is incompatible with "
+                "allocated_capacity — PySpark jobs use worker_type and number_of_workers, not DPU allocation."
+            )
+        if command_name == "glueetl" and max_capacity is not None:
+            raise ValueError(
+                "@task.glue_job command_name='glueetl' (PySpark) is incompatible with "
+                "max_capacity — PySpark jobs use worker_type and number_of_workers."
+            )
+        # allocated_capacity must be a whole-number DPU; fractional values (e.g.
+        # 0.0625 for 1/16 DPU on Python Shell) require max_capacity instead —
+        # AWS StartJobRun rejects AllocatedCapacity when it is not an integer.
+        if allocated_capacity is not None and not isinstance(allocated_capacity, int):
+            raise ValueError(
+                f"@task.glue_job allocated_capacity must be an integer (got {allocated_capacity!r}). "
+                "For fractional DPU values (e.g. 0.0625 for 1/16 DPU), use max_capacity instead."
+            )
+        # max_capacity and allocated_capacity are two names for the same Glue
+        # capacity model (MaxCapacity vs AllocatedCapacity in StartJobRun).
+        # Setting both would produce conflicting AWS API parameters.
+        if max_capacity is not None and allocated_capacity is not None:
+            raise ValueError(
+                "@task.glue_job max_capacity and allocated_capacity are mutually exclusive — "
+                "use max_capacity (supports fractional DPU) or allocated_capacity (integer DPU, deprecated)."
+            )
+        # MaxCapacity is also mutually exclusive with the WorkerType+NumberOfWorkers model.
+        if max_capacity is not None and (worker_type or number_of_workers):
+            raise ValueError(
+                "@task.glue_job max_capacity is mutually exclusive with "
+                "worker_type/number_of_workers (different Glue capacity models)."
+            )
         # Glue StartJobRun overrides: WorkerType + NumberOfWorkers go together,
         # and AllocatedCapacity (the deprecated DPU model) is mutually exclusive
         # with the worker pair. Enforce here (the decorator is the validation
@@ -780,8 +840,10 @@ class TaskDecorator:
             job_name=job_name,
             glue_arguments=glue_arguments,
             allocated_capacity=allocated_capacity,
+            max_capacity=max_capacity,
             worker_type=worker_type,
             number_of_workers=number_of_workers,
+            command_name=command_name,
             **common,
         )
 
@@ -818,6 +880,16 @@ class TaskDecorator:
             )
             def container_job(): pass
         """
+        _ECS_VALID_LAUNCH_TYPES = frozenset({"FARGATE", "EC2"})
+        if launch_type not in _ECS_VALID_LAUNCH_TYPES:
+            raise ValueError(
+                f"@task.ecs_task launch_type must be 'FARGATE' or 'EC2'; got {launch_type!r}."
+            )
+        _ECS_VALID_ASSIGN_PUBLIC_IP = frozenset({"ENABLED", "DISABLED"})
+        if assign_public_ip not in _ECS_VALID_ASSIGN_PUBLIC_IP:
+            raise ValueError(
+                f"@task.ecs_task assign_public_ip must be 'ENABLED' or 'DISABLED'; got {assign_public_ip!r}."
+            )
         # Fargate runs in an ENI and requires at least one subnet; emitting an
         # empty Subnets list fails opaquely at runTask. Enforce it here (the
         # decorator is the validation boundary). EC2 tasks may omit subnets
