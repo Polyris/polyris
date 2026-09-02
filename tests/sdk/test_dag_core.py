@@ -97,6 +97,89 @@ class TestScheduling:
 # ============================================================ #
 # graph methods
 # ============================================================ #
+class TestDuplicateTaskId:
+    """Regression tests for B-1: duplicate task_id must be caught at add_task time."""
+
+    def test_duplicate_task_id_raises_immediately(self):
+        with pytest.raises(ValueError, match="Duplicate task_id"):
+            with DAG("dag_dup", schedule=None):
+                @task.sfn(arn=ARN)
+                def a():
+                    pass
+
+                @task.sfn(arn=ARN)
+                def a():  # noqa: F811 — intentional redefinition for test
+                    pass
+
+                a()
+                a()
+
+    def test_duplicate_task_id_error_names_the_id(self):
+        with pytest.raises(ValueError, match="my_task"):
+            with DAG("dag_dup2", schedule=None):
+                @task.sfn(arn=ARN, task_id="my_task")
+                def first():
+                    pass
+
+                @task.sfn(arn=ARN, task_id="my_task")
+                def second():
+                    pass
+
+                first()
+                second()
+
+    def test_same_task_object_added_twice_is_idempotent(self):
+        """Adding the exact same Task object twice must NOT raise — idempotency."""
+        with DAG("dag_idem", schedule=None) as dag:
+            @task.sfn(arn=ARN)
+            def a():
+                pass
+
+            ai = a()
+            dag.add_task(ai.task)  # second add of the same object
+
+        assert len(dag.tasks) == 1
+
+    def test_duplicate_task_id_within_task_group_raises(self):
+        """Regression: two tasks with the same name in one TaskGroup must raise.
+
+        Previously the duplicate check ran before task_group.add_task applied
+        the group prefix, so both tasks registered as 'a' → passed the check →
+        then both were renamed to 'group.a', silently producing two tasks with
+        the same id in dag.tasks.
+        """
+        from polyris.task_group import TaskGroup
+        with pytest.raises(ValueError, match="Duplicate task_id"):
+            with DAG("dag_dup_grp", schedule=None):
+                with TaskGroup("grp"):
+                    @task.sfn(arn=ARN)
+                    def a():
+                        pass
+
+                    @task.sfn(arn=ARN)
+                    def a():  # noqa: F811
+                        pass
+
+    def test_task_with_same_prefixed_id_as_existing_group_task_raises(self):
+        """A task outside a group whose explicit task_id collides with an already-prefixed
+        group task must raise — caught by dag.add_task since the prefixed id is already
+        in task_dict when the outside task is added."""
+        from polyris.task_group import TaskGroup
+        with pytest.raises(ValueError, match="Duplicate task_id"):
+            with DAG("dag_dup_cross", schedule=None):
+                with TaskGroup("grp"):
+                    @task.sfn(arn=ARN)
+                    def clash():
+                        pass
+
+                @task.sfn(arn=ARN, task_id="grp.clash")
+                def second():
+                    pass
+
+
+# ============================================================ #
+# graph methods
+# ============================================================ #
 class TestGraphMethods:
     def test_topological_sort_orders_deps_first(self):
         dag, a, b, c = _chain()
@@ -185,3 +268,31 @@ class TestCompatHelpers:
             boom()
         dag.test()  # must not propagate — the runner catches and prints
         assert "Error" in capsys.readouterr().out
+
+
+# ============================================================ #
+# identity semantics — DAG must use identity, not value equality
+# ============================================================ #
+
+class TestDAGIdentity:
+    """DAG objects must be hashable and use identity-based equality (B-2)."""
+
+    def test_dag_is_hashable(self):
+        dag = DAG("hash_check", schedule=None)
+        assert hash(dag) is not None
+
+    def test_dag_can_be_used_in_set(self):
+        dag1 = DAG("dag_set_1", schedule=None)
+        dag2 = DAG("dag_set_2", schedule=None)
+        s = {dag1, dag2}
+        assert len(s) == 2
+
+    def test_two_dags_with_same_id_are_not_equal(self):
+        dag1 = DAG("same_id", schedule=None)
+        dag2 = DAG("same_id", schedule=None)
+        assert dag1 is not dag2
+        assert dag1 != dag2
+
+    def test_same_dag_equals_itself(self):
+        dag = DAG("self_eq", schedule=None)
+        assert dag == dag

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 # Step Base Class - All pipeline steps inherit from this
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Step:
     """
     Base class for all pipeline steps.
@@ -101,7 +101,7 @@ class Step:
 # Wait Step - Delay before next step
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Wait(Step):
     """
     Wait step - adds delay before continuing.
@@ -148,7 +148,7 @@ class Wait(Step):
 # Pass Step - Transform/compute data
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Pass(Step):
     """
     Pass step - transform data, compute variables.
@@ -189,7 +189,7 @@ class Pass(Step):
 # Choice Step - Conditional branching
 # ============================================
 
-@dataclass 
+@dataclass(eq=False)
 class Choice(Step):
     """
     Choice step - conditional branching.
@@ -281,7 +281,7 @@ class Condition:
 # HttpTask - Call HTTP API without Step Function
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class HttpTask(Step):
     """
     HTTP API call step.
@@ -328,7 +328,7 @@ class HttpTask(Step):
 # Map Step - Dynamic Task Mapping
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Map(Step):
     """
     Map step - iterate over array, process each item.
@@ -374,7 +374,7 @@ class Map(Step):
 # Sensor Step - Wait for external condition
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Sensor(Step):
     """
     Sensor step - wait for external condition.
@@ -434,7 +434,7 @@ class Sensor(Step):
 # ShortCircuit - Conditional pipeline stop
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class ShortCircuit(Step):
     """
     ShortCircuit step - conditionally skip downstream tasks.
@@ -472,7 +472,7 @@ class ShortCircuit(Step):
 # Lambda Task - Direct Lambda invocation
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class LambdaTask(Step):
     """
     Direct Lambda invocation (without nested Step Function).
@@ -509,7 +509,7 @@ class LambdaTask(Step):
 # Succeed Step - Early successful exit
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Succeed(Step):
     """
     Succeed step - end pipeline successfully.
@@ -545,7 +545,7 @@ class Succeed(Step):
 # AWS SERVICE INTEGRATIONS (Native SDK)
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class DynamoDBTask(Step):
     """
     Direct DynamoDB operation (no Lambda needed).
@@ -624,7 +624,7 @@ class DynamoDBTask(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class SNSTask(Step):
     """
     Publish to SNS topic.
@@ -657,7 +657,7 @@ class SNSTask(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class SQSTask(Step):
     """
     Send message to SQS queue.
@@ -688,7 +688,7 @@ class SQSTask(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class S3Task(Step):
     """
     S3 operations.
@@ -743,7 +743,7 @@ class S3Task(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class GlueTask(Step):
     """
     Run AWS Glue job.
@@ -778,7 +778,7 @@ class GlueTask(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class AthenaTask(Step):
     """
     Run Athena query.
@@ -815,7 +815,7 @@ class AthenaTask(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class ECSTask(Step):
     """
     Run ECS/Fargate task.
@@ -875,7 +875,7 @@ class ECSTask(Step):
             dag.add_step(self)
 
 
-@dataclass  
+@dataclass(eq=False)
 class EventBridgeTask(Step):
     """
     Put events to EventBridge.
@@ -909,7 +909,7 @@ class EventBridgeTask(Step):
             dag.add_step(self)
 
 
-@dataclass
+@dataclass(eq=False)
 class BedrockTask(Step):
     """
     Invoke Bedrock model (AI/ML).

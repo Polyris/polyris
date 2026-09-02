@@ -58,11 +58,19 @@ class TaskGroup:
     
     def add_task(self, task: 'Task'):
         """Add task to group."""
-        if task not in self._tasks:
-            self._tasks.append(task)
-            # Prefix task_id with group_id
-            if self.prefix_group_id:
-                task.task_id = f"{self.group_id}.{task.task_id}"
+        if task in self._tasks:  # pragma: no cover — dag.add_task returns early before this
+            return
+        new_id = f"{self.group_id}.{task.task_id}" if self.prefix_group_id else task.task_id
+        if self._dag is not None:
+            existing = self._dag.task_dict.get(new_id)
+            if existing is not None and existing is not task:
+                raise ValueError(
+                    f"Duplicate task_id '{new_id}' in DAG '{self._dag.dag_id}': "
+                    f"already registered by {existing!r}"
+                )
+        self._tasks.append(task)
+        if self.prefix_group_id:
+            task.task_id = new_id
     
     @property
     def roots(self) -> List['Task']:

@@ -645,7 +645,7 @@ def test_all_task_types_wire_assets():
     }
     with DAG(dag_id="assets-all-types", schedule="@daily"):
         for name, kw in specs.items():
-            @getattr(task, name)(outlets=[produced], inlets=[consumed], wait_for=[consumed], **kw)
+            @getattr(task, name)(outlets=[produced], inlets=[consumed], wait_for=[consumed], task_id=f"t_{name}", **kw)
             def _t():
                 pass
             assert _t.outlets == [produced], f"task.{name} dropped outlets"
