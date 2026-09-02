@@ -852,9 +852,11 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
         if task.worker_type:
             task_config[TaskConfigKey.WORKER_TYPE] = task.worker_type
         if task.number_of_workers:
-            task_config[TaskConfigKey.NUMBER_OF_WORKERS] = task.number_of_workers
-        if task.allocated_capacity:
+            task_config[TaskConfigKey.NUMBER_OF_WORKERS] = int(task.number_of_workers)
+        if task.allocated_capacity is not None:
             task_config[TaskConfigKey.ALLOCATED_CAPACITY] = task.allocated_capacity
+        if task.max_capacity is not None:
+            task_config[TaskConfigKey.MAX_CAPACITY] = float(task.max_capacity)
     elif task.task_type == 'ecs':
         task_config = {
             TaskConfigKey.CLUSTER: task.cluster,

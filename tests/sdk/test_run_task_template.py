@@ -407,6 +407,44 @@ def test_ecs_fargate_requires_subnets():
                 pass
 
 
+def test_ecs_invalid_launch_type_raises():
+    from polyris import DAG, task
+    with DAG(dag_id="bad-ecs-lt", schedule="@daily"):
+        with pytest.raises(ValueError, match="launch_type"):
+            @task.ecs_task(cluster="c", task_definition="td:1",
+                           launch_type="fargate", subnets=["s-1"])
+            def e():
+                pass
+
+
+def test_ecs_invalid_assign_public_ip_raises():
+    from polyris import DAG, task
+    with DAG(dag_id="bad-ecs-api", schedule="@daily"):
+        with pytest.raises(ValueError, match="assign_public_ip"):
+            @task.ecs_task(cluster="c", task_definition="td:1",
+                           launch_type="FARGATE", subnets=["s-1"],
+                           assign_public_ip="yes")
+            def e():
+                pass
+
+
+def test_ecs_ec2_valid_launch_type():
+    from polyris import DAG, task
+    with DAG(dag_id="ecs-ec2-lt", schedule="@daily"):
+        @task.ecs_task(cluster="c", task_definition="td:1", launch_type="EC2")
+        def e():
+            pass
+
+
+def test_ecs_disabled_assign_public_ip_is_default():
+    from polyris import DAG, task
+    with DAG(dag_id="ecs-api-default", schedule="@daily"):
+        @task.ecs_task(cluster="c", task_definition="td:1",
+                       launch_type="FARGATE", subnets=["s-1"])
+        def e():
+            pass  # DISABLED is the default — must not raise
+
+
 def test_glue_allocated_capacity_reaches_startjobrun(template):
     """allocated_capacity (the legacy DPU model, valid on its own) must reach
     startJobRun as AllocatedCapacity."""
@@ -421,6 +459,192 @@ def test_glue_allocated_capacity_reaches_startjobrun(template):
     resolved = _resolve_arguments(template, "Run_Task_Glue", wi)
     assert resolved["JobName"] == "etl"  # binding guard
     assert resolved.get("AllocatedCapacity") == 8, f"AllocatedCapacity dropped: {resolved!r}"
+    assert "WorkerType" not in resolved
+
+
+def test_glue_allocated_capacity_is_integer_in_task_config():
+    """allocated_capacity must be stored as int in task_config — Glue StartJobRun
+    rejects non-integer AllocatedCapacity. Tested at the task_config level so the
+    assertion is not gated on the optional jsonata library."""
+    from polyris import DAG, task
+    from polyris.generators import _build_task_config_and_arn
+    from polyris.constants import TaskConfigKey
+
+    with DAG(dag_id="int-check-alloc", schedule="@daily") as dag:
+        @task.glue_job(job_name="etl", allocated_capacity=4)
+        def j():
+            pass
+
+    t = dag.tasks[0]
+    task_config, _ = _build_task_config_and_arn(t)
+    cap = task_config[TaskConfigKey.ALLOCATED_CAPACITY]
+    assert cap == 4, f"wrong value: {cap!r}"
+    assert isinstance(cap, int) and not isinstance(cap, bool), (
+        f"AllocatedCapacity must be int in task_config, got {type(cap).__name__}: {cap!r}"
+    )
+
+
+def test_glue_number_of_workers_is_integer_in_task_config():
+    """number_of_workers must be stored as int in task_config."""
+    from polyris import DAG, task
+    from polyris.generators import _build_task_config_and_arn
+    from polyris.constants import TaskConfigKey
+
+    with DAG(dag_id="int-check-workers", schedule="@daily") as dag:
+        @task.glue_job(job_name="etl", worker_type="G.2X", number_of_workers=5)
+        def j():
+            pass
+
+    t = dag.tasks[0]
+    task_config, _ = _build_task_config_and_arn(t)
+    n = task_config[TaskConfigKey.NUMBER_OF_WORKERS]
+    assert n == 5, f"wrong value: {n!r}"
+    assert isinstance(n, int) and not isinstance(n, bool), (
+        f"NumberOfWorkers must be int in task_config, got {type(n).__name__}: {n!r}"
+    )
+
+
+def test_glue_python_shell_with_allocated_capacity(template):
+    """command_name='pythonshell' + allocated_capacity is a valid Python Shell configuration."""
+    from polyris import task
+
+    def build(dag):
+        @task.glue_job(job_name="etl-py", command_name="pythonshell", allocated_capacity=1)
+        def j():
+            pass
+
+    wi = _wrapper_input_for(build)
+    resolved = _resolve_arguments(template, "Run_Task_Glue", wi)
+    assert resolved["JobName"] == "etl-py"
+    assert resolved.get("AllocatedCapacity") == 1
+    assert "WorkerType" not in resolved
+
+
+def test_glue_pyspark_with_worker_type(template):
+    """command_name='glueetl' + worker_type/number_of_workers is a valid PySpark configuration."""
+    from polyris import task
+
+    def build(dag):
+        @task.glue_job(job_name="etl-spark", command_name="glueetl",
+                       worker_type="G.2X", number_of_workers=10)
+        def j():
+            pass
+
+    wi = _wrapper_input_for(build)
+    resolved = _resolve_arguments(template, "Run_Task_Glue", wi)
+    assert resolved["JobName"] == "etl-spark"
+    assert resolved.get("WorkerType") == "G.2X"
+    assert resolved.get("NumberOfWorkers") == 10
+    assert "AllocatedCapacity" not in resolved
+
+
+def test_glue_python_shell_rejects_worker_type():
+    """command_name='pythonshell' is incompatible with worker_type/number_of_workers."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-py", schedule="@daily"):
+        with pytest.raises(ValueError, match="pythonshell"):
+            @task.glue_job(job_name="x", command_name="pythonshell",
+                           worker_type="G.1X", number_of_workers=2)
+            def j():
+                pass
+
+
+def test_glue_glueetl_rejects_allocated_capacity():
+    """command_name='glueetl' is incompatible with allocated_capacity."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-spark", schedule="@daily"):
+        with pytest.raises(ValueError, match="glueetl"):
+            @task.glue_job(job_name="x", command_name="glueetl", allocated_capacity=8)
+            def j():
+                pass
+
+
+def test_glue_invalid_command_name_raises():
+    """An unknown command_name must raise immediately with an actionable message."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-cmd", schedule="@daily"):
+        with pytest.raises(ValueError, match="command_name"):
+            @task.glue_job(job_name="x", command_name="unknown")
+            def j():
+                pass
+
+
+def test_glue_allocated_capacity_float_raises():
+    """allocated_capacity=0.0625 must fail immediately with a message that
+    points to max_capacity — the actual error the user saw was Glue rejecting
+    AllocatedCapacity:0.0625 because it must be an INTEGER."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-float", schedule="@daily"):
+        with pytest.raises(ValueError, match="max_capacity"):
+            @task.glue_job(job_name="x", allocated_capacity=0.0625)
+            def j():
+                pass
+
+
+def test_glue_max_capacity_in_task_config():
+    """max_capacity must be stored as float in task_config and flow to MaxCapacity."""
+    from polyris import DAG, task
+    from polyris.generators import _build_task_config_and_arn
+    from polyris.constants import TaskConfigKey
+
+    with DAG(dag_id="max-cap-check", schedule="@daily") as dag:
+        @task.glue_job(job_name="etl-py", max_capacity=0.0625)
+        def j():
+            pass
+
+    t = dag.tasks[0]
+    task_config, _ = _build_task_config_and_arn(t)
+    cap = task_config[TaskConfigKey.MAX_CAPACITY]
+    assert cap == 0.0625, f"wrong value: {cap!r}"
+    assert isinstance(cap, float), f"MaxCapacity must be float, got {type(cap).__name__}: {cap!r}"
+    assert TaskConfigKey.ALLOCATED_CAPACITY not in task_config
+
+
+def test_glue_max_capacity_and_allocated_capacity_raises():
+    """max_capacity and allocated_capacity are mutually exclusive."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-both-cap", schedule="@daily"):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            @task.glue_job(job_name="x", max_capacity=0.0625, allocated_capacity=1)
+            def j():
+                pass
+
+
+def test_glue_max_capacity_and_worker_type_raises():
+    """max_capacity is mutually exclusive with worker_type/number_of_workers."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-maxcap-worker", schedule="@daily"):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            @task.glue_job(job_name="x", max_capacity=0.0625,
+                           worker_type="G.1X", number_of_workers=2)
+            def j():
+                pass
+
+
+def test_glue_glueetl_rejects_max_capacity():
+    """command_name='glueetl' is incompatible with max_capacity."""
+    from polyris import DAG, task
+    with DAG(dag_id="bad-glue-glueetl-maxcap", schedule="@daily"):
+        with pytest.raises(ValueError, match="glueetl"):
+            @task.glue_job(job_name="x", command_name="glueetl", max_capacity=1.0)
+            def j():
+                pass
+
+
+def test_glue_max_capacity_reaches_startjobrun(template):
+    """max_capacity must reach startJobRun as MaxCapacity (float) — not AllocatedCapacity."""
+    from polyris import task
+
+    def build(dag):
+        @task.glue_job(job_name="etl-py", max_capacity=0.0625)
+        def j():
+            pass
+
+    wi = _wrapper_input_for(build)
+    resolved = _resolve_arguments(template, "Run_Task_Glue", wi)
+    assert resolved["JobName"] == "etl-py"
+    assert resolved.get("MaxCapacity") == 0.0625, f"MaxCapacity dropped: {resolved!r}"
+    assert "AllocatedCapacity" not in resolved
     assert "WorkerType" not in resolved
 
 

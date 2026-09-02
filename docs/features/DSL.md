@@ -237,17 +237,26 @@ Starts an existing Glue job run.
 
 **Type-specific (optional):**
 - `glue_arguments` (dict[str, str]) — `--key value` overrides for the job.
-- `worker_type` + `number_of_workers` — must be set together (`G.1X` / `G.2X` / etc).
-- `allocated_capacity` (int) — Deprecated DPU model; mutually exclusive with worker settings.
+- `worker_type` + `number_of_workers` — must be set together (`G.1X` / `G.2X` / etc). For PySpark (glueetl) jobs.
+- `max_capacity` (float) — DPU allocation for Python Shell jobs. Supports fractional values (e.g. `0.0625` for 1/16 DPU). Mutually exclusive with `worker_type`/`number_of_workers`.
+- `allocated_capacity` (int) — Integer DPU model (deprecated by AWS). Use `max_capacity` instead — it supports the same whole-DPU values and additionally allows fractional values.
+- `command_name` (str) — `"pythonshell"` or `"glueetl"`. Enables cross-type validation (e.g. rejects `worker_type` on a Python Shell job).
 
 ```python
+# PySpark job
 @task.glue_job(
     job_name="my-etl-job",
     glue_arguments={"--date": "2024-01-01"},
     worker_type="G.1X",
     number_of_workers=2,
+    command_name="glueetl",  # optional — enables cross-type validation
 )
 def etl_job():
+    pass
+
+# Python Shell with 1/16 DPU
+@task.glue_job(job_name="light-job", max_capacity=0.0625, command_name="pythonshell")
+def light_job():
     pass
 ```
 
