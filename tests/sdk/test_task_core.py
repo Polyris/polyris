@@ -264,3 +264,82 @@ class TestDecorators:
         asl = json.loads(generate_step_function_json(dag))
         ok, errors, _ = validate_asl(asl)
         assert ok, errors
+
+
+# ============================================================ #
+# identity semantics — Task must use identity, not value equality
+# ============================================================ #
+
+class TestTaskIdentity:
+    """Task objects must be hashable and use identity-based equality.
+
+    Plain @dataclass sets __hash__=None and generates value __eq__, which
+    makes Task unhashable and causes 'if x not in deps' to silently discard
+    distinct edges when two tasks have the same field values (B-2).
+    """
+
+    def test_task_is_hashable(self):
+        with DAG("hash_dag", schedule=None):
+            @task.sfn(arn=ARN)
+            def a():
+                pass
+        assert hash(a) is not None  # raises TypeError if __hash__ is None
+
+    def test_task_can_be_used_in_set(self):
+        with DAG("set_dag", schedule=None):
+            @task.sfn(arn=ARN)
+            def a():
+                pass
+
+            @task.sfn(arn=ARN)
+            def b():
+                pass
+
+        s = {a, b}
+        assert len(s) == 2
+
+    def test_two_tasks_with_same_id_are_not_equal(self):
+        # Two distinct Task objects with the same task_id must not compare equal.
+        # Value-equality would make them equal, silently losing one in deduplication.
+        with DAG("neq_dag_1", schedule=None):
+            @task.sfn(arn=ARN)
+            def x():
+                pass
+        task_a = x
+
+        with DAG("neq_dag_2", schedule=None):
+            @task.sfn(arn=ARN)
+            def x():  # noqa: F811
+                pass
+        task_b = x
+
+        assert task_a is not task_b
+        assert task_a != task_b  # must use identity, not value
+
+    def test_same_task_object_equals_itself(self):
+        with DAG("self_eq_dag", schedule=None):
+            @task.sfn(arn=ARN)
+            def a():
+                pass
+        assert a == a
+
+    def test_dependency_check_uses_identity_not_value(self):
+        # 'if upstream not in downstream.dependencies' must use identity so
+        # that a *different* task object with the same id does not count as present.
+        with DAG("identity_dep_dag", schedule=None):
+            @task.sfn(arn=ARN)
+            def a():
+                pass
+
+            @task.sfn(arn=ARN)
+            def b():
+                pass
+
+            a() >> b()
+
+        # b depends on exactly the `a` object
+        assert a in b.dependencies
+        # a clone with same fields must NOT be found as a dependency
+        clone = object.__new__(type(a))
+        clone.__dict__.update(a.__dict__)
+        assert clone not in b.dependencies

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .steps import Step
 
 
-@dataclass
+@dataclass(eq=False)
 class DAG:
     """
     Directed Acyclic Graph.
@@ -168,13 +168,20 @@ class DAG:
     
     def add_task(self, task: 'Task'):
         """Add a task to the DAG."""
-        if task not in self.tasks:
-            self.tasks.append(task)
-            task._dag = self
-            
-            # Add to current task group if in one
-            if self._current_task_group:
-                self._current_task_group.add_task(task)
+        if task in self.tasks:
+            return
+        existing = self.task_dict.get(task.task_id)
+        if existing is not None:
+            raise ValueError(
+                f"Duplicate task_id '{task.task_id}' in DAG '{self.dag_id}': "
+                f"already registered by {existing!r}"
+            )
+        self.tasks.append(task)
+        task._dag = self
+
+        # Add to current task group if in one
+        if self._current_task_group:
+            self._current_task_group.add_task(task)
     
     def add_step(self, step: 'Step'):
         """Add a non-task step (Wait, Pass, Choice) to the DAG."""

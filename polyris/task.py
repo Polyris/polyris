@@ -220,7 +220,7 @@ class TaskInstance:
 # Task Definition
 # ============================================
 
-@dataclass
+@dataclass(eq=False)
 class Task:
     """
     A task in the pipeline.
