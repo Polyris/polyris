@@ -266,3 +266,18 @@ def test_wait_for_metadata_includes_groups():
         assert {x["name"] for x in meta[0]["assets"]} == {"grp_a", "grp_b"}
         # and it agrees with the runtime serializer on the operator
         assert runtime[0]["operator"] == op
+
+
+def test_serialize_wait_for_unknown_type_raises():
+    """_serialize_wait_for must raise on unrecognised entry types rather than
+    silently dropping them — a bare string asset name or a future type
+    extension would otherwise vanish from the SFN input with no warning."""
+    from polyris.generators import _serialize_wait_for
+    with pytest.raises(TypeError, match="wait_for"):
+        _serialize_wait_for(["bare_string_asset_name"])
+
+
+def test_serialize_wait_for_metadata_unknown_type_raises():
+    from polyris.generators import _serialize_wait_for_metadata
+    with pytest.raises(TypeError, match="wait_for"):
+        _serialize_wait_for_metadata([42])

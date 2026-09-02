@@ -118,3 +118,15 @@ class TestStageConfig:
     def test_stage_view_namespace_default(self):
         view = _cfg({}).for_stage("prod")
         assert view.namespace == "polyris"
+
+    def test_unknown_stage_with_configured_environments_raises(self):
+        """--stage prd when only prod is configured must raise immediately,
+        before any AWS call — not silently deploy to namespace='polyris'."""
+        with pytest.raises(ValueError, match="prd"):
+            _cfg({"prod": {"namespace": "pns"}}).for_stage("prd").namespace
+
+    def test_unknown_stage_with_no_environments_uses_defaults(self):
+        """No config.py at all (empty environments) must stay quiet — the user
+        hasn't configured any stages yet, so any stage name is valid."""
+        view = _cfg({}).for_stage("anything")
+        assert view.namespace == "polyris"

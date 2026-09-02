@@ -147,6 +147,11 @@ def _serialize_wait_for(wait_for: List[Any]) -> List[Dict[str, Any]]:
                 "operator": operator,
                 "assets": nested
             })
+        else:
+            raise TypeError(
+                f"Unrecognised wait_for entry type: {type(item)!r}. "
+                f"Expected Asset, AssetRef, AssetConsecutiveRef, AssetAll, or AssetAny."
+            )
     return result
 
 
@@ -176,6 +181,11 @@ def _serialize_wait_for_metadata(wait_for: List[Any]) -> List[Dict[str, Any]]:
                 "operator": operator,
                 "assets": _serialize_wait_for_metadata(item.assets),
             })
+        else:
+            raise TypeError(
+                f"Unrecognised wait_for entry type: {type(item)!r}. "
+                f"Expected Asset, AssetRef, AssetConsecutiveRef, AssetAll, or AssetAny."
+            )
     return result
 
 
