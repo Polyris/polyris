@@ -244,7 +244,15 @@ class _StageConfig:
         self._stage = stage
 
     def _env_config(self) -> Dict[str, Any]:
-        return self._parent._environments.get(self._stage, {})
+        envs = self._parent._environments
+        if envs and self._stage not in envs:
+            configured = sorted(envs.keys())
+            raise ValueError(
+                f"Unknown stage {self._stage!r}. "
+                f"Configured stages: {configured}. "
+                f"Check --stage or DEFAULT_STAGE in config.py."
+            )
+        return envs.get(self._stage, {})
 
     @property
     def namespace(self) -> str:

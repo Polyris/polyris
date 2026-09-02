@@ -29,9 +29,9 @@ import subprocess
 import importlib.util
 import argparse
 import threading
+import uuid
 from pathlib import Path
 from typing import Optional, List, Tuple
-from datetime import datetime, timezone
 
 import boto3
 from botocore.exceptions import (
@@ -314,14 +314,22 @@ def _register_pipeline(
     """Trigger pipeline registration via Step Function."""
     session = boto3.Session(profile_name=profile, region_name=region)
     sfn = session.client("stepfunctions")
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    suffix = uuid.uuid4().hex[:8]
+    raw_name = f"{dag_id}-register-{suffix}"
+    execution_name = raw_name[:80]
 
     print(f"  Registering pipeline {dag_id}...")
-    sfn.start_execution(
-        stateMachineArn=sfn_arn,
-        name=f"{dag_id}-register-{ts}",
-        input=json.dumps({"register_only": True}),
-    )
+    try:
+        sfn.start_execution(
+            stateMachineArn=sfn_arn,
+            name=execution_name,
+            input=json.dumps({"register_only": True}),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ExecutionAlreadyExists":
+            pass  # idempotent — a concurrent deploy registered first; this one is a no-op
+        else:
+            raise
     print("  ✅ Registration triggered")
 
 

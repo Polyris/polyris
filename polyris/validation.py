@@ -647,8 +647,11 @@ def _find_all_pipelines() -> list:
     return sorted(set(dag_files))
 
 
-def _run_test(dag_file: str) -> None:
-    """Run python_callable for each task (for @task.python pipelines)."""
+def _run_test(dag_file: str) -> bool:
+    """Run python_callable for each task (for @task.python pipelines).
+
+    Returns True if all callables succeeded, False if any raised.
+    """
     import importlib.util
     from pathlib import Path
 
@@ -670,6 +673,7 @@ def _run_test(dag_file: str) -> None:
         print(f"❌ No DAG found in {dag_file}")
         sys.exit(1)
 
+    failures = []
     for dag in dags:
         print(f"Testing DAG: {dag.dag_id}")
         for task in dag.topological_sort():
@@ -680,8 +684,10 @@ def _run_test(dag_file: str) -> None:
                     print(f"    ✅ Result: {result}")
                 except Exception as e:
                     print(f"    ❌ Error: {e}")
+                    failures.append((task.task_id, e))
             else:  # pragma: no cover -- every @task.* carries its decorated python_callable; this guards a task shape the DSL does not produce
                 print(f"    ℹ️  No python_callable (task type: {getattr(task, 'task_type', 'unknown')})")
+    return not failures
 
 
 
@@ -759,7 +765,9 @@ def main():
         sys.exit(0 if all_valid else 1)
 
     elif args.test:
-        _run_test(args.file)
+        result = _run_test(args.file)
+        if not result:
+            sys.exit(1)
 
     else:
         # Single pipeline in cwd

@@ -87,6 +87,16 @@ class TestDiscoveryAndRunner:
         _run_test(str(f))  # must not propagate
         assert "Error" in capsys.readouterr().out
 
+    def test_run_test_returns_false_on_failure(self, tmp_path):
+        """_run_test must return False when any callable raises — so main()
+        can call sys.exit(1). Previously it returned None in all cases."""
+        f = _write(tmp_path, "dag.py", RAISING_DAG)
+        assert _run_test(str(f)) is False
+
+    def test_run_test_returns_true_on_success(self, tmp_path):
+        f = _write(tmp_path, "dag.py", SOLO_DAG)
+        assert _run_test(str(f)) is True
+
 
 # ============================================================ #
 # validate_asl_from_dag verbose + _validate_single failure
@@ -143,3 +153,12 @@ class TestMain:
         monkeypatch.setattr(sys, "argv", ["polyris-validate", "--test", "-f", str(f)])
         # --test path runs callables and returns normally (no SystemExit).
         assert main() is None
+
+    def test_test_mode_exits_one_on_failure(self, tmp_path, monkeypatch):
+        """--test must exit 1 when any callable raises — previously it always
+        exited 0 because _run_test swallowed errors and returned None."""
+        f = _write(tmp_path, "dag.py", RAISING_DAG)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--test", "-f", str(f)])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 1
