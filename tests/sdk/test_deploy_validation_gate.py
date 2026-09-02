@@ -4,6 +4,7 @@ Deploying an invalid DAG otherwise only fails later in CloudFormation (or ships 
 broken pipeline), so deploy_pipeline runs the same check as polyris-validate first.
 """
 import pytest
+from botocore.exceptions import BotoCoreError
 
 from polyris import deploy
 
@@ -84,7 +85,7 @@ def test_deploy_refuses_when_account_cannot_be_verified(mocker):
     session = mocker.MagicMock()
     boto.Session.return_value = session
     sts = mocker.MagicMock()
-    sts.get_caller_identity.side_effect = Exception("some unrelated STS failure")
+    sts.get_caller_identity.side_effect = BotoCoreError()
     session.client.side_effect = lambda name: sts if name == "sts" else mocker.MagicMock()
 
     cfg = mocker.patch("polyris.deploy.polyris_config")

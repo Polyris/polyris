@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"lambda_task\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"process\", \"task_type\": \"lambda\", \"dependencies\": []}], \"dag\": {\"nodes\": [{\"id\": \"process\", \"name\": \"process\", \"type\": \"task\", \"task_type\": \"lambda\", \"task_config\": {\"function_name\": \"my-processor\", \"payload\": {\"action\": \"process\"}}}], \"edges\": []}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

@@ -124,6 +124,14 @@ class _RolesDict(dict):
             f"  }}"
         )
 
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        env_var = f"POLYRIS_ROLE_{key.upper()}"
+        if os.environ.get(env_var):
+            return True
+        return super().__contains__(key)
+
     def get(self, key: Any, default: Any = None) -> Any:  # match dict/Mapping LSP
         try:
             return self[key]

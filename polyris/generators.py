@@ -240,7 +240,23 @@ def validate_asl(asl: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
     """
     errors = []
     warnings: List[str] = []
-    
+
+    # 0. Size guard — AWS rejects definitions ≥ 1 MB; warn at 900 KB
+    _ASL_LIMIT_BYTES = 1_000_000
+    _ASL_WARN_BYTES = 900_000
+    size = len(json.dumps(asl).encode())
+    if size >= _ASL_LIMIT_BYTES:
+        errors.append(
+            f"Definition size {size:,} bytes exceeds the AWS 1 MB limit "
+            f"({_ASL_LIMIT_BYTES:,} bytes). Reduce the number of tasks or "
+            f"schema column count."
+        )
+    elif size >= _ASL_WARN_BYTES:
+        warnings.append(
+            f"Definition size {size:,} bytes is approaching the AWS 1 MB limit "
+            f"({_ASL_LIMIT_BYTES:,} bytes)."
+        )
+
     # 1. Basic structure
     if "StartAt" not in asl:
         errors.append("Missing required field 'StartAt'")
@@ -487,11 +503,11 @@ def generate_debug_info(dag: "DAG") -> Dict[str, Any]:
 def _gen_wait_state(step: Wait) -> Dict:
     """Generate Wait state."""
     state: Dict[str, Any] = {"Type": "Wait"}
-    if step.seconds:
+    if step.seconds is not None:
         state["Seconds"] = step.seconds
-    elif step.timestamp:
+    elif step.timestamp is not None:
         state["Timestamp"] = step.timestamp
-    elif step.timestamp_path:
+    elif step.timestamp_path is not None:
         state["TimestampPath"] = step.timestamp_path
     return state
 
@@ -561,7 +577,7 @@ def _gen_dynamodb_state(step: DynamoDBTask) -> Dict:
         args["IndexName"] = step.index_name
     return {
         "Type": "Task",
-        "Resource": _DYNAMODB_RESOURCES.get(step.operation, _DYNAMODB_RESOURCES["get_item"]),
+        "Resource": _DYNAMODB_RESOURCES[step.operation],
         "Arguments": args,
     }
 
@@ -610,7 +626,7 @@ def _gen_s3_state(step: S3Task) -> Dict:
         args["CopySource"] = step.copy_source
     return {
         "Type": "Task",
-        "Resource": _S3_RESOURCES.get(step.operation, _S3_RESOURCES["get_object"]),
+        "Resource": _S3_RESOURCES[step.operation],
         "Arguments": args,
     }
 
@@ -1398,19 +1414,7 @@ def generate_step_function_json(
     }
     
     # 5. Assemble definition
-    registration_metadata = {
-        "dag_id": dag.dag_id,
-        "description": dag.description or "",
-        "group": dag.group or "",
-        "schedule": dag.schedule if isinstance(dag.schedule, str) else None,
-        "asset_schedule": asset_schedule if asset_schedule else None,
-        "tasks": tasks_metadata,
-        "dag": dag_metadata,
-        "polyris_version": "1.0"
-    }
-    
     definition = {
-        "Comment": json.dumps(registration_metadata),
         "QueryLanguage": "JSONata",
         "StartAt": start_at,
         "States": states

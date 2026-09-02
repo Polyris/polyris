@@ -106,6 +106,10 @@ class DAG:
 
         # Handle trigger_assets as alternative to schedule for asset triggers
         if self.trigger_assets is not None and self.schedule is None:
+            if self.trigger_mode not in {"all", "any"}:
+                raise ValueError(
+                    f"trigger_mode must be 'all' or 'any', got {self.trigger_mode!r}"
+                )
             # Convert trigger_assets to schedule based on trigger_mode
             if self.trigger_mode == "any":
                 from .assets import AssetAny as _AssetAny
@@ -139,6 +143,12 @@ class DAG:
                 self._eventbridge_schedule = SCHEDULE_PRESETS[self.schedule]
             else:
                 self._eventbridge_schedule = self.schedule
+        elif self.schedule is not None:
+            raise TypeError(
+                f"Unrecognised schedule type: {type(self.schedule)!r}. "
+                f"Expected a str (e.g. '@daily', 'rate(1 hour)'), "
+                f"an Asset, a non-empty list of Assets, AssetAll, or AssetAny."
+            )
     
     @property
     def is_asset_triggered(self) -> bool:

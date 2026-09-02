@@ -718,8 +718,7 @@ def test_variables_in_define_inputs():
     dag = _build_with_variables()
     asl = json.loads(generate_step_function_json(dag))
 
-    # Check that variables are embedded in Comment metadata or Define_Inputs
-    json.loads(asl.get("Comment", "{}"))
+    # Variables are embedded in Define_Inputs state (Comment was removed — B-5)
     # Variables should be accessible to tasks
     for sname, state in asl["States"].items():
         if "Define_Inputs" in sname or "variables" in json.dumps(state).lower():
@@ -729,6 +728,48 @@ def test_variables_in_define_inputs():
     asl_str = json.dumps(asl)
     assert "env" in asl_str, "Variable 'env' not found in ASL"
     assert "prod" in asl_str, "Variable value 'prod' not found in ASL"
+
+
+def test_all_snapshots_under_size_limit():
+    """Regression guard: every golden snapshot must stay under 900 KB.
+
+    Catches accidental re-introduction of the Comment duplication (B-5)
+    before it reaches a real deploy.
+    """
+    from polyris.generators import validate_asl
+    _WARN_BYTES = 900_000
+    for path in sorted(SNAPSHOT_DIR.glob("*.json")):
+        asl = json.loads(path.read_text())
+        size = len(json.dumps(asl).encode())
+        assert size < _WARN_BYTES, (
+            f"{path.name}: {size:,} bytes ≥ 900 KB warning threshold — "
+            f"definition is approaching the AWS 1 MB limit."
+        )
+        _, errors, _ = validate_asl(asl)
+        assert not any("size" in e.lower() for e in errors), (
+            f"{path.name}: size error from validate_asl: {errors}"
+        )
+
+
+def test_validate_asl_errors_on_oversized_definition():
+    """validate_asl must report an error when definition exceeds 1 MB."""
+    from polyris.generators import validate_asl
+    huge_state = {"Type": "Pass", "End": True, "Comment": "x" * 1_100_000}
+    asl = {"StartAt": "S", "States": {"S": huge_state}}
+    ok, errors, _ = validate_asl(asl)
+    assert not ok
+    assert any("1 MB" in e or "limit" in e.lower() for e in errors)
+
+
+def test_validate_asl_warns_when_approaching_size_limit():
+    """validate_asl must warn when definition is 900 KB–1 MB."""
+    from polyris.generators import validate_asl
+    large_state = {"Type": "Pass", "End": True, "Comment": "x" * 950_000}
+    asl = {"StartAt": "S", "States": {"S": large_state}}
+    ok, errors, warnings = validate_asl(asl)
+    assert ok  # warning, not error
+    assert not errors
+    assert any("approaching" in w for w in warnings)
 
 
 # ============================================================

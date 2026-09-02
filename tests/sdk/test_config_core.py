@@ -43,6 +43,21 @@ class TestRolesDict:
     def test_get_returns_value_when_present(self):
         assert _RolesDict({"x": "arn:x"}).get("x") == "arn:x"
 
+    def test_contains_finds_key_in_dict(self):
+        assert "exec" in _RolesDict({"exec": "arn:role/exec"})
+
+    def test_contains_returns_false_for_missing_key(self):
+        assert "exec" not in _RolesDict({})
+
+    def test_contains_finds_env_var_override(self, monkeypatch):
+        """B-75: `in` operator used to call __getitem__ via iteration fallback,
+        missing env-var-only roles that have no entry in the backing dict."""
+        monkeypatch.setenv("POLYRIS_ROLE_EXEC", "arn:env/exec")
+        assert "exec" in _RolesDict({})
+
+    def test_contains_non_string_key_returns_false(self):
+        assert 42 not in _RolesDict({"x": "arn:x"})
+
 
 # ============================================================ #
 # PolyrisConfig accessors

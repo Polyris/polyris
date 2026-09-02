@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"with_outlets\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"ingest\", \"task_type\": \"sfn\", \"dependencies\": [], \"outlets\": [{\"name\": \"raw/inventory\", \"uri\": \"s3://bucket/raw/inventory/\", \"granularity\": \"daily\"}]}], \"dag\": {\"nodes\": [{\"id\": \"ingest\", \"name\": \"ingest\", \"type\": \"task\", \"task_type\": \"sfn\", \"outlets\": [{\"name\": \"raw/inventory\", \"uri\": \"s3://bucket/raw/inventory/\", \"granularity\": \"daily\"}]}], \"edges\": []}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

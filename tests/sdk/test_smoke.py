@@ -420,33 +420,30 @@ def test_no_dead_code():
 
 
 def test_dag_group_field():
-    """Test that DAG group field is stored and flows to ASL Comment metadata."""
+    """Test that DAG group field is stored and flows to DDB registration."""
     from polyris import DAG, task
     from polyris.generators import generate_step_function_json
     import json
-    
+
     with DAG('test-pipeline', schedule='rate(1 day)', group='mygroup') as dag:
         @task.sfn(arn='arn:aws:states:us-east-1:123456789:stateMachine:test')
         def task1():
             pass
         task1()
-    
+
     # Check DAG field
     assert dag.group == 'mygroup', f"Expected 'mygroup', got '{dag.group}'"
-    
-    # Check ASL Comment contains group
+
+    # Check inline DDB registration has pipeline_group
     asl = generate_step_function_json(dag, registry_table='test-registry')
     definition = json.loads(asl)
-    metadata = json.loads(definition['Comment'])
-    assert metadata.get('group') == 'mygroup', f"ASL Comment missing group: {metadata}"
-    
-    # Check inline DDB registration has pipeline_group
+    assert 'Comment' not in definition, "Comment must be absent (removed to reduce definition size)"
     register_state = definition['States'].get('Register_Pipeline', {})
     register_item = register_state.get('Arguments', {}).get('Item', {})
     assert 'pipeline_group' in register_item, "Register_Pipeline missing pipeline_group in DDB Item"
     assert register_item['pipeline_group']['S'] == 'mygroup', f"Wrong pipeline_group value: {register_item['pipeline_group']}"
-    
-    print("✅ DAG group field flows to ASL Comment and DDB registration")
+
+    print("✅ DAG group field flows to DDB registration")
 
 
 def test_dag_group_default_empty():
@@ -454,20 +451,19 @@ def test_dag_group_default_empty():
     from polyris import DAG, task
     from polyris.generators import generate_step_function_json
     import json
-    
+
     with DAG('test-no-group', schedule='rate(1 day)') as dag:
         @task.sfn(arn='arn:aws:states:us-east-1:123456789:stateMachine:test')
         def task1():
             pass
         task1()
-    
+
     assert dag.group == '', f"Expected empty string, got '{dag.group}'"
-    
+
     asl = generate_step_function_json(dag, registry_table='test-registry')
     definition = json.loads(asl)
-    metadata = json.loads(definition['Comment'])
-    assert metadata.get('group') == '', f"ASL Comment group should be empty: {metadata}"
-    
+    assert 'Comment' not in definition, "Comment must be absent (removed to reduce definition size)"
+
     print("✅ DAG group defaults to empty string")
 
 

@@ -63,6 +63,17 @@ class TestControlFlowStates:
         with pytest.raises(ValueError, match="requires exactly one of"):
             Wait()
 
+    def test_wait_seconds_zero_is_valid(self):
+        """B-81: Wait(seconds=0) previously raised because `if not (0 or …)`
+        treats 0 as absent.  0-second Wait is valid ASL (no-op delay)."""
+        s = _generate_step_state(Wait(seconds=0))
+        assert s == {"Type": "Wait", "Seconds": 0}
+
+    def test_wait_multiple_fields_raises(self):
+        """B-81: providing more than one duration field must raise immediately."""
+        with pytest.raises(ValueError, match="exactly one"):
+            Wait(seconds=10, timestamp="2024-01-01T00:00:00Z")
+
     def test_pass_with_output(self):
         s = _generate_step_state(Pass(output={"k": "v"}))
         assert s["Type"] == "Pass"
@@ -148,9 +159,9 @@ class TestServiceStates:
         assert s["Arguments"]["Bucket"] == "b"
         assert s["Arguments"]["Body"] == "data"
 
-    def test_s3_unknown_operation_defaults_to_get(self):
-        s = _generate_step_state(S3Task(operation="frobnicate", bucket="b", key="k"))
-        assert s["Resource"] == "arn:aws:states:::aws-sdk:s3:getObject"
+    def test_s3_unknown_operation_raises(self):
+        with pytest.raises(ValueError, match="frobnicate"):
+            S3Task(operation="frobnicate", bucket="b", key="k")
 
     def test_glue_async_when_no_wait(self):
         s = _generate_step_state(GlueTask(job_name="job", wait_for_completion=False))
@@ -255,6 +266,14 @@ class TestServiceTaskConstructionValidation:
         # scan has no operation-specific requirement beyond table_name.
         d = DynamoDBTask(table_name="t", operation="scan")
         assert d.table_name == "t"
+
+    def test_dynamodb_invalid_operation_raises(self):
+        with pytest.raises(ValueError, match="putitem"):
+            DynamoDBTask(table_name="t", operation="putitem")
+
+    def test_s3_invalid_operation_raises(self):
+        with pytest.raises(ValueError, match="putobject"):
+            S3Task(bucket="b", key="k", operation="putobject")
 
     def test_sns_requires_topic_arn(self):
         with pytest.raises(ValueError, match="requires 'topic_arn'"):

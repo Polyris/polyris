@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"diamond\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"a\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"b\", \"task_type\": \"sfn\", \"dependencies\": [\"a\"]}, {\"task_id\": \"c\", \"task_type\": \"sfn\", \"dependencies\": [\"a\"]}, {\"task_id\": \"d\", \"task_type\": \"sfn\", \"dependencies\": [\"b\", \"c\"]}], \"dag\": {\"nodes\": [{\"id\": \"a\", \"name\": \"a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"b\", \"name\": \"b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"c\", \"name\": \"c\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"d\", \"name\": \"d\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"a\", \"to\": \"b\"}, {\"from\": \"a\", \"to\": \"c\"}, {\"from\": \"b\", \"to\": \"d\"}, {\"from\": \"c\", \"to\": \"d\"}]}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

@@ -297,6 +297,8 @@ Authentication:
     
     if args.json:
         print(json.dumps(result, indent=2))
+        if not result['success']:
+            sys.exit(1)
     elif result['success']:
         print("✅ Registration triggered!")
         print(f"   Execution: {result['execution_arn']}")

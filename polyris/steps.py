@@ -123,17 +123,27 @@ class Wait(Step):
     timestamp_path: Optional[str] = None  # JSONPath to timestamp in input
     
     def __post_init__(self):
-        if not (self.seconds or self.timestamp or self.timestamp_path):
+        provided = sum([
+            self.seconds is not None,
+            self.timestamp is not None,
+            self.timestamp_path is not None,
+        ])
+        if provided == 0:
             raise ValueError(
                 "Wait(...) requires exactly one of: seconds, timestamp, "
                 "timestamp_path. A Wait state with none of these generates "
                 "{'Type': 'Wait'} with no duration — locally valid-looking "
                 "ASL that AWS Step Functions rejects at deploy time."
             )
+        if provided > 1:
+            raise ValueError(
+                "Wait(...) accepts exactly one of: seconds, timestamp, "
+                "timestamp_path — received more than one."
+            )
         if not self.step_id:
-            if self.seconds:
+            if self.seconds is not None:
                 self.step_id = f"Wait_{self.seconds}s"
-            elif self.timestamp:
+            elif self.timestamp is not None:
                 self.step_id = f"Wait_until_{self.timestamp.replace(':', '-').replace('T', '_')}"
             else:
                 self.step_id = "Wait"
@@ -604,6 +614,12 @@ class DynamoDBTask(Step):
     def __post_init__(self):
         if not self.table_name:
             raise ValueError("DynamoDBTask(...) requires 'table_name'.")
+        from .generators import _DYNAMODB_RESOURCES
+        if self.operation not in _DYNAMODB_RESOURCES:
+            raise ValueError(
+                f"DynamoDBTask: invalid operation {self.operation!r}. "
+                f"Valid: {sorted(_DYNAMODB_RESOURCES)}"
+            )
         _op_requires = {
             "get_item": ("key", self.key),
             "delete_item": ("key", self.key),
@@ -732,6 +748,12 @@ class S3Task(Step):
             raise ValueError("S3Task(...) requires 'bucket'.")
         if not self.key:
             raise ValueError("S3Task(...) requires 'key'.")
+        from .generators import _S3_RESOURCES
+        if self.operation not in _S3_RESOURCES:
+            raise ValueError(
+                f"S3Task: invalid operation {self.operation!r}. "
+                f"Valid: {sorted(_S3_RESOURCES)}"
+            )
         if self.operation == "put_object" and not self.body:
             raise ValueError("S3Task(operation='put_object') requires 'body'.")
         if self.operation == "copy_object" and not self.copy_source:

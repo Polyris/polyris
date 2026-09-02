@@ -1,5 +1,4 @@
 {
-  "Comment": "{\"dag_id\": \"step_wrapper_ecs_athena\", \"description\": \"\", \"group\": \"\", \"schedule\": null, \"asset_schedule\": null, \"tasks\": [{\"task_id\": \"extract\", \"task_type\": \"sfn\", \"dependencies\": []}], \"dag\": {\"nodes\": [{\"id\": \"extract\", \"name\": \"extract\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"run_container\", \"name\": \"run_container\", \"type\": \"ecs\"}, {\"id\": \"run_report\", \"name\": \"run_report\", \"type\": \"athena\"}], \"edges\": [{\"from\": \"extract\", \"to\": \"run_container\"}, {\"from\": \"extract\", \"to\": \"run_report\"}]}, \"polyris_version\": \"1.0\"}",
   "QueryLanguage": "JSONata",
   "StartAt": "Register_Pipeline",
   "States": {

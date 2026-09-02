@@ -36,23 +36,20 @@ def chain(*tasks):
         next_item = tasks[i + 1]
         
         if isinstance(current, list) and isinstance(next_item, list):
-            # Pairwise: [a, b] >> [c, d] means a >> c and b >> d
+            if len(current) != len(next_item):
+                raise ValueError(
+                    f"chain() pairwise lists must have equal length: "
+                    f"left has {len(current)}, right has {len(next_item)}"
+                )
             for c, n in zip(current, next_item):
-                if hasattr(c, '__rshift__'):
-                    c >> n
+                c >> n
         elif isinstance(current, list):
-            # [a, b] >> c
             for c_item in current:
-                if hasattr(c_item, '__rshift__'):
-                    c_item >> next_item
+                c_item >> next_item
         elif isinstance(next_item, list):
-            # a >> [b, c]
-            if hasattr(current, '__rshift__'):
-                current >> next_item
+            current >> next_item
         else:
-            # a >> b
-            if hasattr(current, '__rshift__'):
-                current >> next_item
+            current >> next_item
 
 
 def cross_downstream(from_tasks, to_tasks):
@@ -69,8 +66,7 @@ def cross_downstream(from_tasks, to_tasks):
     """
     for from_task in from_tasks:
         for to_task in to_tasks:
-            if hasattr(from_task, '__rshift__'):
-                from_task >> to_task
+            from_task >> to_task
 
 
 class Label:
@@ -94,9 +90,7 @@ class Label:
     def __rshift__(self, other):
         """Label(...) >> task"""
         if self._upstream is not None:
-            # Connect upstream to downstream, passing through the label
-            if hasattr(self._upstream, '__rshift__'):
-                self._upstream >> other
+            self._upstream >> other
         return other
 
     def __rlshift__(self, other):
@@ -110,8 +104,7 @@ class Label:
         """Label(...) << task1 — completes the edge as `other >> downstream`,
         mirroring __rshift__'s completion of the forward chain."""
         if self._downstream is not None:
-            if hasattr(other, '__rshift__'):
-                other >> self._downstream
+            other >> self._downstream
         return other
     
     def __repr__(self):
