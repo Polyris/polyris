@@ -35,6 +35,7 @@ const rf = vi.hoisted(() => ({
     measuredIds: new Set<string>(),
     currentNodeIds: [] as string[],
     currentEdges: [] as { id: string; style?: { stroke?: string; opacity?: number } }[],
+    currentNodes: [] as { id: string; selected?: boolean; data: { label: string; status: string } }[],
 }));
 
 vi.mock('reactflow', () => {
@@ -46,13 +47,14 @@ vi.mock('reactflow', () => {
     );
 
     const ReactFlow = ({ nodes, edges, onNodeClick, onNodeContextMenu, onInit, children }: {
-        nodes: { id: string; data: { label: string; status: string } }[];
+        nodes: { id: string; selected?: boolean; data: { label: string; status: string } }[];
         edges: { id: string; style?: { stroke?: string; opacity?: number } }[];
         onNodeClick?: (e: unknown, node: { id: string }) => void;
         onNodeContextMenu?: (e: unknown, node: { id: string }) => void;
         onInit?: (instance: { fitView: (o?: unknown) => void }) => void;
         children?: React.ReactNode;
     }) => {
+        rf.currentNodes = nodes ?? [];
         rf.currentNodeIds = (nodes ?? []).map(n => n.id);
         rf.currentEdges = edges ?? [];
         React.useEffect(() => { onInit?.(rf); }, [onInit]);
@@ -63,6 +65,7 @@ vi.mock('reactflow', () => {
                         key={n.id}
                         data-testid={`rf-node-${n.id}`}
                         data-status={n.data?.status}
+                        data-selected={String(n.selected ?? false)}
                         onClick={() => onNodeClick?.({}, { id: n.id })}
                         onContextMenu={(e) => { e.preventDefault(); onNodeContextMenu?.({ preventDefault: () => {} }, { id: n.id }); }}
                     >
@@ -276,6 +279,30 @@ describe('DAGGraphFlow', () => {
             expect(defaultProps.onSelectTask).toHaveBeenCalledWith(
                 expect.objectContaining({ task_name: 'unknown_task', status: 'waiting' })
             );
+        });
+    });
+
+    // ─── Selected task wiring ───────────────────────────────────────────
+
+    describe('selectedTask wiring', () => {
+        it('marks the selectedTask node as selected=true in the nodes array', () => {
+            const transform = createTask({ task_name: 'transform', status: 'running' });
+            render(<DAGGraphFlow {...defaultProps} selectedTask={transform} />);
+            expect(screen.getByTestId('rf-node-transform')).toHaveAttribute('data-selected', 'true');
+        });
+
+        it('all other nodes have selected=false when a task is selected', () => {
+            const transform = createTask({ task_name: 'transform', status: 'running' });
+            render(<DAGGraphFlow {...defaultProps} selectedTask={transform} />);
+            expect(screen.getByTestId('rf-node-init_config')).toHaveAttribute('data-selected', 'false');
+            expect(screen.getByTestId('rf-node-load_db')).toHaveAttribute('data-selected', 'false');
+        });
+
+        it('no node is selected when selectedTask is null', () => {
+            render(<DAGGraphFlow {...defaultProps} selectedTask={null} />);
+            for (const id of ['init_config', 'extract_data', 'transform', 'load_db']) {
+                expect(screen.getByTestId(`rf-node-${id}`)).toHaveAttribute('data-selected', 'false');
+            }
         });
     });
 
