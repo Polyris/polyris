@@ -551,11 +551,27 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     font-size: 1.25rem;
     font-weight: 600;
     font-family: var(--font-mono);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.75rem;
 }
 .td-duration-label {
     font-size: 0.7rem;
     color: var(--text-muted);
     margin-top: 0.25rem;
+}
+
+/* Compact metadata row: Task Type + Started + Finished on one line */
+.td-compact-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    padding: 0.25rem 0;
+}
+.td-compact-meta-item {
+    display: flex;
+    flex-direction: column;
 }
 
 /* Paused pipeline style */
