@@ -18,7 +18,7 @@ import { formatCountdown, formatWaitBadge, formatDuration } from '../utils';
 import { TASK_SUCCESS_STATUSES, TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { taskTypeBadge } from '../utils/taskTypeBadge';
 import { mergeNodePositions } from '../utils/reactFlowHelpers';
-import { StatusIcon, CheckCircle2, XCircle, Loader2, Clock, Settings, BarChart3, Hourglass, Check, AlertTriangle } from '../utils/icons';
+import { StatusIcon, CheckCircle2, XCircle, Loader2, Clock, Settings, BarChart3, Hourglass, Check, AlertTriangle, SkipForward } from '../utils/icons';
 import { 
     TASK_STATUS, 
     isTerminalStatus, 
@@ -500,10 +500,11 @@ export function DAGGraphFlow({
     // Stats
     const stats = useMemo(() => {
         const total = dag?.nodes?.length || 0;
-        const success = tasks?.filter(t => TASK_SUCCESS_STATUSES.includes(t.status)).length || 0;
+        const success = tasks?.filter(t => t.status === 'success' || t.status === 'succeeded').length || 0;
+        const skipped = tasks?.filter(t => t.status === 'skipped').length || 0;
         const running = tasks?.filter(t => t.status === 'running' || t.status === 'deps_ready' || t.status === 'waiting_delay').length || 0;
         const failed = tasks?.filter(t => TASK_SETTLED_STATUSES.includes(t.status) && !TASK_SUCCESS_STATUSES.includes(t.status)).length || 0;
-        return { total, success, running, failed };
+        return { total, success, skipped, running, failed };
     }, [dag, tasks]);
     
     const containerRef = useRef<HTMLDivElement>(null);
@@ -573,6 +574,12 @@ export function DAGGraphFlow({
                             <CheckCircle2 size={14} className="text-green-500" />
                             <span className="dag-stat-value">{stats.success}</span>
                         </div>
+                        {stats.skipped > 0 && (
+                        <div className="dag-stat-item">
+                            <SkipForward size={14} className="text-slate-500" />
+                            <span className="dag-stat-value">{stats.skipped}</span>
+                        </div>
+                        )}
                         <div className="dag-stat-item">
                             <Loader2 size={14} className="text-blue-500 animate-spin" />
                             <span className="dag-stat-value">{stats.running}</span>
