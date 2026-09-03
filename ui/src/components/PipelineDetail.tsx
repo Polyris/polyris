@@ -333,10 +333,17 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
                         <div className="structure-source-toggle" role="group" aria-label="Definition source">
                             <button
                                 type="button"
-                                onClick={() => { setDagViewSource('current'); setShowHistory(false); }}
+                                onClick={() => {
+                                    if (dagViewSource === 'current') {
+                                        setDagViewSource('run');
+                                    } else {
+                                        setDagViewSource('current');
+                                        setShowHistory(false);
+                                    }
+                                }}
                                 aria-pressed={dagViewSource === 'current'}
                                 className={`structure-source-toggle-btn ${dagViewSource === 'current' ? 'active' : ''}`}
-                                title="Show what's deployed right now, independent of any run"
+                                title={dagViewSource === 'current' ? 'Return to the previous run' : 'Show what\'s deployed right now, independent of any run'}
                             >
                                 Definition
                             </button>

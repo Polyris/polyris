@@ -331,26 +331,6 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                             </div>
                         </div>
 
-                        {task.pipeline_execution && (
-                            <div className="detail-section">
-                                <div className="detail-label">Pipeline Execution</div>
-                                <div className="detail-value td-mono text-xs td-flex-row">
-                                    <span className="td-ellipsis" title={task.pipeline_execution}>
-                                        {task.pipeline_execution}
-                                    </span>
-                                    {copiedKey === 'pipeline_execution' && <span className="td-copy-feedback">Copied!</span>}
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-6 w-6 opacity-60 hover:opacity-100"
-                                        onClick={() => handleCopy('pipeline_execution', task.pipeline_execution ?? '')}
-                                        title="Copy full execution ID"
-                                        aria-label={copiedKey === 'pipeline_execution' ? 'Copied' : 'Copy full execution ID'}
-                                    >{copiedKey === 'pipeline_execution' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
-                                </div>
-                            </div>
-                        )}
-                        
                         {childPipeline && onOpenPipeline && (
                             <div className="detail-section">
                                 <div className="detail-label">Child Pipeline</div>
@@ -365,16 +345,42 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                 </div>
                             </div>
                         )}
-                        
-                        <div className="td-compact-meta">
-                            {task.task_type && (
-                                <div className="td-compact-meta-item">
-                                    <div className="detail-label">Task Type</div>
-                                    <div className="detail-value">
-                                        <span className="tag td-task-type-tag">{task.task_type}</span>
+
+                        {/* Task Type (left) + Pipeline Execution (right) on one line */}
+                        {(task.task_type || task.pipeline_execution) && (
+                            <div className="td-type-exec-row">
+                                {task.task_type && (
+                                    <div className="td-compact-meta-item">
+                                        <div className="detail-label">Task Type</div>
+                                        <div className="detail-value">
+                                            <span className="tag td-task-type-tag">{task.task_type}</span>
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                )}
+                                {task.pipeline_execution && (
+                                    <div className="td-compact-meta-item flex-1 min-w-0">
+                                        <div className="detail-label">Pipeline Execution</div>
+                                        <div className="detail-value td-mono text-xs td-flex-row">
+                                            <span className="td-ellipsis" title={task.pipeline_execution}>
+                                                {task.pipeline_execution}
+                                            </span>
+                                            {copiedKey === 'pipeline_execution' && <span className="td-copy-feedback">Copied!</span>}
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-6 w-6 opacity-60 hover:opacity-100"
+                                                onClick={() => handleCopy('pipeline_execution', task.pipeline_execution ?? '')}
+                                                title="Copy full execution ID"
+                                                aria-label={copiedKey === 'pipeline_execution' ? 'Copied' : 'Copy full execution ID'}
+                                            >{copiedKey === 'pipeline_execution' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Timeline: Started | Queued | Finished — one line */}
+                        <div className="td-compact-meta">
                             <div className="td-compact-meta-item">
                                 <div className="detail-label">Started</div>
                                 <div className="detail-value">{formatDate(task.running_at || task.started_at)}</div>

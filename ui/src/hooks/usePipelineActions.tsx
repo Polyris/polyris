@@ -348,10 +348,10 @@ export function usePipelineActions({
                     const execArn = result.execution_arn || null;
                     const execShort = execArn ? execArn.split(':').pop() : null;
                     
-                    if (execArn) {
+                    if (execShort) {
                         setSelectedExecution({
-                            execution_id: execArn,
-                            execution_short: execShort ?? undefined,
+                            execution_id: execShort,
+                            execution_short: execShort,
                             date: targetDate,
                             status: 'running',
                             start_time: new Date().toISOString(),

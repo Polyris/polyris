@@ -249,18 +249,57 @@ describe('usePipelineActions', () => {
 
     it('should handle run error', async () => {
       mockApiPost.mockResolvedValue({ error: 'Pipeline already running' });
-      
+
       const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
-      
+
       act(() => {
         result.current.handleRun();
       });
-      
+
       await act(async () => {
         await result.current.executeModalAction();
       });
-      
+
       expect(defaultProps.showToast).toHaveBeenCalledWith('Pipeline already running', 'error');
+    });
+
+    it('selects the newly created execution immediately after a successful run', async () => {
+      mockApiPost.mockResolvedValue({ execution_arn: 'arn:aws:states:us-east-1:123:execution:pipeline:new-exec-id' });
+
+      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
+
+      act(() => {
+        result.current.handleRun();
+      });
+
+      await act(async () => {
+        await result.current.executeModalAction();
+      });
+
+      expect(defaultProps.setSelectedExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          execution_id: 'new-exec-id',
+          execution_short: 'new-exec-id',
+          status: 'running',
+          auto_selected: false,
+        })
+      );
+    });
+
+    it('does not call setSelectedExecution when the run API returns an error', async () => {
+      mockApiPost.mockResolvedValue({ error: 'Pipeline already running' });
+
+      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
+
+      act(() => {
+        result.current.handleRun();
+      });
+
+      await act(async () => {
+        await result.current.executeModalAction();
+      });
+
+      expect(defaultProps.setSelectedExecution).not.toHaveBeenCalled();
     });
 
     it('should stop all incomplete tasks when stopping pipeline', async () => {
