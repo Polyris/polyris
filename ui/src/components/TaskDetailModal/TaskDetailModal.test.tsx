@@ -86,9 +86,9 @@ describe('TaskDetailModal', () => {
             expect(matches.length).toBeGreaterThan(0);
         });
 
-        it('shows pipeline execution short ID', () => {
+        it('shows full pipeline execution ID', () => {
             render(<TaskDetailModal {...defaultProps} />);
-            expect(screen.getByText('abc123')).toBeInTheDocument();
+            expect(screen.getByText('arn:aws:states:us-east-1:123456:execution:pipeline:abc123')).toBeInTheDocument();
         });
     });
 

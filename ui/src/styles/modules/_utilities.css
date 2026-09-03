@@ -493,3 +493,6 @@
    header indicator is calm, not distracting. */
 .hdr-auto-spin { animation: hdr-auto-rotate 8s linear infinite; }
 @keyframes hdr-auto-rotate { to { transform: rotate(360deg); } }
+
+/* Slow spin for in-progress status icons — 20s is nearly imperceptible. */
+.animate-spin-slow { animation: hdr-auto-rotate 20s linear infinite; }

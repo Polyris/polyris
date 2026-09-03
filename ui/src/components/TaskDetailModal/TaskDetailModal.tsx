@@ -14,8 +14,8 @@ import {
     Clock, 
     Pause,
     StopCircle,
-    Play, 
-    SkipForward, 
+    Play,
+    SkipForward,
     RotateCcw,
     Target,
     CircleDot,
@@ -26,7 +26,6 @@ import {
     X,
     Info,
     Check,
-    XIcon,
     User,
     Database,
     Hourglass,
@@ -296,8 +295,8 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         <div className="td-duration-label">Duration</div>
                     </div>
                     <div className="td-duration-stat">
-                        <div className="td-duration-value" style={{ color: (task.status === 'success' || task.status === 'succeeded') ? 'var(--success)' : task.status === 'failed' ? 'var(--error)' : 'var(--text-muted)' }}>
-                            {(task.status === 'success' || task.status === 'succeeded') ? <Check size={16} /> : task.status === 'failed' ? <XIcon size={16} /> : '...'}
+                        <div className="td-duration-value">
+                            <StatusIcon status={task.status} size={22} />
                         </div>
                         <div className="td-duration-label">Status</div>
                     </div>
@@ -337,7 +336,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                 <div className="detail-label">Pipeline Execution</div>
                                 <div className="detail-value td-mono text-xs td-flex-row">
                                     <span className="td-ellipsis" title={task.pipeline_execution}>
-                                        {task.pipeline_execution_short || task.pipeline_execution}
+                                        {task.pipeline_execution}
                                     </span>
                                     {copiedKey === 'pipeline_execution' && <span className="td-copy-feedback">Copied!</span>}
                                     <Button
@@ -348,17 +347,6 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         title="Copy full execution ID"
                                         aria-label={copiedKey === 'pipeline_execution' ? 'Copied' : 'Copy full execution ID'}
                                     >{copiedKey === 'pipeline_execution' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
-                                </div>
-                            </div>
-                        )}
-                        
-                        {task.task_type && (
-                            <div className="detail-section">
-                                <div className="detail-label">Task Type</div>
-                                <div className="detail-value">
-                                    <span className="tag td-task-type-tag">
-                                        {task.task_type}
-                                    </span>
                                 </div>
                             </div>
                         )}
@@ -378,21 +366,29 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                             </div>
                         )}
                         
-                        <div className="detail-section">
-                            <div className="detail-label">Started</div>
-                            <div className="detail-value">{formatDate(task.running_at || task.started_at)}</div>
-                        </div>
-                        
-                        {task.running_at && task.started_at && task.running_at !== task.started_at && (
-                            <div className="detail-section">
-                                <div className="detail-label">Queued</div>
-                                <div className="detail-value">{formatDate(task.started_at)}</div>
+                        <div className="td-compact-meta">
+                            {task.task_type && (
+                                <div className="td-compact-meta-item">
+                                    <div className="detail-label">Task Type</div>
+                                    <div className="detail-value">
+                                        <span className="tag td-task-type-tag">{task.task_type}</span>
+                                    </div>
+                                </div>
+                            )}
+                            <div className="td-compact-meta-item">
+                                <div className="detail-label">Started</div>
+                                <div className="detail-value">{formatDate(task.running_at || task.started_at)}</div>
                             </div>
-                        )}
-                        
-                        <div className="detail-section">
-                            <div className="detail-label">Finished</div>
-                            <div className="detail-value">{formatDate(task.finished_at)}</div>
+                            {task.running_at && task.started_at && task.running_at !== task.started_at && (
+                                <div className="td-compact-meta-item">
+                                    <div className="detail-label">Queued</div>
+                                    <div className="detail-value">{formatDate(task.started_at)}</div>
+                                </div>
+                            )}
+                            <div className="td-compact-meta-item">
+                                <div className="detail-label">Finished</div>
+                                <div className="detail-value">{formatDate(task.finished_at)}</div>
+                            </div>
                         </div>
                     </div>
                     

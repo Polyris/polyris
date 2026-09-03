@@ -138,8 +138,8 @@ export function StatusIcon({ status, size = 16, className = '' }: { status: stri
         up_failed: <XCircle size={size} className={`${baseClass} text-red-400`} />,
         
         // Active states
-        running: <Loader2 size={size} className={`${baseClass} text-blue-500 animate-spin`} />,
-        pending: <Loader2 size={size} className={`${baseClass} text-blue-400 animate-spin`} />,
+        running: <Loader2 size={size} className={`${baseClass} text-blue-500 animate-spin-slow`} />,
+        pending: <Loader2 size={size} className={`${baseClass} text-blue-400 animate-spin-slow`} />,
         
         // Waiting states
         waiting: <Clock size={size} className={`${baseClass} text-gray-400`} />,
