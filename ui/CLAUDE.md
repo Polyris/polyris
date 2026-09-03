@@ -60,6 +60,33 @@ opportunistically when the file is touched for another reason.
 
 ---
 
+## `execution_id` is always the short pipeline execution name, never the full ARN
+
+The backend's DynamoDB `pipeline_execution` field stores only the **short execution
+name** (e.g. `hello-world-run-2026-09-03-3bb2ff0c`), never the full SFN ARN
+(`arn:aws:states:…:execution:hello-world:hello-world-run-…`).
+
+Whenever code receives a full ARN and needs to store or pass it as an `execution_id`
+for subsequent queries, extract the short form with `arn.split(':').pop()` first.
+Never use the raw ARN as `execution_id`.
+
+```ts
+// WRONG — backend DDB GSI can never match a full ARN
+setSelectedExecution({ execution_id: result.execution_arn, … });
+
+// RIGHT — extract short name, which matches DDB pipeline_execution values
+const execShort = result.execution_arn.split(':').pop();
+setSelectedExecution({ execution_id: execShort, execution_short: execShort, … });
+```
+
+**Why:** `usePipelineDetailQuery` passes `selectedExecution.execution_id` directly as the
+`pipeline_execution` query param. The backend calls `query_by_pipeline_execution(pipeline_execution)`,
+which uses a DDB KeyConditionExpression `Key('pipeline_execution').eq(value)`. DDB stores
+the short name — passing the full ARN always returns `tasks: []`, causing the UI to show
+the blueprint/Definition state instead of the live execution.
+
+---
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

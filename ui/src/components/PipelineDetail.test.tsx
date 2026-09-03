@@ -458,6 +458,41 @@ describe('PipelineDetail', () => {
             expect(useAppStore.getState().dagViewSource).toBe('run');
         });
 
+        it('clicking "Definition" when already in Definition mode toggles back to run', () => {
+            setStore({ dagViewSource: 'current' });
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByText('Definition'));
+            expect(useAppStore.getState().dagViewSource).toBe('run');
+        });
+
+        it('toggling back from Definition preserves the execution that was selected before', () => {
+            // Set up: pipeline has a run selected and we are in run mode.
+            setStore({ dagViewSource: 'run' });
+            useAppStore.getState().setSelectedExecution({ execution_id: 'exec-abc', execution_short: 'exec-abc', date: '2024-01-15', auto_selected: false });
+            render(<PipelineDetail {...defaultProps} />);
+
+            // Switch to Definition — only dagViewSource changes, selectedExecution is preserved.
+            fireEvent.click(screen.getByText('Definition'));
+            expect(useAppStore.getState().dagViewSource).toBe('current');
+            expect(useAppStore.getState().selectedExecution?.execution_id).toBe('exec-abc');
+
+            // Toggle back — still the same execution.
+            fireEvent.click(screen.getByText('Definition'));
+            expect(useAppStore.getState().dagViewSource).toBe('run');
+            expect(useAppStore.getState().selectedExecution?.execution_id).toBe('exec-abc');
+        });
+
+        it('no "View latest run" in Definition mode when the pipeline has never run', () => {
+            // Pipeline with no recent_runs — latestRunDate resolves to null.
+            mockPipelinesQuery.data = [createPipeline({ name: 'acme-daily' })];
+            mockDetailQuery.data = { tasks: [], dag: mockDag, serverOffsetMs: 0, selectedExecution: null };
+            setStore({ dagViewSource: 'current' });
+
+            render(<PipelineDetail {...defaultProps} />);
+
+            expect(screen.queryByText(/View latest run/)).not.toBeInTheDocument();
+        });
+
         it('does not auto-default while the pipelines list is still loading', () => {
             // usePipelinesQuery defaults to [] while loading — without the
             // pipelines.length > 0 guard, a not-yet-loaded pipeline would

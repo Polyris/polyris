@@ -542,6 +542,26 @@ style from scratch.
 **Documentation-specific rules** live in `docs/CLAUDE.md`. Read that before editing
 anything under `docs/`.
 
+**26. Every fix must produce a rule — not just a patch**
+When fixing a bug, a layout issue, a behavioural inconsistency, or any recurring mistake,
+the fix alone is not enough. Before closing the work, ask: *what rule, if it had existed,
+would have prevented this?* Then write that rule — in CLAUDE.md, in `ui/CLAUDE.md`, or in
+the relevant `docs/` section — in the **same commit** as the fix.
+
+A patch without a rule fixes one instance. A rule prevents the whole class.
+
+Concrete examples:
+- Fixed a status constant being used for display counting → added rule to `ui/CLAUDE.md`
+  forbidding `TASK_SUCCESS_STATUSES` in UI display code.
+- Fixed a copy button with no visible feedback → added rule to `ui/CLAUDE.md` requiring
+  text feedback ("Copied!") alongside icon changes.
+- Fixed a mock-based test that passed while the real integration was broken → added
+  Principle #13 ("Tests must verify integration contracts, not just function calls").
+
+The rule must be specific enough to catch a future recurrence, not a vague "be careful".
+If the fix touches a pattern that appears in multiple places, the rule must address the
+whole pattern, not just the one file you changed (see Principle #23).
+
 ---
 
 

@@ -562,10 +562,18 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     margin-top: 0.25rem;
 }
 
-/* Compact metadata row: Task Type + Started + Finished on one line */
+/* Task Type + Pipeline Execution side-by-side */
+.td-type-exec-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 0.25rem 0;
+}
+
+/* Timeline row: Started | Queued | Finished on one line */
 .td-compact-meta {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.5rem 1.5rem;
     padding: 0.25rem 0;
 }
