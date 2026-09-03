@@ -176,6 +176,34 @@ describe('TaskNode › status rendering', () => {
     });
 });
 
+describe('TaskNode › selection styling', () => {
+    it('uses accent border when selected', () => {
+        const { container } = renderNode({ selected: true, status: 'success' });
+        const node = container.querySelector('.dag-flow-node') as HTMLElement;
+        expect(node.style.border).toContain('var(--accent)');
+    });
+
+    it('uses status border color when not selected', () => {
+        const { container } = renderNode({ selected: false, status: 'success' });
+        const node = container.querySelector('.dag-flow-node') as HTMLElement;
+        expect(node.style.border).toContain('var(--success)');
+        expect(node.style.border).not.toContain('var(--accent)');
+    });
+
+    it('applies accent box-shadow when selected', () => {
+        const { container } = renderNode({ selected: true, status: 'waiting' });
+        const node = container.querySelector('.dag-flow-node') as HTMLElement;
+        expect(node.style.boxShadow).toContain('var(--accent-light)');
+    });
+
+    it('applies no selection shadow when not selected', () => {
+        const { container } = renderNode({ selected: false, status: 'waiting' });
+        const node = container.querySelector('.dag-flow-node') as HTMLElement;
+        expect(node.style.boxShadow).not.toContain('var(--accent-light)');
+    });
+});
+
+
 describe('TaskNode › blueprint mode contrast (dark mode visibility fix)', () => {
     it('does not dim the whole node to 0.5 opacity', () => {
         // Previously the whole node (border AND the text/badge inside it)

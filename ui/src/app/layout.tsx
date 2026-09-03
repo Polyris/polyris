@@ -4,7 +4,8 @@ import '@/styles/globals.css';
 import '@/styles/index.css';
 
 export const metadata: Metadata = {
-  title: 'polyris Console',
+  title: 'Polyris Console',
+  icons: { icon: '/favicon.svg' },
 };
 
 export default function RootLayout({

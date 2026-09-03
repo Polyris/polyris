@@ -161,7 +161,7 @@ export const TaskNode = ({ data, selected }: { data: DAGTaskNodeData; selected: 
                 border: `2px ${isBlueprint ? 'dashed' : 'solid'} ${selected ? 'var(--accent)' : colors.border}`,
                 borderRadius: '6px',
                 padding: '8px 12px',
-                minWidth: '130px',
+                minWidth: '150px',
                 boxShadow: selected 
                     ? '0 0 0 3px var(--accent-light), 0 4px 12px rgba(0,0,0,0.15)' 
                     : isBlueprint ? 'none' : '0 1px 3px rgba(0,0,0,0.1)',
@@ -295,10 +295,10 @@ function ViewportFitController({ signal, containerRef }: {
     return null;
 }
 
-export function DAGGraphFlow({  
-    dag, 
-    tasks, 
-    selectedTask: _selectedTask, 
+export function DAGGraphFlow({
+    dag,
+    tasks,
+    selectedTask,
     onSelectTask,
     serverOffsetMs,
     isBlueprint = false
@@ -370,7 +370,8 @@ export function DAGGraphFlow({
                 id: node.id,
                 type: 'task',
                 position: layoutPositions.positions[node.id] || { x: 0, y: 0 },
-                data: { 
+                selected: node.id === selectedTask?.task_name,
+                data: {
                     label: node.id,
                     status,
                     duration,
@@ -379,7 +380,7 @@ export function DAGGraphFlow({
                 }
             };
         });
-        
+
         // Update edges with status-dependent styling
         const edges = layoutPositions.edges.map(edge => {
             if (isBlueprint) {
@@ -416,7 +417,7 @@ export function DAGGraphFlow({
         });
         
         return { nodes, edges };
-    }, [dag, tasks, serverOffsetMs, layoutPositions, isBlueprint]);
+    }, [dag, tasks, serverOffsetMs, layoutPositions, isBlueprint, selectedTask]);
     
     const [nodes, setNodes, onNodesChange] = useNodesState(initialElements.nodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialElements.edges);
