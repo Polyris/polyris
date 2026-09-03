@@ -38,6 +38,28 @@ any user-visible number or label that represents a specific status category.
 
 ---
 
+## Copy-to-clipboard always shows visible text feedback
+
+An icon change alone (Copy → CheckCircle2) is not enough — the user may not notice it.
+Every copy button must show a short text label `"Copied!"` that appears next to the
+button and disappears automatically after ~1.5 s.
+
+```tsx
+// pattern — copiedKey is a string | null useState in the parent component
+{copiedKey === 'my_field' && <span className="td-copy-feedback">Copied!</span>}
+<Button
+    onClick={() => handleCopy('my_field', value)}
+    aria-label={copiedKey === 'my_field' ? 'Copied' : 'Copy to clipboard'}
+>
+    {copiedKey === 'my_field' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+</Button>
+```
+
+`HelpModal.tsx` uses icon-only — that predates this rule and should be updated
+opportunistically when the file is touched for another reason.
+
+---
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

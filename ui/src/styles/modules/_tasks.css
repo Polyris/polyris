@@ -635,6 +635,11 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     align-items: center;
     justify-content: space-between;
 }
+.td-copy-feedback {
+    font-size: 0.75rem;
+    color: var(--success);
+    white-space: nowrap;
+}
 .td-ellipsis {
     flex: 1;
     overflow: hidden;

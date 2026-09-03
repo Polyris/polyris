@@ -24,7 +24,7 @@ vi.mock('@/utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => 
 vi.mock('../../utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, ContextIcons: new Proxy({}, { get: () => () => null }), Copy: () => null, Database: () => null, Download: () => null, ElementIcons: () => null, ExpandIcon: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, LoadingIcon: () => null, MarkIcons: () => null, Minus: () => null, Moon: () => null, NavIcon: () => null, NavIcons: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, RefreshIcon: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, STALENESS_ICONS_COMPONENTS: () => null, STATUS_ICONS_COMPONENTS: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StalenessIcon: () => null, StatusIcon: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, ToastIcons: () => null, Trash2: () => null, UIIcons: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, XIcon: () => null, Zap: () => null }));
 vi.mock('lucide-react', () => ({ Activity: () => null, AlertCircle: () => null, ArrowLeft: () => null, Check: () => null, CheckCircle: () => null, ChevronDown: () => null, ChevronRight: () => null, ChevronUp: () => null, Circle: () => null, Eye: () => null, EyeOff: () => null, HelpCircle: () => null, KeyRound: () => null, ListTodo: () => null, Loader2: () => null, Lock: () => null, LogOut: () => null, Mail: () => null, Menu: () => null, Moon: () => null, Package: () => null, Pause: () => null, RefreshCw: () => null, Shield: () => null, Sun: () => null, User: () => null, Users: () => null, Workflow: () => null, X: () => null, Zap: () => null }));
 vi.mock('@/components/ui/button', () => ({
-    Button: (props) => <button onClick={props.onClick} disabled={props.disabled} className={props.className} title={props.title} data-variant={props.variant}>{props.children}</button>,
+    Button: (props) => <button onClick={props.onClick} disabled={props.disabled} className={props.className} title={props.title} aria-label={props['aria-label']} data-variant={props.variant}>{props.children}</button>,
 }));
 vi.mock('../BaseModal', () => ({
     BaseModal: ({ isOpen, children, className }) => isOpen ? <div data-testid="base-modal" className={className} role="dialog">{children}</div> : null,
@@ -483,6 +483,85 @@ describe('TaskDetailModal', () => {
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByRole('link', { name: /^Task$/i })).toBeInTheDocument();
             expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+        });
+
+        it('shows pending placeholder for running task without wrapper ARN', () => {
+            const task = createRunningTask({ wrapper_execution_arn: null });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            expect(screen.getByText(/awaiting start/i)).toBeInTheDocument();
+            expect(screen.queryByRole('link', { name: /Wrapper/i })).not.toBeInTheDocument();
+        });
+
+        it('shows active Wrapper link for running task that already has an ARN', () => {
+            const task = createRunningTask();
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.queryByText(/awaiting start/i)).not.toBeInTheDocument();
+        });
+
+        it('hides the AWS Console section entirely for non-running tasks without ARNs', () => {
+            const task = createTask({ status: 'waiting', wrapper_execution_arn: null, task_execution_arn: null });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            expect(screen.queryByText('AWS Console')).not.toBeInTheDocument();
+        });
+    });
+
+    // ─── Copy confirmation ───────────────────────────────────────────────
+
+    describe('copy confirmation', () => {
+        it('updates aria-label to Copied after clicking execution name copy button', () => {
+            render(<TaskDetailModal {...defaultProps} />);
+            const copyBtn = screen.getAllByTitle('Copy to clipboard')[0];
+            expect(copyBtn).toHaveAttribute('aria-label', 'Copy to clipboard');
+            fireEvent.click(copyBtn);
+            expect(copyBtn).toHaveAttribute('aria-label', 'Copied');
+        });
+
+        it('updates aria-label to Copied after clicking pipeline execution copy button', () => {
+            render(<TaskDetailModal {...defaultProps} />);
+            const copyBtn = screen.getByTitle('Copy full execution ID');
+            expect(copyBtn).toHaveAttribute('aria-label', 'Copy full execution ID');
+            fireEvent.click(copyBtn);
+            expect(copyBtn).toHaveAttribute('aria-label', 'Copied');
+        });
+
+        it('updates aria-label to Copied after clicking error copy button', () => {
+            const task = createFailedTask();
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            const copyBtn = screen.getByTitle('Copy error');
+            expect(copyBtn).toHaveAttribute('aria-label', 'Copy error');
+            fireEvent.click(copyBtn);
+            expect(copyBtn).toHaveAttribute('aria-label', 'Copied');
+        });
+    });
+
+    // ─── Failure visibility ──────────────────────────────────────────────
+
+    describe('failure visibility', () => {
+        it('error section appears before duration stats in DOM for failed tasks', () => {
+            const task = createFailedTask();
+            const { container } = render(<TaskDetailModal {...defaultProps} task={task} />);
+            const error = container.querySelector('.td-error-section');
+            const stats = container.querySelector('.td-duration-stats');
+            expect(error).not.toBeNull();
+            expect(stats).not.toBeNull();
+            expect(error!.compareDocumentPosition(stats!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+        });
+    });
+
+    // ─── Decision required banner ────────────────────────────────────────
+
+    describe('decision required banner', () => {
+        it('shows Decision required banner for waiting_decision tasks', () => {
+            const task = createWaitingDecisionTask();
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            expect(screen.getByText('Decision required')).toBeInTheDocument();
+            expect(screen.getByText(/waiting for a manual decision/i)).toBeInTheDocument();
+        });
+
+        it('does not show Decision required banner for non-decision tasks', () => {
+            render(<TaskDetailModal {...defaultProps} />);
+            expect(screen.queryByText('Decision required')).not.toBeInTheDocument();
         });
     });
 
