@@ -18,7 +18,7 @@ import { formatCountdown, formatWaitBadge, formatDuration } from '../utils';
 import { TASK_SUCCESS_STATUSES, TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { taskTypeBadge } from '../utils/taskTypeBadge';
 import { mergeNodePositions } from '../utils/reactFlowHelpers';
-import { StatusIcon, CheckCircle2, XCircle, Loader2, Clock, Settings, BarChart3, Hourglass, Check, AlertTriangle, SkipForward } from '../utils/icons';
+import { StatusIcon, CheckCircle2, XCircle, Clock, Settings, BarChart3, Hourglass, Check, AlertTriangle, SkipForward, Play } from '../utils/icons';
 import { 
     TASK_STATUS, 
     isTerminalStatus, 
@@ -581,7 +581,7 @@ export function DAGGraphFlow({
                         </div>
                         )}
                         <div className="dag-stat-item">
-                            <Loader2 size={14} className="text-blue-500 animate-spin" />
+                            <Play size={14} className="text-blue-500" />
                             <span className="dag-stat-value">{stats.running}</span>
                         </div>
                         <div className="dag-stat-item">

@@ -112,12 +112,30 @@ export const formatDate = (iso: string | null | undefined): string => {
     if (!iso) return '-';
     try {
         const d = new Date(iso);
-        return d.toLocaleString('en-US', { 
-            month: 'short', 
-            day: 'numeric', 
-            hour: '2-digit', 
+        return d.toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
             minute: '2-digit',
-            hour12: false 
+            hour12: false
+        });
+    } catch {
+        return '-';
+    }
+};
+
+// Format ISO date for event history — includes seconds for precision
+export const formatEventTime = (iso: string | null | undefined): string => {
+    if (!iso) return '-';
+    try {
+        const d = new Date(iso);
+        return d.toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
         });
     } catch {
         return '-';

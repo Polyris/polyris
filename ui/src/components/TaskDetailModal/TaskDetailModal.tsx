@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
-import { formatDate, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount } from '../../utils';
+import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount } from '../../utils';
 import { formatFreshnessWindow, formatFreshnessWindowLong } from '../../utils/formatters';
 import { logger } from '../../utils/logger';
 import { useKeyboardShortcuts } from '../../hooks';
@@ -231,6 +231,14 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
     // Team-tier task-modal sub-components (absent in the OSS build) — ADR #99.
     const ConsecutiveProgress = paidSurface.ConsecutiveProgress;
     const DependencyStatusList = paidSurface.DependencyStatusList;
+
+    const [copiedKey, setCopiedKey] = useState<string | null>(null);
+    const handleCopy = (key: string, text: string) => {
+        navigator.clipboard.writeText(text);
+        setCopiedKey(key);
+        setTimeout(() => setCopiedKey(null), 1500);
+    };
+
     return (
         <div className="td-task-details-grid">
             {/* Paused task message */}
@@ -246,7 +254,39 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         </Button>
                     </div>
                 )}
-                
+
+            {/* Decision required message */}
+            {task.status === 'waiting_decision' && (
+                <div className="td-paused-task-message">
+                    <div className="td-paused-task-icon"><CircleDot size={24} className="text-orange-500" /></div>
+                    <div className="td-paused-task-text">
+                        <strong>Decision required</strong>
+                        <p>This task is waiting for a manual decision. Go to the Actions tab to proceed.</p>
+                    </div>
+                </div>
+            )}
+
+            {/* Failure — shown at top so it is visible without scrolling */}
+            {task.error && (
+                <div className="detail-section td-error-section">
+                    <div className="detail-label td-flex-between">
+                        <span>Error</span>
+                        <div className="td-flex-row">
+                            {copiedKey === 'error' && <span className="td-copy-feedback">Copied!</span>}
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 opacity-60 hover:opacity-100"
+                                onClick={() => handleCopy('error', typeof task.error === 'string' ? task.error : JSON.stringify(task.error ?? ''))}
+                                title="Copy error"
+                                aria-label={copiedKey === 'error' ? 'Copied' : 'Copy error'}
+                            >{copiedKey === 'error' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
+                        </div>
+                    </div>
+                    <ErrorDisplay error={task.error} />
+                </div>
+            )}
+
                 {/* Duration Stats */}
                 <div className="td-duration-stats">
                     <div className="td-duration-stat">
@@ -277,31 +317,37 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                             <div className="detail-value td-mono td-flex-row">
                                 <span className="td-ellipsis">{task.execution_name || '-'}</span>
                                 {task.execution_name && (
-                                    <Button 
-                                        variant="ghost" 
-                                        size="icon"
-                                        className="h-6 w-6 opacity-60 hover:opacity-100"
-                                        onClick={() => navigator.clipboard.writeText(task.execution_name)}
-                                        title="Copy to clipboard"
-                                    ><Copy size={14} /></Button>
+                                    <>
+                                        {copiedKey === 'execution_name' && <span className="td-copy-feedback">Copied!</span>}
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-6 w-6 opacity-60 hover:opacity-100"
+                                            onClick={() => handleCopy('execution_name', task.execution_name)}
+                                            title="Copy to clipboard"
+                                            aria-label={copiedKey === 'execution_name' ? 'Copied' : 'Copy to clipboard'}
+                                        >{copiedKey === 'execution_name' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
+                                    </>
                                 )}
                             </div>
                         </div>
-                        
+
                         {task.pipeline_execution && (
                             <div className="detail-section">
                                 <div className="detail-label">Pipeline Execution</div>
                                 <div className="detail-value td-mono text-xs td-flex-row">
-                                    <span className="td-ellipsis">
-                                        {task.pipeline_execution_short || task.pipeline_execution?.split(':').pop()?.substring(0, 12) || '-'}
+                                    <span className="td-ellipsis" title={task.pipeline_execution}>
+                                        {task.pipeline_execution_short || task.pipeline_execution}
                                     </span>
-                                    <Button 
-                                        variant="ghost" 
+                                    {copiedKey === 'pipeline_execution' && <span className="td-copy-feedback">Copied!</span>}
+                                    <Button
+                                        variant="ghost"
                                         size="icon"
                                         className="h-6 w-6 opacity-60 hover:opacity-100"
-                                        onClick={() => navigator.clipboard.writeText(task.pipeline_execution ?? '')}
+                                        onClick={() => handleCopy('pipeline_execution', task.pipeline_execution ?? '')}
                                         title="Copy full execution ID"
-                                    ><Copy size={14} /></Button>
+                                        aria-label={copiedKey === 'pipeline_execution' ? 'Copied' : 'Copy full execution ID'}
+                                    >{copiedKey === 'pipeline_execution' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
                                 </div>
                             </div>
                         )}
@@ -423,8 +469,9 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                             </div>
                         )}
                         
-                        {/* AWS Console Links */}
-                        {(task.task_execution_arn || task.wrapper_execution_arn) && (
+                        {/* AWS Console Links — shown when ARNs are present, or while
+                            running so the user knows where to look once the ARN lands. */}
+                        {(task.task_execution_arn || task.wrapper_execution_arn || task.status === 'running') && (
                             <div className="detail-section">
                                 <div className="detail-label">AWS Console</div>
                                 <div className="flex flex-col gap-xs mt-sm">
@@ -436,9 +483,9 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         AWS's own console surfaces the real resource link on the
                                         wrapper execution page. */}
                                     {task.task_execution_arn?.includes(':states:') && (
-                                        <a 
-                                            href={buildAwsConsoleUrl(task.task_execution_arn)} 
-                                            target="_blank" 
+                                        <a
+                                            href={buildAwsConsoleUrl(task.task_execution_arn)}
+                                            target="_blank"
                                             rel="noopener noreferrer"
                                             className="td-link-primary"
                                         >
@@ -446,21 +493,25 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                             <ExternalLink size={10} className="opacity-50" />
                                         </a>
                                     )}
-                                    {task.wrapper_execution_arn && (
-                                        <a 
-                                            href={buildAwsConsoleUrl(task.wrapper_execution_arn)} 
-                                            target="_blank" 
+                                    {task.wrapper_execution_arn ? (
+                                        <a
+                                            href={buildAwsConsoleUrl(task.wrapper_execution_arn)}
+                                            target="_blank"
                                             rel="noopener noreferrer"
                                             className="td-link-primary"
                                         >
                                             <RotateCcw size={12} /> Wrapper
                                             <ExternalLink size={10} className="opacity-50" />
                                         </a>
+                                    ) : task.status === 'running' && (
+                                        <span className="td-link-muted td-link-pending" title="Execution ARN will appear once the wrapper starts">
+                                            <RotateCcw size={12} /> Wrapper — awaiting start
+                                        </span>
                                     )}
                                     {task.pagerduty_enabled && task.wrapper_arn && (
-                                        <a 
+                                        <a
                                             href={`https://app.pagerduty.com/incidents?search=${encodeURIComponent(task.wrapper_arn)}`}
-                                            target="_blank" 
+                                            target="_blank"
                                             rel="noopener noreferrer"
                                             className="td-link-muted"
                                         >
@@ -474,21 +525,6 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                     </div>
                 </div>
                 
-                {task.error && (
-                    <div className="detail-section td-error-section">
-                        <div className="detail-label td-flex-between">
-                            <span>Error</span>
-                            <Button 
-                                variant="ghost" 
-                                size="icon"
-                                className="h-6 w-6 opacity-60 hover:opacity-100"
-                                onClick={() => navigator.clipboard.writeText(typeof task.error === 'string' ? task.error : JSON.stringify(task.error ?? ''))}
-                                title="Copy error"
-                            ><Copy size={14} /></Button>
-                        </div>
-                        <ErrorDisplay error={task.error} />
-                    </div>
-                )}
             </div>
     );
 }
@@ -516,7 +552,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                     <div className="td-status-history-events">
                         {taskEvents.map((evt, idx) => (
                             <div key={idx} className="td-status-event">
-                                <span className="td-event-time">{formatDate(evt.event_time)}</span>
+                                <span className="td-event-time">{formatEventTime(evt.event_time)}</span>
                                 <span className={`td-event-badge td-event-${evt.event_type.toLowerCase().replace('_', '-')}`}>
                                     {evt.event_type.replace('_', ' ')}
                                 </span>
@@ -551,7 +587,7 @@ function DerivedTimeline({ task }: { task: Task }) {
     const events: Array<{ time: string; badge: string; badgeClass: string; text: string }> = [];
 
     if (task.started_at) {
-        events.push({ time: formatDate(task.started_at), badge: 'Started', badgeClass: 'td-event-started', text: 'Task execution began' });
+        events.push({ time: formatEventTime(task.started_at), badge: 'Started', badgeClass: 'td-event-started', text: 'Task execution began' });
     }
 
     const statusEvents: Record<string, { badge: string; badgeClass: string; text: string; useTime?: string }> = {
@@ -572,7 +608,7 @@ function DerivedTimeline({ task }: { task: Task }) {
 
     const evt = statusEvents[task.status];
     if (evt) {
-        events.push({ time: evt.useTime ? formatDate(evt.useTime) : 'now', badge: evt.badge, badgeClass: evt.badgeClass, text: evt.text });
+        events.push({ time: evt.useTime ? formatEventTime(evt.useTime) : 'now', badge: evt.badge, badgeClass: evt.badgeClass, text: evt.text });
     }
 
     return (
