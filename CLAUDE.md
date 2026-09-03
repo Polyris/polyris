@@ -1305,6 +1305,7 @@ Violating this rule → `_notify_warn_` will appear in All Tasks / pipeline stat
 - Styling: shadcn/ui + Tailwind CSS only
 - Icons: Lucide React via `icons.tsx`
 - Runtime config: `window.CONFIG` (set by `/config.js`) is source of truth, `NEXT_PUBLIC_*` is build fallback only — `getConfig()` is window-first, never env-first; use `??` for booleans (ADR #94)
+- **Status constants are for orchestration only.** Semantic grouping arrays (`TASK_SUCCESS_STATUSES`, `TERMINAL_STATUSES`, etc.) encode which statuses unblock downstream tasks — orchestration logic only. Display code (counters, labels, badges) must use explicit checks: `t.status === 'success'`, never `TASK_SUCCESS_STATUSES.includes(t.status)`. Mixing the two caused skipped tasks to show as success in the DAG stats panel. See `ui/CLAUDE.md` for details.
 
 ### Responsive Layout (ADR #40)
 

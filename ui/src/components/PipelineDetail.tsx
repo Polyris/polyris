@@ -9,7 +9,6 @@ import {
     ErrorBoundary,
 } from './index';
 import { POLLING, toDateString } from '../utils';
-import { TASK_SUCCESS_STATUSES } from '@/generated/enums';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useToast, useKeyboardShortcuts, SHORTCUTS } from '../hooks';
@@ -210,7 +209,6 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
     const [showHistory, setShowHistory] = useState(false);
 
     const stats = useMemo(() => ({
-        done: filteredTasks.filter(t => TASK_SUCCESS_STATUSES.includes(t.status)).length,
         active: filteredTasks.filter(t => t.status === 'running' || t.status === 'deps_ready' || t.status === 'waiting_delay').length,
         failed: filteredTasks.filter(t => t.status === 'failed' || t.status === 'upstream_failed').length,
         wait: filteredTasks.filter(t => t.status === 'waiting').length,
