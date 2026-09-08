@@ -14,6 +14,21 @@ Setting to `None` (or any fixed value) unconditionally breaks nesting: an inner 
 manager wipes the outer group's state, so tasks written after the inner block have no group.
 The field used for saving (`parent_group`) must be populated in `__enter__`, not just declared.
 
+## Deploy file scanning: filter by locality, not by name; non-zero exits are errors
+
+`_load_dag_from_file` must return only DAGs **defined in the loaded file**, never ones
+merely imported into it. Use `sys.modules` after `exec_module` to build a set of all
+DAG object IDs known in other modules; exclude those from the result. The `obj.__module__`
+attribute does **not** work for this — DAG instances always carry `__module__ == "polyris.dag"`
+regardless of where they were instantiated.
+
+`except SystemExit: pass` silently swallows a pipeline file calling `sys.exit(1)`, hiding
+load errors. Re-raise non-zero exits: `if code != 0: sys.exit(1)`. Tolerate `exit(0)`.
+
+`_discover_dags_in_dir` must deduplicate by `dag_id`: if two files in the same directory
+define the same `dag_id`, keep the first and warn about the duplicate. Silent double-deploy
+would run the pipeline twice in the same batch.
+
 ## Graph objects: always `@dataclass(eq=False)`
 
 `Task`, `DAG`, and every `Step` subclass must carry `eq=False`.

@@ -5,6 +5,7 @@ found in every file is deployed — a directory can hold more than one pipeline
 file, and a file with zero DAGs (a shared config.py, a utils module) is a
 no-op, not an error. One DAG failing must not stop the rest of the batch.
 """
+import sys
 import textwrap
 
 import pytest
@@ -72,6 +73,73 @@ class TestDiscoverDagsInDir:
 
     def test_empty_directory_returns_nothing(self, tmp_path):
         assert deploy._discover_dags_in_dir(tmp_path) == []
+
+    def test_duplicate_dag_id_across_files_is_warned_and_skipped(self, tmp_path, capsys):
+        """Same dag_id in two files: first wins, second is warned and dropped."""
+        _write_dag_file(tmp_path / "a.py", "shared-id")
+        _write_dag_file(tmp_path / "b.py", "shared-id")
+        found = deploy._discover_dags_in_dir(tmp_path)
+        assert len(found) == 1
+        assert found[0][1].dag_id == "shared-id"
+        out = capsys.readouterr().out
+        assert "shared-id" in out
+
+    def test_file_that_exits_nonzero_is_skipped_with_warning(self, tmp_path, capsys):
+        """A pipeline file that calls sys.exit(1) is treated as a load error."""
+        _write_dag_file(tmp_path / "good.py", "good-dag")
+        (tmp_path / "bad.py").write_text("import sys; sys.exit(1)\n")
+        found = deploy._discover_dags_in_dir(tmp_path)
+        assert [d.dag_id for _, d in found] == ["good-dag"]
+        assert "Skipping" in capsys.readouterr().out
+
+
+class TestLoadDagFromFile:
+    def test_imported_dag_is_excluded(self, tmp_path, monkeypatch):
+        """A DAG imported into the pipeline file must not be returned."""
+        (tmp_path / "shared_mod.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("shared-dag", schedule="@daily") as shared_dag:
+                @task.sfn(arn=ARN)
+                def s(): pass
+                s()
+        """))
+        (tmp_path / "dag.py").write_text(textwrap.dedent(f"""
+            import sys; sys.path.insert(0, r"{tmp_path}")
+            from shared_mod import shared_dag  # imported, not defined here
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("local-dag", schedule="@daily") as local_dag:
+                @task.sfn(arn=ARN)
+                def go(): pass
+                go()
+        """))
+        monkeypatch.delitem(sys.modules, "shared_mod", raising=False)
+
+        dags = deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert [d.dag_id for d in dags] == ["local-dag"]
+
+    def test_systemexit_zero_is_tolerated(self, tmp_path):
+        """exit(0) in a pipeline file must not abort loading."""
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("d", schedule="@daily") as dag:
+                @task.sfn(arn=ARN)
+                def go(): pass
+                go()
+            import sys; sys.exit(0)
+        """))
+        dags = deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert [d.dag_id for d in dags] == ["d"]
+
+    def test_systemexit_nonzero_is_a_load_error(self, tmp_path, capsys):
+        """exit(1) in a pipeline file must propagate as a load error."""
+        (tmp_path / "dag.py").write_text("import sys; sys.exit(1)\n")
+        with pytest.raises(SystemExit) as exc:
+            deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert exc.value.code == 1
+        assert "Error loading pipeline" in capsys.readouterr().out
 
 
 class TestRunBulk:
