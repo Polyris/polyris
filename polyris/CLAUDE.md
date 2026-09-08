@@ -5,6 +5,15 @@ Each rule is here because we shipped a bug that violated it.
 
 ---
 
+## Context managers that push/pop shared state must save and restore, never just clear
+
+Any `__enter__` that overwrites shared state (e.g. `dag._current_task_group`) must
+first save the *previous* value into `self` (e.g. `self.parent_group = dag._current_task_group`),
+and `__exit__` must restore it (`dag._current_task_group = self.parent_group`).
+Setting to `None` (or any fixed value) unconditionally breaks nesting: an inner context
+manager wipes the outer group's state, so tasks written after the inner block have no group.
+The field used for saving (`parent_group`) must be populated in `__enter__`, not just declared.
+
 ## Graph objects: always `@dataclass(eq=False)`
 
 `Task`, `DAG`, and every `Step` subclass must carry `eq=False`.

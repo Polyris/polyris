@@ -1,3 +1,34 @@
+## v0.98.0 - 2026-09-08
+
+### Added
+
+- **Run trigger source** — every task execution now records how it was triggered
+  (`triggered_by`: `ui`, `api`, `asset`, or `schedule`). Surfaced in the Runs list
+  and task detail across SDK, SFN registration template, API, and UI.
+
+### Changed
+
+- **Pipeline detail — definition/run toggle** — the Definition button is now a toggle:
+  clicking it a second time returns to the previous run instead of staying locked in
+  blueprint mode. After clicking Run, the UI navigates directly to the new execution.
+
+### Fixed
+
+- **UI — DAG stats panel** — skipped tasks were counted as successes because
+  `TASK_SUCCESS_STATUSES` is an orchestration set (skipped unblocks downstream), not a
+  display set. Skipped now has its own counter; success shows only `success`/`succeeded`.
+- **UI — task detail feedback** — error section moved to the top of the Details tab;
+  "Decision required" banner for `waiting_decision` tasks; clipboard buttons show
+  "Copied!" text feedback; event timestamps include seconds; AWS Console link appears
+  once execution ARN is available.
+- **UI — DAG node selection** — `selectedTask` now drives DAG node highlight;
+  node width corrected; favicon added.
+- **UI — TaskDetailModal** — status stat fixed; full pipeline ID shown; meta row
+  compacted; spinner replaced with static icon.
+- **Backend** — `batch_get_triggered_by` test fixed for Python lambda path.
+
+---
+
 ## v0.97.0 - 2026-09-02
 
 ### Fixed — SDK correctness: silent failures, type safety, and validation hardening

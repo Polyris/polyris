@@ -67,6 +67,64 @@ class TestTaskGroupMembership:
             # After the group context exits, the DAG has no active group.
             assert dag._current_task_group is None
 
+    def test_nested_group_restores_outer_on_exit(self):
+        """Inner group exit must restore outer group, not clear to None."""
+        with DAG("d", schedule=None) as dag:
+            with TaskGroup("outer") as outer:
+                @task.sfn(arn=ARN)
+                def a():
+                    pass
+                a()
+
+                with TaskGroup("inner"):
+                    @task.sfn(arn=ARN)
+                    def b():
+                        pass
+                    b()
+
+                # After inner exits, outer must be the active group again.
+                assert dag._current_task_group is outer
+
+                @task.sfn(arn=ARN)
+                def c():
+                    pass
+                c()
+
+        # c was created after inner exited but while outer was still active —
+        # it must be prefixed by outer and appear in outer._tasks.
+        assert c.task_id == "outer.c"
+        assert c in outer._tasks
+
+    def test_triple_nesting_restores_correctly(self):
+        """Three levels of nesting unwind back through middle then outer."""
+        with DAG("d", schedule=None) as dag:
+            with TaskGroup("l1") as l1:
+                @task.sfn(arn=ARN)
+                def t1():
+                    pass
+                t1()
+
+                with TaskGroup("l2") as l2:
+                    @task.sfn(arn=ARN)
+                    def t2():
+                        pass
+                    t2()
+
+                    with TaskGroup("l3"):
+                        @task.sfn(arn=ARN)
+                        def t3():
+                            pass
+                        t3()
+
+                    # l3 exited — l2 must be active
+                    assert dag._current_task_group is l2
+
+                # l2 exited — l1 must be active
+                assert dag._current_task_group is l1
+
+            # l1 exited — None
+            assert dag._current_task_group is None
+
 
 # ============================================================ #
 # operators
