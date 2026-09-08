@@ -48,13 +48,14 @@ class TaskGroup:
         """Enter TaskGroup context."""
         self._dag = get_current_dag()
         if self._dag:
+            self.parent_group = self._dag._current_task_group
             self._dag._current_task_group = self
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit TaskGroup context."""
         if self._dag:
-            self._dag._current_task_group = None
+            self._dag._current_task_group = self.parent_group
     
     def add_task(self, task: 'Task'):
         """Add task to group."""
