@@ -148,6 +148,49 @@ def test_falsy_overrides_of_default_args_are_respected():
     assert t2.retry_delay == timedelta(minutes=10)
 
 
+def test_default_args_applies_trigger_rule_wait_before_skip_on_backfill():
+    """trigger_rule, wait_before, skip_on_backfill must be read from default_args.
+
+    These three fields had non-None defaults in _create_task ("all_success", 0,
+    False). Because the is-not-None guard was not applied, default_args values were
+    silently ignored — the decorator's own default always won.
+    """
+    from polyris import DAG, task
+
+    defaults = {
+        'trigger_rule': 'all_done',
+        'wait_before': 30,
+        'skip_on_backfill': True,
+    }
+    with DAG('test-non-none-defaults', schedule=None, default_args=defaults) as dag:
+        @task.sfn(arn='arn:aws:states:us-east-1:123:stateMachine:test')
+        def my_task():
+            pass
+        my_task()
+
+    t = dag.tasks[0]
+    assert t.trigger_rule == 'all_done'
+    assert t.wait_before == 30
+    assert t.skip_on_backfill is True
+
+    # Control: explicit task-level value overrides default_args
+    with DAG('test-non-none-defaults-override', schedule=None, default_args=defaults) as dag2:
+        @task.sfn(
+            arn='arn:aws:states:us-east-1:123:stateMachine:test',
+            trigger_rule='all_success',
+            wait_before=0,
+            skip_on_backfill=False,
+        )
+        def other_task():
+            pass
+        other_task()
+
+    t2 = dag2.tasks[0]
+    assert t2.trigger_rule == 'all_success'
+    assert t2.wait_before == 0
+    assert t2.skip_on_backfill is False
+
+
 def test_orchestration_timeout_in_generated_sfn():
     """Generator passes orchestration_timeout to wrapper input."""
     from polyris import DAG, task
@@ -396,6 +439,7 @@ if __name__ == '__main__':
         test_orchestration_timeout_via_default_args,
         test_orchestration_timeout_override_default_args,
         test_falsy_overrides_of_default_args_are_respected,
+        test_default_args_applies_trigger_rule_wait_before_skip_on_backfill,
         test_orchestration_timeout_in_generated_sfn,
         test_orchestration_timeout_default_in_generated_sfn,
         # wrapper template
