@@ -247,6 +247,19 @@ export const formatRelativeTime = (iso: string | null | undefined): string => {
     return iso.slice(0, 10);
 };
 
+const TRIGGER_SOURCE_LABELS: Record<string, string> = {
+    console_run: 'Manual',
+    schedule: 'Scheduled',
+    asset: 'Asset',
+    backfill: 'Backfill',
+};
+
+/** Map a triggered_by value to a human-readable label. Returns null for 'unknown'/absent. */
+export const formatTriggerSource = (value: string | null | undefined): string | null => {
+    if (!value || value === 'unknown') return null;
+    return TRIGGER_SOURCE_LABELS[value] ?? value;
+};
+
 // Human-readable schedule label for a pipeline. Single source of truth for
 // schedule display — used by the sidebar, command palette, and anywhere else
 // a schedule is shown.

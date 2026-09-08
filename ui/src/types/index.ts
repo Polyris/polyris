@@ -100,6 +100,8 @@ export interface Pipeline {
   task_count?: number;
   stats?: PipelineStats;
   tags?: string[] | Record<string, string>;
+  /** ISO timestamp of last polyris-deploy for this pipeline. */
+  registered_at?: string;
   [key: string]: unknown;
 }
 
@@ -126,6 +128,8 @@ export interface Execution {
   /** Backfill membership (v0.78+, ADR #51). Empty/undefined if standalone. */
   backfill_id?: string;
   partition_key?: string;
+  /** How this execution was triggered: 'console_run' | 'schedule' | 'asset' | 'backfill' | 'unknown'. */
+  triggered_by?: string;
   [key: string]: unknown;
 }
 

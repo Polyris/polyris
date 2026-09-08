@@ -72,6 +72,9 @@
           },
           "wait_for": {
             "S": "{% $exists($states.input.wait_for) ? $string($states.input.wait_for) : '[]' %}"
+          },
+          "triggered_by": {
+            "S": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}"
           }
         }
       },

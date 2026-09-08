@@ -82,6 +82,7 @@ JSONATA_PASS_INPUT = "{% $states.input %}"
 # false → existing 'auto' behavior preserved for scheduled runs.
 JSONATA_SUPPRESS_ASSET_EVENT = "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}"
 JSONATA_CASCADE_ALL = "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}"
+JSONATA_TRIGGERED_BY = "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}"
 JSONATA_EXEC_SHORT = (
     "{% ( $exec := $states.context.Execution.Name; "
     "$short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; "
@@ -804,6 +805,7 @@ def _build_wrapper_input(
         # false → run_task helper preserves existing 'auto' behavior.
         "_suppress_asset_event": JSONATA_SUPPRESS_ASSET_EVENT,
         "cascade_all": JSONATA_CASCADE_ALL,
+        "triggered_by": JSONATA_TRIGGERED_BY,
         "date": JSONATA_DATE,
         "current_date": JSONATA_DATE,
         "PARTITION_ARG": JSONATA_PARTITION,

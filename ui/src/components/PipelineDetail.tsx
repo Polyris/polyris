@@ -8,7 +8,7 @@ import {
     GanttSkeleton,
     ErrorBoundary,
 } from './index';
-import { POLLING, toDateString } from '../utils';
+import { POLLING, toDateString, formatRelativeTime, formatTriggerSource } from '../utils';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useToast, useKeyboardShortcuts, SHORTCUTS } from '../hooks';
@@ -266,9 +266,17 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
                     <div className="pd-canvas-title">{pipeline?.name || 'Select a pipeline'}</div>
                     <div className="pd-canvas-subtitle flex items-center gap-md">
                         {pipeline ? (
-                            dagViewSource === 'current'
-                                ? <span>Current deployed structure</span>
-                                : <span>{selectedExecution?.date || date}</span>
+                            <>
+                                {dagViewSource === 'current'
+                                    ? <span>Current deployed structure</span>
+                                    : <span>{selectedExecution?.date || date}</span>
+                                }
+                                {pipeline.registered_at && (
+                                    <span title={pipeline.registered_at}>
+                                        {' · '}Deployed {formatRelativeTime(pipeline.registered_at)}
+                                    </span>
+                                )}
+                            </>
                         ) : (
                             'Choose from the sidebar'
                         )}
@@ -712,6 +720,12 @@ function ExecutionDropdown({
                                         </div>
                                         <div className="pd-dropdown-item-meta">
                                             {ex.started_at ? new Date(ex.started_at).toLocaleString() : ex.date}
+                                            {formatTriggerSource(ex.triggered_by) && (
+                                                <span className="pd-trigger-source">
+                                                    {' · '}
+                                                    <strong>{formatTriggerSource(ex.triggered_by)}</strong>
+                                                </span>
+                                            )}
                                         </div>
                                     </div>
                                 );

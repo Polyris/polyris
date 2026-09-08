@@ -562,12 +562,18 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     margin-top: 0.25rem;
 }
 
-/* Task Type + Pipeline Execution side-by-side */
-.td-type-exec-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 1rem;
-    padding: 0.25rem 0;
+/* Task Type badge — neutral mono chip in the right column */
+.td-task-type-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    padding: 0.25rem 0.625rem;
+    border-radius: 4px;
 }
 
 /* Timeline row: Started | Queued | Finished on one line */
@@ -683,14 +689,7 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     font-size: 12px;
     color: var(--warning, #f59e0b);
 }
-.td-task-type-tag {
-    background: var(--accent-light);
-    color: var(--primary);
-    padding: 0.15rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    text-transform: uppercase;
-}
+
 .td-child-pipeline-btn {
     background: none;
     border: none;

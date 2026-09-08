@@ -68,6 +68,7 @@ def list_pipelines(event: Dict) -> Dict:
                     'group': item.get('pipeline_group', ''),
                     'schedule': item.get('schedule', ''),
                     'asset_schedule': asset_schedule,
+                    'registered_at': item.get('registered_at', ''),
                     'status': 'idle',
                     'paused': False,
                     'sla': None,
@@ -435,7 +436,12 @@ def _aggregate_executions(items):
                 'finished_at': item.get('finished_at'),
                 'statuses': set(),
                 'earliest_started': item.get('started_at', ''),
-                'latest_finished': item.get('finished_at', '')
+                'latest_finished': item.get('finished_at', ''),
+                'triggered_by': item.get('triggered_by', ''),
+                # execution_name (base table PK) is always returned by GSI queries;
+                # used by _fill_triggered_by to GetItem triggered_by from base table
+                # when the GSI INCLUDE projection doesn't carry it.
+                '_sample_exec_name': item.get('execution_name', ''),
             }
         
         entry = exec_map[pe]
@@ -476,12 +482,42 @@ def _aggregate_executions(items):
             'status': status,
             'started_at': data['earliest_started'] or data['started_at'],
             'finished_at': data['latest_finished'] or data['finished_at'],
-            'duration_ms': duration_ms
+            'duration_ms': duration_ms,
+            'triggered_by': data.get('triggered_by') or None,
+            '_sample_exec_name': data.get('_sample_exec_name', ''),
         })
     
     # Sort by started_at descending (newest first)
     executions.sort(key=lambda x: x.get('started_at') or '', reverse=True)
     return executions
+
+
+def _fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None:
+    """Back-fill triggered_by on executions fetched via a GSI that doesn't project it.
+
+    id_field: key used to identify each execution (default 'execution_id';
+              get_all_runs uses 'pipeline_execution').
+    """
+    samples = {}  # id_field value → sample execution_name
+    for e in executions:
+        name = e.pop('_sample_exec_name', None)
+        if name and not e.get('triggered_by'):
+            samples[e[id_field]] = name
+
+    if not samples:
+        return
+
+    try:
+        results = executions_repo.batch_get_triggered_by(list(samples.values()))
+        for e in executions:
+            if e.get('triggered_by'):
+                continue
+            sample = samples.get(e[id_field])
+            if sample:
+                e['triggered_by'] = results.get(sample) or None
+    except (ClientError, BotoCoreError) as err:
+        log.warn("_fill_triggered_by", "batch_get failed; triggered_by left null",
+                 error=str(err))
 
 
 def _query_pipeline_by_date_range(pipeline_name: str, start: datetime, end: datetime):
@@ -495,7 +531,7 @@ def _query_pipeline_by_date_range(pipeline_name: str, start: datetime, end: date
                 date_str,
                 min_rows=Limits.MAX_STATS_ITEMS,
                 key_condition=Key('date').eq(date_str) & Key('pipeline_name').eq(pipeline_name),
-                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at',
+                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at, execution_name',
                 expr_names={'#d': 'date', '#s': 'status'}
             )
             items.extend(day_items)
@@ -600,7 +636,7 @@ def get_pipeline_executions(pipeline_name: str, event: Dict) -> Dict:
                 date_filter,
                 min_rows=Limits.MAX_STATS_ITEMS,
                 key_condition=Key('date').eq(date_filter) & Key('pipeline_name').eq(pipeline_name),
-                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at',
+                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at, execution_name',
                 expr_names={'#d': 'date', '#s': 'status'}
             )
         elif start_date_filter or end_date_filter:
@@ -620,12 +656,16 @@ def get_pipeline_executions(pipeline_name: str, event: Dict) -> Dict:
                 pipeline_name,
                 min_runs=safe_param_int(params, 'page_size', Limits.RUNS_PAGE_SIZE, 100),
                 before_date=params.get('before', '') or None,
-                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at',
+                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at, execution_name',
                 expr_names={'#d': 'date', '#s': 'status'}
             )
-        
+
         executions = _aggregate_executions(items)
-        
+
+        # Fetch triggered_by from base table (GSI INCLUDE doesn't project it).
+        # Pops _sample_exec_name from each execution as a side effect.
+        _fill_triggered_by(executions)
+
         # Reconcile running executions with SFN (verify still alive)
         _reconcile_running(executions, pipeline_name)
         
