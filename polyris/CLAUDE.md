@@ -174,3 +174,12 @@ values — those display strings will never match a real `asset_name` field.
 Use `_flatten_asset_names(node)` (from `polyris/assets.py`) wherever a flat list
 of leaf asset name strings is needed: EventBridge patterns, SFN Map `Items` for
 subscription registration. `asset_names` is for display/repr only.
+
+## `@dag` decorator must forward `**kwargs` to `DAG()`
+
+The `dag()` function in `helpers.py` accepts `**kwargs` to stay compatible with
+`DAG` fields added in the future. Every call to `DAG(...)` inside its `wrapper`
+must end with `**kwargs` — omitting it silently drops any field not listed
+explicitly in the decorator signature (e.g. `group`, `variables`, `doc_md`,
+`default_timeout`). The user sees no error; the field just resets to its
+dataclass default.

@@ -51,6 +51,24 @@ class TestDagDecorator:
 
         assert documented().description == "Doc-as-description."
 
+    def test_extra_kwargs_forwarded_to_dag(self):
+        """Extra kwargs accepted by @dag must be forwarded to DAG(), not silently dropped.
+
+        Fields like group, variables, doc_md, default_timeout are valid DAG fields
+        but are not listed explicitly in the dag() signature — they arrive via **kwargs.
+        Before the fix, **kwargs was accepted but never forwarded, so these fields
+        silently reverted to their DAG dataclass defaults.
+        """
+        @dag(dag_id="kwarg-test", schedule=None,
+             group="acme", variables={"env": "prod"}, doc_md="# Doc")
+        def my_etl():
+            pass
+
+        built = my_etl()
+        assert built.group == "acme"
+        assert built.variables == {"env": "prod"}
+        assert built.doc_md == "# Doc"
+
     def test_body_runs_inside_context_and_wires_deps(self):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)

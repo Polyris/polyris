@@ -150,12 +150,7 @@ def dag(
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **call_kwargs) -> DAG:
-            # Use function name as dag_id if not provided
-            nonlocal dag_id
-            if dag_id is None:
-                dag_id_value = func.__name__
-            else:
-                dag_id_value = dag_id
+            dag_id_value = func.__name__ if dag_id is None else dag_id
             
             # Create DAG
             dag_instance = DAG(
@@ -172,6 +167,7 @@ def dag(
                 owner=owner,
                 max_active_tasks=max_active_tasks,
                 max_active_runs=max_active_runs,
+                **kwargs,
             )
             
             # Enter DAG context and execute function
