@@ -84,6 +84,29 @@ After adding a member: run `python -m polyris.codegen.sync_enums` to regenerate
 the four downstream files. A bare string literal on either side (generator or
 template) fails `tests/sdk/test_task_config_contract.py`.
 
+## New wrapper input fields require three-file updates + snapshot regeneration
+
+Any field that must flow from the SDK through every task execution and be written to
+DynamoDB requires changes in **all three** of these places in the same commit:
+
+1. `generators.py` → `_build_wrapper_input` — include the field in the dict returned
+   for each task's SFN input.
+2. `sam/sfn_templates/dependency_wrapper/sfn.tpl.json` → `Arguments.Input` block of
+   the registration_helper call — thread the field through using JSONata so it is
+   forwarded to the helper SFN.
+3. `sam/sfn_templates/helpers/registration/sfn.tpl.json` → DDB `PutItem` — write the
+   field to the `pipeline-tokens` table so it is queryable later.
+
+Missing any one of the three means the field arrives in the SFN execution context but
+is never persisted, or is persisted but never populated, or is populated only for
+directly-started executions and not for SDK-generated ones.
+
+After changing `_build_wrapper_input`, regenerate snapshots:
+```bash
+SNAPSHOT_UPDATE=1 python -m pytest tests/sdk/test_asl_snapshots.py tests/sdk/test_asl_snapshots_steps.py
+python -m pytest tests/sdk/test_asl_snapshots.py  # verify
+```
+
 ## Tests pin AWS type contracts, not just values
 
 After adding a parameter that carries a specific AWS type (integer, float, boolean),

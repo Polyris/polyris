@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
-import { formatDuration, formatApiErrorMessage } from '../utils';
+import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
 import {
     Search,
     Inbox,
@@ -236,7 +236,7 @@ export function AllRunsView({
 
             <div className="card">
                 {loading ? (
-                    <TableSkeleton rows={10} cols={showBackfills ? 7 : 6} />
+                    <TableSkeleton rows={10} cols={showBackfills ? 8 : 7} />
                 ) : isError ? (
                     <EmptyState
                         icon={AlertTriangle}
@@ -263,6 +263,7 @@ export function AllRunsView({
                                 <SortableHeader label="Date" sortKey="date" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Duration" sortKey="duration_ms" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Started" sortKey="started_at" currentSort={sort} onSort={handleSort} />
+                                <th className="arv-table-cell">Trigger</th>
                                 {showBackfills && <th className="arv-table-cell">Backfill</th>}
                             </tr>
                         </thead>
@@ -310,6 +311,12 @@ export function AllRunsView({
                                     </td>
                                     <td className="p-md text-sm text-muted">
                                         {run.started_at ? new Date(run.started_at).toLocaleString() : '-'}
+                                    </td>
+                                    <td className="p-md text-sm text-muted">
+                                        {isBackfill ? '—' : (() => {
+                                            const label = formatTriggerSource(run.triggered_by);
+                                            return label ? <strong>{label}</strong> : <span className="text-muted">—</span>;
+                                        })()}
                                     </td>
                                     {showBackfills && (
                                         <td className="table-cell-mono">

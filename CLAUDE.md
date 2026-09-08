@@ -1259,6 +1259,15 @@ from dal import executions_repo, pipelines_repo
 # Never: repo.table.get_item(...)  — use repo.get(key)
 ```
 
+**GSI INCLUDE projections — back-fill missing fields via BatchGetItem, not N GetItem calls:**
+When a GSI uses `ProjectionType: INCLUDE` and a field is absent from `NonKeyAttributes`,
+fetch it from the base table with `executions_repo.batch_get_triggered_by`. The base
+table PK (`execution_name`) is physically stored in every GSI item and is returned when
+listed in `ProjectionExpression` — use it as the sample key. Never loop N individual
+`GetItem` calls; `batch_get_triggered_by` chunks at 100 (AWS BatchGetItem hard limit)
+and retries `UnprocessedKeys` automatically. New "back-fill" needs follow this same
+DAL-level BatchGetItem pattern.
+
 **Error handling:**
 ```python
 from botocore.exceptions import ClientError, BotoCoreError
@@ -1386,6 +1395,14 @@ make test-cov
 - Pure-logic core stays above the coverage floor (`fail_under` in `pyproject.toml`);
   raise the floor when you raise coverage (Principle #22). AWS/CLI modules are
   `omit`-ed and covered by e2e/smoke instead.
+- **`dal/__init__.py` submodule shadowing:** `dal/__init__.py` does
+  `from dal.executions_repo import executions_repo`, which replaces the `dal.executions_repo`
+  submodule attribute on the `dal` package with the singleton instance. Code like
+  `import dal.executions_repo as mod` returns the instance, not the module, so
+  `mocker.patch.object(mod, 'dynamodb', …)` raises `AttributeError`. Tests that need
+  to patch module-level globals on a `dal` submodule must use
+  `importlib.import_module('dal.executions_repo')` — that returns `sys.modules['dal.executions_repo']`,
+  the actual module object.
 
 ---
 

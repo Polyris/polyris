@@ -264,7 +264,8 @@
           "task_type": "{% $exists($states.input.task_type) ? $states.input.task_type : 'sfn' %}",
           "task_config": "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}",
           "outlets": "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}",
-          "wait_for": "{% $exists($states.input.wait_for) ? $states.input.wait_for : [] %}"
+          "wait_for": "{% $exists($states.input.wait_for) ? $states.input.wait_for : [] %}",
+          "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}"
         }
       },
       "Assign": {

@@ -28,6 +28,30 @@ class ExecutionsRepo:
 
     # ── Single-item operations ────────────────────────────────────────────
 
+    def batch_get_triggered_by(self, execution_names: list[str]) -> dict[str, str | None]:
+        """Fetch triggered_by for a batch of execution_names. Returns {name: value}.
+
+        Chunks at 100 (AWS limit) and retries UnprocessedKeys automatically.
+        """
+        unique = [n for n in set(execution_names) if n]
+        if not unique:
+            return {}
+        result: dict[str, str | None] = {}
+        # BatchGetItem hard limit: 100 keys per call.
+        for i in range(0, len(unique), 100):
+            pending = {
+                self._table_name: {
+                    'Keys': [{'execution_name': n} for n in unique[i:i + 100]],
+                    'ProjectionExpression': 'execution_name, triggered_by',
+                }
+            }
+            while pending:
+                response = dynamodb.batch_get_item(RequestItems=pending)
+                for item in response.get('Responses', {}).get(self._table_name, []):
+                    result[item['execution_name']] = item.get('triggered_by')
+                pending = response.get('UnprocessedKeys') or {}
+        return result
+
     def get(self, execution_name: str, consistent: bool = False) -> dict | None:
         """Get a single execution by execution_name."""
         kwargs = {'Key': {'execution_name': execution_name}}

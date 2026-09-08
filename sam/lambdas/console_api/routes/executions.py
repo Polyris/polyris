@@ -19,7 +19,7 @@ from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn
 from dal import executions_repo, pipelines_repo, backfills_repo
-from .pipelines_list import reconcile_sfn_status
+from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
 from dal.subscriptions_repo import dep_subscriptions_repo
 from constants import Limits, TASK_SETTLED_STATUSES, derive_execution_status
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
@@ -134,7 +134,7 @@ def _build_backfill_run_rows(
 
 
 _RUNS_PROJECTION = ('pipeline_execution, pipeline_execution_short, pipeline_name, '
-                    '#d, #s, started_at, finished_at')
+                    '#d, #s, started_at, finished_at, execution_name')
 _RUNS_EXPR_NAMES = {'#d': 'date', '#s': 'status'}
 
 
@@ -227,7 +227,8 @@ def get_all_runs(event: Dict) -> Dict:
                     'date': item.get('date'),
                     'started_at': item.get('started_at', ''),
                     'finished_at': item.get('finished_at', ''),
-                    'statuses': set()
+                    'statuses': set(),
+                    '_sample_exec_name': item.get('execution_name', ''),
                 }
             
             entry = exec_map[pe]
@@ -268,8 +269,13 @@ def get_all_runs(event: Dict) -> Dict:
                 'started_at': data['started_at'] or None,
                 'finished_at': data['finished_at'] or None,
                 'date': data['date'],
-                'duration_ms': duration_ms
+                'duration_ms': duration_ms,
+                '_sample_exec_name': data.get('_sample_exec_name', ''),
             })
+
+        # Fetch triggered_by from base table (GSI INCLUDE doesn't project it).
+        # Pops _sample_exec_name from each run as a side effect.
+        _fill_triggered_by(all_runs, id_field='pipeline_execution')
 
         # Drop what earlier pages already served before reconciling: a run newer than
         # the cursor cannot appear on this page, and reconciling it would spend an SFN
