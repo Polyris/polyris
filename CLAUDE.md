@@ -616,6 +616,16 @@ Three layered references, applied in this order when they conflict:
    - *Errors should never pass silently. Unless explicitly silenced.*
      Hard rule #4 above; restated here because it's the single biggest
      source of "wait, why didn't this fail" debugging sessions.
+     **Concrete form:** a bare `except SomeException: pass` without a
+     justification comment is a presumptive bug. Three legitimate cases:
+     (1) a defensive guard for a branch provably unreachable through the
+     public API — document why; (2) an optional dependency that may be
+     absent — log at debug level; (3) an explicit no-op (e.g. `except
+     RuntimeError: pass` guarding against dict mutation during iteration)
+     — add a comment explaining the scenario. Any other usage must log
+     or re-raise. Shipped example: `except SystemExit: pass` in
+     `_load_dag_from_file` silently swallowed `sys.exit(1)` from broken
+     pipeline files, making load errors invisible (fixed in PR #5).
    - *Special cases aren't special enough to break the rules. Although
      practicality beats purity.* Both matter; the second wins when the
      cost of "purity" is concrete and the cost of "practicality" is

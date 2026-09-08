@@ -854,14 +854,35 @@ def _load_dag_from_file(path: Path) -> list:
 
     try:
         spec.loader.exec_module(module)
-    except SystemExit:
-        pass
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        if code != 0:
+            print(f"❌ Error loading pipeline: exited with code {code}")
+            sys.exit(1)
+        # exit(0) is tolerated — treat as success
     except Exception as e:
         print(f"❌ Error loading pipeline: {e}")
         sys.exit(1)
 
-    # Collect all DAGs defined in the file
-    dags = [obj for obj in module.__dict__.values() if isinstance(obj, DAG)]
+    # Exclude DAGs that are merely imported from other modules.
+    # A DAG is "local" only if it is not referenced by any other currently-loaded module.
+    dags_in_other_modules: set = set()
+    for mod in list(sys.modules.values()):
+        if mod is None or mod is module or not hasattr(mod, '__dict__'):
+            continue
+        try:
+            for val in mod.__dict__.values():
+                if isinstance(val, DAG):
+                    dags_in_other_modules.add(id(val))
+        except RuntimeError:
+            pass
+
+    seen: set = set()
+    dags = []
+    for obj in module.__dict__.values():
+        if isinstance(obj, DAG) and id(obj) not in dags_in_other_modules and id(obj) not in seen:
+            seen.add(id(obj))
+            dags.append(obj)
     return dags
 
 
@@ -877,6 +898,7 @@ def _discover_dags_in_dir(dir_path: Path) -> "List[Tuple[Path, DAG]]":
     here, so it's caught as SystemExit and turned into "skip this file".
     """
     found: "List[Tuple[Path, DAG]]" = []
+    seen_dag_ids: dict = {}
     for py_file in sorted(dir_path.glob("*.py")):
         try:
             dags = _load_dag_from_file(py_file)
@@ -884,6 +906,13 @@ def _discover_dags_in_dir(dir_path: Path) -> "List[Tuple[Path, DAG]]":
             print(f"  ⚠️  Skipping {py_file} (failed to load)")
             continue
         for dag in dags:
+            if dag.dag_id in seen_dag_ids:
+                print(
+                    f"  ⚠️  Skipping duplicate dag_id '{dag.dag_id}' in {py_file.name} "
+                    f"(already defined in {seen_dag_ids[dag.dag_id].name})"
+                )
+                continue
+            seen_dag_ids[dag.dag_id] = py_file
             found.append((py_file, dag))
     return found
 
