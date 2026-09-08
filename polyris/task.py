@@ -521,7 +521,7 @@ class TaskDecorator:
         task_type: TaskTypeLiteral = "sfn",
         arn: Optional[str] = None,
         role: str = "same",
-        wait_before: int = 0,
+        wait_before: Optional[int] = None,
         retries: Optional[int] = None,
         retry_delay: Optional[timedelta] = None,
         retry_exponential_backoff: Optional[bool] = None,
@@ -529,7 +529,7 @@ class TaskDecorator:
         max_retry_delay: Optional[timedelta] = None,
         execution_timeout: Optional[timedelta] = None,
         orchestration_timeout: Optional[timedelta] = None,
-        trigger_rule: TriggerRuleLiteral = "all_success",
+        trigger_rule: Optional[TriggerRuleLiteral] = None,
         doc: Optional[str] = None,
         doc_md: Optional[str] = None,
         # Service-specific fields
@@ -563,7 +563,7 @@ class TaskDecorator:
         inlets: Optional[List[Any]] = None,
         wait_for: Optional[List[Any]] = None,  # Assets to wait for (pull-based)
         # Backfill behavior
-        skip_on_backfill: bool = False,
+        skip_on_backfill: Optional[bool] = None,
     ) -> Union[Task, Callable]:
         """Internal method to create Task with all parameters."""
         
@@ -610,10 +610,16 @@ class TaskDecorator:
                     orchestration_timeout if orchestration_timeout is not None
                     else default_args.get('orchestration_timeout')
                 ),
-                trigger_rule=trigger_rule,
+                trigger_rule=(
+                    trigger_rule if trigger_rule is not None
+                    else default_args.get('trigger_rule', 'all_success')
+                ),
                 doc=docstring,
                 doc_md=doc_md or "",
-                wait_before=wait_before,
+                wait_before=(
+                    wait_before if wait_before is not None
+                    else default_args.get('wait_before', 0)
+                ),
                 # Lambda-specific
                 function_name=function_name,
                 payload=payload,
@@ -650,7 +656,10 @@ class TaskDecorator:
                 inlets=inlets or [],
                 wait_for=wait_for or [],
                 # Backfill
-                skip_on_backfill=skip_on_backfill,
+                skip_on_backfill=(
+                    skip_on_backfill if skip_on_backfill is not None
+                    else default_args.get('skip_on_backfill', False)
+                ),
             )
             
             # Register with current DAG

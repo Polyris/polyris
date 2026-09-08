@@ -175,6 +175,33 @@ Use `_flatten_asset_names(node)` (from `polyris/assets.py`) wherever a flat list
 of leaf asset name strings is needed: EventBridge patterns, SFN Map `Items` for
 subscription registration. `asset_names` is for display/repr only.
 
+## `_create_task` parameters that support `default_args` must default to `None`
+
+Any parameter in `_create_task` that should fall back to `default_args` when not
+explicitly passed **must** have `Optional[...] = None` as its signature default —
+never a concrete value like `0`, `False`, or `"all_success"`.
+
+A non-None default makes `param is not None` always `True`, so the
+`default_args.get(...)` fallback is never reached — the user's DAG-level default is
+silently ignored with no error.
+
+The pattern to follow:
+
+```python
+# Signature — None means "caller did not pass this"
+trigger_rule: Optional[TriggerRuleLiteral] = None,
+
+# Task constructor — fall back to default_args, then the hardcoded default
+trigger_rule=(
+    trigger_rule if trigger_rule is not None
+    else default_args.get('trigger_rule', 'all_success')
+),
+```
+
+Fields affected historically: `trigger_rule`, `wait_before`, `skip_on_backfill`
+(fixed in PR #22). Apply this pattern to every new `_create_task` parameter whose
+value a user might want to set via `DAG(default_args={...})`.
+
 ## `@dag` decorator must forward `**kwargs` to `DAG()`
 
 The `dag()` function in `helpers.py` accepts `**kwargs` to stay compatible with
