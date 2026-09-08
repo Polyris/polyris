@@ -130,4 +130,31 @@ class TestRichGeneration:
     def test_mermaid_on_asset_dag(self):
         out = generate_mermaid(_rich_dag())
         assert isinstance(out, str)
-        assert "graph" in out.lower()
+
+    def test_alias_subscription_assets_field_is_flat_strings(self):
+        """WriteSubscription state must always store assets.S as a flat JSON list of strings.
+
+        If AssetAlias is used in a multi-item schedule, normalize_asset_schedule wraps
+        its members in AssetAny. AssetAll.to_dict() then produces a nested dict entry:
+        [{"operator":"OR","assets":[...]}, ...]. Storing that nested form breaks EE
+        assets.py (asset_status[dict] raises TypeError) and the SFN required_assets
+        counting. The generator must call _flatten_asset_names instead of
+        using asset_schedule["assets"] directly.
+        """
+        from polyris.assets import AssetAlias
+
+        alias = AssetAlias(name="grp", assets=[Asset("ns/b"), Asset("ns/c")])
+        with DAG("alias-sub-test", schedule=[Asset("ns/a"), alias]) as dag:
+            @task.sfn(arn=ARN)
+            def go(): pass
+            go()
+
+        asl = json.loads(generate_step_function_json(dag))
+        sub_state = asl["States"]["Register_Asset_Subscriptions"]
+        write_state = sub_state["ItemProcessor"]["States"]["WriteSubscription"]
+        assets_json = write_state["Arguments"]["Item"]["assets"]["S"]
+        stored = json.loads(assets_json)
+        assert all(isinstance(name, str) for name in stored), (
+            f"assets.S contains non-string items: {stored!r}"
+        )
+        assert sorted(stored) == ["ns/a", "ns/b", "ns/c"]

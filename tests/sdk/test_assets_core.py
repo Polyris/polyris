@@ -50,6 +50,20 @@ class TestAssetCore:
     def test_repr(self):
         assert repr(Asset("ns/x")) == "Asset('ns/x')"
 
+    def test_s3_uri_derived_name_includes_bucket(self):
+        """Name derived from S3 URI must include the bucket to avoid cross-bucket collisions."""
+        a = Asset("s3://bucket-a/orders/")
+        assert a.name == "bucket-a/orders"
+        assert a.uri == "s3://bucket-a/orders/"
+
+    def test_different_buckets_same_path_are_distinct(self):
+        """Two S3 URIs with the same path but different buckets must be unequal assets."""
+        a = Asset("s3://bucket-a/orders/")
+        b = Asset("s3://bucket-b/orders/")
+        assert a != b
+        assert a.name != b.name
+        assert hash(a) != hash(b)
+
     def test_and_creates_assetall(self):
         a, b = Asset("ns/a"), Asset("ns/b")
         combined = a & b
@@ -369,9 +383,23 @@ class TestNormalizeAssetSchedule:
         assert res.asset_names == ["ns/a", "ns/b"]
 
     def test_alias_expanded_in_multi_list(self):
+        """Multi-item list with alias: alias wraps into AssetAny (OR), not extends (AND)."""
         res = normalize_asset_schedule([Asset("ns/a"), AssetAlias(name="x", assets=[Asset("s/us")])])
         assert isinstance(res, AssetAll)
-        assert res.asset_names == ["ns/a", "s/us"]
+        assert len(res.assets) == 2
+        assert isinstance(res.assets[1], AssetAny)
+
+    def test_alias_or_semantics_preserved_in_multi_item_list(self):
+        """[alias, a] must yield AssetAll([AssetAny([b, c]), a]), not AssetAll([b, c, a]).
+        Extending the alias's assets into the AND list inverts OR to AND — only triggers
+        when ALL alias members AND the other asset fire, instead of ANY alias member."""
+        alias = AssetAlias(name="grp", assets=[Asset("ns/b"), Asset("ns/c")])
+        res = normalize_asset_schedule([Asset("ns/a"), alias])
+        assert isinstance(res, AssetAll)
+        assert len(res.assets) == 2
+        assert isinstance(res.assets[1], AssetAny)
+        assert res.assets[1].asset_names == ["ns/b", "ns/c"]
+        assert res.assets[0].name == "ns/a"
 
     def test_nested_assetall_in_list_is_flattened(self):
         """AND is associative: [a, AssetAll([b, c])] must flatten to a single
@@ -453,6 +481,37 @@ class TestModuleHelpers:
         assert info["operator"] == "OR"
         # AssetAll member is flattened into individual names.
         assert info["eventbridge_rule_pattern"]["detail"]["asset_name"] == ["ns/a", "ns/b", "ns/c"]
+
+    def test_eventbridge_pattern_flattens_nested_assetany_in_and(self):
+        """AssetAll with a nested AssetAny must produce flat leaf names in the
+        EventBridge pattern, not the display string '(ns/b | ns/c)'."""
+        dag_ns = SimpleNamespace(schedule=[Asset("ns/a"), Asset("ns/b") | Asset("ns/c")])
+        info = get_asset_schedule_info(dag_ns)
+        assert info["eventbridge_rule_pattern"]["detail"]["asset_name"] == ["ns/a", "ns/b", "ns/c"]
+
+    def test_alias_subscription_assets_field_is_flat_strings(self):
+        """assets.S written to DDB subscription rows must be a flat list of strings.
+
+        AssetAlias in a multi-item list produces a nested AssetAny inside AssetAll.
+        to_dict() serialises that as [{"operator":"OR","assets":[...]},...], which
+        is unhashable — iterating it and using elements as dict keys crashes (EE
+        assets.py asset_status[asset] = ...). _flatten_asset_names must be used to
+        keep assets.S flat so every consumer can treat list items as plain strings.
+        """
+        from polyris.assets import _flatten_asset_names
+        from polyris import DAG, task as task_mod
+
+        ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+        alias = AssetAlias(name="grp", assets=[Asset("ns/b"), Asset("ns/c")])
+        with DAG("test-alias-flat", schedule=[Asset("ns/a"), alias]) as dag:
+            @task_mod.sfn(arn=ARN)
+            def go(): pass
+            go()
+
+        flat = _flatten_asset_names(dag._asset_schedule)
+        # Must be a flat list of strings — no dicts allowed
+        assert all(isinstance(name, str) for name in flat), f"Non-string in flat: {flat}"
+        assert sorted(flat) == ["ns/a", "ns/b", "ns/c"]
 
 
 # ============================================================ #
