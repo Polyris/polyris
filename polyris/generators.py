@@ -23,7 +23,7 @@ from .steps import (
     Step, Wait, Pass, Succeed, LambdaTask, DynamoDBTask, SNSTask, SQSTask,
     S3Task, GlueTask, AthenaTask, ECSTask, EventBridgeTask, BedrockTask, HttpTask,
 )
-from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny
+from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
 
 
@@ -1305,7 +1305,7 @@ def _build_registration_chain(
         states["Register_Asset_Subscriptions"] = {
             "Type": "Map",
             "Comment": "Register subscription for each asset (enables Query instead of Scan)",
-            "Items": asset_schedule["assets"],
+            "Items": _flatten_asset_names(dag._asset_schedule),
             "MaxConcurrency": 10,
             "ItemProcessor": {
                 "ProcessorConfig": {"Mode": "INLINE"},
@@ -1321,7 +1321,7 @@ def _build_registration_chain(
                                 "pipeline_name": {"S": dag.dag_id},
                                 "sfn_arn": {"S": JSONATA_SFN_ARN},
                                 "operator": {"S": asset_schedule.get("operator", "AND")},
-                                "assets": {"S": json.dumps(asset_schedule["assets"])},
+                                "assets": {"S": json.dumps(_flatten_asset_names(dag._asset_schedule))},
                                 "registered_at": {"S": JSONATA_NOW}
                             }
                         },

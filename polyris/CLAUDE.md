@@ -143,3 +143,34 @@ assert isinstance(task_config[TaskConfigKey.NUMBER_OF_WORKERS], int)
 
 Test against `_build_task_config_and_arn` directly — no jsonata dependency needed
 for type contract tests.
+
+## Asset name derivation: keep the bucket, never strip it
+
+`Asset("s3://bucket/path/")` must derive `name = "bucket/path"`, not `"path"`.
+Stripping everything up to and including the first `/` after `://` means two
+different buckets with the same key path produce identical names — they compare
+equal, hash equal, and cross-wire in dependency graphs with no error.
+
+The rule: `name = uri.rstrip('/').split('://')[-1]` and stop. Do not call
+`.split('/', 1)[1]` or any equivalent that discards the bucket component.
+
+## AssetAlias in a multi-item list wraps in AssetAny, never extends
+
+In `normalize_asset_schedule`, when an `AssetAlias` appears inside a list with
+other items, append `AssetAny(assets=item.assets)` to the outer `AssetAll`.
+Never call `assets.extend(item.assets)`.
+
+Why: `AssetAlias` semantics are OR — the pipeline triggers when ANY member fires.
+`extend` flattens the alias assets into the outer AND list, silently inverting
+the operator: `[alias, a]` becomes `AssetAll([b, c, a])` instead of
+`AssetAll([AssetAny([b, c]), a])`.
+
+## EventBridge patterns use `_flatten_asset_names`, never `asset_names`
+
+`AssetAll.asset_names` formats nested `AssetAny` groups as display strings like
+`"(ns/b | ns/c)"`. EventBridge event pattern matching requires exact string
+values — those display strings will never match a real `asset_name` field.
+
+Use `_flatten_asset_names(node)` (from `polyris/assets.py`) wherever a flat list
+of leaf asset name strings is needed: EventBridge patterns, SFN Map `Items` for
+subscription registration. `asset_names` is for display/repr only.

@@ -309,14 +309,9 @@ class Asset:
         
         # Derive name from uri if not provided
         if name is None and uri is not None:
-            # Extract meaningful name from uri
-            # s3://bucket/path/to/data/ -> path/to/data
+            # Extract meaningful name from uri, keeping the bucket to avoid
+            # cross-bucket collisions: s3://bucket/path/to/data/ -> bucket/path/to/data
             name = uri.rstrip('/').split('://')[-1]
-            if '/' in name:
-                # Remove bucket name for s3/gs urls
-                parts = name.split('/', 1)
-                if len(parts) > 1:
-                    name = parts[1]
         
         # Derive uri from name if not provided (just use name as identifier)
         if uri is None:
@@ -1388,8 +1383,9 @@ def normalize_asset_schedule(schedule: Optional[AssetSchedule]) -> Union[AssetAl
             if isinstance(item, AssetAll):
                 assets.extend(item.assets)
             elif isinstance(item, AssetAlias):
-                # Expand alias assets
-                assets.extend(item.assets)
+                # Wrap alias assets in AssetAny — alias semantics are OR (trigger on
+                # any member). Extending into the outer AssetAll would invert to AND.
+                assets.append(AssetAny(assets=cast("List[Union[AssetOperand, AssetAll]]", item.assets)))
             elif isinstance(item, AssetAny):
                 # Mixed operators in list - keep as a nested OR-group operand
                 assets.append(item)
@@ -1416,6 +1412,21 @@ def is_asset_triggered(dag: 'DAG') -> bool:
     return isinstance(schedule, (Asset, AssetAll, AssetAny, list))
 
 
+def _flatten_asset_names(node: Any) -> List[str]:
+    """Recursively collect all leaf asset names for EventBridge pattern matching.
+
+    Unlike ``asset_names``, which formats nested groups as display strings like
+    ``'(ns/b | ns/c)'``, this function returns only plain name strings — the only
+    form EventBridge event patterns can match against.
+    """
+    if isinstance(node, (AssetAll, AssetAny)):
+        result: List[str] = []
+        for child in node.assets:
+            result.extend(_flatten_asset_names(child))
+        return result
+    return [node.name]
+
+
 def get_asset_schedule_info(dag: 'DAG') -> Optional[Dict[str, Any]]:
     """
     Get asset schedule information for a DAG.
@@ -1435,37 +1446,17 @@ def get_asset_schedule_info(dag: 'DAG') -> Optional[Dict[str, Any]]:
     
     result = normalized.to_dict()
     
-    # Add EventBridge pattern
-    if isinstance(normalized, AssetAll):
-        # AND logic: Need to track state, trigger when all ready
-        result["eventbridge_rule_pattern"] = {
-            "source": ["polyris.assets"],
-            "detail-type": ["Asset Materialized"],
-            "detail": {
-                "asset_name": normalized.asset_names
-            }
+    # Add EventBridge pattern. Both AND and OR logic need a flat list of leaf
+    # asset names — EventBridge event patterns match on exact string values, so
+    # any display-format strings like '(ns/b | ns/c)' would never match a real
+    # event. _flatten_asset_names recurses through all nested AND/OR groups.
+    result["eventbridge_rule_pattern"] = {
+        "source": ["polyris.assets"],
+        "detail-type": ["Asset Materialized"],
+        "detail": {
+            "asset_name": _flatten_asset_names(normalized)
         }
-    elif isinstance(normalized, AssetAny):
-        # OR logic: Trigger on any. EventBridge event patterns match on the
-        # literal asset_name field, so AssetRef/AssetConsecutiveRef
-        # contribute their underlying asset's .name here (not their full
-        # to_dict(), which carries freshness/consecutive info that has no
-        # meaning for pattern-matching an incoming event) — same as a plain
-        # Asset. A nested AssetAll is flattened into its member names so the
-        # EventBridge pattern is a flat array, not a nested structure.
-        flat_names = []
-        for a in normalized.assets:
-            if isinstance(a, AssetAll):
-                flat_names.extend(a.asset_names)
-            else:
-                flat_names.append(a.name)
-        result["eventbridge_rule_pattern"] = {
-            "source": ["polyris.assets"],
-            "detail-type": ["Asset Materialized"],
-            "detail": {
-                "asset_name": flat_names
-            }
-        }
+    }
     
     return result
 
