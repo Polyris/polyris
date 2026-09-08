@@ -9,7 +9,6 @@ module object for patching `dynamodb`.
 """
 import importlib
 import pytest
-from botocore.exceptions import ClientError
 
 
 @pytest.fixture
