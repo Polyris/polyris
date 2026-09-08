@@ -76,7 +76,7 @@ class TestTaskGroupMembership:
                     pass
                 a()
 
-                with TaskGroup("inner") as inner:
+                with TaskGroup("inner"):
                     @task.sfn(arn=ARN)
                     def b():
                         pass
