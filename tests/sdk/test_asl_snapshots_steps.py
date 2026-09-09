@@ -776,6 +776,66 @@ def test_task_depending_on_direct_step_raises():
         generate_step_function_json(dag)
 
 
+def test_wrapper_step_lambda_retries_appear_in_task_config():
+    """LambdaTask(retries=N) used as a wrapper step must carry RETRIES and RETRY_DELAY
+    in the generated task_config — parity guard against drift from _build_task_config_and_arn."""
+    from polyris import DAG, LambdaTask
+    from polyris.generators import generate_step_function_json
+    from polyris.constants import TaskConfigKey
+
+    with DAG("step_retries_parity", schedule=None) as dag:
+        LambdaTask(
+            step_id="fn_with_retries",
+            function_arn="arn:aws:lambda:us-east-1:123:function:fn",
+            retries=3,
+            retry_interval=5,
+        )
+
+    asl = json.loads(generate_step_function_json(dag))
+
+    for state in asl["States"].values():
+        if state.get("Type") == "Parallel":
+            for branch in state["Branches"]:
+                if "fn_with_retries" in branch["StartAt"]:
+                    tc = branch["States"][branch["StartAt"]]["Arguments"]["Input"]["task_config"]
+                    assert tc[TaskConfigKey.RETRIES.value] == 3, (
+                        "LambdaTask wrapper step must carry retries=3 in task_config"
+                    )
+                    assert tc[TaskConfigKey.RETRY_DELAY.value] == 5, (
+                        "LambdaTask wrapper step must carry retry_delay=5 in task_config"
+                    )
+                    return
+
+    pytest.fail("fn_with_retries wrapper branch not found")
+
+
+def test_wrapper_step_lambda_without_retries_has_no_retry_keys():
+    """LambdaTask(retries=0) wrapper step must NOT include RETRIES in task_config."""
+    from polyris import DAG, LambdaTask
+    from polyris.generators import generate_step_function_json
+    from polyris.constants import TaskConfigKey
+
+    with DAG("step_no_retries", schedule=None) as dag:
+        LambdaTask(
+            step_id="fn_no_retries",
+            function_arn="arn:aws:lambda:us-east-1:123:function:fn",
+        )
+
+    asl = json.loads(generate_step_function_json(dag))
+
+    for state in asl["States"].values():
+        if state.get("Type") == "Parallel":
+            for branch in state["Branches"]:
+                if "fn_no_retries" in branch["StartAt"]:
+                    tc = branch["States"][branch["StartAt"]]["Arguments"]["Input"]["task_config"]
+                    assert TaskConfigKey.RETRIES.value not in tc, (
+                        "LambdaTask with no retries must not add RETRIES key to task_config"
+                    )
+                    return
+
+    pytest.fail("fn_no_retries wrapper branch not found")
+
+
 # ============================================================
 # Runner
 # ============================================================
