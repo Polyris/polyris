@@ -95,6 +95,21 @@ WRAPPER_STEP_TYPES = frozenset({'lambda', 'glue', 'ecs', 'athena'})
 # Step types tracked in DAG visualization (business logic, not infrastructure)
 TRACKED_STEP_TYPES = frozenset({'glue', 'ecs', 'athena'})
 
+# Standard retry for AWS SDK integration states (DynamoDB throttling / transient errors).
+# Used by all DynamoDB write states in _build_registration_chain.
+_STANDARD_DYNAMODB_RETRY: Dict[str, Any] = {
+    "ErrorEquals": [
+        "DynamoDB.ProvisionedThroughputExceededException",
+        "DynamoDB.ThrottlingException",
+        "DynamoDB.InternalServerError",
+        "States.Timeout"
+    ],
+    "IntervalSeconds": 1,
+    "MaxAttempts": 3,
+    "BackoffRate": 2,
+    "JitterStrategy": "FULL"
+}
+
 
 def _make_execution_name_expr(task_id: str) -> str:
     """Build JSONata expression for deterministic SFN child execution Name.
@@ -817,6 +832,32 @@ def _build_wrapper_input(
     return wrapper_input
 
 
+def _add_retry_config(
+    task_config: Dict[TaskConfigKey, Any],
+    retries: int,
+    retry_delay: int,
+    retry_exponential_backoff: bool = False,
+    max_retry_delay: Optional[int] = None,
+    retry_jitter: bool = False,
+) -> None:
+    """Thread retry policy fields into task_config in-place.
+
+    Single source of truth for the retry contract: called by both
+    _build_task_config_and_arn (Task path) and _build_step_branch
+    (wrapper-step path) so they cannot drift apart.
+    """
+    if not retries:
+        return
+    task_config[TaskConfigKey.RETRIES] = retries
+    task_config[TaskConfigKey.RETRY_DELAY] = retry_delay
+    if retry_exponential_backoff:
+        task_config[TaskConfigKey.RETRY_BACKOFF] = True
+        if max_retry_delay is not None:
+            task_config[TaskConfigKey.MAX_RETRY_DELAY] = max_retry_delay
+    if retry_jitter:
+        task_config[TaskConfigKey.RETRY_JITTER] = True
+
+
 def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], str]:
     """Build task_config (task-type-specific settings + retry policy) and
     resolve task_arn for task types (lambda) that derive it from a
@@ -893,15 +934,14 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
     # (ADR #107). When absent, the wrapper's Check_Should_Retry defaults to 0, so
     # no-retry tasks keep their existing contract untouched (including sfn's empty
     # one) and incur no snapshot churn; sfn tasks with retries opt in uniformly.
-    if task.retries:
-        task_config[TaskConfigKey.RETRIES] = task.retries
-        task_config[TaskConfigKey.RETRY_DELAY] = task.retry_delay_seconds
-        if task.retry_exponential_backoff:
-            task_config[TaskConfigKey.RETRY_BACKOFF] = True
-            if task.max_retry_delay_seconds is not None:
-                task_config[TaskConfigKey.MAX_RETRY_DELAY] = task.max_retry_delay_seconds
-        if task.retry_jitter:
-            task_config[TaskConfigKey.RETRY_JITTER] = True
+    _add_retry_config(
+        task_config,
+        task.retries,
+        task.retry_delay_seconds,
+        task.retry_exponential_backoff,
+        task.max_retry_delay_seconds,
+        task.retry_jitter,
+    )
 
     return task_config, task_arn
 
@@ -1052,7 +1092,16 @@ def _build_step_branch(step: Step, dag: DAG, wrapper_arn: str) -> Dict:
                 TaskConfigKey.OUTPUT_LOCATION: step.output_location,
                 TaskConfigKey.WORKGROUP: step.workgroup
             }
-        
+
+        # Include retry policy from step (same contract as _build_task_config_and_arn for Task).
+        # LambdaTask(Step) uses retry_interval; other wrapper step types currently carry no
+        # retry fields, so getattr defaults keep them out of the config.
+        _add_retry_config(
+            task_config,
+            getattr(step, 'retries', 0),
+            getattr(step, 'retry_interval', 1),
+        )
+
         # For lambda, task_arn is function_arn
         task_arn = getattr(step, 'function_arn', '') or getattr(step, 'task_arn', '') or step.step_id
         
@@ -1211,10 +1260,16 @@ def _build_registration_chain(
     asset_subscriptions_table: str,
 ) -> Tuple[Dict, str]:
     """Build the registration state chain that runs before tasks.
-    
+
     Produces states: Define_Inputs (optional) → Register_Pipeline →
-    Save_DAG_Snapshot → Register_Asset_Subscriptions (optional) →
+    [Warn_Registration_Failed] → Save_DAG_Snapshot → [Warn_Snapshot_Failed] →
+    Register_Asset_Subscriptions (optional, with WriteSubscription +
+    Warn_WriteSubscription_Failed + Subscription_Skipped inside its Map) →
     Check_Register_Only / Registration_Complete
+
+    Each DynamoDB write carries _STANDARD_DYNAMODB_RETRY and a Catch that routes
+    to a Warn_* state writing a _notify_warn_ record before continuing, so a
+    ThrottlingException degrades to a UI notification rather than killing the run.
     
     Args:
         dag: DAG for metadata (dag_id, description, variables, schedule)
@@ -1234,12 +1289,12 @@ def _build_registration_chain(
     """
     states: Dict[str, Any] = {}
     start_at = "Register_Pipeline"
-    
+
     # Define_Inputs if variables are defined
     if dag.variables:
         start_at = "Define_Inputs"
         variables_output = {var_name: var_expr for var_name, var_expr in dag.variables.items()}
-        
+
         states["Define_Inputs"] = {
             "Type": "Pass",
             "Comment": "Compute pipeline variables (e.g. current_date, execution_id)",
@@ -1254,7 +1309,10 @@ def _build_registration_chain(
             },
             "Next": "Register_Pipeline"
         }
-    
+
+    # Compute next state after Save_DAG_Snapshot (used for both success and warn paths)
+    _after_snapshot = "Register_Asset_Subscriptions" if asset_schedule.get("assets") else "Check_Register_Only"
+
     # Register_Pipeline — registers DAG metadata on each execution
     states["Register_Pipeline"] = {
         "Type": "Task",
@@ -1276,9 +1334,44 @@ def _build_registration_chain(
             }
         },
         "Output": JSONATA_PASS_INPUT,
+        "Retry": [_STANDARD_DYNAMODB_RETRY],
+        "Catch": [{
+            "ErrorEquals": ["States.ALL"],
+            "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
+            "Next": "Warn_Registration_Failed"
+        }],
         "Next": "Save_DAG_Snapshot"
     }
-    
+
+    # Warn_Registration_Failed — writes a _notify_warn_ record so the UI shows the failure
+    states["Warn_Registration_Failed"] = {
+        "Type": "Task",
+        "Comment": "Write register failure to UI notifications",
+        "Resource": "arn:aws:states:::dynamodb:putItem",
+        "Arguments": {
+            "TableName": tokens_table,
+            "Item": {
+                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-register_pipeline' %}"},
+                "pipeline_name": {"S": dag.dag_id},
+                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
+                "task_name": {"S": "Register_Pipeline"},
+                "date": {"S": JSONATA_DATE},
+                "status": {"S": "failed"},
+                "error": {"S": "{% 'Register_Pipeline failed: ' & $string($states.input._registration_error) %}"},
+                "finished_at": {"S": JSONATA_NOW},
+                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
+            }
+        },
+        "Output": "{% $sift($states.input, function($v, $k) { $k != '_registration_error' }) %}",
+        "Retry": [_STANDARD_DYNAMODB_RETRY],
+        "Catch": [{
+            "ErrorEquals": ["States.ALL"],
+            "Output": "{% $sift($states.input, function($v, $k) { $k != '_registration_error' }) %}",
+            "Next": "Save_DAG_Snapshot"
+        }],
+        "Next": "Save_DAG_Snapshot"
+    }
+
     # Save DAG snapshot per execution — ensures UI shows correct DAG for each run
     # even after pipeline definition changes (key = dag_snapshot::{execution_name})
     states["Save_DAG_Snapshot"] = {
@@ -1297,9 +1390,44 @@ def _build_registration_chain(
             }
         },
         "Output": JSONATA_PASS_INPUT,
-        "Next": "Register_Asset_Subscriptions" if asset_schedule.get("assets") else "Check_Register_Only"
+        "Retry": [_STANDARD_DYNAMODB_RETRY],
+        "Catch": [{
+            "ErrorEquals": ["States.ALL"],
+            "Output": "{% $merge([$states.input, {'_snapshot_error': $states.errorOutput.Cause}]) %}",
+            "Next": "Warn_Snapshot_Failed"
+        }],
+        "Next": _after_snapshot
     }
-    
+
+    # Warn_Snapshot_Failed — writes a _notify_warn_ record and continues to next state
+    states["Warn_Snapshot_Failed"] = {
+        "Type": "Task",
+        "Comment": "Write snapshot failure to UI notifications",
+        "Resource": "arn:aws:states:::dynamodb:putItem",
+        "Arguments": {
+            "TableName": tokens_table,
+            "Item": {
+                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"},
+                "pipeline_name": {"S": dag.dag_id},
+                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
+                "task_name": {"S": "Save_DAG_Snapshot"},
+                "date": {"S": JSONATA_DATE},
+                "status": {"S": "failed"},
+                "error": {"S": "{% 'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error) %}"},
+                "finished_at": {"S": JSONATA_NOW},
+                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
+            }
+        },
+        "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
+        "Retry": [_STANDARD_DYNAMODB_RETRY],
+        "Catch": [{
+            "ErrorEquals": ["States.ALL"],
+            "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
+            "Next": _after_snapshot
+        }],
+        "Next": _after_snapshot
+    }
+
     # Asset subscription registration for asset-triggered pipelines
     if asset_schedule.get("assets"):
         states["Register_Asset_Subscriptions"] = {
@@ -1326,14 +1454,50 @@ def _build_registration_chain(
                             }
                         },
                         "Output": "{% null %}",
+                        "Retry": [_STANDARD_DYNAMODB_RETRY],
+                        "Catch": [{
+                            "ErrorEquals": ["States.ALL"],
+                            "Output": "{% {'_asset_name': $states.input, '_subscription_error': $states.errorOutput.Cause} %}",
+                            "Next": "Warn_WriteSubscription_Failed"
+                        }],
                         "End": True
+                    },
+                    "Warn_WriteSubscription_Failed": {
+                        "Type": "Task",
+                        "Comment": "Write subscription failure to UI notifications",
+                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Arguments": {
+                            "TableName": tokens_table,
+                            "Item": {
+                                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-write_subscription-' & $string($states.input._asset_name) %}"},
+                                "pipeline_name": {"S": dag.dag_id},
+                                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
+                                "task_name": {"S": "WriteSubscription"},
+                                "date": {"S": JSONATA_DATE},
+                                "status": {"S": "failed"},
+                                "error": {"S": "{% 'WriteSubscription failed for ' & $string($states.input._asset_name) & ': ' & $string($states.input._subscription_error) %}"},
+                                "finished_at": {"S": JSONATA_NOW},
+                                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
+                            }
+                        },
+                        "Output": "{% null %}",
+                        "Retry": [_STANDARD_DYNAMODB_RETRY],
+                        "Catch": [{
+                            "ErrorEquals": ["States.ALL"],
+                            "Output": "{% null %}",
+                            "Next": "Subscription_Skipped"
+                        }],
+                        "End": True
+                    },
+                    "Subscription_Skipped": {
+                        "Type": "Succeed"
                     }
                 }
             },
             "Output": JSONATA_PASS_INPUT,
             "Next": "Check_Register_Only"
         }
-    
+
     # Check if this is a registration-only run
     states["Check_Register_Only"] = {
         "Type": "Choice",
@@ -1344,12 +1508,12 @@ def _build_registration_chain(
         }],
         "Default": "Run_All_Tasks"
     }
-    
+
     states["Registration_Complete"] = {
         "Type": "Succeed",
         "Comment": "Registration completed without running tasks"
     }
-    
+
     return states, start_at
 
 

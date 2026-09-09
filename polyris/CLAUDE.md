@@ -210,3 +210,32 @@ must end with `**kwargs` — omitting it silently drops any field not listed
 explicitly in the decorator signature (e.g. `group`, `variables`, `doc_md`,
 `default_timeout`). The user sees no error; the field just resets to its
 dataclass default.
+
+## All DynamoDB write states in `_build_registration_chain` must carry Retry + Catch
+
+`Register_Pipeline`, `Save_DAG_Snapshot`, and `WriteSubscription` (inside
+`Register_Asset_Subscriptions` Map) are all DynamoDB `putItem` states.
+A `ThrottlingException` on any of them aborts the entire registration flow
+before tasks start and, without a `_notify_warn_` Catch path, the failure is
+invisible in the UI.
+
+Every DynamoDB SDK integration state in `_build_registration_chain` must:
+1. Carry `_STANDARD_DYNAMODB_RETRY` in its `Retry` block.
+2. Carry a `Catch` that routes to its corresponding `Warn_*` state, which
+   writes a `_notify_warn_` record to `tokens_table` and then continues
+   to the next registration step rather than failing the execution.
+
+`_STANDARD_DYNAMODB_RETRY` (a module-level constant in `generators.py`) is the
+single shared definition — don't inline a one-off retry dict.
+
+## Wrapper step retry policy lives in `_add_retry_config`, not duplicated inline
+
+`_build_task_config_and_arn` (Task path) and `_build_step_branch` (wrapper-step
+path) must both call `_add_retry_config` to thread the retry contract into
+`task_config`. Never inline the `if task.retries: task_config[...] = ...` block
+again — that's the duplication that caused `LambdaTask(retries=3)` used as a
+wrapper step to silently receive zero retries.
+
+When adding new retry-related fields to `task_config` (new `TaskConfigKey`
+members): update `_add_retry_config` only, and both paths pick up the change
+automatically.

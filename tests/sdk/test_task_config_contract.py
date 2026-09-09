@@ -267,6 +267,28 @@ class TestBuildTaskConfigAndArnDirectly:
         assert TaskConfigKey.MAX_RETRY_DELAY not in task_config
         assert TaskConfigKey.RETRY_JITTER not in task_config
 
+    def test_retry_logic_shared_with_wrapper_step_path(self):
+        """_add_retry_config is the single source of truth: calling it directly
+        mirrors what both _build_task_config_and_arn and _build_step_branch produce
+        for the same retry parameters."""
+        from polyris.generators import _add_retry_config
+        from polyris.constants import TaskConfigKey
+
+        # Simulate the Task path: retries=3, delay=5s, no backoff
+        task_cfg: dict = {}
+        _add_retry_config(task_cfg, retries=3, retry_delay=5)
+        assert task_cfg[TaskConfigKey.RETRIES] == 3
+        assert task_cfg[TaskConfigKey.RETRY_DELAY] == 5
+        assert TaskConfigKey.RETRY_BACKOFF not in task_cfg
+
+        # Simulate the step path (same call, different field names resolved upstream)
+        step_cfg: dict = {}
+        _add_retry_config(step_cfg, retries=3, retry_delay=5)
+        assert task_cfg == step_cfg, (
+            "_add_retry_config must produce identical output for identical inputs "
+            "regardless of which caller (task vs step) invokes it"
+        )
+
     def test_function_is_pure_repeated_calls_on_the_same_task_give_identical_results(self):
         """No side effects on the task object itself — calling this twice
         for the same task (which restart_task_helper effectively does

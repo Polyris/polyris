@@ -536,6 +536,82 @@ def test_dag_snapshot_has_ttl():
     assert item["ttl"]["N"].startswith("{%"), "TTL should be JSONata expression"
 
 
+def test_registration_states_have_standard_retry():
+    """Register_Pipeline and Save_DAG_Snapshot carry DynamoDB throttling Retry blocks."""
+    from polyris.generators import generate_step_function_json
+
+    dag = _build_chain()
+    asl = json.loads(generate_step_function_json(dag))
+    states = asl["States"]
+
+    for state_name in ("Register_Pipeline", "Save_DAG_Snapshot"):
+        assert "Retry" in states[state_name], f"{state_name}: missing Retry block"
+        retry = states[state_name]["Retry"][0]
+        assert "DynamoDB.ThrottlingException" in retry["ErrorEquals"], (
+            f"{state_name}: Retry must cover ThrottlingException"
+        )
+        assert retry["MaxAttempts"] >= 3, f"{state_name}: MaxAttempts should be >= 3"
+
+
+def test_registration_states_have_catch_routing_to_warn():
+    """Register_Pipeline and Save_DAG_Snapshot Catch blocks route to Warn states."""
+    from polyris.generators import generate_step_function_json
+
+    dag = _build_chain()
+    asl = json.loads(generate_step_function_json(dag))
+    states = asl["States"]
+
+    assert states["Register_Pipeline"]["Catch"][0]["Next"] == "Warn_Registration_Failed", (
+        "Register_Pipeline Catch must route to Warn_Registration_Failed"
+    )
+    assert "Warn_Registration_Failed" in states, "Warn_Registration_Failed state must exist"
+    assert states["Warn_Registration_Failed"]["Next"] == "Save_DAG_Snapshot", (
+        "Warn_Registration_Failed must continue to Save_DAG_Snapshot"
+    )
+
+    assert states["Save_DAG_Snapshot"]["Catch"][0]["Next"] == "Warn_Snapshot_Failed", (
+        "Save_DAG_Snapshot Catch must route to Warn_Snapshot_Failed"
+    )
+    assert "Warn_Snapshot_Failed" in states, "Warn_Snapshot_Failed state must exist"
+
+
+def test_warn_registration_states_write_notify_warn_record():
+    """Warn states write _notify_warn_ prefixed records to the tokens table."""
+    from polyris.generators import generate_step_function_json
+
+    dag = _build_chain()
+    asl = json.loads(generate_step_function_json(dag, tokens_table="my-tokens"))
+    states = asl["States"]
+
+    for warn_name in ("Warn_Registration_Failed", "Warn_Snapshot_Failed"):
+        warn = states[warn_name]
+        assert warn["Type"] == "Task"
+        assert warn["Arguments"]["TableName"] == "my-tokens"
+        exec_name_expr = warn["Arguments"]["Item"]["execution_name"]["S"]
+        assert "_notify_warn_" in exec_name_expr, (
+            f"{warn_name}: execution_name must carry _notify_warn_ prefix"
+        )
+        assert warn["Arguments"]["Item"]["status"]["S"] == "failed"
+
+
+def test_write_subscription_has_retry_and_catch():
+    """WriteSubscription inside Map carries Retry and Catch routing to Warn state."""
+    from polyris.generators import generate_step_function_json
+
+    dag = _build_asset_triggered()
+    asl = json.loads(generate_step_function_json(dag))
+    states = asl["States"]
+
+    assert "Register_Asset_Subscriptions" in states
+    item_proc = states["Register_Asset_Subscriptions"]["ItemProcessor"]
+    sub_states = item_proc["States"]
+
+    assert "Retry" in sub_states["WriteSubscription"], "WriteSubscription must have Retry"
+    assert sub_states["WriteSubscription"]["Catch"][0]["Next"] == "Warn_WriteSubscription_Failed"
+    assert "Warn_WriteSubscription_Failed" in sub_states, "Warn_WriteSubscription_Failed must exist"
+    assert "Subscription_Skipped" in sub_states, "Subscription_Skipped fallback must exist"
+
+
 def test_dag_hash_deterministic():
     """Same DAG always produces same hash."""
     from polyris.generators import generate_dag_hash
