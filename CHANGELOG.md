@@ -1,3 +1,52 @@
+## v0.99.0 - 2026-09-09
+
+### Fixed — SDK correctness: context managers, deploy scan, assets, and registration resilience
+
+Six bug fixes across the SDK core. No breaking changes to the public API.
+
+**Context manager nesting**
+- Nested `TaskGroup` blocks now correctly restore the outer group context on exit.
+  Previously, `__exit__` set `dag._current_task_group = None` unconditionally, so
+  tasks written after an inner group had no parent group.
+
+**Deploy file scanning**
+- `_load_dag_from_file` now returns only DAGs defined in the loaded file, not ones
+  merely imported into it. Previously, an `import` at the top of a pipeline file
+  would cause imported DAGs to be deployed as if they belonged to that file.
+- Non-zero `sys.exit()` in a pipeline file now propagates correctly.
+  `except SystemExit: pass` was silently swallowing load errors.
+
+**Assets**
+- `Asset("s3://bucket/path/")` now derives `name = "bucket/path"`, keeping the
+  bucket component. Previously the bucket was stripped, so two assets in different
+  buckets with the same key were treated as identical.
+- `AssetAlias` inside a multi-item schedule list now wraps in `AssetAny` instead of
+  flattening into `AssetAll`, preserving the intended OR semantics.
+- EventBridge patterns now use `_flatten_asset_names` instead of `asset_names`, so
+  pattern values are exact leaf strings, not display-formatted group expressions.
+
+**`@dag` decorator**
+- `**kwargs` are now forwarded from `@dag` to `DAG()`. Previously, any `DAG` field
+  not listed explicitly in the decorator signature (e.g. `group`, `variables`,
+  `doc_md`, `default_timeout`) was silently dropped.
+
+**`default_args`**
+- `trigger_rule`, `wait_before`, and `skip_on_backfill` in `_create_task` now default
+  to `None` in the signature, so `default_args` fallback is correctly reached.
+  Previously a non-`None` default made the fallback unreachable — DAG-level defaults
+  were silently ignored.
+
+**Registration resilience**
+- `Register_Pipeline`, `Save_DAG_Snapshot`, and `WriteSubscription` now carry
+  `_STANDARD_DYNAMODB_RETRY` and a `Catch` that writes a `_notify_warn_` record
+  before continuing. Previously a single `ThrottlingException` aborted the entire
+  registration execution with no visible trace in the UI.
+- `LambdaTask(retries=N)` used as a wrapper step now correctly propagates retries
+  into `task_config`. `_build_step_branch` and `_build_task_config_and_arn` now share
+  `_add_retry_config` as a single source of truth.
+
+---
+
 ## v0.98.0 - 2026-09-08
 
 ### Added
