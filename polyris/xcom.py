@@ -358,3 +358,146 @@ def get(
 
     # 2. Fallback: read from DDB (Glue/ECS/Batch/EMR, or undeclared Lambda dep)
     return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing)
+
+
+# Size cap for a single DDB item (soft limit — DDB hard is 400KB, we leave
+# headroom for metadata fields). Matches the runtime ~350KB result cap the
+# wrapper enforces in Save_Success.
+_PUSH_MAX_BYTES = 350_000
+
+
+def push(
+    value: Any,
+    *,
+    pipeline: Optional[str] = None,
+    task: Optional[str] = None,
+    date: Optional[str] = None,
+    table: Optional[str] = None,
+    run_id: Optional[str] = None,
+    ddb_client: Any = None,
+) -> None:
+    """Store this task's output for downstream reading.
+
+    Required for service tasks (Glue / ECS / Batch / EMR) whose wrapper only
+    sees the AWS API response (JobRunId / TaskArn / QueryExecutionId / etc.) —
+    without this call, downstream tasks receive that AWS metadata instead of
+    the actual work output.
+
+    Lambda tasks should prefer ``return value`` — see the Lambda note below.
+
+    Args:
+        value: JSON-serializable output (``dict``, ``list``, primitive, ``None``).
+        pipeline / task / date / table / run_id: context, resolved from
+            ``POLYRIS_*`` env vars if omitted. The wrapper injects these envs
+            into every service-task container / job.
+        ddb_client: injected for tests; created on demand otherwise.
+
+    Raises:
+        XComError: value is not JSON-serializable, or serialized > 350KB.
+        XComError: required env var missing (usually means the wrapper wasn't
+            re-deployed — actionable hint in the error message).
+        ClientError: DDB UpdateItem failed (permission / throttling).
+
+    Note (Lambda):
+        Calling ``xcom.push()`` from a Lambda handler races with the wrapper's
+        Save_Success write. If the push finishes AFTER the handler returns,
+        the wrapper may or may not detect the marker depending on timing. Prefer
+        ``return value`` from Lambda. This function emits a ``UserWarning`` if
+        ``AWS_LAMBDA_FUNCTION_NAME`` is set. See DATA_PASSING.md.
+
+    Note (cross-account):
+        Cross-account tasks (task role in a different AWS account than the
+        polyris deployment) cannot call ``xcom.push()`` without additional IAM
+        setup — the ``pipeline-tokens`` table is in the polyris account. See docs.
+
+    Coupled with SFN template:
+        The ``_pushed_by_task`` marker field and ``pushed_run_id`` field written
+        here are read by Check_Task_Pushed in ``run_task/sfn.tpl.json``. Do not
+        rename either without a matching template update (see XCOM_PLAN.md §2.8).
+    """
+    import warnings
+
+    # Lambda-runtime warning — race with wrapper's Save_Success is real. Emit
+    # once per call so users see it in CloudWatch logs; stacklevel=2 points the
+    # warning at the caller's line, not this module.
+    if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        warnings.warn(
+            "xcom.push() called from a Lambda handler. Prefer `return value` — "
+            "an async push after the handler returns may race with the wrapper's "
+            "Save_Success write. See docs/features/DATA_PASSING.md#lambda-write-pattern.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Serialize first — fail fast on non-JSON types before touching DDB.
+    try:
+        serialized = json.dumps(value)
+    except TypeError as e:
+        raise XComError(
+            f"xcom.push() value must be JSON-serializable: {e}. "
+            "Convert datetimes to ISO strings, Decimals to floats, custom classes "
+            "to dicts, etc. before pushing."
+        ) from e
+
+    if len(serialized) > _PUSH_MAX_BYTES:
+        raise XComError(
+            f"xcom.push() value is {len(serialized)} bytes, exceeds "
+            f"{_PUSH_MAX_BYTES} byte DDB item limit. Write the payload to S3 and "
+            "push {'_s3_ref': 's3://your-bucket/your-key.json'} instead — the "
+            "downstream xcom.get() / pull() will resolve the pointer "
+            "transparently. See docs/features/DATA_PASSING.md#large-outputs."
+        )
+
+    ctx: dict = {}
+    pipeline = _resolve(pipeline, ctx, (), ENV_PIPELINE, "pipeline name")
+    date = _resolve(date, ctx, (), ENV_DATE, "run date")
+    table = _resolve(table, ctx, (), ENV_TABLE, "table name")
+
+    # POLYRIS_TASK_NAME and POLYRIS_WRAPPER_RUN_ID are NEW env vars — an
+    # older wrapper (pre-0.100.0) does not inject them. Convert the generic
+    # PullError from _resolve into an actionable XComError that names the
+    # remediation.
+    try:
+        task = _resolve(task, ctx, (), ENV_TASK_NAME, "task name")
+    except PullError:
+        raise XComError(
+            f"xcom.push() requires the '{ENV_TASK_NAME}' environment variable. "
+            "This env var is injected by the polyris wrapper for service tasks. "
+            "If you're seeing this in production, your pipeline is running under "
+            "an older wrapper — run `sam deploy` on the polyris SAM template to "
+            "update it (no per-pipeline redeploy needed). For local testing, pass "
+            "task=... explicitly."
+        ) from None
+
+    try:
+        run_id = _resolve(run_id, ctx, (), ENV_RUN_ID, "wrapper run id")
+    except PullError:
+        raise XComError(
+            f"xcom.push() requires the '{ENV_RUN_ID}' environment variable "
+            "(prevents stale push marker corruption across backfill runs). "
+            "This env var is injected by the polyris wrapper — run `sam deploy` "
+            "on the polyris SAM template to update it."
+        ) from None
+
+    if ddb_client is None:
+        import boto3  # pragma: no cover - boto3 client factory; tests inject a client
+        ddb_client = boto3.client("dynamodb")  # pragma: no cover
+
+    key_name = f"output#{pipeline}#{task}#{date}"
+    ddb_client.update_item(
+        TableName=table,
+        Key={"execution_name": {"S": key_name}},
+        UpdateExpression=(
+            "SET #r = :r, #p = :p, pushed_at = :now, pushed_run_id = :rid, "
+            "task_name = :tn ADD push_count :one"
+        ),
+        ExpressionAttributeNames={"#r": "result", "#p": _PUSH_MARKER_FIELD},
+        ExpressionAttributeValues={
+            ":r": {"S": serialized},
+            ":p": {"BOOL": True},
+            ":now": {"S": datetime.now(timezone.utc).isoformat()},
+            ":rid": {"S": run_id},
+            ":tn": {"S": task},
+            ":one": {"N": "1"},
+        },
+    )

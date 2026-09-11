@@ -1,21 +1,26 @@
 """Tests for the xcom.pull() runtime helper (100% coverage)."""
 import json
+from datetime import datetime
 
 import pytest
 
 from polyris.xcom import (
     ENV_DATE,
     ENV_PIPELINE,
+    ENV_RUN_ID,
     ENV_TABLE,
+    ENV_TASK_NAME,
     PullError,
     XComError,
     XComMissingError,
     XComTruncatedError,
     XComUpstreamFailedError,
+    _PUSH_MARKER_FIELD,
     _resolve,
     _resolve_s3_pointer,
     get,
     pull,
+    push,
 )
 
 
@@ -386,3 +391,177 @@ def test_get_malformed_upstream_entry_passed_through():
     """Legacy raw-value shape (non-dict entry) should not crash."""
     event = _event_with_upstream(raw="just a string, not a dict")
     assert get(event, "raw") == "just a string, not a dict"
+
+
+# ── xcom.push() — writer for service tasks (§2.3) ──────────────────────
+
+
+class FakePushDDB:
+    """DDB stub capturing update_item calls for assertion."""
+    def __init__(self):
+        self.calls = []
+
+    def update_item(self, **kwargs):
+        self.calls.append(kwargs)
+        return {}
+
+
+def _set_push_env(monkeypatch, task="my-task", run_id="arn:aws:states:us-east-1:1:execution:w:r1"):
+    """Set the four env vars xcom.push() reads via _resolve."""
+    monkeypatch.setenv(ENV_PIPELINE, "sales")
+    monkeypatch.setenv(ENV_DATE, "2026-07-07")
+    monkeypatch.setenv(ENV_TABLE, "tokens")
+    monkeypatch.setenv(ENV_TASK_NAME, task)
+    monkeypatch.setenv(ENV_RUN_ID, run_id)
+    # Ensure Lambda warning does NOT fire in default test env
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+
+
+def test_push_writes_updateitem_to_output_key(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push({"rows": 100}, ddb_client=ddb)
+    assert len(ddb.calls) == 1
+    call = ddb.calls[0]
+    assert call["TableName"] == "tokens"
+    assert call["Key"]["execution_name"]["S"] == "output#sales#my-task#2026-07-07"
+
+
+def test_push_sets_pushed_by_task_marker(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push({"v": 1}, ddb_client=ddb)
+    call = ddb.calls[0]
+    # Marker written as {"BOOL": True}
+    assert call["ExpressionAttributeValues"][":p"] == {"BOOL": True}
+    # ExpressionAttributeNames uses the SDK constant so §2.8 parity holds
+    assert call["ExpressionAttributeNames"]["#p"] == _PUSH_MARKER_FIELD
+    # UpdateExpression sets it
+    assert "#p = :p" in call["UpdateExpression"]
+
+
+def test_push_writes_pushed_run_id_for_stale_marker_rejection(monkeypatch):
+    """B1 fix: run_id lets Check_Task_Pushed reject stale markers from prior runs."""
+    _set_push_env(monkeypatch, run_id="arn:...:execution:w:current-run")
+    ddb = FakePushDDB()
+    push({"v": 1}, ddb_client=ddb)
+    assert ddb.calls[0]["ExpressionAttributeValues"][":rid"]["S"] == "arn:...:execution:w:current-run"
+    assert "pushed_run_id = :rid" in ddb.calls[0]["UpdateExpression"]
+
+
+def test_push_increments_push_count(monkeypatch):
+    """push_count uses DDB ADD — atomic increment, useful for debug."""
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push({"v": 1}, ddb_client=ddb)
+    assert ddb.calls[0]["ExpressionAttributeValues"][":one"] == {"N": "1"}
+    assert "ADD push_count :one" in ddb.calls[0]["UpdateExpression"]
+
+
+def test_push_serializes_dict(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push({"nested": {"a": [1, 2]}}, ddb_client=ddb)
+    result_field = ddb.calls[0]["ExpressionAttributeValues"][":r"]["S"]
+    assert json.loads(result_field) == {"nested": {"a": [1, 2]}}
+
+
+def test_push_serializes_primitive(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push(42, ddb_client=ddb)
+    assert ddb.calls[0]["ExpressionAttributeValues"][":r"]["S"] == "42"
+
+
+def test_push_serializes_none(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push(None, ddb_client=ddb)
+    assert ddb.calls[0]["ExpressionAttributeValues"][":r"]["S"] == "null"
+
+
+def test_push_serializes_list(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    push([1, 2, 3], ddb_client=ddb)
+    assert ddb.calls[0]["ExpressionAttributeValues"][":r"]["S"] == "[1, 2, 3]"
+
+
+def test_push_non_serializable_raises_xcom_error(monkeypatch):
+    """L1 fix: datetime is not JSON-serializable → clear XComError, not TypeError."""
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    with pytest.raises(XComError, match="JSON-serializable"):
+        push(datetime(2026, 1, 1), ddb_client=ddb)
+    # Nothing hit DDB
+    assert ddb.calls == []
+
+
+def test_push_too_large_raises_with_s3_hint(monkeypatch):
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    # 400_000 chars of JSON > 350_000 cap
+    huge = "x" * 400_000
+    with pytest.raises(XComError, match="_s3_ref"):
+        push(huge, ddb_client=ddb)
+    assert ddb.calls == []
+
+
+def test_push_missing_task_name_env_gives_actionable_error(monkeypatch):
+    """§2.3: 'run sam deploy' hint when POLYRIS_TASK_NAME missing (old wrapper)."""
+    monkeypatch.setenv(ENV_PIPELINE, "p")
+    monkeypatch.setenv(ENV_DATE, "d")
+    monkeypatch.setenv(ENV_TABLE, "t")
+    monkeypatch.delenv(ENV_TASK_NAME, raising=False)
+    monkeypatch.delenv(ENV_RUN_ID, raising=False)
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    ddb = FakePushDDB()
+    with pytest.raises(XComError, match=ENV_TASK_NAME):
+        push({"v": 1}, ddb_client=ddb)
+
+
+def test_push_missing_run_id_env_gives_actionable_error(monkeypatch):
+    """Same actionable hint for POLYRIS_WRAPPER_RUN_ID (B1 stale-marker guard)."""
+    monkeypatch.setenv(ENV_PIPELINE, "p")
+    monkeypatch.setenv(ENV_DATE, "d")
+    monkeypatch.setenv(ENV_TABLE, "t")
+    monkeypatch.setenv(ENV_TASK_NAME, "task")
+    monkeypatch.delenv(ENV_RUN_ID, raising=False)
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    ddb = FakePushDDB()
+    with pytest.raises(XComError, match=ENV_RUN_ID):
+        push({"v": 1}, ddb_client=ddb)
+
+
+def test_push_from_lambda_emits_userwarning(monkeypatch):
+    """B2: warn when called from Lambda runtime — race with wrapper Save_Success."""
+    _set_push_env(monkeypatch)
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "my-lambda")
+    ddb = FakePushDDB()
+    with pytest.warns(UserWarning, match="Lambda"):
+        push({"v": 1}, ddb_client=ddb)
+
+
+def test_push_not_from_lambda_no_warning(monkeypatch):
+    """No warning for Glue/ECS/Batch/EMR — those are the intended callers."""
+    _set_push_env(monkeypatch)
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    ddb = FakePushDDB()
+    # pytest.warns would fail if no warning caught; use warnings.catch_warnings + assert 0
+    import warnings as _w
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        push({"v": 1}, ddb_client=ddb)
+        assert [w for w in caught if issubclass(w.category, UserWarning)] == []
+
+
+def test_push_explicit_kwargs_bypass_env(monkeypatch):
+    """Local tests / cross-account workarounds: pass context as kwargs."""
+    monkeypatch.delenv(ENV_PIPELINE, raising=False)
+    monkeypatch.delenv(ENV_TASK_NAME, raising=False)
+    monkeypatch.delenv(ENV_RUN_ID, raising=False)
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    ddb = FakePushDDB()
+    push({"v": 1}, pipeline="p", task="t", date="d", table="tbl",
+         run_id="test-run", ddb_client=ddb)
+    assert ddb.calls[0]["Key"]["execution_name"]["S"] == "output#p#t#d"
