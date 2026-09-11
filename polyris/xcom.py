@@ -16,6 +16,7 @@ environment variables the runtime injects, so inside a task body you just call
 """
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,10 +28,66 @@ if TYPE_CHECKING:
 ENV_PIPELINE = "POLYRIS_PIPELINE_NAME"
 ENV_DATE = "POLYRIS_RUN_DATE"
 ENV_TABLE = "POLYRIS_TOKENS_TABLE"
+ENV_TASK_NAME = "POLYRIS_TASK_NAME"          # set by run_task wrapper for service tasks
+ENV_RUN_ID = "POLYRIS_WRAPPER_RUN_ID"        # SFN wrapper execution ARN — used by xcom.push()
+
+# Field name written to DDB by xcom.push() and read by run_task wrapper's
+# Check_Task_Pushed state. Coupled constant — must match run_task/sfn.tpl.json.
+# See XCOM_PLAN.md §2.8 for the full coupled-constants list.
+_PUSH_MARKER_FIELD = "_pushed_by_task"
 
 
-class PullError(RuntimeError):
-    """Raised when a dependency's output cannot be pulled."""
+class XComError(RuntimeError):
+    """Base class for all XCom errors."""
+
+
+class XComMissingError(XComError):
+    """Upstream task has no stored output (never ran, was skipped, or didn't return anything)."""
+
+    def __init__(self, task_name: str, pipeline: Optional[str] = None, date: Optional[str] = None):
+        self.task_name = task_name
+        self.pipeline = pipeline
+        self.date = date
+        msg = f"no output stored for task '{task_name}'"
+        if pipeline and date:
+            msg += f" (pipeline '{pipeline}', date '{date}')"
+        msg += " — did the task run and return anything?"
+        super().__init__(msg)
+
+
+class XComUpstreamFailedError(XComError):
+    """Upstream task did not succeed (skipped/failed/aborted). Caller opted for loud errors."""
+
+    def __init__(self, task_name: str, status: str):
+        self.task_name = task_name
+        self.status = status
+        super().__init__(
+            f"upstream '{task_name}' did not succeed (status: {status}). "
+            f"Pass raise_on_failure=False to xcom.get() to read its output anyway."
+        )
+
+
+class XComTruncatedError(XComError):
+    """Upstream output too large for inline transport, and DDB fallback also unavailable."""
+
+    def __init__(self, task_name: str, size_bytes: Optional[int] = None):
+        self.task_name = task_name
+        self.size_bytes = size_bytes
+        msg = f"output for task '{task_name}' is truncated"
+        if size_bytes:
+            msg += f" ({size_bytes} bytes)"
+        msg += (
+            " — use Claim Check pattern: write to S3 and return "
+            "{'_s3_ref': 's3://...'}. See docs/features/DATA_PASSING.md#large-outputs."
+        )
+        super().__init__(msg)
+
+
+# Backward-compat alias. Existing user code with `except PullError` continues to work
+# because PullError now refers to XComMissingError (same behaviour for the historical
+# "no output stored" and "no context" cases; also catches the new missing-dep raises
+# from xcom.get()).
+PullError = XComMissingError
 
 
 class XComArg:

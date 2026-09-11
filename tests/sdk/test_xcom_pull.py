@@ -8,6 +8,10 @@ from polyris.xcom import (
     ENV_PIPELINE,
     ENV_TABLE,
     PullError,
+    XComError,
+    XComMissingError,
+    XComTruncatedError,
+    XComUpstreamFailedError,
     _resolve,
     _resolve_s3_pointer,
     pull,
@@ -160,3 +164,72 @@ def test_resolve_s3_pointer_without_scheme():
     s3 = FakeS3(json.dumps({"v": 2}).encode())
     assert _resolve_s3_pointer("b/k", s3) == {"v": 2}
     assert s3.calls[0] == {"Bucket": "b", "Key": "k"}
+
+
+# ── XComError hierarchy + PullError alias (§2.1 + backward compat) ─────
+
+
+def test_xcom_error_is_runtime_error():
+    """Base XComError inherits RuntimeError so `except RuntimeError:` still catches."""
+    assert issubclass(XComError, RuntimeError)
+
+
+def test_xcom_missing_error_subclasses_xcom_error():
+    assert issubclass(XComMissingError, XComError)
+
+
+def test_xcom_upstream_failed_error_subclasses_xcom_error():
+    assert issubclass(XComUpstreamFailedError, XComError)
+
+
+def test_xcom_truncated_error_subclasses_xcom_error():
+    assert issubclass(XComTruncatedError, XComError)
+
+
+def test_pull_error_is_alias_for_xcom_missing_error():
+    """Backward-compat: old `except PullError` catches new XComMissingError raises."""
+    assert PullError is XComMissingError
+
+
+def test_pull_error_still_raised_by_pull_no_item():
+    """Regression: existing pull() code raising PullError works via alias."""
+    with pytest.raises(PullError, match="no output stored"):
+        pull("missing", pipeline="p", date="d", table="t", ddb_client=FakeDDB(None))
+
+
+def test_pull_error_also_caught_as_xcom_missing_error():
+    """Same raise, caught via new class name — proves alias works both directions."""
+    with pytest.raises(XComMissingError, match="no output stored"):
+        pull("missing", pipeline="p", date="d", table="t", ddb_client=FakeDDB(None))
+
+
+def test_xcom_missing_error_message_includes_context_when_provided():
+    err = XComMissingError("extract", pipeline="sales", date="2026-01-01")
+    msg = str(err)
+    assert "extract" in msg
+    assert "sales" in msg
+    assert "2026-01-01" in msg
+
+
+def test_xcom_missing_error_message_without_context():
+    err = XComMissingError("extract")
+    msg = str(err)
+    assert "extract" in msg
+    assert "did the task run" in msg
+
+
+def test_xcom_upstream_failed_error_message_mentions_raise_on_failure():
+    err = XComUpstreamFailedError("extract", "failed")
+    msg = str(err)
+    assert "extract" in msg
+    assert "failed" in msg
+    assert "raise_on_failure=False" in msg
+
+
+def test_xcom_truncated_error_message_mentions_s3_claim_check():
+    err = XComTruncatedError("extract", size_bytes=400000)
+    msg = str(err)
+    assert "extract" in msg
+    assert "400000" in msg
+    assert "_s3_ref" in msg
+    assert "S3" in msg or "Claim Check" in msg
