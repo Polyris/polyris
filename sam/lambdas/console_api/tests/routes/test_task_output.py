@@ -5,6 +5,8 @@ the parse/branch logic runs for real (CLAUDE.md #13).
 """
 import json
 
+from botocore.exceptions import ClientError
+
 from routes.tasks import get_task_output
 
 
@@ -17,21 +19,58 @@ def _body(resp):
     return json.loads(resp["body"])
 
 
-class _Table:
-    def __init__(self, item):
-        self._item = item
+class _MultiKeyTable:
+    """Fake DDB table returning different items per execution_name key.
+
+    Supports the 2-GetItem pattern get_task_output uses in 0.100.0+:
+    one call for the output# row (result), one for the input# row (task_input).
+    """
+
+    def __init__(self, items_by_key=None, raise_on_key=None):
+        self._items = items_by_key or {}
+        # If set, get_item(Key.execution_name == raise_on_key) raises ClientError.
+        # Used to test the fallback path when input# lookup fails.
+        self._raise_on_key = raise_on_key
         self.calls = []
 
     def get_item(self, **kwargs):
         self.calls.append(kwargs)
-        return {"Item": self._item} if self._item is not None else {}
+        key = kwargs["Key"]["execution_name"]
+        if self._raise_on_key is not None and key == self._raise_on_key:
+            raise ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "simulated"}},
+                "GetItem",
+            )
+        item = self._items.get(key)
+        return {"Item": item} if item is not None else {}
 
 
-def _patch(mocker, *, item=("pipeline_name", "sales"), store=None, retrieve=None,
+def _patch(mocker, *, item=("pipeline_name", "sales"), store=None, input_store=None,
+           retrieve=None, raise_on_input_key=False,
            task_name="extract", date="2026-07-07"):
+    """Patch resolve_task_item + repo table for get_task_output tests.
+
+    - store        → seeds the output#{pipeline}#{task}#{date} row (result, legacy task_input).
+    - input_store  → seeds the input#{pipeline}#{task}#{date} row (new task_input home).
+    - raise_on_input_key → simulate DDB failure on the input# lookup only,
+                           to exercise the fallback to legacy task_input on output# row.
+    """
     task_item = {"pipeline_name": item[1], "task_name": task_name, "date": date} if item else {}
     mocker.patch("routes.tasks.resolve_task_item", return_value=(task_item, "extract-2026-07-07-abc"))
-    table = _Table(store)
+
+    items_by_key = {}
+    pipeline = item[1] if item else "sales"
+    output_key = f"output#{pipeline}#{task_name}#{date}"
+    input_key = f"input#{pipeline}#{task_name}#{date}"
+    if store is not None:
+        items_by_key[output_key] = store
+    if input_store is not None:
+        items_by_key[input_key] = input_store
+
+    table = _MultiKeyTable(
+        items_by_key,
+        raise_on_key=input_key if raise_on_input_key else None,
+    )
     # Patch the repo's table property, not a raw dynamodb.Table: the real
     # ExecutionsRepo.get() then runs against the fake, so the test still
     # exercises production code rather than a stand-in for it (#14).
@@ -104,3 +143,87 @@ def test_result_read_error_is_swallowed(mocker):
     body = _body(get_task_output("extract", _event()))
     assert body["output"] is None
     assert body["truncated"] is False
+
+
+# ── Split records: prefer input# record, fall back to legacy field (§3.2) ────
+
+
+def test_input_read_from_new_input_record_when_present(mocker):
+    """0.100.0+ pipelines: task_input lives on the separate input# row.
+    That's the primary source; the legacy field on output# is fallback only."""
+    new_input = {"upstream": {"a": {"output": {"n": 1}, "status": "success"}},
+                 "variables": {"year": "2026"}}
+    table = _patch(
+        mocker,
+        store={"result": json.dumps({"rows": 5})},           # no task_input on output# row
+        input_store={"task_input": json.dumps(new_input)},   # new-shape row
+    )
+    body = _body(get_task_output("extract", _event()))
+    assert body["input"] == new_input
+    assert body["output"] == {"rows": 5}
+    # Two GetItem calls: output# first, input# second
+    keys = [c["Key"]["execution_name"] for c in table.calls]
+    assert keys == ["output#sales#extract#2026-07-07", "input#sales#extract#2026-07-07"]
+
+
+def test_input_falls_back_to_legacy_task_input_on_output_row_when_new_record_absent(mocker):
+    """Pre-0.100.0 pipelines: input# record doesn't exist yet, so we still
+    display task_input from the output# row's legacy field."""
+    legacy_input = {"upstream": {"legacy": {"output": {"k": 1}, "status": "success"}},
+                    "variables": {}}
+    _patch(
+        mocker,
+        store={"result": json.dumps({"rows": 5}), "task_input": json.dumps(legacy_input)},
+        input_store=None,   # no new-shape row
+    )
+    body = _body(get_task_output("extract", _event()))
+    assert body["input"] == legacy_input
+
+
+def test_input_prefers_new_record_over_legacy_field_when_both_present(mocker):
+    """Migration case: legacy output# row still has the pre-split task_input,
+    AND the new wrapper wrote input# too. Prefer the new record — it's the
+    current run's truth; legacy field may be from an older execution."""
+    new_input = {"upstream": {}, "variables": {"tag": "new"}}
+    legacy_input = {"upstream": {}, "variables": {"tag": "legacy-stale"}}
+    _patch(
+        mocker,
+        store={"result": json.dumps({"ok": True}), "task_input": json.dumps(legacy_input)},
+        input_store={"task_input": json.dumps(new_input)},
+    )
+    body = _body(get_task_output("extract", _event()))
+    assert body["input"] == new_input
+
+
+def test_neither_record_has_input_returns_null(mocker):
+    """Task ran, wrote a result, but no task_input recorded anywhere (odd but
+    possible with wrapper DDB failures)."""
+    _patch(mocker, store={"result": json.dumps({"rows": 1})}, input_store=None)
+    body = _body(get_task_output("extract", _event()))
+    assert body["input"] is None
+    assert body["output"] == {"rows": 1}
+
+
+def test_input_record_read_error_falls_back_gracefully(mocker):
+    """If DDB fails on the input# GetItem specifically, we must still fall back
+    to the legacy task_input on the output# row — a transient input# failure
+    can't hide input the legacy row can still surface."""
+    legacy_input = {"upstream": {}, "variables": {"y": "fallback"}}
+    _patch(
+        mocker,
+        store={"result": json.dumps({"rows": 1}), "task_input": json.dumps(legacy_input)},
+        raise_on_input_key=True,
+    )
+    body = _body(get_task_output("extract", _event()))
+    assert body["input"] == legacy_input
+    assert body["output"] == {"rows": 1}
+
+
+def test_input_read_never_calls_input_key_when_no_pipeline_name(mocker):
+    """Guard: if resolve_task_item returns no pipeline_name, we short-circuit
+    before any GetItem call — no wasted DDB read."""
+    table = _patch(mocker, item=None, store={"result": json.dumps({"x": 1})})
+    body = _body(get_task_output("extract", _event()))
+    assert body["input"] is None
+    assert body["output"] is None
+    assert table.calls == []

@@ -380,11 +380,19 @@ def get_task_config(task_name: str, event: Dict) -> Dict:
 def get_task_output(task_name: str, event: Dict) -> Dict:
     """Return a task's stored input and output.
 
-    Reads the run-stable record (``output#pipeline#task#date``). ``output`` is the
-    value the task returned; ``input`` is what it received — its upstream outputs and
-    the injected run variables (upstream is omitted when the input exceeds ~25 KB).
-    Large outputs offloaded to S3 (``_s3_ref``) are resolved transparently;
-    ``truncated: true`` means the output exceeded the inline limit.
+    Reads two DDB rows keyed by pipeline + task_name + date:
+
+    * ``output#{pipeline}#{task}#{date}`` — carries the ``result`` field
+      (what the task returned or pushed via ``xcom.push()``). Large results
+      offloaded to S3 (``_s3_ref``) are resolved transparently;
+      ``truncated: true`` means the stored result exceeded the inline limit.
+    * ``input#{pipeline}#{task}#{date}`` — new in 0.100.0: carries the
+      ``task_input`` blob (upstream + variables) up to ~380 KB. Split out
+      from the ``output#`` row so the Console preview is no longer bounded
+      by the shared 25 KB truncation cap the old design imposed.
+
+    Falls back to reading ``task_input`` off the ``output#`` row for
+    pre-0.100.0 pipelines that haven't produced a new-shape run yet.
     """
     params = event.get('queryStringParameters') or {}
     date = params.get('date') or datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -402,9 +410,11 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
     task_input = None
     truncated = False
     if pipeline_name:
-        key = f"output#{pipeline_name}#{plain_task}#{run_date}"
+        output_key = f"output#{pipeline_name}#{plain_task}#{run_date}"
+        input_key = f"input#{pipeline_name}#{plain_task}#{run_date}"
         try:
-            store_item = executions_repo.get(key) or {}
+            # Result lives on the output# row.
+            store_item = executions_repo.get(output_key) or {}
             raw = store_item.get('result')
             if raw:
                 parsed = json.loads(raw)
@@ -412,7 +422,19 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
                     truncated = True
                 else:
                     output = retrieve_result(parsed)
-            raw_input = store_item.get('task_input')
+
+            # task_input: prefer the new input# record; fall back to the
+            # legacy field on output# for pre-0.100.0 pipelines. Isolated
+            # try so a missing/failing input# lookup can't hide the output.
+            raw_input = None
+            try:
+                input_item = executions_repo.get(input_key) or {}
+                raw_input = input_item.get('task_input')
+            except (ClientError, BotoCoreError) as inner:
+                log.error("get_task_output", "Error reading input# record; falling back to legacy field",
+                          error=str(inner), task_name=task_name)
+            if not raw_input:
+                raw_input = store_item.get('task_input')
             if raw_input:
                 task_input = json.loads(raw_input)
         except (ClientError, BotoCoreError, ValueError) as e:
