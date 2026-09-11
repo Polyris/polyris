@@ -620,3 +620,23 @@ def test_is_internal_record_catches_output_store():
     from utils import is_internal_record
     assert is_internal_record("output#sales#extract#2026-07-08") is True
     assert is_internal_record("extract-2026-07-08-abc123") is False
+
+
+def test_is_internal_record_catches_input_store():
+    """B3 (XCOM_PLAN.md §3.1): the split-out task_input records introduced in
+    0.100.0 use the `input#{pipeline}#{task}#{date}` prefix. is_internal_record
+    MUST filter these — otherwise they leak into All Tasks / Runs / Pipeline
+    Detail listings as garbage rows.
+    """
+    from utils import is_internal_record
+    assert is_internal_record("input#sales#extract#2026-07-08") is True
+    assert is_internal_record("input#any-pipeline#any-task#2099-12-31") is True
+    # Real execution names still pass through
+    assert is_internal_record("extract-2026-07-08-abc123") is False
+
+
+def test_is_internal_record_still_catches_underscore_prefixed():
+    """Regression: _pause_ and _notify_warn_ records must still be filtered."""
+    from utils import is_internal_record
+    assert is_internal_record("_pause_sales-run-2026-07-08-abc") is True
+    assert is_internal_record("_notify_warn_extract-2026-07-08") is True
