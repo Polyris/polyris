@@ -1110,3 +1110,125 @@ def test_jitter_config_threaded_only_when_enabled():
             pass
 
     assert "retry_jitter" not in _wrapper_input_for(build_off)["task_config"]
+
+
+# --- primitive value parsing (S3 fix) and multi-upstream merge (S4) ---
+
+def _sfn_parse_fn():
+    """Return a $parse stub compatible with AWS SFN semantics.
+
+    AWS SFN's $parse is equivalent to JSON.parse: returns the parsed value for
+    valid JSON, undefined for invalid JSON. jsonata-python maps Python None to
+    undefined and uses Utils.NULL_VALUE for JSONata null — so we convert
+    json.loads()'s None to NULL_VALUE and let exceptions return None (undefined).
+    """
+    import json
+    try:
+        from jsonata.utils import Utils
+        null_sentinel = Utils.NULL_VALUE
+    except ImportError:
+        null_sentinel = None
+
+    def _parse(s):
+        try:
+            result = json.loads(s)
+            return null_sentinel if result is None else result
+        except Exception:
+            return None  # undefined — $exists() returns False
+
+    return _parse
+
+
+def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task"):
+    """Evaluate Get_Dep_Output.Output with a simulated DDB getItem result.
+
+    Simulates what the inner Map processor sees: $states.result is the DDB
+    getItem response shape and $states.input.dep is the upstream task name.
+    Registers $parse as an AWS SFN extension (not in standard jsonata-python).
+    """
+    jsonata = pytest.importorskip("jsonata")
+    inner_states = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]
+    expr = inner_states["Get_Dep_Output"]["Output"]
+    body = expr[2:-2].strip()
+    j = jsonata.Jsonata(body)
+    j.register_lambda("parse", _sfn_parse_fn())
+    j.assign("states", {
+        "result": {"Item": {"result": {"S": ddb_raw_value}, "status": {"S": "success"}}},
+        "input": {"dep": dep_name},
+    })
+    return j.evaluate({})
+
+
+def test_get_dep_output_parses_primitive_values(template):
+    """$parse()-based fix (S3): primitives and number arrays must parse correctly,
+    not fall through to the {'_raw': ...} wrapper.
+
+    The old $isJson heuristic only recognised plain objects and arrays of
+    strings/objects — everything else (null, true, 42, [1,2,3]) got wrapped.
+    """
+    cases = [
+        ('{"k": 1}', {"k": 1}),              # object — correct before and after fix
+        ('[1, 2, 3]', [1, 2, 3]),             # array of numbers — was broken
+        ('null', None),                        # null — was broken
+        ('true', True),                        # boolean — was broken
+        ('42', 42),                            # integer — was broken
+        ('invalid json', {'_raw': 'invalid json'}),  # non-JSON stays wrapped
+    ]
+    for raw, expected in cases:
+        result = _eval_get_dep_output(template, raw)
+        assert result["output"] == expected, (
+            f"raw={raw!r}: expected {expected!r}, got {result['output']!r}"
+        )
+
+
+def test_two_producers_one_consumer(template):
+    """Both upstream outputs reach the downstream Lambda event['upstream'].
+
+    Exercises the Read_Upstream_Outputs $merge($map(...)) expression with 2
+    deps — previously untested with more than 1 upstream. Regression gate for
+    the multi-upstream merge silently dropping one entry.
+
+    Pattern from scenario-4/dag.py:
+        [extract_core_sales(), enrich_customer_segments()] >> daily_report()
+    """
+    jsonata = pytest.importorskip("jsonata")
+
+    # Step 1: simulate Get_Dep_Output for each upstream dep
+    dep1 = _eval_get_dep_output(template, '{"sales_count": 100}', dep_name="extract_core_sales")
+    dep2 = _eval_get_dep_output(template, '{"segments": ["vip", "new"]}', dep_name="enrich_customer_segments")
+
+    # Step 2: evaluate Read_Upstream_Outputs Map Output with both results
+    base_input = {
+        "pipeline_name": "scenario-4",
+        "task_name": "daily_report",
+        "date": "2026-01-01",
+        "current_date": "2026-01-01",
+    }
+    map_output_expr = template["States"]["Read_Upstream_Outputs"]["Output"]
+    body = map_output_expr[2:-2].strip()
+    j = jsonata.Jsonata(body)
+    j.assign("states", {"result": [dep1, dep2], "input": base_input})
+    after_map = j.evaluate({})
+
+    upstream = after_map.get("upstream", {})
+    assert "extract_core_sales" in upstream, (
+        f"extract_core_sales missing from merged upstream: {list(upstream)}"
+    )
+    assert "enrich_customer_segments" in upstream, (
+        f"enrich_customer_segments missing from merged upstream: {list(upstream)}"
+    )
+    assert upstream["extract_core_sales"]["output"] == {"sales_count": 100}
+    assert upstream["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}
+
+    # Step 3: verify both keys appear in the downstream Lambda Payload
+    runtime_input = {
+        **after_map,
+        "task_arn": "arn:aws:lambda:us-east-1:111111111111:function:polyris-test-lambda",
+        "task_config": {"payload": {}},
+        "variables": {},
+        "PARTITION_ARG": "2026-01-01",
+    }
+    resolved = _resolve_arguments(template, "Run_Task_Lambda", runtime_input)
+    payload = resolved["Payload"]
+    assert payload["upstream"]["extract_core_sales"]["output"] == {"sales_count": 100}
+    assert payload["upstream"]["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}

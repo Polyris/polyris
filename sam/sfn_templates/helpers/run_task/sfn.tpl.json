@@ -294,7 +294,7 @@
                                 "#s": "status"
                             }
                         },
-                        "Output": "{% ( $raw := $states.result.Item.result.S; $safe := $exists($raw) and $length($raw) > 25000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & ',\"_warning\":\"Output exceeded 25KB upstream limit. Full output preserved in DynamoDB. Use S3 pointers for large data.\"}' : $raw; $isJson := $exists($safe) and ($safe = '{}' or $safe = '[]' or $substring($safe, 0, 2) = '{\"' or $substring($safe, 0, 2) = '[\"' or $substring($safe, 0, 2) = '[{'); $parsed := $isJson ? $parse($safe) : {'_raw': $safe}; { 'task_name': $states.input.dep, 'output': $exists($safe) ? $parsed : {}, 'status': $exists($states.result.Item.status.S) ? $states.result.Item.status.S : 'unknown' } ) %}",
+                        "Output": "{% ( $raw := $states.result.Item.result.S; $safe := $exists($raw) and $length($raw) > 25000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & ',\"_warning\":\"Output exceeded 25KB upstream limit. Full output preserved in DynamoDB. Use S3 pointers for large data.\"}' : $raw; $parsed := $exists($safe) ? ($exists($parse($safe)) ? $parse($safe) : {'_raw': $safe}) : {}; { 'task_name': $states.input.dep, 'output': $exists($safe) ? $parsed : {}, 'status': $exists($states.result.Item.status.S) ? $states.result.Item.status.S : 'unknown' } ) %}",
                         "End": true
                     }
                 }
