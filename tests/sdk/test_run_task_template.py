@@ -1232,3 +1232,99 @@ def test_two_producers_one_consumer(template):
     payload = resolved["Payload"]
     assert payload["upstream"]["extract_core_sales"]["output"] == {"sales_count": 100}
     assert payload["upstream"]["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}
+
+
+# ── SFN template split: Save_Task_Input → Init_Output_Row + Save_Input_Record ──
+
+
+def test_save_task_input_state_removed(template):
+    """The old monolithic Save_Task_Input is gone — replaced by two states."""
+    assert "Save_Task_Input" not in template["States"], (
+        "Save_Task_Input has been split into Init_Output_Row + Save_Input_Record "
+        "in 0.100.0 (see XCOM_PLAN.md §1.2). If this test fails, the old state was "
+        "reintroduced accidentally."
+    )
+
+
+def test_init_output_row_and_save_input_record_exist(template):
+    """Both new states must be present in the template."""
+    assert "Init_Output_Row" in template["States"]
+    assert "Save_Input_Record" in template["States"]
+
+
+def test_init_output_row_removes_stale_push_marker_fields(template):
+    """B1 fix: REMOVE clause wipes _pushed_by_task/pushed_at/pushed_run_id at
+    task start so Check_Task_Pushed never sees a marker from a prior same-date run.
+    """
+    state = template["States"]["Init_Output_Row"]
+    update_expr = state["Arguments"]["UpdateExpression"]
+    assert "REMOVE" in update_expr
+    assert "#pushed_marker" in update_expr
+    assert "pushed_at" in update_expr
+    assert "pushed_run_id" in update_expr
+    assert state["Arguments"]["ExpressionAttributeNames"]["#pushed_marker"] == "_pushed_by_task"
+
+
+def test_save_input_record_uses_input_key_prefix(template):
+    """Task_input now lives in a separate DDB record with `input#...` key —
+    lets Console preview hold up to ~380KB instead of the old 25KB shared cap."""
+    key = template["States"]["Save_Input_Record"]["Arguments"]["Key"]["execution_name"]["S"]
+    assert "'input#'" in key
+    assert "'output#'" not in key
+
+
+def test_save_input_record_no_truncation_expression(template):
+    """§1.2 fix: the 25KB $length check is gone — the new record has its
+    own 400KB DDB item budget."""
+    ti_expr = template["States"]["Save_Input_Record"]["Arguments"]["ExpressionAttributeValues"][":ti"]["S"]
+    assert "25000" not in ti_expr, "task_input must not truncate at 25KB anymore"
+    assert "_upstream_omitted" not in ti_expr, "task_input must not emit _upstream_omitted marker anymore"
+
+
+def test_save_input_record_uses_updateitem_not_putitem(template):
+    """Concurrent-safe semantics: same-date backfill runs share the input# key;
+    putItem would clobber a prior run's task_input mid-flight."""
+    assert template["States"]["Save_Input_Record"]["Resource"] == "arn:aws:states:::dynamodb:updateItem"
+
+
+def test_save_input_record_uses_task_date_not_date(template):
+    """§1.2 I3 fix: field name deliberately mismatched from date-pipeline-index
+    GSI's key attribute to avoid populating that GSI with internal input# rows.
+    is_internal_record() also filters input#* by prefix as belt-and-suspenders."""
+    update_expr = template["States"]["Save_Input_Record"]["Arguments"]["UpdateExpression"]
+    assert "task_date = :td" in update_expr
+    # And must NOT write bare 'date' — that would pollute the GSI
+    for clause in update_expr.split(","):
+        clause = clause.strip()
+        assert not clause.startswith("date "), (
+            f"Save_Input_Record must not write bare 'date' field (GSI pollution risk): {clause!r}"
+        )
+
+
+def test_save_canonical_output_no_task_input_field(template):
+    """§1.3: task_input moved to separate input# record — must not be duplicated here."""
+    item = template["States"]["Save_Canonical_Output"]["Arguments"]["Item"]
+    assert "task_input" not in item, (
+        "Save_Canonical_Output must not write task_input anymore; it lives in the "
+        "input# record populated by Save_Input_Record."
+    )
+
+
+def test_prepare_task_input_chains_to_init_output_row(template):
+    """Wiring: Prepare_Task_Input -> Init_Output_Row -> Save_Input_Record -> Check_Task_Type."""
+    assert template["States"]["Prepare_Task_Input"]["Next"] == "Init_Output_Row"
+    assert template["States"]["Init_Output_Row"]["Next"] == "Save_Input_Record"
+    assert template["States"]["Save_Input_Record"]["Next"] == "Check_Task_Type"
+
+
+def test_init_output_row_catch_falls_through_to_save_input_record(template):
+    """Best-effort: DDB failure on Init_Output_Row must NOT skip Save_Input_Record
+    (task_input recording is independent of marker cleanup)."""
+    catch = template["States"]["Init_Output_Row"]["Catch"]
+    assert catch[0]["Next"] == "Save_Input_Record"
+
+
+def test_save_input_record_catch_falls_through_to_check_task_type(template):
+    """Best-effort: DDB failure on the input write must not block dispatch."""
+    catch = template["States"]["Save_Input_Record"]["Catch"]
+    assert catch[0]["Next"] == "Check_Task_Type"

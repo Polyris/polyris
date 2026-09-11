@@ -500,15 +500,18 @@ async function main() {
   await testTemplateExpressionsCompile();
 
   
-await test("task_input captures upstream + variables", `( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti )`,
+// Save_Input_Record (new in 0.100.0) — task_input stored in a separate
+// input# DDB record without the old 25KB truncation. The record's own 400KB
+// item budget lets it hold ~380KB. See XCOM_PLAN.md §1.2.
+await test("Save_Input_Record captures full upstream + variables (no 25KB truncation)", `$string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}})`,
   { upstream: { a: { output: { n: 1 } } }, variables: { year: "2026" } },
   null,
   { check: (r) => { const o = JSON.parse(r); return o.upstream.a.output.n === 1 && o.variables.year === "2026"; } });
 
-await test("task_input omits large upstream, keeps variables", `( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti )`,
+await test("Save_Input_Record preserves large upstream (no _upstream_omitted)", `$string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}})`,
   { upstream: { big: { output: "x".repeat(30000) } }, variables: { year: "2026" } },
   null,
-  { check: (r) => { const o = JSON.parse(r); return o._upstream_omitted === true && o.variables.year === "2026"; } });
+  { check: (r) => { const o = JSON.parse(r); return o.upstream.big.output.length === 30000 && o.variables.year === "2026" && !o._upstream_omitted; } });
 
 console.log(`\n${"=".repeat(50)}`);
   console.log(`Results: ${passed} passed, ${failed} failed`);

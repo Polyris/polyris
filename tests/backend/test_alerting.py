@@ -290,34 +290,41 @@ class TestRetryLoopComposesWithHumanDecision:
 
     def test_only_dispatch_and_increment_reenter_the_task(self):
         """Check_Task_Type (task dispatch) is re-entered ONLY by the initial dispatch
-        chain (Prepare_Task_Input -> Save_Task_Input) and the retry increment
-        (Increment_Retry). No decision-flow state loops back into the task, so a
-        human Restart cannot race the counter mid-flight — it can only arrive as
-        a brand-new execution. Save_Task_Input (writes task_input as soon as the
-        task starts, independent of eventual success/failure) sits between
-        Prepare_Task_Input and Check_Task_Type — it's part of the same initial
-        dispatch, not a new re-entry path."""
+        chain (Prepare_Task_Input -> Init_Output_Row -> Save_Input_Record) and the
+        retry increment (Increment_Retry). No decision-flow state loops back into
+        the task, so a human Restart cannot race the counter mid-flight — it can
+        only arrive as a brand-new execution. Init_Output_Row + Save_Input_Record
+        (which write task metadata and the task_input record as soon as the task
+        starts, independent of eventual success/failure) sit between
+        Prepare_Task_Input and Check_Task_Type — part of the same initial
+        dispatch, not new re-entry paths."""
         feeders = {n for n, b in self.rt['States'].items()
                    if 'Check_Task_Type' in self._targets(b)}
-        assert feeders == {'Save_Task_Input', 'Increment_Retry'}, \
-            f"unexpected re-dispatch into the task from: {feeders - {'Save_Task_Input', 'Increment_Retry'}}"
-        # And Save_Task_Input itself must only be reachable from Prepare_Task_Input —
-        # not from anywhere else, so it can't become a second, independent entry point.
+        assert feeders == {'Save_Input_Record', 'Increment_Retry'}, \
+            f"unexpected re-dispatch into the task from: {feeders - {'Save_Input_Record', 'Increment_Retry'}}"
+        # And Save_Input_Record itself must only be reachable from Init_Output_Row
+        # (its Next AND its Catch fallback), so it can't become a second entry point.
         save_input_feeders = {n for n, b in self.rt['States'].items()
-                               if 'Save_Task_Input' in self._targets(b)}
-        assert save_input_feeders == {'Prepare_Task_Input'}, \
-            f"Save_Task_Input has unexpected feeders: {save_input_feeders - {'Prepare_Task_Input'}}"
+                               if 'Save_Input_Record' in self._targets(b)}
+        assert save_input_feeders == {'Init_Output_Row'}, \
+            f"Save_Input_Record has unexpected feeders: {save_input_feeders - {'Init_Output_Row'}}"
+        # And Init_Output_Row must only be reachable from Prepare_Task_Input.
+        init_feeders = {n for n, b in self.rt['States'].items()
+                        if 'Init_Output_Row' in self._targets(b)}
+        assert init_feeders == {'Prepare_Task_Input'}, \
+            f"Init_Output_Row has unexpected feeders: {init_feeders - {'Prepare_Task_Input'}}"
 
     def test_counter_reset_precedes_first_dispatch(self):
         """retry_attempt is initialised to 0 in Prepare_Task_Input, which runs before the
         first Check_Task_Type — so every fresh execution, including a human Restart, starts
-        the retry loop clean. Prepare_Task_Input feeds Save_Task_Input (writes task_input
-        before dispatch) which then feeds Check_Task_Type — retry_attempt is still set
-        before either of them, so the invariant holds through the extra hop."""
+        the retry loop clean. Prepare_Task_Input feeds Init_Output_Row -> Save_Input_Record
+        -> Check_Task_Type — retry_attempt is set before all three, so the invariant holds
+        through the extra hops."""
         prep = self.rt['States']['Prepare_Task_Input']
         assert '"retry_attempt"' in json.dumps(prep['Assign'])
-        assert prep['Next'] == 'Save_Task_Input'
-        assert self.rt['States']['Save_Task_Input']['Next'] == 'Check_Task_Type'
+        assert prep['Next'] == 'Init_Output_Row'
+        assert self.rt['States']['Init_Output_Row']['Next'] == 'Save_Input_Record'
+        assert self.rt['States']['Save_Input_Record']['Next'] == 'Check_Task_Type'
 
 
 # ============================================================
@@ -700,60 +707,165 @@ class TestCanonicalOutput:
         assert 'pipeline_name' in key
 
 
-class TestSaveTaskInputEarly:
-    """Save_Task_Input writes task_input (upstream+variables) as soon as the task
-    starts, independent of eventual success/failure/waiting_decision — closes the
-    gap where only Save_Canonical_Output (success-path only) ever recorded it,
-    so a failed or still-running task's Input tab was always empty."""
+class TestInitOutputRowAtStart:
+    """Init_Output_Row runs at task start on the canonical output# row: it sets
+    task metadata (task_name, ttl, updated_at, run_id) AND clears any stale
+    _pushed_by_task / pushed_at / pushed_run_id fields from a previous same-date
+    run. Without the REMOVE, Check_Task_Pushed on the current run could see a
+    leftover marker and route to Save_Success_Preserve — data corruption.
+    Split from the old Save_Task_Input state in 0.100.0 (see XCOM_PLAN.md §1.2)."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
         self.rt = load('run_task')
 
-    def test_prepare_task_input_chains_through_save_task_input_to_dispatch(self):
-        """Prepare_Task_Input -> Save_Task_Input -> Check_Task_Type — the write
-        happens after upstream/variables are fully resolved, but before any
-        business logic (Glue/ECS/SFN/etc.) actually runs."""
-        assert self.rt['States']['Prepare_Task_Input']['Next'] == 'Save_Task_Input'
-        assert self.rt['States']['Save_Task_Input']['Next'] == 'Check_Task_Type'
-
-    def test_uses_the_same_stable_canonical_key_as_save_canonical_output(self):
-        """Same key format as Save_Canonical_Output (output#pipeline#task#date) —
-        this is deliberately the same record xcom.pull() and the console's
-        Input/Output tab both read, not a new location."""
-        key = self.rt['States']['Save_Task_Input']['Arguments']['Key']['execution_name']['S']
+    def test_writes_to_canonical_output_row_by_updateitem(self):
+        """Same output#pipeline#task#date key as Save_Canonical_Output —
+        this is the row xcom.pull() reads. Uses updateItem (not putItem) so a
+        concurrent same-date run's real 'result' is never clobbered mid-flight."""
+        state = self.rt['States']['Init_Output_Row']
+        assert state['Resource'] == 'arn:aws:states:::dynamodb:updateItem'
+        key = state['Arguments']['Key']['execution_name']['S']
         assert 'output#' in key
         assert 'pipeline_name' in key
         assert 'task_name' in key
         assert 'date' in key
 
-    def test_only_touches_task_input_never_result_or_status(self):
-        """Deliberately updateItem, not putItem like Save_Canonical_Output: this
-        key is shared across same-day runs of this task, so a blind full-item
-        replace here could momentarily blank out a prior successful run's real
-        'result' while a later run of the same task/date is still in flight.
-        The UpdateExpression must only ever touch task_input/task_name/
-        updated_at/ttl — never result or status."""
-        state = self.rt['States']['Save_Task_Input']
-        assert state['Resource'] == 'arn:aws:states:::dynamodb:updateItem'
+    def test_never_writes_result_or_status(self):
+        """Same rationale as the old Save_Task_Input: this state runs before the
+        task actually does its work, so 'result' and 'status' MUST stay untouched
+        — they belong to the eventual Save_Success / Save_Canonical_Output."""
+        state = self.rt['States']['Init_Output_Row']
         update_expr = state['Arguments']['UpdateExpression']
         assert 'result' not in update_expr
         assert 'status' not in update_expr
-        assert 'task_input' in update_expr
+
+    def test_clears_stale_push_marker_fields(self):
+        """B1 fix: the REMOVE clause wipes _pushed_by_task / pushed_at /
+        pushed_run_id at task start. Without it, xcom.push() from a prior
+        same-date run would leave a marker Check_Task_Pushed could still see
+        on the current run — silent data corruption."""
+        state = self.rt['States']['Init_Output_Row']
+        update_expr = state['Arguments']['UpdateExpression']
+        assert 'REMOVE' in update_expr
+        assert '#pushed_marker' in update_expr
+        assert 'pushed_at' in update_expr
+        assert 'pushed_run_id' in update_expr
+        # The alias resolves to the SDK-coupled constant name
+        names = state['Arguments']['ExpressionAttributeNames']
+        assert names['#pushed_marker'] == '_pushed_by_task'
+
+    def test_stamps_current_wrapper_run_id(self):
+        """run_id lets debugging distinguish which wrapper execution last
+        touched this row. Uses $states.context.Execution.Id (full SFN ARN) —
+        same convention as elsewhere in the template."""
+        update_expr = self.rt['States']['Init_Output_Row']['Arguments']['UpdateExpression']
+        assert 'run_id = :rid' in update_expr
+        rid = self.rt['States']['Init_Output_Row']['Arguments']['ExpressionAttributeValues'][':rid']['S']
+        assert '$states.context.Execution.Id' in rid
 
     def test_ttl_uses_if_not_exists_so_it_is_not_reset_every_run(self):
         """A same-day re-run of this task must not push the ttl forward
         indefinitely — if_not_exists means only the first write for this key
         on this date sets it."""
-        update_expr = self.rt['States']['Save_Task_Input']['Arguments']['UpdateExpression']
+        update_expr = self.rt['States']['Init_Output_Row']['Arguments']['UpdateExpression']
         assert 'if_not_exists' in update_expr
 
-    def test_is_best_effort_like_every_other_status_write(self):
-        """DDB failure here must not block the task from actually running —
-        same pattern as Save_Success/Save_Failed/Save_Canonical_Output."""
-        catch = self.rt['States']['Save_Task_Input']['Catch']
+    def test_is_best_effort_falls_through_to_save_input_record(self):
+        """DDB failure here must not block the task — same best-effort pattern
+        as every other status write. Catch fallback goes to Save_Input_Record
+        (the next state), not to Check_Task_Type — the second write should
+        still be attempted even if the first one dies."""
+        catch = self.rt['States']['Init_Output_Row']['Catch']
+        assert len(catch) == 1
+        assert catch[0]['Next'] == 'Save_Input_Record'
+
+
+class TestSaveInputRecordSeparate:
+    """Save_Input_Record writes task_input (upstream + variables) to a SEPARATE
+    DDB record with key 'input#{pipeline}#{task}#{date}'. Split from the old
+    Save_Task_Input state so the Console preview is bounded by DDB's 400KB item
+    limit (not the arbitrary 25KB cap that used to sit on the shared output#
+    row). See XCOM_PLAN.md §1.2."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.rt = load('run_task')
+
+    def test_uses_input_key_prefix_not_output(self):
+        """The new prefix keeps task_input out of the output# row entirely,
+        eliminating the 25KB shared-budget truncation that caused
+        _upstream_omitted markers in the Console Input tab."""
+        state = self.rt['States']['Save_Input_Record']
+        assert state['Resource'] == 'arn:aws:states:::dynamodb:updateItem'
+        key = state['Arguments']['Key']['execution_name']['S']
+        assert "'input#'" in key or '"input#"' in key
+        assert 'pipeline_name' in key
+        assert 'task_name' in key
+        assert 'date' in key
+
+    def test_stores_task_input_field_without_25kb_truncation(self):
+        """The old Save_Task_Input truncated at 25000 chars to fit alongside
+        the 'result' field. Split records eliminate the shared budget so this
+        state writes the full task_input blob (bounded only by DDB's 400KB item)."""
+        state = self.rt['States']['Save_Input_Record']
+        update_expr = state['Arguments']['UpdateExpression']
+        assert 'task_input = :ti' in update_expr
+        ti_expr = state['Arguments']['ExpressionAttributeValues'][':ti']['S']
+        # No more $length($ti) > 25000 ? {_upstream_omitted: true, ...} : ...
+        assert '25000' not in ti_expr
+        assert '_upstream_omitted' not in ti_expr
+
+    def test_uses_task_date_field_not_date_to_avoid_gsi_pollution(self):
+        """Deliberately mismatched field name: date-pipeline-index GSI keys on
+        'date' + 'pipeline_name'. Writing 'date' here would populate the GSI
+        with internal input# rows. 'task_date' keeps the same semantic value
+        (task run date) without polluting execution listings. Belt-and-suspenders
+        with is_internal_record()'s input#* prefix filter (utils.py)."""
+        state = self.rt['States']['Save_Input_Record']
+        update_expr = state['Arguments']['UpdateExpression']
+        assert 'task_date = :td' in update_expr
+        # Must NOT write bare 'date =' — that would show up in the GSI
+        # (allow 'task_date' via startswith exclusion)
+        for part in update_expr.split(','):
+            part = part.strip()
+            assert not part.startswith('date '), \
+                f"Save_Input_Record must not write bare 'date' field (GSI pollution): {part}"
+
+    def test_never_writes_result_or_status(self):
+        """Same guard as Init_Output_Row: this is a task-start write, not a
+        completion write. result/status belong to Save_Success."""
+        state = self.rt['States']['Save_Input_Record']
+        update_expr = state['Arguments']['UpdateExpression']
+        assert 'result' not in update_expr
+        assert 'status' not in update_expr
+
+    def test_ttl_uses_if_not_exists(self):
+        """Same ttl policy as Init_Output_Row — don't push forward on same-day re-run."""
+        update_expr = self.rt['States']['Save_Input_Record']['Arguments']['UpdateExpression']
+        assert 'if_not_exists' in update_expr
+
+    def test_is_best_effort_falls_through_to_check_task_type(self):
+        """DDB failure here must not block dispatch — same pattern as every
+        other status write."""
+        catch = self.rt['States']['Save_Input_Record']['Catch']
         assert len(catch) == 1
         assert catch[0]['Next'] == 'Check_Task_Type'
+
+
+class TestSaveCanonicalOutputNoLongerWritesTaskInput:
+    """task_input moved to the separate input# record (Save_Input_Record).
+    Save_Canonical_Output should no longer touch that field at all — the
+    Console API reads the new record first with a legacy-field fallback."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.rt = load('run_task')
+
+    def test_task_input_field_removed_from_canonical_output_item(self):
+        item = self.rt['States']['Save_Canonical_Output']['Arguments']['Item']
+        assert 'task_input' not in item, \
+            "Save_Canonical_Output must NOT write task_input anymore; it lives in the input# record (see Save_Input_Record). Console API reads new record first with legacy fallback."
 
 
 class TestUpstreamDataFlow:

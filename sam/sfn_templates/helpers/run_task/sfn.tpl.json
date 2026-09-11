@@ -319,11 +319,11 @@
                 "retry_attempt": "{% 0 %}"
             },
             "Output": "{% ( $cd := $states.input.current_date; $dt := $toMillis($cd & 'T00:00:00Z'); $dateVars := { 'current_date': $cd, 'PARTITION_ARG': $exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : $cd, 'date_iso': $cd, 'date_compact': $replace($cd, '-', ''), 'date_slash': $substring($cd,0,4) & '/' & $substring($cd,5,2) & '/' & $substring($cd,8,2), 'date_underscore': $replace($cd, '-', '_'), 'year': $substring($cd, 0, 4), 'month': $substring($cd, 5, 2), 'day': $substring($cd, 8, 2), 'day_of_week': (['thursday','friday','saturday','sunday','monday','tuesday','wednesday'])[$floor($dt / 86400000) % 7], 'previous_date': $fromMillis($dt - 86400000, '[Y0001]-[M01]-[D01]'), 'next_date': $fromMillis($dt + 86400000, '[Y0001]-[M01]-[D01]'), 'minus_7_days': $fromMillis($dt - 604800000, '[Y0001]-[M01]-[D01]'), 'minus_14_days': $fromMillis($dt - 1209600000, '[Y0001]-[M01]-[D01]'), 'minus_30_days': $fromMillis($dt - 2592000000, '[Y0001]-[M01]-[D01]'), 'minus_7_days_compact': $replace($fromMillis($dt - 604800000, '[Y0001]-[M01]-[D01]'), '-', ''), 'minus_30_days_compact': $replace($fromMillis($dt - 2592000000, '[Y0001]-[M01]-[D01]'), '-', ''), 'partition_key': $exists($states.input.partition_key) ? $states.input.partition_key : $cd, 'backfill_id': $exists($states.input.backfill_id) ? $states.input.backfill_id : '', 'is_backfill': $exists($states.input.is_backfill) ? $states.input.is_backfill : false, 'ALLOW_UNSUCCESSFUL_SPIDER_RUN': 'True' }; $vars := $exists($states.input.variables) ? $states.input.variables : {}; $merged := $merge([$dateVars, $vars]); $states.input ~> |$| {'variables': $merged, 'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}} | ) %}",
-            "Next": "Save_Task_Input"
+            "Next": "Init_Output_Row"
         },
-        "Save_Task_Input": {
+        "Init_Output_Row": {
             "Type": "Task",
-            "Comment": "Save task_input (upstream+variables) as soon as the task actually starts, independent of eventual success/failure/waiting_decision — Save_Canonical_Output only fires on the success path, which previously meant running/failed/manually-resolved tasks never had a recorded input to debug from. Deliberately updateItem, not putItem like Save_Canonical_Output: this key (output#pipeline#task#date) is shared across same-day runs of this task, so a blind full-item replace here could momentarily blank out a prior successful run's real 'result' while this run is still in flight. SET only touches task_input/updated_at; ttl is set only if not already present, so it isn't reset by every subsequent run.",
+            "Comment": "Initialize the canonical output# row at task start: set task_name/ttl/updated_at AND clear any stale _pushed_by_task marker left by a prior same-date run. Uses updateItem (not putItem) because the row may already carry a real 'result' from a concurrent same-date run (backfill semantics) — a blind putItem could clobber it mid-flight. The REMOVE clause on _pushed_by_task / pushed_at / pushed_run_id is the B1 fix: without it, Check_Task_Pushed could see a leftover marker from a previous run's xcom.push() and incorrectly route to Save_Success_Preserve on the current run, causing data corruption (downstream would read the stale pushed value instead of the current run's real output). See XCOM_PLAN.md §2.8 for coupled constants with polyris/xcom.py.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -332,7 +332,65 @@
                         "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
                     }
                 },
-                "UpdateExpression": "SET task_name = :tn, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
+                "UpdateExpression": "SET task_name = :tn, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl), run_id = :rid REMOVE #pushed_marker, pushed_at, pushed_run_id",
+                "ExpressionAttributeNames": {
+                    "#ttl_field": "ttl",
+                    "#pushed_marker": "_pushed_by_task"
+                },
+                "ExpressionAttributeValues": {
+                    ":tn": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    ":ua": {
+                        "S": "{% $now() %}"
+                    },
+                    ":ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    },
+                    ":rid": {
+                        "S": "{% $states.context.Execution.Id %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Save_Input_Record",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution; row init is best-effort, same pattern as every other status write in this template",
+                    "Output": "{% $states.input %}",
+                    "Next": "Save_Input_Record"
+                }
+            ]
+        },
+        "Save_Input_Record": {
+            "Type": "Task",
+            "Comment": "Store task_input (upstream + variables) in a SEPARATE DDB record (key 'input#{pipeline}#{task}#{date}') so the Console preview is not bounded by the ~25KB left in the output# row after 'result' takes 350KB. This record's own 400KB item budget lets task_input hold ~380KB. Uses updateItem (not putItem) — same concurrent-safety rationale as Init_Output_Row. IMPORTANT field naming: 'task_date' (not 'date') is deliberate — mismatched from the date-pipeline-index GSI's key attribute so input# rows never populate that GSI. is_internal_record() also filters input#* by prefix as belt-and-suspenders (see console_api/utils.py). See XCOM_PLAN.md §1.2 + §2.8.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'input#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "UpdateExpression": "SET task_name = :tn, pipeline_name = :pn, task_date = :td, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
                 "ExpressionAttributeNames": {
                     "#ttl_field": "ttl"
                 },
@@ -340,8 +398,14 @@
                     ":tn": {
                         "S": "{% $states.input.task_name %}"
                     },
+                    ":pn": {
+                        "S": "{% $states.input.pipeline_name %}"
+                    },
+                    ":td": {
+                        "S": "{% $states.input.date %}"
+                    },
                     ":ti": {
-                        "S": "{% ( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti ) %}"
+                        "S": "{% $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}) %}"
                     },
                     ":ua": {
                         "S": "{% $now() %}"
@@ -372,7 +436,7 @@
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "DDB failure - continue with execution; input recording is best-effort, same pattern as every other status write in this template",
+                    "Comment": "DDB failure - continue with execution; input recording is best-effort, same pattern as Init_Output_Row",
                     "Output": "{% $states.input %}",
                     "Next": "Check_Task_Type"
                 }
@@ -768,7 +832,7 @@
         },
         "Save_Canonical_Output": {
             "Type": "Task",
-            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this.",
+            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this. task_input is intentionally NOT written here anymore — it lives in a separate 'input#{pipeline}#{task}#{date}' record populated by Save_Input_Record at task start (see XCOM_PLAN.md §1.2). That split lets the Console preview hold up to ~380KB of upstream data instead of the previous 25KB truncation cap.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -784,9 +848,6 @@
                     },
                     "result": {
                         "S": "{% ( $to := $string($states.input.task_output); $length($to) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($to)) & '}' : $to ) %}"
-                    },
-                    "task_input": {
-                        "S": "{% ( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti ) %}"
                     },
                     "updated_at": {
                         "S": "{% $now() %}"
