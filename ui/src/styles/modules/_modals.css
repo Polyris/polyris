@@ -113,6 +113,127 @@
     overflow-x: auto;
     max-height: 60vh;
 }
+
+/* ── Split input rendering: variables + per-upstream cards (XCOM_PLAN.md §4.2) ──
+   New in 0.100.0. Colour pattern mirrors .bd-status-hint--warning/danger so the
+   Task Detail modal stays visually consistent with Backfill Detail banners. */
+.td-input-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+.td-io-block { margin-bottom: 0.5rem; }
+.td-io-sublabel {
+    font-size: 0.85rem;
+    opacity: 0.7;
+    margin-bottom: 0.35rem;
+    font-weight: 500;
+}
+.td-upstream-dep {
+    margin-bottom: 0.4rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    border-left: 3px solid var(--border);
+}
+.td-upstream-dep--success { border-left-color: var(--success); }
+.td-upstream-dep summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+}
+.td-upstream-dep summary strong { flex: 1; }
+.td-upstream-dep details[open] > .td-output-json,
+.td-upstream-dep > .td-output-json {
+    margin-top: 0.5rem;
+}
+
+.td-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    margin-bottom: 0.375rem;
+}
+.td-banner > svg { flex-shrink: 0; margin-top: 0.15rem; }
+.td-banner code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    padding: 0.05rem 0.25rem;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 3px;
+}
+.td-banner--warn {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: var(--text-primary);
+}
+.td-banner--warn > svg { color: var(--warning); }
+.td-banner--error {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: var(--text-primary);
+}
+.td-banner--error > svg { color: var(--error); }
+.td-banner--muted {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.td-banner-detail {
+    margin-top: 0.25rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.td-status-badge {
+    display: inline-block;
+    padding: 0.1rem 0.4rem;
+    border-radius: 8px;
+    font-size: 0.7rem;
+    background: var(--success-light, rgba(34, 197, 94, 0.15));
+    color: var(--success);
+    margin-left: 0.5rem;
+}
+
+/* One-time onboarding banner (removed in 0.102.0 per TODO). */
+.td-onboarding-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 0.75rem;
+    font-size: 0.85rem;
+}
+.td-onboarding-banner > svg { flex-shrink: 0; margin-top: 0.2rem; }
+.td-onboarding-banner code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    padding: 0.05rem 0.3rem;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 3px;
+}
+.td-banner-dismiss {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    align-self: flex-start;
+}
+.td-banner-dismiss:hover {
+    background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+    color: var(--text-primary);
+}
 .td-tab-empty {
     display: flex;
     align-items: center;

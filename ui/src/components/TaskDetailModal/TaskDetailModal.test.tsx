@@ -106,15 +106,28 @@ describe('TaskDetailModal', () => {
             expect(screen.getByLabelText('Task output').textContent).toContain('42');
         });
 
-        it('displays the task input (upstream + variables)', () => {
+        it('displays the task input (upstream + variables) as split sections', () => {
             vi.mocked(useTaskOutput).mockReturnValue(io({
-                input: { upstream: { a: { output: { n: 1 } } }, variables: { year: '2026' } },
+                input: {
+                    upstream: { a: { output: { n: 1 }, status: 'success' } },
+                    variables: { year: '2026' },
+                },
                 output: { ok: true },
             }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.getByLabelText('Task input').textContent).toContain('upstream');
-            expect(screen.getByLabelText('Task input').textContent).toContain('2026');
+            // Variables render in their own labelled <pre> block.
+            expect(screen.getByLabelText('Task variables').textContent).toContain('2026');
+            // Upstream section shows the dep count in the sublabel.
+            expect(screen.getByText(/Upstream \(1\)/)).toBeInTheDocument();
+            // The dep card carries the dep name.
+            expect(screen.getByText('a')).toBeInTheDocument();
+            // 'success' appears both in the modal header and as the dep's status
+            // badge — both are legitimate. Verify at least one is the dep badge
+            // (rendered inside .td-status-badge span).
+            const badges = screen.getAllByText('success');
+            expect(badges.length).toBeGreaterThanOrEqual(1);
+            expect(badges.some(el => el.classList.contains('td-status-badge'))).toBe(true);
         });
 
         it('shows an empty state when the task stored no output', () => {
@@ -144,6 +157,129 @@ describe('TaskDetailModal', () => {
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
             expect(screen.getByText(/loading/i)).toBeInTheDocument();
+        });
+
+        // ── Upstream marker interpretation (XCOM_PLAN.md §4.1) ───────────
+
+        it('renders a warn banner for a missing upstream (status=unknown)', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: { extract_sales: { output: {}, status: 'unknown' } },
+                    variables: {},
+                },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('extract_sales')).toBeInTheDocument();
+            expect(screen.getByText(/No output recorded/i)).toBeInTheDocument();
+        });
+
+        it('renders an error banner for a failed upstream and shows output details', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: { transform: { output: { partial: true }, status: 'failed' } },
+                    variables: {},
+                },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('transform')).toBeInTheDocument();
+            expect(screen.getByText(/failed/)).toBeInTheDocument();
+        });
+
+        it('renders a truncated marker with xcom.get() hint', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: {
+                        big: {
+                            output: { _truncated: true, _size: 30000 },
+                            status: 'success',
+                        },
+                    },
+                    variables: {},
+                },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText(/29\.3KB/)).toBeInTheDocument();
+            expect(screen.getByText(/xcom\.get/i)).toBeInTheDocument();
+        });
+
+        it('renders an S3 claim-check pointer with resolve hint', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: {
+                        payload: {
+                            output: { _s3_ref: 's3://my-bucket/key.json' },
+                            status: 'success',
+                        },
+                    },
+                    variables: {},
+                },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('s3://my-bucket/key.json')).toBeInTheDocument();
+        });
+
+        it('renders _upstream_omitted marker as legacy-pipeline banner (with size)', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: { _upstream_omitted: true, _size: 27000, variables: { y: 1 } },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText(/26\.4KB/)).toBeInTheDocument();
+            expect(screen.getByText(/legacy Console preview/i)).toBeInTheDocument();
+        });
+
+        it('warns when the output looks like AWS API metadata (JobRunId etc.)', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                output: { JobRunId: 'jr_abc123' },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            // Banner text + still shows the JSON payload
+            expect(screen.getByText(/AWS API response/i)).toBeInTheDocument();
+            // 'xcom.push' appears twice: banner prose text + <code> element.
+            // Both are the same banner — assert at least one match.
+            expect(screen.getAllByText(/xcom\.push/i).length).toBeGreaterThanOrEqual(1);
+            expect(screen.getByLabelText('Task output').textContent).toContain('jr_abc123');
+        });
+
+        // ── Onboarding banner (XCOM_PLAN.md §4.5) ────────────────────────
+
+        it('shows the 0.100.0 onboarding banner on first render', () => {
+            localStorage.clear();
+            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 1 } }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText(/Updated in 0\.100\.0/)).toBeInTheDocument();
+        });
+
+        it('hides the onboarding banner after dismiss (persists to localStorage)', () => {
+            localStorage.clear();
+            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 1 } }));
+            const { unmount } = render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            fireEvent.click(screen.getByRole('button', { name: /Dismiss onboarding banner/i }));
+            expect(screen.queryByText(/Updated in 0\.100\.0/)).not.toBeInTheDocument();
+            // Persists across re-mount.
+            expect(localStorage.getItem('polyris.ui.taskDetailBannerDismissed_v100')).toBe('true');
+            unmount();
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.queryByText(/Updated in 0\.100\.0/)).not.toBeInTheDocument();
+        });
+
+        it('renders the onboarding banner when localStorage throws (private mode)', () => {
+            const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+                throw new Error('SecurityError');
+            });
+            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 1 } }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText(/Updated in 0\.100\.0/)).toBeInTheDocument();
+            spy.mockRestore();
         });
     });
 

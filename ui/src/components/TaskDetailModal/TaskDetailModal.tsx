@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
@@ -643,6 +643,310 @@ interface OutputTabProps {
     loaded: boolean;
 }
 
+// =============================================================================
+// Output Tab helpers — per-upstream marker interpretation (XCOM_PLAN.md §4.1)
+// =============================================================================
+
+export function formatBytes(n: number): string {
+    if (!Number.isFinite(n) || n < 0) return '0B';
+    if (n < 1024) return `${n}B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Heuristic: is `output` the wrapper's AWS API response (JobRunId, TaskArn,
+ * QueryExecutionId, StepId, JobId, ExecutionArn) rather than real user data?
+ *
+ * Service tasks (Glue/ECS/Batch/EMR) store the AWS response as `result` unless
+ * the job code calls xcom.push() with the real output. This detection lets us
+ * surface a Console banner pointing at the fix.
+ */
+export function looksLikeAwsMetadata(output: unknown): boolean {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
+    const obj = output as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    if (keys.length === 0 || keys.length > 4) return false;
+    const metadataKeys = new Set(['JobRunId', 'TaskArn', 'JobId', 'QueryExecutionId', 'StepId', 'ExecutionArn']);
+    return keys.some(k => metadataKeys.has(k));
+}
+
+// One-time banner explaining the new marker-aware UI. Dismissible; remembers
+// the choice per browser via localStorage. See XCOM_PLAN.md §4.5.
+// TODO(polyris-0.102.0): remove OnboardingBanner + this localStorage key.
+// Two releases after 0.100.0 introduces it — users have had time to see it.
+const ONBOARDING_BANNER_KEY = 'polyris.ui.taskDetailBannerDismissed_v100';
+
+function useDismissibleBanner(key: string): { dismissed: boolean; dismiss: () => void } {
+    const [dismissed, setDismissed] = useState<boolean>(() => {
+        if (typeof window === 'undefined') return true; // SSR-safe
+        try {
+            return localStorage.getItem(key) === 'true';
+        } catch {
+            return false; // localStorage blocked (private mode) → show banner
+        }
+    });
+
+    const dismiss = useCallback(() => {
+        try {
+            localStorage.setItem(key, 'true');
+        } catch {
+            /* ignore localStorage errors — banner still hides in-session */
+        }
+        setDismissed(true);
+    }, [key]);
+
+    return { dismissed, dismiss };
+}
+
+function OnboardingBanner() {
+    const { dismissed, dismiss } = useDismissibleBanner(ONBOARDING_BANNER_KEY);
+    if (dismissed) return null;
+    return (
+        <div className="td-onboarding-banner" role="status">
+            <Info size={14} />
+            <div>
+                <strong>Updated in 0.100.0:</strong> upstream deps now render as colored cards
+                with actionable messages — click the summary to expand raw data. AWS-metadata
+                outputs from Glue/ECS/Batch flag themselves with a hint about{' '}
+                <code>xcom.push()</code>.
+            </div>
+            <button
+                onClick={dismiss}
+                className="td-banner-dismiss"
+                aria-label="Dismiss onboarding banner"
+            >
+                Dismiss
+            </button>
+        </div>
+    );
+}
+
+/**
+ * Render a single upstream dependency entry from `event.upstream[X]`.
+ * Interprets `status` and any `_truncated` / `_s3_ref` markers into
+ * actionable banners rather than raw JSON.
+ */
+function UpstreamDep({ name, entry }: { name: string; entry: unknown }) {
+    // Malformed entry — surface visibly so a producer bug isn't hidden.
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return (
+            <div className="td-upstream-dep td-banner td-banner--warn">
+                <AlertTriangle size={14} />
+                <div>
+                    <strong>{name}</strong>
+                    <div className="td-banner-detail">
+                        Malformed upstream entry (expected {'{status, output}'}).
+                    </div>
+                    <details>
+                        <summary>Raw</summary>
+                        <pre className="td-output-json">{JSON.stringify(entry, null, 2)}</pre>
+                    </details>
+                </div>
+            </div>
+        );
+    }
+    const e = entry as { status?: string; output?: unknown };
+    const status = e.status ?? 'unknown';
+    const output = e.output;
+    const outputIsObj = output !== null && typeof output === 'object' && !Array.isArray(output);
+    const outputAsRec = outputIsObj ? (output as Record<string, unknown>) : null;
+
+    // Missing dep — Get_Dep_Output writes status=unknown when the DDB row is absent.
+    if (status === 'unknown') {
+        return (
+            <div className="td-upstream-dep td-banner td-banner--warn">
+                <AlertTriangle size={14} />
+                <div>
+                    <strong>{name}</strong>
+                    <div className="td-banner-detail">
+                        No output recorded — the task may have been skipped, failed, or
+                        hasn&apos;t run yet for this date.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Non-success status (skipped/failed/aborted) — collapsed output details for debug.
+    if (status !== 'success') {
+        return (
+            <div className="td-upstream-dep td-banner td-banner--error">
+                <XCircle size={14} />
+                <div>
+                    <strong>{name}</strong> — status: <code>{status}</code>
+                    {output !== undefined && output !== null && (
+                        <details>
+                            <summary>Output</summary>
+                            <pre className="td-output-json">{JSON.stringify(output, null, 2)}</pre>
+                        </details>
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    // Truncated marker — inline injection was capped, downstream can fetch full via xcom.pull().
+    if (outputAsRec && outputAsRec._truncated) {
+        const size = typeof outputAsRec._size === 'number' ? outputAsRec._size : 0;
+        return (
+            <div className="td-upstream-dep td-banner td-banner--warn">
+                <AlertTriangle size={14} />
+                <div>
+                    <strong>{name}</strong>
+                    <div className="td-banner-detail">
+                        Output was {formatBytes(size)}, truncated for runtime injection (25KB cap).
+                        The task can still read the full value via{' '}
+                        <code>xcom.get(event, &quot;{name}&quot;)</code> which falls back to DDB
+                        automatically.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Manual Claim Check pointer — user offloaded to S3.
+    if (outputAsRec && typeof outputAsRec._s3_ref === 'string') {
+        return (
+            <div className="td-upstream-dep td-banner td-banner--muted">
+                <Database size={14} />
+                <div>
+                    <strong>{name}</strong>
+                    <div className="td-banner-detail">
+                        Output stored in S3 (Claim Check pattern): <code>{outputAsRec._s3_ref}</code>.
+                        Downstream <code>xcom.get()</code> / <code>xcom.pull()</code> resolves it
+                        transparently.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Success — collapsible clean JSON.
+    return (
+        <details className="td-upstream-dep td-upstream-dep--success">
+            <summary>
+                <CheckCircle2 size={14} /> <strong>{name}</strong>
+                <span className="td-status-badge">success</span>
+            </summary>
+            <pre className="td-output-json">{JSON.stringify(output, null, 2)}</pre>
+        </details>
+    );
+}
+
+function InputSection({ input }: { input: unknown }) {
+    if (input === null || input === undefined) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> No input recorded (upstream data + run variables).
+            </div>
+        );
+    }
+    if (typeof input !== 'object' || Array.isArray(input)) {
+        return (
+            <pre className="td-output-json" aria-label="Task input">
+                {JSON.stringify(input, null, 2)}
+            </pre>
+        );
+    }
+    const inp = input as Record<string, unknown>;
+
+    // Pre-0.100.0 wholesale-omission marker: shows up only on legacy pipelines
+    // that haven't produced a new-shape run yet.
+    if (inp._upstream_omitted) {
+        const size = typeof inp._size === 'number' ? inp._size : 0;
+        return (
+            <div className="td-banner td-banner--warn">
+                <AlertTriangle size={14} />
+                <div>
+                    Upstream data was <strong>{formatBytes(size)}</strong> — too large for the
+                    legacy Console preview (pre-0.100.0 pipelines share a 25KB budget between
+                    result and task_input). The task received the full data at runtime.
+                    Re-deploy this pipeline to store task_input in the new separate record
+                    (~380KB budget).
+                </div>
+            </div>
+        );
+    }
+
+    const variables = (inp.variables && typeof inp.variables === 'object')
+        ? inp.variables as Record<string, unknown>
+        : {};
+    const upstream = (inp.upstream && typeof inp.upstream === 'object')
+        ? inp.upstream as Record<string, unknown>
+        : {};
+    const hasVars = Object.keys(variables).length > 0;
+    const hasUpstream = Object.keys(upstream).length > 0;
+
+    if (!hasVars && !hasUpstream) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> No upstream or variables recorded.
+            </div>
+        );
+    }
+
+    return (
+        <div className="td-input-section">
+            {hasVars && (
+                <div className="td-io-block">
+                    <div className="td-io-sublabel">Variables</div>
+                    <pre className="td-output-json" aria-label="Task variables">
+                        {JSON.stringify(variables, null, 2)}
+                    </pre>
+                </div>
+            )}
+            {hasUpstream && (
+                <div className="td-io-block">
+                    <div className="td-io-sublabel">Upstream ({Object.keys(upstream).length})</div>
+                    {Object.entries(upstream).map(([dep, entry]) => (
+                        <UpstreamDep key={dep} name={dep} entry={entry} />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function OutputSection({ output, truncated }: { output: unknown; truncated: boolean }) {
+    if (truncated) {
+        return (
+            <div className="td-banner td-banner--warn" role="status">
+                <AlertTriangle size={14} />
+                <div>
+                    Output too large to store inline. Write the payload to S3 and return{' '}
+                    <code>{'{"_s3_ref": "s3://..."}'}</code> — downstream{' '}
+                    <code>xcom.get()</code> / <code>xcom.pull()</code> resolves it automatically.
+                </div>
+            </div>
+        );
+    }
+    if (output === null || output === undefined) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> This task stored no output.
+            </div>
+        );
+    }
+    return (
+        <>
+            {looksLikeAwsMetadata(output) && (
+                <div className="td-banner td-banner--warn">
+                    <AlertTriangle size={14} />
+                    <div>
+                        This output is an AWS API response, not application data. For
+                        Glue/ECS/Batch tasks, call <code>xcom.push(value)</code> in your job
+                        code so downstream tasks receive the real output.
+                    </div>
+                </div>
+            )}
+            <pre className="td-output-json" aria-label="Task output">
+                {JSON.stringify(output, null, 2)}
+            </pre>
+        </>
+    );
+}
+
 function OutputTab({ input, output, truncated, loading, loaded }: OutputTabProps) {
     if (loading) {
         return <div className="td-tab-empty"><Hourglass size={16} /> Loading…</div>;
@@ -650,40 +954,16 @@ function OutputTab({ input, output, truncated, loading, loaded }: OutputTabProps
     if (!loaded) {
         return <div className="td-tab-empty"><Database size={16} /> Open to load input and output.</div>;
     }
-
-    const hasInput = input !== null && input !== undefined;
-    const hasOutput = output !== null && output !== undefined;
-
     return (
         <div className="td-output-tab">
+            <OnboardingBanner />
             <div className="td-io-section">
                 <div className="td-io-label">Input</div>
-                {hasInput ? (
-                    <pre className="td-output-json" aria-label="Task input">
-                        {JSON.stringify(input, null, 2)}
-                    </pre>
-                ) : (
-                    <div className="td-tab-empty td-tab-empty--inline">
-                        <Database size={14} /> No input recorded (upstream data + run variables).
-                    </div>
-                )}
+                <InputSection input={input} />
             </div>
             <div className="td-io-section">
                 <div className="td-io-label">Output</div>
-                {truncated ? (
-                    <div className="td-tab-empty td-tab-empty--inline" role="status">
-                        <AlertTriangle size={14} /> Output too large to store inline. Return an
-                        <code>s3://</code> pointer for large data.
-                    </div>
-                ) : hasOutput ? (
-                    <pre className="td-output-json" aria-label="Task output">
-                        {JSON.stringify(output, null, 2)}
-                    </pre>
-                ) : (
-                    <div className="td-tab-empty td-tab-empty--inline">
-                        <Database size={14} /> This task stored no output.
-                    </div>
-                )}
+                <OutputSection output={output} truncated={truncated} />
             </div>
         </div>
     );
