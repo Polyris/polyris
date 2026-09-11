@@ -217,15 +217,23 @@ def _wrapper_input_for(build):
     return state["Arguments"]["Input"]
 
 
-def _resolve_arguments(template, state_name, wrapper_input):
-    """Resolve a Run_Task_<X> state's Arguments JSONata with $states bound."""
+def _resolve_arguments(template, state_name, wrapper_input, context_execution_id=None):
+    """Resolve a Run_Task_<X> state's Arguments JSONata with $states bound.
+
+    Pass context_execution_id to bind $states.context.Execution.Id for expressions
+    that read the wrapper's own run identifier (POLYRIS_WRAPPER_RUN_ID injection
+    reads this — otherwise JSONata drops it as undefined and the key disappears).
+    """
     jsonata = pytest.importorskip("jsonata")
+    states_binding = {"input": wrapper_input}
+    if context_execution_id is not None:
+        states_binding["context"] = {"Execution": {"Id": context_execution_id}}
 
     def resolve(node):
         if isinstance(node, str) and node.startswith("{%") and node.endswith("%}"):
             expr = node[2:-2].strip()
             j = jsonata.Jsonata(expr)
-            j.assign("states", {"input": wrapper_input})
+            j.assign("states", states_binding)
             return j.evaluate({})
         if isinstance(node, dict):
             return {k: resolve(v) for k, v in node.items()}
@@ -1515,3 +1523,121 @@ def test_all_run_task_states_route_to_check_task_pushed(template):
             f"{state_name}.Next must be Check_Task_Pushed (was: {state['Next']}) — "
             "otherwise xcom.push() marker check is bypassed on this task type."
         )
+
+
+# ── POLYRIS_TASK_NAME + POLYRIS_WRAPPER_RUN_ID env injection (§1.5) ───
+
+
+def test_glue_arguments_include_task_name_and_run_id_env(template):
+    """xcom.push() from a Glue job reads POLYRIS_TASK_NAME (DDB key) and
+    POLYRIS_WRAPPER_RUN_ID (stale-marker rejection). Must reach Glue as
+    --POLYRIS_* arguments so the job's arg parser can expose them as env-like
+    values via getResolvedOptions()."""
+    from polyris import task
+
+    def build(dag):
+        @task.glue_job(job_name="etl")
+        def j():
+            pass
+
+    wi = _wrapper_input_for(build)
+    # Pass context_execution_id so $states.context.Execution.Id resolves — otherwise
+    # JSONata drops undefined values from dict-emitting expressions and the KEY vanishes.
+    run_id = "arn:aws:states:us-east-1:1:execution:wrapper:test-run"
+    resolved = _resolve_arguments(template, "Run_Task_Glue", wi, context_execution_id=run_id)
+    args = resolved["Arguments"]
+    assert args["--POLYRIS_TASK_NAME"] == "j"
+    assert args["--POLYRIS_WRAPPER_RUN_ID"] == run_id
+    # Existing env keys still present — regression guard.
+    assert args["--POLYRIS_PIPELINE_NAME"] == "contract"
+    assert "--POLYRIS_RUN_DATE" in args
+    assert args["--POLYRIS_TOKENS_TABLE"] == "0"  # ${tokens_table} normalized
+
+
+def test_ecs_container_env_includes_task_name_and_run_id(template):
+    """ECS containers receive POLYRIS_* as Environment entries so xcom.push()
+    can read them via os.environ.
+
+    NOTE: env injection only fires when the user passes container_overrides
+    with the AWS-correct PascalCase 'ContainerOverrides' key. Lowercase
+    'containerOverrides' is a pre-existing pass-through path (documented by
+    test_ecs_overrides_launchtype_securitygroups_reach_runtask) — SFN template
+    reads $ov.ContainerOverrides literally.
+    """
+    from polyris import task
+
+    def build(dag):
+        @task.ecs_task(cluster="c", task_definition="td:1", subnets=["s-1"],
+                       container_overrides={"ContainerOverrides": [{"Name": "app"}]})
+        def e():
+            pass
+
+    wi = _wrapper_input_for(build)
+    run_id = "arn:aws:states:us-east-1:1:execution:wrapper:test-run"
+    resolved = _resolve_arguments(template, "Run_Task_ECS", wi, context_execution_id=run_id)
+    env = resolved["Overrides"]["ContainerOverrides"][0]["Environment"]
+    names = {e["Name"] for e in env}
+    assert "POLYRIS_TASK_NAME" in names
+    assert "POLYRIS_WRAPPER_RUN_ID" in names
+    # Regression: existing env vars still injected
+    assert "POLYRIS_PIPELINE_NAME" in names
+    assert "POLYRIS_RUN_DATE" in names
+    assert "POLYRIS_TOKENS_TABLE" in names
+    # Values are correct
+    by_name = {e["Name"]: e["Value"] for e in env}
+    assert by_name["POLYRIS_TASK_NAME"] == "e"
+    assert by_name["POLYRIS_WRAPPER_RUN_ID"] == run_id
+
+
+def test_batch_container_env_includes_task_name_and_run_id(template):
+    """Batch job container env — same as ECS."""
+    from polyris import task
+
+    def build(dag):
+        @task.batch_job(job_definition="jd:1", job_queue="jq")
+        def b():
+            pass
+
+    wi = _wrapper_input_for(build)
+    run_id = "arn:aws:states:us-east-1:1:execution:wrapper:test-run"
+    resolved = _resolve_arguments(template, "Run_Task_Batch", wi, context_execution_id=run_id)
+    env = resolved["ContainerOverrides"]["Environment"]
+    names = {e["Name"] for e in env}
+    assert "POLYRIS_TASK_NAME" in names
+    assert "POLYRIS_WRAPPER_RUN_ID" in names
+    # Regression
+    assert "POLYRIS_PIPELINE_NAME" in names
+    assert "POLYRIS_RUN_DATE" in names
+    assert "POLYRIS_TOKENS_TABLE" in names
+    by_name = {e["Name"]: e["Value"] for e in env}
+    assert by_name["POLYRIS_TASK_NAME"] == "b"
+    assert by_name["POLYRIS_WRAPPER_RUN_ID"] == run_id
+
+
+def test_emr_does_not_inject_task_name_env(template):
+    """XCOM_PLAN.md §1.5: EMR xcom.push() is DEFERRED — no Environment field in
+    addStep.sync (only HadoopJarStep.Args, which would break user's Spark arg
+    parsers if we injected there unconditionally). Documented as future work.
+    This test pins that decision — if it fails, we shipped EMR push support and
+    need to also document the arg-passing convention in DATA_PASSING.md."""
+    from polyris import task
+    jar = "s3://bucket/spark.jar"
+
+    def build(dag):
+        @task.emr_step(
+            emr_cluster_id="j-ABC",
+            emr_step={
+                "Name": "Spark",
+                "ActionOnFailure": "CONTINUE",
+                "HadoopJarStep": {"Jar": jar, "Args": ["--date", "2026-01-01"]},
+            },
+        )
+        def step():
+            pass
+
+    wi = _wrapper_input_for(build)
+    resolved = _resolve_arguments(template, "Run_Task_EMR", wi)
+    # Args should be exactly what the user passed — no POLYRIS_* injected.
+    args = resolved["Step"]["HadoopJarStep"]["Args"]
+    assert "--POLYRIS_TASK_NAME" not in args
+    assert "--POLYRIS_WRAPPER_RUN_ID" not in args
