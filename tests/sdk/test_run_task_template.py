@@ -1328,3 +1328,190 @@ def test_save_input_record_catch_falls_through_to_check_task_type(template):
     """Best-effort: DDB failure on the input write must not block dispatch."""
     catch = template["States"]["Save_Input_Record"]["Catch"]
     assert catch[0]["Next"] == "Check_Task_Type"
+
+
+# ── Push detection: Check_Task_Pushed + Save_Success_Preserve ────────
+
+
+def _eval_with_context(template, state_path, wrapper_input,
+                       context_execution_id="arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run",
+                       result_dict=None):
+    """Evaluate a state's Output (or nested field) expression with $states.context bound.
+
+    jsonata-python doesn't auto-bind $states.context — so tests that read
+    $states.context.Execution.Id must supply it explicitly. state_path is a
+    dotted path from template['States'] to the JSONata expression string.
+    """
+    jsonata = pytest.importorskip("jsonata")
+    node = template["States"]
+    for part in state_path.split("."):
+        node = node[part]
+    expr = node
+    body = expr[2:-2].strip() if isinstance(expr, str) and expr.startswith("{%") else expr
+    j = jsonata.Jsonata(body)
+    states = {
+        "input": wrapper_input,
+        "context": {"Execution": {"Id": context_execution_id}},
+    }
+    if result_dict is not None:
+        states["result"] = result_dict
+    j.assign("states", states)
+    return j.evaluate({})
+
+
+def test_check_task_pushed_state_exists(template):
+    assert "Check_Task_Pushed" in template["States"]
+    state = template["States"]["Check_Task_Pushed"]
+    assert state["Type"] == "Task"
+    assert state["Resource"] == "arn:aws:states:::dynamodb:getItem"
+
+
+def test_check_task_pushed_projects_marker_and_run_id(template):
+    """§1.4: GetItem must read _pushed_by_task AND pushed_run_id for versioning."""
+    state = template["States"]["Check_Task_Pushed"]
+    proj = state["Arguments"]["ProjectionExpression"]
+    assert "#p" in proj
+    assert "pushed_run_id" in proj
+    assert state["Arguments"]["ExpressionAttributeNames"]["#p"] == "_pushed_by_task"
+
+
+def test_check_task_pushed_reads_output_key_prefix(template):
+    """Marker lives on the canonical output# row (same row xcom.push() writes)."""
+    key = template["States"]["Check_Task_Pushed"]["Arguments"]["Key"]["execution_name"]["S"]
+    assert "'output#'" in key
+
+
+def test_check_task_pushed_matches_current_run_id(template):
+    """B1: matching pushed_run_id → _task_pushed = true. Verifies happy path."""
+    result_matching = {"Item": {
+        "_pushed_by_task": {"BOOL": True},
+        "pushed_run_id": {"S": "arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run"},
+    }}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        context_execution_id="arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run",
+        result_dict=result_matching,
+    )
+    assert output["_task_pushed"] is True
+
+
+def test_check_task_pushed_rejects_stale_run_id(template):
+    """B1 KEY GUARANTEE: marker with wrong run_id → _task_pushed = false.
+    Without this rejection, a backfill re-run would inherit the previous
+    run's pushed value and silently corrupt downstream reads."""
+    result_stale = {"Item": {
+        "_pushed_by_task": {"BOOL": True},
+        "pushed_run_id": {"S": "arn:aws:states:us-east-1:111111111111:execution:wrapper:OLD-run"},
+    }}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        context_execution_id="arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run",
+        result_dict=result_stale,
+    )
+    assert output["_task_pushed"] is False
+
+
+def test_check_task_pushed_no_marker_no_push(template):
+    """No marker → _task_pushed = false (normal path for Lambda/SFN tasks)."""
+    result_empty = {"Item": {}}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        result_dict=result_empty,
+    )
+    assert output["_task_pushed"] is False
+
+
+def test_check_task_pushed_marker_false_no_push(template):
+    """Marker explicitly false (theoretically possible) → _task_pushed = false."""
+    result_false = {"Item": {"_pushed_by_task": {"BOOL": False}}}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        result_dict=result_false,
+    )
+    assert output["_task_pushed"] is False
+
+
+def test_check_task_pushed_ddb_failure_safe_default(template):
+    """Catch: DDB error → _task_pushed = false (safe: wrapper writes result as usual)."""
+    catch = template["States"]["Check_Task_Pushed"]["Catch"]
+    assert len(catch) == 1
+    fallback_out = catch[0]["Output"]
+    assert "'_task_pushed': false" in fallback_out
+    assert catch[0]["Next"] == "Route_Save_Success"
+
+
+def test_route_save_success_defaults_to_current_when_not_pushed(template):
+    """Choice Default → Save_Success (current behavior for non-pushed tasks)."""
+    choice = template["States"]["Route_Save_Success"]
+    assert choice["Type"] == "Choice"
+    assert choice["Default"] == "Save_Success"
+
+
+def test_route_save_success_routes_to_preserve_when_pushed(template):
+    """Only condition: _task_pushed == true → Save_Success_Preserve."""
+    choice = template["States"]["Route_Save_Success"]
+    assert len(choice["Choices"]) == 1
+    branch = choice["Choices"][0]
+    assert "_task_pushed" in branch["Condition"]
+    assert branch["Next"] == "Save_Success_Preserve"
+
+
+def test_save_success_preserve_never_sets_result(template):
+    """The whole point: the pushed result must survive. NEVER SET #r/result."""
+    state = template["States"]["Save_Success_Preserve"]
+    update_expr = state["Arguments"]["UpdateExpression"]
+    assert "result" not in update_expr, (
+        "Save_Success_Preserve must NOT SET result — the pushed value must survive. "
+        f"UpdateExpression={update_expr!r}"
+    )
+    assert "#r" not in update_expr
+
+
+def test_save_success_preserve_keeps_stale_attempt_guard(template):
+    """Same attempt-based rejection as Save_Success — restart safety preserved."""
+    state = template["States"]["Save_Success_Preserve"]
+    assert state["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+    catch = {e: c["Next"] for c in state["Catch"] for e in c["ErrorEquals"]}
+    assert catch["DynamoDB.ConditionalCheckFailedException"] == "Stale_Attempt_Superseded"
+
+
+def test_save_success_preserve_next_is_canonical_preserve(template):
+    assert template["States"]["Save_Success_Preserve"]["Next"] == "Save_Canonical_Output_Preserve"
+
+
+def test_save_canonical_output_preserve_uses_updateitem_not_putitem(template):
+    """putItem here would clobber the pushed 'result'. updateItem only touches status/updated_at."""
+    state = template["States"]["Save_Canonical_Output_Preserve"]
+    assert state["Resource"] == "arn:aws:states:::dynamodb:updateItem"
+
+
+def test_save_canonical_output_preserve_never_writes_result(template):
+    state = template["States"]["Save_Canonical_Output_Preserve"]
+    update_expr = state["Arguments"]["UpdateExpression"]
+    assert "result" not in update_expr
+    assert "#r" not in update_expr
+
+
+def test_save_canonical_output_preserve_next_is_finished_success(template):
+    """Rejoins the shared success flow."""
+    assert template["States"]["Save_Canonical_Output_Preserve"]["Next"] == "Emit_Task_Finished_Success"
+
+
+def test_all_run_task_states_route_to_check_task_pushed(template):
+    """Every Run_Task_* state must feed into Check_Task_Pushed, not Save_Success directly.
+    Otherwise pushed values would be silently overwritten on the default flow."""
+    for state_name in ["Run_Task_SFN", "Run_Task_Lambda", "Run_Task_Glue",
+                       "Run_Task_ECS", "Run_Task_Athena", "Run_Task_EMR", "Run_Task_Batch"]:
+        state = template["States"][state_name]
+        assert state["Next"] == "Check_Task_Pushed", (
+            f"{state_name}.Next must be Check_Task_Pushed (was: {state['Next']}) — "
+            "otherwise xcom.push() marker check is bypassed on this task type."
+        )

@@ -495,7 +495,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success",
+            "Next": "Check_Task_Pushed",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -530,7 +530,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success",
+            "Next": "Check_Task_Pushed",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -564,7 +564,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_ECS": {
             "Type": "Task",
@@ -584,7 +584,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_Athena": {
             "Type": "Task",
@@ -604,7 +604,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_EMR": {
             "Type": "Task",
@@ -635,7 +635,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_Batch": {
             "Type": "Task",
@@ -661,7 +661,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Check_Should_Retry": {
             "Type": "Choice",
@@ -759,6 +759,178 @@
         "Stale_Attempt_Superseded": {
             "Type": "Succeed",
             "Comment": "§9: a newer attempt (restart) has already progressed past this attempt's own status write - this execution's outcome is superseded and must not report itself as finished, waiting, or failed. Ends quietly with no further side effects (no TASK_FINISHED event, no dependent notification, no Slack message) - the newer attempt's own eventual outcome is what downstream should see."
+        },
+        "Check_Task_Pushed": {
+            "Type": "Task",
+            "Comment": "Check whether the task called xcom.push() during this run. Compares the stored pushed_run_id against the current wrapper's Execution.Id to reject stale markers from prior same-date runs (B1 fix — Init_Output_Row also REMOVEs the marker at task start, this is belt-and-suspenders). On DDB failure, defaults to _task_pushed=false: safe fallback (wrapper writes result as usual, at worst overwriting a push we didn't detect). See XCOM_PLAN.md §1.4 + §2.8.",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "ProjectionExpression": "#p, pushed_run_id",
+                "ExpressionAttributeNames": {
+                    "#p": "_pushed_by_task"
+                }
+            },
+            "Output": "{% $states.input ~> |$| {'_task_pushed': $exists($states.result.Item._pushed_by_task) and $states.result.Item._pushed_by_task.BOOL = true and $exists($states.result.Item.pushed_run_id) and $states.result.Item.pushed_run_id.S = $states.context.Execution.Id} | %}",
+            "Next": "Route_Save_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException"
+                    ],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Best-effort: on DDB failure treat as not pushed (safe default — Save_Success writes result as usual).",
+                    "Output": "{% $states.input ~> |$| {'_task_pushed': false} | %}",
+                    "Next": "Route_Save_Success"
+                }
+            ]
+        },
+        "Route_Save_Success": {
+            "Type": "Choice",
+            "Comment": "Route to Save_Success_Preserve if the task called xcom.push() this run (verified by matching pushed_run_id in Check_Task_Pushed), otherwise the default path overwrites result with the wrapper-collected task_output (Lambda return, AWS API response for service tasks).",
+            "Choices": [
+                {
+                    "Condition": "{% $states.input._task_pushed = true %}",
+                    "Next": "Save_Success_Preserve"
+                }
+            ],
+            "Default": "Save_Success"
+        },
+        "Save_Success_Preserve": {
+            "Type": "Task",
+            "Comment": "Task called xcom.push() during this run — the canonical result was already written by push() (with the marker). Save_Success_Preserve only updates status/finished_at/task_execution_arn; it deliberately does NOT SET #r so the pushed value survives. Keeps the same attempt-based stale-attempt guard as Save_Success. See XCOM_PLAN.md §1.4.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, finished_at = :finished, task_execution_arn = :taskArn",
+                "ConditionExpression": "attempt = :expectedAttempt",
+                "ExpressionAttributeNames": {
+                    "#s": "status"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "success"
+                    },
+                    ":finished": {
+                        "S": "{% $now() %}"
+                    },
+                    ":taskArn": {
+                        "S": "{% $exists($states.input.task_execution_arn) ? $states.input.task_execution_arn : '' %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input ~> |$| {'final_status': 'success'} | %}",
+            "Next": "Save_Canonical_Output_Preserve",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "Same stale-attempt guard as Save_Success — a newer restart's attempt has already progressed past this one.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - skip canonical, continue (same best-effort as Save_Success).",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Success"
+                }
+            ]
+        },
+        "Save_Canonical_Output_Preserve": {
+            "Type": "Task",
+            "Comment": "Task called xcom.push() — the canonical row already has the pushed 'result'. Uses updateItem (NOT putItem like Save_Canonical_Output) so we only touch status/updated_at/ttl; putItem here would replace the entire row and clobber the pushed value. See XCOM_PLAN.md §1.4.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
+                "ExpressionAttributeNames": {
+                    "#s": "status",
+                    "#ttl_field": "ttl"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "success"
+                    },
+                    ":ua": {
+                        "S": "{% $now() %}"
+                    },
+                    ":ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Emit_Task_Finished_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Best-effort - skip canonical, continue.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Success"
+                }
+            ]
         },
         "Save_Success": {
             "Type": "Task",
