@@ -1,3 +1,56 @@
+## v0.100.0 - 2026-09-11
+
+### Added — Reliable task-to-task data passing (XCom)
+
+Ships a unified reader/writer API, closes long-standing silent-corruption paths, and rewrites the Console debug UX around actionable messages instead of cryptic JSON markers. See ADR-123 and `docs/features/DATA_PASSING.md`.
+
+**SDK — new APIs in `polyris.xcom`:**
+- `xcom.get(event, task_name)` — uniform reader for Lambda / Glue / ECS / Batch / EMR. Auto-resolves `_s3_ref` claim-check pointers, auto-falls-back from a truncated inline inject to the full-size DDB row, raises typed errors by default.
+- `xcom.push(value)` — writer for service tasks (Glue / ECS / Batch / EMR) whose job code needs to store real output instead of the AWS API response (`JobRunId`, `TaskArn`, etc.).
+- `XComError` base class with `XComMissingError`, `XComUpstreamFailedError`, `XComTruncatedError` subclasses. `PullError` is now an alias for `XComMissingError` — existing `except PullError:` code continues to work.
+
+**Infrastructure:**
+- New DDB record `input#{pipeline}#{task}#{date}` carries `task_input` for the Console preview, up to ~380 KB (was 25 KB shared with `result` on the `output#` row).
+- `Init_Output_Row` state clears any stale `_pushed_by_task` / `pushed_at` / `pushed_run_id` at task start; `Check_Task_Pushed` verifies the marker matches the current wrapper's `Execution.Id` before honoring it — no backfill re-run can accidentally inherit a prior run's pushed value.
+- `Save_Success_Preserve` + `Save_Canonical_Output_Preserve` skip overwriting `result` when the task pushed it.
+- `PolyrisTaskWritePolicy` managed policy for tasks that call `xcom.push()`. Scoped by `dynamodb:LeadingKeys → output#*` — least privilege within the polyris trust boundary.
+- `POLYRIS_TASK_NAME` and `POLYRIS_WRAPPER_RUN_ID` env vars injected by the wrapper into Glue Arguments and ECS/Batch container Environment.
+
+**Console UI (Task Detail modal, Input/Output tab):**
+- Per-upstream cards, color-coded by status. `status="unknown"` → warn banner ("no output recorded"). `status="failed"` etc. → error banner with collapsible output details. `output={_truncated: true}` → warn banner pointing at `xcom.get()` (which auto-falls-back). `output={_s3_ref: ...}` → muted banner naming the S3 path.
+- AWS-metadata detection: when `output` looks like `{JobRunId}` / `{TaskArn}` / etc., a banner explains that Glue/ECS/Batch tasks need `xcom.push()` for real data.
+- Variables and upstream deps rendered as separate sections instead of one raw-JSON blob.
+- One-time onboarding banner explaining the new layout (dismissible, persists via localStorage; removed in 0.102.0).
+
+### Fixed
+- `$isJson` heuristic in `Get_Dep_Output` no longer wraps primitives, arrays of numbers, `null`, or booleans in `{"_raw": ...}`. Replaced with `$exists($parse($safe))`.
+- `docs/features/DATA_PASSING.md` no longer claims automatic S3 offload — it doesn't exist, and never did. Manual Claim Check pattern (BYO S3 bucket) is now documented honestly.
+- Backfill re-runs no longer risk stale-marker data corruption (run-versioned `_pushed_by_task`).
+- Console API `is_internal_record()` filters the new `input#*` prefix — those rows never leak into All Tasks / Runs / Pipeline Detail listings.
+
+### Deprecated
+- `polyris.xcom.PullError` — kept as an alias for `XComMissingError` for backward compatibility. New code should catch the specific `XCom*Error` subclass.
+
+### Removed
+- `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`). `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store — the grant was misleading dead permission.
+  - **Breaking risk (low, undocumented pattern):** users who attached `PolyrisTaskReadPolicy` specifically to read `ResultsBucket` from Lambda code lose access. Mitigation: attach a direct `s3:GetObject` policy on the bucket.
+
+### Behavior change for opt-in migration
+Migrating `event["upstream"][X]["output"]` → `xcom.get(event, X)`: if `X` uses `trigger_rule="all_done"` or `"one_success"`, pass `raise_on_failure=False`. Old raw-dict access silently returned `{}` for failed upstreams; `xcom.get()` raises by default. See DATA_PASSING.md for the migration example.
+
+### AWS cost impact
+- +1 DDB `GetItem` per task success (`Check_Task_Pushed`)
+- +1 DDB write per task start (`Save_Input_Record` writes a separate row instead of a shared field)
+- Approximate impact at 100k tasks/day: ~$0.30/day, ~$9/month
+- No impact when no task runs
+
+### Known limitations
+- **EMR `xcom.push()` unsupported** in this release. `addStep.sync` has no Environment field, and injecting `POLYRIS_TASK_NAME` via `HadoopJarStep.Args` risks breaking arbitrary Spark arg parsers. Deferred to a follow-up.
+- **Cross-account `xcom.push()`** requires additional IAM (the `pipeline-tokens` table is in the polyris account). Not supported out-of-the-box.
+- **Athena has no `xcom.push()` equivalent** — SQL can't call the SDK. Use the "Lambda after Athena" pattern.
+
+---
+
 ## v0.99.0 - 2026-09-09
 
 ### Fixed — SDK correctness: context managers, deploy scan, assets, and registration resilience
