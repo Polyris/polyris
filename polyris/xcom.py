@@ -134,6 +134,31 @@ def _resolve_s3_pointer(ref: str, s3_client: Any) -> Any:
     return json.loads(body)
 
 
+def _get_from_ddb(
+    task_name: str,
+    event: Optional[dict],
+    ddb_client: Any,
+    s3_client: Any,
+    raise_on_missing: bool,
+) -> Any:
+    """Fallback path for :func:`get` — reads from DDB via :func:`pull`.
+
+    Wraps pull()'s legacy ``PullError`` messages into the canonical XCom error
+    types so callers get a consistent taxonomy regardless of which read path
+    served the request.
+    """
+    try:
+        return pull(task_name, event, ddb_client=ddb_client, s3_client=s3_client)
+    except PullError as e:
+        msg = str(e)
+        if "truncated" in msg:
+            # Elevate to XComTruncatedError so message points at Claim Check pattern
+            raise XComTruncatedError(task_name) from e
+        if not raise_on_missing and ("no output stored" in msg or "needs the" in msg):
+            return None
+        raise  # PullError == XComMissingError alias; propagates as expected
+
+
 def pull(
     task_name: str,
     context: Optional[dict] = None,
@@ -210,3 +235,126 @@ def pull(
             "(this build predates transparent S3 offload for large outputs)."
         )
     return data
+
+
+def get(
+    event: Optional[dict] = None,
+    task_name: Optional[str] = None,
+    *,
+    raise_on_missing: bool = True,
+    raise_on_failure: bool = True,
+    ddb_client: Any = None,
+    s3_client: Any = None,
+) -> Any:
+    """Read an upstream task's output. Uniform API for every task type.
+
+    Recommended reader — replaces ``event["upstream"][task]["output"]`` (which
+    still works but returns raw markers on missing / failed / truncated cases)
+    and ``xcom.pull()`` (low-level DDB reader). ``get()`` returns the same value
+    ``pull()`` would but with loud, typed errors by default and transparent
+    fallback from a truncated inline inject to the full-size DDB row.
+
+    Lookup order:
+
+    1. If ``event["upstream"][task_name]`` exists (Lambda / SFN pre-fetched
+       inject), use it. Auto-resolves ``{"_s3_ref": "s3://..."}`` pointers.
+       On a ``{"_truncated": true}`` marker, falls back to DDB (which may hold
+       the full value up to 350KB).
+    2. Otherwise (Glue / ECS / Batch / EMR, or an undeclared Lambda dep),
+       reads DDB directly via :func:`pull`.
+
+    Args:
+        event: Lambda handler event, or ``None`` for service tasks.
+        task_name: upstream ``task_id`` to read.
+        raise_on_missing: raise :class:`XComMissingError` for a dep with no
+            recorded output (default ``True``). Pass ``False`` to get ``None``
+            for a soft check.
+        raise_on_failure: raise :class:`XComUpstreamFailedError` when the
+            upstream's status != ``"success"`` (default ``True``). Pass
+            ``False`` when using ``trigger_rule="all_done"`` and you want to
+            read output regardless of upstream outcome.
+        ddb_client, s3_client: injected for tests; created on demand otherwise.
+
+    Returns:
+        The upstream output — whatever shape it stored (``dict``, ``list``,
+        primitive, ``None``).
+
+    Raises:
+        ValueError: ``task_name`` was not provided.
+        XComMissingError: dep has no recorded output (subject to ``raise_on_missing``).
+        XComUpstreamFailedError: upstream status != ``"success"``
+            (subject to ``raise_on_failure``).
+        XComTruncatedError: both the event inject and DDB rows returned
+            truncation markers — the actual data is unavailable through this
+            path. Use the Claim Check pattern (write to S3, return
+            ``{"_s3_ref": "s3://..."}``).
+
+    Examples:
+        Lambda handler (declared dep)::
+
+            def handler(event, context):
+                sales = xcom.get(event, "extract_sales")
+                # sales is whatever extract_sales returned
+
+        Optional dep (``all_done`` trigger)::
+
+            def handler(event, context):
+                sales = xcom.get(event, "extract_sales")
+                bonus = xcom.get(event, "bonus", raise_on_failure=False) or {}
+
+        Glue / ECS / Batch task (no event to pass)::
+
+            from polyris import xcom
+            sales = xcom.get(None, "extract_sales")
+    """
+    if not task_name:
+        raise ValueError("xcom.get() requires task_name")
+
+    # 1. Pre-fetched inject path (Lambda / SFN receive event.upstream from run_task)
+    if event and isinstance(event, dict):
+        upstream = event.get("upstream")
+        if isinstance(upstream, dict) and task_name in upstream:
+            entry = upstream[task_name]
+
+            # Non-dict entry: malformed / legacy shape — pass through unchanged
+            if not isinstance(entry, dict):
+                return entry
+
+            status = entry.get("status", "unknown")
+            output = entry.get("output")
+
+            # Missing dep: Get_Dep_Output writes {"output": {}, "status": "unknown"}
+            # when the upstream DDB row is absent (dep didn't run, was skipped, etc.).
+            # Only checks status here — an empty {} with status="success" is a valid
+            # user-returned value and must NOT be treated as missing.
+            if status == "unknown":
+                if raise_on_missing:
+                    raise XComMissingError(task_name)
+                return None
+
+            # Non-success upstream (all_done trigger path)
+            if status != "success":
+                if raise_on_failure:
+                    raise XComUpstreamFailedError(task_name, status)
+                # else: fall through and return whatever output was recorded
+
+            # Truncated in inject path — try DDB, which may hold the full value
+            # (runtime injection cap is ~25KB per dep; DDB result field allows ~350KB)
+            if isinstance(output, dict) and output.get("_truncated"):
+                try:
+                    return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing)
+                except XComMissingError:
+                    # DDB also empty — the original truncation stands
+                    raise XComTruncatedError(task_name, output.get("_size"))
+
+            # S3 Claim Check pointer — resolve transparently
+            if isinstance(output, dict) and "_s3_ref" in output:
+                if s3_client is None:
+                    import boto3  # pragma: no cover - boto3 client factory; tests inject a client
+                    s3_client = boto3.client("s3")  # pragma: no cover
+                return _resolve_s3_pointer(output["_s3_ref"], s3_client)
+
+            return output
+
+    # 2. Fallback: read from DDB (Glue/ECS/Batch/EMR, or undeclared Lambda dep)
+    return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing)

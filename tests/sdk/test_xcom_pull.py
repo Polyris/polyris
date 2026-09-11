@@ -14,6 +14,7 @@ from polyris.xcom import (
     XComUpstreamFailedError,
     _resolve,
     _resolve_s3_pointer,
+    get,
     pull,
 )
 
@@ -233,3 +234,155 @@ def test_xcom_truncated_error_message_mentions_s3_claim_check():
     assert "400000" in msg
     assert "_s3_ref" in msg
     assert "S3" in msg or "Claim Check" in msg
+
+
+# ── xcom.get() — uniform reader (§2.2) ─────────────────────────────────
+
+
+def _event_with_upstream(**deps):
+    """Build a minimal Lambda event with the given upstream deps.
+
+    Each kwarg is a dep name; value is the {output, status} entry dict.
+    """
+    return {
+        "pipeline_name": "p",
+        "date": "2026-07-07",
+        "_polyris_table": "t",
+        "upstream": deps,
+    }
+
+
+def test_get_from_event_upstream_dict():
+    event = _event_with_upstream(extract={"output": {"rows": 100}, "status": "success"})
+    assert get(event, "extract") == {"rows": 100}
+
+
+def test_get_from_event_upstream_primitive():
+    """Post-$isJson-fix: primitives flow through untouched."""
+    event = _event_with_upstream(count={"output": 42, "status": "success"})
+    assert get(event, "count") == 42
+
+
+def test_get_from_event_upstream_none():
+    event = _event_with_upstream(nullable={"output": None, "status": "success"})
+    assert get(event, "nullable") is None
+
+
+def test_get_from_event_upstream_list():
+    event = _event_with_upstream(items={"output": [1, 2, 3], "status": "success"})
+    assert get(event, "items") == [1, 2, 3]
+
+
+def test_get_missing_status_unknown_raises():
+    """Get_Dep_Output writes status=unknown when DDB row is absent."""
+    event = _event_with_upstream(gone={"output": {}, "status": "unknown"})
+    with pytest.raises(XComMissingError, match="gone"):
+        get(event, "gone")
+
+
+def test_get_missing_no_raise_returns_none():
+    event = _event_with_upstream(gone={"output": {}, "status": "unknown"})
+    assert get(event, "gone", raise_on_missing=False) is None
+
+
+def test_get_failed_status_raises():
+    event = _event_with_upstream(broken={"output": {}, "status": "failed"})
+    with pytest.raises(XComUpstreamFailedError, match="broken"):
+        get(event, "broken")
+
+
+def test_get_failed_no_raise_returns_output():
+    """all_done trigger opt-in: reader wants failed upstream's output too."""
+    event = _event_with_upstream(broken={"output": {"partial": True}, "status": "failed"})
+    assert get(event, "broken", raise_on_failure=False) == {"partial": True}
+
+
+def test_get_success_with_empty_dict_returns_empty_dict():
+    """status=success + output={} is a VALID user-returned empty dict (M5 fix).
+
+    Only status=unknown means missing — empty dict alone must not trigger XComMissingError.
+    """
+    event = _event_with_upstream(empty={"output": {}, "status": "success"})
+    assert get(event, "empty") == {}
+
+
+def test_get_event_truncated_falls_back_to_pull():
+    """Runtime inject cap is 25KB per dep; DDB result field allows 350KB.
+    When event marker says truncated, get() reads DDB directly (may have full data).
+    """
+    event = _event_with_upstream(big={
+        "output": {"_truncated": True, "_size": 30000},
+        "status": "success",
+    })
+    # Provide a DDB client with the full non-truncated payload
+    full = {"rows": list(range(100))}
+    ddb = FakeDDB(_item(json.dumps(full)))
+    assert get(event, "big", ddb_client=ddb) == full
+
+
+def test_get_event_and_ddb_both_truncated_raises():
+    """If DDB also has _truncated marker → XComTruncatedError with size from event."""
+    event = _event_with_upstream(gigantic={
+        "output": {"_truncated": True, "_size": 500000},
+        "status": "success",
+    })
+    ddb = FakeDDB(_item(json.dumps({"_truncated": True, "_size": 500000})))
+    with pytest.raises(XComTruncatedError, match="gigantic"):
+        get(event, "gigantic", ddb_client=ddb)
+
+
+def test_get_s3_ref_in_event_auto_resolves():
+    event = _event_with_upstream(big={
+        "output": {"_s3_ref": "s3://lake/out/big.json"},
+        "status": "success",
+    })
+    s3 = FakeS3(json.dumps({"real": "payload"}).encode())
+    assert get(event, "big", s3_client=s3) == {"real": "payload"}
+
+
+def test_get_undeclared_dep_falls_back_to_pull():
+    """Dep not in event.upstream → get() delegates to pull() (DDB read)."""
+    event = _event_with_upstream(other={"output": {"x": 1}, "status": "success"})
+    ddb = FakeDDB(_item(json.dumps({"y": 2})))
+    assert get(event, "undeclared", ddb_client=ddb) == {"y": 2}
+
+
+def test_get_no_event_uses_pull(monkeypatch):
+    """Service tasks (Glue/ECS/Batch) pass event=None; get() uses env-based pull()."""
+    monkeypatch.setenv(ENV_PIPELINE, "p")
+    monkeypatch.setenv(ENV_DATE, "2026-07-07")
+    monkeypatch.setenv(ENV_TABLE, "t")
+    ddb = FakeDDB(_item(json.dumps({"ok": True})))
+    result = get(None, "extract", ddb_client=ddb)
+    assert result == {"ok": True}
+    # Proves we went through pull() (which built the key from env + task_name)
+    assert ddb.calls[0]["Key"]["execution_name"]["S"] == "output#p#extract#2026-07-07"
+
+
+def test_get_no_event_no_context_returns_none_when_soft(monkeypatch):
+    """Glue/ECS with missing env in soft mode returns None instead of raising."""
+    # Ensure env is clean so _resolve raises
+    monkeypatch.delenv(ENV_PIPELINE, raising=False)
+    monkeypatch.delenv(ENV_DATE, raising=False)
+    monkeypatch.delenv(ENV_TABLE, raising=False)
+    assert get(None, "extract", raise_on_missing=False) is None
+
+
+def test_get_no_event_no_context_raises_by_default(monkeypatch):
+    """Loud default: missing context → clear error propagated up."""
+    monkeypatch.delenv(ENV_PIPELINE, raising=False)
+    monkeypatch.delenv(ENV_DATE, raising=False)
+    monkeypatch.delenv(ENV_TABLE, raising=False)
+    with pytest.raises(XComMissingError):
+        get(None, "extract")
+
+
+def test_get_missing_task_name_raises_value_error():
+    with pytest.raises(ValueError, match="task_name"):
+        get({}, None)
+
+
+def test_get_malformed_upstream_entry_passed_through():
+    """Legacy raw-value shape (non-dict entry) should not crash."""
+    event = _event_with_upstream(raw="just a string, not a dict")
+    assert get(event, "raw") == "just a string, not a dict"
