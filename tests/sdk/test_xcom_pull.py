@@ -336,6 +336,23 @@ def test_get_event_and_ddb_both_truncated_raises():
         get(event, "gigantic", ddb_client=ddb)
 
 
+def test_get_event_truncated_and_ddb_missing_raises_truncated():
+    """Event says _truncated but DDB row is completely absent → we still know it was
+    truncated (event marker had the size), so raise XComTruncatedError with the size,
+    not XComMissingError. The event's marker is authoritative — DDB just failed to
+    salvage the full value. Regression gate for the `except XComMissingError → raise
+    XComTruncatedError` branch in xcom.get()."""
+    event = _event_with_upstream(gigantic={
+        "output": {"_truncated": True, "_size": 42000},
+        "status": "success",
+    })
+    ddb = FakeDDB(None)  # no DDB item at all (dep row got TTL-expired or never written)
+    with pytest.raises(XComTruncatedError, match="gigantic") as exc:
+        get(event, "gigantic", ddb_client=ddb)
+    # Size from the event marker survives into the raised error.
+    assert exc.value.size_bytes == 42000
+
+
 def test_get_s3_ref_in_event_auto_resolves():
     event = _event_with_upstream(big={
         "output": {"_s3_ref": "s3://lake/out/big.json"},
