@@ -323,7 +323,7 @@
         },
         "Init_Output_Row": {
             "Type": "Task",
-            "Comment": "Initialize the canonical output# row at task start: set task_name/ttl/updated_at AND clear any stale _pushed_by_task marker left by a prior same-date run. Uses updateItem (not putItem) because the row may already carry a real 'result' from a concurrent same-date run (backfill semantics) — a blind putItem could clobber it mid-flight. The REMOVE clause on _pushed_by_task / pushed_at / pushed_run_id is the B1 fix: without it, Check_Task_Pushed could see a leftover marker from a previous run's xcom.push() and incorrectly route to Save_Success_Preserve on the current run, causing data corruption (downstream would read the stale pushed value instead of the current run's real output).py.",
+            "Comment": "Initialize the canonical output# row at task start: set task_name/ttl/updated_at AND clear any stale _pushed_by_task marker left by a prior same-date run. Uses updateItem (not putItem) because the row may already carry a real 'result' from a concurrent same-date run (backfill semantics) — a blind putItem could clobber it mid-flight. The REMOVE clause on _pushed_by_task / pushed_at / pushed_run_id is the B1 fix: without it, Check_Task_Pushed could see a leftover marker from a previous run's xcom.push() and incorrectly route to Save_Success_Preserve on the current run, causing data corruption (downstream would read the stale pushed value instead of the current run's real output).",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -1004,7 +1004,7 @@
         },
         "Save_Canonical_Output": {
             "Type": "Task",
-            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this. task_input is intentionally NOT written here anymore — it lives in a separate 'input#{pipeline}#{task}#{date}' record populated by Save_Input_Record at task start. That split lets the Console preview hold up to ~380KB of upstream data instead of the previous 25KB truncation cap.",
+            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this. task_input is intentionally NOT written here anymore — it lives in a separate 'input#{pipeline}#{task}#{date}' record populated by Save_Input_Record at task start. That split lets the Console preview hold up to ~380KB of upstream data instead of the previous 25KB truncation cap. run_id is set here (same as Init_Output_Row) so the canonical row's schema stays symmetric with Save_Canonical_Output_Preserve (which updateItem-preserves the run_id Init_Output_Row wrote earlier) — a future consumer keying on run_id doesn't hit a path-dependent gap where push-path rows have it and non-push putItem rows don't.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -1020,6 +1020,9 @@
                     },
                     "result": {
                         "S": "{% ( $to := $string($states.input.task_output); $length($to) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($to)) & '}' : $to ) %}"
+                    },
+                    "run_id": {
+                        "S": "{% $states.context.Execution.Id %}"
                     },
                     "updated_at": {
                         "S": "{% $now() %}"

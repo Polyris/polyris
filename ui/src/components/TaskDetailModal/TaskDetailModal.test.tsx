@@ -512,6 +512,51 @@ describe('TaskDetailModal', () => {
             expect(screen.queryByLabelText('Task output preview')).not.toBeInTheDocument();
         });
 
+        it('hides Input snapshot when task is in a non-settled status (input# row is date-scoped too)', () => {
+            // Symmetric with OutputCard's gate — the input# DDB row is
+            // shared across every same-date run, so a fresh run's task in
+            // waiting_decision inherits a prior run's snapshot visually
+            // until Save_Input_Record overwrites it. We hide the section
+            // rather than lie about whose input it is.
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: { extract: { output: { rows: 100 }, status: 'success' } },
+                    variables: { year: '2026' },
+                },
+                output: null,
+            }));
+            const task = createTask({ status: 'waiting_decision' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText(/Input snapshot will appear once the task settles/i))
+                .toBeInTheDocument();
+            // Prior run's upstream card must NOT render.
+            expect(screen.queryByText('extract')).not.toBeInTheDocument();
+            // Variables section either.
+            expect(screen.queryByRole('button', { name: /Variables/ })).not.toBeInTheDocument();
+        });
+
+        it('renders Input normally when task IS settled', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: { extract: { output: { rows: 100 }, status: 'success' } },
+                    variables: { year: '2026' },
+                },
+                output: { done: true },
+            }));
+            const task = createTask({ status: 'success' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('extract')).toBeInTheDocument();
+            // Variables section header renders (avoid collision with the
+            // copy button whose aria-label also matches /Variables/).
+            const varsHeaders = screen.getAllByRole('button').filter(
+                el => el.classList.contains('td-collapsible-header')
+                    && el.textContent?.startsWith('Variables')
+            );
+            expect(varsHeaders).toHaveLength(1);
+        });
+
     });
 
     // ─── Notification Warning ────────────────────────────────────────────

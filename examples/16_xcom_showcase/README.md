@@ -180,18 +180,6 @@ Task Detail → **Output** tab:
   {"dict_rows": 1240, "primitive_value": 42, "glue_total": 500}
   ```
 
-### 5. One-time onboarding banner
-
-First time you open the Output tab (any task) after upgrading to 0.100.0,
-you'll see a dismissible banner at the top:
-
-> **Updated in 0.100.0:** upstream deps now render as colored cards with
-> actionable messages — click the summary to expand raw data. …
-
-Click Dismiss — the banner remembers your choice per browser via
-localStorage (`polyris.ui.taskDetailBannerDismissed_v100`). Cleared
-automatically in polyris 0.102.0.
-
 ## Related
 
 - Full docs: [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md)

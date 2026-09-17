@@ -2151,6 +2151,14 @@ Resources:
               - dynamodb:GetItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
+          # Deferred-for-removal — kept because deleting it triggers a
+          # replacement of the whole managed policy (CFN treats Description
+          # changes as replacement, and the fixed ManagedPolicyName above +
+          # downstream `!ImportValue` block the delete-then-create). See
+          # CHANGELOG "Deferred (planned removal, blocked by CFN)" for the
+          # two-phase cleanup plan. Do not treat this as load-bearing —
+          # ResultsBucket is polyris-deploy's CFN artifact bucket, not an
+          # XCom store; user tasks never wrote there.
           - Sid: PolyrisResultsBucketRead
             Effect: Allow
             Action:

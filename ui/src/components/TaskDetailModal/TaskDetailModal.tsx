@@ -888,11 +888,30 @@ function UpstreamDep({ name, entry }: { name: string; entry: unknown }) {
     );
 }
 
-function InputSection({ input }: { input: unknown }) {
+function InputSection({ input, taskStatus }: { input: unknown; taskStatus: string }) {
+    // Same date-scoped-row gate as OutputCard (CLAUDE.md rule #30). The
+    // `input#{pipeline}#{task}#{date}` row is shared across every same-date
+    // run; `Save_Input_Record` fires early in the wrapper, so a task that
+    // hasn't reached a settled state yet may still be rendering a prior
+    // run's snapshot. We over-fire a little (a task in `running` HAS run
+    // Save_Input_Record already, so its input IS current) — that's the
+    // trade-off for consistency with OutputCard's gate. UI polls every
+    // ~5s so the mid-run window is short.
+    const isSettled = TASK_SETTLED_STATUSES.includes(taskStatus);
+
     if (input === null || input === undefined) {
         return (
             <div className="td-tab-empty td-tab-empty--inline">
                 <Database size={14} /> No input recorded (upstream data + run variables).
+            </div>
+        );
+    }
+    if (!isSettled) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> Input snapshot will appear once the task settles
+                {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
+                . The record for this date may still hold a prior run&apos;s data.
             </div>
         );
     }
@@ -984,7 +1003,7 @@ function OutputTab({ input, output, truncated, loading, loaded, taskStatus }: Ou
     }
     return (
         <div className="td-output-tab">
-            <InputSection input={input} />
+            <InputSection input={input} taskStatus={taskStatus} />
             <OutputSection output={output} truncated={truncated} taskStatus={taskStatus} />
         </div>
     );

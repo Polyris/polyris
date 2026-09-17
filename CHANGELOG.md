@@ -43,6 +43,9 @@ Ships a unified reader/writer API, closes long-standing silent-corruption paths,
 ### Behavior change for opt-in migration
 Migrating `event["upstream"][X]["output"]` → `xcom.get(event, X)`: if `X` uses `trigger_rule="all_done"` or `"one_success"`, pass `raise_on_failure=False`. Old raw-dict access silently returned `{}` for failed upstreams; `xcom.get()` raises by default. See DATA_PASSING.md for the migration example.
 
+### Behavior change (in-place, no opt-in needed)
+`xcom.pull()` now raises `XComManuallyResolvedError` when the stored row is a Console-written manual-resolution marker (mark_success / skip / fail / stop via UI); previously it returned the marker dict as if it were data, and downstream `output["rows"]`-style access crashed with `KeyError` at runtime. Loud by default; pass `raise_on_manual=False` to `pull()` (or to `get()`) to receive the marker for introspection. The same behaviour is symmetric with `get()` — one shared detector and one shared error subclass across both reader entry points. No user code that legitimately handled marker output was ever possible before; there is no compat break, only a hidden bug becoming a typed exception.
+
 ### AWS cost impact
 - +1 DDB `GetItem` per task success (`Check_Task_Pushed`)
 - +1 DDB write per task start (`Save_Input_Record` writes a separate row instead of a shared field)

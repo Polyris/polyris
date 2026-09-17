@@ -121,3 +121,68 @@ class TestManualResolutionEnumValues:
                 f"Value {value!r} missing from ui/src/generated/enums.ts — "
                 "run `make generate-enums`."
             )
+
+
+# ── Runtime env-var injection per service-task branch ─────────────────────
+
+
+class TestServiceTaskEnvInjectionParity:
+    """``xcom.push()`` from Glue / ECS / Batch reads the wrapper-injected
+    ``POLYRIS_TASK_NAME`` and ``POLYRIS_WRAPPER_RUN_ID`` env vars (defined
+    as constants in ``polyris/xcom.py``: ``ENV_TASK_NAME`` / ``ENV_RUN_ID``).
+    The wrapper injects them per service-task branch — Glue via
+    ``--Arguments``, ECS/Batch via ``ContainerOverrides.Environment``. A
+    missing injection in any single branch silently breaks ``xcom.push()``
+    for that task type — the SDK would raise the "requires the env
+    variable" error at runtime with no build-time signal.
+
+    Pinning per-branch presence here so a template edit that drops the
+    injection from one branch fails the build."""
+
+    SERVICE_BRANCHES = ("Run_Task_Glue", "Run_Task_ECS", "Run_Task_Batch")
+
+    @pytest.fixture(scope="class")
+    def branch_bodies(self, sfn_template_text):
+        """Extract the JSON body of each service-task state so per-branch
+        asserts don't false-positive on a mention in a sibling state."""
+        import re
+        out = {}
+        for name in self.SERVICE_BRANCHES:
+            # Match `"Name": {` ... balanced-brace body. The template is
+            # small enough (~1200 lines) that a naive regex-with-brace-count
+            # via re.finditer over `{` and `}` is fine.
+            start_match = re.search(rf'"{re.escape(name)}"\s*:\s*\{{', sfn_template_text)
+            assert start_match, f"State {name!r} not found in run_task template"
+            start = start_match.end() - 1  # position of the opening brace
+            depth = 0
+            for i in range(start, len(sfn_template_text)):
+                ch = sfn_template_text[i]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        out[name] = sfn_template_text[start:i + 1]
+                        break
+            else:
+                raise AssertionError(f"State {name!r} — unmatched braces")
+        return out
+
+    @pytest.mark.parametrize("branch", SERVICE_BRANCHES)
+    def test_branch_injects_task_name_env(self, branch, branch_bodies):
+        # SDK reads xcom.ENV_TASK_NAME = "POLYRIS_TASK_NAME"; the string
+        # must appear inside this state's body verbatim (as a JSON key for
+        # Glue Arguments, or a Name value for ECS/Batch Environment entries).
+        assert xcom.ENV_TASK_NAME in branch_bodies[branch], (
+            f"{branch} does not inject {xcom.ENV_TASK_NAME!r} — xcom.push() "
+            f"in this task type will fail with 'requires the env variable' "
+            "at runtime."
+        )
+
+    @pytest.mark.parametrize("branch", SERVICE_BRANCHES)
+    def test_branch_injects_wrapper_run_id_env(self, branch, branch_bodies):
+        assert xcom.ENV_RUN_ID in branch_bodies[branch], (
+            f"{branch} does not inject {xcom.ENV_RUN_ID!r} — xcom.push() "
+            f"in this task type will fail with 'requires the env variable' "
+            "at runtime."
+        )
