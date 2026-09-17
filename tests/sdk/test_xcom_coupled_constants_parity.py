@@ -88,7 +88,6 @@ class TestCanonicalRowKeyFormats:
     others breaks readers silently. Pin the exact prefixes here."""
 
     def test_output_prefix_in_sdk(self):
-        from pathlib import Path
         xcom_text = (REPO_ROOT / "polyris" / "xcom.py").read_text()
         assert '"output#"' in xcom_text or "'output#'" in xcom_text or 'f"output#{' in xcom_text
 

@@ -2165,10 +2165,14 @@ Resources:
               - s3:GetObject
             Resource: !Sub "${ResultsBucket.Arn}/*"
 
-  # Managed policy for service tasks (Glue/ECS/Batch/EMR) that call xcom.push()
+  # Managed policy for service tasks (Glue/ECS/Batch) that call xcom.push()
   # in their job code. Lambda return values do NOT need this policy — the
-  # wrapper captures Lambda output directly. See the IAM attachment matrix in
-  # docs/features/DATA_PASSING.md.
+  # wrapper captures Lambda output directly. EMR xcom.push() is unsupported
+  # in 0.100.0 (see CHANGELOG "Known limitations" — HadoopJarStep.Args risks
+  # breaking arbitrary Spark arg parsers, so POLYRIS_* env injection is not
+  # attempted for the EMR branch; attaching this policy to an EMR task role
+  # would grant permission but xcom.push() would still fail at runtime).
+  # See the IAM attachment matrix in docs/features/DATA_PASSING.md.
   #
   # The IAM Condition restricts UpdateItem to keys with `output#*` prefix —
   # user tasks can only touch the canonical output store, never the internal
@@ -2181,8 +2185,9 @@ Resources:
       ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-task-write"
       Description: >-
         Write access to the Polyris output store for tasks that call
-        xcom.push(). Attach to Glue/ECS/Batch/EMR task roles alongside
+        xcom.push(). Attach to Glue/ECS/Batch task roles alongside
         PolyrisTaskReadPolicy. Lambda return values do NOT need this.
+        EMR xcom.push() is unsupported in 0.100.0 — see CHANGELOG.
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2210,7 +2215,7 @@ Outputs:
       Name: !Sub "${Namespace}-${Stage}-polyris-task-read-policy"
 
   PolyrisTaskWritePolicyArn:
-    Description: Attach this managed policy to Glue/ECS/Batch/EMR task roles that call xcom.push()
+    Description: Attach this managed policy to Glue/ECS/Batch task roles that call xcom.push() (EMR unsupported in 0.100.0)
     Value: !Ref PolyrisTaskWritePolicy
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-task-write-policy"
