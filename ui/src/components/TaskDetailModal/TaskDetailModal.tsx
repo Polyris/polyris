@@ -198,6 +198,9 @@ export function TaskDetailModal({
                         loading={taskOutput.loading}
                         loaded={taskOutput.loaded}
                         taskStatus={task.status}
+                        outputRowRunId={taskOutput.outputRowRunId}
+                        inputRowRunId={taskOutput.inputRowRunId}
+                        expectedRunId={taskOutput.expectedRunId}
                     />
                 ) : onAction ? (
                     <ActionsTab
@@ -656,6 +659,14 @@ interface OutputTabProps {
      * the date-scoped canonical-row read on settled state (see the CLAUDE.md
      * rule about date-scoped canonical DDB rows). */
     taskStatus: string;
+    /** run_id stamped on the canonical output# row by the wrapper. */
+    outputRowRunId: string | null;
+    /** run_id stamped on the input# row by Save_Input_Record. */
+    inputRowRunId: string | null;
+    /** The run_task_helper ARN this run's wrapper invoked. Row-run-ids that
+     * don't match belong to a prior same-date run and should suppress the
+     * canonical-row read. */
+    expectedRunId: string | null;
 }
 
 // =============================================================================
@@ -670,20 +681,50 @@ export function formatBytes(n: number): string {
 }
 
 /**
- * Heuristic: is `output` the wrapper's AWS API response (JobRunId, TaskArn,
- * QueryExecutionId, StepId, JobId, ExecutionArn) rather than real user data?
+ * Heuristic: is `output` the wrapper's AWS API response (Glue JobRunId,
+ * Batch JobId, ECS Tasks list, Athena QueryExecution, EMR Step, child SFN
+ * ExecutionArn) rather than real user data?
  *
- * Service tasks (Glue/ECS/Batch/EMR) store the AWS response as `result` unless
- * the job code calls xcom.push() with the real output. This detection lets us
- * surface a Console banner pointing at the fix.
+ * Service tasks (Glue/ECS/Batch/EMR/Athena) store the AWS response as
+ * `result` unless the job code calls xcom.push() with the real output.
+ * This detection lets us surface a Console banner pointing at the fix.
+ *
+ * Two key sets:
+ *   FLAT_METADATA_KEYS — services whose response has the id at top level
+ *     (Glue: {JobRunId, ...}, Batch: {JobId, ...}, child SFN: {ExecutionArn, ...}).
+ *   WRAPPED_METADATA_KEYS — services whose response wraps the id inside
+ *     a single named key (Athena: {QueryExecution: {QueryExecutionId, ...}},
+ *     ECS: {Tasks: [...], Failures: [...]}, EMR: {Step: {Id, ...}}). Missing
+ *     these was a 0.100.0 bug — the Athena user reported no banner ever fires.
+ *
+ * Coupled with backend wrapper response shapes — see
+ * `tests/sdk/test_xcom_coupled_constants_parity.py::TestAwsMetadataDetector`
+ * for the parity gate that pins each service integration's response
+ * against this detector.
  */
+const FLAT_METADATA_KEYS = new Set([
+    'JobRunId',      // Glue: startJobRun.sync
+    'TaskArn',       // (legacy — real ECS response uses Tasks[])
+    'JobId',         // Batch: submitJob.sync
+    'ExecutionArn',  // child SFN: startExecution.sync
+]);
+const WRAPPED_METADATA_KEYS = new Set([
+    'QueryExecution', // Athena: startQueryExecution.sync → {QueryExecution: {...}}
+    'Tasks',          // ECS:    runTask.sync            → {Tasks: [...], Failures: [...]}
+    'Step',           // EMR:    addStep.sync-ish        → {Step: {Id, ...}}
+]);
+
 export function looksLikeAwsMetadata(output: unknown): boolean {
     if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
     const obj = output as Record<string, unknown>;
     const keys = Object.keys(obj);
-    if (keys.length === 0 || keys.length > 4) return false;
-    const metadataKeys = new Set(['JobRunId', 'TaskArn', 'JobId', 'QueryExecutionId', 'StepId', 'ExecutionArn']);
-    return keys.some(k => metadataKeys.has(k));
+    // Response shapes are always small (id + a handful of metadata fields).
+    // Cap at 6 keys — wide enough for real responses (Glue emits ~5), narrow
+    // enough that a large real user output isn't misclassified.
+    if (keys.length === 0 || keys.length > 6) return false;
+    if (keys.some(k => FLAT_METADATA_KEYS.has(k))) return true;
+    if (keys.some(k => WRAPPED_METADATA_KEYS.has(k))) return true;
+    return false;
 }
 
 // Card-body renderers ----------------------------------------------------
@@ -888,16 +929,25 @@ function UpstreamDep({ name, entry }: { name: string; entry: unknown }) {
     );
 }
 
-function InputSection({ input, taskStatus }: { input: unknown; taskStatus: string }) {
-    // Same date-scoped-row gate as OutputCard (CLAUDE.md rule #30). The
-    // `input#{pipeline}#{task}#{date}` row is shared across every same-date
-    // run; `Save_Input_Record` fires early in the wrapper, so a task that
-    // hasn't reached a settled state yet may still be rendering a prior
-    // run's snapshot. We over-fire a little (a task in `running` HAS run
-    // Save_Input_Record already, so its input IS current) — that's the
-    // trade-off for consistency with OutputCard's gate. UI polls every
-    // ~5s so the mid-run window is short.
+function InputSection({
+    input, taskStatus, inputRowRunId, expectedRunId,
+}: {
+    input: unknown; taskStatus: string;
+    inputRowRunId: string | null; expectedRunId: string | null;
+}) {
+    // Two-layer gate for the date-scoped canonical `input#` row (CLAUDE.md
+    // rule #30, extended for cross-run staleness):
+    //
+    // 1. Non-settled task → Save_Input_Record hasn't fired yet for this run,
+    //    row still holds a prior same-date run's snapshot. Suppress.
+    // 2. Settled task, row_run_id ≠ this run's helper ARN → the settled
+    //    outcome didn't touch input# (e.g. task skipped without wrapper
+    //    ever running Save_Input_Record). Row content belongs to another
+    //    run — suppress rather than lie about whose input it is.
     const isSettled = TASK_SETTLED_STATUSES.includes(taskStatus);
+    const rowFromPriorRun = Boolean(
+        inputRowRunId && expectedRunId && inputRowRunId !== expectedRunId
+    );
 
     if (input === null || input === undefined) {
         return (
@@ -912,6 +962,16 @@ function InputSection({ input, taskStatus }: { input: unknown; taskStatus: strin
                 <Database size={14} /> Input snapshot will appear once the task settles
                 {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
                 . The record for this date may still hold a prior run&apos;s data.
+            </div>
+        );
+    }
+    if (rowFromPriorRun) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> Input snapshot belongs to a different run
+                of this task on the same date. This run&apos;s task settled without
+                populating the canonical input record (e.g. resolved via UI
+                before the wrapper started).
             </div>
         );
     }
@@ -983,18 +1043,28 @@ function InputSection({ input, taskStatus }: { input: unknown; taskStatus: strin
     );
 }
 
-function OutputSection({ output, truncated, taskStatus }: { output: unknown; truncated: boolean; taskStatus: string }) {
+function OutputSection({
+    output, truncated, taskStatus, outputRowRunId, expectedRunId,
+}: {
+    output: unknown; truncated: boolean; taskStatus: string;
+    outputRowRunId: string | null; expectedRunId: string | null;
+}) {
     return (
         <OutputCard
             output={output}
             truncated={truncated}
             awsMetadata={output !== null && output !== undefined && looksLikeAwsMetadata(output)}
             taskStatus={taskStatus}
+            outputRowRunId={outputRowRunId}
+            expectedRunId={expectedRunId}
         />
     );
 }
 
-function OutputTab({ input, output, truncated, loading, loaded, taskStatus }: OutputTabProps) {
+function OutputTab({
+    input, output, truncated, loading, loaded, taskStatus,
+    outputRowRunId, inputRowRunId, expectedRunId,
+}: OutputTabProps) {
     if (loading) {
         return <div className="td-tab-empty"><Hourglass size={16} /> Loading…</div>;
     }
@@ -1003,8 +1073,19 @@ function OutputTab({ input, output, truncated, loading, loaded, taskStatus }: Ou
     }
     return (
         <div className="td-output-tab">
-            <InputSection input={input} taskStatus={taskStatus} />
-            <OutputSection output={output} truncated={truncated} taskStatus={taskStatus} />
+            <InputSection
+                input={input}
+                taskStatus={taskStatus}
+                inputRowRunId={inputRowRunId}
+                expectedRunId={expectedRunId}
+            />
+            <OutputSection
+                output={output}
+                truncated={truncated}
+                taskStatus={taskStatus}
+                outputRowRunId={outputRowRunId}
+                expectedRunId={expectedRunId}
+            />
         </div>
     );
 }

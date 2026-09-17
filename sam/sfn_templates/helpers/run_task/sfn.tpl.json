@@ -332,7 +332,7 @@
                         "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
                     }
                 },
-                "UpdateExpression": "SET task_name = :tn, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl), run_id = :rid REMOVE #pushed_marker, pushed_at, pushed_run_id",
+                "UpdateExpression": "SET task_name = :tn, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl), run_id = :rid REMOVE #pushed_marker, pushed_at, pushed_run_id, push_count",
                 "ExpressionAttributeNames": {
                     "#ttl_field": "ttl",
                     "#pushed_marker": "_pushed_by_task"
@@ -390,7 +390,7 @@
                         "S": "{% 'input#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
                     }
                 },
-                "UpdateExpression": "SET task_name = :tn, pipeline_name = :pn, task_date = :td, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
+                "UpdateExpression": "SET task_name = :tn, pipeline_name = :pn, task_date = :td, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl), run_id = :rid",
                 "ExpressionAttributeNames": {
                     "#ttl_field": "ttl"
                 },
@@ -412,6 +412,9 @@
                     },
                     ":ttl": {
                         "N": "{% $string($states.input.ttl) %}"
+                    },
+                    ":rid": {
+                        "S": "{% $states.context.Execution.Id %}"
                     }
                 }
             },
@@ -594,7 +597,7 @@
                 "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
             },
             "Arguments": "{% $merge([{'QueryString': $states.input.task_config.query_string, 'QueryExecutionContext': {'Database': $states.input.task_config.database}, 'WorkGroup': $exists($states.input.task_config.workgroup) ? $states.input.task_config.workgroup : 'primary'}, ($exists($states.input.task_config.output_location) and $states.input.task_config.output_location != '') ? {'ResultConfiguration': {'OutputLocation': $states.input.task_config.output_location}} : {}]) %}",
-            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.QueryExecutionId) ? $states.result.QueryExecutionId : ''} | ) %}",
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.QueryExecution.QueryExecutionId) ? $states.result.QueryExecution.QueryExecutionId : ''} | ) %}",
             "Catch": [
                 {
                     "ErrorEquals": [

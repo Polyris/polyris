@@ -88,22 +88,32 @@ class XComManuallyResolvedError(XComError):
     when an operator resolved the task via UI (mark_success / skip / fail / stop).
 
     The marker fields (``_manually_resolved`` / ``_resolution`` / ``_reason`` /
-    ``_operator``) are metadata, not payload. Reading them as if they were data
-    is almost always a bug — the whole reason a resolution needed a human is
-    that the task never produced real output.
+    ``_operator`` / ``_pipeline_execution``) are metadata, not payload. Reading
+    them as if they were data is almost always a bug — the whole reason a
+    resolution needed a human is that the task never produced real output.
 
     Loud by default. To read the marker anyway (e.g. to inspect the operator's
     ``reason`` or route on the ``resolution``), pass ``raise_on_manual=False``.
+
+    When the marker carries ``_pipeline_execution``, the error message names
+    the specific pipeline run that produced it — useful for spotting cross-run
+    bleed (the ``output#{pipeline}#{task}#{date}`` row is date-scoped, so a
+    downstream task in a different same-date run reads the same marker until
+    a new organic output overwrites it).
     """
 
-    def __init__(self, task_name: str, resolution: str, operator: str, reason: str):
+    def __init__(self, task_name: str, resolution: str, operator: str, reason: str,
+                 pipeline_execution: str = ""):
         self.task_name = task_name
         self.resolution = resolution
         self.operator = operator
         self.reason = reason
+        self.pipeline_execution = pipeline_execution
         detail = f"resolution: {resolution}, operator: {operator}"
         if reason:
             detail += f", reason: {reason}"
+        if pipeline_execution:
+            detail += f", pipeline_execution: {pipeline_execution}"
         super().__init__(
             f"upstream '{task_name}' has no organic output — it was manually "
             f"resolved via Console ({detail}). "
@@ -117,6 +127,7 @@ _MANUAL_RESOLVED_FIELD = "_manually_resolved"
 _MANUAL_RESOLUTION_FIELD = "_resolution"
 _MANUAL_REASON_FIELD = "_reason"
 _MANUAL_OPERATOR_FIELD = "_operator"
+_MANUAL_PIPELINE_EXECUTION_FIELD = "_pipeline_execution"
 
 
 def _is_manual_marker(value: Any) -> bool:
@@ -139,9 +150,15 @@ def _raise_manual(task_name: str, marker: dict) -> None:
         task_name,
         resolution=str(marker.get(_MANUAL_RESOLUTION_FIELD, "unknown")),
         # `_operator` was added in 0.100.0 — older marker records may lack it.
-        # Fall back to a generic label so error messages stay meaningful.
-        operator=str(marker.get(_MANUAL_OPERATOR_FIELD) or "operator"),
+        # Fall back to the same string the backend writes when auth is
+        # disabled ("unknown") so the SDK / UI / backend all present one
+        # distinct label for "no identity captured".
+        operator=str(marker.get(_MANUAL_OPERATOR_FIELD) or "unknown"),
         reason=str(marker.get(_MANUAL_REASON_FIELD) or ""),
+        # `_pipeline_execution` added post-0.100.0 to disambiguate cross-run
+        # marker bleed (the `output#{pipeline}#{task}#{date}` row is
+        # date-scoped). Empty string when absent (older markers).
+        pipeline_execution=str(marker.get(_MANUAL_PIPELINE_EXECUTION_FIELD) or ""),
     )
 
 

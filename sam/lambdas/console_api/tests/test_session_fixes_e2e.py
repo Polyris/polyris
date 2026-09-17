@@ -672,6 +672,85 @@ class TestSyntheticOutputMarker:
         # Real result must be untouched — not replaced by the synthetic marker.
         assert fake_table.items['output#acme-daily#transform#2026-07-24']['result'] == real_result
 
+    def test_second_same_date_manual_action_refreshes_marker_identity(self, wired):
+        """SEV3 regression guard: pre-fix, `attribute_not_exists(#r)` blocked
+        both a real-output clobber AND a stale-marker refresh, so any second
+        same-date manual action silently kept the FIRST action's operator /
+        reason / resolution on the DDB row. Post-fix (CLAUDE.md #32 — split
+        the two guard concerns), the second action must land its own values.
+
+        Simulates the exact reproduction: skip in Run1 with operator alice
+        + reason 'first attempt' → mark_success in Run2 with operator bob +
+        reason 'verified via logs'. Row must end with the SECOND action's
+        identity, not the FIRST's."""
+        tasks_module, fake_table = wired
+
+        # Run 1 — first skip (writes marker with alice's identity)
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+        from auth import Principal
+        alice = Principal('user', 'sub-alice', email='alice@example.com')
+        resp = tasks_module.skip_task(
+            'transform',
+            {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1', 'reason': 'first attempt'}),
+             'principal': alice},
+        )
+        assert resp['statusCode'] == 200, resp
+        marker1 = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker1['_operator'] == 'alice@example.com'
+        assert marker1['_reason'] == 'first attempt'
+        assert marker1['_resolution'] == 'skip'
+
+        # Run 2 — mark_success (must overwrite marker with bob's identity)
+        run2 = _waiting_task()
+        run2['execution_name'] = 'transform-2026-07-24-run2'
+        run2['pipeline_execution'] = 'run-2'
+        fake_table.items['transform-2026-07-24-run2'] = run2
+        bob = Principal('user', 'sub-bob', email='bob@example.com')
+        resp = tasks_module.mark_success(
+            'transform',
+            {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-2', 'reason': 'verified via logs'}),
+             'principal': bob},
+        )
+        assert resp['statusCode'] == 200, resp
+        marker2 = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker2['_operator'] == 'bob@example.com', (
+            "Second same-date manual action did not refresh _operator — "
+            "the pre-fix behaviour (silent no-op via attribute_not_exists) "
+            "has regressed."
+        )
+        assert marker2['_reason'] == 'verified via logs'
+        assert marker2['_resolution'] == 'mark_success'
+
+    def test_marker_blocked_by_real_output_emits_notify_warn(self, wired):
+        """SEV2 observability guard: when the marker write is blocked
+        because real output already exists, emit a `_notify_warn_*` record
+        so the operator sees the intent-vs-storage mismatch in the
+        Notifications bell (Principle #38) — not only in CloudWatch."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+        # Real output present — guard should legitimately block marker write.
+        fake_table.items['output#acme-daily#transform#2026-07-24'] = {
+            'execution_name': 'output#acme-daily#transform#2026-07-24',
+            'task_name': 'transform',
+            'result': json.dumps({'rows_processed': 42}),
+            'status': 'success',
+        }
+
+        resp = tasks_module.skip_task(
+            'transform', {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'})},
+        )
+        assert resp['statusCode'] == 200, resp
+        # _notify_warn_* record emitted so the UI Notifications bell surfaces it.
+        warn_keys = [k for k in fake_table.items if k.startswith('_notify_warn_marker_blocked_')]
+        assert len(warn_keys) == 1, f"Expected exactly one _notify_warn_ record; got {warn_keys}"
+        warn_row = fake_table.items[warn_keys[0]]
+        assert warn_row['status'] == 'warning'
+        assert 'real output' in warn_row['error'].lower()
+        # Real output preserved regardless.
+        assert json.loads(
+            fake_table.items['output#acme-daily#transform#2026-07-24']['result']
+        ) == {'rows_processed': 42}
+
     def test_ddb_failure_in_marker_write_does_not_block_the_manual_action(self, wired, mocker):
         """The realistic failure mode — a ClientError from DynamoDB — is
         caught inside _write_synthetic_output_marker itself, so the manual

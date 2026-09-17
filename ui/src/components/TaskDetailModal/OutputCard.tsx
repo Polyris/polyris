@@ -25,15 +25,21 @@ interface Props {
     /** True when the raw output looks like an AWS API response (JobRunId etc). */
     awsMetadata?: boolean;
     /**
-     * The task's current per-run status. Used to gate whether the canonical
-     * `output#{pipeline}#{task}#{date}` row is authoritative for THIS run:
-     * that row is date-scoped, so multiple same-date runs of the same task
-     * share it. A stale row from a prior same-date run (e.g. manual skip)
-     * shows here whenever the current run's task hasn't reached a settled
-     * state — we render an empty state in that case rather than lying about
-     * whose output it is. Optional for backwards compatibility.
+     * The task's current per-run status. First layer of the date-scoped-row
+     * gate (CLAUDE.md #30): non-settled tasks haven't produced output for
+     * this run yet, so the canonical row's content necessarily belongs to
+     * a prior same-date run. Suppress. Optional for backwards compat.
      */
     taskStatus?: string;
+    /** run_id stamped on the canonical `output#*` row (Init_Output_Row /
+     * Save_Canonical_Output). Compared with expectedRunId — mismatch is
+     * the second layer of the gate: settled tasks whose row nevertheless
+     * came from a prior same-date run (e.g. resolved via UI without ever
+     * running the wrapper). */
+    outputRowRunId?: string | null;
+    /** The run_task_helper ARN this run's wrapper invoked. From the per-run
+     * task row's `run_task_helper_arn`. */
+    expectedRunId?: string | null;
 }
 
 /**
@@ -45,7 +51,10 @@ interface Props {
  * Variants: normal / empty / truncated / aws-metadata — each carries a
  * distinct icon + status badge so the user reads intent at a glance.
  */
-export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata, taskStatus }) => {
+export const OutputCard: React.FC<Props> = ({
+    output, truncated, awsMetadata, taskStatus,
+    outputRowRunId, expectedRunId,
+}) => {
     const [expanded, setExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
 
@@ -54,13 +63,19 @@ export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata, ta
         [output],
     );
 
-    // Gate the canonical-row read on the task's settled state. Rows keyed by
-    // (pipeline, task, date) are shared across all same-date runs — a task
-    // still in `waiting_decision` / `running` / etc. cannot own the row's
-    // content until Save_Success (or a manual action) writes it for THIS
-    // run. Rendering the row before that leaks a prior run's data.
-    // (See CLAUDE.md rule about date-scoped canonical DDB rows.)
+    // Two-layer date-scoped-row gate (CLAUDE.md #30 + cross-run extension):
+    //
+    // 1. `isSettled` — non-settled tasks haven't yet produced output for
+    //    this run, canonical row necessarily holds a prior run's content.
+    //
+    // 2. `rowFromPriorRun` — settled tasks that never ran the wrapper (e.g.
+    //    resolved via UI, or backfill-auto-skipped) leave the canonical row
+    //    stamped with a prior same-date run's `run_id`. Compare directly to
+    //    detect and suppress.
     const isSettled = taskStatus === undefined || TASK_SETTLED_STATUSES.includes(taskStatus);
+    const rowFromPriorRun = Boolean(
+        outputRowRunId && expectedRunId && outputRowRunId !== expectedRunId
+    );
 
     const toggle = () => setExpanded(!expanded);
     const onHeaderKey = (e: React.KeyboardEvent) => {
@@ -119,6 +134,27 @@ export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata, ta
                     This run hasn&apos;t reached a settled state yet
                     {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
                     . Output will appear once the task completes.
+                </div>
+            </div>
+        );
+    }
+
+    // Settled task but the canonical row was stamped by a DIFFERENT run
+    // (e.g. this run's task was skipped via UI so the wrapper never ran
+    // Save_Canonical_Output — canonical row still holds a prior same-date
+    // run's content). Suppress rather than attribute another run's output.
+    if (rowFromPriorRun) {
+        return (
+            <div className="td-upstream-dep td-upstream-dep--muted td-output-card">
+                <div className="td-output-card-header">
+                    <Database size={14} />
+                    <strong>Output</strong>
+                    <span className="td-status-badge td-status-badge--muted">from prior run</span>
+                </div>
+                <div className="td-output-card-message">
+                    The canonical output row for this task/date was written by a
+                    different run. This run settled without populating it (e.g.
+                    resolved via UI before the wrapper started).
                 </div>
             </div>
         );

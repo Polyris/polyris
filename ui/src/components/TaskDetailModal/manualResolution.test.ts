@@ -41,7 +41,7 @@ describe('detectManualResolution', () => {
             _resolution: 'skip',
             _reason: 'legacy row',
         });
-        expect(m?.operator).toBe('operator');
+        expect(m?.operator).toBe('unknown');
     });
 
     it('falls back to "unknown" resolution and empty reason on malformed fields', () => {

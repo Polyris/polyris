@@ -676,7 +676,49 @@ task start would race concurrent same-date backfills and lose real output;
 changes across writer / reader / snapshot tests. The UI gate is scoped to
 the surface that has the problem and gains nothing from the heavier fix.
 
-**31. Break-review + architect-pass before claiming "done"**
+**31. Canonical-row writers must distinguish "protect real data" from "block stale metadata refresh"**
+
+Any writer with a `condition_expr` guard that protects an existing row from
+clobber must split its guard into two concerns:
+
+1. **Never clobber genuine user data** — the original intent. Real output
+   from an earlier same-date run must survive a re-run / a subsequent
+   manual action.
+2. **Always refresh stale metadata written by the same writer** — a
+   subsequent action of the same class (e.g. a second same-date manual
+   resolution) must supersede the first, otherwise its identity fields
+   (operator / reason / resolution / timestamp) drift silently forever.
+
+`attribute_not_exists(#field)` alone conflates the two. The correct shape
+is either:
+
+- **GetItem-then-Update.** Read the current row; if the field is absent
+  OR is a marker/synthetic value the writer itself produced, do an
+  unconditional Update. If it's opaque user data, skip and warn.
+- **Structured sentinel in ConditionExpression** (advanced): use
+  `attribute_not_exists(#field) OR contains(#field, :marker_sentinel)`
+  with a unique substring that can only appear in this writer's own
+  synthetic rows. Fragile if the JSON emitter's ordering changes; prefer
+  GetItem-then-Update unless the round-trip cost matters.
+
+Canonical example (post-0.100.0 fix): `_write_synthetic_output_marker`
+in `sam/lambdas/console_api/routes/tasks.py`. Pre-fix, the guard
+blocked BOTH real-output clobbers AND stale-marker refreshes silently at
+INFO log level — a same-date second skip left the first skip's
+`_operator` UUID even after the UI switched to sending Cognito ID tokens.
+Post-fix, GetItem-then-Update lands the second action's identity; when
+the guard legitimately blocks (real data present) it emits a
+`_notify_warn_*` (Principle #38) so the operator sees the mismatch in
+the Notifications bell, not only in CloudWatch. Test guard against
+regression: `tests/... TestSyntheticOutputMarker::test_second_same_date_manual_action_refreshes_marker_identity`.
+
+When to apply this rule: any new writer that touches a **shared** DDB
+key (date-scoped canonical rows, cache rows, aggregation snapshots) —
+i.e. rows other writers of the same class may have populated earlier.
+The write path for exclusively-owned rows (per-run task record, single-
+writer configs) does not need this split.
+
+**32. Break-review + architect-pass before claiming "done"**
 
 A change of any significant size (new SDK API, cross-surface refactor, ADR-worthy
 decision) is not "done" until it has been independently break-reviewed AND

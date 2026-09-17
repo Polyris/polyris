@@ -37,9 +37,11 @@ export function detectManualResolution(value: unknown): ManualResolution | null 
         resolution: typeof rec._resolution === 'string' ? rec._resolution : 'unknown',
         reason: typeof rec._reason === 'string' ? rec._reason : '',
         // Backend added `_operator` in 0.100.0 — records written before that
-        // deploy carry no operator field. Fall back to a generic label so old
-        // rows still render without a UI-side branch.
-        operator: typeof rec._operator === 'string' && rec._operator ? rec._operator : 'operator',
+        // deploy carry no operator field. Fall back to the same 'unknown'
+        // string the backend uses for auth-disabled routes so the UI shows
+        // a single distinct string for "no identity captured" rather than
+        // two ('operator' vs 'unknown') the user has to learn to distinguish.
+        operator: typeof rec._operator === 'string' && rec._operator ? rec._operator : 'unknown',
     };
 }
 

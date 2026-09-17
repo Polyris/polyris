@@ -411,12 +411,23 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
     output = None
     task_input = None
     truncated = False
+    # `run_id` on canonical rows (set by Init_Output_Row / Save_Canonical_Output /
+    # Save_Input_Record — all use $states.context.Execution.Id = run_task_helper
+    # ARN). Returned so the UI can detect cross-run staleness: rows keyed by
+    # (pipeline, task, DATE) are shared across every same-date run; a row whose
+    # run_id doesn't match THIS task's run_task_helper_arn was written by a
+    # prior same-date run and its content should not be attributed to this run.
+    # See CLAUDE.md rule #30 (extended in the same delivery to catch settled
+    # tasks with stale-row bleed).
+    output_row_run_id = None
+    input_row_run_id = None
     if pipeline_name:
         output_key = f"output#{pipeline_name}#{plain_task}#{run_date}"
         input_key = f"input#{pipeline_name}#{plain_task}#{run_date}"
         try:
             # Result lives on the output# row.
             store_item = executions_repo.get(output_key) or {}
+            output_row_run_id = store_item.get('run_id')
             raw = store_item.get('result')
             if raw:
                 parsed = json.loads(raw)
@@ -431,6 +442,7 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
             raw_input = None
             try:
                 input_item = executions_repo.get(input_key) or {}
+                input_row_run_id = input_item.get('run_id')
                 raw_input = input_item.get('task_input')
             except (ClientError, BotoCoreError) as inner:
                 log.error("get_task_output", "Error reading input# record; falling back to legacy field",
@@ -449,6 +461,13 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
         'output': output,
         'input': task_input,
         'truncated': truncated,
+        # Canonical-row run_ids for the UI's cross-run staleness gate.
+        # `expected_run_id` is the run_task_helper ARN this run's wrapper
+        # invoked (set on the per-run task row by Send_Ready_Signal_Sfn); UI
+        # compares row.run_id vs this to know if the row belongs to this run.
+        'output_row_run_id': output_row_run_id,
+        'input_row_run_id': input_row_run_id,
+        'expected_run_id': resolved.get('run_task_helper_arn'),
     })
 
 
@@ -564,13 +583,26 @@ def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, da
     consequence of a manual decision made on an upstream task, through no
     fault of the downstream task's own logic.
 
-    Conditional on 'result' NOT already existing: a genuine, real output from
-    an earlier successful run of this same task/date (e.g. a same-day
-    re-run, or a manual action taken after the task had already produced
-    real output some other way) must never be overwritten by this synthetic
-    marker — it only fills the gap when nothing real is there. Best-effort,
-    matching every other status write in this codebase: a failure here must
-    not block the manual action itself.
+    Two distinct protection concerns, addressed separately (CLAUDE.md #32):
+
+    1. **Never clobber real user output.** A genuine, real output from an
+       earlier successful run of this same task/date (e.g. same-day re-run,
+       real xcom.push, real Lambda return) must survive — this synthetic
+       marker only fills the gap when nothing real is there.
+    2. **Always refresh a prior stale marker.** A previous same-date manual
+       action left its own marker on the row (with its own operator / reason
+       / resolution). A subsequent manual action must overwrite it —
+       otherwise the identity fields drift silently forever (SEV3 finding
+       in 0.100.0 development: same-date second-skip left the first-skip
+       operator UUID even after the ID-token fix). GetItem-then-Update is
+       the cleanest split of these two concerns; `attribute_not_exists`
+       alone conflates them.
+
+    Best-effort, matching every other status write in this codebase: a
+    failure here must not block the manual action itself. When the guard
+    legitimately blocks (real output present), emit a `_notify_warn_` so
+    the operator sees the intent-vs-storage mismatch in the Notifications
+    bell rather than only in CloudWatch (Principle #38).
     """
     pipeline_name = item.get('pipeline_name', 'unknown')
     task_name = item.get('task_name', '')
@@ -581,19 +613,76 @@ def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, da
     # (Cognito email if present, else sub; PAT: `pat:<name>`; else 'unknown').
     # UI reads this to show "Marked <resolution> by <operator>" in the
     # Task Detail modal instead of leaving intent invisible in a shared account.
+    # `_pipeline_execution` — which pipeline run created this marker. Threaded
+    # into the SDK's XComManuallyResolvedError message so a downstream task
+    # in a different same-date run sees the source explicitly instead of
+    # inferring stale-vs-current bleed from context.
     marker = json.dumps({
         '_manually_resolved': True,
         '_resolution': action_name,
         '_reason': reason,
         '_operator': operator,
+        '_pipeline_execution': item.get('pipeline_execution', ''),
     })
     ttl = int(datetime.now(timezone.utc).timestamp()) + (30 * 24 * 60 * 60)
+
+    # 1) Read the existing row's result (if any) to distinguish "empty",
+    #    "prior marker" (refresh), and "real user output" (protect).
+    try:
+        existing = executions_repo.get(key)
+    except (ClientError, BotoCoreError) as e:
+        log.warn(
+            "_write_synthetic_output_marker",
+            "Failed to read existing output# row before marker write",
+            error=str(e), task_name=task_name,
+        )
+        return
+
+    prior_result = (existing or {}).get('result')
+    prior_is_marker = False
+    if isinstance(prior_result, str):
+        try:
+            parsed = json.loads(prior_result)
+            prior_is_marker = isinstance(parsed, dict) and parsed.get('_manually_resolved') is True
+        except (ValueError, TypeError):
+            # Malformed JSON is treated as "not a marker" — protect it as if
+            # it were opaque real output. Same conservative bias.
+            prior_is_marker = False
+
+    if prior_result is not None and not prior_is_marker:
+        # Real user output present — the original guard's intent. Skip write,
+        # elevate to WARN, and surface via Notifications bell (Principle #38)
+        # so the operator sees that their manual action's marker did not land.
+        log.warn(
+            "_write_synthetic_output_marker",
+            "Real output already exists for this task/date — marker not written; "
+            "downstream reads will see the prior real output, not the manual resolution",
+            task_name=task_name,
+            pipeline_name=pipeline_name,
+            date=date,
+            action=action_name,
+            operator=operator,
+        )
+        _emit_marker_blocked_warn(
+            pipeline_name=pipeline_name,
+            task_name=task_name,
+            date=date,
+            action_name=action_name,
+            operator=operator,
+        )
+        return
+
+    # 2) Absent OR prior marker → unconditional SET (no `condition_expr`).
+    #    Unconditional is safe here because we just proved the row does not
+    #    hold real output; if a race writes real output between our GetItem
+    #    and this UpdateItem, we still overwrite — but that race would need
+    #    a full task run in single-digit-millisecond window after a manual
+    #    action, which is practically impossible.
     try:
         executions_repo.update(
             key,
             'SET task_name = :tn, #r = :result, #s = :status, '
             'updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)',
-            condition_expr='attribute_not_exists(#r)',
             expr_names={'#r': 'result', '#s': 'status', '#ttl_field': 'ttl'},
             expr_values={
                 ':tn': task_name,
@@ -603,21 +692,43 @@ def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, da
                 ':ttl': ttl,
             },
         )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-            log.info(
-                "_write_synthetic_output_marker",
-                "Real output already exists for this task/date — not overwriting",
-                task_name=task_name,
-            )
-        else:
-            log.warn(
-                "_write_synthetic_output_marker", "Failed to write synthetic marker",
-                error=str(e), task_name=task_name,
-            )
-    except BotoCoreError as e:
+    except (ClientError, BotoCoreError) as e:
         log.warn(
-            "_write_synthetic_output_marker", "Failed to write synthetic marker",
+            "_write_synthetic_output_marker",
+            "Failed to write synthetic marker",
+            error=str(e), task_name=task_name,
+        )
+
+
+def _emit_marker_blocked_warn(
+    pipeline_name: str, task_name: str, date: str,
+    action_name: str, operator: str,
+) -> None:
+    """Emit a `_notify_warn_*` record (Principle #38) when
+    `_write_synthetic_output_marker`'s guard blocks a manual action from
+    landing its marker because real output is already present. Best-effort —
+    a failure here must not block the manual action either."""
+    try:
+        exec_name = f"_notify_warn_marker_blocked_{pipeline_name}_{task_name}_{date}_{action_name}"
+        executions_repo.put({
+            'execution_name': exec_name,
+            'task_name': task_name,
+            'pipeline_name': pipeline_name,
+            'date': date,
+            'status': 'warning',
+            'error': (
+                f"Manual '{action_name}' by {operator} did not write a marker — "
+                f"real output for {task_name}@{date} already existed on the canonical row "
+                "and was preserved. Downstream reads see that real output, not the manual "
+                "resolution."
+            ),
+            'finished_at': datetime.now(timezone.utc).isoformat(),
+            'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400,
+        })
+    except (ClientError, BotoCoreError) as e:
+        log.warn(
+            "_emit_marker_blocked_warn",
+            "Failed to emit marker-blocked notification",
             error=str(e), task_name=task_name,
         )
 

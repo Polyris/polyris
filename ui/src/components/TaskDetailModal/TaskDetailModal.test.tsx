@@ -395,7 +395,7 @@ describe('TaskDetailModal', () => {
             }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.getByText(/Marked success by operator — old record/)).toBeInTheDocument();
+            expect(screen.getByText(/Marked success by unknown — old record/)).toBeInTheDocument();
         });
 
         it('renders the task’s own output as a manual card when the task itself was mark_success’d', () => {

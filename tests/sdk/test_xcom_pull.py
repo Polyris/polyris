@@ -202,12 +202,13 @@ def test_xcom_manually_resolved_error_subclasses_xcom_error():
 
 
 def _manual_marker(resolution: str = "mark_success", operator: str = "alice@example.com",
-                   reason: str = "verified via S3"):
+                   reason: str = "verified via S3", pipeline_execution: str = "run-abc123"):
     return {
         "_manually_resolved": True,
         "_resolution": resolution,
         "_reason": reason,
         "_operator": operator,
+        "_pipeline_execution": pipeline_execution,
     }
 
 
@@ -238,6 +239,10 @@ def test_get_raises_manually_resolved_on_marker_in_event_inject():
     assert exc.value.resolution == "mark_success"
     assert exc.value.operator == "alice@example.com"
     assert exc.value.reason == "verified via S3"
+    # `_pipeline_execution` surfaces in the message so a downstream operator
+    # can spot cross-run bleed (the marker's run is named explicitly).
+    assert exc.value.pipeline_execution == "run-abc123"
+    assert "pipeline_execution: run-abc123" in str(exc.value)
     assert "manually resolved" in str(exc.value)
 
 
@@ -263,9 +268,11 @@ def test_get_returns_marker_when_raise_on_manual_false():
     assert result == marker
 
 
-def test_get_falls_back_to_generic_operator_when_field_missing():
-    """Records written before 0.100.0 carry no _operator — error message
-    still readable via a generic label rather than 'None'."""
+def test_get_falls_back_to_unknown_operator_when_field_missing():
+    """Records written before 0.100.0 carry no _operator — falls back to
+    the same string the backend uses for auth-off routes ('unknown'), so
+    SDK / UI / backend present one distinct label for 'no identity captured'
+    rather than two ('operator' vs 'unknown') users have to learn."""
     legacy = {
         "_manually_resolved": True,
         "_resolution": "mark_success",
@@ -274,8 +281,8 @@ def test_get_falls_back_to_generic_operator_when_field_missing():
     event = {"upstream": {"t": {"status": "success", "output": legacy}}}
     with pytest.raises(XComManuallyResolvedError) as exc:
         get(event, "t")
-    assert exc.value.operator == "operator"
-    assert "operator: operator" in str(exc.value)
+    assert exc.value.operator == "unknown"
+    assert "operator: unknown" in str(exc.value)
 
 
 def test_pull_raises_manually_resolved_when_ddb_row_is_a_marker():

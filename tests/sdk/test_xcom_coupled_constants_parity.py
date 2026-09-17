@@ -77,6 +77,7 @@ class TestManualResolutionMarkerFields:
         xcom._MANUAL_RESOLUTION_FIELD,
         xcom._MANUAL_REASON_FIELD,
         xcom._MANUAL_OPERATOR_FIELD,
+        xcom._MANUAL_PIPELINE_EXECUTION_FIELD,
     ])
     def test_field_appears_in_console_api_writer(self, field, tasks_route_text):
         assert field in tasks_route_text, (
