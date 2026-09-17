@@ -16,6 +16,7 @@ import {
     statusForResolution,
     variantForResolution,
 } from './manualResolution';
+import { TASK_SETTLED_STATUSES } from '@/generated/enums';
 
 interface Props {
     output: unknown;
@@ -23,6 +24,16 @@ interface Props {
     truncated?: boolean;
     /** True when the raw output looks like an AWS API response (JobRunId etc). */
     awsMetadata?: boolean;
+    /**
+     * The task's current per-run status. Used to gate whether the canonical
+     * `output#{pipeline}#{task}#{date}` row is authoritative for THIS run:
+     * that row is date-scoped, so multiple same-date runs of the same task
+     * share it. A stale row from a prior same-date run (e.g. manual skip)
+     * shows here whenever the current run's task hasn't reached a settled
+     * state — we render an empty state in that case rather than lying about
+     * whose output it is. Optional for backwards compatibility.
+     */
+    taskStatus?: string;
 }
 
 /**
@@ -34,7 +45,7 @@ interface Props {
  * Variants: normal / empty / truncated / aws-metadata — each carries a
  * distinct icon + status badge so the user reads intent at a glance.
  */
-export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata }) => {
+export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata, taskStatus }) => {
     const [expanded, setExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
 
@@ -42,6 +53,14 @@ export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata }) 
         () => (output === undefined || output === null ? '' : JSON.stringify(output)),
         [output],
     );
+
+    // Gate the canonical-row read on the task's settled state. Rows keyed by
+    // (pipeline, task, date) are shared across all same-date runs — a task
+    // still in `waiting_decision` / `running` / etc. cannot own the row's
+    // content until Save_Success (or a manual action) writes it for THIS
+    // run. Rendering the row before that leaks a prior run's data.
+    // (See CLAUDE.md rule about date-scoped canonical DDB rows.)
+    const isSettled = taskStatus === undefined || TASK_SETTLED_STATUSES.includes(taskStatus);
 
     const toggle = () => setExpanded(!expanded);
     const onHeaderKey = (e: React.KeyboardEvent) => {
@@ -80,6 +99,27 @@ export const OutputCard: React.FC<Props> = ({ output, truncated, awsMetadata }) 
                     <span className="td-status-badge td-status-badge--muted">empty</span>
                 </div>
                 <div className="td-output-card-message">This task stored no output.</div>
+            </div>
+        );
+    }
+
+    // Non-settled task: any content in the canonical row belongs to a prior
+    // same-date run, not this one. Render as pending rather than lie about
+    // whose output it is. Copy button still exposes the raw JSON on demand
+    // — advanced users diagnosing multi-run state don't lose access.
+    if (!isSettled) {
+        return (
+            <div className="td-upstream-dep td-upstream-dep--muted td-output-card">
+                <div className="td-output-card-header">
+                    <Database size={14} />
+                    <strong>Output</strong>
+                    <span className="td-status-badge td-status-badge--muted">pending</span>
+                </div>
+                <div className="td-output-card-message">
+                    This run hasn&apos;t reached a settled state yet
+                    {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
+                    . Output will appear once the task completes.
+                </div>
             </div>
         );
     }

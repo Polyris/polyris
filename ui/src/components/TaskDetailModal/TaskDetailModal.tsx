@@ -197,6 +197,7 @@ export function TaskDetailModal({
                         truncated={taskOutput.truncated}
                         loading={taskOutput.loading}
                         loaded={taskOutput.loaded}
+                        taskStatus={task.status}
                     />
                 ) : onAction ? (
                     <ActionsTab
@@ -651,6 +652,10 @@ interface OutputTabProps {
     truncated: boolean;
     loading: boolean;
     loaded: boolean;
+    /** This task's per-run status — threaded to OutputCard so it can gate
+     * the date-scoped canonical-row read on settled state (see the CLAUDE.md
+     * rule about date-scoped canonical DDB rows). */
+    taskStatus: string;
 }
 
 // =============================================================================
@@ -959,17 +964,18 @@ function InputSection({ input }: { input: unknown }) {
     );
 }
 
-function OutputSection({ output, truncated }: { output: unknown; truncated: boolean }) {
+function OutputSection({ output, truncated, taskStatus }: { output: unknown; truncated: boolean; taskStatus: string }) {
     return (
         <OutputCard
             output={output}
             truncated={truncated}
             awsMetadata={output !== null && output !== undefined && looksLikeAwsMetadata(output)}
+            taskStatus={taskStatus}
         />
     );
 }
 
-function OutputTab({ input, output, truncated, loading, loaded }: OutputTabProps) {
+function OutputTab({ input, output, truncated, loading, loaded, taskStatus }: OutputTabProps) {
     if (loading) {
         return <div className="td-tab-empty"><Hourglass size={16} /> Loading…</div>;
     }
@@ -979,7 +985,7 @@ function OutputTab({ input, output, truncated, loading, loaded }: OutputTabProps
     return (
         <div className="td-output-tab">
             <InputSection input={input} />
-            <OutputSection output={output} truncated={truncated} />
+            <OutputSection output={output} truncated={truncated} taskStatus={taskStatus} />
         </div>
     );
 }

@@ -635,7 +635,48 @@ grep -Ec "^\| [0-9]+ \| .* \| inline \|" docs/reference/adr-index.md   # inline 
 is 5 seconds. Skipping it means the header is drifting silently — every future
 reader has to distrust the count or run the same grep themselves.
 
-**30. Break-review + architect-pass before claiming "done"**
+**30. Date-scoped canonical DDB rows are shared across same-date runs — gate every UI read on the task's settled state**
+
+Rows keyed by `(pipeline, task, DATE)` — `output#*`, `input#*`, the manual-
+resolution marker row, and any future date-scoped canonical record — are
+shared across every same-date run of the same task. That's by design:
+backfills and same-date re-runs must read a stable "output for date D"
+regardless of which run wrote it, and downstream tasks in a later run must
+be able to read an earlier run's output at the same date.
+
+The trap: any UI that renders such a row unconditionally will show a
+**prior** run's content when the current run's task hasn't reached a
+settled state yet. A skip on run A at 2026-09-17 leaves a marker in
+`output#pipeline#clean#2026-09-17`; a fresh run B on the same date opens
+Task Detail on `clean` while it's still `waiting_decision` and sees run
+A's marker as if it were run B's output.
+
+Rule: every consumer of a date-scoped canonical row must gate on
+`task.status ∈ TASK_SETTLED_STATUSES` (terminal + `stopped`). Non-settled
+tasks render an explicit "pending" empty state, not the stale row.
+
+Concrete surfaces this applies to (grep first, extend the list):
+
+- `ui/src/components/TaskDetailModal/OutputCard.tsx` — takes `taskStatus`
+  prop; renders muted "pending" card when not settled (see the `!isSettled`
+  branch and the accompanying tests in `TaskDetailModal.test.tsx`).
+- Any future Backfill Detail / Runs feed / DAG-node preview that reads
+  `output#*` or `input#*` and needs to attribute content to *this* run.
+
+The UI's "Status constants are for orchestration, not display" rule
+(`ui/CLAUDE.md`) applies inverted here: gating a canonical-row read on
+settled state IS orchestration (decides whether this row is authoritative
+for this run), not display counting. `TASK_SETTLED_STATUSES` is the correct
+constant.
+
+Backend variants (clear the row at task start, or run-version the marker)
+were considered and rejected: (a) `Init_Output_Row` clearing `result` at
+task start would race concurrent same-date backfills and lose real output;
+(b) marker-versioning by run ID would need a new DDB field and coupled
+changes across writer / reader / snapshot tests. The UI gate is scoped to
+the surface that has the problem and gains nothing from the heavier fix.
+
+**31. Break-review + architect-pass before claiming "done"**
 
 A change of any significant size (new SDK API, cross-surface refactor, ADR-worthy
 decision) is not "done" until it has been independently break-reviewed AND

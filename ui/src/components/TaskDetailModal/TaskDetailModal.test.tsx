@@ -449,6 +449,69 @@ describe('TaskDetailModal', () => {
             }
         });
 
+        // ── Canonical-row gate on settled state ────────────────────────────
+
+        it('shows pending Output state when task is in a non-settled status', () => {
+            // Setup: canonical output# row still carries a marker from a
+            // PRIOR same-date run (mark_success by alice); current run's task
+            // is now in waiting_decision — the marker doesn't belong to it.
+            // The Output card must not render the stale marker as if it were
+            // this run's output.
+            const staleMarker = {
+                _manually_resolved: true,
+                _resolution: 'mark_success',
+                _reason: 'from earlier run',
+                _operator: 'alice@example.com',
+            };
+            vi.mocked(useTaskOutput).mockReturnValue(io({ output: staleMarker }));
+            const task = createTask({ status: 'waiting_decision' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            // Pending badge appears in place of the manual card.
+            expect(screen.getByText('pending')).toBeInTheDocument();
+            expect(screen.getByText(/hasn.t reached a settled state yet/i)).toBeInTheDocument();
+            // Current status surfaced for context — inside the pending message
+            // <code> element (getByText also matches the modal-header badge).
+            expect(screen.getAllByText('waiting_decision').some(
+                el => el.tagName === 'CODE'
+            )).toBe(true);
+            // The stale marker's manual-card badges must NOT render.
+            expect(screen.queryByText('manual: mark_success')).not.toBeInTheDocument();
+            expect(screen.queryByText(/Marked success by alice/)).not.toBeInTheDocument();
+        });
+
+        it('renders Output normally when task IS settled (marker belongs to this run)', () => {
+            // Opposite of the above: task's own status is 'success' AND the
+            // canonical row is a mark_success marker — the marker belongs to
+            // this run (someone just marked it), render as manual card.
+            const marker = {
+                _manually_resolved: true,
+                _resolution: 'mark_success',
+                _reason: 'verified',
+                _operator: 'bob@example.com',
+            };
+            vi.mocked(useTaskOutput).mockReturnValue(io({ output: marker }));
+            const task = createTask({ status: 'success' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('manual: mark_success')).toBeInTheDocument();
+            expect(screen.getByText(/Marked success by bob@example\.com — verified/))
+                .toBeInTheDocument();
+        });
+
+        it('renders Output normally for a "running" task with real data — belt-and-suspenders', () => {
+            // Defensive: if the canonical row somehow shows real data while
+            // the task is in a non-settled state, we still suppress and show
+            // pending. Guards against a race where Save_Success fired but
+            // the per-run status hasn't caught up yet.
+            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 42 } }));
+            const task = createTask({ status: 'running' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('pending')).toBeInTheDocument();
+            expect(screen.queryByLabelText('Task output preview')).not.toBeInTheDocument();
+        });
+
     });
 
     // ─── Notification Warning ────────────────────────────────────────────
