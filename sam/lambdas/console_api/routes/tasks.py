@@ -23,9 +23,11 @@ from config import sfn
 from dal import asset_events_repo, executions_repo, pipelines_repo
 from dal.task_events_repo import task_events_repo
 from constants import Limits, TaskStatus, TASK_WAITING_STATUSES, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TASK_TERMINAL_STATUSES
+from constants_generated import ManualResolution
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
 from response import cors_response, safe_parse_body
 from logger import log
+from auth import operator_display
 from utils import (
     should_skip_token_row,
     is_execution_name, safe_int, safe_param_int,
@@ -550,7 +552,7 @@ def retry_task(task_name: str, event: Dict) -> Dict:
     return restart_task(task_name, event)
 
 
-def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, date: str) -> None:
+def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, date: str, operator: str = "unknown") -> None:
     """Write a synthetic marker to the canonical output store (the same
     output#{pipeline}#{task}#{date} key xcom.pull() and the console's
     Input/Output tab both read) when a task is manually resolved — Skip,
@@ -575,10 +577,15 @@ def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, da
     if not task_name:
         return
     key = f"output#{pipeline_name}#{task_name}#{date}"
+    # `_operator` — human-readable identity of whoever clicked the action
+    # (Cognito email if present, else sub; PAT: `pat:<name>`; else 'unknown').
+    # UI reads this to show "Marked <resolution> by <operator>" in the
+    # Task Detail modal instead of leaving intent invisible in a shared account.
     marker = json.dumps({
         '_manually_resolved': True,
         '_resolution': action_name,
         '_reason': reason,
+        '_operator': operator,
     })
     ttl = int(datetime.now(timezone.utc).timestamp()) + (30 * 24 * 60 * 60)
     try:
@@ -810,7 +817,7 @@ def _execute_task_action(
     stop_cause = reason or default_stop_cause or f'Task {action_name} via UI'
     stop_task_executions(item, stop_error, stop_cause)
     record_manual_decision(execution_name, action_name, stop_cause, item)
-    _write_synthetic_output_marker(item, action_name, stop_cause, item.get('date', date))
+    _write_synthetic_output_marker(item, action_name, stop_cause, item.get('date', date), operator=operator_display(event))
     if emit_asset_events:
         _emit_asset_events_for_manual_success(item, actual_task_name, date)
 
@@ -897,7 +904,7 @@ def skip_task(task_name: str, event: Dict) -> Dict:
     return _execute_task_action(
         task_name,
         event,
-        action_name='skip',
+        action_name=ManualResolution.SKIP,
         target_status='skipped',
         use_resolved_check=True,
         stop_error='Skipped',
@@ -918,7 +925,7 @@ def fail_task(task_name: str, event: Dict) -> Dict:
     return _execute_task_action(
         task_name,
         event,
-        action_name='fail',
+        action_name=ManualResolution.FAIL,
         target_status='failed',
         use_resolved_check=False,
         include_error_field=True,
@@ -944,7 +951,7 @@ def mark_success(task_name: str, event: Dict) -> Dict:
     return _execute_task_action(
         task_name,
         event,
-        action_name='mark_success',
+        action_name=ManualResolution.MARK_SUCCESS,
         target_status='success',
         use_resolved_check=True,
         stop_error='ManuallySucceeded',
@@ -1036,7 +1043,7 @@ def stop_task(task_name: str, event: Dict) -> Dict:
     # Side-effects AFTER successful claim
     stop_task_executions(item, 'Stopped', 'Task stopped via UI - can be restarted')
     record_manual_decision(execution_name, 'stop', 'Task stopped via UI', item)
-    _write_synthetic_output_marker(item, 'stop', 'Task stopped via UI', item.get('date', date))
+    _write_synthetic_output_marker(item, ManualResolution.STOP, 'Task stopped via UI', item.get('date', date), operator=operator_display(event))
 
     # For aborted tasks: send orchestration callback if token exists
     # This prevents pipeline from hanging waiting for callback

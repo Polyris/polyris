@@ -151,16 +151,41 @@ class AuthzError(Exception):
 class Principal:
     """Who is making the request. Attached to the event on success."""
 
-    __slots__ = ("kind", "subject", "token_name", "scope")
+    __slots__ = ("kind", "subject", "token_name", "scope", "email")
 
     def __init__(self, kind: str, subject: str, token_name: Optional[str] = None,
-                 scope: Optional[str] = None):
+                 scope: Optional[str] = None, email: Optional[str] = None):
         self.kind = kind            # "user" (Cognito) | "service" (PAT)
         self.subject = subject      # cognito sub/username, or token_id
         self.token_name = token_name
+        self.email = email          # Cognito ID-token email claim (None for access tokens / PATs)
         # Cognito operator gets full access; PAT carries its stored scope (a
         # legacy PAT minted before scopes has none -> admin, for compat / #4).
         self.scope = "admin" if kind == "user" else (scope or "admin")
+
+    def display(self) -> str:
+        """Human-readable operator identifier for audit records / marker rows.
+
+        Cognito users → email (from ID-token claim) if present, else the sub UUID.
+        PATs → ``pat:<name>`` when the token was named at mint time, else
+        ``pat:<token_id[:8]>``. Callers must tolerate any string — never parse.
+        """
+        if self.kind == "service":
+            if self.token_name:
+                return f"pat:{self.token_name}"
+            return f"pat:{self.subject[:8]}" if self.subject else "pat:unknown"
+        return self.email or self.subject or "unknown"
+
+
+def operator_display(event: dict) -> str:
+    """Convenience: pull the principal off ``event`` (set by ``authenticate``)
+    and return its display string. Returns ``"unknown"`` when auth is disabled
+    or the route is public — the marker still records *something* so audit
+    reads never see an absent field."""
+    principal = event.get("principal") if isinstance(event, dict) else None
+    if isinstance(principal, Principal):
+        return principal.display()
+    return "unknown"
 
 
 # --- PAT primitives ---------------------------------------------------------
@@ -277,7 +302,10 @@ def verify_cognito_token(token: str) -> Principal:
     if presented_client != client_id:
         raise AuthError("token not issued for this client")
 
-    return Principal("user", claims.get("sub", ""))
+    # ID tokens carry the email claim; access tokens don't. Capture it when
+    # present so marker records / audit logs show a human-readable operator
+    # (email) instead of the opaque Cognito sub. `display()` handles the fallback.
+    return Principal("user", claims.get("sub", ""), email=claims.get("email"))
 
 
 def authenticate(event: dict, repo) -> Principal:

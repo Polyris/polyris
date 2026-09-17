@@ -596,6 +596,60 @@ class TestSyntheticOutputMarker:
         marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
         assert marker['_resolution'] == 'stop'
 
+    def test_marker_records_operator_email_when_principal_is_a_cognito_user(self, wired):
+        """When the request carries a Cognito principal with email, the
+        marker records that email under `_operator` so the UI can render
+        "Marked success by alice@example.com" instead of a generic
+        "operator" — the whole point of the identity-capture change."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+
+        from auth import Principal
+        principal = Principal('user', 'sub-uuid-123', email='alice@example.com')
+        event = {
+            'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'}),
+            'principal': principal,
+        }
+        resp = tasks_module.mark_success('transform', event)
+        assert resp['statusCode'] == 200, resp
+
+        marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker['_operator'] == 'alice@example.com'
+
+    def test_marker_records_pat_name_when_principal_is_a_service_token(self, wired):
+        """PAT-authenticated requests get `pat:<token_name>` so scripts /
+        CI actions are also attributable in a shared account."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+
+        from auth import Principal
+        principal = Principal('service', 'token-id-xyz', token_name='ci-nightly')
+        event = {
+            'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'}),
+            'principal': principal,
+        }
+        resp = tasks_module.skip_task('transform', event)
+        assert resp['statusCode'] == 200, resp
+
+        marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker['_operator'] == 'pat:ci-nightly'
+
+    def test_marker_falls_back_to_unknown_when_no_principal_on_event(self, wired):
+        """Auth disabled or public path — no principal on the event.
+        Marker still records something so audit reads never see an absent
+        field. UI falls back to 'operator' for pre-0.100.0 rows too."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+
+        resp = tasks_module.mark_success(
+            'transform',
+            {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'})},
+        )
+        assert resp['statusCode'] == 200, resp
+
+        marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker['_operator'] == 'unknown'
+
     def test_never_overwrites_a_real_prior_result_same_task_and_date(self, wired):
         """A genuine, real output from an earlier successful run of this
         exact task/date (e.g. a same-day re-run, or output written some
