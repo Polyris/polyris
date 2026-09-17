@@ -103,6 +103,10 @@ describe('TaskDetailModal', () => {
             vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 42 } }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
+            // Collapsed OutputCard shows a compact single-line preview containing the value.
+            expect(screen.getByLabelText('Task output preview').textContent).toContain('42');
+            // Expanding the card reveals the pretty-printed JSON.
+            fireEvent.click(screen.getByRole('button', { name: /Expand output/ }));
             expect(screen.getByLabelText('Task output').textContent).toContain('42');
         });
 
@@ -116,15 +120,27 @@ describe('TaskDetailModal', () => {
             }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            // Variables render in their own labelled <pre> block.
+            // Variables section is collapsed by default — expand it, then read.
+            // Header role="button" has text "Variables (1)"; use exact match so we
+            // don't collide with the copy button's aria-label "Copy Variables".
+            const varsHeaders = screen.getAllByRole('button').filter(
+                el => el.classList.contains('td-collapsible-header')
+                    && el.textContent?.startsWith('Variables')
+            );
+            expect(varsHeaders).toHaveLength(1);
+            fireEvent.click(varsHeaders[0]);
             expect(screen.getByLabelText('Task variables').textContent).toContain('2026');
-            // Upstream section shows the dep count in the sublabel.
-            expect(screen.getByText(/Upstream \(1\)/)).toBeInTheDocument();
+            // Upstream section header carries label + count and is open by default.
+            const upHeaders = screen.getAllByRole('button').filter(
+                el => el.classList.contains('td-collapsible-header')
+                    && el.textContent?.startsWith('Upstream')
+            );
+            expect(upHeaders).toHaveLength(1);
+            expect(upHeaders[0].textContent).toContain('(1)');
             // The dep card carries the dep name.
             expect(screen.getByText('a')).toBeInTheDocument();
-            // 'success' appears both in the modal header and as the dep's status
-            // badge — both are legitimate. Verify at least one is the dep badge
-            // (rendered inside .td-status-badge span).
+            // 'success' appears in the modal header and as the dep's status
+            // badge — verify at least the dep badge (span.td-status-badge).
             const badges = screen.getAllByText('success');
             expect(badges.length).toBeGreaterThanOrEqual(1);
             expect(badges.some(el => el.classList.contains('td-status-badge'))).toBe(true);
@@ -148,7 +164,7 @@ describe('TaskDetailModal', () => {
             vi.mocked(useTaskOutput).mockReturnValue(io({ output: false }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.getByLabelText('Task output').textContent).toContain('false');
+            expect(screen.getByLabelText('Task output preview').textContent).toContain('false');
             expect(screen.queryByText(/stored no output/i)).not.toBeInTheDocument();
         });
 
@@ -159,9 +175,9 @@ describe('TaskDetailModal', () => {
             expect(screen.getByText(/loading/i)).toBeInTheDocument();
         });
 
-        // ── Upstream marker interpretation (XCOM_PLAN.md §4.1) ───────────
+        // ── Upstream marker interpretation ────────────────────────────────
 
-        it('renders a warn banner for a missing upstream (status=unknown)', () => {
+        it('renders a warn card for a missing upstream (status=unknown)', () => {
             vi.mocked(useTaskOutput).mockReturnValue(io({
                 input: {
                     upstream: { extract_sales: { output: {}, status: 'unknown' } },
@@ -171,7 +187,8 @@ describe('TaskDetailModal', () => {
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
             expect(screen.getByText('extract_sales')).toBeInTheDocument();
-            expect(screen.getByText(/No output recorded/i)).toBeInTheDocument();
+            expect(screen.getByText('no output')).toBeInTheDocument();
+            expect(screen.getByText(/hasn.t run yet for this date/i)).toBeInTheDocument();
         });
 
         it('renders an error banner for a failed upstream and shows output details', () => {
@@ -238,49 +255,200 @@ describe('TaskDetailModal', () => {
             }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            // Banner text + still shows the JSON payload
+            // Collapsed OutputCard already flags the metadata variant via badge.
+            expect(screen.getByText('aws-metadata')).toBeInTheDocument();
+            expect(screen.getByLabelText('Task output preview').textContent).toContain('jr_abc123');
+            // Expanding the card reveals the full warn banner + pretty JSON.
+            fireEvent.click(screen.getByRole('button', { name: /Expand output/ }));
             expect(screen.getByText(/AWS API response/i)).toBeInTheDocument();
-            // 'xcom.push' appears twice: banner prose text + <code> element.
-            // Both are the same banner — assert at least one match.
             expect(screen.getAllByText(/xcom\.push/i).length).toBeGreaterThanOrEqual(1);
             expect(screen.getByLabelText('Task output').textContent).toContain('jr_abc123');
         });
 
-        // ── Onboarding banner (XCOM_PLAN.md §4.5) ────────────────────────
+        // ── Manual resolution (_manually_resolved marker) ─────────────────
 
-        it('shows the 0.100.0 onboarding banner on first render', () => {
-            localStorage.clear();
-            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 1 } }));
+        // Backend contract: _write_synthetic_output_marker writes DDB status =
+        // action_name on the output# row — so event.upstream[X].status is the
+        // RAW action ('mark_success' / 'skip' / 'fail' / 'stop'), NOT the
+        // per-run task target_status ('success' / 'skipped' / ...). The manual
+        // branch then maps action_name → user-friendly label via
+        // statusForResolution to match OutputCard.
+        it('renders an upstream mark_success as a manual card with derived success badge', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: {
+                        transform: {
+                            output: {
+                                _manually_resolved: true,
+                                _resolution: 'mark_success',
+                                _reason: 'verified via S3 logs',
+                                _operator: 'alice@example.com',
+                            },
+                            status: 'mark_success',
+                        },
+                    },
+                    variables: {},
+                },
+            }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.getByText(/Updated in 0\.100\.0/)).toBeInTheDocument();
+            expect(screen.getByText('transform')).toBeInTheDocument();
+            expect(screen.getByText('manual: mark_success')).toBeInTheDocument();
+            expect(screen.getByText(/Marked success by alice@example\.com — verified via S3 logs/))
+                .toBeInTheDocument();
+            // Primary badge is the user-friendly label, not the raw action_name.
+            const successBadges = screen.getAllByText('success').filter(
+                el => el.classList.contains('td-status-badge--success')
+            );
+            expect(successBadges.length).toBeGreaterThanOrEqual(1);
         });
 
-        it('hides the onboarding banner after dismiss (persists to localStorage)', () => {
-            localStorage.clear();
-            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 1 } }));
-            const { unmount } = render(<TaskDetailModal {...defaultProps} />);
-            fireEvent.click(screen.getByText('Input / Output'));
-            fireEvent.click(screen.getByRole('button', { name: /Dismiss onboarding banner/i }));
-            expect(screen.queryByText(/Updated in 0\.100\.0/)).not.toBeInTheDocument();
-            // Persists across re-mount.
-            expect(localStorage.getItem('polyris.ui.taskDetailBannerDismissed_v100')).toBe('true');
-            unmount();
+        it('renders an upstream skip via UI as a manual card with red skipped badge', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: {
+                        transform: {
+                            output: {
+                                _manually_resolved: true,
+                                _resolution: 'skip',
+                                _reason: 'source data missing today',
+                                _operator: 'bob@example.com',
+                            },
+                            status: 'skip',
+                        },
+                    },
+                    variables: {},
+                },
+            }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.queryByText(/Updated in 0\.100\.0/)).not.toBeInTheDocument();
+            expect(screen.getByText('manual: skip')).toBeInTheDocument();
+            expect(screen.getByText(/Skipped by bob@example\.com — source data missing today/))
+                .toBeInTheDocument();
+            // Primary badge label = statusForResolution('skip') = 'skipped',
+            // variant = 'error' (red).
+            const skippedBadge = screen.getByText('skipped');
+            expect(skippedBadge).toHaveClass('td-status-badge--error');
         });
 
-        it('renders the onboarding banner when localStorage throws (private mode)', () => {
-            const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-                throw new Error('SecurityError');
-            });
-            vi.mocked(useTaskOutput).mockReturnValue(io({ output: { rows: 1 } }));
+        it('renders each manual resolution with UpstreamDep + OutputCard identical primary badges', () => {
+            // The "applied identically" contract from ADR-123 §5 — for the
+            // same marker, both surfaces show the same badge text and colour.
+            const cases: Array<[string, string, string]> = [
+                ['mark_success', 'success', 'td-status-badge--success'],
+                ['skip', 'skipped', 'td-status-badge--error'],
+                ['fail', 'failed', 'td-status-badge--error'],
+                ['stop', 'stopped', 'td-status-badge--muted'],
+            ];
+            for (const [resolution, label, cls] of cases) {
+                vi.mocked(useTaskOutput).mockReturnValue(io({
+                    input: {
+                        upstream: {
+                            dep: {
+                                output: {
+                                    _manually_resolved: true,
+                                    _resolution: resolution,
+                                    _reason: 'r',
+                                    _operator: 'op',
+                                },
+                                status: resolution,
+                            },
+                        },
+                        variables: {},
+                    },
+                    // The task's OWN output is the same marker (mark_success'd
+                    // via UI) so OutputCard renders the same badge alongside.
+                    output: {
+                        _manually_resolved: true,
+                        _resolution: resolution,
+                        _reason: 'r',
+                        _operator: 'op',
+                    },
+                }));
+                const { unmount } = render(<TaskDetailModal {...defaultProps} />);
+                fireEvent.click(screen.getByText('Input / Output'));
+                const badges = screen.getAllByText(label).filter(
+                    el => el.classList.contains('td-status-badge')
+                );
+                // At least 2: one on UpstreamDep, one on OutputCard.
+                expect(badges.length).toBeGreaterThanOrEqual(2);
+                for (const b of badges) expect(b).toHaveClass(cls);
+                unmount();
+            }
+        });
+
+        it('falls back to generic "operator" when marker predates 0.100.0 _operator field', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                input: {
+                    upstream: {
+                        legacy: {
+                            output: {
+                                _manually_resolved: true,
+                                _resolution: 'mark_success',
+                                _reason: 'old record',
+                            },
+                            status: 'mark_success',
+                        },
+                    },
+                    variables: {},
+                },
+            }));
             render(<TaskDetailModal {...defaultProps} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.getByText(/Updated in 0\.100\.0/)).toBeInTheDocument();
-            spy.mockRestore();
+            expect(screen.getByText(/Marked success by operator — old record/)).toBeInTheDocument();
         });
+
+        it('renders the task’s own output as a manual card when the task itself was mark_success’d', () => {
+            vi.mocked(useTaskOutput).mockReturnValue(io({
+                output: {
+                    _manually_resolved: true,
+                    _resolution: 'mark_success',
+                    _reason: 'checked upstream logs',
+                    _operator: 'carol@example.com',
+                },
+            }));
+            render(<TaskDetailModal {...defaultProps} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('manual: mark_success')).toBeInTheDocument();
+            // Preview shows the human summary, not raw marker JSON.
+            expect(screen.getByLabelText('Task output preview').textContent)
+                .toContain('Marked success by carol@example.com');
+            // Primary badge on the OutputCard derives from resolution
+            // (mark_success → success). Filter to the OutputCard badge to
+            // avoid the modal-header status badge collision.
+            const successBadges = screen.getAllByText('success').filter(
+                el => el.classList.contains('td-status-badge')
+            );
+            expect(successBadges.length).toBeGreaterThanOrEqual(1);
+        });
+
+        it('renders OutputCard manual variants with resolution-derived primary badges', () => {
+            // Verifies the "applied identically" contract with UpstreamDep — the
+            // primary badge must reflect the real outcome (skipped / failed /
+            // stopped), not a hardcoded green "success" that would lie about
+            // what the operator did.
+            const cases: Array<[string, string]> = [
+                ['skip', 'skipped'],
+                ['fail', 'failed'],
+                ['stop', 'stopped'],
+            ];
+            for (const [resolution, expectedBadge] of cases) {
+                vi.mocked(useTaskOutput).mockReturnValue(io({
+                    output: {
+                        _manually_resolved: true,
+                        _resolution: resolution,
+                        _reason: 'operator note',
+                        _operator: 'dan@example.com',
+                    },
+                }));
+                const { unmount } = render(<TaskDetailModal {...defaultProps} />);
+                fireEvent.click(screen.getByText('Input / Output'));
+                expect(screen.getByText(`manual: ${resolution}`)).toBeInTheDocument();
+                expect(screen.getByText(expectedBadge)).toBeInTheDocument();
+                unmount();
+            }
+        });
+
     });
 
     // ─── Notification Warning ────────────────────────────────────────────

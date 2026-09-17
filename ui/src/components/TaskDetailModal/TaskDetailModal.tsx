@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
@@ -32,11 +32,21 @@ import {
     AlertTriangle,
     Calendar,
     Rocket,
+    Wrench,
 } from '../../utils/icons';
 import { CountdownTimer } from '../CountdownTimer';
 import { BaseModal } from '../BaseModal';
 import { LiveDuration } from './LiveDuration';
 import { ErrorDisplay } from './ErrorDisplay';
+import { CollapsibleJsonBlock } from './CollapsibleJsonBlock';
+import { CollapsibleSection } from './CollapsibleSection';
+import { OutputCard } from './OutputCard';
+import {
+    detectManualResolution,
+    formatManualResolution,
+    statusForResolution,
+    variantForResolution,
+} from './manualResolution';
 import { useAppStore } from '../../stores/useAppStore';
 import type { Task, TaskDetailModalProps } from '@/types';
 import { paidSurface } from '@/ee-active.generated';
@@ -644,7 +654,7 @@ interface OutputTabProps {
 }
 
 // =============================================================================
-// Output Tab helpers — per-upstream marker interpretation (XCOM_PLAN.md §4.1)
+// Output Tab helpers — per-upstream marker interpretation (see ADR-123 §5)
 // =============================================================================
 
 export function formatBytes(n: number): string {
@@ -671,166 +681,205 @@ export function looksLikeAwsMetadata(output: unknown): boolean {
     return keys.some(k => metadataKeys.has(k));
 }
 
-// One-time banner explaining the new marker-aware UI. Dismissible; remembers
-// the choice per browser via localStorage. See XCOM_PLAN.md §4.5.
-// TODO(polyris-0.102.0): remove OnboardingBanner + this localStorage key.
-// Two releases after 0.100.0 introduces it — users have had time to see it.
-const ONBOARDING_BANNER_KEY = 'polyris.ui.taskDetailBannerDismissed_v100';
+// Card-body renderers ----------------------------------------------------
+// Kept small + declarative so every UpstreamDep branch shares the same
+// wrapper shell (left-stripe + header + optional expandable body). Adding a
+// new state = add a case, not another divergent full-bleed banner.
 
-function useDismissibleBanner(key: string): { dismissed: boolean; dismiss: () => void } {
-    const [dismissed, setDismissed] = useState<boolean>(() => {
-        if (typeof window === 'undefined') return true; // SSR-safe
-        try {
-            return localStorage.getItem(key) === 'true';
-        } catch {
-            return false; // localStorage blocked (private mode) → show banner
-        }
-    });
+type DepVariant = 'success' | 'error' | 'warn' | 'muted' | 'manual';
 
-    const dismiss = useCallback(() => {
-        try {
-            localStorage.setItem(key, 'true');
-        } catch {
-            /* ignore localStorage errors — banner still hides in-session */
-        }
-        setDismissed(true);
-    }, [key]);
-
-    return { dismissed, dismiss };
+interface DepCardProps {
+    name: string;
+    /** Card-frame variant — sets the left-stripe colour (semantic: what class
+     * of thing happened). For manual resolutions this is always 'manual'
+     * regardless of the underlying outcome, so the blue stripe consistently
+     * signals human intervention. */
+    variant: DepVariant;
+    icon: React.ComponentType<{ size?: number }>;
+    primaryBadge: string;
+    /** Colour of the primary badge. Defaults to `variant` so single-purpose
+     * cards (success/error/warn/muted) stay consistent; the manual variant
+     * overrides this via ``primaryBadgeVariant`` so the badge reflects the
+     * real outcome (green/red/muted) instead of the blue "manual" stripe
+     * colour — see OutputCard for the same pattern. */
+    primaryBadgeVariant?: 'success' | 'error' | 'warn' | 'muted' | 'manual';
+    /** Optional second badge (used for the 'manual' chip alongside the resolved status). */
+    manualBadge?: string;
+    /** Optional inline sub-line under the header (short human summary, e.g. manual reason). */
+    subline?: React.ReactNode;
+    /** Optional expandable body (shown when the user opens the card). */
+    body?: React.ReactNode;
 }
 
-function OnboardingBanner() {
-    const { dismissed, dismiss } = useDismissibleBanner(ONBOARDING_BANNER_KEY);
-    if (dismissed) return null;
-    return (
-        <div className="td-onboarding-banner" role="status">
-            <Info size={14} />
-            <div>
-                <strong>Updated in 0.100.0:</strong> upstream deps now render as colored cards
-                with actionable messages — click the summary to expand raw data. AWS-metadata
-                outputs from Glue/ECS/Batch flag themselves with a hint about{' '}
-                <code>xcom.push()</code>.
+function DepCard({
+    name, variant, icon: Icon, primaryBadge,
+    primaryBadgeVariant, manualBadge, subline, body,
+}: DepCardProps) {
+    const classes = `td-upstream-dep td-upstream-dep--${variant}`;
+    const primaryClass = `td-status-badge td-status-badge--${primaryBadgeVariant ?? variant}`;
+    // Only render as <details> when there's actually something to expand.
+    // Otherwise a chevron on a card with no expandable body would be a UI lie.
+    if (!body) {
+        return (
+            <div className={classes}>
+                <div className="td-upstream-dep-header">
+                    <Icon size={14} />
+                    <strong>{name}</strong>
+                    {subline && <span className="td-upstream-dep-subline">{subline}</span>}
+                    <div className="td-upstream-dep-badges">
+                        {manualBadge && (
+                            <span className="td-status-badge td-status-badge--manual">{manualBadge}</span>
+                        )}
+                        <span className={primaryClass}>{primaryBadge}</span>
+                    </div>
+                </div>
             </div>
-            <button
-                onClick={dismiss}
-                className="td-banner-dismiss"
-                aria-label="Dismiss onboarding banner"
-            >
-                Dismiss
-            </button>
-        </div>
+        );
+    }
+    return (
+        <details className={classes}>
+            <summary>
+                <Icon size={14} />
+                <strong>{name}</strong>
+                {subline && <span className="td-upstream-dep-subline">{subline}</span>}
+                <div className="td-upstream-dep-badges">
+                    {manualBadge && (
+                        <span className="td-status-badge td-status-badge--manual">{manualBadge}</span>
+                    )}
+                    <span className={primaryClass}>{primaryBadge}</span>
+                </div>
+            </summary>
+            <div className="td-upstream-dep-body">{body}</div>
+        </details>
     );
 }
 
 /**
  * Render a single upstream dependency entry from `event.upstream[X]`.
- * Interprets `status` and any `_truncated` / `_s3_ref` markers into
- * actionable banners rather than raw JSON.
+ * All branches route through DepCard so every state uses the same unified
+ * left-stripe card shape — no full-bleed banners. Manual resolutions
+ * (mark_success / skip / fail / stop via UI) get their own blue variant with
+ * a "Marked X by <operator> — <reason>" summary so downstream operators can
+ * tell organic outcomes from human overrides at a glance.
  */
 function UpstreamDep({ name, entry }: { name: string; entry: unknown }) {
     // Malformed entry — surface visibly so a producer bug isn't hidden.
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
         return (
-            <div className="td-upstream-dep td-banner td-banner--warn">
-                <AlertTriangle size={14} />
-                <div>
-                    <strong>{name}</strong>
-                    <div className="td-banner-detail">
-                        Malformed upstream entry (expected {'{status, output}'}).
-                    </div>
-                    <details>
-                        <summary>Raw</summary>
-                        <pre className="td-output-json">{JSON.stringify(entry, null, 2)}</pre>
-                    </details>
-                </div>
-            </div>
+            <DepCard
+                name={name}
+                variant="warn"
+                icon={AlertTriangle}
+                primaryBadge="malformed"
+                subline="Expected {status, output}"
+                body={<CollapsibleJsonBlock value={entry} ariaLabel={`${name} raw entry`} />}
+            />
         );
     }
+
     const e = entry as { status?: string; output?: unknown };
     const status = e.status ?? 'unknown';
     const output = e.output;
     const outputIsObj = output !== null && typeof output === 'object' && !Array.isArray(output);
     const outputAsRec = outputIsObj ? (output as Record<string, unknown>) : null;
 
+    // Manual resolution — takes precedence over status because the marker is
+    // written for every manual action; the human intervention is the story.
+    //
+    // Backend writes DDB `status` = action_name on the output# row (see
+    // console_api/routes/tasks.py::_write_synthetic_output_marker), so
+    // event.upstream[X].status is the RAW action ('mark_success' / 'skip' /
+    // 'fail' / 'stop'). We route it through statusForResolution to get a
+    // user-friendly label ('success' / 'skipped' / 'failed' / 'stopped') that
+    // matches what OutputCard renders — the "applied identically" contract.
+    const manual = detectManualResolution(output);
+    if (manual) {
+        return (
+            <DepCard
+                name={name}
+                variant="manual"
+                icon={Wrench}
+                primaryBadge={statusForResolution(manual.resolution)}
+                primaryBadgeVariant={variantForResolution(manual.resolution)}
+                manualBadge={`manual: ${manual.resolution}`}
+                subline={formatManualResolution(manual)}
+                body={<CollapsibleJsonBlock value={output} ariaLabel={`${name} raw marker`} />}
+            />
+        );
+    }
+
     // Missing dep — Get_Dep_Output writes status=unknown when the DDB row is absent.
     if (status === 'unknown') {
         return (
-            <div className="td-upstream-dep td-banner td-banner--warn">
-                <AlertTriangle size={14} />
-                <div>
-                    <strong>{name}</strong>
-                    <div className="td-banner-detail">
-                        No output recorded — the task may have been skipped, failed, or
-                        hasn&apos;t run yet for this date.
-                    </div>
-                </div>
-            </div>
+            <DepCard
+                name={name}
+                variant="warn"
+                icon={AlertTriangle}
+                primaryBadge="no output"
+                subline="Task may have been skipped, failed, or hasn’t run yet for this date."
+            />
         );
     }
 
-    // Non-success status (skipped/failed/aborted) — collapsed output details for debug.
+    // Non-success status (skipped/failed/aborted) — status is the story;
+    // output (if any) is available on expand for debugging.
     if (status !== 'success') {
         return (
-            <div className="td-upstream-dep td-banner td-banner--error">
-                <XCircle size={14} />
-                <div>
-                    <strong>{name}</strong> — status: <code>{status}</code>
-                    {output !== undefined && output !== null && (
-                        <details>
-                            <summary>Output</summary>
-                            <pre className="td-output-json">{JSON.stringify(output, null, 2)}</pre>
-                        </details>
-                    )}
-                </div>
-            </div>
+            <DepCard
+                name={name}
+                variant="error"
+                icon={XCircle}
+                primaryBadge={status}
+                body={
+                    output !== undefined && output !== null
+                        ? <CollapsibleJsonBlock value={output} ariaLabel={`${name} output`} />
+                        : undefined
+                }
+            />
         );
     }
 
-    // Truncated marker — inline injection was capped, downstream can fetch full via xcom.pull().
+    // Truncated — output was too large for inline injection.
     if (outputAsRec && outputAsRec._truncated) {
         const size = typeof outputAsRec._size === 'number' ? outputAsRec._size : 0;
         return (
-            <div className="td-upstream-dep td-banner td-banner--warn">
-                <AlertTriangle size={14} />
-                <div>
-                    <strong>{name}</strong>
-                    <div className="td-banner-detail">
-                        Output was {formatBytes(size)}, truncated for runtime injection (25KB cap).
-                        The task can still read the full value via{' '}
-                        <code>xcom.get(event, &quot;{name}&quot;)</code> which falls back to DDB
-                        automatically.
-                    </div>
-                </div>
-            </div>
+            <DepCard
+                name={name}
+                variant="warn"
+                icon={AlertTriangle}
+                primaryBadge="truncated"
+                subline={
+                    <>
+                        {formatBytes(size)} — fetch via{' '}
+                        <code>xcom.get(event, &quot;{name}&quot;)</code>
+                    </>
+                }
+            />
         );
     }
 
-    // Manual Claim Check pointer — user offloaded to S3.
+    // S3 Claim Check pointer — producer offloaded, xcom.get()/pull() resolves.
     if (outputAsRec && typeof outputAsRec._s3_ref === 'string') {
         return (
-            <div className="td-upstream-dep td-banner td-banner--muted">
-                <Database size={14} />
-                <div>
-                    <strong>{name}</strong>
-                    <div className="td-banner-detail">
-                        Output stored in S3 (Claim Check pattern): <code>{outputAsRec._s3_ref}</code>.
-                        Downstream <code>xcom.get()</code> / <code>xcom.pull()</code> resolves it
-                        transparently.
-                    </div>
-                </div>
-            </div>
+            <DepCard
+                name={name}
+                variant="muted"
+                icon={Database}
+                primaryBadge="s3-ref"
+                subline={<code>{outputAsRec._s3_ref}</code>}
+            />
         );
     }
 
-    // Success — collapsible clean JSON.
+    // Organic success — expandable pretty JSON.
     return (
-        <details className="td-upstream-dep td-upstream-dep--success">
-            <summary>
-                <CheckCircle2 size={14} /> <strong>{name}</strong>
-                <span className="td-status-badge">success</span>
-            </summary>
-            <pre className="td-output-json">{JSON.stringify(output, null, 2)}</pre>
-        </details>
+        <DepCard
+            name={name}
+            variant="success"
+            icon={CheckCircle2}
+            primaryBadge="success"
+            body={<CollapsibleJsonBlock value={output} ariaLabel={`${name} output`} />}
+        />
     );
 }
 
@@ -843,11 +892,7 @@ function InputSection({ input }: { input: unknown }) {
         );
     }
     if (typeof input !== 'object' || Array.isArray(input)) {
-        return (
-            <pre className="td-output-json" aria-label="Task input">
-                {JSON.stringify(input, null, 2)}
-            </pre>
-        );
+        return <CollapsibleJsonBlock value={input} ariaLabel="Task input" />;
     }
     const inp = input as Record<string, unknown>;
 
@@ -889,61 +934,38 @@ function InputSection({ input }: { input: unknown }) {
     return (
         <div className="td-input-section">
             {hasVars && (
-                <div className="td-io-block">
-                    <div className="td-io-sublabel">Variables</div>
-                    <pre className="td-output-json" aria-label="Task variables">
-                        {JSON.stringify(variables, null, 2)}
-                    </pre>
-                </div>
+                <CollapsibleSection
+                    label="Variables"
+                    count={Object.keys(variables).length}
+                    defaultOpen={false}
+                    copyValue={variables}
+                >
+                    <CollapsibleJsonBlock value={variables} ariaLabel="Task variables" />
+                </CollapsibleSection>
             )}
             {hasUpstream && (
-                <div className="td-io-block">
-                    <div className="td-io-sublabel">Upstream ({Object.keys(upstream).length})</div>
+                <CollapsibleSection
+                    label="Upstream"
+                    count={Object.keys(upstream).length}
+                    defaultOpen={true}
+                    copyValue={upstream}
+                >
                     {Object.entries(upstream).map(([dep, entry]) => (
                         <UpstreamDep key={dep} name={dep} entry={entry} />
                     ))}
-                </div>
+                </CollapsibleSection>
             )}
         </div>
     );
 }
 
 function OutputSection({ output, truncated }: { output: unknown; truncated: boolean }) {
-    if (truncated) {
-        return (
-            <div className="td-banner td-banner--warn" role="status">
-                <AlertTriangle size={14} />
-                <div>
-                    Output too large to store inline. Write the payload to S3 and return{' '}
-                    <code>{'{"_s3_ref": "s3://..."}'}</code> — downstream{' '}
-                    <code>xcom.get()</code> / <code>xcom.pull()</code> resolves it automatically.
-                </div>
-            </div>
-        );
-    }
-    if (output === null || output === undefined) {
-        return (
-            <div className="td-tab-empty td-tab-empty--inline">
-                <Database size={14} /> This task stored no output.
-            </div>
-        );
-    }
     return (
-        <>
-            {looksLikeAwsMetadata(output) && (
-                <div className="td-banner td-banner--warn">
-                    <AlertTriangle size={14} />
-                    <div>
-                        This output is an AWS API response, not application data. For
-                        Glue/ECS/Batch tasks, call <code>xcom.push(value)</code> in your job
-                        code so downstream tasks receive the real output.
-                    </div>
-                </div>
-            )}
-            <pre className="td-output-json" aria-label="Task output">
-                {JSON.stringify(output, null, 2)}
-            </pre>
-        </>
+        <OutputCard
+            output={output}
+            truncated={truncated}
+            awsMetadata={output !== null && output !== undefined && looksLikeAwsMetadata(output)}
+        />
     );
 }
 
@@ -956,15 +978,8 @@ function OutputTab({ input, output, truncated, loading, loaded }: OutputTabProps
     }
     return (
         <div className="td-output-tab">
-            <OnboardingBanner />
-            <div className="td-io-section">
-                <div className="td-io-label">Input</div>
-                <InputSection input={input} />
-            </div>
-            <div className="td-io-section">
-                <div className="td-io-label">Output</div>
-                <OutputSection output={output} truncated={truncated} />
-            </div>
+            <InputSection input={input} />
+            <OutputSection output={output} truncated={truncated} />
         </div>
     );
 }

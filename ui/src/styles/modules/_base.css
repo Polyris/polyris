@@ -28,6 +28,12 @@
     --warning-light: #fffbeb;
     --error: #ef4444;
     --error-light: #fef2f2;
+    /* --info: semantic token for informational / human-intervention signals
+       (Task Detail modal's "manual" resolution card, per ADR-123 §5). Kept
+       separate from --accent (primary brand / focus / links) so a brand-colour
+       change doesn't repaint semantic status chips and vice-versa. */
+    --info: #3b82f6;
+    --info-light: #eff6ff;
     --running: #3b82f6;
     --running-light: #eff6ff;
     --waiting: #64748b;
@@ -70,6 +76,8 @@
     --warning-light: #451a03;
     --error: #f87171;
     --error-light: #450a0a;
+    --info: #60a5fa;
+    --info-light: #1e3a5f;
     --running: #60a5fa;
     --running-light: #1e3a5f;
     --waiting: #94a3b8;
