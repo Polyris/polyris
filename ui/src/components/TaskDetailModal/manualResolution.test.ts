@@ -35,7 +35,7 @@ describe('detectManualResolution', () => {
         });
     });
 
-    it('falls back to "operator" when _operator is missing (pre-0.100.0 records)', () => {
+    it('falls back to "operator" when _operator is missing (pre-1.0.0 records)', () => {
         const m = detectManualResolution({
             _manually_resolved: true,
             _resolution: 'skip',

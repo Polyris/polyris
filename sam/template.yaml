@@ -2168,7 +2168,7 @@ Resources:
   # Managed policy for service tasks (Glue/ECS/Batch) that call xcom.push()
   # in their job code. Lambda return values do NOT need this policy — the
   # wrapper captures Lambda output directly. EMR xcom.push() is unsupported
-  # in 0.100.0 (see CHANGELOG "Known limitations" — HadoopJarStep.Args risks
+  # in 1.0.0 (see CHANGELOG "Known limitations" — HadoopJarStep.Args risks
   # breaking arbitrary Spark arg parsers, so POLYRIS_* env injection is not
   # attempted for the EMR branch; attaching this policy to an EMR task role
   # would grant permission but xcom.push() would still fail at runtime).
@@ -2214,7 +2214,7 @@ Outputs:
       Name: !Sub "${Namespace}-${Stage}-polyris-task-read-policy"
 
   PolyrisTaskWritePolicyArn:
-    Description: Attach this managed policy to Glue/ECS/Batch task roles that call xcom.push() (EMR unsupported in 0.100.0)
+    Description: Attach this managed policy to Glue/ECS/Batch task roles that call xcom.push() (EMR unsupported in 1.0.0)
     Value: !Ref PolyrisTaskWritePolicy
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-task-write-policy"

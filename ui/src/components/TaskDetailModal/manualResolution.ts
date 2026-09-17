@@ -36,7 +36,7 @@ export function detectManualResolution(value: unknown): ManualResolution | null 
     return {
         resolution: typeof rec._resolution === 'string' ? rec._resolution : 'unknown',
         reason: typeof rec._reason === 'string' ? rec._reason : '',
-        // Backend added `_operator` in 0.100.0 — records written before that
+        // Backend added `_operator` in 1.0.0 — records written before that
         // deploy carry no operator field. Fall back to the same 'unknown'
         // string the backend uses for auth-disabled routes so the UI shows
         // a single distinct string for "no identity captured" rather than

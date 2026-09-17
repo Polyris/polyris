@@ -1,7 +1,7 @@
 """Glue script demonstrating the metadata leak — INTENTIONALLY does NOT push.
 
 Deploy as the script for `polyris-xcom-aggregate` to see what happens WITHOUT
-xcom.push(). This is the pre-0.100.0 default behaviour for service tasks:
+xcom.push(). This is the pre-1.0.0 default behaviour for service tasks:
 
     Wrapper stores the Glue startJobRun response as `result`:
         {"JobRunId": "jr_abc123", "StartedOn": "...", ...}
@@ -12,7 +12,7 @@ xcom.push(). This is the pre-0.100.0 default behaviour for service tasks:
         NOT the aggregation data.
 
 Task Detail Output tab after this runs:
-    Warning banner (new in 0.100.0):
+    Warning banner (new in 1.0.0):
         "This output is an AWS API response, not application data. For
         Glue/ECS/Batch tasks, call xcom.push(value) in your job code so
         downstream tasks receive the real output."

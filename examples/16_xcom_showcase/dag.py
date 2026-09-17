@@ -1,7 +1,7 @@
-"""XCom showcase — every reader/writer path in one pipeline (0.100.0+).
+"""XCom showcase — every reader/writer path in one pipeline (1.0.0+).
 
 Deploy this and open the Task Detail modal for each task in the Console to see
-every 0.100.0 XCom feature in one place:
+every 1.0.0 XCom feature in one place:
 
 * ``xcom.get(event, task)`` uniform reader
 * ``xcom.push(value)`` writer for service tasks (Glue)
@@ -18,7 +18,7 @@ Pipeline shape::
 
     extract_dict       Lambda returns a dict — the normal case.
     extract_primitive  Lambda returns 42 — the primitive that used to break
-                       (pre-0.100.0: downstream got {"_raw": "42"}, KeyError).
+                       (pre-1.0.0: downstream got {"_raw": "42"}, KeyError).
     aggregate_glue     Glue calls xcom.push({...}) — real data flows downstream,
                        not a {"JobRunId": "..."} metadata leak.
     report             Lambda uses xcom.get(event, "...") — loud errors by default,
@@ -48,10 +48,10 @@ _REGION = "us-east-1"
 with DAG(
     dag_id="xcom-showcase",
     schedule="cron(0 5 * * ? *)",   # 05:00 UTC daily
-    description="Every XCom reader/writer path in one pipeline (0.100.0 features).",
+    description="Every XCom reader/writer path in one pipeline (1.0.0 features).",
     tags=["example", "xcom", "reference"],
     doc_md=(
-        "Deploy and open Task Detail for each task to see every 0.100.0 XCom "
+        "Deploy and open Task Detail for each task to see every 1.0.0 XCom "
         "feature — uniform xcom.get(), xcom.push() for service tasks, primitive "
         "parsing, loud errors, colored Console cards, AWS-metadata banner. "
         "See lambda_handlers/ and glue_scripts/ next to dag.py for the actual "
@@ -86,13 +86,13 @@ with DAG(
     #
     # Handler: lambda_handlers/extract_primitive.py
     #     def handler(event, _context):
-    #         return 42          # or [1, 2, 3], None, True — all fixed in 0.100.0
+    #         return 42          # or [1, 2, 3], None, True — all fixed in 1.0.0
     #
-    # Before 0.100.0: Get_Dep_Output's $isJson heuristic wrapped the value in
+    # Before 1.0.0: Get_Dep_Output's $isJson heuristic wrapped the value in
     # {"_raw": "42"}, and downstream event["upstream"]["extract_primitive"]["output"]
     # was a dict, not 42 — accessing .rows or [0] blew up with KeyError/TypeError.
     #
-    # After 0.100.0: the value flows through untouched. In the report task:
+    # After 1.0.0: the value flows through untouched. In the report task:
     #     value = xcom.get(event, "extract_primitive")   # → 42
     # -----------------------------------------------------------------------
     @task.lambda_function(

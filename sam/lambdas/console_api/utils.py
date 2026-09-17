@@ -77,7 +77,7 @@ def is_internal_record(execution_name: str) -> bool:
     run_task wrapper for upstream reads) are also internal — they carry a task's
     result, not a task execution, and must not appear in execution/task listings.
 
-    Split-out task_input records (``input#pipeline#task#date``, new in 0.100.0)
+    Split-out task_input records (``input#pipeline#task#date``, new in 1.0.0)
     are the twin of ``output#...`` — same rationale: Console preview data, not
     a task execution row. Missing this filter would leak input# rows into
     All Tasks / Runs listings.

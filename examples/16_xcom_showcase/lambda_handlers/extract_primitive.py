@@ -1,9 +1,9 @@
-"""Producer #2: Lambda that returns a primitive — the regression case fixed in 0.100.0.
+"""Producer #2: Lambda that returns a primitive — the regression case fixed in 1.0.0.
 
 Deploy this as `polyris-xcom-extract-primitive` Lambda function.
 Runtime: python3.12+. No polyris SDK required.
 
-Pre-0.100.0 behaviour (the bug):
+Pre-1.0.0 behaviour (the bug):
     The wrapper's Get_Dep_Output JSONata used a $isJson heuristic that only
     recognised plain objects and string/object arrays. Every other JSON type —
     primitives (42, null, true), arrays of numbers ([1,2,3]) — fell through
@@ -13,7 +13,7 @@ Pre-0.100.0 behaviour (the bug):
         value = event["upstream"]["extract_primitive"]["output"]   # → {"_raw": "42"}
         value + 1                                                  # TypeError
 
-Post-0.100.0 (the fix):
+Post-1.0.0 (the fix):
     $exists($parse($safe)) uses JSONata's $parse to detect any valid JSON
     shape. Primitives flow through untouched.
 

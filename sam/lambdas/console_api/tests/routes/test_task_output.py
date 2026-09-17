@@ -22,7 +22,7 @@ def _body(resp):
 class _MultiKeyTable:
     """Fake DDB table returning different items per execution_name key.
 
-    Supports the 2-GetItem pattern get_task_output uses in 0.100.0+:
+    Supports the 2-GetItem pattern get_task_output uses in 1.0.0+:
     one call for the output# row (result), one for the input# row (task_input).
     """
 
@@ -157,7 +157,7 @@ def test_result_read_error_is_swallowed(mocker):
 
 
 def test_input_read_from_new_input_record_when_present(mocker):
-    """0.100.0+ pipelines: task_input lives on the separate input# row.
+    """1.0.0+ pipelines: task_input lives on the separate input# row.
     That's the primary source; the legacy field on output# is fallback only."""
     new_input = {"upstream": {"a": {"output": {"n": 1}, "status": "success"}},
                  "variables": {"year": "2026"}}
@@ -175,7 +175,7 @@ def test_input_read_from_new_input_record_when_present(mocker):
 
 
 def test_input_falls_back_to_legacy_task_input_on_output_row_when_new_record_absent(mocker):
-    """Pre-0.100.0 pipelines: input# record doesn't exist yet, so we still
+    """Pre-1.0.0 pipelines: input# record doesn't exist yet, so we still
     display task_input from the output# row's legacy field."""
     legacy_input = {"upstream": {"legacy": {"output": {"k": 1}, "status": "success"}},
                     "variables": {}}

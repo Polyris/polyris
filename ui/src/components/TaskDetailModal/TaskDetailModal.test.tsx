@@ -377,7 +377,7 @@ describe('TaskDetailModal', () => {
             }
         });
 
-        it('falls back to generic "operator" when marker predates 0.100.0 _operator field', () => {
+        it('falls back to generic "operator" when marker predates 1.0.0 _operator field', () => {
             vi.mocked(useTaskOutput).mockReturnValue(io({
                 input: {
                     upstream: {

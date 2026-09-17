@@ -73,19 +73,19 @@ Every upstream + output state uses the same card grammar — 4px left color stri
 - **muted** (grey) — `_s3_ref` claim-check pointer
 - **manual** (blue) — `_manually_resolved: true` marker (mark_success / skip / fail / stop via UI). Renders a `manual: <resolution>` badge and a one-line human summary — `"Marked success by alice@example.com — verified via S3 logs"` — instead of exposing the raw marker JSON. Applied identically to the downstream's UpstreamDep card and the resolved task's own Output card via one shared `detectManualResolution` helper.
 
-Detection lives in one place (`ui/src/components/TaskDetailModal/manualResolution.ts`) so both surfaces stay in sync when the marker shape evolves. The marker itself carries `_operator` (recorded by `_write_synthetic_output_marker`) so a shared account can attribute intent: Cognito email if the ID token carries it, else `sub`; PAT → `pat:<token_name>`; auth-off → `unknown`. Records written before 0.100.0 lack the field — the UI falls back to a generic `"operator"` label.
+Detection lives in one place (`ui/src/components/TaskDetailModal/manualResolution.ts`) so both surfaces stay in sync when the marker shape evolves. The marker itself carries `_operator` (recorded by `_write_synthetic_output_marker`) so a shared account can attribute intent: Cognito email if the ID token carries it, else `sub`; PAT → `pat:<token_name>`; auth-off → `unknown`. Records written before 1.0.0 lack the field — the UI falls back to a generic `"operator"` label.
 
 The SDK closes the loop: `xcom.get()` and `xcom.pull()` detect the same marker and raise `XComManuallyResolvedError` by default (opt out with `raise_on_manual=False`). Before this change, downstream code doing `xcom.get(dep)["rows"]` on a `mark_success`'d upstream received the marker dict as if it were data and crashed with `KeyError` at the first attribute access; the UI-only fix would have surfaced the intervention visually but left the runtime footgun in place.
 
 The AWS-metadata detection banner (Glue/ECS/Batch → `{JobRunId}` etc.) still shows on the Output card's `warn` variant with the `xcom.push()` hint.
 
-The `_upstream_omitted` legacy marker (pre-0.100.0 pipelines that share a 25KB budget between result and task_input) still gets the "re-deploy this pipeline" hint — a whole-input banner above the card list, not a per-dep variant.
+The `_upstream_omitted` legacy marker (pre-1.0.0 pipelines that share a 25KB budget between result and task_input) still gets the "re-deploy this pipeline" hint — a whole-input banner above the card list, not a per-dep variant.
 
 ### 6. S3 stays manual claim-check
 
 No auto-offload built. `_s3_ref` reader (10 lines in `xcom.pull()` + `retrieve_result()`) kept as escape hatch. Docs describe the manual pattern honestly — user brings own bucket, own S3 IAM.
 
-New `PolyrisTaskWritePolicy` grants `dynamodb:UpdateItem` on `output#*` keys for `xcom.push()`. The misleading `PolyrisResultsBucketRead` statement was planned for removal in 0.100.0 but reverted before ship — `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering and the fixed `ManagedPolicyName` (exported via `!ImportValue`) blocks the delete-then-create. Cleanup deferred to a follow-up two-phase deploy (see CHANGELOG "Deferred").
+New `PolyrisTaskWritePolicy` grants `dynamodb:UpdateItem` on `output#*` keys for `xcom.push()`. The misleading `PolyrisResultsBucketRead` statement was planned for removal in 1.0.0 but reverted before ship — `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering and the fixed `ManagedPolicyName` (exported via `!ImportValue`) blocks the delete-then-create. Cleanup deferred to a follow-up two-phase deploy (see CHANGELOG "Deferred").
 
 ## Consequences
 

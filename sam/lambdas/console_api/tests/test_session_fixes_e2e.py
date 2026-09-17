@@ -637,7 +637,7 @@ class TestSyntheticOutputMarker:
     def test_marker_falls_back_to_unknown_when_no_principal_on_event(self, wired):
         """Auth disabled or public path — no principal on the event.
         Marker still records something so audit reads never see an absent
-        field. UI falls back to 'operator' for pre-0.100.0 rows too."""
+        field. UI falls back to 'operator' for pre-1.0.0 rows too."""
         tasks_module, fake_table = wired
         fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
 

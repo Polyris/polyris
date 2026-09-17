@@ -1,4 +1,4 @@
-"""Glue script demonstrating xcom.push() — real data reaches downstream (0.100.0).
+"""Glue script demonstrating xcom.push() — real data reaches downstream (1.0.0).
 
 Deploy as the script for `polyris-xcom-aggregate` Glue job:
 
@@ -7,9 +7,9 @@ Deploy as the script for `polyris-xcom-aggregate` Glue job:
 Or upload via Glue Console → Job details → Script location.
 
 Requires:
-    polyris>=0.100.0
+    polyris>=1.0.0
         Install via Glue Job details → --additional-python-modules parameter:
-            --additional-python-modules "polyris==0.100.0"
+            --additional-python-modules "polyris==1.0.0"
 
     IAM: Glue role needs BOTH policies from the polyris SAM stack:
         PolyrisTaskReadPolicy   — for the (not used here) xcom.get() fallback path
@@ -20,7 +20,7 @@ Requires:
 Without this push (see aggregate_no_push.py), the wrapper stores the Glue API's
 {"JobRunId": "..."} response as `result`. Downstream tasks reading
 event["upstream"]["aggregate_glue"]["output"] get that AWS metadata, not the
-real aggregation output — Problem #2 (pre-0.100.0 metadata-leak default), silently for years.
+real aggregation output — Problem #2 (pre-1.0.0 metadata-leak default), silently for years.
 
 Task Detail Output tab after run (with this push):
     Clean JSON, no banner:
@@ -38,7 +38,7 @@ import sys
 from awsglue.utils import getResolvedOptions
 from polyris import xcom
 
-# Wrapper injects POLYRIS_TASK_NAME + POLYRIS_WRAPPER_RUN_ID as --args in 0.100.0.
+# Wrapper injects POLYRIS_TASK_NAME + POLYRIS_WRAPPER_RUN_ID as --args in 1.0.0.
 # xcom.push() reads them from env internally — you don't need to touch either.
 # (The awsglue.utils.getResolvedOptions() call surfaces them from Glue's argv
 # into os.environ for you.)

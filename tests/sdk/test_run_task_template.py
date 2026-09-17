@@ -1249,7 +1249,7 @@ def test_save_task_input_state_removed(template):
     """The old monolithic Save_Task_Input is gone — replaced by two states."""
     assert "Save_Task_Input" not in template["States"], (
         "Save_Task_Input has been split into Init_Output_Row + Save_Input_Record "
-        "in 0.100.0. If this test fails, the old state was "
+        "in 1.0.0. If this test fails, the old state was "
         "reintroduced accidentally."
     )
 

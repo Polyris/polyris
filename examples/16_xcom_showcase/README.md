@@ -1,6 +1,6 @@
 # 16 — XCom showcase
 
-**How-to guide.** How to deploy and run this example to see every 0.100.0 XCom
+**How-to guide.** How to deploy and run this example to see every 1.0.0 XCom
 reader / writer path exercised in one pipeline. For the API specification, see
 [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md); for the
 design rationale, see
@@ -10,7 +10,7 @@ design rationale, see
 
 - polyris SAM stack deployed in the target AWS account (this example depends
   on its managed policies and DDB tables).
-- `polyris >= 0.100.0` installed locally: `pip install polyris==0.100.0`.
+- `polyris >= 1.0.0` installed locally: `pip install polyris==1.0.0`.
 - Credentials for the target AWS account in `AWS_PROFILE` or default chain.
 
 ## Pipeline shape
@@ -65,13 +65,13 @@ Create three Lambdas (`polyris-xcom-extract-dict`,
 (`polyris-xcom-aggregate`). Paste the files from `lambda_handlers/` and
 `glue_scripts/` respectively.
 
-The `report` Lambda's deployment zip must include `polyris>=0.100.0`
+The `report` Lambda's deployment zip must include `polyris>=1.0.0`
 (pip install into the deployment directory).
 
-The Glue job needs `polyris>=0.100.0` on the Spark cluster:
+The Glue job needs `polyris>=1.0.0` on the Spark cluster:
 
 - Glue Job details → Job parameters →
-  `--additional-python-modules` = `polyris==0.100.0`
+  `--additional-python-modules` = `polyris==1.0.0`
 
 ## Step 2 — attach IAM
 
@@ -182,4 +182,4 @@ polyris-deploy --destroy     # removes the pipeline stack
 
 - API specification: [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md)
 - Design rationale: [`docs/reference/adr-123-xcom-reliable-data-passing.md`](../../docs/reference/adr-123-xcom-reliable-data-passing.md)
-- `CHANGELOG.md` — 0.100.0 entry lists every added / fixed / breaking-risk item.
+- `CHANGELOG.md` — 1.0.0 entry lists every added / fixed / breaking-risk item.

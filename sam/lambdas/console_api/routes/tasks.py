@@ -388,13 +388,13 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
       (what the task returned or pushed via ``xcom.push()``). Large results
       offloaded to S3 (``_s3_ref``) are resolved transparently;
       ``truncated: true`` means the stored result exceeded the inline limit.
-    * ``input#{pipeline}#{task}#{date}`` — new in 0.100.0: carries the
+    * ``input#{pipeline}#{task}#{date}`` — new in 1.0.0: carries the
       ``task_input`` blob (upstream + variables) up to ~380 KB. Split out
       from the ``output#`` row so the Console preview is no longer bounded
       by the shared 25 KB truncation cap the old design imposed.
 
     Falls back to reading ``task_input`` off the ``output#`` row for
-    pre-0.100.0 pipelines that haven't produced a new-shape run yet.
+    pre-1.0.0 pipelines that haven't produced a new-shape run yet.
     """
     params = event.get('queryStringParameters') or {}
     date = params.get('date') or datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -437,7 +437,7 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
                     output = retrieve_result(parsed)
 
             # task_input: prefer the new input# record; fall back to the
-            # legacy field on output# for pre-0.100.0 pipelines. Isolated
+            # legacy field on output# for pre-1.0.0 pipelines. Isolated
             # try so a missing/failing input# lookup can't hide the output.
             raw_input = None
             try:
@@ -593,7 +593,7 @@ def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, da
        action left its own marker on the row (with its own operator / reason
        / resolution). A subsequent manual action must overwrite it —
        otherwise the identity fields drift silently forever (SEV3 finding
-       in 0.100.0 development: same-date second-skip left the first-skip
+       in 1.0.0 development: same-date second-skip left the first-skip
        operator UUID even after the ID-token fix). GetItem-then-Update is
        the cleanest split of these two concerns; `attribute_not_exists`
        alone conflates them.

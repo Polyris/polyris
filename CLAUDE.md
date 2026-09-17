@@ -577,7 +577,7 @@ Examples in this codebase:
   `sam/lambdas/console_api/constants_generated.py`,
   `sam/lambdas/evaluate_deps/constants_generated.py`, and
   `ui/src/generated/enums.ts`.
-- `ManualResolution` (added 0.100.0) — the four operator-driven task actions
+- `ManualResolution` (added 1.0.0) — the four operator-driven task actions
   (`mark_success`/`skip`/`fail`/`stop`) written by
   `console_api::_write_synthetic_output_marker`, read by `xcom.get()`/`pull()`, and
   rendered by `ui/src/components/TaskDetailModal/manualResolution.ts` — all three
@@ -701,7 +701,7 @@ is either:
   synthetic rows. Fragile if the JSON emitter's ordering changes; prefer
   GetItem-then-Update unless the round-trip cost matters.
 
-Canonical example (post-0.100.0 fix): `_write_synthetic_output_marker`
+Canonical example (in 1.0.0 fix): `_write_synthetic_output_marker`
 in `sam/lambdas/console_api/routes/tasks.py`. Pre-fix, the guard
 blocked BOTH real-output clobbers AND stale-marker refreshes silently at
 INFO log level — a same-date second skip left the first skip's
@@ -756,7 +756,7 @@ same `ManagedPolicyName` — the create fails with `EntityAlreadyExists` because
 the delete hasn't happened yet, and the whole stack rolls back. Same trap
 applies to any CFN property flagged "Requires: Replacement" in the resource docs.
 
-**Why:** hit twice in the 0.100.0 delivery — once removing EMR from
+**Why:** hit twice in the 1.0.0 delivery — once removing EMR from
 `PolyrisTaskWritePolicy` description, once tweaking `PolyrisTaskReadPolicy`
 description wording. Both deploys rolled back mid-flight and had to be reverted
 in the working tree before the smoke could re-run.
@@ -786,7 +786,7 @@ stale data from a prior run, or (b) needs to *protect* real data written this
 run. `attribute_not_exists` conflates them; only GetItem-then-Update can tell
 them apart.
 
-**Why:** hit in 0.100.0's manual-resolution flow — canonical output rows are
+**Why:** hit in 1.0.0's manual-resolution flow — canonical output rows are
 date-scoped and shared across same-date runs. The SFN writes on every run;
 console_api's manual action also writes to mark a task manually-resolved. A
 second manual action on a same-date run silently kept the first operator's

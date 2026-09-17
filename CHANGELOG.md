@@ -1,4 +1,4 @@
-## v0.100.0 - 2026-09-11
+## v1.0.0 - 2026-09-17
 
 ### Added — Reliable task-to-task data passing (XCom)
 
@@ -46,7 +46,7 @@ Ships a unified reader/writer API, closes long-standing silent-corruption paths,
 - `polyris.xcom.PullError` — kept as an alias for `XComMissingError` for backward compatibility. New code should catch the specific `XCom*Error` subclass.
 
 ### Deferred (planned removal, blocked by CFN)
-- Cleanup of the misleading `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`) was reverted before 0.100.0 ship. `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store; the grant remains a documented dead permission.
+- Cleanup of the misleading `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`) was reverted before 1.0.0 ship. `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store; the grant remains a documented dead permission.
 - **Root cause of the block:** commit `c0a1308` changed the policy's `Description` alongside removing the `Sid: PolyrisResultsBucketRead` statement. `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering per AWS docs, and the policy's fixed `ManagedPolicyName` (`${Namespace}-${Stage}-polyris-task-read`, exported via `!ImportValue` in downstream user stacks) blocks the delete-then-create with a name collision.
 - **Cleaner follow-up plan than an earlier "rename the policy" idea:** removing the `Sid` alone (leaving `Description` and every other field untouched) is a `PolicyDocument`-only change, which AWS documents as "no interruption" — no replacement, no name collision, no downstream `ImportValue` break. Concrete PR shape:
   1. In `sam/template.yaml`, delete only lines 2154-2168 (the `Sid: PolyrisResultsBucketRead` statement + its explanatory comment) and the corresponding `Description` re-flip if any. Leave the outer `PolyrisTaskReadPolicy` name / description / `ManagedPolicyArn` output verbatim as currently deployed.

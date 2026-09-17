@@ -71,7 +71,7 @@ class TestPushMarkerFields:
 
     def test_push_count_field_appears_in_sfn_template(self, sfn_template_text):
         """`push_count` is ADD'd by xcom.push() and REMOVE'd by
-        Init_Output_Row (post-0.100.0 addition to the REMOVE clause).
+        Init_Output_Row (in 1.0.0 addition to the REMOVE clause).
         Same coupling as pushed_at."""
         assert "push_count" in sfn_template_text
 
@@ -109,7 +109,7 @@ class TestCanonicalRowKeyFormats:
         assert "'output#'" in utils_text or '"output#"' in utils_text
 
     def test_input_prefix_in_internal_record_filter(self):
-        # 0.100.0 added the input# filter — regression guard so a future
+        # 1.0.0 added the input# filter — regression guard so a future
         # rename of the prefix doesn't leak input rows into All Tasks.
         utils_text = (REPO_ROOT / "sam" / "lambdas" / "console_api" / "utils.py").read_text()
         assert "'input#'" in utils_text or '"input#"' in utils_text
@@ -244,7 +244,7 @@ class TestServiceTaskEnvInjectionParity:
 class TestEmrPushDeliberatelyUnsupported:
     """Negative-case guard for `xcom.push()` on EMR steps. CHANGELOG "Known
     limitations" and `docs/features/DATA_PASSING.md` name EMR as unsupported
-    in 0.100.0 — `HadoopJarStep.Args` risks breaking arbitrary Spark arg
+    in 1.0.0 — `HadoopJarStep.Args` risks breaking arbitrary Spark arg
     parsers, so `POLYRIS_TASK_NAME` / `POLYRIS_WRAPPER_RUN_ID` are NOT
     injected on the EMR branch. If someone adds an injection without wiring
     the push contract end-to-end, this test fails loudly and points at the

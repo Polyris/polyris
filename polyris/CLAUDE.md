@@ -251,7 +251,7 @@ serialized string, not a DDB attribute. Item passes through untouched, no error,
 no log, and the reset-on-rerun contract the REMOVE was meant to enforce silently
 fails.
 
-**Why:** hit in 0.100.0 wrapper Init_Output_Row — the reset-on-rerun REMOVE
+**Why:** hit in 1.0.0 wrapper Init_Output_Row — the reset-on-rerun REMOVE
 clause listed `_manually_resolved`, `_operator`, `_reason`, `_pipeline_execution`,
 `_resolution`. All five are fields the console_api marker writer stores as
 top-level DDB attributes on the canonical row (correct), and the same names

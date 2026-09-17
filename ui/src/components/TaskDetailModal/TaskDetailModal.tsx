@@ -695,7 +695,7 @@ export function formatBytes(n: number): string {
  *   WRAPPED_METADATA_KEYS — services whose response wraps the id inside
  *     a single named key (Athena: {QueryExecution: {QueryExecutionId, ...}},
  *     ECS: {Tasks: [...], Failures: [...]}, EMR: {Step: {Id, ...}}). Missing
- *     these was a 0.100.0 bug — the Athena user reported no banner ever fires.
+ *     these was a 1.0.0 bug — the Athena user reported no banner ever fires.
  *
  * Coupled with backend wrapper response shapes — see
  * `tests/sdk/test_xcom_coupled_constants_parity.py::TestAwsMetadataDetector`
@@ -1004,7 +1004,7 @@ function InputSection({
     }
     const inp = input as Record<string, unknown>;
 
-    // Pre-0.100.0 wholesale-omission marker: shows up only on legacy pipelines
+    // Pre-1.0.0 wholesale-omission marker: shows up only on legacy pipelines
     // that haven't produced a new-shape run yet.
     if (inp._upstream_omitted) {
         const size = typeof inp._size === 'number' ? inp._size : 0;
@@ -1013,7 +1013,7 @@ function InputSection({
                 <AlertTriangle size={14} />
                 <div>
                     Upstream data was <strong>{formatBytes(size)}</strong> — too large for the
-                    legacy Console preview (pre-0.100.0 pipelines share a 25KB budget between
+                    legacy Console preview (pre-1.0.0 pipelines share a 25KB budget between
                     result and task_input). The task received the full data at runtime.
                     Re-deploy this pipeline to store task_input in the new separate record
                     (~380KB budget).

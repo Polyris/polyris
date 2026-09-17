@@ -25,7 +25,7 @@ composite end-to-end run).
 | [`13_assets_wait_for`](13_assets_wait_for/dag.py) | `wait_for=[asset]` — a task pauses for asset freshness (pull model) *(experimental)* |
 | [`14_assets_and_or`](14_assets_and_or/dag.py) | AND vs OR trigger logic with two independent assets *(experimental)* |
 | [`15_assets_every_event`](15_assets_every_event/dag.py) | `AssetAny([x])` for one asset — trigger on every event, no day dedup *(experimental)* |
-| [`16_xcom_showcase`](16_xcom_showcase/dag.py) | Every 0.100.0 XCom path in one pipeline — `xcom.get()`, `xcom.push()`, primitive fix, loud errors, Console per-upstream cards |
+| [`16_xcom_showcase`](16_xcom_showcase/dag.py) | Every 1.0.0 XCom path in one pipeline — `xcom.get()`, `xcom.push()`, primitive fix, loud errors, Console per-upstream cards |
 
 ## Run one locally
 

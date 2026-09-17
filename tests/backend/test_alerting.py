@@ -713,7 +713,7 @@ class TestInitOutputRowAtStart:
     _pushed_by_task / pushed_at / pushed_run_id fields from a previous same-date
     run. Without the REMOVE, Check_Task_Pushed on the current run could see a
     leftover marker and route to Save_Success_Preserve — data corruption.
-    Split from the old Save_Task_Input state in 0.100.0."""
+    Split from the old Save_Task_Input state in 1.0.0."""
 
     @pytest.fixture(autouse=True)
     def setup(self):

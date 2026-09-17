@@ -1,7 +1,7 @@
-"""Consumer: Lambda that reads all three upstream via xcom.get() (0.100.0 API).
+"""Consumer: Lambda that reads all three upstream via xcom.get() (1.0.0 API).
 
 Deploy this as `polyris-xcom-report` Lambda function.
-Runtime: python3.12+. Requires `polyris>=0.100.0` in the deployment zip.
+Runtime: python3.12+. Requires `polyris>=1.0.0` in the deployment zip.
 
 IAM: `PolyrisTaskReadPolicy` attached to the Lambda execution role (grants
      dynamodb:GetItem on pipeline-tokens for the xcom.pull() fallback path
@@ -10,7 +10,7 @@ IAM: `PolyrisTaskReadPolicy` attached to the Lambda execution role (grants
      PolyrisTaskWritePolicy.
 
 Task Detail Input tab after run:
-    Three colored per-upstream cards (0.100.0 UI):
+    Three colored per-upstream cards (1.0.0 UI):
       * extract_dict         green success, expandable JSON payload
       * extract_primitive    green success (or yellow "no output recorded" if
                              extract_primitive raised — trigger_rule=all_done

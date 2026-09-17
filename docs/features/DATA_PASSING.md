@@ -9,7 +9,7 @@ end-to-end design rationale, see
 
 ## Requires
 
-`polyris >= 0.100.0` in your task deployment bundles (Lambda zip, Glue
+`polyris >= 1.0.0` in your task deployment bundles (Lambda zip, Glue
 `--additional-python-modules`, ECS container install, etc.). The `xcom.get()`
 / `xcom.push()` API and the typed `XCom*Error` hierarchy ship in that version.
 
@@ -164,7 +164,7 @@ xcom.pull(task_name, context=None, *,
 ```
 
 Low-level DDB reader — hits `output#{pipeline}#{task}#{date}` directly with no
-event-inject shortcut. Kept for pre-0.100.0 code and for callers that need to
+event-inject shortcut. Kept for pre-1.0.0 code and for callers that need to
 read a specific date / pipeline explicitly (out-of-band tooling). New code
 should prefer `xcom.get()`, which layers the manual-resolution guard, the
 upstream-failure guard, and inject → DDB fallback on top of the same reader.
@@ -224,7 +224,7 @@ verbatim.
 
 When you catch a `XComManuallyResolvedError`, four attributes are populated on
 the exception; the fifth (`pipeline_execution`) is present when the marker was
-written by 0.100.0 or later:
+written by 1.0.0 or later:
 
 ```python
 except XComManuallyResolvedError as e:
@@ -304,7 +304,7 @@ see the wrong value.
 |-----------|-------|------------------|
 | Runtime inject per dep | 25 KB | Use `xcom.get()` — auto-falls-back to DDB (~350 KB). |
 | DDB `result` field | 350 KB | Use [Claim Check pattern](#large-outputs--claim-check-pattern). |
-| Console preview (`task_input`) | ~380 KB | New in 0.100.0 — separate `input#` DDB record. |
+| Console preview (`task_input`) | ~380 KB | New in 1.0.0 — separate `input#` DDB record. |
 | DDB item hard limit (AWS) | 400 KB | AWS constraint. |
 
 For >350 KB payloads, use the Claim Check pattern.
@@ -349,7 +349,7 @@ needs to import it.
 
 ```yaml
 DefaultArguments:
-  "--additional-python-modules": "polyris==0.100.0"
+  "--additional-python-modules": "polyris==1.0.0"
 ```
 
 Or bake it into a wheel and pass via `--extra-py-files`.
@@ -357,13 +357,13 @@ Or bake it into a wheel and pass via `--extra-py-files`.
 **ECS / Batch** — install into your container image:
 
 ```dockerfile
-RUN pip install polyris==0.100.0
+RUN pip install polyris==1.0.0
 ```
 
 **Lambda** — ship in the deployment zip (typical `requirements.txt` for your
 Lambda function).
 
-**EMR** — bootstrap script that `pip install polyris==0.100.0` on cluster
+**EMR** — bootstrap script that `pip install polyris==1.0.0` on cluster
 nodes. Reads work; writes via `xcom.push()` are not supported (see
 [EMR and Athena — reads yes, `xcom.push()` no](#emr-and-athena--reads-yes-xcompush-no)).
 
@@ -447,7 +447,7 @@ resets per-run. Other per-run markers (`_pushed_by_task`, `pushed_at`,
 `Check_Task_Pushed`; the `run_id` stamp lets same-date runs distinguish their
 own writes from a prior run's leftovers.
 
-### `input#{pipeline}#{task}#{date}` — Console preview row (new in 0.100.0)
+### `input#{pipeline}#{task}#{date}` — Console preview row (new in 1.0.0)
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -489,9 +489,9 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
    (`raise_on_failure`), manual-resolution guard (`raise_on_manual`), and
    transparent inject → DDB fallback on truncation.
 
-2. **Writer API for service tasks.** Before 0.100.0, Glue / ECS / Batch tasks
+2. **Writer API for service tasks.** Before 1.0.0, Glue / ECS / Batch tasks
    silently stored the AWS API response as `result` — downstream received
-   `{"JobRunId": ...}` instead of the real work output. In 0.100.0, call
+   `{"JobRunId": ...}` instead of the real work output. In 1.0.0, call
    `xcom.push({...})` before the job ends to overwrite the metadata with the
    actual payload. The Console shows a warning banner on tasks whose stored
    result looks like AWS metadata.
@@ -501,6 +501,6 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
    catching `XComError` covers all four.
 
 Deploy order: install the new SDK in your task bundles first
-(`polyris==0.100.0`), then redeploy the pipeline so the wrapper picks up the
+(`polyris==1.0.0`), then redeploy the pipeline so the wrapper picks up the
 new `input#` record contract. The wrapper is backward-compatible with
-pre-0.100.0 task bundles (they just don't call `xcom.push()`).
+pre-1.0.0 task bundles (they just don't call `xcom.push()`).

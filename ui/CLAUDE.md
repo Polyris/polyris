@@ -107,7 +107,7 @@ text-plus-element children in a `<span>`.
 </div>
 ```
 
-**Why:** hit in 0.100.0 TaskDetailModal's pending-state cards. `.td-tab-empty`
+**Why:** hit in 1.0.0 TaskDetailModal's pending-state cards. `.td-tab-empty`
 is `display: flex; align-items: center; gap: 0.5rem;` (icon + message). The
 message string had an inline `<code>` for the task name, which the flex layout
 turned into a second flex item — visible gap between "upstream" and the code
@@ -145,7 +145,7 @@ const token = session.tokens?.idToken?.toString();
 return { Authorization: `Bearer ${token}` };
 ```
 
-**Why:** hit in 0.100.0 manual-resolution flow — `_operator` on the DDB
+**Why:** hit in 1.0.0 manual-resolution flow — `_operator` on the DDB
 marker was recording UUIDs like `a1b2c3d4-…` because `useAuth`'s helper
 returned `session.tokens?.accessToken`. Backend `auth.verify_cognito_token`
 extracts `claims.get("email")` and falls back to `sub` when absent — so the

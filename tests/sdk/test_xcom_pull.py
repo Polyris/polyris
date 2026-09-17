@@ -269,7 +269,7 @@ def test_get_returns_marker_when_raise_on_manual_false():
 
 
 def test_get_falls_back_to_unknown_operator_when_field_missing():
-    """Records written before 0.100.0 carry no _operator — falls back to
+    """Records written before 1.0.0 carry no _operator — falls back to
     the same string the backend uses for auth-off routes ('unknown'), so
     SDK / UI / backend present one distinct label for 'no identity captured'
     rather than two ('operator' vs 'unknown') users have to learn."""

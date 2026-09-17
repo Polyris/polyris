@@ -153,13 +153,13 @@ def _raise_manual(task_name: str, marker: dict) -> None:
     raise XComManuallyResolvedError(
         task_name,
         resolution=str(marker.get(_MANUAL_RESOLUTION_FIELD, "unknown")),
-        # `_operator` was added in 0.100.0 — older marker records may lack it.
+        # `_operator` was added in 1.0.0 — older marker records may lack it.
         # Fall back to the same string the backend writes when auth is
         # disabled ("unknown") so the SDK / UI / backend all present one
         # distinct label for "no identity captured".
         operator=str(marker.get(_MANUAL_OPERATOR_FIELD) or "unknown"),
         reason=str(marker.get(_MANUAL_REASON_FIELD) or ""),
-        # `_pipeline_execution` added post-0.100.0 to disambiguate cross-run
+        # `_pipeline_execution` added in 1.0.0 to disambiguate cross-run
         # marker bleed (the `output#{pipeline}#{task}#{date}` row is
         # date-scoped). Empty string when absent (older markers).
         pipeline_execution=str(marker.get(_MANUAL_PIPELINE_EXECUTION_FIELD) or ""),
@@ -169,12 +169,12 @@ def _raise_manual(task_name: str, marker: dict) -> None:
 # Backward-compat alias. Existing user code with `except PullError` continues to work
 # because PullError now refers to XComMissingError.
 #
-# 0.99 → 0.100 behaviour change: PullError was previously raised for both
-# "no output stored" AND "output was truncated and unavailable". In 0.100 the
+# 0.99 → 1.0.0 behaviour change: PullError was previously raised for both
+# "no output stored" AND "output was truncated and unavailable". In 1.0.0 the
 # truncation case gets its own type — XComTruncatedError — when raised via
 # xcom.get() (which layers inject → DDB fallback and only raises truncation
 # after BOTH fail). xcom.pull() still raises PullError on truncation, matching
-# the pre-0.100 shape.
+# the pre-1.0.0 shape.
 #
 # Actionable for callers: code catching `except PullError:` continues to catch
 # every missing-row case; code that wants to react specifically to
@@ -594,7 +594,7 @@ def push(
     table = _resolve(table, ctx, (), ENV_TABLE, "table name")
 
     # POLYRIS_TASK_NAME and POLYRIS_WRAPPER_RUN_ID are NEW env vars — an
-    # older wrapper (pre-0.100.0) does not inject them. Convert the generic
+    # older wrapper (pre-1.0.0) does not inject them. Convert the generic
     # PullError from _resolve into an actionable XComError that names the
     # remediation.
     try:
