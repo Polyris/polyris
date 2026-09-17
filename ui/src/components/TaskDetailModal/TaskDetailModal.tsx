@@ -935,23 +935,32 @@ function InputSection({
     input: unknown; taskStatus: string;
     inputRowRunId: string | null; expectedRunId: string | null;
 }) {
-    // Two-layer gate for the date-scoped canonical `input#` row (CLAUDE.md
-    // rule #30, extended for cross-run staleness):
+    // Input-row gate for the date-scoped canonical `input#` row (CLAUDE.md
+    // rule #30, refined for the input side).
     //
-    // 1. Non-settled task → Save_Input_Record hasn't fired yet for this run,
-    //    row still holds a prior same-date run's snapshot. Suppress.
-    // 2. Settled task whose row_run_id doesn't belong to this run:
-    //    (a) Explicit mismatch — row_run_id differs from this run's helper ARN.
-    //    (b) Cascade / auto-skip — task settled without wrapper ever running
-    //        Save_Input_Record, so expectedRunId is null. Any content on
-    //        the row was written by a prior same-date run.
-    const isSettled = TASK_SETTLED_STATUSES.includes(taskStatus);
+    // Save_Input_Record fires EARLY in the wrapper (before task execution),
+    // so as soon as this run reaches `running` the row is already populated
+    // with THIS run's snapshot — showing it is correct. Contrast with
+    // OutputCard: the result field is only written at Save_Success (end),
+    // so output is only authoritative post-settlement.
+    //
+    // The definitive test is whether the row's run_id matches this run's
+    // helper ARN. Task status is only a fallback signal for when the ARN
+    // isn't yet available.
+    const rowBelongsToThisRun = Boolean(
+        inputRowRunId && expectedRunId && inputRowRunId === expectedRunId
+    );
     const rowFromPriorRun = Boolean(
         inputRowRunId && (
             (expectedRunId && inputRowRunId !== expectedRunId) ||
-            (!expectedRunId)
+            (!expectedRunId)  // cascade/auto-skip — settled without wrapper
         )
     );
+    // "Pre-run" = task hasn't started executing yet (row not written by
+    // this run and status is not one that implies execution). Used only
+    // when run_id comparison can't decide (both sides null).
+    const isPreRun = !TASK_SETTLED_STATUSES.includes(taskStatus)
+        && taskStatus !== 'running';
 
     if (input === null || input === undefined) {
         return (
@@ -960,18 +969,8 @@ function InputSection({
             </div>
         );
     }
-    if (!isSettled) {
-        return (
-            <div className="td-tab-empty td-tab-empty--inline">
-                <Database size={14} />
-                <span>
-                    Input snapshot will appear once the task settles
-                    {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
-                    . The record for this date may still hold a prior run&apos;s data.
-                </span>
-            </div>
-        );
-    }
+    // Stale-from-prior-run takes precedence — content exists but wasn't
+    // written by this run, so we must not attribute it to this task.
     if (rowFromPriorRun) {
         return (
             <div className="td-tab-empty td-tab-empty--inline">
@@ -981,6 +980,21 @@ function InputSection({
                     the same date. This run&apos;s task settled without populating
                     the canonical input record (e.g. resolved via UI before the
                     wrapper started).
+                </span>
+            </div>
+        );
+    }
+    // Row hasn't been written by this run yet AND task hasn't reached a
+    // state that implies execution. (For `running` + row-matches-this-run,
+    // both conditions are false → we fall through and render normally.)
+    if (!rowBelongsToThisRun && isPreRun) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} />
+                <span>
+                    Input snapshot will appear once the task starts running
+                    {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
+                    . The record for this date may still hold a prior run&apos;s data.
                 </span>
             </div>
         );

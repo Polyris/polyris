@@ -528,7 +528,7 @@ describe('TaskDetailModal', () => {
             const task = createTask({ status: 'waiting_decision' });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             fireEvent.click(screen.getByText('Input / Output'));
-            expect(screen.getByText(/Input snapshot will appear once the task settles/i))
+            expect(screen.getByText(/Input snapshot will appear once the task starts running/i))
                 .toBeInTheDocument();
             // Prior run's upstream card must NOT render.
             expect(screen.queryByText('extract')).not.toBeInTheDocument();
@@ -557,6 +557,32 @@ describe('TaskDetailModal', () => {
             fireEvent.click(screen.getByText('Input / Output'));
             expect(screen.getByText('from prior run')).toBeInTheDocument();
             expect(screen.queryByText(/999/)).not.toBeInTheDocument();
+        });
+
+        it('renders Input normally for a "running" task when input# row belongs to this run', () => {
+            // Save_Input_Record fires EARLY (before task execution), so a
+            // running task's input# row is already this run's snapshot —
+            // gating on TASK_SETTLED_STATUSES would over-fire and hide
+            // input mid-run (bad for long-running Glue/Batch/SFN tasks).
+            // The correct test is `row_run_id === expected_run_id`.
+            vi.mocked(useTaskOutput).mockReturnValue({
+                input: {
+                    upstream: { extract: { output: { rows: 1 }, status: 'success' } },
+                    variables: { year: '2026' },
+                },
+                output: null,
+                truncated: false,
+                loading: false,
+                loaded: true,
+                inputRowRunId: 'arn:aws:states:...:execution:helper:this-run',
+                outputRowRunId: null,
+                expectedRunId: 'arn:aws:states:...:execution:helper:this-run',
+            });
+            const task = createTask({ status: 'running' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('extract')).toBeInTheDocument();
+            expect(screen.queryByText(/Input snapshot will appear/)).not.toBeInTheDocument();
         });
 
         it('renders Input normally when task IS settled', () => {
