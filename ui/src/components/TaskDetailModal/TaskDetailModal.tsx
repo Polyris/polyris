@@ -963,19 +963,25 @@ function InputSection({
     if (!isSettled) {
         return (
             <div className="td-tab-empty td-tab-empty--inline">
-                <Database size={14} /> Input snapshot will appear once the task settles
-                {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
-                . The record for this date may still hold a prior run&apos;s data.
+                <Database size={14} />
+                <span>
+                    Input snapshot will appear once the task settles
+                    {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
+                    . The record for this date may still hold a prior run&apos;s data.
+                </span>
             </div>
         );
     }
     if (rowFromPriorRun) {
         return (
             <div className="td-tab-empty td-tab-empty--inline">
-                <Database size={14} /> Input snapshot belongs to a different run
-                of this task on the same date. This run&apos;s task settled without
-                populating the canonical input record (e.g. resolved via UI
-                before the wrapper started).
+                <Database size={14} />
+                <span>
+                    Input snapshot belongs to a different run of this task on
+                    the same date. This run&apos;s task settled without populating
+                    the canonical input record (e.g. resolved via UI before the
+                    wrapper started).
+                </span>
             </div>
         );
     }
