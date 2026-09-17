@@ -32,11 +32,21 @@ import {
     AlertTriangle,
     Calendar,
     Rocket,
+    Wrench,
 } from '../../utils/icons';
 import { CountdownTimer } from '../CountdownTimer';
 import { BaseModal } from '../BaseModal';
 import { LiveDuration } from './LiveDuration';
 import { ErrorDisplay } from './ErrorDisplay';
+import { CollapsibleJsonBlock } from './CollapsibleJsonBlock';
+import { CollapsibleSection } from './CollapsibleSection';
+import { OutputCard } from './OutputCard';
+import {
+    detectManualResolution,
+    formatManualResolution,
+    statusForResolution,
+    variantForResolution,
+} from './manualResolution';
 import { useAppStore } from '../../stores/useAppStore';
 import type { Task, TaskDetailModalProps } from '@/types';
 import { paidSurface } from '@/ee-active.generated';
@@ -187,6 +197,10 @@ export function TaskDetailModal({
                         truncated={taskOutput.truncated}
                         loading={taskOutput.loading}
                         loaded={taskOutput.loaded}
+                        taskStatus={task.status}
+                        outputRowRunId={taskOutput.outputRowRunId}
+                        inputRowRunId={taskOutput.inputRowRunId}
+                        expectedRunId={taskOutput.expectedRunId}
                     />
                 ) : onAction ? (
                     <ActionsTab
@@ -641,50 +655,461 @@ interface OutputTabProps {
     truncated: boolean;
     loading: boolean;
     loaded: boolean;
+    /** This task's per-run status — threaded to OutputCard so it can gate
+     * the date-scoped canonical-row read on settled state (see the CLAUDE.md
+     * rule about date-scoped canonical DDB rows). */
+    taskStatus: string;
+    /** run_id stamped on the canonical output# row by the wrapper. */
+    outputRowRunId: string | null;
+    /** run_id stamped on the input# row by Save_Input_Record. */
+    inputRowRunId: string | null;
+    /** The run_task_helper ARN this run's wrapper invoked. Row-run-ids that
+     * don't match belong to a prior same-date run and should suppress the
+     * canonical-row read. */
+    expectedRunId: string | null;
 }
 
-function OutputTab({ input, output, truncated, loading, loaded }: OutputTabProps) {
+// =============================================================================
+// Output Tab helpers — per-upstream marker interpretation (see ADR-123 §5)
+// =============================================================================
+
+export function formatBytes(n: number): string {
+    if (!Number.isFinite(n) || n < 0) return '0B';
+    if (n < 1024) return `${n}B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Heuristic: is `output` the wrapper's AWS API response (Glue JobRunId,
+ * Batch JobId, ECS Tasks list, Athena QueryExecution, EMR Step, child SFN
+ * ExecutionArn) rather than real user data?
+ *
+ * Service tasks (Glue/ECS/Batch/EMR/Athena) store the AWS response as
+ * `result` unless the job code calls xcom.push() with the real output.
+ * This detection lets us surface a Console banner pointing at the fix.
+ *
+ * Two key sets:
+ *   FLAT_METADATA_KEYS — services whose response has the id at top level
+ *     (Glue: {JobRunId, ...}, Batch: {JobId, ...}, child SFN: {ExecutionArn, ...}).
+ *   WRAPPED_METADATA_KEYS — services whose response wraps the id inside
+ *     a single named key (Athena: {QueryExecution: {QueryExecutionId, ...}},
+ *     ECS: {Tasks: [...], Failures: [...]}, EMR: {Step: {Id, ...}}). Missing
+ *     these was a 1.0.0 bug — the Athena user reported no banner ever fires.
+ *
+ * Coupled with backend wrapper response shapes — see
+ * `tests/sdk/test_xcom_coupled_constants_parity.py::TestAwsMetadataDetector`
+ * for the parity gate that pins each service integration's response
+ * against this detector.
+ */
+const FLAT_METADATA_KEYS = new Set([
+    'JobRunId',      // Glue: startJobRun.sync
+    'TaskArn',       // (legacy — real ECS response uses Tasks[])
+    'JobId',         // Batch: submitJob.sync
+    'ExecutionArn',  // child SFN: startExecution.sync
+]);
+const WRAPPED_METADATA_KEYS = new Set([
+    'QueryExecution', // Athena: startQueryExecution.sync → {QueryExecution: {...}}
+    'Tasks',          // ECS:    runTask.sync            → {Tasks: [...], Failures: [...]}
+    'Step',           // EMR:    addStep.sync-ish        → {Step: {Id, ...}}
+]);
+
+export function looksLikeAwsMetadata(output: unknown): boolean {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
+    const obj = output as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    // Response shapes are always small (id + a handful of metadata fields).
+    // Cap at 6 keys — wide enough for real responses (Glue emits ~5), narrow
+    // enough that a large real user output isn't misclassified.
+    if (keys.length === 0 || keys.length > 6) return false;
+    if (keys.some(k => FLAT_METADATA_KEYS.has(k))) return true;
+    if (keys.some(k => WRAPPED_METADATA_KEYS.has(k))) return true;
+    return false;
+}
+
+// Card-body renderers ----------------------------------------------------
+// Kept small + declarative so every UpstreamDep branch shares the same
+// wrapper shell (left-stripe + header + optional expandable body). Adding a
+// new state = add a case, not another divergent full-bleed banner.
+
+type DepVariant = 'success' | 'error' | 'warn' | 'muted' | 'manual';
+
+interface DepCardProps {
+    name: string;
+    /** Card-frame variant — sets the left-stripe colour (semantic: what class
+     * of thing happened). For manual resolutions this is always 'manual'
+     * regardless of the underlying outcome, so the blue stripe consistently
+     * signals human intervention. */
+    variant: DepVariant;
+    icon: React.ComponentType<{ size?: number }>;
+    primaryBadge: string;
+    /** Colour of the primary badge. Defaults to `variant` so single-purpose
+     * cards (success/error/warn/muted) stay consistent; the manual variant
+     * overrides this via ``primaryBadgeVariant`` so the badge reflects the
+     * real outcome (green/red/muted) instead of the blue "manual" stripe
+     * colour — see OutputCard for the same pattern. */
+    primaryBadgeVariant?: 'success' | 'error' | 'warn' | 'muted' | 'manual';
+    /** Optional second badge (used for the 'manual' chip alongside the resolved status). */
+    manualBadge?: string;
+    /** Optional inline sub-line under the header (short human summary, e.g. manual reason). */
+    subline?: React.ReactNode;
+    /** Optional expandable body (shown when the user opens the card). */
+    body?: React.ReactNode;
+}
+
+function DepCard({
+    name, variant, icon: Icon, primaryBadge,
+    primaryBadgeVariant, manualBadge, subline, body,
+}: DepCardProps) {
+    const classes = `td-upstream-dep td-upstream-dep--${variant}`;
+    const primaryClass = `td-status-badge td-status-badge--${primaryBadgeVariant ?? variant}`;
+    // Only render as <details> when there's actually something to expand.
+    // Otherwise a chevron on a card with no expandable body would be a UI lie.
+    if (!body) {
+        return (
+            <div className={classes}>
+                <div className="td-upstream-dep-header">
+                    <Icon size={14} />
+                    <strong>{name}</strong>
+                    {subline && <span className="td-upstream-dep-subline">{subline}</span>}
+                    <div className="td-upstream-dep-badges">
+                        {manualBadge && (
+                            <span className="td-status-badge td-status-badge--manual">{manualBadge}</span>
+                        )}
+                        <span className={primaryClass}>{primaryBadge}</span>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+    return (
+        <details className={classes}>
+            <summary>
+                <Icon size={14} />
+                <strong>{name}</strong>
+                {subline && <span className="td-upstream-dep-subline">{subline}</span>}
+                <div className="td-upstream-dep-badges">
+                    {manualBadge && (
+                        <span className="td-status-badge td-status-badge--manual">{manualBadge}</span>
+                    )}
+                    <span className={primaryClass}>{primaryBadge}</span>
+                </div>
+            </summary>
+            <div className="td-upstream-dep-body">{body}</div>
+        </details>
+    );
+}
+
+/**
+ * Render a single upstream dependency entry from `event.upstream[X]`.
+ * All branches route through DepCard so every state uses the same unified
+ * left-stripe card shape — no full-bleed banners. Manual resolutions
+ * (mark_success / skip / fail / stop via UI) get their own blue variant with
+ * a "Marked X by <operator> — <reason>" summary so downstream operators can
+ * tell organic outcomes from human overrides at a glance.
+ */
+function UpstreamDep({ name, entry }: { name: string; entry: unknown }) {
+    // Malformed entry — surface visibly so a producer bug isn't hidden.
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return (
+            <DepCard
+                name={name}
+                variant="warn"
+                icon={AlertTriangle}
+                primaryBadge="malformed"
+                subline="Expected {status, output}"
+                body={<CollapsibleJsonBlock value={entry} ariaLabel={`${name} raw entry`} />}
+            />
+        );
+    }
+
+    const e = entry as { status?: string; output?: unknown };
+    const status = e.status ?? 'unknown';
+    const output = e.output;
+    const outputIsObj = output !== null && typeof output === 'object' && !Array.isArray(output);
+    const outputAsRec = outputIsObj ? (output as Record<string, unknown>) : null;
+
+    // Manual resolution — takes precedence over status because the marker is
+    // written for every manual action; the human intervention is the story.
+    //
+    // Backend writes DDB `status` = action_name on the output# row (see
+    // console_api/routes/tasks.py::_write_synthetic_output_marker), so
+    // event.upstream[X].status is the RAW action ('mark_success' / 'skip' /
+    // 'fail' / 'stop'). We route it through statusForResolution to get a
+    // user-friendly label ('success' / 'skipped' / 'failed' / 'stopped') that
+    // matches what OutputCard renders — the "applied identically" contract.
+    const manual = detectManualResolution(output);
+    if (manual) {
+        return (
+            <DepCard
+                name={name}
+                variant="manual"
+                icon={Wrench}
+                primaryBadge={statusForResolution(manual.resolution)}
+                primaryBadgeVariant={variantForResolution(manual.resolution)}
+                manualBadge={`manual: ${manual.resolution}`}
+                subline={formatManualResolution(manual)}
+                body={<CollapsibleJsonBlock value={output} ariaLabel={`${name} raw marker`} />}
+            />
+        );
+    }
+
+    // Missing dep — Get_Dep_Output writes status=unknown when the DDB row is absent.
+    if (status === 'unknown') {
+        return (
+            <DepCard
+                name={name}
+                variant="warn"
+                icon={AlertTriangle}
+                primaryBadge="no output"
+                subline="Task may have been skipped, failed, or hasn’t run yet for this date."
+            />
+        );
+    }
+
+    // Non-success status (skipped/failed/aborted) — status is the story;
+    // output (if any) is available on expand for debugging.
+    if (status !== 'success') {
+        return (
+            <DepCard
+                name={name}
+                variant="error"
+                icon={XCircle}
+                primaryBadge={status}
+                body={
+                    output !== undefined && output !== null
+                        ? <CollapsibleJsonBlock value={output} ariaLabel={`${name} output`} />
+                        : undefined
+                }
+            />
+        );
+    }
+
+    // Truncated — output was too large for inline injection.
+    if (outputAsRec && outputAsRec._truncated) {
+        const size = typeof outputAsRec._size === 'number' ? outputAsRec._size : 0;
+        return (
+            <DepCard
+                name={name}
+                variant="warn"
+                icon={AlertTriangle}
+                primaryBadge="truncated"
+                subline={
+                    <>
+                        {formatBytes(size)} — fetch via{' '}
+                        <code>xcom.get(event, &quot;{name}&quot;)</code>
+                    </>
+                }
+            />
+        );
+    }
+
+    // S3 Claim Check pointer — producer offloaded, xcom.get()/pull() resolves.
+    if (outputAsRec && typeof outputAsRec._s3_ref === 'string') {
+        return (
+            <DepCard
+                name={name}
+                variant="muted"
+                icon={Database}
+                primaryBadge="s3-ref"
+                subline={<code>{outputAsRec._s3_ref}</code>}
+            />
+        );
+    }
+
+    // Organic success — expandable pretty JSON.
+    return (
+        <DepCard
+            name={name}
+            variant="success"
+            icon={CheckCircle2}
+            primaryBadge="success"
+            body={<CollapsibleJsonBlock value={output} ariaLabel={`${name} output`} />}
+        />
+    );
+}
+
+function InputSection({
+    input, taskStatus, inputRowRunId, expectedRunId,
+}: {
+    input: unknown; taskStatus: string;
+    inputRowRunId: string | null; expectedRunId: string | null;
+}) {
+    // Input-row gate for the date-scoped canonical `input#` row (CLAUDE.md
+    // rule #30, refined for the input side).
+    //
+    // Save_Input_Record fires EARLY in the wrapper (before task execution),
+    // so as soon as this run reaches `running` the row is already populated
+    // with THIS run's snapshot — showing it is correct. Contrast with
+    // OutputCard: the result field is only written at Save_Success (end),
+    // so output is only authoritative post-settlement.
+    //
+    // The definitive test is whether the row's run_id matches this run's
+    // helper ARN. Task status is only a fallback signal for when the ARN
+    // isn't yet available.
+    const rowBelongsToThisRun = Boolean(
+        inputRowRunId && expectedRunId && inputRowRunId === expectedRunId
+    );
+    const rowFromPriorRun = Boolean(
+        inputRowRunId && (
+            (expectedRunId && inputRowRunId !== expectedRunId) ||
+            (!expectedRunId)  // cascade/auto-skip — settled without wrapper
+        )
+    );
+    // "Pre-run" = task hasn't started executing yet (row not written by
+    // this run and status is not one that implies execution). Used only
+    // when run_id comparison can't decide (both sides null).
+    const isPreRun = !TASK_SETTLED_STATUSES.includes(taskStatus)
+        && taskStatus !== 'running';
+
+    if (input === null || input === undefined) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> No input recorded (upstream data + run variables).
+            </div>
+        );
+    }
+    // Stale-from-prior-run takes precedence — content exists but wasn't
+    // written by this run, so we must not attribute it to this task.
+    if (rowFromPriorRun) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} />
+                <span>
+                    Input snapshot belongs to a different run of this task on
+                    the same date. This run&apos;s task settled without populating
+                    the canonical input record (e.g. resolved via UI before the
+                    wrapper started).
+                </span>
+            </div>
+        );
+    }
+    // Row hasn't been written by this run yet AND task hasn't reached a
+    // state that implies execution. (For `running` + row-matches-this-run,
+    // both conditions are false → we fall through and render normally.)
+    if (!rowBelongsToThisRun && isPreRun) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} />
+                <span>
+                    Input snapshot will appear once the task starts running
+                    {taskStatus ? <> (current status: <code>{taskStatus}</code>)</> : null}
+                    . The record for this date may still hold a prior run&apos;s data.
+                </span>
+            </div>
+        );
+    }
+    if (typeof input !== 'object' || Array.isArray(input)) {
+        return <CollapsibleJsonBlock value={input} ariaLabel="Task input" />;
+    }
+    const inp = input as Record<string, unknown>;
+
+    // Pre-1.0.0 wholesale-omission marker: shows up only on legacy pipelines
+    // that haven't produced a new-shape run yet.
+    if (inp._upstream_omitted) {
+        const size = typeof inp._size === 'number' ? inp._size : 0;
+        return (
+            <div className="td-banner td-banner--warn">
+                <AlertTriangle size={14} />
+                <div>
+                    Upstream data was <strong>{formatBytes(size)}</strong> — too large for the
+                    legacy Console preview (pre-1.0.0 pipelines share a 25KB budget between
+                    result and task_input). The task received the full data at runtime.
+                    Re-deploy this pipeline to store task_input in the new separate record
+                    (~380KB budget).
+                </div>
+            </div>
+        );
+    }
+
+    const variables = (inp.variables && typeof inp.variables === 'object')
+        ? inp.variables as Record<string, unknown>
+        : {};
+    const upstream = (inp.upstream && typeof inp.upstream === 'object')
+        ? inp.upstream as Record<string, unknown>
+        : {};
+    const hasVars = Object.keys(variables).length > 0;
+    const hasUpstream = Object.keys(upstream).length > 0;
+
+    if (!hasVars && !hasUpstream) {
+        return (
+            <div className="td-tab-empty td-tab-empty--inline">
+                <Database size={14} /> No upstream or variables recorded.
+            </div>
+        );
+    }
+
+    return (
+        <div className="td-input-section">
+            {hasVars && (
+                <CollapsibleSection
+                    label="Variables"
+                    count={Object.keys(variables).length}
+                    defaultOpen={false}
+                    copyValue={variables}
+                >
+                    <CollapsibleJsonBlock value={variables} ariaLabel="Task variables" />
+                </CollapsibleSection>
+            )}
+            {hasUpstream && (
+                <CollapsibleSection
+                    label="Upstream"
+                    count={Object.keys(upstream).length}
+                    defaultOpen={true}
+                    copyValue={upstream}
+                >
+                    {Object.entries(upstream).map(([dep, entry]) => (
+                        <UpstreamDep key={dep} name={dep} entry={entry} />
+                    ))}
+                </CollapsibleSection>
+            )}
+        </div>
+    );
+}
+
+function OutputSection({
+    output, truncated, taskStatus, outputRowRunId, expectedRunId,
+}: {
+    output: unknown; truncated: boolean; taskStatus: string;
+    outputRowRunId: string | null; expectedRunId: string | null;
+}) {
+    return (
+        <OutputCard
+            output={output}
+            truncated={truncated}
+            awsMetadata={output !== null && output !== undefined && looksLikeAwsMetadata(output)}
+            taskStatus={taskStatus}
+            outputRowRunId={outputRowRunId}
+            expectedRunId={expectedRunId}
+        />
+    );
+}
+
+function OutputTab({
+    input, output, truncated, loading, loaded, taskStatus,
+    outputRowRunId, inputRowRunId, expectedRunId,
+}: OutputTabProps) {
     if (loading) {
         return <div className="td-tab-empty"><Hourglass size={16} /> Loading…</div>;
     }
     if (!loaded) {
         return <div className="td-tab-empty"><Database size={16} /> Open to load input and output.</div>;
     }
-
-    const hasInput = input !== null && input !== undefined;
-    const hasOutput = output !== null && output !== undefined;
-
     return (
         <div className="td-output-tab">
-            <div className="td-io-section">
-                <div className="td-io-label">Input</div>
-                {hasInput ? (
-                    <pre className="td-output-json" aria-label="Task input">
-                        {JSON.stringify(input, null, 2)}
-                    </pre>
-                ) : (
-                    <div className="td-tab-empty td-tab-empty--inline">
-                        <Database size={14} /> No input recorded (upstream data + run variables).
-                    </div>
-                )}
-            </div>
-            <div className="td-io-section">
-                <div className="td-io-label">Output</div>
-                {truncated ? (
-                    <div className="td-tab-empty td-tab-empty--inline" role="status">
-                        <AlertTriangle size={14} /> Output too large to store inline. Return an
-                        <code>s3://</code> pointer for large data.
-                    </div>
-                ) : hasOutput ? (
-                    <pre className="td-output-json" aria-label="Task output">
-                        {JSON.stringify(output, null, 2)}
-                    </pre>
-                ) : (
-                    <div className="td-tab-empty td-tab-empty--inline">
-                        <Database size={14} /> This task stored no output.
-                    </div>
-                )}
-            </div>
+            <InputSection
+                input={input}
+                taskStatus={taskStatus}
+                inputRowRunId={inputRowRunId}
+                expectedRunId={expectedRunId}
+            />
+            <OutputSection
+                output={output}
+                truncated={truncated}
+                taskStatus={taskStatus}
+                outputRowRunId={outputRowRunId}
+                expectedRunId={expectedRunId}
+            />
         </div>
     );
 }

@@ -132,6 +132,14 @@ sam/*.Xtoml
 # Local working copies of examples with real account IDs — never publish
 examples_temp/
 
+# Session-local planning / research / spike docs. Ephemeral by design: they
+# capture context for the current implementation session and get superseded
+# by the shipped ADR / CHANGELOG / feature docs. Never commit — shipped code
+# must not cross-reference them (Principle #26 rule below stands: docs a
+# future reader needs live under docs/reference/, docs/architecture/,
+# docs/features/, or in ADRs).
+docs/work/
+
 # User pipeline definitions live outside the repo (were sample acme/shopmart;
 # real account IDs must never be published). Users create their own pipelines/,
 # and scripts/setup-polyris.sh writes pipelines/config.py (with account_id

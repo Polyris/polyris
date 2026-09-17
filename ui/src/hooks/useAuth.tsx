@@ -158,7 +158,7 @@ interface AuthContextValue {
     verifyMfa: (code: string) => Promise<Record<string, unknown>>;
     forgotPassword: (email: string) => Promise<Record<string, unknown>>;
     confirmForgotPassword: (email: string, code: string, newPassword: string) => Promise<Record<string, unknown>>;
-    getAccessToken: () => Promise<string | null>;
+    getIdToken: () => Promise<string | null>;
     clearError: () => void;
     refreshAuth: () => Promise<void>;
 }
@@ -418,18 +418,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, []);
     
     /**
-     * Get current access token
+     * Get current ID token for Bearer-authenticating to the polyris API.
+     *
+     * ID token (not access token) because polyris's marker records the
+     * caller's `email` claim on manual resolutions (see
+     * console_api/auth.py::verify_cognito_token → Principal.email); access
+     * tokens don't carry that claim. Both are accepted by the backend
+     * (`token_use in ("access", "id")`), so switching is safe — access
+     * tokens would just silently lose the `email` attribution in every
+     * `_manually_resolved` marker.
      */
-    const getAccessToken = useCallback(async () => {
+    const getIdToken = useCallback(async () => {
         if (!authEnabled) {
             return null;
         }
-        
+
         try {
             const session = await fetchAuthSession();
-            return session.tokens?.accessToken?.toString() || null;
+            return session.tokens?.idToken?.toString() || null;
         } catch (err: unknown) {
-            logger.warn('auth', 'Failed to get access token', err);
+            logger.warn('auth', 'Failed to get id token', err);
             return null;
         }
     }, [authEnabled]);
@@ -490,7 +498,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         verifyMfa,
         forgotPassword,
         confirmForgotPassword,
-        getAccessToken,
+        getIdToken,
         clearError: () => setError(null),
         refreshAuth: checkAuthState,
     };
@@ -517,22 +525,22 @@ export function useAuth(): AuthContextValue {
  * Hook to get auth header for API requests
  */
 export function useAuthHeader() {
-    const { getAccessToken, isAuthEnabled } = useAuth();
-    
+    const { getIdToken, isAuthEnabled } = useAuth();
+
     return useCallback(async () => {
         if (!isAuthEnabled) {
             return {};
         }
-        
-        const token = await getAccessToken();
+
+        const token = await getIdToken();
         if (!token) {
             return {};
         }
-        
+
         return {
             Authorization: `Bearer ${token}`,
         };
-    }, [getAccessToken, isAuthEnabled]);
+    }, [getIdToken, isAuthEnabled]);
 }
 
 export default AuthContext;

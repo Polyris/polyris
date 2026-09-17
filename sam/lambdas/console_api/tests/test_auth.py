@@ -158,6 +158,35 @@ class TestVerifyCognito:
         tok = _make_token(token_use='id', aud='client123', client_id=None)
         assert auth.verify_cognito_token(tok).subject == 'user-sub-123'
 
+    def test_id_token_email_claim_lands_on_principal(self, mocker, monkeypatch):
+        """Contract test: a Cognito ID token carrying an `email` claim must
+        populate `Principal.email` so `_write_synthetic_output_marker` can
+        record it as `_operator` (the whole point of Fix #6b). A typo like
+        `claims.get("emails")` would ship silently green without this test."""
+        import auth
+        self._env(monkeypatch)
+        self._use_test_key(mocker)
+        tok = _make_token(
+            token_use='id', aud='client123', client_id=None,
+            email='alice@example.com',
+        )
+        principal = auth.verify_cognito_token(tok)
+        assert principal.email == 'alice@example.com'
+        # display() prefers email over sub for user principals.
+        assert principal.display() == 'alice@example.com'
+
+    def test_access_token_without_email_claim_leaves_email_none(self, mocker, monkeypatch):
+        """Access tokens don't carry `email` — Principal.email must be None
+        (not a KeyError, not an empty string). display() then falls back
+        to the Cognito `sub`."""
+        import auth
+        self._env(monkeypatch)
+        self._use_test_key(mocker)
+        principal = auth.verify_cognito_token(_make_token())  # default access token
+        assert principal.email is None
+        assert principal.display() == 'user-sub-123'
+
+
     def test_wrong_client_rejected(self, mocker, monkeypatch):
         import auth
         self._env(monkeypatch)
@@ -217,6 +246,68 @@ class TestVerifyCognito:
         monkeypatch.delenv('COGNITO_CLIENT_ID', raising=False)
         with pytest.raises(auth.AuthError, match="not configured"):
             auth.verify_cognito_token("eyJ.x.y")
+
+
+# ── Principal.display() fallback branches ─────────────────────────────────
+
+class TestPrincipalDisplay:
+    """Exhaustively covers Principal.display() and the module-level
+    operator_display(event) helper. Both surface in every marker record —
+    unexercised branches here become silent malformed rows in DDB."""
+
+    def test_pat_with_name_formats_as_pat_prefix(self):
+        from auth import Principal
+        p = Principal('service', 'tok_abcd1234efgh', token_name='ci-nightly')
+        assert p.display() == 'pat:ci-nightly'
+
+    def test_pat_without_name_falls_back_to_token_id_prefix(self):
+        from auth import Principal
+        p = Principal('service', 'tok_abcd1234efgh')
+        assert p.display() == 'pat:tok_abcd'
+
+    def test_pat_without_name_and_empty_subject_gives_pat_unknown(self):
+        from auth import Principal
+        p = Principal('service', '')
+        assert p.display() == 'pat:unknown'
+
+    def test_user_prefers_email_over_sub(self):
+        from auth import Principal
+        p = Principal('user', 'sub-uuid', email='alice@example.com')
+        assert p.display() == 'alice@example.com'
+
+    def test_user_falls_back_to_sub_when_email_missing(self):
+        from auth import Principal
+        p = Principal('user', 'sub-uuid')
+        assert p.display() == 'sub-uuid'
+
+    def test_user_falls_back_to_unknown_when_email_and_sub_both_missing(self):
+        from auth import Principal
+        p = Principal('user', '')
+        assert p.display() == 'unknown'
+
+    def test_operator_display_extracts_principal_from_event(self):
+        from auth import Principal, operator_display
+        event = {'principal': Principal('user', 'sub', email='alice@example.com')}
+        assert operator_display(event) == 'alice@example.com'
+
+    def test_operator_display_returns_unknown_for_missing_principal(self):
+        from auth import operator_display
+        assert operator_display({}) == 'unknown'
+
+    def test_operator_display_returns_unknown_for_non_dict_event(self):
+        """Defensive: routes pass whatever they got — a None event or a
+        non-dict shouldn't crash the marker write."""
+        from auth import operator_display
+        assert operator_display(None) == 'unknown'
+        assert operator_display([]) == 'unknown'
+
+    def test_operator_display_returns_unknown_for_non_principal_value(self):
+        """If the middleware wire changes and `event['principal']` becomes
+        a dict or string, the marker writer still records `unknown` instead
+        of leaking arbitrary data into `_operator`."""
+        from auth import operator_display
+        assert operator_display({'principal': 'not-a-Principal'}) == 'unknown'
+        assert operator_display({'principal': {'kind': 'user'}}) == 'unknown'
 
 
 # ── The gate ──────────────────────────────────────────────────────────────

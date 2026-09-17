@@ -596,6 +596,60 @@ class TestSyntheticOutputMarker:
         marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
         assert marker['_resolution'] == 'stop'
 
+    def test_marker_records_operator_email_when_principal_is_a_cognito_user(self, wired):
+        """When the request carries a Cognito principal with email, the
+        marker records that email under `_operator` so the UI can render
+        "Marked success by alice@example.com" instead of a generic
+        "operator" — the whole point of the identity-capture change."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+
+        from auth import Principal
+        principal = Principal('user', 'sub-uuid-123', email='alice@example.com')
+        event = {
+            'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'}),
+            'principal': principal,
+        }
+        resp = tasks_module.mark_success('transform', event)
+        assert resp['statusCode'] == 200, resp
+
+        marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker['_operator'] == 'alice@example.com'
+
+    def test_marker_records_pat_name_when_principal_is_a_service_token(self, wired):
+        """PAT-authenticated requests get `pat:<token_name>` so scripts /
+        CI actions are also attributable in a shared account."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+
+        from auth import Principal
+        principal = Principal('service', 'token-id-xyz', token_name='ci-nightly')
+        event = {
+            'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'}),
+            'principal': principal,
+        }
+        resp = tasks_module.skip_task('transform', event)
+        assert resp['statusCode'] == 200, resp
+
+        marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker['_operator'] == 'pat:ci-nightly'
+
+    def test_marker_falls_back_to_unknown_when_no_principal_on_event(self, wired):
+        """Auth disabled or public path — no principal on the event.
+        Marker still records something so audit reads never see an absent
+        field. UI falls back to 'operator' for pre-1.0.0 rows too."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+
+        resp = tasks_module.mark_success(
+            'transform',
+            {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'})},
+        )
+        assert resp['statusCode'] == 200, resp
+
+        marker = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker['_operator'] == 'unknown'
+
     def test_never_overwrites_a_real_prior_result_same_task_and_date(self, wired):
         """A genuine, real output from an earlier successful run of this
         exact task/date (e.g. a same-day re-run, or output written some
@@ -617,6 +671,88 @@ class TestSyntheticOutputMarker:
         assert resp['statusCode'] == 200, resp
         # Real result must be untouched — not replaced by the synthetic marker.
         assert fake_table.items['output#acme-daily#transform#2026-07-24']['result'] == real_result
+
+    def test_second_same_date_manual_action_refreshes_marker_identity(self, wired):
+        """SEV3 regression guard: pre-fix, `attribute_not_exists(#r)` blocked
+        both a real-output clobber AND a stale-marker refresh, so any second
+        same-date manual action silently kept the FIRST action's operator /
+        reason / resolution on the DDB row. Post-fix (CLAUDE.md #32 — split
+        the two guard concerns), the second action must land its own values.
+
+        Simulates the exact reproduction: skip in Run1 with operator alice
+        + reason 'first attempt' → mark_success in Run2 with operator bob +
+        reason 'verified via logs'. Row must end with the SECOND action's
+        identity, not the FIRST's."""
+        tasks_module, fake_table = wired
+
+        # Run 1 — first skip (writes marker with alice's identity)
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+        from auth import Principal
+        alice = Principal('user', 'sub-alice', email='alice@example.com')
+        resp = tasks_module.skip_task(
+            'transform',
+            {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1', 'reason': 'first attempt'}),
+             'principal': alice},
+        )
+        assert resp['statusCode'] == 200, resp
+        marker1 = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker1['_operator'] == 'alice@example.com'
+        assert marker1['_reason'] == 'first attempt'
+        assert marker1['_resolution'] == 'skip'
+
+        # Run 2 — mark_success (must overwrite marker with bob's identity)
+        run2 = _waiting_task()
+        run2['execution_name'] = 'transform-2026-07-24-run2'
+        run2['pipeline_execution'] = 'run-2'
+        fake_table.items['transform-2026-07-24-run2'] = run2
+        bob = Principal('user', 'sub-bob', email='bob@example.com')
+        resp = tasks_module.mark_success(
+            'transform',
+            {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-2', 'reason': 'verified via logs'}),
+             'principal': bob},
+        )
+        assert resp['statusCode'] == 200, resp
+        marker2 = json.loads(fake_table.items['output#acme-daily#transform#2026-07-24']['result'])
+        assert marker2['_operator'] == 'bob@example.com', (
+            "Second same-date manual action did not refresh _operator — "
+            "the pre-fix behaviour (silent no-op via attribute_not_exists) "
+            "has regressed."
+        )
+        assert marker2['_reason'] == 'verified via logs'
+        assert marker2['_resolution'] == 'mark_success'
+
+    def test_marker_blocked_by_real_output_emits_notify_warn(self, wired):
+        """SEV2 observability guard: when the marker write is blocked
+        because real output already exists, emit a `_notify_warn_*` record
+        so the operator sees the intent-vs-storage mismatch in the
+        Notifications bell (Principle #38) — not only in CloudWatch."""
+        tasks_module, fake_table = wired
+        fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
+        # Real output present — guard should legitimately block marker write.
+        fake_table.items['output#acme-daily#transform#2026-07-24'] = {
+            'execution_name': 'output#acme-daily#transform#2026-07-24',
+            'task_name': 'transform',
+            'result': json.dumps({'rows_processed': 42}),
+            'status': 'success',
+        }
+
+        resp = tasks_module.skip_task(
+            'transform', {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'})},
+        )
+        assert resp['statusCode'] == 200, resp
+        # _notify_warn_* record emitted so the UI Notifications bell surfaces it.
+        # status='failed' MUST match `notifications.py::get_notifications`'s
+        # filter (`Attr('status').is_in(['failed', 'waiting_decision'])`);
+        # anything else lands in DDB but stays invisible to the operator.
+        warn_keys = [k for k in fake_table.items if k.startswith('_notify_warn_marker_blocked_')]
+        assert len(warn_keys) == 1, f"Expected exactly one _notify_warn_ record; got {warn_keys}"
+        warn_row = fake_table.items[warn_keys[0]]
+        assert warn_row['status'] == 'failed'
+        assert 'real output' in warn_row['error'].lower()
+        # Real output preserved regardless.
+        assert json.loads(
+            fake_table.items['output#acme-daily#transform#2026-07-24']['result']
+        ) == {'rows_processed': 42}
 
     def test_ddb_failure_in_marker_write_does_not_block_the_manual_action(self, wired, mocker):
         """The realistic failure mode — a ClientError from DynamoDB — is

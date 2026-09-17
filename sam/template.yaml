@@ -517,7 +517,13 @@ Resources:
           Value: !Ref Namespace
 
   # ---------------------------------------------------------------------------
-  # S3 Bucket — task results (Claim Check pattern)
+  # S3 Bucket — polyris-deploy CloudFormation artifact storage.
+  #
+  # Used by `polyris-deploy` (see polyris/deploy.py:755) to stage packaged
+  # SAM templates during `sam package`. NOT an XCom store — user XCom values
+  # live in DynamoDB (pipeline-tokens), and the manual Claim Check pattern
+  # (`return {"_s3_ref": "s3://your-bucket/..."}`) points to the user's own
+  # bucket. See docs/features/DATA_PASSING.md#large-outputs.
   # ---------------------------------------------------------------------------
 
   ResultsBucket:
@@ -2145,11 +2151,55 @@ Resources:
               - dynamodb:GetItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
+          # Deferred-for-removal — kept because deleting it triggers a
+          # replacement of the whole managed policy (CFN treats Description
+          # changes as replacement, and the fixed ManagedPolicyName above +
+          # downstream `!ImportValue` block the delete-then-create). See
+          # CHANGELOG "Deferred (planned removal, blocked by CFN)" for the
+          # two-phase cleanup plan. Do not treat this as load-bearing —
+          # ResultsBucket is polyris-deploy's CFN artifact bucket, not an
+          # XCom store; user tasks never wrote there.
           - Sid: PolyrisResultsBucketRead
             Effect: Allow
             Action:
               - s3:GetObject
             Resource: !Sub "${ResultsBucket.Arn}/*"
+
+  # Managed policy for service tasks (Glue/ECS/Batch) that call xcom.push()
+  # in their job code. Lambda return values do NOT need this policy — the
+  # wrapper captures Lambda output directly. EMR xcom.push() is unsupported
+  # in 1.0.0 (see CHANGELOG "Known limitations" — HadoopJarStep.Args risks
+  # breaking arbitrary Spark arg parsers, so POLYRIS_* env injection is not
+  # attempted for the EMR branch; attaching this policy to an EMR task role
+  # would grant permission but xcom.push() would still fail at runtime).
+  # See the IAM attachment matrix in docs/features/DATA_PASSING.md.
+  #
+  # The IAM Condition restricts UpdateItem to keys with `output#*` prefix —
+  # user tasks can only touch the canonical output store, never the internal
+  # `_pause_*` / `_notify_warn_*` records or the new `input#*` task_input
+  # records (those are wrapper-owned). Least privilege within the polyris
+  # trust boundary (same AWS account as the pipeline-tokens table).
+  PolyrisTaskWritePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-task-write"
+      Description: >-
+        Write access to the Polyris output store for tasks that call
+        xcom.push(). Attach to Glue/ECS/Batch/EMR task roles alongside
+        PolyrisTaskReadPolicy. Lambda return values do NOT need this.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PolyrisOutputStoreWrite
+            Effect: Allow
+            Action:
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt PipelineTokensTable.Arn
+            Condition:
+              "ForAllValues:StringLike":
+                "dynamodb:LeadingKeys":
+                  - "output#*"
 
 
 # =============================================================================
@@ -2162,6 +2212,12 @@ Outputs:
     Value: !Ref PolyrisTaskReadPolicy
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-task-read-policy"
+
+  PolyrisTaskWritePolicyArn:
+    Description: Attach this managed policy to Glue/ECS/Batch task roles that call xcom.push() (EMR unsupported in 1.0.0)
+    Value: !Ref PolyrisTaskWritePolicy
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-task-write-policy"
 
   ConsoleApiUrl:
     Description: API Gateway URL for Console UI

@@ -45,14 +45,23 @@ Deploy Options:
     # Then: polyris-deploy
 """
 
-__version__ = "0.99.0"
+__version__ = "1.0.0"
 
 # Core classes
 from .config import config
 from .dag import DAG, Pipeline
 from .task import Task, TaskInstance, TaskDecorator, task
 from .task_group import TaskGroup, task_group
-from .xcom import XComArg
+from .xcom import (
+    XComArg,
+    XComError,
+    XComMissingError,
+    XComUpstreamFailedError,
+    XComTruncatedError,
+    XComManuallyResolvedError,
+    PullError,   # backward-compat alias for XComMissingError
+)
+from . import xcom  # allow `from polyris import xcom` idiom
 
 # Assets
 from .assets import Asset, AssetAll, AssetAny, AssetAlias, Metadata, Watcher, generate_watchers_config, ExperimentalWarning
@@ -141,6 +150,13 @@ __all__ = [
     'task_group',
     'TaskInstance',
     'XComArg',
+    'xcom',
+    'XComError',
+    'XComMissingError',
+    'XComUpstreamFailedError',
+    'XComTruncatedError',
+    'XComManuallyResolvedError',
+    'PullError',
     
     # Assets
     'Asset',

@@ -294,7 +294,7 @@
                                 "#s": "status"
                             }
                         },
-                        "Output": "{% ( $raw := $states.result.Item.result.S; $safe := $exists($raw) and $length($raw) > 25000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & ',\"_warning\":\"Output exceeded 25KB upstream limit. Full output preserved in DynamoDB. Use S3 pointers for large data.\"}' : $raw; $isJson := $exists($safe) and ($safe = '{}' or $safe = '[]' or $substring($safe, 0, 2) = '{\"' or $substring($safe, 0, 2) = '[\"' or $substring($safe, 0, 2) = '[{'); $parsed := $isJson ? $parse($safe) : {'_raw': $safe}; { 'task_name': $states.input.dep, 'output': $exists($safe) ? $parsed : {}, 'status': $exists($states.result.Item.status.S) ? $states.result.Item.status.S : 'unknown' } ) %}",
+                        "Output": "{% ( $raw := $states.result.Item.result.S; $safe := $exists($raw) and $length($raw) > 25000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & ',\"_warning\":\"Output exceeded 25KB upstream limit. Full output preserved in DynamoDB. Use S3 pointers for large data.\"}' : $raw; $parsed := $exists($safe) ? ($exists($parse($safe)) ? $parse($safe) : {'_raw': $safe}) : {}; { 'task_name': $states.input.dep, 'output': $exists($safe) ? $parsed : {}, 'status': $exists($states.result.Item.status.S) ? $states.result.Item.status.S : 'unknown' } ) %}",
                         "End": true
                     }
                 }
@@ -319,11 +319,11 @@
                 "retry_attempt": "{% 0 %}"
             },
             "Output": "{% ( $cd := $states.input.current_date; $dt := $toMillis($cd & 'T00:00:00Z'); $dateVars := { 'current_date': $cd, 'PARTITION_ARG': $exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : $cd, 'date_iso': $cd, 'date_compact': $replace($cd, '-', ''), 'date_slash': $substring($cd,0,4) & '/' & $substring($cd,5,2) & '/' & $substring($cd,8,2), 'date_underscore': $replace($cd, '-', '_'), 'year': $substring($cd, 0, 4), 'month': $substring($cd, 5, 2), 'day': $substring($cd, 8, 2), 'day_of_week': (['thursday','friday','saturday','sunday','monday','tuesday','wednesday'])[$floor($dt / 86400000) % 7], 'previous_date': $fromMillis($dt - 86400000, '[Y0001]-[M01]-[D01]'), 'next_date': $fromMillis($dt + 86400000, '[Y0001]-[M01]-[D01]'), 'minus_7_days': $fromMillis($dt - 604800000, '[Y0001]-[M01]-[D01]'), 'minus_14_days': $fromMillis($dt - 1209600000, '[Y0001]-[M01]-[D01]'), 'minus_30_days': $fromMillis($dt - 2592000000, '[Y0001]-[M01]-[D01]'), 'minus_7_days_compact': $replace($fromMillis($dt - 604800000, '[Y0001]-[M01]-[D01]'), '-', ''), 'minus_30_days_compact': $replace($fromMillis($dt - 2592000000, '[Y0001]-[M01]-[D01]'), '-', ''), 'partition_key': $exists($states.input.partition_key) ? $states.input.partition_key : $cd, 'backfill_id': $exists($states.input.backfill_id) ? $states.input.backfill_id : '', 'is_backfill': $exists($states.input.is_backfill) ? $states.input.is_backfill : false, 'ALLOW_UNSUCCESSFUL_SPIDER_RUN': 'True' }; $vars := $exists($states.input.variables) ? $states.input.variables : {}; $merged := $merge([$dateVars, $vars]); $states.input ~> |$| {'variables': $merged, 'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}} | ) %}",
-            "Next": "Save_Task_Input"
+            "Next": "Init_Output_Row"
         },
-        "Save_Task_Input": {
+        "Init_Output_Row": {
             "Type": "Task",
-            "Comment": "Save task_input (upstream+variables) as soon as the task actually starts, independent of eventual success/failure/waiting_decision — Save_Canonical_Output only fires on the success path, which previously meant running/failed/manually-resolved tasks never had a recorded input to debug from. Deliberately updateItem, not putItem like Save_Canonical_Output: this key (output#pipeline#task#date) is shared across same-day runs of this task, so a blind full-item replace here could momentarily blank out a prior successful run's real 'result' while this run is still in flight. SET only touches task_input/updated_at; ttl is set only if not already present, so it isn't reset by every subsequent run.",
+            "Comment": "Initialize the canonical output# row at task start: set task_name/ttl/updated_at AND clear any stale _pushed_by_task marker left by a prior same-date run. Uses updateItem (not putItem) because the row may already carry a real 'result' from a concurrent same-date run (backfill semantics) — a blind putItem could clobber it mid-flight. The REMOVE clause on _pushed_by_task / pushed_at / pushed_run_id is the B1 fix: without it, Check_Task_Pushed could see a leftover marker from a previous run's xcom.push() and incorrectly route to Save_Success_Preserve on the current run, causing data corruption (downstream would read the stale pushed value instead of the current run's real output).",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -332,7 +332,65 @@
                         "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
                     }
                 },
-                "UpdateExpression": "SET task_name = :tn, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
+                "UpdateExpression": "SET task_name = :tn, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl), run_id = :rid REMOVE #pushed_marker, pushed_at, pushed_run_id, push_count",
+                "ExpressionAttributeNames": {
+                    "#ttl_field": "ttl",
+                    "#pushed_marker": "_pushed_by_task"
+                },
+                "ExpressionAttributeValues": {
+                    ":tn": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    ":ua": {
+                        "S": "{% $now() %}"
+                    },
+                    ":ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    },
+                    ":rid": {
+                        "S": "{% $states.context.Execution.Id %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Save_Input_Record",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - continue with execution; row init is best-effort, same pattern as every other status write in this template",
+                    "Output": "{% $states.input %}",
+                    "Next": "Save_Input_Record"
+                }
+            ]
+        },
+        "Save_Input_Record": {
+            "Type": "Task",
+            "Comment": "Store task_input (upstream + variables) in a SEPARATE DDB record (key 'input#{pipeline}#{task}#{date}') so the Console preview is not bounded by the ~25KB left in the output# row after 'result' takes 350KB. This record's own 400KB item budget lets task_input hold ~380KB. Uses updateItem (not putItem) — same concurrent-safety rationale as Init_Output_Row. IMPORTANT field naming: 'task_date' (not 'date') is deliberate — mismatched from the date-pipeline-index GSI's key attribute so input# rows never populate that GSI. is_internal_record() also filters input#* by prefix as belt-and-suspenders (see console_api/utils.py).",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'input#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "UpdateExpression": "SET task_name = :tn, pipeline_name = :pn, task_date = :td, task_input = :ti, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl), run_id = :rid",
                 "ExpressionAttributeNames": {
                     "#ttl_field": "ttl"
                 },
@@ -340,14 +398,23 @@
                     ":tn": {
                         "S": "{% $states.input.task_name %}"
                     },
+                    ":pn": {
+                        "S": "{% $states.input.pipeline_name %}"
+                    },
+                    ":td": {
+                        "S": "{% $states.input.date %}"
+                    },
                     ":ti": {
-                        "S": "{% ( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti ) %}"
+                        "S": "{% $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}) %}"
                     },
                     ":ua": {
                         "S": "{% $now() %}"
                     },
                     ":ttl": {
                         "N": "{% $string($states.input.ttl) %}"
+                    },
+                    ":rid": {
+                        "S": "{% $states.context.Execution.Id %}"
                     }
                 }
             },
@@ -372,7 +439,7 @@
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "DDB failure - continue with execution; input recording is best-effort, same pattern as every other status write in this template",
+                    "Comment": "DDB failure - continue with execution; input recording is best-effort, same pattern as Init_Output_Row",
                     "Output": "{% $states.input %}",
                     "Next": "Check_Task_Type"
                 }
@@ -431,7 +498,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success",
+            "Next": "Check_Task_Pushed",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -466,7 +533,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success",
+            "Next": "Check_Task_Pushed",
             "Retry": [
                 {
                     "ErrorEquals": [
@@ -489,7 +556,7 @@
             "Credentials": {
                 "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
             },
-            "Arguments": "{% $merge([{'JobName': $states.input.task_config.job_name, 'Arguments': $merge([$exists($states.input.task_config.arguments) ? $states.input.task_config.arguments : {}, {'--POLYRIS_PIPELINE_NAME': $states.input.pipeline_name, '--POLYRIS_RUN_DATE': $states.input.date, '--POLYRIS_TOKENS_TABLE': '${tokens_table}'}])}, $exists($states.input.task_config.worker_type) ? {'WorkerType': $states.input.task_config.worker_type, 'NumberOfWorkers': $states.input.task_config.number_of_workers} : {}, $exists($states.input.task_config.allocated_capacity) ? {'AllocatedCapacity': $states.input.task_config.allocated_capacity} : {}, $exists($states.input.task_config.max_capacity) ? {'MaxCapacity': $states.input.task_config.max_capacity} : {}]) %}",
+            "Arguments": "{% $merge([{'JobName': $states.input.task_config.job_name, 'Arguments': $merge([$exists($states.input.task_config.arguments) ? $states.input.task_config.arguments : {}, {'--POLYRIS_PIPELINE_NAME': $states.input.pipeline_name, '--POLYRIS_RUN_DATE': $states.input.date, '--POLYRIS_TOKENS_TABLE': '${tokens_table}', '--POLYRIS_TASK_NAME': $states.input.task_name, '--POLYRIS_WRAPPER_RUN_ID': $states.context.Execution.Id}])}, $exists($states.input.task_config.worker_type) ? {'WorkerType': $states.input.task_config.worker_type, 'NumberOfWorkers': $states.input.task_config.number_of_workers} : {}, $exists($states.input.task_config.allocated_capacity) ? {'AllocatedCapacity': $states.input.task_config.allocated_capacity} : {}, $exists($states.input.task_config.max_capacity) ? {'MaxCapacity': $states.input.task_config.max_capacity} : {}]) %}",
             "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.JobRunId) ? $states.result.JobRunId : ''} | ) %}",
             "Catch": [
                 {
@@ -500,7 +567,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_ECS": {
             "Type": "Task",
@@ -509,7 +576,7 @@
             "Credentials": {
                 "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
             },
-            "Arguments": "{% $merge([{'Cluster': $states.input.task_config.cluster, 'TaskDefinition': $states.input.task_config.task_definition, 'LaunchType': $exists($states.input.task_config.launch_type) ? $states.input.task_config.launch_type : 'FARGATE', 'Overrides': ($ov := $exists($states.input.task_config.overrides) ? $states.input.task_config.overrides : {}; $penv := [{'Name': 'POLYRIS_PIPELINE_NAME', 'Value': $states.input.pipeline_name}, {'Name': 'POLYRIS_RUN_DATE', 'Value': $states.input.date}, {'Name': 'POLYRIS_TOKENS_TABLE', 'Value': '${tokens_table}'}]; $exists($ov.ContainerOverrides) ? $merge([$ov, {'ContainerOverrides': [$map($ov.ContainerOverrides, function($co) { $merge([$co, {'Environment': $append($exists($co.Environment) ? $co.Environment : [], $penv)}]) })]}]) : $ov)}, ($exists($states.input.task_config.subnets) and $count($states.input.task_config.subnets) > 0) ? {'NetworkConfiguration': {'AwsvpcConfiguration': {'Subnets': $states.input.task_config.subnets, 'SecurityGroups': $exists($states.input.task_config.security_groups) ? $states.input.task_config.security_groups : [], 'AssignPublicIp': $exists($states.input.task_config.assign_public_ip) ? $states.input.task_config.assign_public_ip : 'DISABLED'}}} : {}]) %}",
+            "Arguments": "{% $merge([{'Cluster': $states.input.task_config.cluster, 'TaskDefinition': $states.input.task_config.task_definition, 'LaunchType': $exists($states.input.task_config.launch_type) ? $states.input.task_config.launch_type : 'FARGATE', 'Overrides': ($ov := $exists($states.input.task_config.overrides) ? $states.input.task_config.overrides : {}; $penv := [{'Name': 'POLYRIS_PIPELINE_NAME', 'Value': $states.input.pipeline_name}, {'Name': 'POLYRIS_RUN_DATE', 'Value': $states.input.date}, {'Name': 'POLYRIS_TOKENS_TABLE', 'Value': '${tokens_table}'}, {'Name': 'POLYRIS_TASK_NAME', 'Value': $states.input.task_name}, {'Name': 'POLYRIS_WRAPPER_RUN_ID', 'Value': $states.context.Execution.Id}]; $exists($ov.ContainerOverrides) ? $merge([$ov, {'ContainerOverrides': [$map($ov.ContainerOverrides, function($co) { $merge([$co, {'Environment': $append($exists($co.Environment) ? $co.Environment : [], $penv)}]) })]}]) : $ov)}, ($exists($states.input.task_config.subnets) and $count($states.input.task_config.subnets) > 0) ? {'NetworkConfiguration': {'AwsvpcConfiguration': {'Subnets': $states.input.task_config.subnets, 'SecurityGroups': $exists($states.input.task_config.security_groups) ? $states.input.task_config.security_groups : [], 'AssignPublicIp': $exists($states.input.task_config.assign_public_ip) ? $states.input.task_config.assign_public_ip : 'DISABLED'}}} : {}]) %}",
             "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.Tasks) and $count($states.result.Tasks) > 0 ? $states.result.Tasks[0].TaskArn : ''} | ) %}",
             "Catch": [
                 {
@@ -520,7 +587,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_Athena": {
             "Type": "Task",
@@ -530,7 +597,7 @@
                 "RoleArn": "{% $substring($states.input.cross_account_role, 0, 4) = 'arn:' ? $states.input.cross_account_role : '${same_account_role_arn}' %}"
             },
             "Arguments": "{% $merge([{'QueryString': $states.input.task_config.query_string, 'QueryExecutionContext': {'Database': $states.input.task_config.database}, 'WorkGroup': $exists($states.input.task_config.workgroup) ? $states.input.task_config.workgroup : 'primary'}, ($exists($states.input.task_config.output_location) and $states.input.task_config.output_location != '') ? {'ResultConfiguration': {'OutputLocation': $states.input.task_config.output_location}} : {}]) %}",
-            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.QueryExecutionId) ? $states.result.QueryExecutionId : ''} | ) %}",
+            "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.QueryExecution.QueryExecutionId) ? $states.result.QueryExecution.QueryExecutionId : ''} | ) %}",
             "Catch": [
                 {
                     "ErrorEquals": [
@@ -540,7 +607,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_EMR": {
             "Type": "Task",
@@ -571,7 +638,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Run_Task_Batch": {
             "Type": "Task",
@@ -585,7 +652,7 @@
                 "JobName": "{% $states.input.execution_name %}",
                 "JobQueue": "{% $states.input.task_config.job_queue %}",
                 "Parameters": "{% $exists($states.input.task_config.parameters) ? $states.input.task_config.parameters : {} %}",
-                  "ContainerOverrides": "{% {'Environment': [{'Name': 'POLYRIS_PIPELINE_NAME', 'Value': $states.input.pipeline_name}, {'Name': 'POLYRIS_RUN_DATE', 'Value': $states.input.date}, {'Name': 'POLYRIS_TOKENS_TABLE', 'Value': '${tokens_table}'}]} %}"
+                  "ContainerOverrides": "{% {'Environment': [{'Name': 'POLYRIS_PIPELINE_NAME', 'Value': $states.input.pipeline_name}, {'Name': 'POLYRIS_RUN_DATE', 'Value': $states.input.date}, {'Name': 'POLYRIS_TOKENS_TABLE', 'Value': '${tokens_table}'}, {'Name': 'POLYRIS_TASK_NAME', 'Value': $states.input.task_name}, {'Name': 'POLYRIS_WRAPPER_RUN_ID', 'Value': $states.context.Execution.Id}]} %}"
             },
             "Output": "{% ( $raw := $string($states.result); $truncated := $length($raw) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($raw)) & '}' : $raw; $states.input ~> |$| {'task_output': $truncated, 'task_execution_arn': $exists($states.result.JobId) ? $states.result.JobId : ''} | ) %}",
             "Catch": [
@@ -597,7 +664,7 @@
                     "Next": "Check_Should_Retry"
                 }
             ],
-            "Next": "Save_Success"
+            "Next": "Check_Task_Pushed"
         },
         "Check_Should_Retry": {
             "Type": "Choice",
@@ -696,6 +763,178 @@
             "Type": "Succeed",
             "Comment": "§9: a newer attempt (restart) has already progressed past this attempt's own status write - this execution's outcome is superseded and must not report itself as finished, waiting, or failed. Ends quietly with no further side effects (no TASK_FINISHED event, no dependent notification, no Slack message) - the newer attempt's own eventual outcome is what downstream should see."
         },
+        "Check_Task_Pushed": {
+            "Type": "Task",
+            "Comment": "Check whether the task called xcom.push() during this run. Compares the stored pushed_run_id against the current wrapper's Execution.Id to reject stale markers from prior same-date runs (B1 fix — Init_Output_Row also REMOVEs the marker at task start, this is belt-and-suspenders). On DDB failure, defaults to _task_pushed=false: safe fallback (wrapper writes result as usual, at worst overwriting a push we didn't detect).",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "ProjectionExpression": "#p, pushed_run_id",
+                "ExpressionAttributeNames": {
+                    "#p": "_pushed_by_task"
+                }
+            },
+            "Output": "{% $states.input ~> |$| {'_task_pushed': $exists($states.result.Item._pushed_by_task) and $states.result.Item._pushed_by_task.BOOL = true and $exists($states.result.Item.pushed_run_id) and $states.result.Item.pushed_run_id.S = $states.context.Execution.Id} | %}",
+            "Next": "Route_Save_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException"
+                    ],
+                    "IntervalSeconds": 1,
+                    "MaxAttempts": 2,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Best-effort: on DDB failure treat as not pushed (safe default — Save_Success writes result as usual).",
+                    "Output": "{% $states.input ~> |$| {'_task_pushed': false} | %}",
+                    "Next": "Route_Save_Success"
+                }
+            ]
+        },
+        "Route_Save_Success": {
+            "Type": "Choice",
+            "Comment": "Route to Save_Success_Preserve if the task called xcom.push() this run (verified by matching pushed_run_id in Check_Task_Pushed), otherwise the default path overwrites result with the wrapper-collected task_output (Lambda return, AWS API response for service tasks).",
+            "Choices": [
+                {
+                    "Condition": "{% $states.input._task_pushed = true %}",
+                    "Next": "Save_Success_Preserve"
+                }
+            ],
+            "Default": "Save_Success"
+        },
+        "Save_Success_Preserve": {
+            "Type": "Task",
+            "Comment": "Task called xcom.push() during this run — the canonical result was already written by push() (with the marker). Save_Success_Preserve only updates status/finished_at/task_execution_arn; it deliberately does NOT SET #r so the pushed value survives. Keeps the same attempt-based stale-attempt guard as Save_Success.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, finished_at = :finished, task_execution_arn = :taskArn",
+                "ConditionExpression": "attempt = :expectedAttempt",
+                "ExpressionAttributeNames": {
+                    "#s": "status"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "success"
+                    },
+                    ":finished": {
+                        "S": "{% $now() %}"
+                    },
+                    ":taskArn": {
+                        "S": "{% $exists($states.input.task_execution_arn) ? $states.input.task_execution_arn : '' %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input ~> |$| {'final_status': 'success'} | %}",
+            "Next": "Save_Canonical_Output_Preserve",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "Same stale-attempt guard as Save_Success — a newer restart's attempt has already progressed past this one.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure - skip canonical, continue (same best-effort as Save_Success).",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Success"
+                }
+            ]
+        },
+        "Save_Canonical_Output_Preserve": {
+            "Type": "Task",
+            "Comment": "Task called xcom.push() — the canonical row already has the pushed 'result'. Uses updateItem (NOT putItem like Save_Canonical_Output) so we only touch status/updated_at/ttl; putItem here would replace the entire row and clobber the pushed value.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% 'output#' & $states.input.pipeline_name & '#' & $states.input.task_name & '#' & $states.input.date %}"
+                    }
+                },
+                "UpdateExpression": "SET #s = :status, updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)",
+                "ExpressionAttributeNames": {
+                    "#s": "status",
+                    "#ttl_field": "ttl"
+                },
+                "ExpressionAttributeValues": {
+                    ":status": {
+                        "S": "success"
+                    },
+                    ":ua": {
+                        "S": "{% $now() %}"
+                    },
+                    ":ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Emit_Task_Finished_Success",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Best-effort - skip canonical, continue.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Finished_Success"
+                }
+            ]
+        },
         "Save_Success": {
             "Type": "Task",
             "Comment": "Update DynamoDB: status = success, save result and task_execution_arn (truncates large results)",
@@ -768,7 +1007,7 @@
         },
         "Save_Canonical_Output": {
             "Type": "Task",
-            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this.",
+            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this. task_input is intentionally NOT written here anymore — it lives in a separate 'input#{pipeline}#{task}#{date}' record populated by Save_Input_Record at task start. That split lets the Console preview hold up to ~380KB of upstream data instead of the previous 25KB truncation cap. run_id is set here (same as Init_Output_Row) so the canonical row's schema stays symmetric with Save_Canonical_Output_Preserve (which updateItem-preserves the run_id Init_Output_Row wrote earlier) — a future consumer keying on run_id doesn't hit a path-dependent gap where push-path rows have it and non-push putItem rows don't.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -785,8 +1024,8 @@
                     "result": {
                         "S": "{% ( $to := $string($states.input.task_output); $length($to) > 350000 ? '{\"_truncated\":true,\"_size\":' & $string($length($to)) & '}' : $to ) %}"
                     },
-                    "task_input": {
-                        "S": "{% ( $ti := $string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}}); $length($ti) > 25000 ? $string({'variables': $exists($states.input.variables) ? $states.input.variables : {}, '_upstream_omitted': true, '_size': $length($ti)}) : $ti ) %}"
+                    "run_id": {
+                        "S": "{% $states.context.Execution.Id %}"
                     },
                     "updated_at": {
                         "S": "{% $now() %}"

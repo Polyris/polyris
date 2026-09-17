@@ -217,15 +217,23 @@ def _wrapper_input_for(build):
     return state["Arguments"]["Input"]
 
 
-def _resolve_arguments(template, state_name, wrapper_input):
-    """Resolve a Run_Task_<X> state's Arguments JSONata with $states bound."""
+def _resolve_arguments(template, state_name, wrapper_input, context_execution_id=None):
+    """Resolve a Run_Task_<X> state's Arguments JSONata with $states bound.
+
+    Pass context_execution_id to bind $states.context.Execution.Id for expressions
+    that read the wrapper's own run identifier (POLYRIS_WRAPPER_RUN_ID injection
+    reads this — otherwise JSONata drops it as undefined and the key disappears).
+    """
     jsonata = pytest.importorskip("jsonata")
+    states_binding = {"input": wrapper_input}
+    if context_execution_id is not None:
+        states_binding["context"] = {"Execution": {"Id": context_execution_id}}
 
     def resolve(node):
         if isinstance(node, str) and node.startswith("{%") and node.endswith("%}"):
             expr = node[2:-2].strip()
             j = jsonata.Jsonata(expr)
-            j.assign("states", {"input": wrapper_input})
+            j.assign("states", states_binding)
             return j.evaluate({})
         if isinstance(node, dict):
             return {k: resolve(v) for k, v in node.items()}
@@ -1110,3 +1118,526 @@ def test_jitter_config_threaded_only_when_enabled():
             pass
 
     assert "retry_jitter" not in _wrapper_input_for(build_off)["task_config"]
+
+
+# --- primitive value parsing (S3 fix) and multi-upstream merge (S4) ---
+
+def _sfn_parse_fn():
+    """Return a $parse stub compatible with AWS SFN semantics.
+
+    AWS SFN's $parse is equivalent to JSON.parse: returns the parsed value for
+    valid JSON, undefined for invalid JSON. jsonata-python maps Python None to
+    undefined and uses Utils.NULL_VALUE for JSONata null — so we convert
+    json.loads()'s None to NULL_VALUE and let exceptions return None (undefined).
+    """
+    import json
+    try:
+        from jsonata.utils import Utils
+        null_sentinel = Utils.NULL_VALUE
+    except ImportError:
+        null_sentinel = None
+
+    def _parse(s):
+        try:
+            result = json.loads(s)
+            return null_sentinel if result is None else result
+        except Exception:
+            return None  # undefined — $exists() returns False
+
+    return _parse
+
+
+def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task"):
+    """Evaluate Get_Dep_Output.Output with a simulated DDB getItem result.
+
+    Simulates what the inner Map processor sees: $states.result is the DDB
+    getItem response shape and $states.input.dep is the upstream task name.
+    Registers $parse as an AWS SFN extension (not in standard jsonata-python).
+    """
+    jsonata = pytest.importorskip("jsonata")
+    inner_states = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]
+    expr = inner_states["Get_Dep_Output"]["Output"]
+    body = expr[2:-2].strip()
+    j = jsonata.Jsonata(body)
+    j.register_lambda("parse", _sfn_parse_fn())
+    j.assign("states", {
+        "result": {"Item": {"result": {"S": ddb_raw_value}, "status": {"S": "success"}}},
+        "input": {"dep": dep_name},
+    })
+    return j.evaluate({})
+
+
+def test_get_dep_output_parses_primitive_values(template):
+    """$parse()-based fix (S3): primitives and number arrays must parse correctly,
+    not fall through to the {'_raw': ...} wrapper.
+
+    The old $isJson heuristic only recognised plain objects and arrays of
+    strings/objects — everything else (null, true, 42, [1,2,3]) got wrapped.
+    """
+    cases = [
+        ('{"k": 1}', {"k": 1}),              # object — correct before and after fix
+        ('[1, 2, 3]', [1, 2, 3]),             # array of numbers — was broken
+        ('null', None),                        # null — was broken
+        ('true', True),                        # boolean — was broken
+        ('42', 42),                            # integer — was broken
+        ('invalid json', {'_raw': 'invalid json'}),  # non-JSON stays wrapped
+    ]
+    for raw, expected in cases:
+        result = _eval_get_dep_output(template, raw)
+        assert result["output"] == expected, (
+            f"raw={raw!r}: expected {expected!r}, got {result['output']!r}"
+        )
+
+
+def test_two_producers_one_consumer(template):
+    """Both upstream outputs reach the downstream Lambda event['upstream'].
+
+    Exercises the Read_Upstream_Outputs $merge($map(...)) expression with 2
+    deps — previously untested with more than 1 upstream. Regression gate for
+    the multi-upstream merge silently dropping one entry.
+
+    Pattern from scenario-4/dag.py:
+        [extract_core_sales(), enrich_customer_segments()] >> daily_report()
+    """
+    jsonata = pytest.importorskip("jsonata")
+
+    # Step 1: simulate Get_Dep_Output for each upstream dep
+    dep1 = _eval_get_dep_output(template, '{"sales_count": 100}', dep_name="extract_core_sales")
+    dep2 = _eval_get_dep_output(template, '{"segments": ["vip", "new"]}', dep_name="enrich_customer_segments")
+
+    # Step 2: evaluate Read_Upstream_Outputs Map Output with both results
+    base_input = {
+        "pipeline_name": "scenario-4",
+        "task_name": "daily_report",
+        "date": "2026-01-01",
+        "current_date": "2026-01-01",
+    }
+    map_output_expr = template["States"]["Read_Upstream_Outputs"]["Output"]
+    body = map_output_expr[2:-2].strip()
+    j = jsonata.Jsonata(body)
+    j.assign("states", {"result": [dep1, dep2], "input": base_input})
+    after_map = j.evaluate({})
+
+    upstream = after_map.get("upstream", {})
+    assert "extract_core_sales" in upstream, (
+        f"extract_core_sales missing from merged upstream: {list(upstream)}"
+    )
+    assert "enrich_customer_segments" in upstream, (
+        f"enrich_customer_segments missing from merged upstream: {list(upstream)}"
+    )
+    assert upstream["extract_core_sales"]["output"] == {"sales_count": 100}
+    assert upstream["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}
+
+    # Step 3: verify both keys appear in the downstream Lambda Payload
+    runtime_input = {
+        **after_map,
+        "task_arn": "arn:aws:lambda:us-east-1:111111111111:function:polyris-test-lambda",
+        "task_config": {"payload": {}},
+        "variables": {},
+        "PARTITION_ARG": "2026-01-01",
+    }
+    resolved = _resolve_arguments(template, "Run_Task_Lambda", runtime_input)
+    payload = resolved["Payload"]
+    assert payload["upstream"]["extract_core_sales"]["output"] == {"sales_count": 100}
+    assert payload["upstream"]["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}
+
+
+# ── SFN template split: Save_Task_Input → Init_Output_Row + Save_Input_Record ──
+
+
+def test_save_task_input_state_removed(template):
+    """The old monolithic Save_Task_Input is gone — replaced by two states."""
+    assert "Save_Task_Input" not in template["States"], (
+        "Save_Task_Input has been split into Init_Output_Row + Save_Input_Record "
+        "in 1.0.0. If this test fails, the old state was "
+        "reintroduced accidentally."
+    )
+
+
+def test_init_output_row_and_save_input_record_exist(template):
+    """Both new states must be present in the template."""
+    assert "Init_Output_Row" in template["States"]
+    assert "Save_Input_Record" in template["States"]
+
+
+def test_init_output_row_removes_stale_push_marker_fields(template):
+    """B1 fix: REMOVE clause wipes _pushed_by_task/pushed_at/pushed_run_id at
+    task start so Check_Task_Pushed never sees a marker from a prior same-date run.
+    """
+    state = template["States"]["Init_Output_Row"]
+    update_expr = state["Arguments"]["UpdateExpression"]
+    assert "REMOVE" in update_expr
+    assert "#pushed_marker" in update_expr
+    assert "pushed_at" in update_expr
+    assert "pushed_run_id" in update_expr
+    assert state["Arguments"]["ExpressionAttributeNames"]["#pushed_marker"] == "_pushed_by_task"
+
+
+def test_save_input_record_uses_input_key_prefix(template):
+    """Task_input now lives in a separate DDB record with `input#...` key —
+    lets Console preview hold up to ~380KB instead of the old 25KB shared cap."""
+    key = template["States"]["Save_Input_Record"]["Arguments"]["Key"]["execution_name"]["S"]
+    assert "'input#'" in key
+    assert "'output#'" not in key
+
+
+def test_save_input_record_no_truncation_expression(template):
+    """§1.2 fix: the 25KB $length check is gone — the new record has its
+    own 400KB DDB item budget."""
+    ti_expr = template["States"]["Save_Input_Record"]["Arguments"]["ExpressionAttributeValues"][":ti"]["S"]
+    assert "25000" not in ti_expr, "task_input must not truncate at 25KB anymore"
+    assert "_upstream_omitted" not in ti_expr, "task_input must not emit _upstream_omitted marker anymore"
+
+
+def test_save_input_record_uses_updateitem_not_putitem(template):
+    """Concurrent-safe semantics: same-date backfill runs share the input# key;
+    putItem would clobber a prior run's task_input mid-flight."""
+    assert template["States"]["Save_Input_Record"]["Resource"] == "arn:aws:states:::dynamodb:updateItem"
+
+
+def test_save_input_record_uses_task_date_not_date(template):
+    """§1.2 I3 fix: field name deliberately mismatched from date-pipeline-index
+    GSI's key attribute to avoid populating that GSI with internal input# rows.
+    is_internal_record() also filters input#* by prefix as belt-and-suspenders."""
+    update_expr = template["States"]["Save_Input_Record"]["Arguments"]["UpdateExpression"]
+    assert "task_date = :td" in update_expr
+    # And must NOT write bare 'date' — that would pollute the GSI
+    for clause in update_expr.split(","):
+        clause = clause.strip()
+        assert not clause.startswith("date "), (
+            f"Save_Input_Record must not write bare 'date' field (GSI pollution risk): {clause!r}"
+        )
+
+
+def test_save_canonical_output_no_task_input_field(template):
+    """§1.3: task_input moved to separate input# record — must not be duplicated here."""
+    item = template["States"]["Save_Canonical_Output"]["Arguments"]["Item"]
+    assert "task_input" not in item, (
+        "Save_Canonical_Output must not write task_input anymore; it lives in the "
+        "input# record populated by Save_Input_Record."
+    )
+
+
+def test_prepare_task_input_chains_to_init_output_row(template):
+    """Wiring: Prepare_Task_Input -> Init_Output_Row -> Save_Input_Record -> Check_Task_Type."""
+    assert template["States"]["Prepare_Task_Input"]["Next"] == "Init_Output_Row"
+    assert template["States"]["Init_Output_Row"]["Next"] == "Save_Input_Record"
+    assert template["States"]["Save_Input_Record"]["Next"] == "Check_Task_Type"
+
+
+def test_init_output_row_catch_falls_through_to_save_input_record(template):
+    """Best-effort: DDB failure on Init_Output_Row must NOT skip Save_Input_Record
+    (task_input recording is independent of marker cleanup)."""
+    catch = template["States"]["Init_Output_Row"]["Catch"]
+    assert catch[0]["Next"] == "Save_Input_Record"
+
+
+def test_save_input_record_catch_falls_through_to_check_task_type(template):
+    """Best-effort: DDB failure on the input write must not block dispatch."""
+    catch = template["States"]["Save_Input_Record"]["Catch"]
+    assert catch[0]["Next"] == "Check_Task_Type"
+
+
+# ── Push detection: Check_Task_Pushed + Save_Success_Preserve ────────
+
+
+def _eval_with_context(template, state_path, wrapper_input,
+                       context_execution_id="arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run",
+                       result_dict=None):
+    """Evaluate a state's Output (or nested field) expression with $states.context bound.
+
+    jsonata-python doesn't auto-bind $states.context — so tests that read
+    $states.context.Execution.Id must supply it explicitly. state_path is a
+    dotted path from template['States'] to the JSONata expression string.
+    """
+    jsonata = pytest.importorskip("jsonata")
+    node = template["States"]
+    for part in state_path.split("."):
+        node = node[part]
+    expr = node
+    body = expr[2:-2].strip() if isinstance(expr, str) and expr.startswith("{%") else expr
+    j = jsonata.Jsonata(body)
+    states = {
+        "input": wrapper_input,
+        "context": {"Execution": {"Id": context_execution_id}},
+    }
+    if result_dict is not None:
+        states["result"] = result_dict
+    j.assign("states", states)
+    return j.evaluate({})
+
+
+def test_check_task_pushed_state_exists(template):
+    assert "Check_Task_Pushed" in template["States"]
+    state = template["States"]["Check_Task_Pushed"]
+    assert state["Type"] == "Task"
+    assert state["Resource"] == "arn:aws:states:::dynamodb:getItem"
+
+
+def test_check_task_pushed_projects_marker_and_run_id(template):
+    """§1.4: GetItem must read _pushed_by_task AND pushed_run_id for versioning."""
+    state = template["States"]["Check_Task_Pushed"]
+    proj = state["Arguments"]["ProjectionExpression"]
+    assert "#p" in proj
+    assert "pushed_run_id" in proj
+    assert state["Arguments"]["ExpressionAttributeNames"]["#p"] == "_pushed_by_task"
+
+
+def test_check_task_pushed_reads_output_key_prefix(template):
+    """Marker lives on the canonical output# row (same row xcom.push() writes)."""
+    key = template["States"]["Check_Task_Pushed"]["Arguments"]["Key"]["execution_name"]["S"]
+    assert "'output#'" in key
+
+
+def test_check_task_pushed_matches_current_run_id(template):
+    """B1: matching pushed_run_id → _task_pushed = true. Verifies happy path."""
+    result_matching = {"Item": {
+        "_pushed_by_task": {"BOOL": True},
+        "pushed_run_id": {"S": "arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run"},
+    }}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        context_execution_id="arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run",
+        result_dict=result_matching,
+    )
+    assert output["_task_pushed"] is True
+
+
+def test_check_task_pushed_rejects_stale_run_id(template):
+    """B1 KEY GUARANTEE: marker with wrong run_id → _task_pushed = false.
+    Without this rejection, a backfill re-run would inherit the previous
+    run's pushed value and silently corrupt downstream reads."""
+    result_stale = {"Item": {
+        "_pushed_by_task": {"BOOL": True},
+        "pushed_run_id": {"S": "arn:aws:states:us-east-1:111111111111:execution:wrapper:OLD-run"},
+    }}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        context_execution_id="arn:aws:states:us-east-1:111111111111:execution:wrapper:current-run",
+        result_dict=result_stale,
+    )
+    assert output["_task_pushed"] is False
+
+
+def test_check_task_pushed_no_marker_no_push(template):
+    """No marker → _task_pushed = false (normal path for Lambda/SFN tasks)."""
+    result_empty = {"Item": {}}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        result_dict=result_empty,
+    )
+    assert output["_task_pushed"] is False
+
+
+def test_check_task_pushed_marker_false_no_push(template):
+    """Marker explicitly false (theoretically possible) → _task_pushed = false."""
+    result_false = {"Item": {"_pushed_by_task": {"BOOL": False}}}
+    output = _eval_with_context(
+        template,
+        "Check_Task_Pushed.Output",
+        wrapper_input={"pipeline_name": "p", "task_name": "t", "date": "d"},
+        result_dict=result_false,
+    )
+    assert output["_task_pushed"] is False
+
+
+def test_check_task_pushed_ddb_failure_safe_default(template):
+    """Catch: DDB error → _task_pushed = false (safe: wrapper writes result as usual)."""
+    catch = template["States"]["Check_Task_Pushed"]["Catch"]
+    assert len(catch) == 1
+    fallback_out = catch[0]["Output"]
+    assert "'_task_pushed': false" in fallback_out
+    assert catch[0]["Next"] == "Route_Save_Success"
+
+
+def test_route_save_success_defaults_to_current_when_not_pushed(template):
+    """Choice Default → Save_Success (current behavior for non-pushed tasks)."""
+    choice = template["States"]["Route_Save_Success"]
+    assert choice["Type"] == "Choice"
+    assert choice["Default"] == "Save_Success"
+
+
+def test_route_save_success_routes_to_preserve_when_pushed(template):
+    """Only condition: _task_pushed == true → Save_Success_Preserve."""
+    choice = template["States"]["Route_Save_Success"]
+    assert len(choice["Choices"]) == 1
+    branch = choice["Choices"][0]
+    assert "_task_pushed" in branch["Condition"]
+    assert branch["Next"] == "Save_Success_Preserve"
+
+
+def test_save_success_preserve_never_sets_result(template):
+    """The whole point: the pushed result must survive. NEVER SET #r/result."""
+    state = template["States"]["Save_Success_Preserve"]
+    update_expr = state["Arguments"]["UpdateExpression"]
+    assert "result" not in update_expr, (
+        "Save_Success_Preserve must NOT SET result — the pushed value must survive. "
+        f"UpdateExpression={update_expr!r}"
+    )
+    assert "#r" not in update_expr
+
+
+def test_save_success_preserve_keeps_stale_attempt_guard(template):
+    """Same attempt-based rejection as Save_Success — restart safety preserved."""
+    state = template["States"]["Save_Success_Preserve"]
+    assert state["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+    catch = {e: c["Next"] for c in state["Catch"] for e in c["ErrorEquals"]}
+    assert catch["DynamoDB.ConditionalCheckFailedException"] == "Stale_Attempt_Superseded"
+
+
+def test_save_success_preserve_next_is_canonical_preserve(template):
+    assert template["States"]["Save_Success_Preserve"]["Next"] == "Save_Canonical_Output_Preserve"
+
+
+def test_save_canonical_output_preserve_uses_updateitem_not_putitem(template):
+    """putItem here would clobber the pushed 'result'. updateItem only touches status/updated_at."""
+    state = template["States"]["Save_Canonical_Output_Preserve"]
+    assert state["Resource"] == "arn:aws:states:::dynamodb:updateItem"
+
+
+def test_save_canonical_output_preserve_never_writes_result(template):
+    state = template["States"]["Save_Canonical_Output_Preserve"]
+    update_expr = state["Arguments"]["UpdateExpression"]
+    assert "result" not in update_expr
+    assert "#r" not in update_expr
+
+
+def test_save_canonical_output_preserve_next_is_finished_success(template):
+    """Rejoins the shared success flow."""
+    assert template["States"]["Save_Canonical_Output_Preserve"]["Next"] == "Emit_Task_Finished_Success"
+
+
+def test_all_run_task_states_route_to_check_task_pushed(template):
+    """Every Run_Task_* state must feed into Check_Task_Pushed, not Save_Success directly.
+    Otherwise pushed values would be silently overwritten on the default flow."""
+    for state_name in ["Run_Task_SFN", "Run_Task_Lambda", "Run_Task_Glue",
+                       "Run_Task_ECS", "Run_Task_Athena", "Run_Task_EMR", "Run_Task_Batch"]:
+        state = template["States"][state_name]
+        assert state["Next"] == "Check_Task_Pushed", (
+            f"{state_name}.Next must be Check_Task_Pushed (was: {state['Next']}) — "
+            "otherwise xcom.push() marker check is bypassed on this task type."
+        )
+
+
+# ── POLYRIS_TASK_NAME + POLYRIS_WRAPPER_RUN_ID env injection (§1.5) ───
+
+
+def test_glue_arguments_include_task_name_and_run_id_env(template):
+    """xcom.push() from a Glue job reads POLYRIS_TASK_NAME (DDB key) and
+    POLYRIS_WRAPPER_RUN_ID (stale-marker rejection). Must reach Glue as
+    --POLYRIS_* arguments so the job's arg parser can expose them as env-like
+    values via getResolvedOptions()."""
+    from polyris import task
+
+    def build(dag):
+        @task.glue_job(job_name="etl")
+        def j():
+            pass
+
+    wi = _wrapper_input_for(build)
+    # Pass context_execution_id so $states.context.Execution.Id resolves — otherwise
+    # JSONata drops undefined values from dict-emitting expressions and the KEY vanishes.
+    run_id = "arn:aws:states:us-east-1:1:execution:wrapper:test-run"
+    resolved = _resolve_arguments(template, "Run_Task_Glue", wi, context_execution_id=run_id)
+    args = resolved["Arguments"]
+    assert args["--POLYRIS_TASK_NAME"] == "j"
+    assert args["--POLYRIS_WRAPPER_RUN_ID"] == run_id
+    # Existing env keys still present — regression guard.
+    assert args["--POLYRIS_PIPELINE_NAME"] == "contract"
+    assert "--POLYRIS_RUN_DATE" in args
+    assert args["--POLYRIS_TOKENS_TABLE"] == "0"  # ${tokens_table} normalized
+
+
+def test_ecs_container_env_includes_task_name_and_run_id(template):
+    """ECS containers receive POLYRIS_* as Environment entries so xcom.push()
+    can read them via os.environ.
+
+    NOTE: env injection only fires when the user passes container_overrides
+    with the AWS-correct PascalCase 'ContainerOverrides' key. Lowercase
+    'containerOverrides' is a pre-existing pass-through path (documented by
+    test_ecs_overrides_launchtype_securitygroups_reach_runtask) — SFN template
+    reads $ov.ContainerOverrides literally.
+    """
+    from polyris import task
+
+    def build(dag):
+        @task.ecs_task(cluster="c", task_definition="td:1", subnets=["s-1"],
+                       container_overrides={"ContainerOverrides": [{"Name": "app"}]})
+        def e():
+            pass
+
+    wi = _wrapper_input_for(build)
+    run_id = "arn:aws:states:us-east-1:1:execution:wrapper:test-run"
+    resolved = _resolve_arguments(template, "Run_Task_ECS", wi, context_execution_id=run_id)
+    env = resolved["Overrides"]["ContainerOverrides"][0]["Environment"]
+    names = {e["Name"] for e in env}
+    assert "POLYRIS_TASK_NAME" in names
+    assert "POLYRIS_WRAPPER_RUN_ID" in names
+    # Regression: existing env vars still injected
+    assert "POLYRIS_PIPELINE_NAME" in names
+    assert "POLYRIS_RUN_DATE" in names
+    assert "POLYRIS_TOKENS_TABLE" in names
+    # Values are correct
+    by_name = {e["Name"]: e["Value"] for e in env}
+    assert by_name["POLYRIS_TASK_NAME"] == "e"
+    assert by_name["POLYRIS_WRAPPER_RUN_ID"] == run_id
+
+
+def test_batch_container_env_includes_task_name_and_run_id(template):
+    """Batch job container env — same as ECS."""
+    from polyris import task
+
+    def build(dag):
+        @task.batch_job(job_definition="jd:1", job_queue="jq")
+        def b():
+            pass
+
+    wi = _wrapper_input_for(build)
+    run_id = "arn:aws:states:us-east-1:1:execution:wrapper:test-run"
+    resolved = _resolve_arguments(template, "Run_Task_Batch", wi, context_execution_id=run_id)
+    env = resolved["ContainerOverrides"]["Environment"]
+    names = {e["Name"] for e in env}
+    assert "POLYRIS_TASK_NAME" in names
+    assert "POLYRIS_WRAPPER_RUN_ID" in names
+    # Regression
+    assert "POLYRIS_PIPELINE_NAME" in names
+    assert "POLYRIS_RUN_DATE" in names
+    assert "POLYRIS_TOKENS_TABLE" in names
+    by_name = {e["Name"]: e["Value"] for e in env}
+    assert by_name["POLYRIS_TASK_NAME"] == "b"
+    assert by_name["POLYRIS_WRAPPER_RUN_ID"] == run_id
+
+
+def test_emr_does_not_inject_task_name_env(template):
+    """EMR xcom.push() is DEFERRED — no Environment field in
+    addStep.sync (only HadoopJarStep.Args, which would break user's Spark arg
+    parsers if we injected there unconditionally). Documented as future work.
+    This test pins that decision — if it fails, we shipped EMR push support and
+    need to also document the arg-passing convention in DATA_PASSING.md."""
+    from polyris import task
+    jar = "s3://bucket/spark.jar"
+
+    def build(dag):
+        @task.emr_step(
+            emr_cluster_id="j-ABC",
+            emr_step={
+                "Name": "Spark",
+                "ActionOnFailure": "CONTINUE",
+                "HadoopJarStep": {"Jar": jar, "Args": ["--date", "2026-01-01"]},
+            },
+        )
+        def step():
+            pass
+
+    wi = _wrapper_input_for(build)
+    resolved = _resolve_arguments(template, "Run_Task_EMR", wi)
+    # Args should be exactly what the user passed — no POLYRIS_* injected.
+    args = resolved["Step"]["HadoopJarStep"]["Args"]
+    assert "--POLYRIS_TASK_NAME" not in args
+    assert "--POLYRIS_WRAPPER_RUN_ID" not in args

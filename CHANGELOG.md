@@ -1,3 +1,79 @@
+## v1.0.0 - 2026-09-17
+
+### Added — Reliable task-to-task data passing (XCom)
+
+Ships a unified reader/writer API, closes long-standing silent-corruption paths, and rewrites the Console debug UX around actionable messages instead of cryptic JSON markers. See ADR-123 and `docs/features/DATA_PASSING.md`.
+
+**SDK — new APIs in `polyris.xcom`:**
+- `xcom.get(event, task_name)` — uniform reader for Lambda / Glue / ECS / Batch / EMR. Auto-resolves `_s3_ref` claim-check pointers, auto-falls-back from a truncated inline inject to the full-size DDB row, raises typed errors by default.
+- `xcom.push(value)` — writer for service tasks (Glue / ECS / Batch / EMR) whose job code needs to store real output instead of the AWS API response (`JobRunId`, `TaskArn`, etc.).
+- `XComError` base class with `XComMissingError`, `XComUpstreamFailedError`, `XComTruncatedError`, and `XComManuallyResolvedError` subclasses. `PullError` is now an alias for `XComMissingError` — existing `except PullError:` code continues to work.
+- **`XComManuallyResolvedError` + `raise_on_manual=True`** on `xcom.get()` / `xcom.pull()`. When a downstream task reads an upstream that was resolved by an operator via UI (Mark success / Skip / Fail / Stop), the SDK now raises a typed error carrying `resolution` / `operator` / `reason` — instead of silently returning the synthetic marker dict as if it were real data (which caused `output["rows"]` → `KeyError` at runtime). Loud by default; pass `raise_on_manual=False` to introspect the marker (e.g. to route on the operator's `reason`).
+
+**Infrastructure:**
+- New DDB record `input#{pipeline}#{task}#{date}` carries `task_input` for the Console preview, up to ~380 KB (was 25 KB shared with `result` on the `output#` row).
+- `Init_Output_Row` state clears any stale `_pushed_by_task` / `pushed_at` / `pushed_run_id` at task start; `Check_Task_Pushed` verifies the marker matches the current wrapper's `Execution.Id` before honoring it — no backfill re-run can accidentally inherit a prior run's pushed value.
+- `Save_Success_Preserve` + `Save_Canonical_Output_Preserve` skip overwriting `result` when the task pushed it.
+- `PolyrisTaskWritePolicy` managed policy for tasks that call `xcom.push()`. Scoped by `dynamodb:LeadingKeys → output#*` — least privilege within the polyris trust boundary.
+- `POLYRIS_TASK_NAME` and `POLYRIS_WRAPPER_RUN_ID` env vars injected by the wrapper into Glue Arguments and ECS/Batch container Environment.
+
+**Console UI (Task Detail modal, Input/Output tab):**
+- Unified card grammar across every upstream + output state — 4px left color stripe + neutral fill, status carried by icon + badge. Retired the earlier full-bleed warn/error/muted banners so a fan-in of mixed statuses reads as one calm column instead of a colour siren.
+- Variants: `success` (green), `error` (red — failed/skipped/aborted), `warn` (yellow — no output, truncated, malformed), `muted` (grey — s3-ref), `manual` (blue — human intervention). AWS-metadata detection still surfaces the `xcom.push()` hint on the Output card via a warn variant.
+- **Manual-resolution rendering.** When an operator resolves a task via the UI (Mark success / Skip / Fail / Stop), the synthetic marker now renders as a blue "manual" card with a `manual: <resolution>` badge and a one-line summary — `"Marked success by alice@example.com — verified via S3 logs"` — instead of exposing the raw marker JSON. Applied identically to the downstream's UpstreamDep card and the resolved task's own Output card (same primary status badge derived from the resolution, same shared `detectManualResolution` helper). Raw marker JSON still accessible via expand.
+- Variables and upstream deps rendered as separate sections instead of one raw-JSON blob.
+- Input / Output JSON blocks render at natural height for small payloads (no forced inner scrollbar) and collapse with a "Show all (N lines)" toggle when long. Both blocks carry a copy button that gives `Copied!` text feedback.
+- **Canonical-row read gated on settled state + cross-run match.** The `output#{pipeline}#{task}#{date}` and `input#{pipeline}#{task}#{date}` rows are shared across every same-date run (backfill semantics). Two-layer gate: (1) non-settled tasks render a muted "pending" state (their run hasn't produced content yet); (2) settled tasks whose row `run_id` doesn't match this run's `run_task_helper_arn` render a muted "from prior run" state (e.g. a task resolved via UI without running the wrapper leaves the row stamped with a prior same-date run). Applied to both OutputCard and InputSection. Backend `get_task_output` now returns `output_row_run_id` / `input_row_run_id` / `expected_run_id` for the UI comparison; wrapper's `Save_Input_Record` now stamps `run_id` on the input# row (was missing). See CLAUDE.md rule #30.
+- **AWS-metadata detection covers all service response shapes.** `looksLikeAwsMetadata` used to check only top-level flat keys (`JobRunId`, `TaskArn`, `JobId`, `QueryExecutionId`, `StepId`, `ExecutionArn`) — it missed Athena (`{QueryExecution: {...}}`), ECS (`{Tasks, Failures}`), and EMR (`{Step: ...}`) which wrap the id inside a named key. Detector now checks both flat and wrapped key sets; every service task's real wrapper response is covered by response-shape fixtures in `looksLikeAwsMetadata.test.ts`. Corollary wrapper fix: `Run_Task_Athena`'s `task_execution_arn` extraction was reading `$states.result.QueryExecutionId` (always absent) instead of `$states.result.QueryExecution.QueryExecutionId` — every Athena task had an empty `task_execution_arn` silently.
+
+**Backend (marker writer contract):**
+- `_write_synthetic_output_marker` now splits its guard into two concerns (CLAUDE.md rule #31): protect real user output vs allow stale marker refresh. Pre-fix, `attribute_not_exists(#r)` blocked both, so a second same-date manual action silently kept the first action's `_operator` / `_reason` / `_resolution` on the DDB row — the "Cognito UUID persisting after the ID-token deploy" symptom users hit in production. Post-fix, GetItem-then-Update lands the second action's identity when the prior row was a marker; when the guard legitimately blocks (real data present) it emits a `_notify_warn_*` record so the operator sees the mismatch in the Notifications bell.
+- Marker now carries `_pipeline_execution` so the SDK's `XComManuallyResolvedError` message names the specific pipeline run that produced the marker — makes cross-run bleed on shared canonical rows self-diagnosing.
+- `Init_Output_Row` REMOVE clause now also clears `push_count` (was only clearing `_pushed_by_task` / `pushed_at` / `pushed_run_id`). Marker JSON fields live inside the `result` string (not separate DDB attributes), so the marker refresh works via GetItem-then-Update, not via REMOVE.
+- `Save_Canonical_Output` (non-push path) now stamps `run_id` on the canonical row — was silently dropped by the `putItem` while `Save_Canonical_Output_Preserve` (push path) preserved it via `updateItem`. Symmetric row shape lets consumers key on `run_id` without a path-dependent gap.
+- Marker + SDK / UI fallback strings unified: absent `_operator` field renders as `"unknown"` in all three surfaces (was `"operator"` in UI and `"operator"` in SDK vs `"unknown"` in backend for auth-off routes).
+
+**Backend (Console API):**
+- `_write_synthetic_output_marker` now records the operator identity as `_operator` on the marker (Cognito email if the ID token carries it, else `sub`; PAT: `pat:<token_name>`; auth-off: `unknown`). `Principal` gained an `email` slot and a `display()` helper; `auth.operator_display(event)` is the single call any route uses to resolve identity for audit records.
+
+### Fixed
+- `$isJson` heuristic in `Get_Dep_Output` no longer wraps primitives, arrays of numbers, `null`, or booleans in `{"_raw": ...}`. Replaced with `$exists($parse($safe))`.
+- `docs/features/DATA_PASSING.md` no longer claims automatic S3 offload — it doesn't exist, and never did. Manual Claim Check pattern (BYO S3 bucket) is now documented honestly.
+- Backfill re-runs no longer risk stale-marker data corruption (run-versioned `_pushed_by_task`).
+- Console API `is_internal_record()` filters the new `input#*` prefix — those rows never leak into All Tasks / Runs / Pipeline Detail listings.
+
+### Deprecated
+- `polyris.xcom.PullError` — kept as an alias for `XComMissingError` for backward compatibility. New code should catch the specific `XCom*Error` subclass.
+
+### Deferred (planned removal, blocked by CFN)
+- Cleanup of the misleading `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`) was reverted before 1.0.0 ship. `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store; the grant remains a documented dead permission.
+- **Root cause of the block:** commit `c0a1308` changed the policy's `Description` alongside removing the `Sid: PolyrisResultsBucketRead` statement. `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering per AWS docs, and the policy's fixed `ManagedPolicyName` (`${Namespace}-${Stage}-polyris-task-read`, exported via `!ImportValue` in downstream user stacks) blocks the delete-then-create with a name collision.
+- **Cleaner follow-up plan than an earlier "rename the policy" idea:** removing the `Sid` alone (leaving `Description` and every other field untouched) is a `PolicyDocument`-only change, which AWS documents as "no interruption" — no replacement, no name collision, no downstream `ImportValue` break. Concrete PR shape:
+  1. In `sam/template.yaml`, delete only lines 2154-2168 (the `Sid: PolyrisResultsBucketRead` statement + its explanatory comment) and the corresponding `Description` re-flip if any. Leave the outer `PolyrisTaskReadPolicy` name / description / `ManagedPolicyArn` output verbatim as currently deployed.
+  2. `sam deploy` — CFN performs an in-place `UpdatePolicyVersion` on the managed policy; existing attachments and `!ImportValue` consumers stay live throughout.
+  3. Update CHANGELOG (move this bullet to "Removed") and delete the deferral comment on the Sid.
+- Estimated impact: ~15 LOC diff (template + CHANGELOG). No user-visible regression at deploy time.
+
+### Behavior change for opt-in migration
+Migrating `event["upstream"][X]["output"]` → `xcom.get(event, X)`: if `X` uses `trigger_rule="all_done"` or `"one_success"`, pass `raise_on_failure=False`. Old raw-dict access silently returned `{}` for failed upstreams; `xcom.get()` raises by default. See DATA_PASSING.md for the migration example.
+
+### Behavior change (in-place, no opt-in needed)
+`xcom.pull()` now raises `XComManuallyResolvedError` when the stored row is a Console-written manual-resolution marker (mark_success / skip / fail / stop via UI); previously it returned the marker dict verbatim (a defensive `if pull(x).get('_manually_resolved'):` guard on the caller's side would have worked, so this IS a behaviour change, not "impossible before" — but the overwhelming majority of code did unguarded `pull(x)["rows"]`-style access and crashed with `KeyError` at runtime). Loud by default; pass `raise_on_manual=False` to `pull()` (or to `get()`) to receive the marker dict for introspection. Same behaviour is symmetric with `get()` — one shared detector and one shared error subclass across both reader entry points.
+
+### AWS cost impact
+- +1 DDB `GetItem` per task success (`Check_Task_Pushed`)
+- +1 DDB write per task start (`Save_Input_Record` writes a separate row instead of a shared field)
+- +1 DDB `GetItem` per manual action (`_write_synthetic_output_marker` splits its guard into GetItem-then-Update to distinguish protect-real-output from refresh-stale-marker, per CLAUDE.md rule #31). Only fires when an operator clicks Skip / Mark Success / Mark Failed / Stop via the UI — low volume, single-digit-ms latency, doesn't scale with task throughput.
+- Approximate impact at 100k tasks/day: ~$0.30/day, ~$9/month
+- No impact when no task runs
+
+### Known limitations
+- **EMR `xcom.push()` unsupported** in this release. `addStep.sync` has no Environment field, and injecting `POLYRIS_TASK_NAME` via `HadoopJarStep.Args` risks breaking arbitrary Spark arg parsers. Deferred to a follow-up.
+- **Cross-account `xcom.push()`** requires additional IAM (the `pipeline-tokens` table is in the polyris account). Not supported out-of-the-box.
+- **Athena has no `xcom.push()` equivalent** — SQL can't call the SDK. Use the "Lambda after Athena" pattern.
+
+---
+
 ## v0.99.0 - 2026-09-09
 
 ### Fixed — SDK correctness: context managers, deploy scan, assets, and registration resilience

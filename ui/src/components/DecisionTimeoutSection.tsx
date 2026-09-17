@@ -38,7 +38,11 @@ export function DecisionTimeoutSection() {
   const [error, setError] = useState<string | null>(null);
 
   // Sync draft with server value once (and on refetch when the user isn't editing).
+  // Reflecting fetched server data into an editable form draft is the intended
+  // pattern here; the alternatives (useSyncExternalStore / Suspense-based sync)
+  // need a larger refactor of useDecisionTimeoutQuery and its consumers.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- see comment above
     if (!isLoading) setDraftHours(secondsToHours(seconds));
   }, [seconds, isLoading]);
 

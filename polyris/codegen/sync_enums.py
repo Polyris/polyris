@@ -115,6 +115,17 @@ def _render_python_body() -> str:
     ))
     parts.append("\n")
 
+    # ManualResolution — the 4 operator-driven task actions (mark_success /
+    # skip / fail / stop). Written by console_api's _write_synthetic_output_marker,
+    # read by SDK's xcom.get()/pull() and the frontend manualResolution.ts.
+    parts.append(_enum_class_py(
+        "ManualResolution",
+        "The four operator-driven task resolutions written by console_api.",
+        [(n, getattr(src.ManualResolution, n))
+         for n in vars(src.ManualResolution) if not n.startswith("_")],
+    ))
+    parts.append("\n")
+
     # PipelineStatus, ExecutionStatus, BackfillStatus, etc.
     for cls in (src.PipelineStatus, src.ExecutionStatus,
                 src.BackfillStatus, src.BackfillCascade,
@@ -259,6 +270,16 @@ def _render_ts_body() -> str:
         "TriggerRule",
         "Trigger rules.",
         [getattr(src.TriggerRule, n) for n in vars(src.TriggerRule)
+         if not n.startswith("_")],
+    ))
+    parts.append("\n")
+
+    parts.append(_ts_union(
+        "ManualResolution",
+        "The four operator-driven task resolutions written by console_api "
+        "(mark_success / skip / fail / stop). Single source of truth crossing "
+        "SDK + backend + UI — see polyris/constants.py::ManualResolution.",
+        [getattr(src.ManualResolution, n) for n in vars(src.ManualResolution)
          if not n.startswith("_")],
     ))
     parts.append("\n")

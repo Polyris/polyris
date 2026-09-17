@@ -562,6 +562,253 @@ The rule must be specific enough to catch a future recurrence, not a vague "be c
 If the fix touches a pattern that appears in multiple places, the rule must address the
 whole pattern, not just the one file you changed (see Principle #23).
 
+**27. Enums crossing SDK ↔ backend ↔ frontend go through `polyris/constants.py` + `sync_enums` — never bare string literals**
+
+If a value set means the same thing in Python (SDK + Lambda routes) and TypeScript
+(UI), it belongs in `polyris/constants.py` as an enum/class and is emitted to every
+consumer by `python -m polyris.codegen.sync_enums`. Bare string literals for the
+same concept in multiple files are how a fifth member gets added in one place and
+silently forgotten elsewhere — the type system can't help because there is no type.
+
+Examples in this codebase:
+- `TaskStatus`, `TriggerRule`, `PipelineStatus`, `ExecutionStatus`, `BackfillStatus`,
+  `BackfillGranularity`, `StalenessStatus` — all canonical in `polyris/constants.py`,
+  all mirrored to `sam/lambdas/_shared/constants_generated.py`,
+  `sam/lambdas/console_api/constants_generated.py`,
+  `sam/lambdas/evaluate_deps/constants_generated.py`, and
+  `ui/src/generated/enums.ts`.
+- `ManualResolution` (added 1.0.0) — the four operator-driven task actions
+  (`mark_success`/`skip`/`fail`/`stop`) written by
+  `console_api::_write_synthetic_output_marker`, read by `xcom.get()`/`pull()`, and
+  rendered by `ui/src/components/TaskDetailModal/manualResolution.ts` — all three
+  reach the same set via the canonical enum, not by copy-pasting the strings.
+
+Concrete workflow when adding a value:
+1. Add the member to the canonical class in `polyris/constants.py`.
+2. Register in `polyris/codegen/sync_enums.py` (both `_render_python_body`
+   and `_render_ts_body`) if it's a new class.
+3. Run `python -m polyris.codegen.sync_enums` (or `make generate-enums`). CI
+   drift-check (`--check`) fails if the generated files diverge.
+4. Import + reference the enum on every consuming surface — never a bare
+   string.
+5. Add a parity test (see #28) covering the new coupling.
+
+The rule catches: "someone added a `hold` action in `routes/tasks.py` and forgot to
+update the TS switch statements" — with the enum + parity test, step 1 alone would
+be a build break until the consumers catch up.
+
+**28. Constants coupled across languages/artifacts need a parity test**
+
+Any string that is written in one artifact (Python module, SFN JSON template, IAM
+resource name) and read verbatim in another (SDK, UI, IAM policy check) must have a
+parity test that grep-loads both sides and asserts the same value appears. The type
+system cannot enforce string parity across JSON templates or across
+Python↔TypeScript.
+
+Examples:
+- `polyris/xcom.py::_PUSH_MARKER_FIELD` (`_pushed_by_task`) is written by
+  `xcom.push()` and read by `Check_Task_Pushed` in
+  `sam/sfn_templates/helpers/run_task/sfn.tpl.json`. Parity pinned by
+  `tests/sdk/test_xcom_coupled_constants_parity.py`.
+- Marker field names (`_manually_resolved` / `_resolution` / `_reason` /
+  `_operator`) written by `console_api::_write_synthetic_output_marker`, read by
+  the SDK's `_raise_manual` and the UI's `detectManualResolution`. Same test.
+- Generated enums (`polyris/constants.py` → `constants_generated.py` +
+  `enums.ts`) — covered by `codegen --check`, which the CI gate runs.
+
+If you cannot express the parity as a test (e.g. because one side is JSON-in-YAML
+that a grep would false-positive on), extract the constant to `polyris/constants.py`
+and route both sides through it. `docs/reference/adr-123-xcom-reliable-data-passing.md`
+has a "Coupled constants" table — a table alone is not a test; the test is the gate.
+
+**29. adr-index.md count must match its row count — sanity-check on ADR edits**
+
+`docs/reference/adr-index.md` opens with a line of the form
+"_N ADRs indexed (X inline, Y standalone)_". When you add or remove an ADR:
+grep the row counts and update the numbers in the same commit. Running:
+
+```bash
+grep -Ec "^\| [0-9]+ \| " docs/reference/adr-index.md              # total
+grep -Ec "^\| [0-9]+ \| .* \| inline \|" docs/reference/adr-index.md   # inline count
+```
+
+is 5 seconds. Skipping it means the header is drifting silently — every future
+reader has to distrust the count or run the same grep themselves.
+
+**30. Date-scoped canonical DDB rows are shared across same-date runs — gate every UI read on the task's settled state**
+
+Rows keyed by `(pipeline, task, DATE)` — `output#*`, `input#*`, the manual-
+resolution marker row, and any future date-scoped canonical record — are
+shared across every same-date run of the same task. That's by design:
+backfills and same-date re-runs must read a stable "output for date D"
+regardless of which run wrote it, and downstream tasks in a later run must
+be able to read an earlier run's output at the same date.
+
+The trap: any UI that renders such a row unconditionally will show a
+**prior** run's content when the current run's task hasn't reached a
+settled state yet. A skip on run A at 2026-09-17 leaves a marker in
+`output#pipeline#clean#2026-09-17`; a fresh run B on the same date opens
+Task Detail on `clean` while it's still `waiting_decision` and sees run
+A's marker as if it were run B's output.
+
+Rule: every consumer of a date-scoped canonical row must gate on
+`task.status ∈ TASK_SETTLED_STATUSES` (terminal + `stopped`). Non-settled
+tasks render an explicit "pending" empty state, not the stale row.
+
+Concrete surfaces this applies to (grep first, extend the list):
+
+- `ui/src/components/TaskDetailModal/OutputCard.tsx` — takes `taskStatus`
+  prop; renders muted "pending" card when not settled (see the `!isSettled`
+  branch and the accompanying tests in `TaskDetailModal.test.tsx`).
+- Any future Backfill Detail / Runs feed / DAG-node preview that reads
+  `output#*` or `input#*` and needs to attribute content to *this* run.
+
+The UI's "Status constants are for orchestration, not display" rule
+(`ui/CLAUDE.md`) applies inverted here: gating a canonical-row read on
+settled state IS orchestration (decides whether this row is authoritative
+for this run), not display counting. `TASK_SETTLED_STATUSES` is the correct
+constant.
+
+Backend variants (clear the row at task start, or run-version the marker)
+were considered and rejected: (a) `Init_Output_Row` clearing `result` at
+task start would race concurrent same-date backfills and lose real output;
+(b) marker-versioning by run ID would need a new DDB field and coupled
+changes across writer / reader / snapshot tests. The UI gate is scoped to
+the surface that has the problem and gains nothing from the heavier fix.
+
+**31. Canonical-row writers must distinguish "protect real data" from "block stale metadata refresh"**
+
+Any writer with a `condition_expr` guard that protects an existing row from
+clobber must split its guard into two concerns:
+
+1. **Never clobber genuine user data** — the original intent. Real output
+   from an earlier same-date run must survive a re-run / a subsequent
+   manual action.
+2. **Always refresh stale metadata written by the same writer** — a
+   subsequent action of the same class (e.g. a second same-date manual
+   resolution) must supersede the first, otherwise its identity fields
+   (operator / reason / resolution / timestamp) drift silently forever.
+
+`attribute_not_exists(#field)` alone conflates the two. The correct shape
+is either:
+
+- **GetItem-then-Update.** Read the current row; if the field is absent
+  OR is a marker/synthetic value the writer itself produced, do an
+  unconditional Update. If it's opaque user data, skip and warn.
+- **Structured sentinel in ConditionExpression** (advanced): use
+  `attribute_not_exists(#field) OR contains(#field, :marker_sentinel)`
+  with a unique substring that can only appear in this writer's own
+  synthetic rows. Fragile if the JSON emitter's ordering changes; prefer
+  GetItem-then-Update unless the round-trip cost matters.
+
+Canonical example (in 1.0.0 fix): `_write_synthetic_output_marker`
+in `sam/lambdas/console_api/routes/tasks.py`. Pre-fix, the guard
+blocked BOTH real-output clobbers AND stale-marker refreshes silently at
+INFO log level — a same-date second skip left the first skip's
+`_operator` UUID even after the UI switched to sending Cognito ID tokens.
+Post-fix, GetItem-then-Update lands the second action's identity; when
+the guard legitimately blocks (real data present) it emits a
+`_notify_warn_*` (Principle #38) so the operator sees the mismatch in
+the Notifications bell, not only in CloudWatch. Test guard against
+regression: `tests/... TestSyntheticOutputMarker::test_second_same_date_manual_action_refreshes_marker_identity`.
+
+When to apply this rule: any new writer that touches a **shared** DDB
+key (date-scoped canonical rows, cache rows, aggregation snapshots) —
+i.e. rows other writers of the same class may have populated earlier.
+The write path for exclusively-owned rows (per-run task record, single-
+writer configs) does not need this split.
+
+**32. Break-review + architect-pass before claiming "done"**
+
+A change of any significant size (new SDK API, cross-surface refactor, ADR-worthy
+decision) is not "done" until it has been independently break-reviewed AND
+architect-reviewed. The author's own summary of "everything works" is a starting
+point, not a completion signal — every session in this repo has produced examples
+of the author confidently claiming done while contract inconsistencies, dead code,
+or design drift sat uncaught.
+
+Concrete practice (already tooled via `/break` and the general-purpose Agent):
+1. Author signals "I think this is done."
+2. Spawn a break-review agent: `general-purpose` with the `/break` skill's frame
+   (reassurance is a failure; report what couldn't be ruled out).
+3. Address every finding — Closed / Partial / Still open, cited by file:line.
+4. Spawn an architect-review agent: judge coherence, ADR quality, abstraction
+   fit, backwards-compat, docs shape. Verdict: Ship / Ship-with-follow-ups /
+   Hold-for-rework.
+5. Close every architect-flagged blocker before the "done" claim reaches the
+   maintainer. Non-blocker follow-ups go into a numbered list, either shipped in
+   the same PR (with tests) or explicitly deferred with a task ID.
+
+The two agent passes catch different classes of problem — break-review finds
+contract violations and blast-radius misses; architect finds abstraction drift and
+design token reuse. Neither replaces the other, and neither can be replaced by the
+author's self-review. A PR that reaches merge without both passes on record is
+under-tested by construction, regardless of the green CI badges.
+
+**33. Never change `Description` on `AWS::IAM::ManagedPolicy` (or any resource that
+uses it as a REPLACEMENT trigger) unless renaming — CloudFormation replaces the
+policy, hits a name collision, and the deploy fails mid-flight**
+
+CFN treats `Description` on `AWS::IAM::ManagedPolicy` as an "update-requires-
+replacement" property. Editing the text (e.g. removing an obsolete service name
+from a comment) tells CFN to delete the old policy and create a new one with the
+same `ManagedPolicyName` — the create fails with `EntityAlreadyExists` because
+the delete hasn't happened yet, and the whole stack rolls back. Same trap
+applies to any CFN property flagged "Requires: Replacement" in the resource docs.
+
+**Why:** hit twice in the 1.0.0 delivery — once removing EMR from
+`PolyrisTaskWritePolicy` description, once tweaking `PolyrisTaskReadPolicy`
+description wording. Both deploys rolled back mid-flight and had to be reverted
+in the working tree before the smoke could re-run.
+
+**How to apply:**
+- Editing an IAM policy? Change only the `Statement` block. Leave `Description`
+  and `ManagedPolicyName` alone.
+- Genuinely need a description change (product renaming, tier boundary shift)?
+  Do it as a rename (new logical + physical name) in a dedicated deploy, with
+  the old policy deleted first via the console or `aws iam delete-policy` after
+  detaching, then a fresh `sam deploy` creates the new one.
+- Documenting an intended change but shipping later? Put the note in the ADR or
+  CHANGELOG's "deferred cleanup" section, not the template.
+- Before editing any CFN property on a named resource, check the AWS resource
+  reference for "Update requires: Replacement". If yes and the resource has a
+  physical name, the change is a rename operation, not a text edit.
+
+**34. Two writers to the same DDB row must both handle "row already exists with
+the value I'm about to overwrite" explicitly — GetItem-then-conditional-Update,
+not blind Put/Update**
+
+A row that only the SFN writes can safely use `attribute_not_exists` guards.
+Once a second writer joins (a Lambda, another SFN branch, an operator action),
+that guard means "someone got here first — silently do nothing", which is
+almost never what you want. The second write either (a) needs to *overwrite*
+stale data from a prior run, or (b) needs to *protect* real data written this
+run. `attribute_not_exists` conflates them; only GetItem-then-Update can tell
+them apart.
+
+**Why:** hit in 1.0.0's manual-resolution flow — canonical output rows are
+date-scoped and shared across same-date runs. The SFN writes on every run;
+console_api's manual action also writes to mark a task manually-resolved. A
+second manual action on a same-date run silently kept the first operator's
+name because `attribute_not_exists(#r)` blocked the refresh. Fixed with
+GetItem → `if row.run_id == expected_run_id: protect else: refresh`. See
+Principle #31 for the writer-side pattern; this rule is the design constraint
+that forces its use.
+
+**How to apply:**
+- Before adding a second writer to any DDB row, list every writer and answer
+  per row: "when writer B fires and writer A's data is present, what should
+  happen — protect, overwrite, or fail loudly?"
+- If "protect if fresh, overwrite if stale" — you need GetItem-then-Update
+  (rule #31). `attribute_not_exists` is not a substitute.
+- If the row genuinely has only one writer today but a second is *foreseeable*
+  (backfill Lambda, replay tool, human console action), document the writer
+  contract in an ADR and add a `# CLAUDE.md #34` comment on the guard so the
+  next author sees the constraint.
+- Tests: parity-test with two Lambda invocations back-to-back against a real
+  moto table — a pass-only test with a single writer never catches this class
+  of bug.
+
 ---
 
 

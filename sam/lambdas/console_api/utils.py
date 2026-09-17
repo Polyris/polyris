@@ -77,9 +77,18 @@ def is_internal_record(execution_name: str) -> bool:
     run_task wrapper for upstream reads) are also internal — they carry a task's
     result, not a task execution, and must not appear in execution/task listings.
 
+    Split-out task_input records (``input#pipeline#task#date``, new in 1.0.0)
+    are the twin of ``output#...`` — same rationale: Console preview data, not
+    a task execution row. Missing this filter would leak input# rows into
+    All Tasks / Runs listings.
+
     All loops iterating pipeline-tokens items MUST call this and skip True results.
     """
-    return execution_name.startswith('_') or execution_name.startswith('output#')
+    return (
+        execution_name.startswith('_')
+        or execution_name.startswith('output#')
+        or execution_name.startswith('input#')
+    )
 
 
 def is_backfill_record(item: dict) -> bool:

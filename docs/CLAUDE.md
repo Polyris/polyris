@@ -327,3 +327,35 @@ If it's read by a user, it's a doc, and every rule here applies.
   faith.
 - **"I'll use 'workflow' here and 'pipeline' there, they mean the same
   thing."** No. Pick one. Two words = two concepts, to the reader.
+
+## Back-compat aliases are documented once, at the point of the alias — never in each doc
+
+When a symbol is renamed or superseded but the old name stays exported as an
+alias (e.g. `polyris.pull` → `polyris.xcom.get`, `PullError` → `XComMissingError`),
+the alias is documented in **exactly one place**: the deprecation/back-compat
+paragraph next to the new symbol's reference entry. Every other doc uses the
+canonical name and does not re-explain the alias.
+
+The alias docstring itself carries the deprecation note (visible in IDE
+autocomplete + `help()`); the reference doc's back-compat paragraph is the
+canonical human-readable explanation. Tutorials, how-tos, examples, ADRs —
+none of them mention the alias unless the reader is expected to see it in
+pre-existing code they're migrating.
+
+**Why:** an alias mentioned in five docs is five places that go stale when the
+alias is finally removed. Worse, tutorials that show the alias teach new users
+the deprecated form. The single-source-of-truth pattern from Principle #12
+applies to doc mentions as much as to code.
+
+**How to apply:**
+- Renaming a symbol? Add the back-compat paragraph to the canonical symbol's
+  reference entry ("Also exported as `oldName` for back-compat — see
+  `docs/reference/adr-XYZ.md`"), and stop.
+- Writing a tutorial or example? Use the canonical name only. If you *must*
+  show migration (e.g. "if you're upgrading from 0.99…"), put the migration
+  note in a dedicated Migration section, not sprinkled through the tutorial.
+- Reviewing a doc PR? `grep` for the alias name across the docs tree —
+  every hit outside the canonical reference entry and a Migration section is
+  a candidate for deletion.
+- CHANGELOG entry for the rename lists the alias once with the deprecation
+  target version; that's the second and last mention.
