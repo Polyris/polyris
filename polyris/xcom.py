@@ -32,8 +32,8 @@ ENV_TASK_NAME = "POLYRIS_TASK_NAME"          # set by run_task wrapper for servi
 ENV_RUN_ID = "POLYRIS_WRAPPER_RUN_ID"        # SFN wrapper execution ARN — used by xcom.push()
 
 # Field name written to DDB by xcom.push() and read by run_task wrapper's
-# Check_Task_Pushed state. Coupled constant — must match run_task/sfn.tpl.json.
-# See XCOM_PLAN.md §2.8 for the full coupled-constants list.
+# Check_Task_Pushed state. Coupled constant — must match run_task/sfn.tpl.json;
+# renaming it here requires the matching template edit in the same commit.
 _PUSH_MARKER_FIELD = "_pushed_by_task"
 
 
@@ -81,6 +81,68 @@ class XComTruncatedError(XComError):
             "{'_s3_ref': 's3://...'}. See docs/features/DATA_PASSING.md#large-outputs."
         )
         super().__init__(msg)
+
+
+class XComManuallyResolvedError(XComError):
+    """Upstream has no organic output — the Console wrote a synthetic marker
+    when an operator resolved the task via UI (mark_success / skip / fail / stop).
+
+    The marker fields (``_manually_resolved`` / ``_resolution`` / ``_reason`` /
+    ``_operator``) are metadata, not payload. Reading them as if they were data
+    is almost always a bug — the whole reason a resolution needed a human is
+    that the task never produced real output.
+
+    Loud by default. To read the marker anyway (e.g. to inspect the operator's
+    ``reason`` or route on the ``resolution``), pass ``raise_on_manual=False``.
+    """
+
+    def __init__(self, task_name: str, resolution: str, operator: str, reason: str):
+        self.task_name = task_name
+        self.resolution = resolution
+        self.operator = operator
+        self.reason = reason
+        detail = f"resolution: {resolution}, operator: {operator}"
+        if reason:
+            detail += f", reason: {reason}"
+        super().__init__(
+            f"upstream '{task_name}' has no organic output — it was manually "
+            f"resolved via Console ({detail}). "
+            "Pass raise_on_manual=False to xcom.get() to read the marker anyway."
+        )
+
+
+# Marker field names — coupled with `console_api/routes/tasks.py::_write_synthetic_output_marker`.
+# Changing any of these here requires the same edit there in the same commit.
+_MANUAL_RESOLVED_FIELD = "_manually_resolved"
+_MANUAL_RESOLUTION_FIELD = "_resolution"
+_MANUAL_REASON_FIELD = "_reason"
+_MANUAL_OPERATOR_FIELD = "_operator"
+
+
+def _is_manual_marker(value: Any) -> bool:
+    """True when ``value`` is the synthetic marker written by
+    ``console_api::_write_synthetic_output_marker``. The marker is a dict with
+    ``_manually_resolved: True`` — other shapes (organic dict outputs that
+    happen to include an unrelated ``_manually_resolved`` key set to False /
+    a string / etc.) are NOT markers."""
+    return (
+        isinstance(value, dict)
+        and value.get(_MANUAL_RESOLVED_FIELD) is True
+    )
+
+
+def _raise_manual(task_name: str, marker: dict) -> None:
+    """Raise :class:`XComManuallyResolvedError` from a marker dict. Callers
+    check ``_is_manual_marker`` first — this is a small helper so both
+    :func:`get` and :func:`pull` produce identical error shapes."""
+    raise XComManuallyResolvedError(
+        task_name,
+        resolution=str(marker.get(_MANUAL_RESOLUTION_FIELD, "unknown")),
+        # `_operator` was added in 0.100.0 — older marker records may lack it.
+        # Fall back to a generic label so error messages stay meaningful.
+        operator=str(marker.get(_MANUAL_OPERATOR_FIELD) or "operator"),
+        reason=str(marker.get(_MANUAL_REASON_FIELD) or ""),
+    )
 
 
 # Backward-compat alias. Existing user code with `except PullError` continues to work
@@ -140,15 +202,21 @@ def _get_from_ddb(
     ddb_client: Any,
     s3_client: Any,
     raise_on_missing: bool,
+    raise_on_manual: bool,
 ) -> Any:
     """Fallback path for :func:`get` — reads from DDB via :func:`pull`.
 
     Wraps pull()'s legacy ``PullError`` messages into the canonical XCom error
     types so callers get a consistent taxonomy regardless of which read path
-    served the request.
+    served the request. Threads ``raise_on_manual`` through so the marker
+    check fires on the DDB path too.
     """
     try:
-        return pull(task_name, event, ddb_client=ddb_client, s3_client=s3_client)
+        return pull(
+            task_name, event,
+            ddb_client=ddb_client, s3_client=s3_client,
+            raise_on_manual=raise_on_manual,
+        )
     except PullError as e:
         msg = str(e)
         if "truncated" in msg:
@@ -166,6 +234,7 @@ def pull(
     pipeline: Optional[str] = None,
     date: Optional[str] = None,
     table: Optional[str] = None,
+    raise_on_manual: bool = True,
     ddb_client: Any = None,
     s3_client: Any = None,
 ) -> Any:
@@ -184,6 +253,12 @@ def pull(
         context: the task's input (e.g. a Lambda event) to read context from.
         pipeline / date / table: override context explicitly (each otherwise comes
             from ``context`` then the ``POLYRIS_*`` env vars).
+        raise_on_manual: raise :class:`XComManuallyResolvedError` when the DDB
+            row is the synthetic marker written by the Console for a manually-
+            resolved task (mark_success / skip / fail / stop via UI). Default
+            ``True`` — the marker is metadata, not organic payload, so treating
+            it as data is almost always a bug. Pass ``False`` to receive the
+            marker dict as-is.
         ddb_client / s3_client: boto3 clients; created on demand if omitted.
 
     Returns:
@@ -191,6 +266,8 @@ def pull(
 
     Raises:
         PullError: if the task stored nothing, or its output is unavailable.
+        XComManuallyResolvedError: the stored row is a Console-written manual-
+            resolution marker (subject to ``raise_on_manual``).
     """
     ctx = context or {}
     pipeline = _resolve(pipeline, ctx, ("pipeline_name", "pipeline"), ENV_PIPELINE, "pipeline name")
@@ -234,6 +311,14 @@ def pull(
             f"output for task '{task_name}' was truncated and is unavailable "
             "(this build predates transparent S3 offload for large outputs)."
         )
+
+    # Manual-resolution marker check runs LAST — after _s3_ref resolution and
+    # _truncated handling. An organic dict that happens to include a stray
+    # `_manually_resolved` key (extremely unlikely user shape) is not a marker
+    # unless the field is literally True — `_is_manual_marker` enforces that.
+    if raise_on_manual and _is_manual_marker(data):
+        _raise_manual(task_name, data)
+
     return data
 
 
@@ -243,6 +328,7 @@ def get(
     *,
     raise_on_missing: bool = True,
     raise_on_failure: bool = True,
+    raise_on_manual: bool = True,
     ddb_client: Any = None,
     s3_client: Any = None,
 ) -> Any:
@@ -273,6 +359,13 @@ def get(
             upstream's status != ``"success"`` (default ``True``). Pass
             ``False`` when using ``trigger_rule="all_done"`` and you want to
             read output regardless of upstream outcome.
+        raise_on_manual: raise :class:`XComManuallyResolvedError` when the
+            upstream was resolved by an operator via Console UI (mark_success /
+            skip / fail / stop) — its recorded "output" is the synthetic
+            marker, not real data. Default ``True``: silently returning a
+            marker in place of payload is almost always a bug. Pass ``False``
+            to receive the marker dict for introspection (e.g. reading the
+            operator's ``_reason``).
         ddb_client, s3_client: injected for tests; created on demand otherwise.
 
     Returns:
@@ -288,6 +381,10 @@ def get(
             truncation markers — the actual data is unavailable through this
             path. Use the Claim Check pattern (write to S3, return
             ``{"_s3_ref": "s3://..."}``).
+        XComManuallyResolvedError: upstream carries a Console-written manual-
+            resolution marker (subject to ``raise_on_manual``). Task's status
+            (``success`` after ``mark_success``; ``skip`` / ``failed`` / etc.
+            after the matching action) is not the story — human intervention is.
 
     Examples:
         Lambda handler (declared dep)::
@@ -332,6 +429,14 @@ def get(
                     raise XComMissingError(task_name)
                 return None
 
+            # Manual-resolution marker check runs BEFORE the status check.
+            # A human's Mark success / Skip / Fail / Stop is the story either
+            # way — reporting "status: skip" for a manual skip is less useful
+            # than "manually resolved (skip) by <operator>". Marker-first lets
+            # the caller catch a single, more informative error type.
+            if raise_on_manual and _is_manual_marker(output):
+                _raise_manual(task_name, output)
+
             # Non-success upstream (all_done trigger path)
             if status != "success":
                 if raise_on_failure:
@@ -342,7 +447,7 @@ def get(
             # (runtime injection cap is ~25KB per dep; DDB result field allows ~350KB)
             if isinstance(output, dict) and output.get("_truncated"):
                 try:
-                    return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing)
+                    return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing, raise_on_manual)
                 except XComMissingError:
                     # DDB also empty — the original truncation stands
                     raise XComTruncatedError(task_name, output.get("_size"))
@@ -357,7 +462,7 @@ def get(
             return output
 
     # 2. Fallback: read from DDB (Glue/ECS/Batch/EMR, or undeclared Lambda dep)
-    return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing)
+    return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing, raise_on_manual)
 
 
 # Size cap for a single DDB item (soft limit — DDB hard is 400KB, we leave
@@ -413,7 +518,7 @@ def push(
     Coupled with SFN template:
         The ``_pushed_by_task`` marker field and ``pushed_run_id`` field written
         here are read by Check_Task_Pushed in ``run_task/sfn.tpl.json``. Do not
-        rename either without a matching template update (see XCOM_PLAN.md §2.8).
+        rename either without a matching template update in the same commit.
     """
     import warnings
 

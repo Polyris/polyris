@@ -58,6 +58,7 @@ from .xcom import (
     XComMissingError,
     XComUpstreamFailedError,
     XComTruncatedError,
+    XComManuallyResolvedError,
     PullError,   # backward-compat alias for XComMissingError
 )
 from . import xcom  # allow `from polyris import xcom` idiom
@@ -154,6 +155,7 @@ __all__ = [
     'XComMissingError',
     'XComUpstreamFailedError',
     'XComTruncatedError',
+    'XComManuallyResolvedError',
     'PullError',
     
     # Assets

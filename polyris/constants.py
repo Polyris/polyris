@@ -209,6 +209,25 @@ class TriggerRule:
     NONE_SKIPPED = "none_skipped"         # No task skipped
 
 
+class ManualResolution:
+    """
+    The four actions an operator can take on a task via the Console UI.
+    Written by ``console_api/routes/tasks.py::_write_synthetic_output_marker``
+    as the ``_resolution`` field on the DDB marker, and read by the SDK
+    (``xcom.py::XComManuallyResolvedError``) plus the UI
+    (``manualResolution.ts``) — this class is the single source of truth for
+    all three surfaces. Adding a fifth action means editing here and
+    regenerating (``make generate-enums``); every consumer picks up the new
+    value automatically.
+
+    See ADR-123 §5 for the shipping contract.
+    """
+    MARK_SUCCESS = "mark_success"    # Operator declares the task succeeded (data verified out-of-band)
+    SKIP = "skip"                    # Operator skips the task — downstream unblocked, no data produced
+    FAIL = "fail"                    # Operator declares the task failed
+    STOP = "stop"                    # Operator stopped a running task (may be restarted later)
+
+
 # =============================================================================
 # Pipeline-level statuses (v0.79.0 SSoT consolidation, ADR #72)
 # =============================================================================

@@ -12,10 +12,12 @@ from polyris.xcom import (
     ENV_TASK_NAME,
     PullError,
     XComError,
+    XComManuallyResolvedError,
     XComMissingError,
     XComTruncatedError,
     XComUpstreamFailedError,
     _PUSH_MARKER_FIELD,
+    _is_manual_marker,
     _resolve,
     _resolve_s3_pointer,
     get,
@@ -190,6 +192,156 @@ def test_xcom_upstream_failed_error_subclasses_xcom_error():
 
 def test_xcom_truncated_error_subclasses_xcom_error():
     assert issubclass(XComTruncatedError, XComError)
+
+
+def test_xcom_manually_resolved_error_subclasses_xcom_error():
+    assert issubclass(XComManuallyResolvedError, XComError)
+
+
+# ── Manual-resolution marker detection (§Fix #6) ───────────────────────────
+
+
+def _manual_marker(resolution: str = "mark_success", operator: str = "alice@example.com",
+                   reason: str = "verified via S3"):
+    return {
+        "_manually_resolved": True,
+        "_resolution": resolution,
+        "_reason": reason,
+        "_operator": operator,
+    }
+
+
+def test_is_manual_marker_true_for_full_marker():
+    assert _is_manual_marker(_manual_marker()) is True
+
+
+def test_is_manual_marker_false_for_non_marker_shapes():
+    assert _is_manual_marker({"rows": 42}) is False
+    assert _is_manual_marker({"_manually_resolved": False}) is False
+    assert _is_manual_marker({"_manually_resolved": "yes"}) is False  # not literal True
+    assert _is_manual_marker([1, 2, 3]) is False
+    assert _is_manual_marker(None) is False
+    assert _is_manual_marker(42) is False
+
+
+def test_get_raises_manually_resolved_on_marker_in_event_inject():
+    """The primary footgun: mark_success writes status='success' + marker.
+    Without the marker check the caller silently receives the marker dict."""
+    event = {
+        "upstream": {
+            "transform": {"status": "success", "output": _manual_marker()}
+        }
+    }
+    with pytest.raises(XComManuallyResolvedError) as exc:
+        get(event, "transform")
+    assert exc.value.task_name == "transform"
+    assert exc.value.resolution == "mark_success"
+    assert exc.value.operator == "alice@example.com"
+    assert exc.value.reason == "verified via S3"
+    assert "manually resolved" in str(exc.value)
+
+
+def test_get_manual_marker_error_precedes_status_check():
+    """A manually-skipped upstream carries status='skip' AND a marker.
+    Marker check runs first so caller gets the more informative error."""
+    event = {
+        "upstream": {
+            "transform": {"status": "skip", "output": _manual_marker(resolution="skip")}
+        }
+    }
+    with pytest.raises(XComManuallyResolvedError) as exc:
+        get(event, "transform")
+    assert exc.value.resolution == "skip"
+
+
+def test_get_returns_marker_when_raise_on_manual_false():
+    """Opt-out returns the marker dict verbatim for callers that want to
+    introspect the operator's reason / route on the resolution."""
+    marker = _manual_marker(resolution="mark_success", reason="paid outside pipeline")
+    event = {"upstream": {"t": {"status": "success", "output": marker}}}
+    result = get(event, "t", raise_on_manual=False)
+    assert result == marker
+
+
+def test_get_falls_back_to_generic_operator_when_field_missing():
+    """Records written before 0.100.0 carry no _operator — error message
+    still readable via a generic label rather than 'None'."""
+    legacy = {
+        "_manually_resolved": True,
+        "_resolution": "mark_success",
+        "_reason": "old row",
+    }
+    event = {"upstream": {"t": {"status": "success", "output": legacy}}}
+    with pytest.raises(XComManuallyResolvedError) as exc:
+        get(event, "t")
+    assert exc.value.operator == "operator"
+    assert "operator: operator" in str(exc.value)
+
+
+def test_pull_raises_manually_resolved_when_ddb_row_is_a_marker():
+    """SDK is symmetric: the DDB path also catches the marker so Glue / ECS
+    / Batch tasks (which have no event to pass) are protected identically."""
+    ddb = FakeDDB({"result": {"S": json.dumps(_manual_marker())}})
+    with pytest.raises(XComManuallyResolvedError):
+        pull("t", pipeline="p", date="d", table="tbl", ddb_client=ddb)
+
+
+def test_pull_returns_marker_when_raise_on_manual_false():
+    ddb = FakeDDB({"result": {"S": json.dumps(_manual_marker())}})
+    result = pull("t", pipeline="p", date="d", table="tbl",
+                  ddb_client=ddb, raise_on_manual=False)
+    assert result["_manually_resolved"] is True
+
+
+def test_get_ddb_fallback_propagates_raise_on_manual(monkeypatch):
+    """Undeclared-dep path (no event.upstream[task]) goes via DDB — the
+    marker check must fire there too, not only on the event-inject path."""
+    monkeypatch.setenv(ENV_PIPELINE, "p")
+    monkeypatch.setenv(ENV_DATE, "d")
+    monkeypatch.setenv(ENV_TABLE, "tbl")
+    ddb = FakeDDB({"result": {"S": json.dumps(_manual_marker())}})
+    with pytest.raises(XComManuallyResolvedError):
+        get(None, "t", ddb_client=ddb)
+
+
+def test_get_ddb_fallback_returns_marker_when_opted_out(monkeypatch):
+    monkeypatch.setenv(ENV_PIPELINE, "p")
+    monkeypatch.setenv(ENV_DATE, "d")
+    monkeypatch.setenv(ENV_TABLE, "tbl")
+    ddb = FakeDDB({"result": {"S": json.dumps(_manual_marker())}})
+    result = get(None, "t", ddb_client=ddb, raise_on_manual=False)
+    assert result["_manually_resolved"] is True
+
+
+def test_get_organic_dict_output_that_happens_to_have_stray_field_is_not_a_marker():
+    """A user-returned dict that just happens to include the string
+    '_manually_resolved' (typo, coincidence, custom domain) is NOT treated
+    as a marker — the field must be literally True."""
+    weird = {"_manually_resolved": "no thanks", "rows": 42}
+    event = {"upstream": {"t": {"status": "success", "output": weird}}}
+    assert get(event, "t") == weird
+
+
+def test_get_all_done_manual_skip_needs_both_opt_outs_to_read_marker():
+    """The realistic ``trigger_rule='all_done'`` + manually-skipped upstream
+    case. The caller must opt out of BOTH ``raise_on_failure`` (because the
+    task's status is 'skip' — the action_name) AND ``raise_on_manual``
+    (because the marker check runs first and would still fire). Pinning the
+    combination here so a future ordering change is caught."""
+    marker = _manual_marker(resolution="skip", operator="alice", reason="no data today")
+    event = {"upstream": {"t": {"status": "skip", "output": marker}}}
+    # Default: raises XComManuallyResolvedError (marker check runs before status check).
+    with pytest.raises(XComManuallyResolvedError):
+        get(event, "t")
+    # Opt out of manual only: still raises status error.
+    with pytest.raises(XComUpstreamFailedError):
+        get(event, "t", raise_on_manual=False)
+    # Opt out of failure only: manual check still fires.
+    with pytest.raises(XComManuallyResolvedError):
+        get(event, "t", raise_on_failure=False)
+    # Both opt-outs: caller receives the marker dict verbatim for introspection.
+    result = get(event, "t", raise_on_failure=False, raise_on_manual=False)
+    assert result == marker
 
 
 def test_pull_error_is_alias_for_xcom_missing_error():
