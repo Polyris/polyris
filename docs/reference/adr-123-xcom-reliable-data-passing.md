@@ -81,7 +81,7 @@ The `_upstream_omitted` legacy marker (pre-0.100.0 pipelines that share a 25KB b
 
 No auto-offload built. `_s3_ref` reader (10 lines in `xcom.pull()` + `retrieve_result()`) kept as escape hatch. Docs describe the manual pattern honestly — user brings own bucket, own S3 IAM.
 
-Misleading `PolyrisResultsBucketRead` IAM statement removed. New `PolyrisTaskWritePolicy` grants `dynamodb:UpdateItem` on `output#*` keys for `xcom.push()`.
+New `PolyrisTaskWritePolicy` grants `dynamodb:UpdateItem` on `output#*` keys for `xcom.push()`. The misleading `PolyrisResultsBucketRead` statement was planned for removal in 0.100.0 but reverted before ship — `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering and the fixed `ManagedPolicyName` (exported via `!ImportValue`) blocks the delete-then-create. Cleanup deferred to a follow-up two-phase deploy (see CHANGELOG "Deferred").
 
 ## Consequences
 
@@ -104,7 +104,7 @@ Misleading `PolyrisResultsBucketRead` IAM statement removed. New `PolyrisTaskWri
 - `xcom.push()` from a Lambda handler races with the wrapper's `Save_Success` — the SDK emits a `UserWarning` and docs recommend `return value` from Lambda.
 - EMR `xcom.push()` unsupported in this release — documented as future work.
 - Cross-account `xcom.push()` unsupported — the `pipeline-tokens` table lives in the polyris account; cross-account writes need additional IAM setup. Documented limitation.
-- Removed `PolyrisResultsBucketRead` — undocumented user pattern of attaching `PolyrisTaskReadPolicy` specifically to read `ResultsBucket` is now broken. Mitigation is to add a direct `s3:GetObject` policy on the bucket if actually needed.
+- `PolyrisResultsBucketRead` cleanup deferred (CFN Description-triggered replacement + fixed ManagedPolicyName + downstream `!ImportValue` = can't land in this delivery; see CHANGELOG "Deferred"). No user-facing regression — the misleading grant is still attached to `PolyrisTaskReadPolicy`.
 
 ### Coupled constants
 

@@ -2132,23 +2132,16 @@ Resources:
         - !Ref ResultsBucket
 
   # Managed policy that user task roles (Lambda/ECS/Glue/Batch) attach so their
-  # code can call xcom.get() / xcom.pull() — least-privilege read of the output
-  # store. Polyris references user-owned compute by name/ARN and does not own
-  # those roles, so it publishes this policy for users to attach themselves.
-  #
-  # See the previous `PolyrisResultsBucketRead` statement
-  # (s3:GetObject on ResultsBucket) was removed in 0.100.0 — ResultsBucket is
-  # polyris-deploy's CloudFormation artifact bucket, not an XCom store, and
-  # user tasks never wrote there. Users who use the manual Claim Check pattern
-  # (return `{"_s3_ref": "s3://your-bucket/..."}`) supply their own S3 read
-  # policy on their own bucket.
+  # code can call xcom.pull() — least-privilege read of the output store and the
+  # results bucket. Polyris references user-owned compute by name/ARN and does not
+  # own those roles, so it publishes this policy for users to attach themselves.
   PolyrisTaskReadPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-task-read"
       Description: >-
-        Read access to the Polyris output store. Attach to the execution role
-        of any Lambda/ECS/Glue/Batch task that calls xcom.get() or xcom.pull().
+        Read access to the Polyris output store and results bucket. Attach to the
+        execution role of any Lambda/ECS/Glue/Batch task that calls xcom.pull().
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -2158,6 +2151,11 @@ Resources:
               - dynamodb:GetItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
+          - Sid: PolyrisResultsBucketRead
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Sub "${ResultsBucket.Arn}/*"
 
   # Managed policy for service tasks (Glue/ECS/Batch/EMR) that call xcom.push()
   # in their job code. Lambda return values do NOT need this policy — the
@@ -2198,7 +2196,7 @@ Resources:
 Outputs:
 
   PolyrisTaskReadPolicyArn:
-    Description: Attach this managed policy to any task role that calls xcom.get() / xcom.pull()
+    Description: Attach this managed policy to any task role that calls xcom.pull()
     Value: !Ref PolyrisTaskReadPolicy
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-task-read-policy"

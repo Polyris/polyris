@@ -36,9 +36,8 @@ Ships a unified reader/writer API, closes long-standing silent-corruption paths,
 ### Deprecated
 - `polyris.xcom.PullError` — kept as an alias for `XComMissingError` for backward compatibility. New code should catch the specific `XCom*Error` subclass.
 
-### Removed
-- `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`). `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store — the grant was misleading dead permission.
-  - **Breaking risk (low, undocumented pattern):** users who attached `PolyrisTaskReadPolicy` specifically to read `ResultsBucket` from Lambda code lose access. Mitigation: attach a direct `s3:GetObject` policy on the bucket.
+### Deferred (planned removal, blocked by CFN)
+- Cleanup of the misleading `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`) was reverted before 0.100.0 ship. `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store; the grant remains a documented dead permission. `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering, and the policy carries a fixed `ManagedPolicyName` (exported via `!ImportValue` in downstream user stacks), so the delete-then-create replacement fails on the name collision. A follow-up PR will rename the managed policy via a two-phase deploy (rename → deploy → rename back with the new PolicyDocument) so the cleanup lands without breaking the export.
 
 ### Behavior change for opt-in migration
 Migrating `event["upstream"][X]["output"]` → `xcom.get(event, X)`: if `X` uses `trigger_rule="all_done"` or `"one_success"`, pass `raise_on_failure=False`. Old raw-dict access silently returned `{}` for failed upstreams; `xcom.get()` raises by default. See DATA_PASSING.md for the migration example.
