@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_94 ADRs indexed (73 inline, 21 standalone). Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_95 ADRs indexed (73 inline, 22 standalone). Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|

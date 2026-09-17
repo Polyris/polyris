@@ -323,7 +323,7 @@
         },
         "Init_Output_Row": {
             "Type": "Task",
-            "Comment": "Initialize the canonical output# row at task start: set task_name/ttl/updated_at AND clear any stale _pushed_by_task marker left by a prior same-date run. Uses updateItem (not putItem) because the row may already carry a real 'result' from a concurrent same-date run (backfill semantics) — a blind putItem could clobber it mid-flight. The REMOVE clause on _pushed_by_task / pushed_at / pushed_run_id is the B1 fix: without it, Check_Task_Pushed could see a leftover marker from a previous run's xcom.push() and incorrectly route to Save_Success_Preserve on the current run, causing data corruption (downstream would read the stale pushed value instead of the current run's real output). See XCOM_PLAN.md §2.8 for coupled constants with polyris/xcom.py.",
+            "Comment": "Initialize the canonical output# row at task start: set task_name/ttl/updated_at AND clear any stale _pushed_by_task marker left by a prior same-date run. Uses updateItem (not putItem) because the row may already carry a real 'result' from a concurrent same-date run (backfill semantics) — a blind putItem could clobber it mid-flight. The REMOVE clause on _pushed_by_task / pushed_at / pushed_run_id is the B1 fix: without it, Check_Task_Pushed could see a leftover marker from a previous run's xcom.push() and incorrectly route to Save_Success_Preserve on the current run, causing data corruption (downstream would read the stale pushed value instead of the current run's real output). See docs/work/xcom-plan.md §2.8 for coupled constants with polyris/xcom.py.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -381,7 +381,7 @@
         },
         "Save_Input_Record": {
             "Type": "Task",
-            "Comment": "Store task_input (upstream + variables) in a SEPARATE DDB record (key 'input#{pipeline}#{task}#{date}') so the Console preview is not bounded by the ~25KB left in the output# row after 'result' takes 350KB. This record's own 400KB item budget lets task_input hold ~380KB. Uses updateItem (not putItem) — same concurrent-safety rationale as Init_Output_Row. IMPORTANT field naming: 'task_date' (not 'date') is deliberate — mismatched from the date-pipeline-index GSI's key attribute so input# rows never populate that GSI. is_internal_record() also filters input#* by prefix as belt-and-suspenders (see console_api/utils.py). See XCOM_PLAN.md §1.2 + §2.8.",
+            "Comment": "Store task_input (upstream + variables) in a SEPARATE DDB record (key 'input#{pipeline}#{task}#{date}') so the Console preview is not bounded by the ~25KB left in the output# row after 'result' takes 350KB. This record's own 400KB item budget lets task_input hold ~380KB. Uses updateItem (not putItem) — same concurrent-safety rationale as Init_Output_Row. IMPORTANT field naming: 'task_date' (not 'date') is deliberate — mismatched from the date-pipeline-index GSI's key attribute so input# rows never populate that GSI. is_internal_record() also filters input#* by prefix as belt-and-suspenders (see console_api/utils.py). See docs/work/xcom-plan.md §1.2 + §2.8.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -762,7 +762,7 @@
         },
         "Check_Task_Pushed": {
             "Type": "Task",
-            "Comment": "Check whether the task called xcom.push() during this run. Compares the stored pushed_run_id against the current wrapper's Execution.Id to reject stale markers from prior same-date runs (B1 fix — Init_Output_Row also REMOVEs the marker at task start, this is belt-and-suspenders). On DDB failure, defaults to _task_pushed=false: safe fallback (wrapper writes result as usual, at worst overwriting a push we didn't detect). See XCOM_PLAN.md §1.4 + §2.8.",
+            "Comment": "Check whether the task called xcom.push() during this run. Compares the stored pushed_run_id against the current wrapper's Execution.Id to reject stale markers from prior same-date runs (B1 fix — Init_Output_Row also REMOVEs the marker at task start, this is belt-and-suspenders). On DDB failure, defaults to _task_pushed=false: safe fallback (wrapper writes result as usual, at worst overwriting a push we didn't detect). See docs/work/xcom-plan.md §1.4 + §2.8.",
             "Resource": "arn:aws:states:::dynamodb:getItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -813,7 +813,7 @@
         },
         "Save_Success_Preserve": {
             "Type": "Task",
-            "Comment": "Task called xcom.push() during this run — the canonical result was already written by push() (with the marker). Save_Success_Preserve only updates status/finished_at/task_execution_arn; it deliberately does NOT SET #r so the pushed value survives. Keeps the same attempt-based stale-attempt guard as Save_Success. See XCOM_PLAN.md §1.4.",
+            "Comment": "Task called xcom.push() during this run — the canonical result was already written by push() (with the marker). Save_Success_Preserve only updates status/finished_at/task_execution_arn; it deliberately does NOT SET #r so the pushed value survives. Keeps the same attempt-based stale-attempt guard as Save_Success. See docs/work/xcom-plan.md §1.4.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -879,7 +879,7 @@
         },
         "Save_Canonical_Output_Preserve": {
             "Type": "Task",
-            "Comment": "Task called xcom.push() — the canonical row already has the pushed 'result'. Uses updateItem (NOT putItem like Save_Canonical_Output) so we only touch status/updated_at/ttl; putItem here would replace the entire row and clobber the pushed value. See XCOM_PLAN.md §1.4.",
+            "Comment": "Task called xcom.push() — the canonical row already has the pushed 'result'. Uses updateItem (NOT putItem like Save_Canonical_Output) so we only touch status/updated_at/ttl; putItem here would replace the entire row and clobber the pushed value. See docs/work/xcom-plan.md §1.4.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -1004,7 +1004,7 @@
         },
         "Save_Canonical_Output": {
             "Type": "Task",
-            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this. task_input is intentionally NOT written here anymore — it lives in a separate 'input#{pipeline}#{task}#{date}' record populated by Save_Input_Record at task start (see XCOM_PLAN.md §1.2). That split lets the Console preview hold up to ~380KB of upstream data instead of the previous 25KB truncation cap.",
+            "Comment": "Save canonical output under stable key (output#pipeline#task#date) for upstream reads. Survives incremental backfill - auto-skip never overwrites this. task_input is intentionally NOT written here anymore — it lives in a separate 'input#{pipeline}#{task}#{date}' record populated by Save_Input_Record at task start (see docs/work/xcom-plan.md §1.2). That split lets the Console preview hold up to ~380KB of upstream data instead of the previous 25KB truncation cap.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${tokens_table}",

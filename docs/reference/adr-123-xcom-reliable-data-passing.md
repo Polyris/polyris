@@ -29,6 +29,10 @@ Console API reads the new record first, falls back to the legacy `task_input` fi
 
 Field name is deliberately `task_date` (not `date`) so `input#` rows never populate the `date-pipeline-index` GSI. Belt-and-suspenders with `is_internal_record()` filtering by the `input#*` prefix.
 
+**Cross-record failure semantics.** The two records are written independently by two SFN states (`Init_Output_Row`, then `Save_Input_Record`), each with a `States.ALL` Catch that logs and continues rather than failing the task. This is deliberate: `input#` is Console-preview-only (never read at runtime by downstream tasks or by the SDK), so a lost `input#` write only degrades a UI snapshot — the task still runs, produces its `result`, and downstream `xcom.get()` reads succeed. Conversely, a lost `Init_Output_Row` write leaves the wrapper without a canonical row until `Save_Success` `UpdateItem`-creates it at task end; concurrent same-date reads during that window get `XComMissingError`, which is the correct semantics ("not yet run"). No cross-record atomic guarantee is attempted because none is needed — the reader contracts (SDK + Console) tolerate either record being absent.
+
+The same "best-effort, log and continue" pattern applies to `_write_synthetic_output_marker` (console_api): a DDB failure during a manual resolution logs a warning but does not block the manual action from completing (its own `try/except ClientError`). Downstream reads on a marker-write failure hit `XComMissingError` from the SDK — safe fail, not silent corruption.
+
 ### 2. `xcom.push(value)` API for service tasks
 
 Glue / ECS / Batch job code can write real output directly to DDB with a marker the wrapper detects. `Save_Success_Preserve` (new state) skips overwriting `result` when the marker is present.
@@ -57,11 +61,21 @@ Same call in every task type. Auto-resolves `_s3_ref` claim-check pointers. Fall
 
 ### 5. Console UI renders markers explicitly
 
-- Color-coded per-dep cards (warn / error / muted / success)
-- `_upstream_omitted` legacy marker gets a "re-deploy this pipeline" hint
-- Per-dep `_truncated` marker points at `xcom.get(event, "name")` which auto-falls-back
-- AWS-metadata detection banner when `output` looks like `{JobRunId}` / `{TaskArn}` / etc. — hints at `xcom.push()`
-- One-time onboarding banner explaining the new layout, dismissible via localStorage
+Every upstream + output state uses the same card grammar — 4px left color stripe + neutral fill, status carried by icon + badge. No full-bleed warn/error/muted banners (they made a fan-in of mixed statuses read as a colour siren). Variants:
+
+- **success** (green) — organic clean output
+- **error** (red) — status `failed` / `skipped` / `aborted`; output (if any) available on expand
+- **warn** (yellow) — status `unknown` (no output recorded), `_truncated: true` (points at `xcom.get(event, "name")` which auto-falls-back), malformed shape
+- **muted** (grey) — `_s3_ref` claim-check pointer
+- **manual** (blue) — `_manually_resolved: true` marker (mark_success / skip / fail / stop via UI). Renders a `manual: <resolution>` badge and a one-line human summary — `"Marked success by alice@example.com — verified via S3 logs"` — instead of exposing the raw marker JSON. Applied identically to the downstream's UpstreamDep card and the resolved task's own Output card via one shared `detectManualResolution` helper.
+
+Detection lives in one place (`ui/src/components/TaskDetailModal/manualResolution.ts`) so both surfaces stay in sync when the marker shape evolves. The marker itself carries `_operator` (recorded by `_write_synthetic_output_marker`) so a shared account can attribute intent: Cognito email if the ID token carries it, else `sub`; PAT → `pat:<token_name>`; auth-off → `unknown`. Records written before 0.100.0 lack the field — the UI falls back to a generic `"operator"` label.
+
+The SDK closes the loop: `xcom.get()` and `xcom.pull()` detect the same marker and raise `XComManuallyResolvedError` by default (opt out with `raise_on_manual=False`). Before this change, downstream code doing `xcom.get(dep)["rows"]` on a `mark_success`'d upstream received the marker dict as if it were data and crashed with `KeyError` at the first attribute access; the UI-only fix would have surfaced the intervention visually but left the runtime footgun in place.
+
+The AWS-metadata detection banner (Glue/ECS/Batch → `{JobRunId}` etc.) still shows on the Output card's `warn` variant with the `xcom.push()` hint.
+
+The `_upstream_omitted` legacy marker (pre-0.100.0 pipelines that share a 25KB budget between result and task_input) still gets the "re-deploy this pipeline" hint — a whole-input banner above the card list, not a per-dep variant.
 
 ### 6. S3 stays manual claim-check
 
@@ -119,6 +133,6 @@ Changing any of these requires updating both sides in the same commit. A parity 
 
 ## References
 
-- `XCOM_PLAN.md` — full implementation plan and per-file design.
+- [`docs/work/xcom-plan.md`](../work/xcom-plan.md) — full implementation plan and per-file design (frozen historical).
 - `ADR-15` — original 25KB per-dep runtime truncation. Unchanged in this decision (it's a real AWS SFN state-payload constraint); only the arbitrary 25KB `task_input` storage cap was replaced.
 - `docs/features/DATA_PASSING.md` — rewritten in the same delivery as this ADR.

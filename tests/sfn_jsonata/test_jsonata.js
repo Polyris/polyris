@@ -502,7 +502,7 @@ async function main() {
   
 // Save_Input_Record (new in 0.100.0) — task_input stored in a separate
 // input# DDB record without the old 25KB truncation. The record's own 400KB
-// item budget lets it hold ~380KB. See XCOM_PLAN.md §1.2.
+// item budget lets it hold ~380KB. See docs/work/xcom-plan.md §1.2.
 await test("Save_Input_Record captures full upstream + variables (no 25KB truncation)", `$string({'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}, 'variables': $exists($states.input.variables) ? $states.input.variables : {}})`,
   { upstream: { a: { output: { n: 1 } } }, variables: { year: "2026" } },
   null,

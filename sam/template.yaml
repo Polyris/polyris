@@ -524,7 +524,7 @@ Resources:
   # live in DynamoDB (pipeline-tokens), and the manual Claim Check pattern
   # (`return {"_s3_ref": "s3://your-bucket/..."}`) points to the user's own
   # bucket. See docs/features/DATA_PASSING.md#large-outputs and
-  # XCOM_PLAN.md §5.3.
+  # docs/work/xcom-plan.md §5.3.
   # ---------------------------------------------------------------------------
 
   ResultsBucket:
@@ -2137,7 +2137,7 @@ Resources:
   # store. Polyris references user-owned compute by name/ARN and does not own
   # those roles, so it publishes this policy for users to attach themselves.
   #
-  # See XCOM_PLAN.md §5.1: the previous `PolyrisResultsBucketRead` statement
+  # See docs/work/xcom-plan.md §5.1: the previous `PolyrisResultsBucketRead` statement
   # (s3:GetObject on ResultsBucket) was removed in 0.100.0 — ResultsBucket is
   # polyris-deploy's CloudFormation artifact bucket, not an XCom store, and
   # user tasks never wrote there. Users who use the manual Claim Check pattern
@@ -2162,7 +2162,7 @@ Resources:
 
   # Managed policy for service tasks (Glue/ECS/Batch/EMR) that call xcom.push()
   # in their job code. Lambda return values do NOT need this policy — the
-  # wrapper captures Lambda output directly. See XCOM_PLAN.md §5.2 and the
+  # wrapper captures Lambda output directly. See docs/work/xcom-plan.md §5.2 and the
   # IAM attachment matrix in docs/features/DATA_PASSING.md.
   #
   # The IAM Condition restricts UpdateItem to keys with `output#*` prefix —

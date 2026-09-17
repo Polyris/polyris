@@ -46,6 +46,7 @@ That's the whole mental model. The rest of this page explains the details.
 xcom.get(event, task_name, *,
          raise_on_missing=True,     # dep with no output → XComMissingError
          raise_on_failure=True,     # upstream status != success → XComUpstreamFailedError
+         raise_on_manual=True,      # upstream manually resolved via UI → XComManuallyResolvedError
          ddb_client=None,           # injected for tests
          s3_client=None)            # injected for tests
 ```
@@ -68,8 +69,20 @@ Failure taxonomy:
 - `XComMissingError` — no output stored (dep didn't run, was skipped, or returned nothing).
 - `XComUpstreamFailedError` — upstream status is `skipped`, `failed`, or `aborted`.
 - `XComTruncatedError` — both the inject and DDB row came back truncated. Use the Claim Check pattern (below).
+- `XComManuallyResolvedError` — upstream carries a Console-written manual-resolution marker (an operator clicked Mark success / Skip / Fail / Stop on it via UI). The recorded "output" is a synthetic marker, not organic payload — reading it as data crashes with `KeyError` at the first attribute access. The error exposes `resolution` / `operator` / `reason` for routing or logging.
 
-All three inherit `XComError`, which inherits `RuntimeError`. Existing `except PullError:` code still catches `XComMissingError` — `PullError` is now an alias.
+All four inherit `XComError`, which inherits `RuntimeError`. Existing `except PullError:` code still catches `XComMissingError` — `PullError` is now an alias.
+
+Reading a manually-resolved upstream (rare — routes on the operator's intent):
+
+```python
+try:
+    sales = xcom.get(event, "extract_sales")
+except XComManuallyResolvedError as e:
+    log.warn(f"upstream {e.task_name} was {e.resolution} by {e.operator}: {e.reason}")
+    # Introspect the marker verbatim if the resolution matters to control flow:
+    marker = xcom.get(event, "extract_sales", raise_on_manual=False)
+```
 
 ## Writing output
 

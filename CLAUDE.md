@@ -562,6 +562,106 @@ The rule must be specific enough to catch a future recurrence, not a vague "be c
 If the fix touches a pattern that appears in multiple places, the rule must address the
 whole pattern, not just the one file you changed (see Principle #23).
 
+**27. Enums crossing SDK ↔ backend ↔ frontend go through `polyris/constants.py` + `sync_enums` — never bare string literals**
+
+If a value set means the same thing in Python (SDK + Lambda routes) and TypeScript
+(UI), it belongs in `polyris/constants.py` as an enum/class and is emitted to every
+consumer by `python -m polyris.codegen.sync_enums`. Bare string literals for the
+same concept in multiple files are how a fifth member gets added in one place and
+silently forgotten elsewhere — the type system can't help because there is no type.
+
+Examples in this codebase:
+- `TaskStatus`, `TriggerRule`, `PipelineStatus`, `ExecutionStatus`, `BackfillStatus`,
+  `BackfillGranularity`, `StalenessStatus` — all canonical in `polyris/constants.py`,
+  all mirrored to `sam/lambdas/_shared/constants_generated.py`,
+  `sam/lambdas/console_api/constants_generated.py`,
+  `sam/lambdas/evaluate_deps/constants_generated.py`, and
+  `ui/src/generated/enums.ts`.
+- `ManualResolution` (added 0.100.0) — the four operator-driven task actions
+  (`mark_success`/`skip`/`fail`/`stop`) written by
+  `console_api::_write_synthetic_output_marker`, read by `xcom.get()`/`pull()`, and
+  rendered by `ui/src/components/TaskDetailModal/manualResolution.ts` — all three
+  reach the same set via the canonical enum, not by copy-pasting the strings.
+
+Concrete workflow when adding a value:
+1. Add the member to the canonical class in `polyris/constants.py`.
+2. Register in `polyris/codegen/sync_enums.py` (both `_render_python_body`
+   and `_render_ts_body`) if it's a new class.
+3. Run `python -m polyris.codegen.sync_enums` (or `make generate-enums`). CI
+   drift-check (`--check`) fails if the generated files diverge.
+4. Import + reference the enum on every consuming surface — never a bare
+   string.
+5. Add a parity test (see #28) covering the new coupling.
+
+The rule catches: "someone added a `hold` action in `routes/tasks.py` and forgot to
+update the TS switch statements" — with the enum + parity test, step 1 alone would
+be a build break until the consumers catch up.
+
+**28. Constants coupled across languages/artifacts need a parity test**
+
+Any string that is written in one artifact (Python module, SFN JSON template, IAM
+resource name) and read verbatim in another (SDK, UI, IAM policy check) must have a
+parity test that grep-loads both sides and asserts the same value appears. The type
+system cannot enforce string parity across JSON templates or across
+Python↔TypeScript.
+
+Examples:
+- `polyris/xcom.py::_PUSH_MARKER_FIELD` (`_pushed_by_task`) is written by
+  `xcom.push()` and read by `Check_Task_Pushed` in
+  `sam/sfn_templates/helpers/run_task/sfn.tpl.json`. Parity pinned by
+  `tests/sdk/test_xcom_coupled_constants_parity.py`.
+- Marker field names (`_manually_resolved` / `_resolution` / `_reason` /
+  `_operator`) written by `console_api::_write_synthetic_output_marker`, read by
+  the SDK's `_raise_manual` and the UI's `detectManualResolution`. Same test.
+- Generated enums (`polyris/constants.py` → `constants_generated.py` +
+  `enums.ts`) — covered by `codegen --check`, which the CI gate runs.
+
+If you cannot express the parity as a test (e.g. because one side is JSON-in-YAML
+that a grep would false-positive on), extract the constant to `polyris/constants.py`
+and route both sides through it. `docs/reference/adr-123-xcom-reliable-data-passing.md`
+has a "Coupled constants" table — a table alone is not a test; the test is the gate.
+
+**29. adr-index.md count must match its row count — sanity-check on ADR edits**
+
+`docs/reference/adr-index.md` opens with a line of the form
+"_N ADRs indexed (X inline, Y standalone)_". When you add or remove an ADR:
+grep the row counts and update the numbers in the same commit. Running:
+
+```bash
+grep -Ec "^\| [0-9]+ \| " docs/reference/adr-index.md              # total
+grep -Ec "^\| [0-9]+ \| .* \| inline \|" docs/reference/adr-index.md   # inline count
+```
+
+is 5 seconds. Skipping it means the header is drifting silently — every future
+reader has to distrust the count or run the same grep themselves.
+
+**30. Break-review + architect-pass before claiming "done"**
+
+A change of any significant size (new SDK API, cross-surface refactor, ADR-worthy
+decision) is not "done" until it has been independently break-reviewed AND
+architect-reviewed. The author's own summary of "everything works" is a starting
+point, not a completion signal — every session in this repo has produced examples
+of the author confidently claiming done while contract inconsistencies, dead code,
+or design drift sat uncaught.
+
+Concrete practice (already tooled via `/break` and the general-purpose Agent):
+1. Author signals "I think this is done."
+2. Spawn a break-review agent: `general-purpose` with the `/break` skill's frame
+   (reassurance is a failure; report what couldn't be ruled out).
+3. Address every finding — Closed / Partial / Still open, cited by file:line.
+4. Spawn an architect-review agent: judge coherence, ADR quality, abstraction
+   fit, backwards-compat, docs shape. Verdict: Ship / Ship-with-follow-ups /
+   Hold-for-rework.
+5. Close every architect-flagged blocker before the "done" claim reaches the
+   maintainer. Non-blocker follow-ups go into a numbered list, either shipped in
+   the same PR (with tests) or explicitly deferred with a task ID.
+
+The two agent passes catch different classes of problem — break-review finds
+contract violations and blast-radius misses; architect finds abstraction drift and
+design token reuse. Neither replaces the other, and neither can be replaced by the
+author's self-review. A PR that reaches merge without both passes on record is
+under-tested by construction, regardless of the green CI badges.
+
 ---
 
 

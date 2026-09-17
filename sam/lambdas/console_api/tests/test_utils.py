@@ -623,7 +623,7 @@ def test_is_internal_record_catches_output_store():
 
 
 def test_is_internal_record_catches_input_store():
-    """B3 (XCOM_PLAN.md §3.1): the split-out task_input records introduced in
+    """B3 (docs/work/xcom-plan.md §3.1): the split-out task_input records introduced in
     0.100.0 use the `input#{pipeline}#{task}#{date}` prefix. is_internal_record
     MUST filter these — otherwise they leak into All Tasks / Runs / Pipeline
     Detail listings as garbage rows.

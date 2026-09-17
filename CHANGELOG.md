@@ -7,7 +7,8 @@ Ships a unified reader/writer API, closes long-standing silent-corruption paths,
 **SDK — new APIs in `polyris.xcom`:**
 - `xcom.get(event, task_name)` — uniform reader for Lambda / Glue / ECS / Batch / EMR. Auto-resolves `_s3_ref` claim-check pointers, auto-falls-back from a truncated inline inject to the full-size DDB row, raises typed errors by default.
 - `xcom.push(value)` — writer for service tasks (Glue / ECS / Batch / EMR) whose job code needs to store real output instead of the AWS API response (`JobRunId`, `TaskArn`, etc.).
-- `XComError` base class with `XComMissingError`, `XComUpstreamFailedError`, `XComTruncatedError` subclasses. `PullError` is now an alias for `XComMissingError` — existing `except PullError:` code continues to work.
+- `XComError` base class with `XComMissingError`, `XComUpstreamFailedError`, `XComTruncatedError`, and `XComManuallyResolvedError` subclasses. `PullError` is now an alias for `XComMissingError` — existing `except PullError:` code continues to work.
+- **`XComManuallyResolvedError` + `raise_on_manual=True`** on `xcom.get()` / `xcom.pull()`. When a downstream task reads an upstream that was resolved by an operator via UI (Mark success / Skip / Fail / Stop), the SDK now raises a typed error carrying `resolution` / `operator` / `reason` — instead of silently returning the synthetic marker dict as if it were real data (which caused `output["rows"]` → `KeyError` at runtime). Loud by default; pass `raise_on_manual=False` to introspect the marker (e.g. to route on the operator's `reason`).
 
 **Infrastructure:**
 - New DDB record `input#{pipeline}#{task}#{date}` carries `task_input` for the Console preview, up to ~380 KB (was 25 KB shared with `result` on the `output#` row).
@@ -17,10 +18,14 @@ Ships a unified reader/writer API, closes long-standing silent-corruption paths,
 - `POLYRIS_TASK_NAME` and `POLYRIS_WRAPPER_RUN_ID` env vars injected by the wrapper into Glue Arguments and ECS/Batch container Environment.
 
 **Console UI (Task Detail modal, Input/Output tab):**
-- Per-upstream cards, color-coded by status. `status="unknown"` → warn banner ("no output recorded"). `status="failed"` etc. → error banner with collapsible output details. `output={_truncated: true}` → warn banner pointing at `xcom.get()` (which auto-falls-back). `output={_s3_ref: ...}` → muted banner naming the S3 path.
-- AWS-metadata detection: when `output` looks like `{JobRunId}` / `{TaskArn}` / etc., a banner explains that Glue/ECS/Batch tasks need `xcom.push()` for real data.
+- Unified card grammar across every upstream + output state — 4px left color stripe + neutral fill, status carried by icon + badge. Retired the earlier full-bleed warn/error/muted banners so a fan-in of mixed statuses reads as one calm column instead of a colour siren.
+- Variants: `success` (green), `error` (red — failed/skipped/aborted), `warn` (yellow — no output, truncated, malformed), `muted` (grey — s3-ref), `manual` (blue — human intervention). AWS-metadata detection still surfaces the `xcom.push()` hint on the Output card via a warn variant.
+- **Manual-resolution rendering.** When an operator resolves a task via the UI (Mark success / Skip / Fail / Stop), the synthetic marker now renders as a blue "manual" card with a `manual: <resolution>` badge and a one-line summary — `"Marked success by alice@example.com — verified via S3 logs"` — instead of exposing the raw marker JSON. Applied identically to the downstream's UpstreamDep card and the resolved task's own Output card (same primary status badge derived from the resolution, same shared `detectManualResolution` helper). Raw marker JSON still accessible via expand.
 - Variables and upstream deps rendered as separate sections instead of one raw-JSON blob.
-- One-time onboarding banner explaining the new layout (dismissible, persists via localStorage; removed in 0.102.0).
+- Input / Output JSON blocks render at natural height for small payloads (no forced inner scrollbar) and collapse with a "Show all (N lines)" toggle when long. Both blocks carry a copy button that gives `Copied!` text feedback.
+
+**Backend (Console API):**
+- `_write_synthetic_output_marker` now records the operator identity as `_operator` on the marker (Cognito email if the ID token carries it, else `sub`; PAT: `pat:<token_name>`; auth-off: `unknown`). `Principal` gained an `email` slot and a `display()` helper; `auth.operator_display(event)` is the single call any route uses to resolve identity for audit records.
 
 ### Fixed
 - `$isJson` heuristic in `Get_Dep_Output` no longer wraps primitives, arrays of numbers, `null`, or booleans in `{"_raw": ...}`. Replaced with `$exists($parse($safe))`.

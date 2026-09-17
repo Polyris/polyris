@@ -713,7 +713,7 @@ class TestInitOutputRowAtStart:
     _pushed_by_task / pushed_at / pushed_run_id fields from a previous same-date
     run. Without the REMOVE, Check_Task_Pushed on the current run could see a
     leftover marker and route to Save_Success_Preserve — data corruption.
-    Split from the old Save_Task_Input state in 0.100.0 (see XCOM_PLAN.md §1.2)."""
+    Split from the old Save_Task_Input state in 0.100.0 (see docs/work/xcom-plan.md §1.2)."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -786,7 +786,7 @@ class TestSaveInputRecordSeparate:
     DDB record with key 'input#{pipeline}#{task}#{date}'. Split from the old
     Save_Task_Input state so the Console preview is bounded by DDB's 400KB item
     limit (not the arbitrary 25KB cap that used to sit on the shared output#
-    row). See XCOM_PLAN.md §1.2."""
+    row). See docs/work/xcom-plan.md §1.2."""
 
     @pytest.fixture(autouse=True)
     def setup(self):
