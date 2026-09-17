@@ -133,6 +133,5 @@ Changing any of these requires updating both sides in the same commit. A parity 
 
 ## References
 
-- [`docs/work/xcom-plan.md`](../work/xcom-plan.md) — full implementation plan and per-file design (frozen historical).
 - `ADR-15` — original 25KB per-dep runtime truncation. Unchanged in this decision (it's a real AWS SFN state-payload constraint); only the arbitrary 25KB `task_input` storage cap was replaced.
 - `docs/features/DATA_PASSING.md` — rewritten in the same delivery as this ADR.

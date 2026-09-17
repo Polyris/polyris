@@ -20,7 +20,7 @@ Requires:
 Without this push (see aggregate_no_push.py), the wrapper stores the Glue API's
 {"JobRunId": "..."} response as `result`. Downstream tasks reading
 event["upstream"]["aggregate_glue"]["output"] get that AWS metadata, not the
-real aggregation output — Problem #2 in docs/work/xcom-plan.md, silently for years.
+real aggregation output — Problem #2 (pre-0.100.0 metadata-leak default), silently for years.
 
 Task Detail Output tab after run (with this push):
     Clean JSON, no banner:

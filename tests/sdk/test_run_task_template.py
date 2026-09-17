@@ -1249,7 +1249,7 @@ def test_save_task_input_state_removed(template):
     """The old monolithic Save_Task_Input is gone — replaced by two states."""
     assert "Save_Task_Input" not in template["States"], (
         "Save_Task_Input has been split into Init_Output_Row + Save_Input_Record "
-        "in 0.100.0 (see docs/work/xcom-plan.md §1.2). If this test fails, the old state was "
+        "in 0.100.0. If this test fails, the old state was "
         "reintroduced accidentally."
     )
 
@@ -1615,7 +1615,7 @@ def test_batch_container_env_includes_task_name_and_run_id(template):
 
 
 def test_emr_does_not_inject_task_name_env(template):
-    """docs/work/xcom-plan.md §1.5: EMR xcom.push() is DEFERRED — no Environment field in
+    """EMR xcom.push() is DEFERRED — no Environment field in
     addStep.sync (only HadoopJarStep.Args, which would break user's Spark arg
     parsers if we injected there unconditionally). Documented as future work.
     This test pins that decision — if it fails, we shipped EMR push support and
