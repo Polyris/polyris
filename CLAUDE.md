@@ -745,6 +745,70 @@ design token reuse. Neither replaces the other, and neither can be replaced by t
 author's self-review. A PR that reaches merge without both passes on record is
 under-tested by construction, regardless of the green CI badges.
 
+**33. Never change `Description` on `AWS::IAM::ManagedPolicy` (or any resource that
+uses it as a REPLACEMENT trigger) unless renaming — CloudFormation replaces the
+policy, hits a name collision, and the deploy fails mid-flight**
+
+CFN treats `Description` on `AWS::IAM::ManagedPolicy` as an "update-requires-
+replacement" property. Editing the text (e.g. removing an obsolete service name
+from a comment) tells CFN to delete the old policy and create a new one with the
+same `ManagedPolicyName` — the create fails with `EntityAlreadyExists` because
+the delete hasn't happened yet, and the whole stack rolls back. Same trap
+applies to any CFN property flagged "Requires: Replacement" in the resource docs.
+
+**Why:** hit twice in the 0.100.0 delivery — once removing EMR from
+`PolyrisTaskWritePolicy` description, once tweaking `PolyrisTaskReadPolicy`
+description wording. Both deploys rolled back mid-flight and had to be reverted
+in the working tree before the smoke could re-run.
+
+**How to apply:**
+- Editing an IAM policy? Change only the `Statement` block. Leave `Description`
+  and `ManagedPolicyName` alone.
+- Genuinely need a description change (product renaming, tier boundary shift)?
+  Do it as a rename (new logical + physical name) in a dedicated deploy, with
+  the old policy deleted first via the console or `aws iam delete-policy` after
+  detaching, then a fresh `sam deploy` creates the new one.
+- Documenting an intended change but shipping later? Put the note in the ADR or
+  CHANGELOG's "deferred cleanup" section, not the template.
+- Before editing any CFN property on a named resource, check the AWS resource
+  reference for "Update requires: Replacement". If yes and the resource has a
+  physical name, the change is a rename operation, not a text edit.
+
+**34. Two writers to the same DDB row must both handle "row already exists with
+the value I'm about to overwrite" explicitly — GetItem-then-conditional-Update,
+not blind Put/Update**
+
+A row that only the SFN writes can safely use `attribute_not_exists` guards.
+Once a second writer joins (a Lambda, another SFN branch, an operator action),
+that guard means "someone got here first — silently do nothing", which is
+almost never what you want. The second write either (a) needs to *overwrite*
+stale data from a prior run, or (b) needs to *protect* real data written this
+run. `attribute_not_exists` conflates them; only GetItem-then-Update can tell
+them apart.
+
+**Why:** hit in 0.100.0's manual-resolution flow — canonical output rows are
+date-scoped and shared across same-date runs. The SFN writes on every run;
+console_api's manual action also writes to mark a task manually-resolved. A
+second manual action on a same-date run silently kept the first operator's
+name because `attribute_not_exists(#r)` blocked the refresh. Fixed with
+GetItem → `if row.run_id == expected_run_id: protect else: refresh`. See
+Principle #31 for the writer-side pattern; this rule is the design constraint
+that forces its use.
+
+**How to apply:**
+- Before adding a second writer to any DDB row, list every writer and answer
+  per row: "when writer B fires and writer A's data is present, what should
+  happen — protect, overwrite, or fail loudly?"
+- If "protect if fresh, overwrite if stale" — you need GetItem-then-Update
+  (rule #31). `attribute_not_exists` is not a substitute.
+- If the row genuinely has only one writer today but a second is *foreseeable*
+  (backfill Lambda, replay tool, human console action), document the writer
+  contract in an ADR and add a `# CLAUDE.md #34` comment on the guard so the
+  next author sees the constraint.
+- Tests: parity-test with two Lambda invocations back-to-back against a real
+  moto table — a pass-only test with a single writer never catches this class
+  of bug.
+
 ---
 
 

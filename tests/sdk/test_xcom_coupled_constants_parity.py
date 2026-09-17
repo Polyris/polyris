@@ -239,3 +239,44 @@ class TestServiceTaskEnvInjectionParity:
             f"in this task type will fail with 'requires the env variable' "
             "at runtime."
         )
+
+
+class TestEmrPushDeliberatelyUnsupported:
+    """Negative-case guard for `xcom.push()` on EMR steps. CHANGELOG "Known
+    limitations" and `docs/features/DATA_PASSING.md` name EMR as unsupported
+    in 0.100.0 — `HadoopJarStep.Args` risks breaking arbitrary Spark arg
+    parsers, so `POLYRIS_TASK_NAME` / `POLYRIS_WRAPPER_RUN_ID` are NOT
+    injected on the EMR branch. If someone adds an injection without wiring
+    the push contract end-to-end, this test fails loudly and points at the
+    limitations doc — silent enablement would trap the next EMR user with
+    a partially-working push feature."""
+
+    @pytest.fixture(scope="class")
+    def emr_branch_body(self, sfn_template_text):
+        # Reuse TestServiceTaskEnvInjectionParity's brace-count trick.
+        import re
+        start_match = re.search(r'"Run_Task_EMR"\s*:\s*\{', sfn_template_text)
+        assert start_match, "Run_Task_EMR state not found in run_task template"
+        start = start_match.end() - 1
+        depth = 0
+        for i in range(start, len(sfn_template_text)):
+            if sfn_template_text[i] == '{':
+                depth += 1
+            elif sfn_template_text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    return sfn_template_text[start:i + 1]
+        raise AssertionError("Run_Task_EMR — unmatched braces")
+
+    def test_emr_does_not_inject_task_name_env(self, emr_branch_body):
+        assert xcom.ENV_TASK_NAME not in emr_branch_body, (
+            f"Run_Task_EMR injects {xcom.ENV_TASK_NAME!r}. If push support "
+            "is now intended, wire the whole contract (docs + IAM matrix + "
+            "CHANGELOG 'Known limitations') and delete this test."
+        )
+
+    def test_emr_does_not_inject_wrapper_run_id_env(self, emr_branch_body):
+        assert xcom.ENV_RUN_ID not in emr_branch_body, (
+            f"Run_Task_EMR injects {xcom.ENV_RUN_ID!r}. Same as above — "
+            "either finish the push contract or don't inject the env at all."
+        )

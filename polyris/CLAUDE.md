@@ -239,3 +239,31 @@ wrapper step to silently receive zero retries.
 When adding new retry-related fields to `task_config` (new `TaskConfigKey`
 members): update `_add_retry_config` only, and both paths pick up the change
 automatically.
+
+## DDB `REMOVE` clauses target top-level attributes only — nested-JSON keys are silent no-ops
+
+DynamoDB's `UpdateExpression` `REMOVE #a, #b, #c` operates on **top-level item
+attributes**, not on keys nested inside a JSON string stored in one attribute.
+If the SFN template Marshall stringifies a `result` dict and stores it in a
+single `result` attribute, `REMOVE #manually_resolved` (aimed at
+`result._manually_resolved`) does nothing — the field is a JSON key inside a
+serialized string, not a DDB attribute. Item passes through untouched, no error,
+no log, and the reset-on-rerun contract the REMOVE was meant to enforce silently
+fails.
+
+**Why:** hit in 0.100.0 wrapper Init_Output_Row — the reset-on-rerun REMOVE
+clause listed `_manually_resolved`, `_operator`, `_reason`, `_pipeline_execution`,
+`_resolution`. All five are fields the console_api marker writer stores as
+top-level DDB attributes on the canonical row (correct), and the same names
+also appear inside `result` on some code paths (misleading). The wrapper's
+REMOVE targeted the top-level marker fields — the fix was to prune the list
+to fields that are actually top-level on the row the wrapper writes
+(`push_count` was the only one that fit that shape after review).
+
+**How to apply:** for every attribute name in a `REMOVE` clause, verify it is
+a top-level DDB attribute on the item being updated — not a JSON key inside a
+stringified blob. If you want to strip a key from inside a JSON blob, that's
+a read-modify-write on the client side, not a DDB `REMOVE`. When the same name
+exists at both levels (top attribute AND JSON key), the REMOVE only touches the
+attribute — document that explicitly in a comment so the next reader doesn't
+assume symmetry.

@@ -87,6 +87,79 @@ the blueprint/Definition state instead of the live execution.
 
 ---
 
+## Flex-container children must be a single element, never raw text mixed with JSX
+
+A `display: flex` container renders every child as a flex item. If the children
+are `"leading text " + <code>value</code>` (a text node plus an element node), the
+container makes two flex items with gap between them — the text and the code
+appear with an unexpected space, and vertical alignment breaks. Wrap
+text-plus-element children in a `<span>`.
+
+```tsx
+// WRONG — text node + <code> node = two flex items with a gap
+<div className="td-tab-empty">
+    Waiting for upstream <code>{depName}</code> to publish output.
+</div>
+
+// RIGHT — one <span> element = one flex item; text flows naturally
+<div className="td-tab-empty">
+    <span>Waiting for upstream <code>{depName}</code> to publish output.</span>
+</div>
+```
+
+**Why:** hit in 0.100.0 TaskDetailModal's pending-state cards. `.td-tab-empty`
+is `display: flex; align-items: center; gap: 0.5rem;` (icon + message). The
+message string had an inline `<code>` for the task name, which the flex layout
+turned into a second flex item — visible gap between "upstream" and the code
+element, misaligned icon. A `<span>` wrapper makes the whole message a single
+child.
+
+**How to apply:** whenever a flex or grid container's child is a *message*
+(free text with any embedded element), wrap it in one element. This includes
+`display: flex` and `display: grid` — both treat every direct child as an
+item. Inline formatting (`<em>`, `<strong>`, `<code>`, `<a>`) inside plain
+block containers (`<p>`, `<div>` without flex) is fine and doesn't need the
+wrapper.
+
+---
+
+## Cognito auth: use the ID token for API calls, not the access token
+
+AWS Cognito issues two tokens per session — the **access token** (carries
+`sub` and scopes, no user identity claims) and the **ID token** (carries
+`sub`, `email`, `email_verified`, name, and any custom claims). The API
+verifies whichever token you send; if the backend needs the caller's email
+for audit/display (e.g. `_operator` on a manual-resolution DDB marker), only
+the ID token has it — sending the access token silently falls back to the
+Cognito UUID and the audit trail shows meaningless GUIDs.
+
+```ts
+// WRONG — access token has no `email` claim; backend logs Cognito sub UUID
+const session = await fetchAuthSession();
+const token = session.tokens?.accessToken?.toString();
+return { Authorization: `Bearer ${token}` };
+
+// RIGHT — ID token carries email; backend logs "alice@example.com"
+const session = await fetchAuthSession();
+const token = session.tokens?.idToken?.toString();
+return { Authorization: `Bearer ${token}` };
+```
+
+**Why:** hit in 0.100.0 manual-resolution flow — `_operator` on the DDB
+marker was recording UUIDs like `a1b2c3d4-…` because `useAuth`'s helper
+returned `session.tokens?.accessToken`. Backend `auth.verify_cognito_token`
+extracts `claims.get("email")` and falls back to `sub` when absent — so the
+audit trail was silently wrong. Fixed by renaming to `getIdToken()` and
+routing every `Authorization` header through it.
+
+**How to apply:** every `Authorization: Bearer` header from a Cognito
+session uses the ID token. The access token is only for AWS SDK calls where
+Cognito acts as an OIDC identity provider for AWS-native services — not
+applicable in this codebase. If you see `session.tokens?.accessToken` in
+the diff, that's the bug.
+
+---
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

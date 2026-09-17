@@ -17,7 +17,7 @@ environment variables the runtime injects, so inside a task body you just call
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING, TypeGuard
 
 if TYPE_CHECKING:
     from .task import TaskInstance
@@ -130,12 +130,16 @@ _MANUAL_OPERATOR_FIELD = "_operator"
 _MANUAL_PIPELINE_EXECUTION_FIELD = "_pipeline_execution"
 
 
-def _is_manual_marker(value: Any) -> bool:
+def _is_manual_marker(value: Any) -> TypeGuard[dict]:
     """True when ``value`` is the synthetic marker written by
     ``console_api::_write_synthetic_output_marker``. The marker is a dict with
     ``_manually_resolved: True`` — other shapes (organic dict outputs that
     happen to include an unrelated ``_manually_resolved`` key set to False /
-    a string / etc.) are NOT markers."""
+    a string / etc.) are NOT markers.
+
+    Typed as :class:`TypeGuard[dict]` so mypy narrows ``value`` to ``dict`` in
+    the True branch — lets callers pass ``output`` (typed ``Any | None``) to
+    :func:`_raise_manual` without a redundant ``isinstance`` narrow."""
     return (
         isinstance(value, dict)
         and value.get(_MANUAL_RESOLVED_FIELD) is True
@@ -163,9 +167,23 @@ def _raise_manual(task_name: str, marker: dict) -> None:
 
 
 # Backward-compat alias. Existing user code with `except PullError` continues to work
-# because PullError now refers to XComMissingError (same behaviour for the historical
-# "no output stored" and "no context" cases; also catches the new missing-dep raises
-# from xcom.get()).
+# because PullError now refers to XComMissingError.
+#
+# 0.99 → 0.100 behaviour change: PullError was previously raised for both
+# "no output stored" AND "output was truncated and unavailable". In 0.100 the
+# truncation case gets its own type — XComTruncatedError — when raised via
+# xcom.get() (which layers inject → DDB fallback and only raises truncation
+# after BOTH fail). xcom.pull() still raises PullError on truncation, matching
+# the pre-0.100 shape.
+#
+# Actionable for callers: code catching `except PullError:` continues to catch
+# every missing-row case; code that wants to react specifically to
+# "truncated and unrecoverable" must migrate to xcom.get() and
+# `except XComTruncatedError:`.
+#
+# Alias mention rule: this is the single canonical explanation of the alias —
+# tutorials, examples, and other docs must use `XComMissingError` and refer
+# here rather than re-explaining. See docs/CLAUDE.md "Back-compat aliases".
 PullError = XComMissingError
 
 
