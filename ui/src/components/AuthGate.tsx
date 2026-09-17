@@ -38,32 +38,32 @@ function AuthLoading() {
  * AuthGate - Shows login or app based on auth state
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
-    const { 
-        isAuthenticated, 
-        isLoading, 
+    const {
+        isAuthenticated,
+        isLoading,
         isAuthEnabled,
-        getAccessToken,
-        signOut 
+        getIdToken,
+        signOut
     } = useAuth();
-    
+
     // Set up API auth integration
     useEffect(() => {
         if (isAuthEnabled) {
             // Set token getter for API requests
-            setAuthTokenGetter(getAccessToken);
-            
+            setAuthTokenGetter(getIdToken);
+
             // Set callback for 401 errors (force sign out)
             setAuthErrorCallback(() => {
                 logger.warn('auth', 'API returned 401 - signing out');
                 signOut();
             });
         }
-        
+
         return () => {
             setAuthTokenGetter(null);
             setAuthErrorCallback(null);
         };
-    }, [isAuthEnabled, getAccessToken, signOut]);
+    }, [isAuthEnabled, getIdToken, signOut]);
     
     // Show loading during initialization
     if (isLoading) {

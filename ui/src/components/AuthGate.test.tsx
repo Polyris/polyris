@@ -36,7 +36,7 @@ describe('AuthGate', () => {
         isAuthenticated: true,
         isLoading: false,
         isAuthEnabled: true,
-        getAccessToken: vi.fn().mockResolvedValue('test-token'),
+        getIdToken: vi.fn().mockResolvedValue('test-token'),
         signOut: vi.fn(),
         ...overrides,
     });
@@ -114,11 +114,11 @@ describe('AuthGate', () => {
         });
 
         it('sets auth token getter for API requests', () => {
-            const getAccessToken = vi.fn();
-            mockUseAuth.mockReturnValue(createAuthState({ getAccessToken }));
+            const getIdToken = vi.fn();
+            mockUseAuth.mockReturnValue(createAuthState({ getIdToken }));
             render(<AuthGate><div>App</div></AuthGate>);
             
-            expect(mockSetAuthTokenGetter).toHaveBeenCalledWith(getAccessToken);
+            expect(mockSetAuthTokenGetter).toHaveBeenCalledWith(getIdToken);
         });
 
         it('sets auth error callback for 401 handling', () => {
