@@ -2185,9 +2185,8 @@ Resources:
       ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-task-write"
       Description: >-
         Write access to the Polyris output store for tasks that call
-        xcom.push(). Attach to Glue/ECS/Batch task roles alongside
+        xcom.push(). Attach to Glue/ECS/Batch/EMR task roles alongside
         PolyrisTaskReadPolicy. Lambda return values do NOT need this.
-        EMR xcom.push() is unsupported in 0.100.0 — see CHANGELOG.
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
