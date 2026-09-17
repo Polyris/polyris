@@ -536,6 +536,29 @@ describe('TaskDetailModal', () => {
             expect(screen.queryByRole('button', { name: /Variables/ })).not.toBeInTheDocument();
         });
 
+        it('suppresses Output for cascade-skipped task (settled but no run_task_helper_arn)', () => {
+            // Auto_Skip_Register / notify_dependents' Update_Status_Skip never
+            // set run_task_helper_arn on the per-run task row — so `expectedRunId`
+            // is null. If the canonical row already carries content from a
+            // prior same-date run, the gate must still catch it via the null-
+            // expected sub-case (SEV3 must-fix from architect audit).
+            vi.mocked(useTaskOutput).mockReturnValue({
+                input: null,
+                output: { rows: 999 },  // pretend prior run wrote real output
+                truncated: false,
+                loading: false,
+                loaded: true,
+                outputRowRunId: 'arn:aws:states:...:execution:prior-helper:run-a',
+                inputRowRunId: null,
+                expectedRunId: null,  // this run's task was auto-skipped
+            });
+            const task = createTask({ status: 'skipped' });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            fireEvent.click(screen.getByText('Input / Output'));
+            expect(screen.getByText('from prior run')).toBeInTheDocument();
+            expect(screen.queryByText(/999/)).not.toBeInTheDocument();
+        });
+
         it('renders Input normally when task IS settled', () => {
             vi.mocked(useTaskOutput).mockReturnValue(io({
                 input: {

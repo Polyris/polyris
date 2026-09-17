@@ -11,7 +11,10 @@ import { looksLikeAwsMetadata } from './TaskDetailModal';
 // Coupled with `sam/sfn_templates/helpers/run_task/sfn.tpl.json`'s
 // Run_Task_* branches (each writes `$states.result` verbatim). When a new
 // service integration lands, add a fixture here + the wrapper key to
-// looksLikeAwsMetadata's FLAT/WRAPPED sets.
+// looksLikeAwsMetadata's FLAT/WRAPPED sets. The Python-side parity test
+// (`tests/sdk/test_xcom_coupled_constants_parity.py`) checks env-var and
+// enum-value coupling; the response-shape coupling is UI-side only
+// because the detector itself lives in TS with no Python counterpart.
 describe('looksLikeAwsMetadata — per-service wrapper response shapes', () => {
 
     // ── Glue: startJobRun.sync ────────────────────────────────────────────

@@ -940,13 +940,17 @@ function InputSection({
     //
     // 1. Non-settled task → Save_Input_Record hasn't fired yet for this run,
     //    row still holds a prior same-date run's snapshot. Suppress.
-    // 2. Settled task, row_run_id ≠ this run's helper ARN → the settled
-    //    outcome didn't touch input# (e.g. task skipped without wrapper
-    //    ever running Save_Input_Record). Row content belongs to another
-    //    run — suppress rather than lie about whose input it is.
+    // 2. Settled task whose row_run_id doesn't belong to this run:
+    //    (a) Explicit mismatch — row_run_id differs from this run's helper ARN.
+    //    (b) Cascade / auto-skip — task settled without wrapper ever running
+    //        Save_Input_Record, so expectedRunId is null. Any content on
+    //        the row was written by a prior same-date run.
     const isSettled = TASK_SETTLED_STATUSES.includes(taskStatus);
     const rowFromPriorRun = Boolean(
-        inputRowRunId && expectedRunId && inputRowRunId !== expectedRunId
+        inputRowRunId && (
+            (expectedRunId && inputRowRunId !== expectedRunId) ||
+            (!expectedRunId)
+        )
     );
 
     if (input === null || input === undefined) {

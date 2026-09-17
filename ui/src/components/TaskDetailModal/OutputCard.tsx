@@ -68,13 +68,22 @@ export const OutputCard: React.FC<Props> = ({
     // 1. `isSettled` — non-settled tasks haven't yet produced output for
     //    this run, canonical row necessarily holds a prior run's content.
     //
-    // 2. `rowFromPriorRun` — settled tasks that never ran the wrapper (e.g.
-    //    resolved via UI, or backfill-auto-skipped) leave the canonical row
-    //    stamped with a prior same-date run's `run_id`. Compare directly to
-    //    detect and suppress.
+    // 2. `rowFromPriorRun` — settled tasks whose canonical-row `run_id`
+    //    doesn't belong to this run. Two sub-cases:
+    //    (a) Explicit mismatch — row has a run_id, we have an expected one,
+    //        they differ.
+    //    (b) Cascade / auto-skip — task settled without the wrapper ever
+    //        running Init_Output_Row / Save_Canonical_Output, so this run's
+    //        per-run task row has NO `run_task_helper_arn` (`expectedRunId
+    //        === null`). Any content already on the row was written by a
+    //        prior same-date run. Auto_Skip_Register / notify_dependents'
+    //        Update_Status_Skip are the two states that produce this case.
     const isSettled = taskStatus === undefined || TASK_SETTLED_STATUSES.includes(taskStatus);
     const rowFromPriorRun = Boolean(
-        outputRowRunId && expectedRunId && outputRowRunId !== expectedRunId
+        outputRowRunId && (
+            (expectedRunId && outputRowRunId !== expectedRunId) ||
+            (!expectedRunId)  // cascade/auto-skip — settled without ever running wrapper
+        )
     );
 
     const toggle = () => setExpanded(!expanded);

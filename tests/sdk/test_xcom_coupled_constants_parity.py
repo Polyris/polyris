@@ -62,6 +62,59 @@ class TestPushMarkerFields:
         # to reject stale markers — the string must exist verbatim.
         assert "pushed_run_id" in sfn_template_text
 
+    def test_pushed_at_field_appears_in_sfn_template(self, sfn_template_text):
+        """`pushed_at` is stamped by xcom.push() and REMOVE'd by
+        Init_Output_Row. Not a Python constant but coupled across SDK and
+        template — a rename in one without the other breaks marker cleanup
+        on same-date re-runs."""
+        assert "pushed_at" in sfn_template_text
+
+    def test_push_count_field_appears_in_sfn_template(self, sfn_template_text):
+        """`push_count` is ADD'd by xcom.push() and REMOVE'd by
+        Init_Output_Row (post-0.100.0 addition to the REMOVE clause).
+        Same coupling as pushed_at."""
+        assert "push_count" in sfn_template_text
+
+
+# ── Canonical row-key formats (SDK ↔ SFN template ↔ console_api reader) ──
+
+
+class TestCanonicalRowKeyFormats:
+    """The `output#{pipeline}#{task}#{date}` and `input#{pipeline}#{task}#{date}`
+    key formats are hard-coded in four places: SDK reader (`xcom.pull`), SFN
+    template (`Init_Output_Row`, `Save_Input_Record`, `Save_Canonical_Output`,
+    `Save_Success_Preserve`), console_api writer + reader, and the internal-
+    record filter (`is_internal_record`). Any rename in one without the
+    others breaks readers silently. Pin the exact prefixes here."""
+
+    def test_output_prefix_in_sdk(self):
+        from pathlib import Path
+        xcom_text = (REPO_ROOT / "polyris" / "xcom.py").read_text()
+        assert '"output#"' in xcom_text or "'output#'" in xcom_text or 'f"output#{' in xcom_text
+
+    def test_output_prefix_in_sfn_template(self, sfn_template_text):
+        # The template uses JSONata expressions like `'output#' & ...`.
+        assert "'output#'" in sfn_template_text
+
+    def test_output_prefix_in_console_api(self, tasks_route_text):
+        assert 'f"output#{' in tasks_route_text or "'output#'" in tasks_route_text
+
+    def test_input_prefix_in_sfn_template(self, sfn_template_text):
+        assert "'input#'" in sfn_template_text
+
+    def test_input_prefix_in_console_api(self, tasks_route_text):
+        assert 'f"input#{' in tasks_route_text or "'input#'" in tasks_route_text
+
+    def test_output_prefix_in_internal_record_filter(self):
+        utils_text = (REPO_ROOT / "sam" / "lambdas" / "console_api" / "utils.py").read_text()
+        assert "'output#'" in utils_text or '"output#"' in utils_text
+
+    def test_input_prefix_in_internal_record_filter(self):
+        # 0.100.0 added the input# filter — regression guard so a future
+        # rename of the prefix doesn't leak input rows into All Tasks.
+        utils_text = (REPO_ROOT / "sam" / "lambdas" / "console_api" / "utils.py").read_text()
+        assert "'input#'" in utils_text or '"input#"' in utils_text
+
 
 # ── Manual-resolution marker fields ───────────────────────────────────────
 

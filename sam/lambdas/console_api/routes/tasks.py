@@ -709,13 +709,17 @@ def _emit_marker_blocked_warn(
     landing its marker because real output is already present. Best-effort —
     a failure here must not block the manual action either."""
     try:
+        # `status: 'failed'` — matches the Notifications bell's filter
+        # (`routes/notifications.py::get_notifications` filters `status
+        # ∈ {'failed', 'waiting_decision'}`). Using 'warning' silently
+        # would land the record in DDB but invisible to the operator.
         exec_name = f"_notify_warn_marker_blocked_{pipeline_name}_{task_name}_{date}_{action_name}"
         executions_repo.put({
             'execution_name': exec_name,
             'task_name': task_name,
             'pipeline_name': pipeline_name,
             'date': date,
-            'status': 'warning',
+            'status': 'failed',
             'error': (
                 f"Manual '{action_name}' by {operator} did not write a marker — "
                 f"real output for {task_name}@{date} already existed on the canonical row "

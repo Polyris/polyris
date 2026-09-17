@@ -46,17 +46,24 @@ Ships a unified reader/writer API, closes long-standing silent-corruption paths,
 - `polyris.xcom.PullError` — kept as an alias for `XComMissingError` for backward compatibility. New code should catch the specific `XCom*Error` subclass.
 
 ### Deferred (planned removal, blocked by CFN)
-- Cleanup of the misleading `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`) was reverted before 0.100.0 ship. `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store; the grant remains a documented dead permission. `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering, and the policy carries a fixed `ManagedPolicyName` (exported via `!ImportValue` in downstream user stacks), so the delete-then-create replacement fails on the name collision. A follow-up PR will rename the managed policy via a two-phase deploy (rename → deploy → rename back with the new PolicyDocument) so the cleanup lands without breaking the export.
+- Cleanup of the misleading `PolyrisResultsBucketRead` IAM statement (from `PolyrisTaskReadPolicy`) was reverted before 0.100.0 ship. `ResultsBucket` is polyris-deploy's CloudFormation artifact bucket, not an XCom store; the grant remains a documented dead permission.
+- **Root cause of the block:** commit `c0a1308` changed the policy's `Description` alongside removing the `Sid: PolyrisResultsBucketRead` statement. `AWS::IAM::ManagedPolicy` treats `Description` changes as replacement-triggering per AWS docs, and the policy's fixed `ManagedPolicyName` (`${Namespace}-${Stage}-polyris-task-read`, exported via `!ImportValue` in downstream user stacks) blocks the delete-then-create with a name collision.
+- **Cleaner follow-up plan than an earlier "rename the policy" idea:** removing the `Sid` alone (leaving `Description` and every other field untouched) is a `PolicyDocument`-only change, which AWS documents as "no interruption" — no replacement, no name collision, no downstream `ImportValue` break. Concrete PR shape:
+  1. In `sam/template.yaml`, delete only lines 2154-2168 (the `Sid: PolyrisResultsBucketRead` statement + its explanatory comment) and the corresponding `Description` re-flip if any. Leave the outer `PolyrisTaskReadPolicy` name / description / `ManagedPolicyArn` output verbatim as currently deployed.
+  2. `sam deploy` — CFN performs an in-place `UpdatePolicyVersion` on the managed policy; existing attachments and `!ImportValue` consumers stay live throughout.
+  3. Update CHANGELOG (move this bullet to "Removed") and delete the deferral comment on the Sid.
+- Estimated impact: ~15 LOC diff (template + CHANGELOG). No user-visible regression at deploy time.
 
 ### Behavior change for opt-in migration
 Migrating `event["upstream"][X]["output"]` → `xcom.get(event, X)`: if `X` uses `trigger_rule="all_done"` or `"one_success"`, pass `raise_on_failure=False`. Old raw-dict access silently returned `{}` for failed upstreams; `xcom.get()` raises by default. See DATA_PASSING.md for the migration example.
 
 ### Behavior change (in-place, no opt-in needed)
-`xcom.pull()` now raises `XComManuallyResolvedError` when the stored row is a Console-written manual-resolution marker (mark_success / skip / fail / stop via UI); previously it returned the marker dict as if it were data, and downstream `output["rows"]`-style access crashed with `KeyError` at runtime. Loud by default; pass `raise_on_manual=False` to `pull()` (or to `get()`) to receive the marker for introspection. The same behaviour is symmetric with `get()` — one shared detector and one shared error subclass across both reader entry points. No user code that legitimately handled marker output was ever possible before; there is no compat break, only a hidden bug becoming a typed exception.
+`xcom.pull()` now raises `XComManuallyResolvedError` when the stored row is a Console-written manual-resolution marker (mark_success / skip / fail / stop via UI); previously it returned the marker dict verbatim (a defensive `if pull(x).get('_manually_resolved'):` guard on the caller's side would have worked, so this IS a behaviour change, not "impossible before" — but the overwhelming majority of code did unguarded `pull(x)["rows"]`-style access and crashed with `KeyError` at runtime). Loud by default; pass `raise_on_manual=False` to `pull()` (or to `get()`) to receive the marker dict for introspection. Same behaviour is symmetric with `get()` — one shared detector and one shared error subclass across both reader entry points.
 
 ### AWS cost impact
 - +1 DDB `GetItem` per task success (`Check_Task_Pushed`)
 - +1 DDB write per task start (`Save_Input_Record` writes a separate row instead of a shared field)
+- +1 DDB `GetItem` per manual action (`_write_synthetic_output_marker` splits its guard into GetItem-then-Update to distinguish protect-real-output from refresh-stale-marker, per CLAUDE.md rule #31). Only fires when an operator clicks Skip / Mark Success / Mark Failed / Stop via the UI — low volume, single-digit-ms latency, doesn't scale with task throughput.
 - Approximate impact at 100k tasks/day: ~$0.30/day, ~$9/month
 - No impact when no task runs
 
