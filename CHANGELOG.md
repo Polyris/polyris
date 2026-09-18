@@ -1,3 +1,36 @@
+## v1.0.1 - 2026-09-18
+
+### Fixed — Athena/Glue onboarding + verbatim-template gotchas
+
+Closes five real-world onboarding traps caught during live end-to-end
+smoke-testing of the new `examples/17_all_task_types_xcom` reference
+pipeline (Lambda × Glue Spark × Glue pythonshell × Athena × ECS × Batch ×
+nested SFN, all reading upstream + writing xcom).
+
+**IAM (`sam/template.yaml`) — default task role now supports Athena ETL out of the box:**
+- Adds 13 Glue Data Catalog read actions (`GetDatabase`, `GetTable`, `GetPartition`, `GetUserDefinedFunction`, `GetConnection` families). Without these, Athena engine v3 fails every query with `glue:GetDatabase AccessDeniedException` because it consults Glue for the query plan.
+- Adds 9 Glue write actions (`CreateTable` / `UpdateTable` / `DeleteTable` + `CreatePartition` / `UpdatePartition` / `DeletePartition` + `Batch*` variants) so CTAS, INSERT INTO, DROP TABLE, ALTER TABLE, and partitioned Hive/Iceberg workflows work without extra IAM.
+- Adds `athena:GetQueryResults` + `athena:StopQueryExecution`.
+- Deliberately excludes `glue:CreateDatabase` / `DeleteDatabase` / `UpdateDatabase` (admin-level; provision via CFN/Terraform). Regression test grep-pins the whole matrix and anti-guards the Database CRUD triple.
+
+**SDK — new verbatim-template guard at DAG-definition time:**
+- `_reject_template_syntax` fires from `@task.athena_query(query_string=...)`, `@task.batch_job(batch_parameters=...)`, `@task.glue_job(glue_arguments=...)`, and their direct-step counterparts (`AthenaTask`, `GlueTask`). polyris passes these values to the AWS service verbatim — there is no runtime templating layer, so a `{{ ds }}` (Airflow-style Jinja) or `{% $states.input.x %}` (JSONata) placeholder reaches the service as literal characters and breaks the SQL parser / becomes useless string parameters. Now caught at `polyris-validate`, not at AWS runtime.
+- Corrected misleading SDK docstrings that showed `'{{ ds }}'` and `'{% $.date %}'` as examples in `@task.athena_query`, `AthenaTask`, `GlueTask` — the examples were the class of code the guard now rejects.
+
+**Documentation — new CLAUDE.md rules from lessons learned:**
+- **Root #35**: `AWS::ECS::TaskDefinition` / `AWS::Batch::JobDefinition` are immutable per revision — DAGs must reference them by family name (no `:N` suffix), or CFN template updates land in a new revision that the pinned DAG never sees. Hit live: Command was updated in CFN, `:2` was created, but the DAG kept calling `:1`.
+- **`polyris/CLAUDE.md`** — "Task-config string fields are passed verbatim" (documents the SDK gap the guard closes + Athena/Batch/Glue workarounds).
+- **`polyris/CLAUDE.md`** — "Glue Python install: pythonshell + Spark → S3 wheel; `git+URL` doesn't work reliably" (Glue's `--additional-python-modules` tokenizes on whitespace, rejects PEP 508 direct-URL syntax; `--extra-py-files` with an S3 wheel is the only reliable path).
+
+**Examples — new reference pipeline:**
+- `examples/17_all_task_types_xcom/` — 8-task chain exercising every polyris 1.0.0 task type participating in xcom bidirectionally, with an honest "This is a smoke test — not a production pattern" section pointing readers at pre-built Docker images for real ECS/Batch deployments.
+
+### Compatibility
+
+- No SDK API changes. Only additive (new guard raises earlier for invalid input).
+- IAM policy expansion is a one-time redeploy of the polyris SAM stack (`sam build && sam deploy`).
+- All existing pipelines continue to work; DAGs with pinned `:1` ECS/Batch ARNs keep working but silently miss template updates (rule #35 documents the migration).
+
 ## v1.0.0 - 2026-09-17
 
 ### Added — Reliable task-to-task data passing (XCom)
