@@ -40,9 +40,13 @@ Athena SQL can't call `xcom.push()` (no Python hook) and can't call
 `xcom.get()` at runtime (SQL is not the polyris runtime). Its xcom
 participation is:
 
-- **Read side** — `variables=` templating pulls DAG-defined constants into
-  the query string at DAG-definition time. See `summary_athena`'s
-  `variables.silver_threshold` reference.
+- **Read side** — none at runtime. Bake constants into the query at
+  DAG-definition time with a Python f-string (see `SILVER_THRESHOLD` in
+  `dag.py`). polyris does NOT template `query_string` — a `{{ ... }}` or
+  `{% ... %}` placeholder reaches Athena as literal characters and breaks
+  the SQL parser. The SDK guard fails this at `polyris-validate` since
+  1.0.1. `variables=` on the DAG records values for Console visibility
+  but is NOT interpolated into the query.
 - **Write side** — the wrapper stores the `StartQueryExecution` API response
   (`{"QueryExecution": {"QueryExecutionId": "..."}}`) as the task's xcom
   output. That's AWS metadata, not data.
@@ -101,7 +105,7 @@ New (add to `testing-infra/test-resources.yaml` or a companion stack):
 | Task | Resource | Notes |
 |------|----------|-------|
 | `seed_lambda` | Lambda `polyris-test-xcom-all-seed` | inline handler — see `lambda_handlers/seed.py`; no SDK |
-| `transform_spark` | Glue Spark job `polyris-test-xcom-all-transform-spark` | `Command.Name = glueetl`, `GlueVersion = 4.0`, `DefaultArguments: --additional-python-modules: polyris==1.0.0`, PolyrisTaskRead/Write policies |
+| `transform_spark` | Glue Spark job `polyris-test-xcom-all-transform-spark` | `Command.Name = glueetl`, `GlueVersion = 5.0` (Python 3.11, matches polyris `requires-python`), `DefaultArguments: --extra-py-files: s3://…/polyris-1.0.0-*.whl`, PolyrisTaskRead/Write policies |
 | `aggregate_pyshell` | Glue pythonshell job `polyris-test-xcom-all-aggregate-pyshell` | `Command.Name = pythonshell`, `DefaultArguments: --extra-py-files: s3://…/polyris-1.0.0-*.whl`, PolyrisTaskRead/Write |
 | `summary_athena` | Table `analytics.silver_stats` with column `silver_count` | pre-populated for the demo; the query is deterministic |
 | `resolve_athena` | Lambda `polyris-test-xcom-all-resolve-athena` | `polyris>=1.0.0` in zip, PolyrisTaskRead + `athena:GetQueryResults` + `s3:GetObject` on workgroup output |
@@ -202,4 +206,3 @@ polyris-deploy --destroy     # removes the pipeline stack
 - API reference: [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md)
 - Focused xcom showcase: [`examples/16_xcom_showcase/`](../16_xcom_showcase/)
 - All task types without xcom emphasis: [`examples/04_task_types/`](../04_task_types/)
-- Real-account variant: `examples_temp/17_all_task_types_xcom/`

@@ -5,12 +5,16 @@ Deploy this as the ``ScriptLocation`` of a Glue Spark job named
     Command:
       Name: glueetl
       PythonVersion: "3"
-    GlueVersion: "4.0"
+    GlueVersion: "5.0"     # Python 3.11 — matches polyris requires-python >=3.11.
 
-Requires ``polyris>=1.0.0`` on the cluster. Glue Spark ETL supports
-``--additional-python-modules`` natively:
+Requires ``polyris>=1.0.0`` on the cluster. Install via ``--extra-py-files``
+pointing at an S3 wheel — the SAME mechanism the pythonshell variant uses.
+``--additional-python-modules 'polyris @ git+...'`` fails at Glue LAUNCH
+(the wrapper tokenizes on whitespace and pip sees a bare `@` — invalid
+requirement). See ``polyris/CLAUDE.md`` "Glue Python install" rule::
+
     DefaultArguments:
-      "--additional-python-modules": "polyris==1.0.0"
+      "--extra-py-files": "s3://<bucket>/polyris-1.0.0-py3-none-any.whl"
 
 IAM:
     - AWSGlueServiceRole
