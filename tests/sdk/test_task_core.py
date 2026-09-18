@@ -343,3 +343,196 @@ class TestTaskIdentity:
         clone = object.__new__(type(a))
         clone.__dict__.update(a.__dict__)
         assert clone not in b.dependencies
+
+
+class TestVerbatimTemplateGuard:
+    """polyris forwards query_string/batch_parameters to AWS verbatim — no Jinja
+    or JSONata layer. Placeholders in those fields silently break at runtime
+    (Athena SQL parser error, or a Batch parameter that evaluates to the literal
+    string). Guard fails loud at DAG-definition time so the author sees it
+    during ``polyris-validate``, not after deploy + a live run.
+
+    See polyris/CLAUDE.md 'Task-config string fields are passed verbatim'.
+    """
+
+    # ─── @task.athena_query — Jinja + JSONata forms both rejected ────────
+    def test_athena_query_rejects_jinja_double_brace(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.athena_query(
+                    query_string="SELECT * FROM t WHERE ds = '{{ ds }}'",
+                    database="db",
+                )
+                def q():
+                    pass
+
+    def test_athena_query_rejects_jsonata_percent_brace(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.athena_query(
+                    query_string="SELECT * WHERE x > {% $states.input.x %}",
+                    database="db",
+                )
+                def q():
+                    pass
+
+    def test_athena_query_accepts_static_sql(self):
+        # A DAG-build-time f-string interpolation is the recommended pattern.
+        with DAG("d", schedule=None):
+            threshold = 100
+            @task.athena_query(
+                query_string=f"SELECT * FROM t WHERE x > {threshold}",
+                database="db",
+            )
+            def q():
+                pass
+        # No raise = accepted. Sanity check that the field survived.
+        assert "WHERE x > 100" in q.query_string
+
+    # ─── @task.batch_job — every value in batch_parameters is checked ────
+    def test_batch_job_rejects_jinja_in_parameter_value(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.batch_job(
+                    job_definition="jd",
+                    job_queue="jq",
+                    batch_parameters={"format": "{{ variables.fmt }}"},
+                )
+                def b():
+                    pass
+
+    def test_batch_job_rejects_jsonata_in_parameter_value(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.batch_job(
+                    job_definition="jd",
+                    job_queue="jq",
+                    batch_parameters={"fmt": "{% $states.input %}"},
+                )
+                def b():
+                    pass
+
+    def test_batch_job_error_names_the_offending_key(self):
+        # Multi-value dict: the message must point at the specific key so
+        # authors don't have to grep multiple parameters for '{{'.
+        with pytest.raises(ValueError, match=r"'bad'"):
+            with DAG("d", schedule=None):
+                @task.batch_job(
+                    job_definition="jd",
+                    job_queue="jq",
+                    batch_parameters={"good": "static", "bad": "{{ x }}"},
+                )
+                def b():
+                    pass
+
+    def test_batch_job_accepts_static_parameters(self):
+        with DAG("d", schedule=None):
+            @task.batch_job(
+                job_definition="jd",
+                job_queue="jq",
+                batch_parameters={"format": "pdf", "quality": "high"},
+            )
+            def b():
+                pass
+        assert b.batch_parameters == {"format": "pdf", "quality": "high"}
+
+    def test_batch_job_accepts_none_parameters(self):
+        # Guard must handle `batch_parameters=None` (the default) without
+        # dereferencing it — regression guard for a plausible `.items()` on None.
+        with DAG("d", schedule=None):
+            @task.batch_job(job_definition="jd", job_queue="jq")
+            def b():
+                pass
+        assert b.batch_parameters is None
+
+    # ─── @task.glue_job — every value in glue_arguments is checked ──────
+    def test_glue_job_rejects_jinja_in_glue_arguments(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.glue_job(
+                    job_name="jn",
+                    glue_arguments={"--date": "{{ ds }}"},
+                )
+                def g():
+                    pass
+
+    def test_glue_job_rejects_jsonata_in_glue_arguments(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.glue_job(
+                    job_name="jn",
+                    glue_arguments={"--partition": "{% $states.input.p %}"},
+                )
+                def g():
+                    pass
+
+    def test_glue_job_error_names_the_offending_arg(self):
+        with pytest.raises(ValueError, match=r"'--stale'"):
+            with DAG("d", schedule=None):
+                @task.glue_job(
+                    job_name="jn",
+                    glue_arguments={"--ok": "static", "--stale": "{{ ds }}"},
+                )
+                def g():
+                    pass
+
+    def test_glue_job_accepts_static_arguments(self):
+        with DAG("d", schedule=None):
+            @task.glue_job(
+                job_name="jn",
+                glue_arguments={"--source": "s3://bucket/", "--format": "parquet"},
+            )
+            def g():
+                pass
+        assert g.glue_arguments == {"--source": "s3://bucket/", "--format": "parquet"}
+
+    def test_glue_job_accepts_none_arguments(self):
+        with DAG("d", schedule=None):
+            @task.glue_job(job_name="jn")
+            def g():
+                pass
+        assert g.glue_arguments is None
+
+    # ─── Direct step GlueTask — same guard, same message ────────────────
+    def test_direct_glue_step_rejects_template_syntax(self):
+        from polyris.steps import GlueTask
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                GlueTask(
+                    step_id="g",
+                    job_name="jn",
+                    arguments={"--date": "{% $.current_date %}"},
+                )
+
+    # ─── Direct step AthenaTask — same guard, same message ──────────────
+    def test_direct_athena_step_rejects_template_syntax(self):
+        from polyris.steps import AthenaTask
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                AthenaTask(
+                    step_id="q",
+                    query_string="SELECT * WHERE d = '{{ ds }}'",
+                    database="db",
+                    output_location="s3://b/",
+                )
+
+    def test_direct_athena_step_accepts_static_sql(self):
+        from polyris.steps import AthenaTask
+        with DAG("d", schedule=None):
+            step = AthenaTask(
+                step_id="q",
+                query_string="SELECT 1",
+                database="db",
+                output_location="s3://b/",
+            )
+        assert step.query_string == "SELECT 1"
+
+    # ─── Non-string values (defensive) ──────────────────────────────────
+    def test_non_string_batch_parameter_value_is_skipped(self):
+        # If a caller passes a non-string (e.g. accidentally an int), the
+        # guard must not crash — non-string values can't carry `{{` markers
+        # anyway. Type validation is a separate concern.
+        from polyris.task import _reject_template_syntax
+        _reject_template_syntax("x", 42)         # no raise
+        _reject_template_syntax("x", None)       # no raise
+        _reject_template_syntax("x", {"k": "v"}) # no raise

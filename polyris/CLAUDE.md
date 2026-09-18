@@ -267,3 +267,89 @@ a read-modify-write on the client side, not a DDB `REMOVE`. When the same name
 exists at both levels (top attribute AND JSON key), the REMOVE only touches the
 attribute — document that explicitly in a comment so the next reader doesn't
 assume symmetry.
+
+## Task-config string fields are passed verbatim — no Jinja / JSONata templating
+
+`query_string` (Athena), `batch_parameters` (Batch), and other string-valued
+task-config fields are forwarded to the AWS service call literally. There is
+no runtime templating layer — a `{{ variable }}` (Airflow-style Jinja) or
+`{% $states.input.variables.x %}` (JSONata) placeholder in the string reaches
+the service verbatim and either breaks the SQL parser (Athena:
+`InvalidRequestException — line 1:N: mismatched input '{'`) or is treated as
+a literal parameter value (Batch).
+
+**Why:** the SDK docstring for `@task.athena_query` shows
+`query_string="SELECT * FROM sales WHERE date = '{{ ds }}'"` as an example —
+which is misleading. That syntax is Airflow's, and polyris doesn't inherit it.
+Hit live in 1.0.0 smoke-testing pipeline-17 (`summary_athena`) — the query
+`WHERE silver_count > {{ variables.silver_threshold }}` failed at position 85
+with `mismatched input '>'` because the `{` bytes went straight to Athena.
+
+**How to apply:** interpolate at DAG-definition time using plain Python
+f-strings or `.format()`, not template syntax. If the value must vary at
+runtime (per-run date, upstream xcom output), route it through
+`variables=` on the DAG (visible in the Console, still constant per-run) or
+wrap the service call in a Lambda that does the substitution before invoking
+Athena/Batch. Never rely on `{{ }}` or `{% %}` inside `query_string` /
+`batch_parameters` / similar until the SDK grows a real templating layer.
+
+```python
+# WRONG — sent to Athena verbatim, fails with InvalidRequestException
+@task.athena_query(
+    query_string="SELECT ... WHERE x > {{ variables.threshold }}",
+    ...
+)
+
+# RIGHT — interpolated at DAG-build time
+THRESHOLD = 100
+@task.athena_query(
+    query_string=f"SELECT ... WHERE x > {THRESHOLD}",
+    ...
+)
+```
+
+The SDK docstring for `@task.athena_query` should either be updated to reflect
+this or the SDK should grow a real Jinja layer that renders task-config strings
+at compile time. Both are follow-ups.
+
+## Glue Python install: pythonshell = `--extra-py-files` (S3 wheel only), Spark = also wheel — `git+URL` doesn't work reliably
+
+AWS Glue's Python-install mechanisms are subtly different from stock pip and
+have version-specific quirks. The safe rule: **install polyris (or any custom
+package) into Glue jobs via an S3 wheel referenced by `--extra-py-files`.**
+
+**Details:**
+
+- **`--extra-py-files`** (accepted by both pythonshell and glueetl/Spark) — S3
+  URI pointing to `.whl`, `.egg`, or `.py`. **Works reliably.** Wheels don't
+  enforce `requires-python` from `pyproject.toml` when built by our custom
+  builder (which omits that metadata), so this also side-steps Glue-version
+  vs Python-version mismatches. This is the pattern all our Glue jobs
+  (`XcomAggregateGlueJob`, `XcomAllAggregatePyshellGlueJob`,
+  `XcomAllTransformSparkGlueJob`) use.
+- **`--additional-python-modules`** (glueetl-only) — comma-separated list of
+  pip requirements. Documented as "no spaces allowed in the value". PEP 508
+  direct-URL syntax (`polyris @ git+https://...`) fails at LAUNCH ERROR with
+  `Invalid requirement: '@'` because Glue tokenizes on whitespace and pip
+  sees a bare `@`. Compact form (`polyris@git+...` no spaces) is also
+  unreliable — not officially supported syntax. Plain PyPI names
+  (`polyris==1.0.0`) work if the package is published, but even then Glue
+   5.0's pip may fail on `requires-python` mismatches. Best used only for
+  well-behaved PyPI packages, never for git URLs.
+- **VCS URLs in general** — Glue does not officially support git/hg/svn URLs
+  in either mechanism. Anecdotal reports of `--additional-python-modules`
+  accepting them exist, but hit our tokenization bug in 1.0.0 pipeline-17
+  smoke-test.
+
+**How to apply:**
+- Any polyris Glue job that needs the SDK: use `--extra-py-files` +
+  `XcomPolyrisWheel` (the CFN Custom Resource that builds the wheel from
+  the vendored `polyris/` subtree). Reuse this — don't duplicate the builder.
+- If you need to install *only PyPI packages* in a Spark job (no polyris),
+  `--additional-python-modules pkg==1.0,other==2.0` (no spaces, no VCS) is
+  fine.
+- ECS/Batch containers CAN use `pip install polyris @ git+...` in their
+  bootstrap Command — pip there is stock, no Glue wrapper interposed.
+  See `XcomAllComputeTaskDefinition` / `XcomAllRenderJobDefinition`.
+- Never mix — Glue always S3 wheel, containers always git+URL (or pre-built
+  image), so consistency in each surface is easy to follow.

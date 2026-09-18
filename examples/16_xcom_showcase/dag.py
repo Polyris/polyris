@@ -1,48 +1,57 @@
 """XCom showcase — every reader/writer path in one pipeline (1.0.0+).
 
-Deploy this and open the Task Detail modal for each task in the Console to see
-every 1.0.0 XCom feature in one place:
+Deploy this and open the Task Detail modal for each task in the Console to
+see every 1.0.0 XCom feature in one place:
 
-* ``xcom.get(event, task)`` uniform reader
-* ``xcom.push(value)`` writer for service tasks (Glue)
-* Primitive return values that used to be wrapped in ``{"_raw": ...}`` (fixed)
-* Loud errors: ``XComMissingError`` / ``XComUpstreamFailedError``
+* ``xcom.get(event, task)`` — uniform reader for every task type
+* ``xcom.push(value)`` — writer for service tasks (Glue), closes the
+  "AWS response metadata leak" trap
+* Primitive return values (``42``, ``[1,2,3]``, ``None``) — used to be
+  wrapped in ``{"_raw": "..."}`` before 1.0.0
+* Loud errors: ``XComMissingError`` / ``XComUpstreamFailedError`` /
+  ``XComTruncatedError`` / ``XComManuallyResolvedError``
 * ``all_done`` trigger with ``raise_on_failure=False`` opt-out
 * Console UI: colored per-dep cards, AWS-metadata banner, status badges
 
-Pipeline shape::
+Deploy prerequisites:
+    1. polyris SAM stack deployed to the target AWS account.
+    2. ``examples/testing-infra/test-resources.yaml`` stack deployed — it
+       provisions the four resources this DAG references:
+           polyris-test-xcom-extract-dict       Lambda
+           polyris-test-xcom-extract-primitive  Lambda
+           polyris-test-xcom-report             Lambda (with polyris SDK)
+           polyris-test-xcom-aggregate          Glue job (uses xcom.push)
+    3. ``polyris-deploy`` from this directory.
+
+Then open the Console → xcom-showcase pipeline → latest run, and walk
+through the "What to look at in the Console" section of README.md.
+
+Pipeline shape (fan-in)::
 
     extract_dict ─────┐
-    extract_primitive ─┼──> report  (trigger_rule="all_done")
+    extract_primitive ─┼──▶ report  (trigger_rule="all_done")
     aggregate_glue ───┘
 
-    extract_dict       Lambda returns a dict — the normal case.
-    extract_primitive  Lambda returns 42 — the primitive that used to break
-                       (pre-1.0.0: downstream got {"_raw": "42"}, KeyError).
-    aggregate_glue     Glue calls xcom.push({...}) — real data flows downstream,
-                       not a {"JobRunId": "..."} metadata leak.
-    report             Lambda uses xcom.get(event, "...") — loud errors by default,
-                       raise_on_failure=False for the flaky upstream.
+What each task demonstrates:
 
-Handler code lives beside this file in ``lambda_handlers/`` and ``glue_scripts/``.
-The README walks through what to observe in Console after each run.
+* ``extract_dict`` — Lambda returning a dict — the common case.
+* ``extract_primitive`` — Lambda returning 42 — the primitive that used to
+  break pre-1.0.0 (downstream got ``{"_raw": "42"}`` and KeyError'd).
+* ``aggregate_glue`` — Glue job with ``xcom.push({...})`` — real data reaches
+  downstream instead of the wrapper storing ``{"JobRunId": "..."}``.
+* ``report`` — Lambda using ``xcom.get(event, "...")`` — uniform reader with
+  loud errors by default, ``raise_on_failure=False`` opt-out for the
+  ``all_done`` trigger case.
 
-Deploy prerequisites:
-    - Base test resources from ``examples/testing-infra/test-resources.yaml``
-      (provides polyris-test-lambda you can reuse, or use dedicated functions
-      per handler for a cleaner demo — see README).
-    - PolyrisTaskWritePolicy attached to the Glue job's IAM role — required
-      for xcom.push() (dynamodb:UpdateItem on output#* keys).
+Handler code lives beside this file in ``lambda_handlers/`` and
+``glue_scripts/`` — identical to the examples/16_xcom_showcase copies since
+the test-resources stack installs the same code either way.
 
 Run locally (no AWS):  polyris-validate -v
 """
 from datetime import timedelta
 
 from polyris import DAG, task
-
-# Replace the account-id in these ARNs before deploying.
-_ACCOUNT = "000000000000"
-_REGION = "us-east-1"
 
 
 with DAG(
@@ -66,107 +75,73 @@ with DAG(
     # -----------------------------------------------------------------------
     # Producer 1: Lambda that returns a dict (the common case).
     # -----------------------------------------------------------------------
-    #
-    # Handler: lambda_handlers/extract_dict.py
-    #     def handler(event, _context):
-    #         return {"rows": 1240, "path": "s3://lake/2026-01-01/data.parquet"}
-    #
-    # After running, open Task Detail for extract_dict:
-    #     Output tab shows the returned dict as clean JSON. No banner.
-    # -----------------------------------------------------------------------
-    @task.lambda_function(
-        function_name=f"arn:aws:lambda:{_REGION}:{_ACCOUNT}:function:polyris-xcom-extract-dict",
-    )
+    @task.lambda_function(function_name="polyris-test-xcom-extract-dict")
     def extract_dict():
+        """See lambda_handlers/extract_dict.py — pure stdlib handler, returns
+        ``{"rows": N, "path": "s3://..."}``. Task Detail Output tab shows the
+        dict as clean JSON, no banner."""
         pass
 
     # -----------------------------------------------------------------------
-    # Producer 2: Lambda that returns a primitive (int, list, None, bool).
+    # Producer 2: Lambda that returns a primitive.
     # -----------------------------------------------------------------------
     #
-    # Handler: lambda_handlers/extract_primitive.py
-    #     def handler(event, _context):
-    #         return 42          # or [1, 2, 3], None, True — all fixed in 1.0.0
+    # See lambda_handlers/extract_primitive.py. Pre-1.0.0 this would have
+    # wrapped the value in ``{"_raw": "42"}`` via the $isJson heuristic —
+    # downstream ``event["upstream"]["extract_primitive"]["output"]`` was a
+    # dict, not 42.
     #
-    # Before 1.0.0: Get_Dep_Output's $isJson heuristic wrapped the value in
-    # {"_raw": "42"}, and downstream event["upstream"]["extract_primitive"]["output"]
-    # was a dict, not 42 — accessing .rows or [0] blew up with KeyError/TypeError.
-    #
-    # After 1.0.0: the value flows through untouched. In the report task:
-    #     value = xcom.get(event, "extract_primitive")   # → 42
+    # 1.0.0 replaces the heuristic with ``$exists($parse($safe))``; the value
+    # flows through untouched, and ``report`` reads it as ``42`` via xcom.get().
     # -----------------------------------------------------------------------
-    @task.lambda_function(
-        function_name=f"arn:aws:lambda:{_REGION}:{_ACCOUNT}:function:polyris-xcom-extract-primitive",
-    )
+    @task.lambda_function(function_name="polyris-test-xcom-extract-primitive")
     def extract_primitive():
         pass
 
     # -----------------------------------------------------------------------
-    # Producer 3: Glue with xcom.push() — service task that writes real data.
+    # Producer 3: Glue with xcom.push() — service task writing real data.
     # -----------------------------------------------------------------------
     #
-    # Script: glue_scripts/aggregate_with_push.py
-    #     from polyris import xcom
-    #     # ... Spark work ...
-    #     xcom.push({"total_rows": 500, "path": "s3://lake/aggregated.parquet"})
+    # See glue_scripts/aggregate_with_push.py. testing-infra installed this
+    # exact script as the Glue job's ScriptLocation. Without the push (see
+    # aggregate_no_push.py, deployed manually to compare), the wrapper would
+    # store ``{"JobRunId": "..."}`` as the task result and downstream would
+    # see AWS metadata instead of the aggregation output.
     #
-    # Without the push (glue_scripts/aggregate_no_push.py):
-    #     Task Detail → Output tab shows {"JobRunId": "jr_xyz"} + a warn banner
-    #     "This output is an AWS API response, not application data. For
-    #     Glue/ECS/Batch tasks, call xcom.push(value) in your job code..."
-    #
-    # With the push: Output tab shows the real dict, no banner.
-    #
-    # Downstream reads the same way regardless:
-    #     data = xcom.get(event, "aggregate_glue")
-    #
-    # IAM required: PolyrisTaskWritePolicy on the Glue role (in addition to
-    # PolyrisTaskReadPolicy). Cross-account tasks need extra setup — see docs.
+    # IAM: the Glue role has PolyrisTaskReadPolicy (dynamodb:GetItem) AND
+    # PolyrisTaskWritePolicy (dynamodb:UpdateItem on output#* keys) — both
+    # attached by the testing-infra stack.
     # -----------------------------------------------------------------------
     @task.glue_job(
-        job_name="polyris-xcom-aggregate",
-        glue_arguments={"--source": "extract_events"},
+        job_name="polyris-test-xcom-aggregate",
+        glue_arguments={"--source": "events"},
     )
     def aggregate_glue():
         pass
 
     # -----------------------------------------------------------------------
-    # Consumer: Lambda that reads all three via xcom.get().
+    # Consumer: Lambda that reads all three via xcom.get() (1.0.0 API).
     # -----------------------------------------------------------------------
     #
-    # trigger_rule="all_done" runs `report` after all upstreams finish, whether
-    # they succeeded or not. That means the primitive producer can even be
-    # intentionally flaky and we still get to demonstrate error handling.
+    # trigger_rule="all_done" runs report after every upstream finishes,
+    # success or fail. See lambda_handlers/report.py:
     #
-    # Handler: lambda_handlers/report.py
-    #     from polyris import xcom, XComMissingError, XComUpstreamFailedError
+    #     dict_output      = xcom.get(event, "extract_dict")
+    #     primitive_output = xcom.get(event, "extract_primitive", raise_on_failure=False)
+    #     glue_output      = xcom.get(event, "aggregate_glue")
     #
-    #     def handler(event, _context):
-    #         # required — raises XComMissingError if no output, XComUpstreamFailedError
-    #         # if the upstream's status is not "success"
-    #         d = xcom.get(event, "extract_dict")
+    # Deployment zip: testing-infra's XcomZipBuilder Custom Resource assembles
+    # index.py + vendored polyris/xcom.py + minimal polyris/__init__.py into
+    # s3://<bucket>/xcom-showcase/report.zip; the Lambda references that S3 key.
     #
-    #         # tolerant — returns None instead of raising when the primitive
-    #         # producer failed (opt-in for all_done trigger consumers)
-    #         p = xcom.get(event, "extract_primitive", raise_on_failure=False)
-    #
-    #         # normal — Glue's pushed value flows through as-is
-    #         a = xcom.get(event, "aggregate_glue")
-    #
-    #         return {
-    #             "dict_rows": d["rows"],
-    #             "primitive_value": p,           # int or None
-    #             "glue_total": a["total_rows"],
-    #         }
-    #
-    # After running, open Task Detail for report → Input tab shows three
-    # colored cards — one per upstream:
-    #   * extract_dict         green, expandable JSON payload
-    #   * extract_primitive    yellow "failed" (if it did) OR green success
-    #   * aggregate_glue       green if pushed, yellow AWS-metadata warning if not
+    # Task Detail Input tab after run shows three colored per-upstream cards:
+    #   * extract_dict         green, expandable JSON
+    #   * extract_primitive    green success, or yellow "no output recorded"
+    #                          if the handler raised (all_done still fires this)
+    #   * aggregate_glue       green if pushed, yellow AWS-metadata banner if not
     # -----------------------------------------------------------------------
     @task.lambda_function(
-        function_name=f"arn:aws:lambda:{_REGION}:{_ACCOUNT}:function:polyris-xcom-report",
+        function_name="polyris-test-xcom-report",
         trigger_rule="all_done",
     )
     def report():

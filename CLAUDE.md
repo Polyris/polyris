@@ -809,6 +809,45 @@ that forces its use.
   moto table — a pass-only test with a single writer never catches this class
   of bug.
 
+**35. `AWS::ECS::TaskDefinition` and `AWS::Batch::JobDefinition` are immutable
+per revision — DAGs must reference them by family name (no `:N` suffix), never
+by pinned revision ARN, or CFN updates land in a new revision the DAG can't
+see**
+
+Both resources are versioned: any change to `Command`, `Image`, `Environment`,
+`ContainerProperties`, etc. causes CFN to create a new revision (`:2`, `:3`,
+…) and update the logical ID pointer. **The prior revision stays `ACTIVE`
+forever** (until explicitly deregistered), so a DAG that hardcodes
+`arn:...:task-definition/family:1` in `@task.ecs_task(task_definition=...)`
+keeps calling revision 1 — with its stale Command — even after the template
+change ships. ECS RunTask and Batch SubmitJob both accept the family name
+without a revision suffix and resolve to the latest `ACTIVE` revision, which
+is what you actually want.
+
+**Why:** hit in 1.0.0 pipeline-17 smoke-test — the ECS/Batch container Command
+was migrated from S3-wheel bootstrap to `pip install polyris @ git+...`, CFN
+happily created `polyris-test-xcom-all-render:2`, but the DAG was still
+pinned to `:1` and the failed task's error dump showed the old Command
+verbatim. Deploy was silently stale for both `compute_ecs` and `render_batch`.
+
+**How to apply:**
+- In DAG `@task.ecs_task(task_definition=...)` and
+  `@task.batch_job(job_definition=...)`, drop the trailing `:N` from the ARN
+  — write `arn:...:task-definition/polyris-my-task` (no revision), not
+  `polyris-my-task:1`. AWS ECS/Batch resolve family-only references to the
+  latest `ACTIVE` revision at RunTask/SubmitJob time.
+- Only pin `:N` when you deliberately want to hold a specific version through
+  a change (e.g. testing a canary revision without letting the DAG follow the
+  latest). Document why on the pinned line.
+- Old revisions accumulate — periodically `deregister-task-definition` /
+  `deregister-job-definition` to prune unused ones, especially in dev
+  accounts where every template edit adds one.
+- Same reasoning does NOT apply to `AWS::Lambda::Function` (mutable via
+  in-place update, no version bump unless you publish a version) or
+  `AWS::StepFunctions::StateMachine` (mutable definition, no revision suffix
+  in ARN). This rule is specifically for the two immutable-versioned
+  resources.
+
 ---
 
 

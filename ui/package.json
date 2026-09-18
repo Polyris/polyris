@@ -1,7 +1,7 @@
 {
   "name": "polyris-console",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "scripts": {
     "gen:ee": "node scripts/gen-ee-active.mjs",
     "predev": "npm run gen:ee",

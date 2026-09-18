@@ -21,6 +21,42 @@ if TYPE_CHECKING:
     from .dag import DAG
 
 # ============================================
+# Task-config verbatim-string guard
+# ============================================
+# polyris forwards `query_string` (Athena) and `batch_parameters` values
+# (Batch) to the AWS service verbatim — no Jinja/JSONata templating layer.
+# A `{{ ... }}` or `{% ... %}` placeholder in these fields reaches the
+# service as literal characters and either breaks the SQL parser (Athena:
+# `InvalidRequestException — mismatched input '{'`) or becomes a useless
+# string parameter (Batch). Fail loudly at DAG-definition time so the
+# author sees it during `polyris-validate`, not after deploy.
+# See polyris/CLAUDE.md "Task-config string fields are passed verbatim".
+_TEMPLATE_MARKERS = ("{{", "{%")
+
+
+def _reject_template_syntax(field_name: str, value: Any) -> None:
+    """Raise ValueError if ``value`` contains Jinja / JSONata template markers.
+
+    ``field_name`` is used in the error message to point the author at the
+    exact field that's misusing the syntax.
+    """
+    if not isinstance(value, str):
+        return
+    for marker in _TEMPLATE_MARKERS:
+        if marker in value:
+            raise ValueError(
+                f"{field_name} contains {marker!r} — polyris does not template "
+                f"this field. The value is passed to the AWS service verbatim, "
+                f"so {marker!r} reaches it as literal characters and breaks "
+                f"the SQL parser / becomes a useless string parameter. "
+                f"Interpolate at DAG-definition time using a Python f-string, "
+                f"or route the runtime value through a Lambda-front task. "
+                f"See polyris/CLAUDE.md 'Task-config string fields are passed "
+                f"verbatim'."
+            )
+
+
+# ============================================
 # Task Instance - Result of calling a task
 # ============================================
 
@@ -843,6 +879,15 @@ class TaskDecorator:
                 "worker_type/number_of_workers (different Glue capacity models)."
             )
         _validate_common_kwargs("glue_job", common)
+        # Same class of gotcha as `@task.batch_job(batch_parameters=...)` — the
+        # dict is forwarded to Glue StartJobRun.Arguments verbatim. A `{{ ds }}`
+        # or `{% ... %}` in any value ships to the Glue script as literal text.
+        if glue_arguments:
+            for _k, _v in glue_arguments.items():
+                _reject_template_syntax(
+                    f"@task.glue_job(glue_arguments={{{_k!r}: ...}})",
+                    _v,
+                )
         return self._create_task(
             _func=_func,
             task_type="glue",
@@ -944,13 +989,24 @@ class TaskDecorator:
 
         Example:
             @task.athena_query(
-                query_string="SELECT * FROM sales WHERE date = '{{ ds }}'",
+                query_string="SELECT * FROM sales WHERE region = 'EU'",
                 database="analytics",
                 output_location="s3://bucket/athena-results/"
             )
             def run_query(): pass
+
+        Note:
+            ``query_string`` is passed to Athena verbatim — polyris does NOT
+            template it. Airflow-style ``{{ ds }}`` and JSONata ``{% ... %}``
+            placeholders reach the SQL parser as literal characters and break
+            the query. Interpolate at DAG-definition time (Python f-string /
+            format) if the value can be resolved before deploy; wrap the query
+            in a Lambda-front task if it must be resolved from upstream xcom
+            at runtime. See ``polyris/CLAUDE.md`` "Task-config string fields
+            are passed verbatim".
         """
         _validate_common_kwargs("athena_query", common)
+        _reject_template_syntax("@task.athena_query(query_string=...)", query_string)
         return self._create_task(
             _func=_func,
             task_type="athena",
@@ -1041,6 +1097,12 @@ class TaskDecorator:
             def batch_job(): pass
         """
         _validate_common_kwargs("batch_job", common)
+        if batch_parameters:
+            for _k, _v in batch_parameters.items():
+                _reject_template_syntax(
+                    f"@task.batch_job(batch_parameters={{{_k!r}: ...}})",
+                    _v,
+                )
         return self._create_task(
             _func=_func,
             task_type="batch",
