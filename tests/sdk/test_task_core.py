@@ -445,6 +445,65 @@ class TestVerbatimTemplateGuard:
                 pass
         assert b.batch_parameters is None
 
+    # ─── @task.glue_job — every value in glue_arguments is checked ──────
+    def test_glue_job_rejects_jinja_in_glue_arguments(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.glue_job(
+                    job_name="jn",
+                    glue_arguments={"--date": "{{ ds }}"},
+                )
+                def g():
+                    pass
+
+    def test_glue_job_rejects_jsonata_in_glue_arguments(self):
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                @task.glue_job(
+                    job_name="jn",
+                    glue_arguments={"--partition": "{% $states.input.p %}"},
+                )
+                def g():
+                    pass
+
+    def test_glue_job_error_names_the_offending_arg(self):
+        with pytest.raises(ValueError, match=r"'--stale'"):
+            with DAG("d", schedule=None):
+                @task.glue_job(
+                    job_name="jn",
+                    glue_arguments={"--ok": "static", "--stale": "{{ ds }}"},
+                )
+                def g():
+                    pass
+
+    def test_glue_job_accepts_static_arguments(self):
+        with DAG("d", schedule=None):
+            @task.glue_job(
+                job_name="jn",
+                glue_arguments={"--source": "s3://bucket/", "--format": "parquet"},
+            )
+            def g():
+                pass
+        assert g.glue_arguments == {"--source": "s3://bucket/", "--format": "parquet"}
+
+    def test_glue_job_accepts_none_arguments(self):
+        with DAG("d", schedule=None):
+            @task.glue_job(job_name="jn")
+            def g():
+                pass
+        assert g.glue_arguments is None
+
+    # ─── Direct step GlueTask — same guard, same message ────────────────
+    def test_direct_glue_step_rejects_template_syntax(self):
+        from polyris.steps import GlueTask
+        with pytest.raises(ValueError, match="does not template"):
+            with DAG("d", schedule=None):
+                GlueTask(
+                    step_id="g",
+                    job_name="jn",
+                    arguments={"--date": "{% $.current_date %}"},
+                )
+
     # ─── Direct step AthenaTask — same guard, same message ──────────────
     def test_direct_athena_step_rejects_template_syntax(self):
         from polyris.steps import AthenaTask

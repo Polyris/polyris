@@ -879,6 +879,15 @@ class TaskDecorator:
                 "worker_type/number_of_workers (different Glue capacity models)."
             )
         _validate_common_kwargs("glue_job", common)
+        # Same class of gotcha as `@task.batch_job(batch_parameters=...)` — the
+        # dict is forwarded to Glue StartJobRun.Arguments verbatim. A `{{ ds }}`
+        # or `{% ... %}` in any value ships to the Glue script as literal text.
+        if glue_arguments:
+            for _k, _v in glue_arguments.items():
+                _reject_template_syntax(
+                    f"@task.glue_job(glue_arguments={{{_k!r}: ...}})",
+                    _v,
+                )
         return self._create_task(
             _func=_func,
             task_type="glue",

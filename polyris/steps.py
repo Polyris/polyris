@@ -769,7 +769,7 @@ class S3Task(Step):
 class GlueTask(Step):
     """
     Run AWS Glue job.
-    
+
     Example:
         etl_job = GlueTask(
             step_id="run_etl",
@@ -777,22 +777,30 @@ class GlueTask(Step):
             arguments={
                 "--source_path": "s3://bucket/input/",
                 "--target_path": "s3://bucket/output/",
-                "--date": "{% $.current_date %}"
+                "--partition": "region=EU",
             }
         )
+
+    Note:
+        ``arguments`` values are passed to Glue verbatim — polyris does NOT
+        template them. See ``@task.glue_job`` for details.
     """
     step_id: str = ""
     step_type: str = "glue"
-    
+
     job_name: str = ""
     arguments: Optional[Dict[str, str]] = None
-    
+
     # Sync vs async
     wait_for_completion: bool = True
-    
+
     def __post_init__(self):
         if not self.job_name:
             raise ValueError("GlueTask(...) requires 'job_name'.")
+        from .task import _reject_template_syntax
+        if self.arguments:
+            for _k, _v in self.arguments.items():
+                _reject_template_syntax(f"GlueTask(arguments={{{_k!r}: ...}})", _v)
         if not self.step_id:
             self.step_id = f"Glue_{self.job_name}"
         dag = get_current_dag()
