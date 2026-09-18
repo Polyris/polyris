@@ -410,6 +410,66 @@ def test_run_task_callback_states_have_retry():
 
 
 # ============================================================
+# Default task-role policy — Athena/Glue permissions parity
+# ============================================================
+
+def test_default_task_policy_grants_glue_catalog_access_for_athena_etl():
+    """Default task role must ship with the full set of Glue catalog actions
+    an Athena-driven ETL task needs — reads for `SELECT`, writes for CTAS /
+    `INSERT INTO` / `DROP TABLE` / `ALTER TABLE`. Without these, the same
+    role can run trivial queries but breaks on the first CTAS with
+    `AccessDeniedException`, and every user hits it in the same order.
+
+    Hit live in 1.0.0 pipeline-17 (`summary_athena`) with just the reads
+    missing — expanded in the same delivery to also cover writes so ETL
+    devs get a working baseline out of the box. Database CRUD is deliberately
+    excluded (admin operation, not per-task).
+
+    This test pins the whole matrix: reads + writes + Athena API surface.
+    Removing any breaks Athena for a real ETL workload."""
+    template_path = os.path.join(REPO_ROOT, 'sam', 'template.yaml')
+    with open(template_path) as f:
+        text = f.read()
+
+    # The default task policy is CrossAccountPipelinePolicy in sam/template.yaml.
+    # Grep-based check keeps the test independent of YAML anchors / SAM
+    # transforms — the guarantee is that every action is present somewhere,
+    # not the exact YAML structure.
+    required_athena = [
+        'athena:StartQueryExecution', 'athena:GetQueryExecution',
+        'athena:GetQueryResults', 'athena:StopQueryExecution',
+    ]
+    required_glue_reads = [
+        'glue:GetDatabase', 'glue:GetDatabases',
+        'glue:GetTable', 'glue:GetTables',
+        'glue:GetTableVersion', 'glue:GetTableVersions',
+        'glue:GetPartition', 'glue:GetPartitions', 'glue:BatchGetPartition',
+        'glue:GetUserDefinedFunction', 'glue:GetUserDefinedFunctions',
+        'glue:GetConnection', 'glue:GetConnections',
+    ]
+    required_glue_writes = [
+        'glue:CreateTable', 'glue:UpdateTable', 'glue:DeleteTable',
+        'glue:CreatePartition', 'glue:UpdatePartition', 'glue:DeletePartition',
+        'glue:BatchCreatePartition', 'glue:BatchUpdatePartition',
+        'glue:BatchDeletePartition',
+    ]
+    for action in required_athena + required_glue_reads + required_glue_writes:
+        assert action in text, (
+            f"Default task policy missing {action!r} — an ETL developer's "
+            f"Athena workflow would break on this. See sam/template.yaml "
+            f"CrossAccountPipelinePolicy."
+        )
+
+    # Deliberately-excluded actions — regression guard against someone
+    # "helpfully" adding admin-level ops to the default task policy.
+    for action in ('glue:CreateDatabase', 'glue:DeleteDatabase', 'glue:UpdateDatabase'):
+        assert action not in text, (
+            f"Default task policy grants {action!r} — that's admin-level, "
+            f"not per-task. Provision databases via CFN/Terraform instead."
+        )
+
+
+# ============================================================
 # api.js dedup test
 # ============================================================
 
@@ -452,6 +512,8 @@ if __name__ == '__main__':
         # run_task resilience
         test_run_task_all_task_states_have_catch,
         test_run_task_callback_states_have_retry,
+        # default task policy — Athena/Glue parity
+        test_default_task_policy_grants_glue_catalog_access_for_athena_etl,
         # api.js
         test_api_js_has_shared_request,
     ]

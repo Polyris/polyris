@@ -618,11 +618,56 @@ Resources:
             Action:
               - athena:StartQueryExecution
               - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:StopQueryExecution
+            Resource: "*"
+          # Glue Data Catalog access — everything an Athena-driven ETL task
+          # needs out of the box. Split into read + write for auditability.
+          #
+          # READS: Athena engine v3 consults Glue for every query's schema
+          # (database, table, partitions). Without these even a trivial
+          # `SELECT 1 FROM db.t` fails with `glue:GetDatabase Access­DeniedException`.
+          # Also covers connections/UDFs for federated queries.
+          - Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetTableVersion
+              - glue:GetTableVersions
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:BatchGetPartition
+              - glue:GetUserDefinedFunction
+              - glue:GetUserDefinedFunctions
+              - glue:GetConnection
+              - glue:GetConnections
+            Resource: "*"
+          # WRITES: Table + Partition CRUD, so CTAS (`CREATE TABLE AS SELECT`),
+          # `INSERT INTO`, `DROP TABLE`, `ALTER TABLE`, and partition-aware
+          # workflows (Iceberg / Hive-style partitioned tables) work without
+          # extra IAM. Database CRUD is deliberately excluded — creating /
+          # dropping databases is an admin operation, not a per-task action;
+          # provision databases via CFN / Terraform and reference them from
+          # task queries.
+          - Effect: Allow
+            Action:
+              - glue:CreateTable
+              - glue:UpdateTable
+              - glue:DeleteTable
+              - glue:CreatePartition
+              - glue:UpdatePartition
+              - glue:DeletePartition
+              - glue:BatchCreatePartition
+              - glue:BatchUpdatePartition
+              - glue:BatchDeletePartition
             Resource: "*"
           # Athena runs queries under this role's identity: it reads source data and
           # writes results to the query's output location — both user-chosen buckets.
-          # Granted broadly to match the service actions above so @task.athena works
-          # out of the box; scope the Resource to your specific buckets to tighten it.
+          # Granted broadly to match the service actions above so @task.athena_query
+          # works out of the box; scope the Resource to your specific buckets to
+          # tighten it.
           - Effect: Allow
             Action:
               - s3:GetBucketLocation
