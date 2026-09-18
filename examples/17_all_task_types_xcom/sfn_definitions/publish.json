@@ -1,0 +1,15 @@
+{
+  "Comment": "Publish task — receives render_batch output as SFN Input, returns a published_url as its Output. The wrapper stores this Output as the publish_sfn task's xcom.",
+  "StartAt": "BuildPublishedUrl",
+  "QueryLanguage": "JSONata",
+  "States": {
+    "BuildPublishedUrl": {
+      "Type": "Pass",
+      "Output": {
+        "published_url": "{% 'https://polyris-demo.example.com/reports/' & $states.input.upstream.render_batch.output.report_path %}",
+        "score": "{% $states.input.upstream.render_batch.output.score %}"
+      },
+      "End": true
+    }
+  }
+}
