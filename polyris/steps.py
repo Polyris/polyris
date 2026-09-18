@@ -804,25 +804,29 @@ class GlueTask(Step):
 class AthenaTask(Step):
     """
     Run Athena query.
-    
+
     Example:
         query = AthenaTask(
             step_id="run_query",
-            query_string="SELECT * FROM sales WHERE date = '{% $.date %}'",
+            query_string="SELECT * FROM sales WHERE region = 'EU'",
             database="my_database",
             output_location="s3://bucket/athena-results/"
         )
+
+    Note:
+        ``query_string`` is passed to Athena verbatim — polyris does NOT
+        template it. See ``@task.athena_query`` for details.
     """
     step_id: str = ""
     step_type: str = "athena"
-    
+
     query_string: str = ""
     database: str = ""
     output_location: str = ""
     workgroup: str = "primary"
-    
+
     wait_for_completion: bool = True
-    
+
     def __post_init__(self):
         if not self.query_string:
             raise ValueError("AthenaTask(...) requires 'query_string'.")
@@ -830,6 +834,8 @@ class AthenaTask(Step):
             raise ValueError("AthenaTask(...) requires 'database'.")
         if not self.output_location:
             raise ValueError("AthenaTask(...) requires 'output_location'.")
+        from .task import _reject_template_syntax
+        _reject_template_syntax("AthenaTask(query_string=...)", self.query_string)
         if not self.step_id:
             self.step_id = "Athena_Query"
         dag = get_current_dag()
