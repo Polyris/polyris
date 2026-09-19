@@ -16,14 +16,30 @@ vi.mock('./BaseModal', () => ({
     ModalFooter: ({ children }) => <div data-testid="modal-footer">{children}</div>,
 }));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
-vi.mock('../utils/api', () => ({ api: { get: vi.fn().mockResolvedValue({ ok: true, data: {} }), post: vi.fn().mockResolvedValue({ ok: true, data: {} }) } }));
 vi.mock('./CountdownTimer', () => ({ CountdownTimer: ({ targetTime }) => <span data-testid="countdown">{targetTime}</span> }));
 vi.mock('./LoginPage', () => ({ LoginPage: () => <div data-testid="login-page" /> }));
 vi.mock('./Notifications', () => ({ default: () => <div data-testid="notifications" /> }));
 vi.mock('./UserMenu', () => ({ UserMenu: () => <div data-testid="user-menu" /> }));
 vi.mock('./Skeletons', () => ({ PipelineListSkeleton: () => <div data-testid="skeleton" /> }));
 vi.mock('@/hooks/useAuth', () => { const m = vi.fn(); return { useAuth: m, AUTH_STATE: { SIGNED_IN: 'signedIn', SIGNED_OUT: 'signedOut', LOADING: 'loading' }, __mockUseAuth: m }; });
-vi.mock('@/utils/api', () => { const g = vi.fn(); const e = vi.fn(); return { setAuthTokenGetter: g, setAuthErrorCallback: e, __mockSetAuthTokenGetter: g, __mockSetAuthErrorCallback: e }; });
+// Single mock for @/utils/api covers both AuthGate.tsx's direct imports
+// (setAuthTokenGetter, setAuthErrorCallback) AND the transitive `api` import
+// used by children. A prior split into `vi.mock('../utils/api', {api})` +
+// `vi.mock('@/utils/api', {setAuthTokenGetter})` broke on Node 24: the module
+// resolver preferred the first mock's export set, and the setAuthTokenGetter
+// export went missing. Node 20 happened to prefer the second. Merge = one
+// source of truth for the module's mock surface, resolver-order-independent.
+vi.mock('@/utils/api', () => {
+    const g = vi.fn();
+    const e = vi.fn();
+    return {
+        api: { get: vi.fn().mockResolvedValue({ ok: true, data: {} }), post: vi.fn().mockResolvedValue({ ok: true, data: {} }) },
+        setAuthTokenGetter: g,
+        setAuthErrorCallback: e,
+        __mockSetAuthTokenGetter: g,
+        __mockSetAuthErrorCallback: e,
+    };
+});
 
 
 // Get mock references
