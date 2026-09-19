@@ -1,0 +1,39 @@
+# lychee — Markdown link checker (https://github.com/lycheeverse/lychee).
+# Runs against every *.md in the repo, offline mode preferred locally,
+# online mode in CI (external URLs are checked too).
+#
+# Doc↔code drift checks (cli_flags, entry_points, adr_refs, resource_counts,
+# pypi_installs) live in `tests/docs/` — this file is only for URL /
+# relative-path checks.
+
+# Anchor-fragment resolution: verify `docs/foo.md#section` points at a real
+# heading in `docs/foo.md`. Catches renamed headings the same day.
+include_fragments = "full"
+
+# Skip historical archives and vendor trees.
+# `exclude_path` values are regular expressions (matched against relative
+# paths). adr-index.md stays audited — only numbered ADR files are exempt.
+exclude_path = [
+    "^docs/reference/DESIGN_DECISIONS\\.md$",
+    "^docs/reference/adr-[0-9]+.*\\.md$",
+    "^docs/reference/SPIKE_.*\\.md$",
+    "^docs/reference/COMPLETENESS_REPORT_.*\\.md$",
+    "^CHANGELOG\\.md$",
+    "(^|/)node_modules(/|$)",
+    "(^|/)\\.venv(/|$)",
+]
+
+# Skip flaky external hosts. Values are URL regexes.
+exclude = [
+    "^mailto:",
+    "^https?://(www\\.)?linkedin\\.com",
+    "^https?://(twitter|x)\\.com",
+    "^https?://github\\.com/.*/(pull|issues|compare)/",
+]
+
+timeout = 20
+max_retries = 2
+max_concurrency = 8
+
+# 429 (rate-limited) is not a broken-link signal — accept and move on.
+accept = ["200", "206", "429"]

@@ -1,0 +1,16 @@
+extends: existence
+message: "Corp voice '%s' — talk to the reader like a colleague."
+level: warning
+ignorecase: true
+# Anti-pattern from .claude/skills/documentation/SKILL.md.
+# Ceremonial phrasing that adds nothing — either cut or rewrite direct.
+tokens:
+  - This document introduces
+  - The following section covers
+  - As mentioned above
+  - As previously noted
+  - It (is|should be) noted that
+  - It is important to note
+  - Please note that
+  - In this section (we|you) will
+  - This section (will cover|covers)

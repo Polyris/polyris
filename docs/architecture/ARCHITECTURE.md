@@ -299,7 +299,7 @@ failure_handler SFN
 ```
 
 **Key design decisions:**
-- PagerDuty fires in line 1 (immediate) so on-call can act during the decision-wait window (global timeout, default 5h, ADR #103 1b)
+- PagerDuty fires in line 1 (immediate) so on-call can act during the decision-wait window (global timeout, default 5h)
 - Backfill suppresses all alerts — results visible in UI calendar
 - upstream_failed tasks don't alert — root cause task already sent notifications
 - Line 2 Slack sends restart-only message (no Skip/Fail buttons on dead task)
@@ -461,7 +461,7 @@ not an error.
 
 > Interactive Slack and PagerDuty alerts/resolves are **not** separate state
 > machines. They are `lambda:invoke` calls from run_task / failure_handler /
-> dependency_wrapper to the single notify Lambda (ADR #103). The earlier
+> dependency_wrapper to the single notify Lambda. The earlier
 > `sf_slack_interactive`, `sf_pagerduty_alerter`, and `sf_pagerduty_resolver`
 > Express SFNs (and the EventBridge Connection that backed them) were removed.
 

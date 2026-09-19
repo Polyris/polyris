@@ -21,9 +21,13 @@ the tools produce. When you're done, you can deploy for real by following
 mkdir my-pipelines && cd my-pipelines
 python3 -m venv .venv
 source .venv/bin/activate
-pip install polyris
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 python -c "from polyris import DAG, task; print('✓ polyris installed')"
 ```
+
+> Replace `<VERSION>` with a real git tag from
+> [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
+> (e.g. `v1.0.1`).
 
 ## Step 2: Generate a pipeline (1 min)
 
@@ -99,6 +103,9 @@ touched AWS.
 
 - **Deploy end-to-end** — [QUICKSTART.md](QUICKSTART.md) is the how-to that
   takes you from an empty AWS account to a running pipeline in the Console.
+- **Test locally with mock execution** — [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md)
+  covers `validate()`, `dry_run()`, `run(mock=True)`, and `run(localstack=True)`
+  for pipeline unit tests without touching AWS.
 - **DSL reference** — [DSL.md](../features/DSL.md) — every task type
   (`sfn`, `lambda_function`, `glue_job`, `ecs_task`, `athena_query`,
   `emr_step`, `batch_job`), every common parameter, every trigger rule.

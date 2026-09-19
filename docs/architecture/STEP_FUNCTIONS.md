@@ -337,7 +337,7 @@ sfn.send_task_success(
 
 ## Best Practices
 
-1. **Use JSONata** - More powerful than JSONPath
+1. **Use JSONata** - richer expression syntax than JSONPath (functions, arithmetic, string manipulation)
 2. **Catch all errors** - Prevent stuck executions
 3. **Set timeouts** - Default is 1 year!
 4. **Use deterministic names** - Prevent duplicates

@@ -125,7 +125,7 @@ orchestration.
 
 - Remove any dead per-task `slack_channel` storage left in registration.
 - Docs: DSL reference (alerts removed), Settings → Alerts how-to (channel mode,
-  timeout, test button), CHANGELOG entry for ADR #103 + this consolidation.
+  timeout, test button), CHANGELOG entry for the alerts-removal + this consolidation.
 - QA pass: stale-doc sweep, version drift, broken links.
 
 ---
@@ -438,7 +438,7 @@ hasty SFN edits this cycle were reverted; this one gets the same caution.)
 ### Done now: docs (continued)
 
 Stage 4 docs are done:
-- **DSL.md**: the `alerts=` argument section rewritten as deprecated (ADR #103) —
+- **DSL.md**: the `alerts=` argument section rewritten as deprecated —
   it is accepted one release then ignored; alerts move to Settings → Alerts. All
   `alerts={...}` examples removed from the DSL doc (kept only in the deprecation
   note). Removed the dead `slack_channel` from the default_args example.
@@ -488,7 +488,7 @@ Removed:
 Kept on purpose: `pipelines_repo.migrate_slack_channel` — a one-shot helper that
 seeds alert_config from a legacy `slack_channel` on old DDB records. It is
 idempotent, not called by live code, and harmless; useful for migrating
-pre-ADR-103 pipelines whose records may still carry the old attribute.
+pre-alert-config-consolidation pipelines whose records may still carry the old attribute.
 
 Tests: removed the 8 stale alerts_json tests (`TestRunTaskAlertsInDDB`,
 `TestRestartTaskAlerts`, `test_alerts_json_roundtrip`). All green: SDK 661,
