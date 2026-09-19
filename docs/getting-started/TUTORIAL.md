@@ -99,6 +99,9 @@ touched AWS.
 
 - **Deploy end-to-end** — [QUICKSTART.md](QUICKSTART.md) is the how-to that
   takes you from an empty AWS account to a running pipeline in the Console.
+- **Test locally with mock execution** — [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md)
+  covers `validate()`, `dry_run()`, `run(mock=True)`, and `run(localstack=True)`
+  for pipeline unit tests without touching AWS.
 - **DSL reference** — [DSL.md](../features/DSL.md) — every task type
   (`sfn`, `lambda_function`, `glue_job`, `ecs_task`, `athena_query`,
   `emr_step`, `batch_job`), every common parameter, every trigger rule.
