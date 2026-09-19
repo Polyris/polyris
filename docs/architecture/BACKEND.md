@@ -3,10 +3,10 @@
 ## Overview
 
 The backend consists of:
-- **Step Function state machines** (16 total) — 13 templates + 3 test SFNs
-- **Lambda functions** (6) — Evaluation, queries, API, assets, and bootstrapping
-- **DynamoDB tables** (8) — State and metadata storage
-- **EventBridge rules** - Auto-registration on deploy, external asset events
+- **Step Function state machines** (14 total) — 11 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-14](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-14)
+- **Lambda functions** (8) — console API, dep evaluation, subscription queries, asset ingest, asset publish, alert delivery, plus 2 CustomResource-only Lambdas (UI bootstrap + bucket cleanup)
+- **DynamoDB tables** (8) — state, metadata, event history
+- **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 
 **Generated constants & enums.** Status/trigger/backfill enum families and the
 backfill error-code registry are defined once in `polyris/constants.py` and
