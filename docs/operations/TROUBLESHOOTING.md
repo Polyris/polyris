@@ -450,24 +450,24 @@ curl -X POST https://api.example.com/api/execution-resume?id={id}
 `ModuleNotFoundError: No module named 'polyris'`, or `python -c "from polyris import DAG"` fails.
 
 **Fix:** Install the SDK into the Python environment your shell is using.
+Polyris is not on PyPI yet (planned but not scheduled), so pick a git tag
+from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
+(e.g. `v1.0.1`) and substitute it for `<VERSION>` below.
 
 ```bash
-# Option A — from PyPI (recommended for pipeline repos)
-pip install polyris
+# Option A — from a git tag (recommended for pipeline repos)
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 
 # Option B — from a local checkout (for development)
 cd /path/to/polyris && pip install -e .
-
-# Option C — pin to a specific tag
-pip install "polyris @ git+https://github.com/Polyris/polyris@v1.0.0"
 
 # Verify
 python -c "from polyris import DAG, task; print('✓ polyris installed')"
 ```
 
 If you're using a virtualenv, activate it first (`source .venv/bin/activate`),
-then `pip install polyris`. `which python && which polyris-deploy` should point
-into the same `bin/` directory as the venv.
+then run the install command. `which python && which polyris-deploy` should
+point into the same `bin/` directory as the venv.
 
 ### `KeyError: 'dev'` or stage not found
 

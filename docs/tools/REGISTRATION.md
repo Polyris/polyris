@@ -91,8 +91,9 @@ This ensures pipelines stay registered even if:
 Use `polyris-register` to register without running tasks:
 
 ```bash
-# Install
-pip install polyris
+# Install (replace <VERSION> with a real tag from
+# https://github.com/Polyris/polyris/tags, e.g. v1.0.1)
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 
 # Register by ARN
 polyris-register arn:aws:states:us-east-1:123456789:stateMachine:my-pipeline

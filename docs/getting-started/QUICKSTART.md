@@ -351,10 +351,10 @@ pip install -e .
 Or install a specific release from git without cloning the infrastructure repo:
 
 ```bash
-pip install git+https://github.com/Polyris/polyris.git@v0.93.0
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 ```
 
-Replace `v0.93.0` with the latest tag from the [tags page](https://github.com/Polyris/polyris/tags).
+Replace `<VERSION>` with a real tag from the [tags page](https://github.com/Polyris/polyris/tags) (e.g. `v1.0.1`). Polyris is not on PyPI yet — `pip install polyris` will start working once we publish (planned but not scheduled).
 
 ### Configure config.py
 

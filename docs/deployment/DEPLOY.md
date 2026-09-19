@@ -56,7 +56,7 @@ State is managed by CloudFormation — create, update, and delete handled automa
 
 1. Shared infra deployed: `sam deploy` (its CloudFormation Outputs are what `polyris-deploy` reads via `describe_stacks`)
 2. AWS credentials configured: `aws configure`
-3. polyris installed: `pip install polyris`
+3. polyris installed: `pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"` — replace `<VERSION>` with a real tag from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags) (e.g. `v1.0.1`). PyPI publish planned but not scheduled.
 
 ## Pipeline file
 

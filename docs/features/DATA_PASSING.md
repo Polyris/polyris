@@ -343,28 +343,53 @@ grants only DDB read, not S3 read on user buckets.
 ## Installing polyris SDK in Glue / ECS / Batch / EMR
 
 `xcom.get()` / `xcom.push()` live in the `polyris` package. Your task code
-needs to import it.
+needs to import it. Polyris is not yet on PyPI (planned but not scheduled),
+so the install string is a git-tag URL rather than a plain PyPI name.
 
-**Glue** — `--additional-python-modules`:
+> Replace `<VERSION>` in every snippet below with a real git tag from
+> [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
+> (e.g. `v1.0.1`). Never pin to `main` in production.
+
+**Glue Spark ETL (`glueetl`)** — `--additional-python-modules` (accepts
+git+URL because it's a pip wrapper):
 
 ```yaml
 DefaultArguments:
-  "--additional-python-modules": "polyris==1.0.0"
+  "--additional-python-modules": "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 ```
 
-Or bake it into a wheel and pass via `--extra-py-files`.
+**Glue Python Shell** — `--additional-python-modules` does NOT accept
+git+URL reliably on Python Shell jobs (see `polyris/CLAUDE.md` "Glue Python
+install" rule). Bake polyris into a wheel and pass via `--extra-py-files`:
+
+```yaml
+DefaultArguments:
+  "--extra-py-files": "s3://<your-bucket>/wheels/polyris-<VERSION>-py3-none-any.whl"
+```
+
+Build the wheel once from the git tag: `pip wheel --no-deps "polyris @ git+https://github.com/Polyris/polyris@<VERSION>" -w dist/` then `aws s3 cp dist/polyris-*.whl s3://<your-bucket>/wheels/`.
 
 **ECS / Batch** — install into your container image:
 
 ```dockerfile
-RUN pip install polyris==1.0.0
+FROM python:3.12
+RUN pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 ```
 
-**Lambda** — ship in the deployment zip (typical `requirements.txt` for your
-Lambda function).
+`python:3.12` (full, not `slim`) has `git` bundled — needed for git+URL
+install. Use `-slim` only if you download the wheel from S3 in the container
+entrypoint instead.
 
-**EMR** — bootstrap script that `pip install polyris==1.0.0` on cluster
-nodes. Reads work; writes via `xcom.push()` are not supported (see
+**Lambda** — ship in the deployment zip. `requirements.txt` one-liner:
+`polyris @ git+https://github.com/Polyris/polyris@<VERSION>`.
+
+**EMR** — bootstrap script:
+
+```bash
+sudo pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
+```
+
+Reads work; writes via `xcom.push()` are not supported (see
 [EMR and Athena — reads yes, `xcom.push()` no](#emr-and-athena--reads-yes-xcompush-no)).
 
 ## IAM
@@ -501,6 +526,8 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
    catching `XComError` covers all four.
 
 Deploy order: install the new SDK in your task bundles first
-(`polyris==1.0.0`), then redeploy the pipeline so the wrapper picks up the
-new `input#` record contract. The wrapper is backward-compatible with
-pre-1.0.0 task bundles (they just don't call `xcom.push()`).
+(`polyris @ git+https://github.com/Polyris/polyris@<VERSION>` — see the
+[install section above](#installing-polyris-sdk-in-glue--ecs--batch--emr)),
+then redeploy the pipeline so the wrapper picks up the new `input#` record
+contract. The wrapper is backward-compatible with pre-1.0.0 task bundles
+(they just don't call `xcom.push()`).

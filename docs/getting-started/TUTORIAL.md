@@ -21,9 +21,14 @@ the tools produce. When you're done, you can deploy for real by following
 mkdir my-pipelines && cd my-pipelines
 python3 -m venv .venv
 source .venv/bin/activate
-pip install polyris
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 python -c "from polyris import DAG, task; print('✓ polyris installed')"
 ```
+
+> Replace `<VERSION>` with a real git tag from
+> [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
+> (e.g. `v1.0.1`). Polyris is not on PyPI yet — `pip install polyris` will
+> start working once we publish (planned but not scheduled).
 
 ## Step 2: Generate a pipeline (1 min)
 
