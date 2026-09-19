@@ -166,10 +166,12 @@ most rot happens. Every time you edit an existing doc, run this pass:
 - [ ] **`python3 -m pytest tests/docs/ -q` reports 0 failures** — five
       pytest checks (cli flags, entry points, ADR refs, resource counts,
       PyPI-style installs) run as CI gates.
-- [ ] **`lychee --config lychee.toml './**/*.md'` reports 0 errors** —
-      broken relative links + broken heading anchors. Also a CI gate.
-- [ ] **`vale docs/ README.md` reports 0 warnings** — sentence-start
-      filler adverbs, marketing verbs, corp voice. Also a CI gate.
+- [ ] **`lychee --config .config/lychee.toml './**/*.md'` reports 0
+      errors** — broken relative links + broken heading anchors. Also
+      a CI gate.
+- [ ] **`vale --config .config/vale.ini docs/ README.md` reports 0
+      warnings** — sentence-start filler adverbs, marketing verbs,
+      corp voice. Also a CI gate.
 
 ## The mechanical gates
 
@@ -211,7 +213,7 @@ meta-reference.
 
 ### `lychee` — link checker
 
-`lychee.toml` in repo root configures the [lychee](https://github.com/lycheeverse/lychee)
+`.config/lychee.toml` configures the [lychee](https://github.com/lycheeverse/lychee)
 Rust link checker. It runs on every `*.md`, verifies:
 - Relative file links (`](../features/DSL.md)`) resolve.
 - Heading anchors (`](../features/DSL.md#retries)`) point at real
@@ -223,18 +225,19 @@ To run locally, install lychee from
 and:
 
 ```bash
-lychee --config lychee.toml './**/*.md'          # online, checks external URLs too
-lychee --config lychee.toml --offline './**/*.md' # local links + anchors only
+lychee --config .config/lychee.toml './**/*.md'          # online, checks external URLs too
+lychee --config .config/lychee.toml --offline './**/*.md' # local links + anchors only
 ```
 
 Historical archives (`DESIGN_DECISIONS.md`, `adr-[0-9]*.md`,
 `SPIKE_*.md`, `COMPLETENESS_REPORT_*.md`) are excluded via
-`exclude_path` regex in `lychee.toml`.
+`exclude_path` regex in `.config/lychee.toml`.
 
 ### `vale` — prose style linter
 
 [Vale](https://vale.sh) enforces the anti-patterns from this SKILL as a
-CI gate. Config: `.vale.ini` (root) + `.vale/styles/PolyrisDocs/` (rules).
+CI gate. Config: `.config/vale.ini` + `.config/vale/styles/PolyrisDocs/`
+(rules).
 
 Three rules ship today:
 
@@ -255,14 +258,14 @@ To run locally, install Vale from
 and:
 
 ```bash
-vale docs/ README.md          # lint all docs
-vale docs/features/DSL.md     # single file
+vale --config .config/vale.ini docs/ README.md          # lint all docs
+vale --config .config/vale.ini docs/features/DSL.md     # single file
 ```
 
-Historical archives are excluded via per-file sections in `.vale.ini`
-(same list as lychee / pytest).
+Historical archives are excluded via per-file sections in
+`.config/vale.ini` (same list as lychee / pytest).
 
-When adding a new rule: create `.vale/styles/PolyrisDocs/<Name>.yml`,
+When adding a new rule: create `.config/vale/styles/PolyrisDocs/<Name>.yml`,
 add the same anti-pattern text to this SKILL's "Anti-patterns" section,
 run `vale` against the current docs, fix or suppress every hit before
 merging so the baseline stays at 0.

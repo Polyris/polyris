@@ -245,8 +245,8 @@ jobs:
   # Docs — link check (lychee)
   # ============================================
   # lychee is a Rust link checker that runs offline against local files.
-  # Config: lychee.toml. Doc↔code drift checks (cli flags, entry points,
-  # ADR refs, resource counts, pypi installs) live as pytest under
+  # Config: .config/lychee.toml. Doc↔code drift checks (cli flags, entry
+  # points, ADR refs, resource counts, pypi installs) live as pytest under
   # `tests/docs/` and run in the `python` job above.
   docs-linkcheck:
     name: Docs Link Check
@@ -258,7 +258,7 @@ jobs:
       - name: Run lychee
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --config lychee.toml --no-progress './**/*.md'
+          args: --config .config/lychee.toml --no-progress './**/*.md'
           fail: true
 
   # ============================================
@@ -266,7 +266,8 @@ jobs:
   # ============================================
   # Vale catches the anti-patterns listed in
   # .claude/skills/documentation/SKILL.md: marketing verbs, sentence-start
-  # filler adverbs, corp voice. Config: .vale.ini + .vale/styles/PolyrisDocs.
+  # filler adverbs, corp voice.
+  # Config: .config/vale.ini + .config/vale/styles/PolyrisDocs.
   docs-prose:
     name: Docs Prose Lint
     runs-on: ubuntu-latest
@@ -277,6 +278,7 @@ jobs:
       - name: Run Vale
         uses: vale-cli/vale-action@v3
         with:
+          config: .config/vale.ini
           fail_on_error: true
           files: 'docs README.md'
 
