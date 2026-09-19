@@ -45,4 +45,4 @@ grant reasonable uses in writing.
 ---
 
 *This policy covers trademarks only. For copyright and use of the source code, see
-[`LICENSE`](./LICENSE). For contributing, see [`CONTRIBUTING.md`](./CONTRIBUTING.md).*
+[`LICENSE`](../../LICENSE). For contributing, see [`CONTRIBUTING.md`](../../CONTRIBUTING.md).*

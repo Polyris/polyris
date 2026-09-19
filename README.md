@@ -114,8 +114,8 @@ print(result.summary())  # ✅ 3 succeeded, ❌ 0 failed
 Failure delivers an **in-app browser notification** automatically — no
 configuration required.
 
-> `DAG` has **no `alerts=` argument** — alert config is not part of the DSL
-> (ADR #103). Passing `alerts={...}` raises a `TypeError`.
+> `DAG` has **no `alerts=` argument** — alert config is not part of the DSL.
+> Passing `alerts={...}` raises a `TypeError`.
 
 ```python
 # No alert config in the DAG — define the pipeline.
@@ -304,7 +304,7 @@ Full reference: [docs/reference/CLI.md](docs/reference/CLI.md)
 │   ├── template.yaml             # SAM template (all AWS resources)
 │   ├── samconfig.toml            # Deploy configuration
 │   ├── samconfig.toml.example    # Example config
-│   ├── lambdas/                  # 6 Lambda functions
+│   ├── lambdas/                  # 8 Lambda functions
 │   └── sfn_templates/            # 13 SFN template files (16 SFNs total incl. 3 test)
 │
 ├── polyris/                      # Python DSL library

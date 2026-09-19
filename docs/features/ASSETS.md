@@ -328,9 +328,10 @@ orders = Asset.from_pyarrow(
 )
 ```
 
-Requires `pip install 'polyris[pyarrow]'`. The bridge to all six
-formats above goes through pyarrow as a hub — one optional dependency,
-many integrations.
+Requires the `pyarrow` extra:
+`pip install "polyris[pyarrow] @ git+https://github.com/Polyris/polyris@<VERSION>"`.
+The bridge to all six formats above goes through pyarrow as a hub — one
+optional dependency, many integrations.
 
 **Shortcut: from a Parquet file directly.**
 
@@ -369,8 +370,10 @@ class Order(BaseModel):
 orders = Asset.from_pydantic(Order, name="retail/orders")
 ```
 
-Requires `pip install 'polyris[pydantic]'`. Pydantic field
-descriptions, defaults, and `Optional[...]` markers all carry over.
+Requires the `pydantic` extra:
+`pip install "polyris[pydantic] @ git+https://github.com/Polyris/polyris@<VERSION>"`.
+Pydantic field descriptions, defaults, and `Optional[...]` markers all
+carry over.
 
 **Naming note.** If `name=` is omitted, `from_pydantic` falls back to
 the model's class name (`Order` → `name="Order"`). This is convenient

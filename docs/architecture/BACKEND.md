@@ -165,7 +165,7 @@ Start
 ```
 
 Collapsed from the older multi-state fan-out (per-channel states + separate
-alerter SFNs) to a single `Send_Alerts` Lambda call in Stage 1a (ADR #103).
+alerter SFNs) to a single `Send_Alerts` Lambda call in the alerts consolidation.
 
 ### 6. sf_restart_task_helper (EXPRESS)
 

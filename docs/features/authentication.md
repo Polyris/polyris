@@ -16,7 +16,7 @@ This document describes how the polyris Console authenticates users via AWS Cogn
 
 ## Overview
 
-- **AWS Amplify SDK** - Battle-tested authentication library with automatic token refresh
+- **AWS Amplify SDK** - handles the Cognito auth flow (login, MFA challenge, refresh)
 - **Admin-only user creation** - No self-registration, users must be created by administrators
 - **Auth at the Lambda gate** - the `console-api` Lambda verifies a Cognito token **offline** (RS256 against the pool JWKS, bound to this deployment's app client) on every non-public request when `AUTH_ENABLED=true`
 - **MFA support** - Optional TOTP-based multi-factor authentication

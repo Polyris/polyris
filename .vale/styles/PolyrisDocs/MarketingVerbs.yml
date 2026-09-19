@@ -1,0 +1,28 @@
+extends: existence
+message: "Marketing verb '%s' — state facts, not self-assessment."
+level: warning
+ignorecase: true
+# Anti-pattern from .claude/skills/documentation/SKILL.md:
+# "Every one is a self-assessment the reader didn't ask for."
+tokens:
+  - hardening
+  - hardened
+  - comprehensive
+  - comprehensively
+  - robust
+  - robustly
+  - seamless
+  - seamlessly
+  - powerful
+  - elegant
+  - elegantly
+  - thoughtful
+  - thoughtfully
+  - carefully[- ]designed
+  - battle[- ]tested
+  - production[- ]grade
+  - enterprise[- ]grade
+  - best[- ]in[- ]class
+  - cutting[- ]edge
+  - state[- ]of[- ]the[- ]art
+  - world[- ]class

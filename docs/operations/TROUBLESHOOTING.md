@@ -450,8 +450,7 @@ curl -X POST https://api.example.com/api/execution-resume?id={id}
 `ModuleNotFoundError: No module named 'polyris'`, or `python -c "from polyris import DAG"` fails.
 
 **Fix:** Install the SDK into the Python environment your shell is using.
-Polyris is not on PyPI yet (planned but not scheduled), so pick a git tag
-from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
+Pick a git tag from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
 (e.g. `v1.0.1`) and substitute it for `<VERSION>` below.
 
 ```bash

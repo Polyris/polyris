@@ -5,7 +5,6 @@ This guide covers different ways to organize polyris projects.
 ## Installation
 
 ```bash
-# From the git tag (PyPI publish planned but not scheduled).
 # Replace <VERSION> with a real tag from
 # https://github.com/Polyris/polyris/tags (e.g. v1.0.1).
 pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"

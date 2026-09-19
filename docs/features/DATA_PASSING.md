@@ -343,8 +343,7 @@ grants only DDB read, not S3 read on user buckets.
 ## Installing polyris SDK in Glue / ECS / Batch / EMR
 
 `xcom.get()` / `xcom.push()` live in the `polyris` package. Your task code
-needs to import it. Polyris is not yet on PyPI (planned but not scheduled),
-so the install string is a git-tag URL rather than a plain PyPI name.
+needs to import it. Install it directly from a git tag.
 
 > Replace `<VERSION>` in every snippet below with a real git tag from
 > [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)

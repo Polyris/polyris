@@ -27,8 +27,7 @@ python -c "from polyris import DAG, task; print('✓ polyris installed')"
 
 > Replace `<VERSION>` with a real git tag from
 > [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
-> (e.g. `v1.0.1`). Polyris is not on PyPI yet — `pip install polyris` will
-> start working once we publish (planned but not scheduled).
+> (e.g. `v1.0.1`).
 
 ## Step 2: Generate a pipeline (1 min)
 

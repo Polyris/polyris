@@ -167,7 +167,7 @@ $ polyris-register --name feeds-pipeline --profile prod
 # GitHub Actions
 deploy:
   steps:
-    - run: polyris-deploy --yes
+    - run: polyris-deploy
     
     # Optional: explicit registration (EventBridge handles this too)
     - run: |

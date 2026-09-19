@@ -53,7 +53,7 @@ Response: `{"notifications": [{kind, pipeline_name, task_name, execution_name, c
 
 ## Why the `alerts=` DAG argument was removed
 
-Prior versions of polyris took an `alerts=` argument on `DAG(...)`. Removed in ADR #103 — passing it now raises `TypeError`. Configuration lives outside the DSL so alerts can be added / changed / removed without touching pipeline code (DSL changes need a redeploy; config doesn't).
+Prior versions of polyris took an `alerts=` argument on `DAG(...)`. It has been removed — passing it now raises `TypeError`. Configuration lives outside the DSL so alerts can be added / changed / removed without touching pipeline code (DSL changes need a redeploy; config doesn't).
 
 ## Related
 

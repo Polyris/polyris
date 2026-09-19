@@ -1,0 +1,18 @@
+extends: existence
+message: "Filler adverb '%s' at sentence start — cut. The reader notices if it's simple."
+level: warning
+# Sentence-start filler ("Simply do X." / "Just run Y." / "Basically it's Z.")
+# is the anti-pattern from .claude/skills/documentation/SKILL.md — the word
+# adds nothing and reads as apology.
+#
+# Mid-sentence uses of the SAME words are usually legitimate English:
+# - "not just X but Y" (contrastive)
+# - "simply no longer projects the field" (limiting, = 'only')
+# - "just as X does" (comparative)
+# Those we leave alone.
+#
+# Anchors: line start (with optional list marker `-` / `*`) OR after a
+# sentence-terminator (`.` `?` `!`).
+tokens:
+  - '(?m)^\s*[-*]?\s*(Simply|Just|Easily|Obviously|Basically|Essentially|Of course)\b'
+  - '[.!?]\s+(Simply|Just|Easily|Obviously|Basically|Essentially|Of course)\b'

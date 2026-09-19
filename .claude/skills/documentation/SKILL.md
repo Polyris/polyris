@@ -163,6 +163,109 @@ most rot happens. Every time you edit an existing doc, run this pass:
 - [ ] English throughout.
 - [ ] If the doc mentions a non-OSS feature by name — delete the mention.
 - [ ] Same-commit as the code change that made it necessary (root #9).
+- [ ] **`python3 -m pytest tests/docs/ -q` reports 0 failures** — five
+      pytest checks (cli flags, entry points, ADR refs, resource counts,
+      PyPI-style installs) run as CI gates.
+- [ ] **`lychee --config lychee.toml './**/*.md'` reports 0 errors** —
+      broken relative links + broken heading anchors. Also a CI gate.
+- [ ] **`vale docs/ README.md` reports 0 warnings** — sentence-start
+      filler adverbs, marketing verbs, corp voice. Also a CI gate.
+
+## The mechanical gates
+
+Doc↔code consistency and prose style are enforced by three gates, all
+running in CI as blockers:
+
+### `tests/docs/` — pytest checks
+
+Five focused tests, each one file, ~30-100 lines:
+
+- `test_cli_flags.py` — every `polyris-<cmd> --flag` referenced in docs
+  must exist as an `add_argument("--flag")` in `polyris/*.py`.
+- `test_entry_points.py` — every `polyris-<cmd>` in docs must be
+  declared in `pyproject.toml [project.scripts]`.
+- `test_adr_refs.py` — every `ADR #N` / `adr-N-slug` reference must
+  resolve to either a `docs/reference/adr-N-*.md` file or a `### N.`
+  heading in `DESIGN_DECISIONS.md`.
+- `test_resource_counts.py` — prose claims like "8 Lambda functions"
+  must match `sam/template.yaml` counts.
+- `test_pypi_installs.py` — bare `pip install polyris` is rejected;
+  use `polyris @ git+…@<VERSION>`.
+
+Suppression escape hatches:
+
+- **Whole file** — add a glob to `DEFAULT_SKIP_GLOBS` in
+  `tests/docs/_helpers.py`. Reserve for historical / meta docs that are
+  allowed to reference removed symbols (default list already covers ADR
+  archives, spikes, completeness reports, `CHANGELOG.md`,
+  `docs/CLAUDE.md`).
+- **Single line** — append `<!-- audit-docs: skip-line -->` to the end
+  of the line. Currently honored by `test_pypi_installs.py` only.
+  Reserve for legitimate meta-references (e.g. a gotchas section
+  explaining *why* the bare form does not work).
+
+If a test flags a doc you edited, the answer is almost always to **fix
+the doc**. Suppression is the escape hatch for the ~1% of cases where
+the doc is genuinely correct and the check's shape catches a legit
+meta-reference.
+
+### `lychee` — link checker
+
+`lychee.toml` in repo root configures the [lychee](https://github.com/lycheeverse/lychee)
+Rust link checker. It runs on every `*.md`, verifies:
+- Relative file links (`](../features/DSL.md)`) resolve.
+- Heading anchors (`](../features/DSL.md#retries)`) point at real
+  headings — enabled via `include_fragments = "full"`.
+- External URLs (`https://…`) reach a 2xx or 429.
+
+To run locally, install lychee from
+[github.com/lycheeverse/lychee/releases](https://github.com/lycheeverse/lychee/releases)
+and:
+
+```bash
+lychee --config lychee.toml './**/*.md'          # online, checks external URLs too
+lychee --config lychee.toml --offline './**/*.md' # local links + anchors only
+```
+
+Historical archives (`DESIGN_DECISIONS.md`, `adr-[0-9]*.md`,
+`SPIKE_*.md`, `COMPLETENESS_REPORT_*.md`) are excluded via
+`exclude_path` regex in `lychee.toml`.
+
+### `vale` — prose style linter
+
+[Vale](https://vale.sh) enforces the anti-patterns from this SKILL as a
+CI gate. Config: `.vale.ini` (root) + `.vale/styles/PolyrisDocs/` (rules).
+
+Three rules ship today:
+
+- `MarketingVerbs.yml` — bans `hardening`, `comprehensive`, `robust`,
+  `seamless`, `powerful`, `elegant`, `thoughtful`, `battle-tested`,
+  `production-grade`, `best-in-class`, `cutting-edge`, and similar
+  self-assessment language.
+- `FillerAdverbs.yml` — bans **sentence-start** `Simply`, `Just`,
+  `Easily`, `Obviously`, `Basically`, `Essentially`, `Of course`.
+  Mid-sentence uses (`not just X`, `simply no longer projects`) are
+  legitimate English and are NOT flagged.
+- `CorpVoice.yml` — bans `This document introduces`, `The following
+  section covers`, `As mentioned above`, `It should be noted that`,
+  and similar ceremonial phrasing.
+
+To run locally, install Vale from
+[github.com/vale-cli/vale/releases](https://github.com/vale-cli/vale/releases)
+and:
+
+```bash
+vale docs/ README.md          # lint all docs
+vale docs/features/DSL.md     # single file
+```
+
+Historical archives are excluded via per-file sections in `.vale.ini`
+(same list as lychee / pytest).
+
+When adding a new rule: create `.vale/styles/PolyrisDocs/<Name>.yml`,
+add the same anti-pattern text to this SKILL's "Anti-patterns" section,
+run `vale` against the current docs, fix or suppress every hit before
+merging so the baseline stays at 0.
 
 ## Done when
 

@@ -115,15 +115,14 @@ with DAG(
 
 ### Alerts Configuration
 
-> **Removed (ADR #103).** The `alerts=` argument has been removed — passing
+> **Removed.** The `alerts=` argument has been removed — passing
 > `alerts={...}` now raises a `TypeError`. Remove it from your DAGs. Alert
 > delivery moved out of the DSL:
 >
 > - **Browser notifications** (in-app) are automatic and free — no setup.
-> - Alert config is not part of the DSL (ADR #103) — there is no `alerts=`
->   argument.
+> - Alert config is not part of the DSL — there is no `alerts=` argument.
 >
-> `DAG` has no `alerts=` argument (ADR #103) — passing `alerts={...}` now raises
+> `DAG` has no `alerts=` argument — passing `alerts={...}` now raises
 > a `TypeError`. Configure alerts in Settings → Alerts instead.
 
 ## Schedule Options
