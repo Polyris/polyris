@@ -208,9 +208,10 @@ that gives false confidence.
 - [ ] **`lychee --config .config/lychee.toml './**/*.md'` reports 0
       errors** — broken relative links + broken heading anchors. Also
       a CI gate.
-- [ ] **`vale --config .config/vale.ini docs/ README.md` reports 0
-      warnings** — sentence-start filler adverbs, marketing verbs,
-      corp voice, sentences over 40 words. Also a CI gate.
+- [ ] **`vale --config .config/vale.ini docs/ README.md polyris/ sam/lambdas/`
+      reports 0 warnings** — sentence-start filler adverbs, marketing
+      verbs, corp voice, sentences over 40 words. Applies to docs AND to
+      docstrings/comments in Python. Also a CI gate.
 - [ ] **Semantic self-review** — read the whole doc top-to-bottom,
       check for internal contradictions and claims that mechanical
       gates can't verify (latency, response shape, timing/ordering).
@@ -307,9 +308,15 @@ To run locally, install Vale from
 and:
 
 ```bash
-vale --config .config/vale.ini docs/ README.md          # lint all docs
-vale --config .config/vale.ini docs/features/DSL.md     # single file
+vale --config .config/vale.ini docs/ README.md polyris/ sam/lambdas/   # full CI scope
+vale --config .config/vale.ini docs/features/DSL.md                    # single file
+vale --config .config/vale.ini polyris/task.py                         # single .py file
 ```
+
+Python scope: Vale's built-in Python parser sees **only** docstrings and
+`#` comments — identifiers, string literals, and type hints are ignored.
+So `def elegantly_process()` does NOT flag `elegantly`, but a docstring
+saying "elegantly handles" does.
 
 Historical archives are excluded via per-file sections in
 `.config/vale.ini` (same list as lychee / pytest).

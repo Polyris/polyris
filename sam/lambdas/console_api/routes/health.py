@@ -24,8 +24,8 @@ UNHEALTHY = 'unhealthy'
 
 def health_check(event: Dict) -> Dict:
     """
-    Comprehensive health check endpoint.
-    
+    Health check endpoint.
+
     Checks:
     - DynamoDB connectivity and latency
     - Step Functions API availability
@@ -81,9 +81,9 @@ def health_check(event: Dict) -> Dict:
 def health_check_simple(event: Dict) -> Dict:
     """
     Simple health check for load balancer probes.
-    
-    Just checks if Lambda can respond - minimal latency.
-    
+
+    Checks if Lambda can respond — minimal latency, no downstream calls.
+
     Returns:
         200 with {"status": "ok"}
     """

@@ -280,7 +280,7 @@ jobs:
         with:
           config: .config/vale.ini
           fail_on_error: true
-          files: 'docs README.md'
+          files: 'docs README.md polyris sam/lambdas'
 
   # ============================================
   # UI
