@@ -509,14 +509,16 @@ NEXT_PUBLIC_COGNITO_REGION=us-east-1
 >    source of truth). A token from a *different* pool is rejected → 401. If the
 >    deployed `/config.js` shows a different pool than the Lambda, that's deploy
 >    drift — rerun `ui/deploy.sh`.
-> 3. **Clear stale caches, then restart** — `NEXT_PUBLIC_*` are baked at startup, so
->    editing `.env` needs a `npm run dev` restart (and `rm -rf ui/.next` if a value
->    still looks stale). Crucially, `/config.js` is loaded by a plain
->    `<script src="/config.js">` with no cache-busting, so the **browser caches it**
->    — after editing `ui/public/config.js` you must hard-reload with cache disabled
->    (DevTools → Network → "Disable cache" → reload) or use a fresh private window,
->    or the old `AUTH.enabled` keeps winning. Quick check: run `window.CONFIG` in the
->    DevTools console and confirm `AUTH.enabled` is what you expect.
+> 3. **Clear stale caches, then restart.** `NEXT_PUBLIC_*` are baked at
+>    startup, so editing `.env` needs a `npm run dev` restart (and
+>    `rm -rf ui/.next` if a value still looks stale). Crucially,
+>    `/config.js` is loaded by a plain `<script src="/config.js">` with no
+>    cache-busting — the **browser caches it**. After editing
+>    `ui/public/config.js` hard-reload with cache disabled (DevTools →
+>    Network → "Disable cache" → reload) or use a fresh private window.
+>    Otherwise the old `AUTH.enabled` keeps winning. Quick check: run
+>    `window.CONFIG` in the DevTools console and confirm `AUTH.enabled` is
+>    what you expect.
 > 4. **Sign out, then sign in** — a session cached from a previous/different pool
 >    survives a restart and keeps sending the wrong token. (A fresh private window
 >    covers this and the config.js cache at once — no cached session, no extensions.)

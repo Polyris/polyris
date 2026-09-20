@@ -330,11 +330,11 @@ If it's read by a user, it's a doc, and every rule here applies.
 
 ## Back-compat aliases are documented once, at the point of the alias — never in each doc
 
-When a symbol is renamed or superseded but the old name stays exported as an
-alias (e.g. `polyris.pull` → `polyris.xcom.get`, `PullError` → `XComMissingError`),
-the alias is documented in **exactly one place**: the deprecation/back-compat
-paragraph next to the new symbol's reference entry. Every other doc uses the
-canonical name and does not re-explain the alias.
+When a symbol is renamed or superseded, the old name may stay exported as
+an alias (e.g. `polyris.pull` → `polyris.xcom.get`, `PullError` →
+`XComMissingError`). Document the alias in **exactly one place**: the
+deprecation/back-compat paragraph next to the new symbol's reference entry.
+Every other doc uses the canonical name and does not re-explain the alias.
 
 The alias docstring itself carries the deprecation note (visible in IDE
 autocomplete + `help()`); the reference doc's back-compat paragraph is the

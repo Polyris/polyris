@@ -1,12 +1,13 @@
 # Assets — experimental scaffolding & graduation checklist
 
-Assets shipped as an **experimental** feature in **v0.93.0**. They work end to
-end (define, produce via `outlets`, consume via `inlets`/`wait_for`,
-asset-triggered `schedule`) on **every task type** — `outlets`/`inlets`/`wait_for`
-are common task params (ADR #109), so `sfn`, `lambda_function`, `glue_job`,
-`ecs_task`, `athena_query`, `emr_step`, and `batch_job` all accept them
-uniformly. The **API shape** may still change; treat the `Asset` class,
-`.within()`, and `.consecutive()` signatures as unstable.
+Assets shipped as an **experimental** feature in **v0.93.0**. They work end
+to end: define, produce via `outlets`, consume via `inlets`/`wait_for`,
+asset-triggered `schedule`. This works on **every task type** — `outlets`,
+`inlets`, and `wait_for` are common task params (ADR #109). So `sfn`,
+`lambda_function`, `glue_job`, `ecs_task`, `athena_query`, `emr_step`, and
+`batch_job` all accept them uniformly. The **API shape** may still change;
+treat the `Asset` class, `.within()`, and `.consecutive()` signatures as
+unstable.
 
 The remaining temporary scaffolding is tagged with a single greppable token:
 

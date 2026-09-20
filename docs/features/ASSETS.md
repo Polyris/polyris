@@ -151,11 +151,11 @@ Asset(name="retail/orders", schema=[
 All three forms are normalized to `List[Column]` internally. You can mix them
 in a single declaration if you are migrating gradually.
 
-**Schema conflict detection:** when the same asset is declared in multiple
-pipelines with different schemas (e.g. a producer pipeline declares 8 columns,
-a consumer references the asset and declares 3), the backend keeps the richer
-schema (more columns) and emits a warning to CloudWatch Logs so the divergent
-declaration can be reconciled.
+**Schema conflict detection:** the same asset can be declared in multiple
+pipelines with different schemas — say a producer declares 8 columns and a
+consumer declares 3. The backend keeps the richer schema (more columns) and
+emits a warning to CloudWatch Logs. Reconcile the divergent declaration
+based on the warning.
 
 ### Glue Catalog Reference
 

@@ -414,11 +414,11 @@ for the full rationale.
 of these in every state reachable under the intervention-first model, ADR #114, or
 could never fire at all — see `docs/features/DSL.md#trigger-rules`).
 
-A blocked rule (all deps terminal, condition not satisfied) resolves one of two ways
-(`evaluate_deps`'s `verdict` field, ADR #115): `upstream_failed` when a
-success/no-failure-requiring rule is blocked by a genuine failure; `skip` (the task
-resolves `skipped`, run stays `success`) when the condition never occurred —
-not an error.
+A blocked rule (all deps terminal, condition not satisfied) resolves one of
+two ways via `evaluate_deps`'s `verdict` field (ADR #115). `upstream_failed`
+fires when a success/no-failure-requiring rule is blocked by a genuine
+failure. `skip` fires when the condition never occurred — the task resolves
+`skipped`, the run stays `success`, no error.
 
 ---
 

@@ -149,6 +149,45 @@ most rot happens. Every time you edit an existing doc, run this pass:
 - Contractions are fine ("don't", "you'll"). This is documentation, not a
   legal filing.
 
+## Semantic self-review (LLM-native check)
+
+The three mechanical gates (pytest / lychee / Vale) catch drift they can
+detect with regex, file existence, and grep against source of truth. They
+do NOT catch **semantic** problems — logical contradictions, claims that
+disagree with each other, code blocks whose behavior conflicts with the
+prose above them. Those are your job as the writer.
+
+Before commit, read the whole doc top-to-bottom (not just your edit) and
+answer:
+
+1. **Internal contradictions.** Does any claim disagree with another claim
+   in the same doc? "Section 2 says the API is async; Section 5 shows
+   `sync_only=True` in the example." "Prose says 'returns a list', code
+   block shows `return {}`." These slip past every regex-based tool.
+2. **Doc↔doc contradictions.** Read at least one sibling doc in the same
+   directory. Does your edit now contradict something a neighbour says?
+   If yes, one is wrong — decide which and fix in the same commit.
+3. **Behavior claims not covered by mechanical checks.** pytest catches
+   flag names, entry-point commands, resource counts, ADR refs, PyPI
+   installs. It does NOT catch:
+   - Latency claims ("runs in <1s", "sub-second") — verify with a
+     benchmark or delete.
+   - Response-shape claims ("returns 200 on success", "the payload
+     includes `foo`") — grep the handler to confirm.
+   - Timing / ordering ("this fires before X", "X blocks until Y") —
+     read the code, don't guess.
+4. **Deprecated / removed features still cited.** Search the doc for
+   symbols you know were removed in recent releases. Regex sometimes
+   misses these because the citation is embedded in prose ("as the old
+   `pull()` did") rather than a code block.
+
+Why this belongs in the skill and not in a mechanical gate: LLMs (Claude,
+GPT) do this class of check well when asked explicitly. Semantic
+contradiction detection has no widely-adopted OSS tool — the state of
+the art is either NLI models (research territory) or an LLM. Doing it
+manually / with an LLM is the right frontier here, not adding a gate
+that gives false confidence.
+
 ## Before you commit
 
 - [ ] Step 0 done: `docs/CLAUDE.md` + root `CLAUDE.md` actually Read this
@@ -171,7 +210,11 @@ most rot happens. Every time you edit an existing doc, run this pass:
       a CI gate.
 - [ ] **`vale --config .config/vale.ini docs/ README.md` reports 0
       warnings** — sentence-start filler adverbs, marketing verbs,
-      corp voice. Also a CI gate.
+      corp voice, sentences over 40 words. Also a CI gate.
+- [ ] **Semantic self-review** — read the whole doc top-to-bottom,
+      check for internal contradictions and claims that mechanical
+      gates can't verify (latency, response shape, timing/ordering).
+      See "Semantic self-review" section above.
 
 ## The mechanical gates
 
@@ -239,7 +282,7 @@ Historical archives (`DESIGN_DECISIONS.md`, `adr-[0-9]*.md`,
 CI gate. Config: `.config/vale.ini` + `.config/vale/styles/PolyrisDocs/`
 (rules).
 
-Three rules ship today:
+Four rules ship today:
 
 - `MarketingVerbs.yml` — bans `hardening`, `comprehensive`, `robust`,
   `seamless`, `powerful`, `elegant`, `thoughtful`, `battle-tested`,
@@ -252,6 +295,12 @@ Three rules ship today:
 - `CorpVoice.yml` — bans `This document introduces`, `The following
   section covers`, `As mentioned above`, `It should be noted that`,
   and similar ceremonial phrasing.
+- `SentenceLength.yml` — flags sentences over 40 words. Long sentences
+  in technical prose usually mean two ideas glued together — split for
+  scannability. Threshold is a **ratchet** (Principle #22-style): started
+  at 40 for a feasible one-time cleanup (11 hits), ratchet down to 30
+  (Microsoft style) or 25 (Google style) once the baseline stays clean
+  for a release cycle.
 
 To run locally, install Vale from
 [github.com/vale-cli/vale/releases](https://github.com/vale-cli/vale/releases)

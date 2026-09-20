@@ -1,0 +1,15 @@
+extends: occurrence
+message: "Sentence too long — consider splitting (>40 words)."
+level: warning
+# Fires on sentences over 40 words. Long sentences in technical prose
+# usually mean two ideas glued together — split for scannability.
+#
+# Threshold rationale:
+# - Google style caps at 25 (very aggressive, ~170 hits at intro time)
+# - Microsoft style caps at 30 (~70 hits)
+# - We started at 40 — catches obvious bloat (60+ words is nearly always
+#   splittable) without a large one-time cleanup. Ratchet down to 30
+#   when the baseline stays clean for a release cycle.
+scope: sentence
+max: 40
+token: '\S+'
