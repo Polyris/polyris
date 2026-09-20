@@ -266,8 +266,14 @@ jobs:
   # ============================================
   # Vale catches the anti-patterns listed in
   # .claude/skills/documentation/SKILL.md: marketing verbs, sentence-start
-  # filler adverbs, corp voice.
+  # filler adverbs, corp voice, sentences over 40 words.
   # Config: .config/vale.ini + .config/vale/styles/PolyrisDocs.
+  #
+  # Direct binary install (not vale-cli/vale-action@v3) — the action's
+  # `files:` input accepts only ONE folder or `all`, so passing our
+  # multi-path scope silently fell back to `all` and scanned unintended
+  # paths (node_modules, .venv). Running the binary directly gives us
+  # exactly the same paths CI and local use.
   docs-prose:
     name: Docs Prose Lint
     runs-on: ubuntu-latest
@@ -275,12 +281,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Vale
-        uses: vale-cli/vale-action@v3
-        with:
-          config: .config/vale.ini
-          fail_on_error: true
-          files: 'docs README.md polyris sam/lambdas'
+      - name: Install Vale
+        run: |
+          curl -sSL -o /tmp/vale.tgz \
+            "https://github.com/vale-cli/vale/releases/download/v3.22.0/vale_3.22.0_Linux_64-bit.tar.gz"
+          tar -xzf /tmp/vale.tgz -C /tmp/
+          sudo mv /tmp/vale /usr/local/bin/vale
+          vale --version
+
+      - name: Run Vale (docs + README + polyris/ + sam/lambdas/)
+        run: vale --config .config/vale.ini docs/ README.md polyris/ sam/lambdas/
 
   # ============================================
   # UI
