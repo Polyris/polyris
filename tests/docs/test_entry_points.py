@@ -15,7 +15,6 @@ from tests.docs._helpers import (
     REPO_ROOT,
     format_findings,
     iter_docs,
-    iter_lines,
     rel,
 )
 
