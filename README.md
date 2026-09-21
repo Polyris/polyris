@@ -93,36 +93,23 @@ hello-world through assets and lineage.
 
 ## Documentation
 
-### Getting started
-| Doc | For |
+| I want to... | Go to |
 |---|---|
-| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Set up polyris from a blank AWS account (~10-15 min) |
-| [DSL.md](docs/features/DSL.md) | Learn the Python DSL — every task type, parameter, trigger rule |
-| [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) | Test pipelines locally with validate / dry_run / mock |
-
-### Building pipelines
-| Doc | For |
-|---|---|
-| [DATA_PASSING.md](docs/features/DATA_PASSING.md) | Pass data between tasks (xcom) |
-| [how-to/configure-retries.md](docs/how-to/configure-retries.md) | Configure retries, backoff, jitter |
-| [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration + `wait_for` |
-| [how-to/schedule-and-redeploy.md](docs/how-to/schedule-and-redeploy.md) | Schedule a pipeline, pause, redeploy safely |
-
-### Running in production
-| Doc | For |
-|---|---|
-| [UI.md](docs/operations/UI.md) | Web Console — DAG view, Runs, task actions |
-| [authentication.md](docs/features/authentication.md) | Set up Cognito authentication |
-| [API.md](docs/operations/API.md) | REST API reference |
-| [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) | Approve an install (IAM / resource inventory) |
-| [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) | Fix common issues |
-
-### Understand & extend
-| Doc | For |
-|---|---|
-| [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | Runtime architecture — what talks to what |
-| [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) | ADRs — why polyris looks the way it does |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Develop polyris itself |
+| Set up polyris from a blank AWS account | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
+| Learn the Python DSL — every task type, parameter, trigger rule | [DSL.md](docs/features/DSL.md) |
+| Test pipelines locally (validate / dry_run / mock) | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) |
+| Pass data between tasks (xcom) | [DATA_PASSING.md](docs/features/DATA_PASSING.md) |
+| Configure retries, backoff, jitter | [how-to/configure-retries.md](docs/how-to/configure-retries.md) |
+| Schedule a pipeline, pause, redeploy safely | [how-to/schedule-and-redeploy.md](docs/how-to/schedule-and-redeploy.md) |
+| Set up asset-based orchestration + `wait_for` | [ASSETS.md](docs/features/ASSETS.md) |
+| Use the Web Console — DAG view, Runs, task actions | [UI.md](docs/operations/UI.md) |
+| Set up Cognito authentication | [authentication.md](docs/features/authentication.md) |
+| Talk to polyris over REST | [API.md](docs/operations/API.md) |
+| Approve an install (IAM / resource inventory) | [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) |
+| Fix a specific problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
+| Understand the runtime architecture | [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) |
+| Read design decisions / ADRs | [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) |
+| Develop polyris itself | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ## Project structure
 
