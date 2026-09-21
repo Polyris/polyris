@@ -24,25 +24,32 @@ with DAG("orders-etl", schedule="@daily") as dag:
 ```
 
 `polyris-deploy` compiles this to a Step Functions state machine and hands
-it to AWS. No scheduler to run. No metadata DB. Pay per run — a typical
-multi-pipeline deployment lands at ~$31/month.
+it to AWS. State lives in DynamoDB and Step Functions execution history —
+serverless AWS primitives, nothing you run or upgrade. Pay per run — see
+[Cost](#cost) for the breakdown.
 
 ## Why polyris
 
-**Like Dagster** — assets, cross-pipeline dependencies, lineage tracking.
-**Unlike Dagster** — no cluster, no scheduler, no metadata DB. Pipelines
-compile to Step Functions; AWS is the runtime.
+Airflow, Dagster, and Prefect all need a scheduler, workers, and a Postgres
+metadata DB running 24/7 — idle cost is real and upgrades are their own
+project. Their managed variants (MWAA, Dagster Cloud, Prefect Cloud) hide
+the fleet but still bill a monthly floor for the control plane. **polyris
+compiles pipelines to Step Functions** and hands them to AWS. State lives
+in DynamoDB (pay-per-request, no schema to migrate); orchestration lives
+in Step Functions execution history. Nothing you keep alive between runs.
 
-- **Intervention-first failures.** Task fails → run pauses for a human
-  decision (retry / mark success / skip / fail) instead of falling over.
-  Fix inline, in the same run, no re-execution cost.
-- **Nothing to run.** No scheduler, workers, or metadata DB. Step Functions
-  scales to zero between runs.
-- **Nothing hidden.** Every pipeline compiles to a state machine — each run
-  is a debuggable execution history, not opaque scheduler state.
-- **Asset-centric.** Pipelines declare first-class data assets with
-  cross-pipeline dependencies, not just task graphs.
-- **Pay per run.** Floor near zero because there is no always-on infra.
+Three things this class of tools does not have:
+
+- **Intervention-first failures.** When a task fails, the run pauses for a
+  human decision — retry / mark success / skip / fail. Fix inline; the
+  upstream tasks that already succeeded don't re-run.
+- **Every run is a Step Functions execution.** Not opaque scheduler state —
+  the AWS Console shows the graph, the inputs, and the error at each state.
+  Familiar to anyone already on-call for AWS.
+- **First-class assets, no cluster to run.** Declare producers via
+  `outlets=`, consume via `schedule=[asset]` / `wait_for=`. Same
+  lineage-first model as Dagster — lineage lives in DynamoDB (managed by
+  AWS), not a Postgres you administer.
 
 Details: `retries`, `trigger_rule`, seven task types (`sfn`, `lambda`,
 `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules, `wait_for`
@@ -160,12 +167,28 @@ auth setup: [docs/features/authentication.md](docs/features/authentication.md).
 
 ## Cost
 
-|  | Managed orchestrators | polyris |
+polyris runs on Step Functions + Lambda + DynamoDB — all pay-per-request,
+no fleet to keep alive:
+
+| Component | AWS billing model | Approx. per-run share |
 |---|---|---|
-| **Base cost** | ~$300+/month | $0 |
-| **Per pipeline run** | $0 (included) | ~$0.01 |
-| **8 tasks, 1×/day, 30 days** | ~$300+ | ~$0.50 |
-| **Scaling** | Manual | Automatic |
+| Step Functions Standard | Per state transition ($0.025 / 1k) | $0.001 – $0.005 |
+| Lambda (task orchestration) | Per invocation + duration | ~$0.0001 per task |
+| DynamoDB | Per read/write unit | ~$0.001 per run |
+| CloudWatch Logs | GB ingested | $0.50 – $2 / month total |
+
+**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$5–10/month
+for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS
+containers, Athena queries) bill separately against your existing AWS
+spend; polyris does not add a percentage on top.
+
+Compared to **Amazon MWAA** (managed Airflow) — the smallest `mw1.small`
+environment alone starts at ~$350/month for the environment fee before
+workers or metadata storage — polyris runs the same orchestration workload
+for roughly two orders of magnitude less.
+
+*Numbers are approximate AWS list prices as of late 2025 — check AWS
+pricing pages for current figures.*
 
 ---
 
