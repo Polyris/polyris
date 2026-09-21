@@ -454,15 +454,15 @@ One-line inventory — for the detailed per-helper flow diagrams see
 
 | Component | Purpose |
 |-----------|---------|
-| **sf_dependency_wrapper** | Main wrapper - handles deps, execution, failures |
-| **sf_registration_helper** | Register task + subscriptions, check initial deps |
-| **sf_run_task_helper** | Execute task (SFN/Lambda/Glue/ECS/Athena/EMR/Batch) |
-| **sf_failure_handler** | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
-| **sf_pause_waiter** | Save pause token, wait for resume callback |
-| **sf_notify_dependents** _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
-| **sf_notify_asset_consumers** _(EXPRESS)_ | Cross-pipeline asset triggers (PUSH/AND/OR) |
-| **sf_restart_task_helper** _(EXPRESS)_ | Restart failed task |
-| **sf_restart_wrapper** _(EXPRESS)_ | Restart wrapper execution |
+| `polyris-dependency-wrapper` | Main wrapper — handles deps, execution, failures |
+| `polyris-registration-helper` | Register task + subscriptions, check initial deps |
+| `polyris-run-task-helper` | Execute task (SFN/Lambda/Glue/ECS/Athena/EMR/Batch) |
+| `polyris-failure-handler` | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
+| `polyris-pause-waiter` | Save pause token, wait for resume callback |
+| `polyris-notify-dependents` _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
+| `polyris-notify-asset-consumers` _(EXPRESS)_ | Cross-pipeline asset triggers (PUSH/AND/OR) |
+| `polyris-restart-task-helper` _(EXPRESS)_ | Restart failed task |
+| `polyris-restart-wrapper` _(EXPRESS)_ | Restart wrapper execution |
 
 > Alert delivery and interactive callbacks are **not** separate state
 > machines. They are `lambda:invoke` calls from run_task / failure_handler /

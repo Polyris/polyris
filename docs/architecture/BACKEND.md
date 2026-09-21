@@ -21,7 +21,7 @@ the generated files or duplicate an enum — edit `constants.py` and regenerate
 
 ## Step Function Helpers
 
-### 1. sf_dependency_wrapper
+### polyris-dependency-wrapper
 
 Main wrapper that orchestrates task execution:
 
@@ -56,7 +56,7 @@ Start
   └─▶ Done
 ```
 
-### 2. sf_registration_helper
+### polyris-registration-helper
 
 Registers task and subscriptions at runtime:
 
@@ -78,7 +78,7 @@ Start
   └─▶ Return dependency check result
 ```
 
-### 3. sf_run_task_helper
+### polyris-run-task-helper
 
 Executes the actual task:
 
@@ -86,7 +86,7 @@ Executes the actual task:
 Start
   │
   ├─▶ Check_Execution_Paused
-  │     └─▶ If paused: Call sf_pause_waiter, wait for resume
+  │     └─▶ If paused: Call polyris-pause-waiter, wait for resume
   │
   ├─▶ Update_Status_Running (DynamoDB)
   │
@@ -118,7 +118,7 @@ Start
        └─▶ Send_Pipeline_Failure (orchestrator token)
 ```
 
-### 4. sf_pause_waiter
+### polyris-pause-waiter
 
 Saves pause token for callback-based resume:
 
@@ -135,7 +135,7 @@ Start
 
 Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback.
 
-### 5. sf_failure_handler
+### polyris-failure-handler
 
 Runs after a task is terminally failed (wrapper catches the failure). Updates
 state, notifies dependents, and sends the follow-up alerts as a single batch
@@ -171,7 +171,7 @@ Start
 Collapsed from the older multi-state fan-out (per-channel states + separate
 alerter SFNs) to a single `Send_Alerts` Lambda call in the alerts consolidation.
 
-### 6. sf_restart_task_helper (EXPRESS)
+### polyris-restart-task-helper (EXPRESS)
 
 Restarts a failed task:
 
@@ -189,7 +189,7 @@ Start
   └─▶ If ready: trigger run_task_helper
 ```
 
-### 7. sf_restart_wrapper (EXPRESS)
+### polyris-restart-wrapper (EXPRESS)
 
 Restarts the wrapper execution:
 
@@ -203,11 +203,7 @@ Start
   └─▶ Return new execution ARN
 ```
 
-### ~~10. sf_register_on_create~~ — Removed (v69.1)
-
-Registration is handled by the `register_pipeline` SFN at deploy time via `polyris-deploy`. See ADR #24.
-
-### 8. sf_notify_dependents_helper (EXPRESS)
+### polyris-notify-dependents (EXPRESS)
 
 Invoked when a task completes (success, failed, skipped, aborted).
 Replaces EventBridge-based notification (pre-v51) with SFN-based approach
@@ -252,7 +248,7 @@ Task Completion (run_task/failure_handler/console_api)
 - `console_api` → skip_task, fail_task, mark_success, stop_task (via notify_dependents_via_sfn)
 - `slack.py` → slack_action_skip, slack_action_fail, slack_action_success (via notify_dependents_via_sfn)
 
-### 9. sf_notify_asset_consumers_helper (EXPRESS)
+### polyris-notify-asset-consumers (EXPRESS)
 
 Processes asset materialization and triggers subscribed pipelines.
 Replaced Lambda `asset_trigger` in v55 — now pure Step Functions for transparency.
@@ -331,9 +327,6 @@ Called by `run_task` helper when a task with `outlets` completes.
 - Queries `asset_subscriptions` for consumers
 - Sends `SendTaskSuccess` tokens to waiting tasks (PULL model)
 
-### ~~7. extract_sfn_metadata~~ — Removed (v69.1)
-
-Registration handled by `polyris-deploy` via boto3 + inline `Register_Pipeline` state.
 
 ---
 
