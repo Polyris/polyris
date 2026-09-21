@@ -8,7 +8,7 @@
 | [PROJECT_STRUCTURE.md](getting-started/PROJECT_STRUCTURE.md) | **Reference** — monorepo vs split-repo layouts, CI/CD patterns | I'm setting up a real project; show me the shape |
 
 To explore the DSL locally without AWS, follow the "Try It Now" section in
-the [root README](../README.md#try-it-now) — install, `polyris-init`,
+the [root README](../README.md#try-it-locally-no-aws) — install, `polyris-init`,
 inspect the ASL / graph / Mermaid output.
 
 ## How-to Guides
