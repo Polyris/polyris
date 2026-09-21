@@ -51,7 +51,7 @@ class ExperimentalWarning(UserWarning):
 
     EXPERIMENTAL-ASSETS: this whole warning mechanism (class, module flag, and the
     warn() call in Asset.__init__) is temporary scaffolding. Remove it when assets
-    graduate to stable — see docs/reference/EXPERIMENTAL_ASSETS.md.
+    graduate to stable — see docs/reference/MAINTAINER_ASSETS_GRADUATION.md.
 
     Assets work end to end (define, produce, wait on, asset-triggered schedules),
     but the API is not yet frozen. Silence this warning with:

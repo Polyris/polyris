@@ -234,5 +234,4 @@ f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-task"
 ## Next Steps
 
 - [CONFIGURATION.md](../reference/CONFIGURATION.md) — All config options
-- [TUTORIAL.md](TUTORIAL.md) — Step-by-step guide
 - [DSL.md](../features/DSL.md) — Pipeline DSL reference

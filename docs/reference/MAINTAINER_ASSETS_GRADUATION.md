@@ -1,4 +1,9 @@
-# Assets — experimental scaffolding & graduation checklist
+# Assets — graduation checklist (maintainer note)
+
+> **Audience: polyris maintainers.** This file is not a user reference. It
+> lists the temporary scaffolding to remove when the asset API graduates
+> from experimental to stable. For user-facing asset docs, see
+> [`ASSETS.md`](../features/ASSETS.md).
 
 Assets shipped as an **experimental** feature in **v0.93.0**. They work end
 to end: define, produce via `outlets`, consume via `inlets`/`wait_for`,
@@ -23,8 +28,7 @@ grep -rn "EXPERIMENTAL-ASSETS" polyris/ docs/ README.md
    `ExperimentalWarning` from the package exports in `polyris/__init__.py` and
    from `assets.py`'s docstrings.
 
-2. **Doc banners** — `README.md`, `docs/features/ASSETS.md`,
-   `docs/features/ASSET_PULL_FEATURE.md`, `docs/getting-started/TUTORIAL.md`
+2. **Doc banners** — `README.md`, `docs/features/ASSETS.md`
    Remove the `⚠️ Experimental` banners (each ends with an
    `<!-- EXPERIMENTAL-ASSETS ... -->` comment).
 

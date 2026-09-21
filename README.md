@@ -58,9 +58,9 @@ including manual steps: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 |---|---|
 | **Try polyris without AWS** (explore DSL locally) | [Try It Now](#try-it-now) below |
 | **Browse runnable examples** | [examples/](examples/) — hello-world → assets & lineage |
+| **Learn the Python DSL** | [DSL.md](docs/features/DSL.md) — every task type, parameter, trigger rule |
 | **Write a pipeline** (infra already deployed) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) → *Deploy Your First Pipeline* |
 | **Set up polyris from scratch** (blank AWS account) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
-| **Learn step by step** with explanations | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) |
 | **Develop polyris itself** (fix bugs, add features) | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **Troubleshoot** a problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
 
@@ -339,15 +339,13 @@ See [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for full setup.
 
 | Document | Description |
 |----------|-------------|
-| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Complete setup guide (~30-45 min) |
-| [TUTORIAL.md](docs/getting-started/TUTORIAL.md) | From zero to production guide |
+| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Complete setup guide from blank AWS account (~10-15 min) |
 | [PROJECT_STRUCTURE.md](docs/getting-started/PROJECT_STRUCTURE.md) | Repository layouts, CI/CD |
 | [DSL.md](docs/features/DSL.md) | Python DSL reference |
-| [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration |
-| [ASSET_PULL_FEATURE.md](docs/features/ASSET_PULL_FEATURE.md) | wait_for / pull-based assets |
+| [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration (including `wait_for` pull-based dependencies) |
 | [authentication.md](docs/features/authentication.md) | Cognito auth setup |
 | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) | Local testing (validate, dry_run, mock) |
-| [REGISTRATION.md](docs/tools/REGISTRATION.md) | Pipeline registration (CLI, auto) |
+| [REGISTRATION.md](docs/features/REGISTRATION.md) | Pipeline registration (CLI, auto) |
 | [API.md](docs/operations/API.md) | REST API reference (27 free endpoints; 63 in the full build) |
 | [UI.md](docs/operations/UI.md) | Web Console guide |
 | [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | System architecture, diagrams |

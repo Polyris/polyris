@@ -210,7 +210,7 @@ Check *why* the upstream was skipped:
 
 **Fix:**
 - If PipelineRegistration failed: `polyris-deploy` again (retry). The registration Custom Resource is idempotent — re-running is safe.
-- If registration missing: `polyris-register --name my-pipeline`. See [tools/REGISTRATION.md](../tools/REGISTRATION.md#manual-registration-cli).
+- If registration missing: `polyris-register --name my-pipeline`. See [REGISTRATION.md](../features/REGISTRATION.md#manual-registration-cli).
 - Every pipeline run also self-heals registration as its first state, so if you can trigger a run manually the pipeline reappears in the sidebar automatically.
 
 ---

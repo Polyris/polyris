@@ -141,6 +141,10 @@ Runs after a task is terminally failed (wrapper catches the failure). Updates
 state, notifies dependents, and sends the follow-up alerts as a single batch
 through the notify Lambda.
 
+For the two-line alerting design rationale (intervention-first,
+backfill-suppression, why `upstream_failed` skips alerts) see
+[ARCHITECTURE.md § Flow 5: Failure → Alerting](ARCHITECTURE.md#flow-5-failure--alerting).
+
 ```
 Start
   │

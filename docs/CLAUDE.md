@@ -81,7 +81,7 @@ that's the signal to split.
 
 | Category         | Purpose                                                              | This repo lives in                                        |
 | ---------------- | -------------------------------------------------------------------- | --------------------------------------------------------- |
-| **Tutorial**     | Learning-oriented — walks a reader through *doing* something for the first time. Assumes zero context. | `docs/getting-started/TUTORIAL.md`                        |
+| **Tutorial**     | Learning-oriented — walks a reader through *doing* something for the first time. Assumes zero context. | `README.md#try-it-now` (root)                             |
 | **How-to guide** | Goal-oriented — "how do I do X", assumes the reader knows what X is and why they want it. | `docs/getting-started/QUICKSTART.md`, `docs/deployment/*` |
 | **Reference**    | Lookup — technical specification, tables of parameters, exact contracts. Assumes the reader knows the concepts. | `docs/features/DSL.md`, `docs/features/DATA_PASSING.md`, `docs/reference/*` |
 | **Explanation**  | Understanding-oriented — "why this design", background, rationale. Not step-by-step; not lookup. | `docs/architecture/*`, ADRs (`docs/reference/adr-*.md`)   |

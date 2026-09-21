@@ -382,6 +382,9 @@ Task Failure
 
 ## DynamoDB Tables
 
+Quick reference — for full attribute definitions and access patterns see
+[BACKEND.md § DynamoDB Tables](BACKEND.md#dynamodb-tables).
+
 | Table | Purpose | PK | SK |
 |-------|---------|----|----|
 | pipeline_tokens | Task state | execution_name | - |
@@ -446,6 +449,9 @@ failure. `skip` fires when the condition never occurred — the task resolves
 
 ## Step Functions Helpers
 
+One-line inventory — for the detailed per-helper flow diagrams see
+[BACKEND.md § Step Function Helpers](BACKEND.md#step-function-helpers).
+
 | Component | Purpose |
 |-----------|---------|
 | **sf_dependency_wrapper** | Main wrapper - handles deps, execution, failures |
@@ -457,7 +463,6 @@ failure. `skip` fires when the condition never occurred — the task resolves
 | **sf_notify_asset_consumers** _(EXPRESS)_ | Cross-pipeline asset triggers (PUSH/AND/OR) |
 | **sf_restart_task_helper** _(EXPRESS)_ | Restart failed task |
 | **sf_restart_wrapper** _(EXPRESS)_ | Restart wrapper execution |
-| **sf_register_on_create** | ~~Removed in v69.1~~ — replaced by `register_pipeline` SFN (ADR #24) |
 
 > Interactive Slack and PagerDuty alerts/resolves are **not** separate state
 > machines. They are `lambda:invoke` calls from run_task / failure_handler /

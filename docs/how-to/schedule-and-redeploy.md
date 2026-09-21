@@ -124,4 +124,4 @@ In-flight executions abort when the state machine is deleted (CFN calls `DeleteS
 - [DEPLOY.md](../deployment/DEPLOY.md) — `polyris-deploy` CLI reference
 - [CLI.md#polyris-deploy](../reference/CLI.md#polyris-deploy) — every deploy flag
 - [ASSETS.md](../features/ASSETS.md) — asset-triggered pipelines (no `AWS::Scheduler::Schedule` deployed)
-- [REGISTRATION.md](../tools/REGISTRATION.md) — how the registration Custom Resource works
+- [REGISTRATION.md](../features/REGISTRATION.md) — how the registration Custom Resource works

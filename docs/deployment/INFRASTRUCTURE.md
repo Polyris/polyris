@@ -17,6 +17,8 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
   - [CloudWatch log groups (17)](#cloudwatch-log-groups-17)
   - [IAM (10 roles + 2 managed policies)](#iam-10-roles--2-managed-policies)
 - [Where does each pipeline run's state live?](#where-does-each-pipeline-runs-state-live)
+- [Stack outputs to read after deploy](#stack-outputs-to-read-after-deploy)
+- [Step Functions definition sources](#step-functions-definition-sources)
 - [What the stack does NOT deploy](#what-the-stack-does-not-deploy)
 
 ## The one distinction that matters: wrappers vs workloads
@@ -162,6 +164,68 @@ A common admin/developer question during an incident. Table maps concepts to con
 | "Which tasks depend on this one?" | `polyris-dep-subscriptions` DDB (GSI: `subscriber-index`) |
 | "When did this task last transition to `failed`?" | `polyris-task-events` DDB, query by `task_run_id` |
 | "Did Cognito reject the login?" | CloudTrail → filter EventSource `cognito-idp.amazonaws.com` |
+
+## Stack outputs to read after deploy
+
+`polyris-deploy` reads these directly from the SAM stack via
+`describe_stacks` (no SSM copy). You need them when integrating with the
+stack from outside — CI hooks, cross-account role assumers, or manual
+troubleshooting.
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs" \
+  --output table \
+  --profile "$AWS_PROFILE"
+```
+
+Key outputs:
+
+| Output | Consumers |
+|---|---|
+| `DependencyWrapperArn` | polyris-deploy — root SFN each pipeline invokes |
+| `OrchestrationRoleArn` | polyris-deploy — role attached to per-pipeline state machines |
+| `PipelineRegistryTable` | Console API, notify Lambda |
+| `PipelineTokensTable` | Every wrapper execution, Console API, notify Lambda |
+| `AssetSubscriptionsTable` | notify_asset_consumers, polyris-deploy |
+| `ResultsBucket` | xcom S3 spill, Console API sign-URL flow |
+| `ConsoleUiBucket`, `ConsoleUiDistributionId`, `ConsoleUiUrl` | UI `deploy.sh` |
+| `ConsoleApiUrl` | UI runtime config |
+| `CognitoUserPoolId`, `CognitoClientId` | UI auth, CLI PAT flow (only when `EnableCognitoAuth=true`) |
+
+## Step Functions definition sources
+
+State machine definitions live in `sam/sfn_templates/` as `.tpl.json`
+files — the **single source of truth**. `template.yaml` references them via
+`DefinitionUri`:
+
+```
+sam/sfn_templates/
+  dependency_wrapper/sfn.tpl.json
+  helpers/
+    run_task/sfn.tpl.json
+    failure_handler/sfn.tpl.json
+    notify_dependents/sfn.tpl.json
+    ...
+```
+
+`${var}` placeholders get replaced at deploy time via
+`DefinitionSubstitutions` in `template.yaml`.
+
+**Editing a definition:**
+1. Edit `sam/sfn_templates/*/sfn.tpl.json`.
+2. `sam build && sam deploy` — SAM inlines the file into `DefinitionString`
+   automatically.
+
+**Logging levels** are separate for the two SFN types (both configurable
+in `samconfig.toml`):
+
+| Parameter | Applies to | Default | Why |
+|---|---|---|---|
+| `SfnLogLevel` | Standard SFNs (`dependency_wrapper`, `run_task`, `failure_handler`, …) | `ERROR` | These run for the pipeline's lifetime — full logging is expensive |
+| `SfnExpressLogLevel` | Express SFNs (`notify_dependents`, `registration`, …) | `ALL` | Express runs are sub-second; full logging is cheap and useful |
 
 ## What the stack does NOT deploy
 
