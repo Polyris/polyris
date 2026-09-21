@@ -12,28 +12,26 @@ from polyris import DAG, task
 with DAG("orders-etl", schedule="@daily") as dag:
 
     @task.glue_job(job_name="extract-orders")
-    def extract(): pass
+    def extract(): ...
 
-    @task.sfn(arn="arn:aws:states:us-east-1:...:transform", retries=2)
-    def transform(): pass
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:transform",
+              retries=2)
+    def transform(): ...
 
     @task.lambda_function(function_name="load-orders")
-    def load(): pass
+    def load(): ...
 
     extract() >> transform() >> load()
 ```
 
 `polyris-deploy` compiles this to a Step Functions state machine and hands
-it to AWS. State lives in DynamoDB and Step Functions execution history —
-serverless AWS primitives, nothing you run or upgrade. Pay per run — see
-[Cost](#cost) for the breakdown.
+it to AWS. Pay per run — see [Cost](#cost) for the breakdown.
 
 ## Why polyris
 
 Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres
-metadata DB running 24/7. **polyris compiles pipelines to Step Functions**;
-state lives in DynamoDB (AWS-managed). Nothing you run or upgrade between
-runs.
+metadata DB running 24/7. polyris compiles pipelines to Step Functions —
+here is how the operations differ:
 
 | | polyris | Airflow / Dagster / Prefect |
 |---|---|---|
@@ -42,30 +40,23 @@ runs.
 | **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
 | **Assets & lineage** | First-class: `outlets=` / `wait_for=` / asset-triggered schedules — same model as Dagster. | Native in Dagster; add-on or missing in Airflow / Prefect. |
 
-Details: `retries`, `trigger_rule`, seven task types (`sfn`, `lambda`,
-`glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules, `wait_for`
-freshness checks, `xcom` data passing — all in
-[docs/features/DSL.md](docs/features/DSL.md).
-
----
+Full DSL reference — `retries`, `trigger_rule`, seven task types (`sfn`,
+`lambda`, `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules,
+`wait_for` freshness checks, `xcom` data passing — in
+[DSL.md](docs/features/DSL.md).
 
 ## Install
 
-One command — checks prerequisites, clones the latest release, tells you
-what to run next:
+Requires **Python 3.11+** and an AWS account. One command — checks
+prerequisites, clones the latest release, tells you what to run next:
 
 ```bash
 curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
 ```
 
-The installer is a release asset pinned to the tag it shipped with, and it
-clones the same tag by default. Pin a specific version with
-`POLYRIS_REF=v0.94.0` before the pipe, or use `main` for bleeding edge —
-in that case fetch the installer from main too:
-`raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh`. Full
-manual walkthrough: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
-
----
+Pin a specific version with `POLYRIS_REF=v0.94.0` before the pipe. Full
+manual walkthrough (dev-mode setup, main-branch install, teardown):
+[QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
 ## Try it locally (no AWS)
 
@@ -89,61 +80,60 @@ Python API for automated tests:
 
 ```python
 from polyris.local import validate, dry_run, run
+from my_pipeline import dag                # your DAG object
 
-validate(dag)                          # DAG structure
-dry_run(dag)                           # Execution plan
-result = run(dag, mock=True)           # Mock execution
-print(result.summary())                # ✅ 3 succeeded, ❌ 0 failed
+validate(dag)                              # DAG structure
+dry_run(dag)                               # Execution plan
+result = run(dag, mock=True)               # Mock execution
+print(result.summary())                    # ✅ 3 succeeded, ❌ 0 failed
 ```
 
 Or browse [examples/](examples/) — 15 self-contained pipelines from
 hello-world through assets and lineage.
 
----
-
-## Web Console
-
-The install ships a React console served from CloudFront. Three primary
-views (DAG, Tasks, Runs) with per-task actions on any failed or paused
-task: **Skip**, **Mark Success**, **Fail**, **Stop**, **Restart**.
-
-Full walkthrough: [docs/operations/UI.md](docs/operations/UI.md). Cognito
-auth setup: [docs/features/authentication.md](docs/features/authentication.md).
-
----
-
 ## Documentation
 
-| I want to... | Go to |
+### Getting started
+| Doc | For |
 |---|---|
-| **Set up polyris from a blank AWS account** | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
-| **Learn the Python DSL** — every task type, parameter, trigger rule | [DSL.md](docs/features/DSL.md) |
-| **Pass data between tasks (xcom)** | [DATA_PASSING.md](docs/features/DATA_PASSING.md) |
-| **Configure retries, backoff, jitter** | [how-to/configure-retries.md](docs/how-to/configure-retries.md) |
-| **Set up asset-based orchestration** | [ASSETS.md](docs/features/ASSETS.md) |
-| **Schedule a pipeline / pause / redeploy safely** | [how-to/schedule-and-redeploy.md](docs/how-to/schedule-and-redeploy.md) |
-| **Set up Cognito authentication** | [authentication.md](docs/features/authentication.md) |
-| **Test pipelines locally** | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) |
-| **Approve a polyris install** (IAM / resource inventory) | [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) |
-| **See the REST API** | [API.md](docs/operations/API.md) |
-| **Understand the runtime architecture** | [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) |
-| **Read design decisions / ADRs** | [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) |
-| **Troubleshoot a problem** | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
-| **Develop polyris itself** | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Set up polyris from a blank AWS account (~10-15 min) |
+| [DSL.md](docs/features/DSL.md) | Learn the Python DSL — every task type, parameter, trigger rule |
+| [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) | Test pipelines locally with validate / dry_run / mock |
 
----
+### Building pipelines
+| Doc | For |
+|---|---|
+| [DATA_PASSING.md](docs/features/DATA_PASSING.md) | Pass data between tasks (xcom) |
+| [how-to/configure-retries.md](docs/how-to/configure-retries.md) | Configure retries, backoff, jitter |
+| [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration + `wait_for` |
+| [how-to/schedule-and-redeploy.md](docs/how-to/schedule-and-redeploy.md) | Schedule a pipeline, pause, redeploy safely |
+
+### Running in production
+| Doc | For |
+|---|---|
+| [UI.md](docs/operations/UI.md) | Web Console — DAG view, Runs, task actions |
+| [authentication.md](docs/features/authentication.md) | Set up Cognito authentication |
+| [API.md](docs/operations/API.md) | REST API reference |
+| [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) | Approve an install (IAM / resource inventory) |
+| [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) | Fix common issues |
+
+### Understand & extend
+| Doc | For |
+|---|---|
+| [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | Runtime architecture — what talks to what |
+| [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) | ADRs — why polyris looks the way it does |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Develop polyris itself |
 
 ## Project structure
 
 ```
-├── pipelines/                    # Pipeline definitions (gitignored)
-│   ├── config.py                 # Shared config: ENVIRONMENTS, DEFAULT_STAGE
+├── pipelines/                    # Your pipeline definitions (gitignored)
+│   ├── config.py                 # Shared: ENVIRONMENTS, DEFAULT_STAGE
 │   └── my-pipeline/
 │       └── dag.py                # Pipeline definition
 │
-├── sam/                          # Shared infrastructure (SAM/CloudFormation)
+├── sam/                          # Shared AWS infrastructure
 │   ├── template.yaml             # SAM template — all AWS resources
-│   ├── samconfig.toml.example    # Deploy configuration template
 │   ├── lambdas/                  # 8 Lambda functions
 │   └── sfn_templates/            # 14 SFN definitions (11 orchestration + 3 test)
 │
@@ -153,8 +143,8 @@ auth setup: [docs/features/authentication.md](docs/features/authentication.md).
 │   ├── assets.py                 # Asset definitions
 │   └── generators.py             # ASL JSON generation
 │
-├── ui/                           # Web Console (React 19 + Next.js 16)
-└── tests/                        # Test suite
+├── ui/                           # Web Console
+└── tests/                        # SDK + backend + docs tests
 ```
 
 ---
@@ -186,29 +176,16 @@ pricing pages for current figures.*
 
 ---
 
-## Requirements
-
-- Python 3.11+
-- AWS account
-
-```bash
-pip install -e .          # pipeline development
-pip install -e ".[dev]"   # polyris development (adds pytest, ruff, mypy)
-```
-
----
-
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and
-PR guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR
+guidelines. Inside a polyris checkout:
 
 ```bash
-make test    # Run all tests
-make check   # Lint + sync + test (before PR)
+pip install -e ".[dev]"   # adds pytest, ruff, mypy
+make test                 # Run all tests
+make check                # Lint + sync + test (before PR)
 ```
-
----
 
 ## License
 
