@@ -5,6 +5,13 @@ This document describes how the polyris Console authenticates users via AWS Cogn
 `scripts/get-e2e-token.sh` obtains one from the deployment's user pool — or set
 `AUTH_ENABLED=false`.
 
+> **Navigating this doc.** Reader intent → jump-to:
+> **Set it up** → [Enabling Authentication](#enabling-authentication).
+> **Add / manage users** → [User Management](#user-management).
+> **Understand the design** → [Architecture](#architecture).
+> **Something's broken** → [Troubleshooting](#troubleshooting).
+> **Dev locally** → [Development](#development).
+
 > **How enforcement actually works (v0.87+, ADR #65).** Auth is enforced by a
 > single gate inside the `console-api` Lambda (`auth.authenticate`), **not** by
 > an API Gateway authorizer. The HTTP API uses a `/{proxy+}` integration, so
