@@ -729,6 +729,41 @@ with DAG(
 
 ---
 
+## JSONata expressions (reference)
+
+The generated ASL uses **JSONata** as its query language. When writing
+custom `@task.sfn` bodies, `variables=` values, or reading intermediate
+state, these five patterns cover most cases:
+
+**Get today's date (UTC):**
+```
+{% $substringBefore($now(), 'T') %}
+```
+
+**Conditional / default:**
+```
+{% $exists($states.input.foo) ? $states.input.foo : 'default' %}
+```
+
+**String concatenation:**
+```
+{% 'prefix-' & $states.input.name & '-suffix' %}
+```
+
+**Filter an array:**
+```
+{% $filter($states.input.items, function($v) { $v.status = 'active' }) %}
+```
+
+**Merge two objects:**
+```
+{% $merge([$states.input, {'new_field': 'value'}]) %}
+```
+
+Full JSONata reference: [jsonata.org/docs](https://docs.jsonata.org/).
+
+---
+
 ## CLI Usage
 
 Run these from the pipeline directory:

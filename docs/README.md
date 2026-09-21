@@ -61,7 +61,6 @@ Task-oriented recipes for specific problems. Each answers one question.
 |----------|-------------|
 | [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | System architecture |
 | [BACKEND.md](architecture/BACKEND.md) | Backend implementation |
-| [STEP_FUNCTIONS.md](architecture/STEP_FUNCTIONS.md) | ASL patterns and helpers |
 
 ## Reference
 
