@@ -15,7 +15,6 @@
 - [Task Status Lifecycle](#task-status-lifecycle)
 - [UI Architecture (React Console)](#ui-architecture-react-console)
 - [Debugging Guide](#debugging-guide)
-- [Runbooks](#runbooks)
 - [Glossary](#glossary)
 
 ## High-Level Overview
@@ -513,14 +512,11 @@ TTL) — without starting the SFN. There is no cost estimate (removed in v0.78.2
 
 ## Cost Model
 
-| Resource | Pricing |
-|----------|---------|
-| Step Functions | $0.025 / 1000 transitions |
-| DynamoDB | ~$0.25 / million requests |
-| Lambda | $0.20 / 1M requests |
-| EventBridge | $1.00 / million events |
-
-**8-task pipeline, 1x/day, 30 days = ~$0.50/month** (vs MWAA ~$300/month)
+Full breakdown (per-run cost per AWS service, small-deployment total,
+MWAA comparison) is in the root [README § Cost](../../README.md#cost).
+The runtime primitives — Step Functions transitions, Lambda invocations,
+DynamoDB read/write units, CloudWatch Logs GB — are all pay-per-request.
+No always-on control plane, so idle cost is near zero.
 
 ---
 
@@ -630,52 +626,6 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 1. Check **task_arn** - is it correct?
 2. Check **IAM roles** - does wrapper have permission to invoke?
 3. Check **task SFN/Lambda** logs - what's the error?
-
----
-
-## Runbooks
-
-### Stuck waitForTaskToken
-
-```bash
-# Find task with stuck token
-aws dynamodb query \
-  --table-name {namespace}-{stage}-polyris-pipeline-tokens \
-  --index-name status-index \
-  --key-condition-expression "#s = :status" \
-  --expression-attribute-names '{"#s": "status"}' \
-  --expression-attribute-values '{":status": {"S": "waiting"}}'
-
-# Check if subscription exists
-aws dynamodb get-item \
-  --table-name {namespace}-{stage}-polyris-dependency-subscriptions \
-  --key '{"dependency_key": {"S": "task_a-abc123"}, "subscriber_name": {"S": "task_b"}}'
-
-# Manually send token (emergency)
-aws stepfunctions send-task-success \
-  --task-token "aqc..." \
-  --task-output '{"status": "success"}'
-```
-
-### Restart failed pipeline
-
-```bash
-# Via Console UI: Pipelines → Select pipeline → Run button
-
-# Via API:
-curl -X POST https://api.example.com/api/pipeline-run?name=my-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"current_date": "2024-01-15"}}'
-```
-
-### Stop runaway execution
-
-```bash
-# Via Console UI: Stop button (appears when tasks are active)
-
-# Via API:
-curl -X POST https://api.example.com/api/execution-stop?id={arn}
-```
 
 ---
 
