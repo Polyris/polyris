@@ -433,7 +433,7 @@ trust relationship or route through a Lambda proxy in the polyris account.
 | Rely on `event["upstream"]` for a Glue upstream without knowing about metadata leak | Read Console — banner warns; then add `xcom.push()` in the Glue job |
 | `xcom.push()` from a Lambda handler | `return value` — deterministic ordering |
 | Read `event["upstream"][X]["output"]["field"]` without checking status | `xcom.get(event, X)` — loud errors surface bugs earlier |
-| Access raw `event["upstream"]` dict in new code | `xcom.get(event, X)` — auto-resolves `_s3_ref`, auto-falls-back on truncated |
+| Access raw `event["upstream"]` dict in **new** code | `xcom.get(event, X)` — auto-resolves `_s3_ref`, auto-falls-back on truncated. Existing readers keep working — see [Migration from 0.99](#migration-from-099). |
 | Read a `XComManuallyResolvedError` marker as if it were data | Catch the error; route on `.resolution` / `.operator` / `.reason` |
 
 ## Where data lives (DDB schema)

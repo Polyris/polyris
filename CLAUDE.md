@@ -1429,7 +1429,7 @@ stale date on mount".
 
 ## Step Functions
 
-### 16 State Machines
+### 14 State Machines (11 orchestration + 3 test)
 
 | Name | Type | Purpose |
 |------|------|---------|
@@ -1438,12 +1438,10 @@ stale date on mount".
 | `polyris-failure-handler` | STANDARD | Handles failures, notifies, updates DynamoDB |
 | `polyris-registration-helper` | STANDARD | Registers pipeline on deploy |
 | `polyris-pause-waiter` | STANDARD | Holds execution during pipeline pause |
+| `polyris-bulk-backfill` | STANDARD | Orchestrates a range of dates for a pipeline |
 | `polyris-notify-dependents` | EXPRESS | Finds and signals downstream tasks when upstream completes |
 | `polyris-restart-task-helper` | EXPRESS | Stops wrapper + restarts task |
 | `polyris-restart-wrapper` | EXPRESS | Starts new dependency_wrapper for restart |
-| `polyris-slack-interactive` | EXPRESS | Sends Slack message with action buttons |
-| `polyris-pagerduty-alerter` | EXPRESS | Sends PagerDuty alert |
-| `polyris-pagerduty-resolver` | EXPRESS | Resolves PagerDuty incident |
 | `polyris-notify-asset-consumers` | EXPRESS | Triggers asset-based pipelines |
 | `polyris-register-pipeline` | EXPRESS | Registers pipeline in registry |
 | `polyris-test-quick` | STANDARD | Demo/test task (fast) |

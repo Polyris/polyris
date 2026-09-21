@@ -25,9 +25,16 @@ SAM_TEMPLATE = REPO_ROOT / "sam" / "template.yaml"
 # is spread across multiple CFN types (state machines = Serverless +
 # StepFunctions primitives).
 _COUNT_PATTERNS = [
+    # "N state machines" / "N Step Function state machines" / "N SFNs total" /
+    # "N SFN definitions" — all common phrasings for the SFN count. Multiple
+    # phrasings caught one live drift where README said "16 SFNs total" while
+    # INFRASTRUCTURE said "14 state machines".
     (re.compile(r"(\d+)\s+(?:Step Function\s+)?state\s+machines?", re.IGNORECASE),
      ("AWS::Serverless::StateMachine", "AWS::StepFunctions::StateMachine"),
      "state machines"),
+    (re.compile(r"(\d+)\s+SFN(?:s|\s+(?:definitions?|total))", re.IGNORECASE),
+     ("AWS::Serverless::StateMachine", "AWS::StepFunctions::StateMachine"),
+     "SFNs"),
     (re.compile(r"(\d+)\s+Lambda\s+functions?", re.IGNORECASE),
      ("AWS::Serverless::Function",),
      "Lambda functions"),

@@ -3,10 +3,11 @@
 Common issues and solutions for polyris operations.
 
 > **API auth (`AUTH_ENABLED=true`):** every API call below except `/api/health*`
-> and `/api/metrics` needs `-H "Authorization: Bearer <token>"` (a Cognito token).
-> The `curl` examples omit it for brevity. A **401 Unauthorized** means a
-> missing/expired token — sign out and sign in again to get a fresh one.
-> See `docs/features/authentication.md`.
+> and `/api/metrics` needs `-H "Authorization: Bearer $TOKEN"` where `$TOKEN`
+> is a Cognito ID token. Grab one from the Console (browser devtools → Network
+> → any authenticated request → copy `Authorization` header). A **401
+> Unauthorized** means a missing/expired token — sign out and sign in again.
+> See [authentication.md](../features/authentication.md).
 
 ---
 
@@ -68,7 +69,8 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 
 **Fix:** Stop the stuck execution via Console UI or API:
 ```bash
-curl -X POST https://api.example.com/api/execution-stop?id={arn}
+curl -X POST https://api.example.com/api/execution-stop?id={arn} \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -391,7 +393,8 @@ aws cloudformation list-stacks \
 # Via Console UI: Stop button
 
 # Via API:
-curl -X POST https://api.example.com/api/execution-stop?id={arn}
+curl -X POST https://api.example.com/api/execution-stop?id={arn} \
+  -H "Authorization: Bearer $TOKEN"
 
 # Via AWS CLI:
 aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
@@ -408,6 +411,7 @@ aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
 
 # Via API:
 curl -X POST https://api.example.com/api/task-success?name={execution_name} \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Manually verified completion"}'
 ```
@@ -421,6 +425,7 @@ curl -X POST https://api.example.com/api/task-success?name={execution_name} \
 
 # Via API:
 curl -X POST https://api.example.com/api/pipeline-run?name={name} \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"variables": {"current_date": "2026-01-15"}}'
 ```

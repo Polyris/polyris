@@ -21,16 +21,16 @@ mycompany-data/
 ├── pyproject.toml              # Python packaging + dev tools
 ├── sam/
 │   └── shared/                 # Shared infrastructure
-│       ├── template.yaml    # SAM template
-│       └── ...
+│       ├── template.yaml       # SAM template
+│       └── samconfig.toml
 │
 ├── pipelines/                  # (whole directory is gitignored — real
 │   ├── config.py               #  account_id / profile stay out of git)
 │   ├── acme-daily/
-│   │   ├── dag.py
-│   │   └── │   └── nexus-hourly/
-│       ├── dag.py
-│       └── │
+│   │   └── dag.py
+│   └── nexus-hourly/
+│       └── dag.py
+│
 └── .github/
     └── workflows/
         └── ci.yml

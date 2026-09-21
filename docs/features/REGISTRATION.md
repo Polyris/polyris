@@ -10,13 +10,14 @@ Registration happens automatically in three ways:
 
 | Method | When | Automatic | Latency |
 |--------|------|-----------|---------|
-| **polyris-deploy lifecycle** | `polyris-deploy` / `polyris-deploy --destroy` | ✅ Yes | ~2-3 seconds |
-| **Pipeline run** | Every execution (self-healing) | ✅ Yes | 0 (inline) |
-| **CLI** | Manual `polyris-register` command | ❌ No | ~2-3 seconds |
+| **polyris-deploy lifecycle** | `polyris-deploy` / `polyris-deploy --destroy` | Yes | ~2-3 seconds |
+| **Pipeline run** | Every execution (self-healing) | Yes | 0 (inline) |
+| **CLI** | Manual `polyris-register` command | No | ~2-3 seconds |
 
 ## polyris-deploy Lifecycle Registration
 
-When you deploy with `polyris-deploy`, the `PipelineRegistration` dynamic resource handles the full lifecycle:
+When you deploy with `polyris-deploy`, a **CloudFormation Custom Resource**
+(`PipelineRegistration`) handles the full lifecycle:
 
 ```
 polyris-deploy (create)
@@ -25,7 +26,7 @@ polyris-deploy (create)
 StateMachine created
     │
     ▼
-PipelineRegistration.create()
+PipelineRegistration Custom Resource fires
     │
     ▼
 StartExecution(register_only=true)
@@ -82,7 +83,7 @@ Check_Register_Only
 ```
 
 This ensures pipelines stay registered even if:
-- EventBridge event was missed
+- The `polyris-deploy` Custom Resource run failed silently
 - DynamoDB items were deleted
 - Subscriptions expired (TTL)
 
@@ -139,19 +140,19 @@ polyris-register --name my-pipeline --profile dev --role-arn arn:aws:iam::456:ro
 ```
 $ polyris-register --name feeds-pipeline --profile prod
 
-🔍 Looking for pipeline 'feeds-pipeline' in us-east-1...
+Looking for pipeline 'feeds-pipeline' in us-east-1...
    Found: arn:aws:states:us-east-1:123:stateMachine:polyris-prod-feeds-pipeline
 
-📝 Registering pipeline...
+Registering pipeline...
    Using profile: prod
 
-✅ Registration triggered!
+Registration triggered.
    Execution: arn:aws:states:us-east-1:123:execution:feeds-pipeline:reg-abc123
    Started: 2026-01-27T13:00:00
 
    Pipeline will be registered in:
-   • pipeline_registry (for UI discovery)
-   • asset_subscriptions (for asset triggers)
+   - pipeline_registry (for UI discovery)
+   - asset_subscriptions (for asset triggers)
 ```
 
 ## When to Use Manual Registration
@@ -169,7 +170,8 @@ deploy:
   steps:
     - run: polyris-deploy
     
-    # Optional: explicit registration (EventBridge handles this too)
+    # Optional: explicit registration (polyris-deploy does this via a CFN
+    # Custom Resource; the CLI call is a safety net if that failed silently).
     - run: |
         polyris-register \
           --name ${{ env.PIPELINE_NAME }} \
@@ -194,7 +196,7 @@ deploy:
 ### "Profile not found" error
 
 ```
-❌ Profile not found: prod
+Profile not found: prod
    Check ~/.aws/credentials or ~/.aws/config
 ```
 

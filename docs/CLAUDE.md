@@ -308,6 +308,11 @@ If it's read by a user, it's a doc, and every rule here applies.
 - **Sweep for comparison phrases** ("not yet in OSS", "coming later",
   "available in", "the full version") — these bypass a features-list
   check but still violate #24.
+- **Render ASCII trees / diagrams / tables in a Markdown preview after
+  editing them.** Regex gates don't catch broken box-drawing: a mis-placed
+  `└──` or a dangling `│` renders as visual garbage but passes every
+  lint. Open the diff in the GitHub preview, mdcat, or your editor's
+  Markdown preview — eyeball the actual rendered output before commit.
 
 ## Common mistakes to avoid
 

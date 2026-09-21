@@ -22,26 +22,14 @@ without hardcoded references between pipelines.
 
 Inspect lineage from the CLI with `polyris-output --graph`.
 
-## On this page
+## Contents
 
-If you want to produce or consume assets, skip to
-[Producer tasks](#producer-tasks-outlets) and
-[Consumer DAGs](#consumer-dags-schedule).
-The schema-declaration sections that come right after "Defining Assets" are
-advanced — read them when you want Glue-catalog integration or typed schemas,
-not on first read.
-
-Order of the doc:
-
-1. [Defining assets](#defining-assets) — naming, minimal example
-2. Schema declaration (advanced — skip on first read)
-3. [Producer tasks (`outlets`)](#producer-tasks-outlets) ← what you probably want
-4. [Consumer DAGs (`schedule`)](#consumer-dags-schedule) ← what you probably want
-5. [AND / OR / mixed logic](#and-logic-all-assets-required)
-6. [Inlets](#inlets-documentation), [pull-based dependencies (`wait_for`)](#pull-based-dependencies-wait_for),
-   [asset events](#asset-events), [queue management](#queue-management)
-7. [Lineage graph](#asset-lineage-graph), [timeouts](#timeout-for-cross-pipeline-dependencies)
-8. [Complete example](#complete-example), [best practices](#best-practices)
+- [Defining Assets](#defining-assets) — naming, minimal example, schema declaration (schema is optional; skip on first read)
+- [Producer Tasks (`outlets`)](#producer-tasks-outlets)
+- [Consumer DAGs (`schedule`)](#consumer-dags-schedule) — AND / OR / mixed logic
+- [Inlets](#inlets-documentation), [pull-based dependencies (`wait_for`)](#pull-based-dependencies-wait_for)
+- [Asset events](#asset-events), [queue management](#queue-management), [lineage graph](#asset-lineage-graph)
+- [Complete example](#complete-example), [best practices](#best-practices)
 
 ---
 

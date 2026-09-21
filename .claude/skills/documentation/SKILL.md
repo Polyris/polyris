@@ -89,6 +89,11 @@ These are patterns I catch myself producing. Delete on sight:
   covers…", "As mentioned above…". Talk to the reader like a colleague.
 - **Restating structure**: "This section will cover A, B, C. First A: …"
   — cut the announcement; write A directly.
+- **Apologetic TOCs**: "On this page: skip section X, section Y is
+  advanced, come back to Z if you care about W." A TOC lists sections; it
+  does not tell the reader what to skip or apologise for the doc's order.
+  If sections need "skip" labels, the doc is mis-ordered — put the
+  most-read section first instead.
 - **False dichotomies for drama**: "Traditionally, doing X was painful.
   Now, with polyris, it's easy." Nobody reads for the narrative arc.
 - **Over-precise numbers where the range is what matters**: "This takes
