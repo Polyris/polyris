@@ -82,7 +82,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-query-subscriptions` | `notify-dependents` SFN | Reads `dep-subscriptions` to find who to notify when an upstream completes |
 | `polyris-check-assets` | Asset ingest path | Validates incoming asset events against `asset-subscriptions` |
 | `polyris-notify-asset-subscribers` | Asset publish path | Starts downstream asset-triggered pipelines when an asset event lands |
-| `polyris-notify` | `failure-handler` SFN | Publishes alerts to Slack / PagerDuty when configured |
+| `polyris-notify` | `failure-handler` SFN | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap` | CustomResource on install | Copies the built Console UI bundle from the SAM artifacts bucket to `ConsoleUiBucket` |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
 

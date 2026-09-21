@@ -103,9 +103,9 @@ These are the load-bearing decisions the rest of the architecture follows from.
    drift gates. Hand-maintained copies of the same vocabulary are treated as
    bugs (see DESIGN_DECISIONS #72/#83/#93/#94).
 
-6. **No silent failures.** Alerts (Slack/PagerDuty) are configured per pipeline in
-   the Console UI; on failure the notify Lambda reads that config from DynamoDB and
-   fans out to every enabled channel (an empty config is a clean no-op).
+6. **No silent failures.** Alerts are configured per pipeline in the Console UI;
+   on failure the notify Lambda reads that config from DynamoDB and fans out to
+   every enabled channel (an empty config is a clean no-op).
 
 ---
 
@@ -175,8 +175,8 @@ Run_Task Helper SFN
      └─ ON FAILURE:
           ├─ Save_Error_Waiting ─────► pipeline_tokens (status=waiting_decision)
           ├─ Check_Is_Backfill ──────► if backfill: skip alerts, go to Wait_For_Decision
-          ├─ Interactive_Slack ──────► notify Lambda: Slack w/ buttons (Skip/Restart/Fail)
-          ├─ Send_PagerDuty_Alert ───► notify Lambda: PagerDuty (immediate, actionable)
+          ├─ Interactive_Notify ─────► notify Lambda: interactive channel with buttons (Skip/Restart/Fail)
+          ├─ Send_Immediate_Alert ───► notify Lambda: immediate alert channel
           ├─ Wait_For_Decision ──────► 5h wait for human response
           ├─ Save_Failed ────────────► pipeline_tokens [updateItem]
           ├─ Notify_Dependents_Failed ► notify_dependents SFN
@@ -263,17 +263,17 @@ Task error caught by run_task
      │
      ├─ Save_Error_Waiting ──────► pipeline_tokens (status=waiting_decision)
      ├─ Get_Decision_Timeout ────► read global decision-wait timeout (registry __global_settings__)
-     ├─ Check_Is_Backfill ───────► backfill? skip alerts → Wait_For_Decision (no Slack/PD)
-     ├─ Interactive_Slack ──────► notify Lambda — Slack w/ buttons (Skip/Restart/Mark Success/Fail)
-     ├─ Send_PagerDuty_Alert ───► notify Lambda — PagerDuty (fires immediately)
+     ├─ Check_Is_Backfill ───────► backfill? skip alerts → Wait_For_Decision (no notifications)
+     ├─ Interactive_Notify ─────► notify Lambda — interactive channel with action buttons (Skip/Restart/Mark Success/Fail)
+     ├─ Send_Immediate_Alert ───► notify Lambda — non-interactive channel (fires immediately)
      └─ Wait_For_Decision ───────► decision-timeout window for human response
           └─ timeout ────────────► Save_Failed → wrapper catches → failure_handler
 ```
 
-Both the interactive Slack post and the PagerDuty alert are `lambda:invoke` calls
-to the single notify Lambda — there are no separate alerter state machines (ADR
-#103). The Lambda reads the pipeline's alert_config from the registry itself and
-posts to whichever channels are enabled.
+Both the interactive post and the immediate alert are `lambda:invoke` calls
+to the single notify Lambda — there are no separate alerter state machines.
+The Lambda reads the pipeline's alert_config from the registry and posts to
+whichever channels are enabled.
 
 **Line 2 — failure_handler (after task is terminal):**
 ```
@@ -289,21 +289,21 @@ failure_handler SFN
      ├─ Notify_Dependents ───────► notify_dependents SFN
      │    (so downstream tasks get blocked/triggered per trigger_rule)
      │
-     ├─ Check_Is_Upstream_Failed ► upstream_failed? skip Slack (root cause already alerted)
+     ├─ Check_Is_Upstream_Failed ► upstream_failed? skip alert (root cause already alerted)
      │
-     ├─ Check_Slack_Alert ── yes ► Slack (restart-only message, no action buttons)
-     │    └─ on Slack failure ───► pipeline_tokens [updateItem]
-     │                              (record slack_notification_failed=true)
+     ├─ Check_Alert_Enabled ─ yes ► notify Lambda (restart-only message, no action buttons)
+     │    └─ on notify failure ──► pipeline_tokens [updateItem]
+     │                              (record notification_failed=true)
      │
      └─ Send_Task_Failure ───────► orchestrator token (callback)
 ```
 
 **Key design decisions:**
-- PagerDuty fires in line 1 (immediate) so on-call can act during the decision-wait window (global timeout, default 5h)
+- The immediate-alert channel fires in line 1 so on-call can act during the decision-wait window (global timeout, default 5h)
 - Backfill suppresses all alerts — results visible in UI calendar
 - upstream_failed tasks don't alert — root cause task already sent notifications
-- Line 2 Slack sends restart-only message (no Skip/Fail buttons on dead task)
-- PagerDuty removed from line 2 — already triggered in line 1, PD handles escalation
+- Line 2 sends a restart-only message (no Skip/Fail buttons on a terminal task)
+- Immediate-alert channel is not re-fired in line 2 — already triggered in line 1
 
 ### Flow 6: Pipeline Registration on Deploy
 
@@ -340,7 +340,7 @@ PipelineRegistration.delete()
 | Task never becomes `deps_ready` | notify_dependents execution | `pipeline_tokens` — check dep statuses |
 | Task `deps_ready` but not running | run_task helper execution | `pipeline_registry` — is pipeline paused? |
 | Asset trigger didn't fire | notify_asset_subscribers logs | `asset_events` + `asset_subscriptions` |
-| No Slack alert on failure | run_task + failure_handler execution | Check `alerts.slack` config, `notification_failed` field in token |
+| No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for PipelineRegistration | `pipeline_registry` — registered? CFN stack has registration output |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
 | Wrong trigger_rule result | evaluate_deps Lambda logs | Check `dep_statuses` + `trigger_rule` in log |
@@ -358,8 +358,8 @@ Task Failure
 │                                                             │
 │   1. Save_Error_Waiting (DDB: status=waiting_decision)      │
 │   2. Check_Is_Backfill → backfill? skip alerts → Wait_For_Decision │
-│   3. Interactive_Slack → notify Lambda: Slack (buttons)            │
-│   4. Send_PagerDuty_Alert → notify Lambda: PagerDuty              │
+│   3. Interactive_Notify → notify Lambda: interactive channel (buttons)  │
+│   4. Send_Immediate_Alert → notify Lambda: immediate channel │
 │   5. Wait_For_Decision (5h timeout)                         │
 │   6. Save_Failed → Notify_Dependents → Send_Pipeline_Failure│
 └──────────────────────────┬──────────────────────────────────┘
@@ -373,7 +373,7 @@ Task Failure
 │   3. Emit_Failure_Event (task_events)                       │
 │   4. Notify_Dependents (trigger_rules evaluation)           │
 │   5. Check_Is_Upstream_Failed → skip alerts if cascade      │
-│   6. Check Slack → Send restart-only message (no buttons)   │
+│   6. Check_Alert_Enabled → send restart-only message (no buttons) │
 │   7. Send_Task_Failure (callback to pipeline)               │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -435,7 +435,7 @@ failure. `skip` fires when the condition never occurred — the task resolves
 | `deps_skip` *(signal, not persisted)* | Callback payload when a rule's condition legitimately never occurred (ADR #115) — resolves to the persisted `skipped` |
 | `waiting_delay` | wait_before countdown |
 | `waiting_paused` | Pipeline paused, task waiting for resume |
-| `waiting_decision` | Waiting for manual decision (interactive Slack) |
+| `waiting_decision` | Waiting for manual decision (interactive notification) |
 | `pending` | Pending redrive (SFN) |
 | `running` | Executing |
 | `success` | Completed successfully |
@@ -464,11 +464,11 @@ One-line inventory — for the detailed per-helper flow diagrams see
 | **sf_restart_task_helper** _(EXPRESS)_ | Restart failed task |
 | **sf_restart_wrapper** _(EXPRESS)_ | Restart wrapper execution |
 
-> Interactive Slack and PagerDuty alerts/resolves are **not** separate state
+> Alert delivery and interactive callbacks are **not** separate state
 > machines. They are `lambda:invoke` calls from run_task / failure_handler /
-> dependency_wrapper to the single notify Lambda. The earlier
-> `sf_slack_interactive`, `sf_pagerduty_alerter`, and `sf_pagerduty_resolver`
-> Express SFNs (and the EventBridge Connection that backed them) were removed.
+> dependency_wrapper to the single notify Lambda. Earlier per-channel
+> Express SFNs (and the EventBridge Connection that backed them) were
+> removed in favor of the consolidated Lambda approach.
 
 ---
 
@@ -553,10 +553,10 @@ TTL) — without starting the SFN. There is no cost estimate (removed in v0.78.2
                           │
               ┌───────────┼───────────┐
               ▼           ▼           ▼
-          ┌─────────┐ ┌─────────┐ ┌──────────────────┐
-          │ SUCCESS │ │ FAILED  │ │WAITING_DECISION   │
-          └─────────┘ └─────────┘ │(interactive Slack)│
-                                  └──────────────────┘
+          ┌─────────┐ ┌─────────┐ ┌───────────────────────┐
+          │ SUCCESS │ │ FAILED  │ │ WAITING_DECISION      │
+          └─────────┘ └─────────┘ │ (interactive notify)  │
+                                  └───────────────────────┘
 ```
 
 **Terminal statuses:** success, failed, skipped, aborted, upstream_failed

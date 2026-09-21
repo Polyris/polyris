@@ -8,7 +8,7 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 1.0.1 · **Next milestone:** consolidate paid Slack/PagerDuty language out of OSS docs (#24)
+**Version:** 1.0.1 · **Next milestone:** consolidate paid-integration language out of OSS docs (#24)
 
 ## In flight
 

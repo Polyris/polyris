@@ -181,13 +181,6 @@ Click a task to open detail modal with actions:
 | **⏰ +12h** | Extend pause timeout by 12 hours. |
 | **⏹️ Stop** | Stop all tasks immediately. |
 
-### From Slack
-
-Interactive Slack notifications include buttons:
-- **Skip** — Continue pipeline without this task
-- **Fail** — Mark failed and continue
-- **Restart** — Retry the task
-
 ---
 
 ## Backfill Modal

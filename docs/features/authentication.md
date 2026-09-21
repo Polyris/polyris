@@ -327,7 +327,7 @@ setting:
 |------|-----------|
 | `GET /api/health` and `GET /api/health/simple` | Load-balancer liveness probes; must work without credentials |
 | `GET /api/metrics` | Ops metrics endpoint; scraped by monitoring agents |
-| `GET /api/action/*` | Slack button callbacks (skip/fail/restart) — the Slack messenger delivers these with no bearer token |
+| `GET /api/action/*` | Link-button callbacks (skip / fail / restart) — delivered without a bearer token; the mutations they allow are documented in [ADR #66](../reference/adr-66-per-token-scopes.md) |
 
 ### Everything else requires a Cognito bearer token (or a PAT)
 

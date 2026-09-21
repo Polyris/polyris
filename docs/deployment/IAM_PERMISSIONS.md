@@ -217,7 +217,7 @@ Ten IAM roles the stack creates during Install. Every role's `RoleName` starts w
 | `polyris-query-subscriptions-role` | Lambda | Reads the `dep-subscriptions` DDB table to find downstream tasks when an upstream completes |
 | `polyris-check-assets-role` | Lambda | Reads `asset-events` and `asset-subscriptions` DDB tables for asset-triggered pipelines |
 | `polyris-notify-asset-subscribers-role` | Lambda | Starts downstream pipeline executions when an asset publishes |
-| `polyris-notify-role` | Lambda | Publishes to Slack / PagerDuty on alert conditions |
+| `polyris-notify-role` | Lambda | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |
 | `polyris-bucket-cleanup-role` | Lambda | One-off role for the CustomResource that empties S3 buckets on Remove |
 
