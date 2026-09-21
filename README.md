@@ -55,12 +55,15 @@ One command — checks prerequisites, clones the latest release, tells you
 what to run next:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
+curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
 ```
 
-Pin a specific version with `POLYRIS_REF=v0.94.0` before the pipe, or use
-`main` for bleeding edge. Full manual walkthrough:
-[QUICKSTART.md](docs/getting-started/QUICKSTART.md).
+The installer is a release asset pinned to the tag it shipped with, and it
+clones the same tag by default. Pin a specific version with
+`POLYRIS_REF=v0.94.0` before the pipe, or use `main` for bleeding edge —
+in that case fetch the installer from main too:
+`raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh`. Full
+manual walkthrough: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
 ---
 
