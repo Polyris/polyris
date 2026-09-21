@@ -30,26 +30,17 @@ serverless AWS primitives, nothing you run or upgrade. Pay per run — see
 
 ## Why polyris
 
-Airflow, Dagster, and Prefect all need a scheduler, workers, and a Postgres
-metadata DB running 24/7 — idle cost is real and upgrades are their own
-project. Their managed variants (MWAA, Dagster Cloud, Prefect Cloud) hide
-the fleet but still bill a monthly floor for the control plane. **polyris
-compiles pipelines to Step Functions** and hands them to AWS. State lives
-in DynamoDB (pay-per-request, no schema to migrate); orchestration lives
-in Step Functions execution history. Nothing you keep alive between runs.
+Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres
+metadata DB running 24/7. **polyris compiles pipelines to Step Functions**;
+state lives in DynamoDB (AWS-managed). Nothing you run or upgrade between
+runs.
 
-Three things this class of tools does not have:
-
-- **Intervention-first failures.** When a task fails, the run pauses for a
-  human decision — retry / mark success / skip / fail. Fix inline; the
-  upstream tasks that already succeeded don't re-run.
-- **Every run is a Step Functions execution.** Not opaque scheduler state —
-  the AWS Console shows the graph, the inputs, and the error at each state.
-  Familiar to anyone already on-call for AWS.
-- **First-class assets, no cluster to run.** Declare producers via
-  `outlets=`, consume via `schedule=[asset]` / `wait_for=`. Same
-  lineage-first model as Dagster — lineage lives in DynamoDB (managed by
-  AWS), not a Postgres you administer.
+| | polyris | Airflow / Dagster / Prefect |
+|---|---|---|
+| **When a task fails** | Run pauses for a human decision — retry / mark success / skip / fail. Fix inline; upstream tasks that already succeeded don't re-run. | Retry policy, then the run fails. Re-execute from the failing task manually. |
+| **Debugging a run** | Step Functions execution history in the AWS Console — graph, inputs, and error at each state. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
+| **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
+| **Assets & lineage** | First-class: `outlets=` / `wait_for=` / asset-triggered schedules — same model as Dagster. | Native in Dagster; add-on or missing in Airflow / Prefect. |
 
 Details: `retries`, `trigger_rule`, seven task types (`sfn`, `lambda`,
 `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules, `wait_for`
