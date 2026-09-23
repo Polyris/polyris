@@ -12,4 +12,4 @@ rsa>=4.9
 # (ADR #102). Pin to a release tag. For local dev, `pip install -e .` from the
 # repo root shadows this with the live core.
 #
-polyris @ git+https://github.com/Polyris/polyris@v1.0.1
+polyris @ git+https://github.com/Polyris/polyris@v1.0.2
