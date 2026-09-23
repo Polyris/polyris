@@ -204,9 +204,11 @@ sam build && sam deploy --profile "$AWS_PROFILE"
 
 First deploy takes ~5-10 minutes. Creates:
 - 8 DynamoDB tables
-- 16 Step Functions state machines (13 templates + 3 test SFNs)
-- 6 Lambda functions
+- 14 Step Functions state machines (11 orchestration + 3 test SFNs)
+- 8 Lambda functions
 - API Gateway, Cognito, S3, CloudFront
+
+Full inventory + purpose per resource: [INFRASTRUCTURE.md](../deployment/INFRASTRUCTURE.md).
 
 Stack outputs (wrapper ARN, table names, bucket, Cognito IDs, …) are visible via:
 
@@ -349,10 +351,10 @@ pip install -e .
 Or install a specific release from git without cloning the infrastructure repo:
 
 ```bash
-pip install git+https://github.com/Polyris/polyris.git@v0.93.0
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 ```
 
-Replace `v0.93.0` with the latest tag from the [tags page](https://github.com/Polyris/polyris/tags).
+Replace `<VERSION>` with a real tag from the [tags page](https://github.com/Polyris/polyris/tags) (e.g. `v1.0.1`).
 
 ### Configure config.py
 
@@ -474,9 +476,8 @@ when `AutoEmptyBucketsOnDelete=true`** is set in `samconfig.toml` (see Step
 
 | I want to... | Go to |
 |---|---|
-| Write real pipelines | [TUTORIAL.md](TUTORIAL.md) |
 | Learn the Python DSL | [DSL.md](../features/DSL.md) |
 | Pass data between tasks (xcom) | [DATA_PASSING.md](../features/DATA_PASSING.md) |
 | Asset-based orchestration | [ASSETS.md](../features/ASSETS.md) |
-| SAM parameters reference | [SAM.md](../deployment/SAM.md) |
+| Stack resources + outputs reference | [INFRASTRUCTURE.md](../deployment/INFRASTRUCTURE.md) |
 | Something's broken | [TROUBLESHOOTING.md](../operations/TROUBLESHOOTING.md) |

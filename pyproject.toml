@@ -108,7 +108,7 @@ warn_unused_ignores = true
 # =============================================================================
 
 [tool.pytest.ini_options]
-testpaths = ["tests/sdk", "tests/backend", "tests/integration"]
+testpaths = ["tests/sdk", "tests/backend", "tests/integration", "tests/docs"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"

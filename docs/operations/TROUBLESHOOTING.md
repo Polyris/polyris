@@ -3,10 +3,11 @@
 Common issues and solutions for polyris operations.
 
 > **API auth (`AUTH_ENABLED=true`):** every API call below except `/api/health*`
-> and `/api/metrics` needs `-H "Authorization: Bearer <token>"` (a Cognito token).
-> The `curl` examples omit it for brevity. A **401 Unauthorized** means a
-> missing/expired token — sign out and sign in again to get a fresh one.
-> See `docs/features/authentication.md`.
+> and `/api/metrics` needs `-H "Authorization: Bearer $TOKEN"` where `$TOKEN`
+> is a Cognito ID token. Grab one from the Console (browser devtools → Network
+> → any authenticated request → copy `Authorization` header). A **401
+> Unauthorized** means a missing/expired token — sign out and sign in again.
+> See [authentication.md](../features/authentication.md).
 
 ---
 
@@ -21,25 +22,34 @@ Common issues and solutions for polyris operations.
 **Symptoms:** Pipeline should run daily but doesn't trigger.
 
 **Check:**
-1. EventBridge rule exists and is enabled:
+1. EventBridge Scheduler schedule exists and is enabled:
    ```bash
-   aws events list-rules --name-prefix "polyris"
-   aws events describe-rule --name "your-pipeline-schedule"
+   # Schedule name pattern: {namespace}-{stage}-polyris-{dag_id}-schedule
+   aws scheduler list-schedules --name-prefix "${NAMESPACE}-${STAGE}-polyris-"
+   aws scheduler get-schedule --name "${NAMESPACE}-${STAGE}-polyris-your-pipeline-schedule"
    ```
 
-2. Rule target has correct permissions:
-   ```bash
-   aws events list-targets-by-rule --rule "your-pipeline-schedule"
-   ```
+   The `State` field should be `ENABLED`. If it's `DISABLED`, the pipeline was
+   paused — resume via Console (pipeline → **Resume**) or set
+   `is_paused_upon_creation=False` on the DAG and redeploy. See
+   [how-to/schedule-and-redeploy.md](../how-to/schedule-and-redeploy.md#pause-and-resume-a-schedule).
 
-3. Pipeline is registered:
+2. Pipeline is registered:
    ```bash
    aws dynamodb get-item \
      --table-name ${NAMESPACE}-${STAGE}-polyris-pipeline-registry \
      --key '{"pipeline_name": {"S": "your-pipeline"}}'
    ```
 
-**Fix:** Re-deploy pipeline with `polyris-deploy` or manually enable rule in AWS Console.
+**Fix:** Re-deploy pipeline with `polyris-deploy`, or re-enable the schedule via
+Console. `polyris-deploy` re-applies the DAG's declared schedule state on every
+deploy, so a manual console pause reverts the next time you deploy — set
+`is_paused_upon_creation=True` on the DAG if you want the pause to stick.
+
+polyris uses `AWS::Scheduler::Schedule` (EventBridge Scheduler), not the legacy
+`AWS::Events::Rule`. If your account was set up before v0.90-ish and you see
+`aws events list-rules` returning polyris rules, they're leftovers — safe to
+delete via console; polyris-deploy creates only Scheduler resources now.
 
 ---
 
@@ -59,7 +69,8 @@ Common issues and solutions for polyris operations.
 
 **Fix:** Stop the stuck execution via Console UI or API:
 ```bash
-curl -X POST https://api.example.com/api/execution-stop?id={arn}
+curl -X POST https://api.example.com/api/execution-stop?id={arn} \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -200,9 +211,9 @@ Check *why* the upstream was skipped:
    ```
 
 **Fix:**
-- If PipelineRegistration failed: `polyris-deploy` again (retry)
-- If registration missing: `polyris-register --name my-pipeline`
-- Legacy environments without Dynamic Provider: wait 1-5 min for EventBridge auto-registration
+- If PipelineRegistration failed: `polyris-deploy` again (retry). The registration Custom Resource is idempotent — re-running is safe.
+- If registration missing: `polyris-register --name my-pipeline`. See [REGISTRATION.md](../features/REGISTRATION.md#manual-registration-cli).
+- Every pipeline run also self-heals registration as its first state, so if you can trigger a run manually the pipeline reappears in the sidebar automatically.
 
 ---
 
@@ -285,19 +296,39 @@ it reads the SAM stack's CloudFormation Outputs directly.
 
 ---
 
+### "Stack already exists" from polyris-deploy
 
-**Symptoms:** `polyris-deploy` fails with "stack already exists".
+**Symptoms:** `polyris-deploy` fails with `AlreadyExistsException — stack {name} already exists`.
 
-**Fix:**
+This means a pipeline stack of the same name was created by an earlier
+`polyris-deploy` (or by hand via CloudFormation console) and CloudFormation
+refuses to create it again.
+
+**Check:**
 ```bash
-# List stacks
-aws cloudformation list-stacks
-
-# Select existing stack
-
-
-# Or remove and recreate
+# List polyris pipeline stacks
+aws cloudformation list-stacks \
+  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE \
+  --query 'StackSummaries[?contains(StackName, `polyris-`)].[StackName,StackStatus]' \
+  --output table
 ```
+
+**Fix — pick one:**
+
+- **If the stack is yours and you want to update it.** `polyris-deploy` already
+  performs an UpdateStack when the stack exists; if you're seeing this error it
+  usually means a prior create failed halfway and the stack is in `ROLLBACK_COMPLETE`.
+  Delete it, then re-deploy:
+  ```bash
+  aws cloudformation delete-stack --stack-name {namespace}-{stage}-polyris-{dag_id}
+  aws cloudformation wait stack-delete-complete --stack-name {namespace}-{stage}-polyris-{dag_id}
+  polyris-deploy
+  ```
+
+- **If the stack is someone else's** (namespace collision), change your
+  `namespace` in `pipelines/config.py` and redeploy — every polyris pipeline
+  stack is named `{namespace}-{stage}-polyris-{dag_id}`, so distinct namespaces
+  don't collide.
 
 ---
 
@@ -362,7 +393,8 @@ aws cloudformation list-stacks
 # Via Console UI: Stop button
 
 # Via API:
-curl -X POST https://api.example.com/api/execution-stop?id={arn}
+curl -X POST https://api.example.com/api/execution-stop?id={arn} \
+  -H "Authorization: Bearer $TOKEN"
 
 # Via AWS CLI:
 aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
@@ -379,6 +411,7 @@ aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
 
 # Via API:
 curl -X POST https://api.example.com/api/task-success?name={execution_name} \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Manually verified completion"}'
 ```
@@ -392,6 +425,7 @@ curl -X POST https://api.example.com/api/task-success?name={execution_name} \
 
 # Via API:
 curl -X POST https://api.example.com/api/pipeline-run?name={name} \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"variables": {"current_date": "2026-01-15"}}'
 ```
@@ -417,15 +451,27 @@ curl -X POST https://api.example.com/api/execution-resume?id={id}
 
 ### `ModuleNotFoundError: No module named 'polyris'`
 
+**Symptoms:** `polyris-deploy` or `polyris-validate` fails with
+`ModuleNotFoundError: No module named 'polyris'`, or `python -c "from polyris import DAG"` fails.
 
-```yaml
-runtime:
-  name: python
-  options:
-    virtualenv: ../../.venv
+**Fix:** Install the SDK into the Python environment your shell is using.
+Pick a git tag from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
+(e.g. `v1.0.1`) and substitute it for `<VERSION>` below.
+
+```bash
+# Option A — from a git tag (recommended for pipeline repos)
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
+
+# Option B — from a local checkout (for development)
+cd /path/to/polyris && pip install -e .
+
+# Verify
+python -c "from polyris import DAG, task; print('✓ polyris installed')"
 ```
 
-Then install: `pip install -e .` from the project root.
+If you're using a virtualenv, activate it first (`source .venv/bin/activate`),
+then run the install command. `which python && which polyris-deploy` should
+point into the same `bin/` directory as the venv.
 
 ### `KeyError: 'dev'` or stage not found
 

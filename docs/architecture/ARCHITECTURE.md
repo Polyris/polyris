@@ -15,7 +15,6 @@
 - [Task Status Lifecycle](#task-status-lifecycle)
 - [UI Architecture (React Console)](#ui-architecture-react-console)
 - [Debugging Guide](#debugging-guide)
-- [Runbooks](#runbooks)
 - [Glossary](#glossary)
 
 ## High-Level Overview
@@ -103,9 +102,9 @@ These are the load-bearing decisions the rest of the architecture follows from.
    drift gates. Hand-maintained copies of the same vocabulary are treated as
    bugs (see DESIGN_DECISIONS #72/#83/#93/#94).
 
-6. **No silent failures.** Alerts (Slack/PagerDuty) are configured per pipeline in
-   the Console UI; on failure the notify Lambda reads that config from DynamoDB and
-   fans out to every enabled channel (an empty config is a clean no-op).
+6. **No silent failures.** Alerts are configured per pipeline in the Console UI;
+   on failure the notify Lambda reads that config from DynamoDB and fans out to
+   every enabled channel (an empty config is a clean no-op).
 
 ---
 
@@ -175,8 +174,8 @@ Run_Task Helper SFN
      └─ ON FAILURE:
           ├─ Save_Error_Waiting ─────► pipeline_tokens (status=waiting_decision)
           ├─ Check_Is_Backfill ──────► if backfill: skip alerts, go to Wait_For_Decision
-          ├─ Interactive_Slack ──────► notify Lambda: Slack w/ buttons (Skip/Restart/Fail)
-          ├─ Send_PagerDuty_Alert ───► notify Lambda: PagerDuty (immediate, actionable)
+          ├─ Interactive_Notify ─────► notify Lambda: interactive channel with buttons (Skip/Restart/Fail)
+          ├─ Send_Immediate_Alert ───► notify Lambda: immediate alert channel
           ├─ Wait_For_Decision ──────► 5h wait for human response
           ├─ Save_Failed ────────────► pipeline_tokens [updateItem]
           ├─ Notify_Dependents_Failed ► notify_dependents SFN
@@ -263,17 +262,17 @@ Task error caught by run_task
      │
      ├─ Save_Error_Waiting ──────► pipeline_tokens (status=waiting_decision)
      ├─ Get_Decision_Timeout ────► read global decision-wait timeout (registry __global_settings__)
-     ├─ Check_Is_Backfill ───────► backfill? skip alerts → Wait_For_Decision (no Slack/PD)
-     ├─ Interactive_Slack ──────► notify Lambda — Slack w/ buttons (Skip/Restart/Mark Success/Fail)
-     ├─ Send_PagerDuty_Alert ───► notify Lambda — PagerDuty (fires immediately)
+     ├─ Check_Is_Backfill ───────► backfill? skip alerts → Wait_For_Decision (no notifications)
+     ├─ Interactive_Notify ─────► notify Lambda — interactive channel with action buttons (Skip/Restart/Mark Success/Fail)
+     ├─ Send_Immediate_Alert ───► notify Lambda — non-interactive channel (fires immediately)
      └─ Wait_For_Decision ───────► decision-timeout window for human response
           └─ timeout ────────────► Save_Failed → wrapper catches → failure_handler
 ```
 
-Both the interactive Slack post and the PagerDuty alert are `lambda:invoke` calls
-to the single notify Lambda — there are no separate alerter state machines (ADR
-#103). The Lambda reads the pipeline's alert_config from the registry itself and
-posts to whichever channels are enabled.
+Both the interactive post and the immediate alert are `lambda:invoke` calls
+to the single notify Lambda — there are no separate alerter state machines.
+The Lambda reads the pipeline's alert_config from the registry and posts to
+whichever channels are enabled.
 
 **Line 2 — failure_handler (after task is terminal):**
 ```
@@ -289,21 +288,21 @@ failure_handler SFN
      ├─ Notify_Dependents ───────► notify_dependents SFN
      │    (so downstream tasks get blocked/triggered per trigger_rule)
      │
-     ├─ Check_Is_Upstream_Failed ► upstream_failed? skip Slack (root cause already alerted)
+     ├─ Check_Is_Upstream_Failed ► upstream_failed? skip alert (root cause already alerted)
      │
-     ├─ Check_Slack_Alert ── yes ► Slack (restart-only message, no action buttons)
-     │    └─ on Slack failure ───► pipeline_tokens [updateItem]
-     │                              (record slack_notification_failed=true)
+     ├─ Check_Alert_Enabled ─ yes ► notify Lambda (restart-only message, no action buttons)
+     │    └─ on notify failure ──► pipeline_tokens [updateItem]
+     │                              (record notification_failed=true)
      │
      └─ Send_Task_Failure ───────► orchestrator token (callback)
 ```
 
 **Key design decisions:**
-- PagerDuty fires in line 1 (immediate) so on-call can act during the decision-wait window (global timeout, default 5h, ADR #103 1b)
+- The immediate-alert channel fires in line 1 so on-call can act during the decision-wait window (global timeout, default 5h)
 - Backfill suppresses all alerts — results visible in UI calendar
 - upstream_failed tasks don't alert — root cause task already sent notifications
-- Line 2 Slack sends restart-only message (no Skip/Fail buttons on dead task)
-- PagerDuty removed from line 2 — already triggered in line 1, PD handles escalation
+- Line 2 sends a restart-only message (no Skip/Fail buttons on a terminal task)
+- Immediate-alert channel is not re-fired in line 2 — already triggered in line 1
 
 ### Flow 6: Pipeline Registration on Deploy
 
@@ -340,7 +339,7 @@ PipelineRegistration.delete()
 | Task never becomes `deps_ready` | notify_dependents execution | `pipeline_tokens` — check dep statuses |
 | Task `deps_ready` but not running | run_task helper execution | `pipeline_registry` — is pipeline paused? |
 | Asset trigger didn't fire | notify_asset_subscribers logs | `asset_events` + `asset_subscriptions` |
-| No Slack alert on failure | run_task + failure_handler execution | Check `alerts.slack` config, `notification_failed` field in token |
+| No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for PipelineRegistration | `pipeline_registry` — registered? CFN stack has registration output |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
 | Wrong trigger_rule result | evaluate_deps Lambda logs | Check `dep_statuses` + `trigger_rule` in log |
@@ -358,8 +357,8 @@ Task Failure
 │                                                             │
 │   1. Save_Error_Waiting (DDB: status=waiting_decision)      │
 │   2. Check_Is_Backfill → backfill? skip alerts → Wait_For_Decision │
-│   3. Interactive_Slack → notify Lambda: Slack (buttons)            │
-│   4. Send_PagerDuty_Alert → notify Lambda: PagerDuty              │
+│   3. Interactive_Notify → notify Lambda: interactive channel (buttons)  │
+│   4. Send_Immediate_Alert → notify Lambda: immediate channel │
 │   5. Wait_For_Decision (5h timeout)                         │
 │   6. Save_Failed → Notify_Dependents → Send_Pipeline_Failure│
 └──────────────────────────┬──────────────────────────────────┘
@@ -373,7 +372,7 @@ Task Failure
 │   3. Emit_Failure_Event (task_events)                       │
 │   4. Notify_Dependents (trigger_rules evaluation)           │
 │   5. Check_Is_Upstream_Failed → skip alerts if cascade      │
-│   6. Check Slack → Send restart-only message (no buttons)   │
+│   6. Check_Alert_Enabled → send restart-only message (no buttons) │
 │   7. Send_Task_Failure (callback to pipeline)               │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -381,6 +380,9 @@ Task Failure
 ---
 
 ## DynamoDB Tables
+
+Quick reference — for full attribute definitions and access patterns see
+[BACKEND.md § DynamoDB Tables](BACKEND.md#dynamodb-tables).
 
 | Table | Purpose | PK | SK |
 |-------|---------|----|----|
@@ -414,11 +416,11 @@ for the full rationale.
 of these in every state reachable under the intervention-first model, ADR #114, or
 could never fire at all — see `docs/features/DSL.md#trigger-rules`).
 
-A blocked rule (all deps terminal, condition not satisfied) resolves one of two ways
-(`evaluate_deps`'s `verdict` field, ADR #115): `upstream_failed` when a
-success/no-failure-requiring rule is blocked by a genuine failure; `skip` (the task
-resolves `skipped`, run stays `success`) when the condition never occurred —
-not an error.
+A blocked rule (all deps terminal, condition not satisfied) resolves one of
+two ways via `evaluate_deps`'s `verdict` field (ADR #115). `upstream_failed`
+fires when a success/no-failure-requiring rule is blocked by a genuine
+failure. `skip` fires when the condition never occurred — the task resolves
+`skipped`, the run stays `success`, no error.
 
 ---
 
@@ -432,7 +434,7 @@ not an error.
 | `deps_skip` *(signal, not persisted)* | Callback payload when a rule's condition legitimately never occurred (ADR #115) — resolves to the persisted `skipped` |
 | `waiting_delay` | wait_before countdown |
 | `waiting_paused` | Pipeline paused, task waiting for resume |
-| `waiting_decision` | Waiting for manual decision (interactive Slack) |
+| `waiting_decision` | Waiting for manual decision (interactive notification) |
 | `pending` | Pending redrive (SFN) |
 | `running` | Executing |
 | `success` | Completed successfully |
@@ -446,24 +448,26 @@ not an error.
 
 ## Step Functions Helpers
 
+One-line inventory — for the detailed per-helper flow diagrams see
+[BACKEND.md § Step Function Helpers](BACKEND.md#step-function-helpers).
+
 | Component | Purpose |
 |-----------|---------|
-| **sf_dependency_wrapper** | Main wrapper - handles deps, execution, failures |
-| **sf_registration_helper** | Register task + subscriptions, check initial deps |
-| **sf_run_task_helper** | Execute task (SFN/Lambda/Glue/ECS/Athena/EMR/Batch) |
-| **sf_failure_handler** | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
-| **sf_pause_waiter** | Save pause token, wait for resume callback |
-| **sf_notify_dependents** _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
-| **sf_notify_asset_consumers** _(EXPRESS)_ | Cross-pipeline asset triggers (PUSH/AND/OR) |
-| **sf_restart_task_helper** _(EXPRESS)_ | Restart failed task |
-| **sf_restart_wrapper** _(EXPRESS)_ | Restart wrapper execution |
-| **sf_register_on_create** | ~~Removed in v69.1~~ — replaced by `register_pipeline` SFN (ADR #24) |
+| `polyris-dependency-wrapper` | Main wrapper — handles deps, execution, failures |
+| `polyris-registration-helper` | Register task + subscriptions, check initial deps |
+| `polyris-run-task-helper` | Execute task (SFN/Lambda/Glue/ECS/Athena/EMR/Batch) |
+| `polyris-failure-handler` | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
+| `polyris-pause-waiter` | Save pause token, wait for resume callback |
+| `polyris-notify-dependents` _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
+| `polyris-notify-asset-consumers` _(EXPRESS)_ | Cross-pipeline asset triggers (PUSH/AND/OR) |
+| `polyris-restart-task-helper` _(EXPRESS)_ | Restart failed task |
+| `polyris-restart-wrapper` _(EXPRESS)_ | Restart wrapper execution |
 
-> Interactive Slack and PagerDuty alerts/resolves are **not** separate state
+> Alert delivery and interactive callbacks are **not** separate state
 > machines. They are `lambda:invoke` calls from run_task / failure_handler /
-> dependency_wrapper to the single notify Lambda (ADR #103). The earlier
-> `sf_slack_interactive`, `sf_pagerduty_alerter`, and `sf_pagerduty_resolver`
-> Express SFNs (and the EventBridge Connection that backed them) were removed.
+> dependency_wrapper to the single notify Lambda. Earlier per-channel
+> Express SFNs (and the EventBridge Connection that backed them) were
+> removed in favor of the consolidated Lambda approach.
 
 ---
 
@@ -508,14 +512,11 @@ TTL) — without starting the SFN. There is no cost estimate (removed in v0.78.2
 
 ## Cost Model
 
-| Resource | Pricing |
-|----------|---------|
-| Step Functions | $0.025 / 1000 transitions |
-| DynamoDB | ~$0.25 / million requests |
-| Lambda | $0.20 / 1M requests |
-| EventBridge | $1.00 / million events |
-
-**8-task pipeline, 1x/day, 30 days = ~$0.50/month** (vs MWAA ~$300/month)
+Full breakdown (per-run cost per AWS service, small-deployment total,
+MWAA comparison) is in the root [README § Cost](../../README.md#cost).
+The runtime primitives — Step Functions transitions, Lambda invocations,
+DynamoDB read/write units, CloudWatch Logs GB — are all pay-per-request.
+No always-on control plane, so idle cost is near zero.
 
 ---
 
@@ -548,10 +549,10 @@ TTL) — without starting the SFN. There is no cost estimate (removed in v0.78.2
                           │
               ┌───────────┼───────────┐
               ▼           ▼           ▼
-          ┌─────────┐ ┌─────────┐ ┌──────────────────┐
-          │ SUCCESS │ │ FAILED  │ │WAITING_DECISION   │
-          └─────────┘ └─────────┘ │(interactive Slack)│
-                                  └──────────────────┘
+          ┌─────────┐ ┌─────────┐ ┌───────────────────────┐
+          │ SUCCESS │ │ FAILED  │ │ WAITING_DECISION      │
+          └─────────┘ └─────────┘ │ (interactive notify)  │
+                                  └───────────────────────┘
 ```
 
 **Terminal statuses:** success, failed, skipped, aborted, upstream_failed
@@ -625,52 +626,6 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 1. Check **task_arn** - is it correct?
 2. Check **IAM roles** - does wrapper have permission to invoke?
 3. Check **task SFN/Lambda** logs - what's the error?
-
----
-
-## Runbooks
-
-### Stuck waitForTaskToken
-
-```bash
-# Find task with stuck token
-aws dynamodb query \
-  --table-name {namespace}-{stage}-polyris-pipeline-tokens \
-  --index-name status-index \
-  --key-condition-expression "#s = :status" \
-  --expression-attribute-names '{"#s": "status"}' \
-  --expression-attribute-values '{":status": {"S": "waiting"}}'
-
-# Check if subscription exists
-aws dynamodb get-item \
-  --table-name {namespace}-{stage}-polyris-dependency-subscriptions \
-  --key '{"dependency_key": {"S": "task_a-abc123"}, "subscriber_name": {"S": "task_b"}}'
-
-# Manually send token (emergency)
-aws stepfunctions send-task-success \
-  --task-token "aqc..." \
-  --task-output '{"status": "success"}'
-```
-
-### Restart failed pipeline
-
-```bash
-# Via Console UI: Pipelines → Select pipeline → Run button
-
-# Via API:
-curl -X POST https://api.example.com/api/pipeline-run?name=my-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"current_date": "2024-01-15"}}'
-```
-
-### Stop runaway execution
-
-```bash
-# Via Console UI: Stop button (appears when tasks are active)
-
-# Via API:
-curl -X POST https://api.example.com/api/execution-stop?id={arn}
-```
 
 ---
 

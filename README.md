@@ -1,74 +1,66 @@
 # polyris
 
-**Orchestration without the orchestrator**
+**Data pipelines that pause for you instead of failing on you.**
 
-Serverless, asset-centric data pipelines on AWS Step Functions. No scheduler, no
-workers, no metadata database to run — your pipelines compile to Step Functions,
-and AWS runs them. Pay per run; idle cost is near zero.
+Serverless orchestration on AWS Step Functions. When a task fails, polyris
+waits for a human decision (retry / mark success / skip / fail) instead of
+nuking the run. Fix it inline, in the same execution.
+
+```python
+from polyris import DAG, task
+
+with DAG("orders-etl", schedule="@daily") as dag:
+
+    @task.glue_job(job_name="extract-orders")
+    def extract(): ...
+
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:transform",
+              retries=2)
+    def transform(): ...
+
+    @task.lambda_function(function_name="load-orders")
+    def load(): ...
+
+    extract() >> transform() >> load()
+```
+
+`polyris-deploy` compiles this to a Step Functions state machine and hands
+it to AWS. Pay per run — see [Cost](#cost) for the breakdown.
 
 ## Why polyris
 
-- 🪂 **Nothing to run** — no scheduler, workers, or metadata DB. Step Functions
-  *is* the runtime, and it scales to zero between runs.
-- 🔎 **Nothing hidden** — every pipeline compiles to a Step Functions state
-  machine, so each run is a visible, debuggable execution history rather than
-  opaque scheduler state.
-- 🧬 **Asset-centric** — pipelines declare first-class data assets and their
-  dependencies, not just task graphs.
-- 💸 **Pay-per-run** — a typical deployment runs ~$31/month; the floor is near
-  zero because there is no always-on infrastructure.
+Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres
+metadata DB running 24/7. polyris compiles pipelines to Step Functions —
+here is how the operations differ:
 
-## Features
+| | polyris | Airflow / Dagster / Prefect |
+|---|---|---|
+| **When a task fails** | Run pauses for a human decision — retry / mark success / skip / fail. Fix inline; upstream tasks that already succeeded don't re-run. | Retry policy, then the run fails. Re-execute from the failing task manually. |
+| **Debugging a run** | Step Functions execution history in the AWS Console — graph, inputs, and error at each state. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
+| **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
+| **Assets & lineage** | First-class: `outlets=` / `wait_for=` / asset-triggered schedules — same model as Dagster. | Native in Dagster; add-on or missing in Airflow / Prefect. |
 
-- 🐍 **Familiar Python DSL** — `@task`, `>>` operators, `DAG()` context manager
-- 🚀 **One-command deploy** — `polyris-deploy` (CloudFormation)
-- 🧪 **Local testing** — Validate, dry-run, mock execution
-- 🔔 **Failure notifications** — browser notifications on failure (the notify Lambda fans out to every enabled channel — no silent failures)
-- ⏸️ **Intervention-first failures** — a failing task pauses for a human decision
-  (retry / mark success / skip / fail) instead of falling over — fix it inline,
-  in the same run, free (ADR #114)
-- 🎯 **Trigger rules** — `all_success`, `one_success`, `all_done`, and more ([details](docs/features/DSL.md#trigger-rules))
-- 🔗 **Data passing between tasks** — Lambda / SFN read upstream from the input dict; Glue / ECS / Batch / EMR call `xcom.pull()` inside the job. Outputs stored in DynamoDB, retained 120 days ([details](docs/features/DATA_PASSING.md))
-- 📊 **Web Console** — pipelines and DAG views for every run
-- 🧬 **Asset dependencies** — declare cross-pipeline asset inlets/outlets; inspect lineage from the CLI with `polyris-output --graph`
-- 🔗 **Pull-based deps** — `wait_for` with freshness and consecutive checks
-- 🔄 **Auto-refresh UI** — polling-based updates (3s active, 30s idle)
-
----
+Full DSL reference — `retries`, `trigger_rule`, seven task types (`sfn`,
+`lambda`, `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules,
+`wait_for` freshness checks, `xcom` data passing — in
+[DSL.md](docs/features/DSL.md).
 
 ## Install
 
-One command — checks prerequisites, clones the latest release, and tells you
-what to run next:
+Requires **Python 3.11+** and an AWS account. One command — checks
+prerequisites, clones the latest release, tells you what to run next:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
+curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
 ```
 
-The installer picks the latest GitHub release tag automatically (falls back to
-`main` if no release exists yet). Pin a specific version with
-`POLYRIS_REF=v0.94.0` before the pipe, or use `main` for bleeding edge.
+Pin a specific version with `POLYRIS_REF=v0.94.0` before the pipe. Full
+manual walkthrough (dev-mode setup, main-branch install, teardown):
+[QUICKSTART.md](docs/getting-started/QUICKSTART.md).
 
-Then follow the printed next step to deploy the SAM infra + UI. Full walkthrough
-including manual steps: [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
+## Try it locally (no AWS)
 
-## Where to Start
-
-| I want to... | Go to |
-|---|---|
-| **Try polyris without AWS** (explore DSL locally) | [Try It Now](#try-it-now) below |
-| **Browse runnable examples** | [examples/](examples/) — hello-world → assets & lineage |
-| **Write a pipeline** (infra already deployed) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) → *Deploy Your First Pipeline* |
-| **Set up polyris from scratch** (blank AWS account) | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
-| **Learn step by step** with explanations | [TUTORIAL.md](docs/getting-started/TUTORIAL.md) |
-| **Develop polyris itself** (fix bugs, add features) | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| **Troubleshoot** a problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
-
----
-
-## Try It Now
-
-No AWS account needed. Explore the DSL, validate pipelines, generate Step Functions JSON — all locally.
+Validate DAGs, generate Step Functions JSON, mock-execute — all offline:
 
 ```bash
 git clone https://github.com/Polyris/polyris
@@ -76,236 +68,61 @@ cd polyris
 pip install -e .
 polyris-init my-pipeline --local
 cd my-pipeline
-polyris-validate              # Validate pipeline
+
+polyris-validate              # Validate structure
 polyris-validate -v           # Verbose: tasks, deps, ASL preview
 polyris-output --json         # Full Step Functions JSON
-polyris-output --mermaid      # Generate diagram
-polyris-output --graph        # Show DAG as ASCII graph
+polyris-output --mermaid      # Mermaid diagram source
+polyris-output --graph        # ASCII graph
 ```
 
-Or browse [examples/](examples/) for 15 small, self-contained pipelines — hello-world through assets and lineage.
-
-Edit `dag.py` to experiment with task types, dependencies, trigger rules, and assets. When ready to deploy, see [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
-
----
-
-## 🧪 Local Testing
-
-Test pipelines without deploying:
+Python API for automated tests:
 
 ```python
 from polyris.local import validate, dry_run, run
+from my_pipeline import dag                # your DAG object
 
-# Validate DAG structure
-validate(dag)
-
-# Show execution plan
-dry_run(dag)
-
-# Mock execution
-result = run(dag, mock=True)
-print(result.summary())  # ✅ 3 succeeded, ❌ 0 failed
+validate(dag)                              # DAG structure
+dry_run(dag)                               # Execution plan
+result = run(dag, mock=True)               # Mock execution
+print(result.summary())                    # ✅ 3 succeeded, ❌ 0 failed
 ```
 
----
+Or browse [examples/](examples/) — 15 self-contained pipelines from
+hello-world through assets and lineage.
 
-## Notifications
+## Documentation
 
-Failure delivers an **in-app browser notification** automatically — no
-configuration required.
+| I want to... | Go to |
+|---|---|
+| Set up polyris from a blank AWS account | [QUICKSTART.md](docs/getting-started/QUICKSTART.md) |
+| Learn the Python DSL — every task type, parameter, trigger rule | [DSL.md](docs/features/DSL.md) |
+| Test pipelines locally (validate / dry_run / mock) | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) |
+| Pass data between tasks (xcom) | [DATA_PASSING.md](docs/features/DATA_PASSING.md) |
+| Configure retries, backoff, jitter | [how-to/configure-retries.md](docs/how-to/configure-retries.md) |
+| Schedule a pipeline, pause, redeploy safely | [how-to/schedule-and-redeploy.md](docs/how-to/schedule-and-redeploy.md) |
+| Set up asset-based orchestration + `wait_for` | [ASSETS.md](docs/features/ASSETS.md) |
+| Use the Web Console — DAG view, Runs, task actions | [UI.md](docs/operations/UI.md) |
+| Set up Cognito authentication | [authentication.md](docs/features/authentication.md) |
+| Talk to polyris over REST | [API.md](docs/operations/API.md) |
+| Approve an install (IAM / resource inventory) | [IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md) + [INFRASTRUCTURE.md](docs/deployment/INFRASTRUCTURE.md) |
+| Fix a specific problem | [TROUBLESHOOTING.md](docs/operations/TROUBLESHOOTING.md) |
+| Understand the runtime architecture | [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) |
+| Read design decisions / ADRs | [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) |
+| Develop polyris itself | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-> `DAG` has **no `alerts=` argument** — alert config is not part of the DSL
-> (ADR #103). Passing `alerts={...}` raises a `TypeError`.
-
-```python
-# No alert config in the DAG — define the pipeline.
-with DAG("pipeline", schedule="@daily") as dag:
-    ...
-```
-
-## Task Types
-
-```python
-# Step Function
-@task.sfn(arn="arn:aws:states:...")
-def my_task(): pass
-
-# Lambda
-@task.lambda_function(function_name="my-function")
-def process(): pass
-
-# Glue
-@task.glue_job(job_name="my-etl-job")
-def etl(): pass
-
-# ECS (Fargate)
-@task.ecs_task(cluster="my-cluster", task_definition="my-task")
-def container_job(): pass
-
-# Athena
-@task.athena_query(query_string="SELECT * FROM table", database="my_db")
-def query(): pass
-
-# EMR
-@task.emr_step(emr_cluster_id="j-XXXXX", emr_step={...})
-def spark_job(): pass
-
-# AWS Batch
-@task.batch_job(job_definition="my-job", job_queue="my-queue")
-def batch_job(): pass
-```
-
----
-
-## Dependencies
-
-```python
-# Sequential
-a >> b >> c
-
-# Fan-out (one to many)
-a >> [b, c, d]
-
-# Fan-in (many to one)
-[a, b, c] >> d
-
-# Function call style
-result = task_a()
-task_b(result)
-```
-
----
-
-## Schedule Options
-
-```python
-# Time-based
-DAG(schedule="@daily")                    # Midnight UTC
-DAG(schedule="@hourly")                   # Every hour
-DAG(schedule="cron(0 8 * * ? *)")         # 8:00 UTC daily
-DAG(schedule="rate(6 hours)")             # Every 6 hours
-
-# Asset-triggered
-DAG(schedule=[processed_data])            # When asset ready
-DAG(schedule=[asset_a & asset_b])         # When ALL ready (AND)
-DAG(schedule=[asset_a | asset_b])         # When ANY ready (OR)
-
-# Manual only
-DAG(schedule=None)
-```
-
----
-
-## Asset-Based Orchestration
-
-> **⚠️ Experimental.** Assets are experimental — the API may change. Inspect
-> lineage with `polyris-output --graph`. Not recommended for production yet.
-> See [docs/features/ASSETS.md](docs/features/ASSETS.md).
-> <!-- EXPERIMENTAL-ASSETS: remove when assets graduate to stable. -->
-
-Cross-pipeline dependencies without hardcoded references:
-
-```python
-# Producer pipeline
-processed = Asset(name="processed/acme")
-
-with DAG("acme-daily", schedule="@daily") as dag:
-    @task.sfn(arn=..., outlets=[processed])
-    def process(): pass
-```
-
-```python
-# Consumer pipeline (triggered by asset)
-processed = Asset(name="processed/acme")
-
-with DAG("feeds", schedule=[processed]) as dag:
-    @task.sfn(arn=...)
-    def build_feeds(): pass
-```
-
-```python
-# Pull-based dependencies (wait_for)
-# Task waits for asset freshness before executing
-daily_complete = Asset("acme/daily-complete")
-weekly_complete = Asset("acme/weekly-complete")
-
-with DAG("acme-weekly", schedule="cron(0 22 ? * SUN *)") as dag:
-    @task.sfn(
-        arn=...,
-        wait_for=[daily_complete.consecutive(days=7)],  # Wait for 7 daily runs
-        outlets=[weekly_complete]
-    )
-    def mark_weekly_complete(): pass
-```
-
----
-
-## Web Console
-
-Access the console at your CloudFront URL. Features:
-
-| View | Description |
-|------|-------------|
-| **🔀 DAG** | Interactive graph visualization (React Flow) |
-| **📋 Tasks** | All task instances across pipelines |
-| **🏃 Runs** | All pipeline runs with filtering |
-
-### Task Actions
-- **Skip** — Mark task as skipped, continue pipeline
-- **Fail** — Mark task as failed, continue pipeline
-- **Stop** — Force stop running task
-- **Restart** — Retry failed task
----
-
-## CLI Commands
-
-Run from the pipeline directory:
-
-```bash
-# Validate pipeline
-polyris-validate
-
-# Validate with details
-polyris-validate -v
-
-# Validate all pipelines in project
-polyris-validate --all
-
-# Generate Step Functions JSON
-polyris-output --json
-
-# Generate Mermaid diagram
-polyris-output --mermaid
-
-# Show DAG as ASCII graph
-polyris-output --graph
-
-# Deploy pipeline
-polyris-deploy
-polyris-deploy --stage prod --profile my-profile
-
-# Register pipeline in DynamoDB (manual)
-polyris-register --name my-pipeline
-```
-
-Full reference: [docs/reference/CLI.md](docs/reference/CLI.md)
-
----
-
-## Project Structure
+## Project structure
 
 ```
-├── pipelines/                    # Pipeline definitions (gitignored)
-│   ├── config.py                 # Shared config: ENVIRONMENTS, DEFAULT_STAGE
+├── pipelines/                    # Your pipeline definitions (gitignored)
+│   ├── config.py                 # Shared: ENVIRONMENTS, DEFAULT_STAGE
 │   └── my-pipeline/
 │       └── dag.py                # Pipeline definition
 │
-├── sam/                          # Shared infrastructure (SAM/CloudFormation)
-│   ├── template.yaml             # SAM template (all AWS resources)
-│   ├── samconfig.toml            # Deploy configuration
-│   ├── samconfig.toml.example    # Example config
-│   ├── lambdas/                  # 6 Lambda functions
-│   └── sfn_templates/            # 13 SFN template files (16 SFNs total incl. 3 test)
+├── sam/                          # Shared AWS infrastructure
+│   ├── template.yaml             # SAM template — all AWS resources
+│   ├── lambdas/                  # 8 Lambda functions
+│   └── sfn_templates/            # 14 SFN definitions (11 orchestration + 3 test)
 │
 ├── polyris/                      # Python DSL library
 │   ├── dag.py                    # DAG class
@@ -313,84 +130,49 @@ Full reference: [docs/reference/CLI.md](docs/reference/CLI.md)
 │   ├── assets.py                 # Asset definitions
 │   └── generators.py             # ASL JSON generation
 │
-├── ui/                           # Web Console (React 19 + Next.js 16)
-│   ├── deploy.sh                 # UI deploy script (S3 + CloudFront)
-│   └── src/
-│       ├── app/                  # Next.js App Router
-│       └── components/           # React components
-│
-└── tests/                        # Test suite
+├── ui/                           # Web Console
+└── tests/                        # SDK + backend + docs tests
 ```
-
----
-
-## Deploy Infrastructure
-
-```bash
-cd sam
-sam build && sam deploy
-```
-
-See [QUICKSTART.md](docs/getting-started/QUICKSTART.md) for full setup.
-
----
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [QUICKSTART.md](docs/getting-started/QUICKSTART.md) | Complete setup guide (~30-45 min) |
-| [TUTORIAL.md](docs/getting-started/TUTORIAL.md) | From zero to production guide |
-| [PROJECT_STRUCTURE.md](docs/getting-started/PROJECT_STRUCTURE.md) | Repository layouts, CI/CD |
-| [DSL.md](docs/features/DSL.md) | Python DSL reference |
-| [ASSETS.md](docs/features/ASSETS.md) | Asset-based orchestration |
-| [ASSET_PULL_FEATURE.md](docs/features/ASSET_PULL_FEATURE.md) | wait_for / pull-based assets |
-| [authentication.md](docs/features/authentication.md) | Cognito auth setup |
-| [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) | Local testing (validate, dry_run, mock) |
-| [REGISTRATION.md](docs/tools/REGISTRATION.md) | Pipeline registration (CLI, auto) |
-| [API.md](docs/operations/API.md) | REST API reference (27 free endpoints; 63 in the full build) |
-| [UI.md](docs/operations/UI.md) | Web Console guide |
-| [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | System architecture, diagrams |
-| [STEP_FUNCTIONS.md](docs/architecture/STEP_FUNCTIONS.md) | ASL patterns and helpers |
-| [BACKEND.md](docs/architecture/BACKEND.md) | Backend implementation details |
-| [DESIGN_DECISIONS.md](docs/reference/DESIGN_DECISIONS.md) | Key design decisions |
 
 ---
 
 ## Cost
 
-| | Managed orchestrators | polyris |
-|---|----------------|---------|
-| **Base cost** | ~$300+/month | $0 |
-| **Per pipeline run** | $0 (included) | ~$0.01 |
-| **8 tasks, 1x/day, 30 days** | ~$300+ | ~$0.50 |
-| **Scaling** | Manual | Automatic |
+polyris runs on Step Functions + Lambda + DynamoDB — all pay-per-request,
+no fleet to keep alive:
 
----
+| Component | AWS billing model | Approx. per-run share |
+|---|---|---|
+| Step Functions Standard | Per state transition ($0.025 / 1k) | $0.001 – $0.005 |
+| Lambda (task orchestration) | Per invocation + duration | ~$0.0001 per task |
+| DynamoDB | Per read/write unit | ~$0.001 per run |
+| CloudWatch Logs | GB ingested | $0.50 – $2 / month total |
 
-## Requirements
+**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$5–10/month
+for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS
+containers, Athena queries) bill separately against your existing AWS
+spend; polyris does not add a percentage on top.
 
-- Python 3.11+
-- AWS Account
+Compared to **Amazon MWAA** (managed Airflow) — the smallest `mw1.small`
+environment alone starts at ~$350/month for the environment fee before
+workers or metadata storage — polyris runs the same orchestration workload
+for roughly two orders of magnitude less.
 
-```bash
-pip install -e .          # pipeline development
-pip install -e ".[dev]"   # polyris development (adds pytest, ruff, mypy)
-```
+*Numbers are approximate AWS list prices as of late 2025 — check AWS
+pricing pages for current figures.*
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and PR guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and PR
+guidelines. Inside a polyris checkout:
 
-Quick start:
 ```bash
-make test    # Run all tests
-make check   # Lint + sync + test (before PR)
+pip install -e ".[dev]"   # adds pytest, ruff, mypy
+make test                 # Run all tests
+make check                # Lint + sync + test (before PR)
 ```
-
----
 
 ## License
 

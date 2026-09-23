@@ -5,6 +5,13 @@ This document describes how the polyris Console authenticates users via AWS Cogn
 `scripts/get-e2e-token.sh` obtains one from the deployment's user pool — or set
 `AUTH_ENABLED=false`.
 
+> **Navigating this doc.** Reader intent → jump-to:
+> **Set it up** → [Enabling Authentication](#enabling-authentication).
+> **Add / manage users** → [User Management](#user-management).
+> **Understand the design** → [Architecture](#architecture).
+> **Something's broken** → [Troubleshooting](#troubleshooting).
+> **Dev locally** → [Development](#development).
+
 > **How enforcement actually works (v0.87+, ADR #65).** Auth is enforced by a
 > single gate inside the `console-api` Lambda (`auth.authenticate`), **not** by
 > an API Gateway authorizer. The HTTP API uses a `/{proxy+}` integration, so
@@ -16,7 +23,7 @@ This document describes how the polyris Console authenticates users via AWS Cogn
 
 ## Overview
 
-- **AWS Amplify SDK** - Battle-tested authentication library with automatic token refresh
+- **AWS Amplify SDK** - handles the Cognito auth flow (login, MFA challenge, refresh)
 - **Admin-only user creation** - No self-registration, users must be created by administrators
 - **Auth at the Lambda gate** - the `console-api` Lambda verifies a Cognito token **offline** (RS256 against the pool JWKS, bound to this deployment's app client) on every non-public request when `AUTH_ENABLED=true`
 - **MFA support** - Optional TOTP-based multi-factor authentication
@@ -313,23 +320,29 @@ When MFA is enabled, users can use any TOTP authenticator app (Google Authentica
 
 ## API Route Protection
 
-### Protected Routes
+When `AUTH_ENABLED=true`, the gate inside the `console-api` Lambda enforces
+authentication on every request except the small allowlist below. The gate
+runs before route dispatch, so this rule applies uniformly to every route in
+the API — no per-route opt-in needed.
 
-All API routes require authentication except public routes listed below:
+### Public routes (never require auth)
 
-- `GET /api/pipelines`
-- `GET /api/pipeline-status?name={name}`
-- `POST /api/pipeline-run?name={name}`
-- `POST /api/task-retry?name={name}`
-- ... (all standard API routes)
+Exactly three prefixes are always public, regardless of the `AUTH_ENABLED`
+setting:
 
-### Public Routes (no auth required)
+| Path | Why public |
+|------|-----------|
+| `GET /api/health` and `GET /api/health/simple` | Load-balancer liveness probes; must work without credentials |
+| `GET /api/metrics` | Ops metrics endpoint; scraped by monitoring agents |
+| `GET /api/action/*` | Link-button callbacks (skip / fail / restart) — delivered without a bearer token; the mutations they allow are documented in [ADR #66](../reference/adr-66-per-token-scopes.md) |
 
-These routes are accessible without authentication:
+### Everything else requires a Cognito bearer token (or a PAT)
 
-- `GET /api/action/skip` - Slack callback
-- `GET /api/action/fail` - Slack callback
-- `GET /api/action/restart` - Slack callback
+All other routes — pipelines, tasks, executions, backfill, settings, notifications
+— require `Authorization: Bearer <cognito-access-token>`. PAT (Personal Access
+Token) support is available; see [ADR #65](../reference/adr-65-api-tokens-and-auth-enforcement.md).
+
+Full route inventory: [../operations/API.md](../operations/API.md).
 
 ## Troubleshooting
 

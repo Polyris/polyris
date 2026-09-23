@@ -8,7 +8,7 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 0.93.0 · **Next milestone:** first public OSS release
+**Version:** 1.0.1 · **Next milestone:** consolidate paid-integration language out of OSS docs (#24)
 
 ## In flight
 

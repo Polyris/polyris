@@ -1,4 +1,8 @@
-# Master plan: finish alerting → full consolidation
+# Spike: alerting consolidation master plan
+
+> **Historical design doc — spike-frozen at write time.** Kept for
+> git-history readability. For current alerts behaviour, see
+> [`docs/features/alerts.md`](../features/alerts.md).
 
 The end state we agreed on (verified by two spikes): **all alert *sending* lives
 in the notify Lambda; the SFNs keep only orchestration** (when to alert, when to
@@ -19,10 +23,11 @@ green. Everything below is what remains.
 ### 1a. failure_handler: collapse 3 alert states → 1 Lambda call
 - `Get_Alert_Config` + `Has_Channels` + `Fan_Out_Alerts` (3 SFN states) become one
   `Send_Alerts` Task that `lambda:invoke`s the notify Lambda once.
-- The notify Lambda gains a **batch mode**: given `pipeline_name` + the failure,
-  it reads `alert_config` from DynamoDB itself, then loops the enabled channels
-  with per-channel try/except (so one channel failing can't break another — the
-  isolation the SFN `Map` gave us for free now lives in Python).
+- The notify Lambda gains a **batch mode**: given `pipeline_name` + the
+  failure, it reads `alert_config` from DynamoDB itself, then loops the
+  enabled channels with per-channel try/except. One channel failing can't
+  break another — the isolation the SFN `Map` gave us for free now lives
+  in Python.
 - failure_handler drops from 11 → 9 states. Everything else
   (Update_Status_Failed, Notify_Dependents, token callback) untouched.
 - **Nothing that calls failure_handler changes** — dependency_wrapper, run_task,
@@ -125,7 +130,7 @@ orchestration.
 
 - Remove any dead per-task `slack_channel` storage left in registration.
 - Docs: DSL reference (alerts removed), Settings → Alerts how-to (channel mode,
-  timeout, test button), CHANGELOG entry for ADR #103 + this consolidation.
+  timeout, test button), CHANGELOG entry for the alerts-removal + this consolidation.
 - QA pass: stale-doc sweep, version drift, broken links.
 
 ---
@@ -214,8 +219,8 @@ public build. They are temporary — Stage 2–3 deletes them entirely.
 - the EventBridge `SlackConnection` + the substitutions wiring these into run_task
 
 **Why deferred, not split into ee:** these are not the long-term home of the
-logic — Stage 2 moves their posting into the notify Lambda (already split:
-framework public, Slack/PD in notify/ee/), and Stage 3 deletes the helpers + the
+logic. Stage 2 moves their posting into the notify Lambda (already split:
+framework public, Slack/PD in notify/ee/). Stage 3 deletes the helpers + the
 EventBridge Connection outright. Splitting transitional code into ee just to
 delete it next would be wasted churn. The *real* paid delivery code (Slack/PD
 notifiers) is already correctly in notify/ee/.
@@ -280,12 +285,13 @@ dependency_wrapper restored to their helper-SFN form) because it read fields tha
 don't exist at runtime.
 
 **What Stage 2 actually needs first (the real 2a-prerequisite):**
-1. **Get alert_config into the flow.** Either (a) run_task/wrapper reads
-   `alert_config` from the registry (a DynamoDB GetItem — the same read the wait
-   timeout needs, so they share it), or (b) the trigger that starts the wrapper
-   builds the input from `alert_config` and passes the structured shape in. Decide
-   which — (a) keeps the SFN self-contained but adds a critical-path read; (b)
-   moves the coupling to the launch point.
+1. **Get alert_config into the flow.** Two options: (a) run_task/wrapper
+   reads `alert_config` from the registry via a DynamoDB GetItem — the
+   same read the wait timeout needs, so they share it. Or (b) the trigger
+   that starts the wrapper builds the input from `alert_config` and passes
+   the structured shape in. Decide which. Option (a) keeps the SFN
+   self-contained but adds a critical-path read; (b) moves the coupling
+   to the launch point.
 2. **Only then** point the SFN Tasks at the notify Lambda actions, reading the
    now-present `alert_config` shape. The Lambda side (notify/ee/actions_ee_impl.py)
    is already correct for that shape.
@@ -331,10 +337,10 @@ pagerduty_resolver) are now UNUSED by run_task/wrapper but still defined — Sta
 deletes them after a dev deploy confirms nothing references them.
 
 **Wait timeout (1b) — intentionally NOT done here.** `decision_timeout_seconds`
-stays the deploy-level 5h default. Making it per-pipeline needs a *new field in
-alert_config + the UI* (it is not in alert_config today) AND a way for the SFN
-`Wait` to read it — and a `Wait` cannot read from a Lambda, so it needs a small
-registry GetItem state before `Wait_For_Decision`. That is a separate slice
+stays the deploy-level 5h default. Making it per-pipeline needs *a new field
+in alert_config + the UI* (not there today). It also needs a way for the SFN
+`Wait` to read it. A `Wait` cannot read from a Lambda, so this requires a
+small registry GetItem state before `Wait_For_Decision`. That is a separate slice
 touching UI + backend + SFN; tracked for its own change, not folded into the
 Stage 2 send-migration. Current 5h default is unchanged and correct.
 
@@ -412,10 +418,10 @@ for Stage 2/3 (live Slack click, real PD cycle, CloudFormation teardown).
 
 ### Deferred (own careful change): legacy alerts_json / slack_channel teardown
 
-The old per-execution alert fields are now **inert for alerting** (the notify
-Lambda reads everything from alert_config in the registry — Stage 2), but they are
-still woven through SFN records and the API contract, so removing them is a
-separate, careful change, not folded into Stage 4 docs:
+The old per-execution alert fields are now **inert for alerting** — the
+notify Lambda reads everything from alert_config in the registry (Stage 2).
+But the fields are still woven through SFN records and the API contract.
+Removing them is a separate, careful change, not folded into Stage 4 docs:
 
 - `alerts_json`: written by run_task (DDB task record), read by restart_task which
   forwards it as `alerts` — but run_task no longer reads `input.alerts` (Stage 2
@@ -438,15 +444,16 @@ hasty SFN edits this cycle were reverted; this one gets the same caution.)
 ### Done now: docs (continued)
 
 Stage 4 docs are done:
-- **DSL.md**: the `alerts=` argument section rewritten as deprecated (ADR #103) —
+- **DSL.md**: the `alerts=` argument section rewritten as deprecated —
   it is accepted one release then ignored; alerts move to Settings → Alerts. All
   `alerts={...}` examples removed from the DSL doc (kept only in the deprecation
   note). Removed the dead `slack_channel` from the default_args example.
-- **New `docs/features/alerts.md`**: the user-facing Settings → Alerts how-to —
-  browser notifications (free), Slack (webhook/channel-mode/mentions + the
-  Skip/Success/Fail/Restart buttons), PagerDuty (routing key + severity + the
-  one-incident dedup behavior), the Test button, the failure flow, and where
-  secrets live (SSM, only the param name in the registry).
+- **New `docs/features/alerts.md`**: the user-facing Settings → Alerts
+  how-to. Covers browser notifications (free), Slack
+  (webhook/channel-mode/mentions + the Skip/Success/Fail/Restart buttons),
+  PagerDuty (routing key + severity + the one-incident dedup behavior), the
+  Test button, the failure flow, and where secrets live (SSM, only the
+  param name in the registry).
 - **README.md**: the "Alerts Configuration (required)" section replaced with the
   two-layer model + a link to alerts.md; all `alerts={...}` examples removed.
 - **getting-started (TUTORIAL, PROJECT_STRUCTURE) + reference (AIRFLOW_MIGRATION,
@@ -488,7 +495,7 @@ Removed:
 Kept on purpose: `pipelines_repo.migrate_slack_channel` — a one-shot helper that
 seeds alert_config from a legacy `slack_channel` on old DDB records. It is
 idempotent, not called by live code, and harmless; useful for migrating
-pre-ADR-103 pipelines whose records may still carry the old attribute.
+pre-alert-config-consolidation pipelines whose records may still carry the old attribute.
 
 Tests: removed the 8 stale alerts_json tests (`TestRunTaskAlertsInDDB`,
 `TestRestartTaskAlerts`, `test_alerts_json_roundtrip`). All green: SDK 661,

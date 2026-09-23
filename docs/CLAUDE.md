@@ -81,7 +81,7 @@ that's the signal to split.
 
 | Category         | Purpose                                                              | This repo lives in                                        |
 | ---------------- | -------------------------------------------------------------------- | --------------------------------------------------------- |
-| **Tutorial**     | Learning-oriented — walks a reader through *doing* something for the first time. Assumes zero context. | `docs/getting-started/TUTORIAL.md`                        |
+| **Tutorial**     | Learning-oriented — walks a reader through *doing* something for the first time. Assumes zero context. | `README.md#try-it-now` (root)                             |
 | **How-to guide** | Goal-oriented — "how do I do X", assumes the reader knows what X is and why they want it. | `docs/getting-started/QUICKSTART.md`, `docs/deployment/*` |
 | **Reference**    | Lookup — technical specification, tables of parameters, exact contracts. Assumes the reader knows the concepts. | `docs/features/DSL.md`, `docs/features/DATA_PASSING.md`, `docs/reference/*` |
 | **Explanation**  | Understanding-oriented — "why this design", background, rationale. Not step-by-step; not lookup. | `docs/architecture/*`, ADRs (`docs/reference/adr-*.md`)   |
@@ -308,6 +308,11 @@ If it's read by a user, it's a doc, and every rule here applies.
 - **Sweep for comparison phrases** ("not yet in OSS", "coming later",
   "available in", "the full version") — these bypass a features-list
   check but still violate #24.
+- **Render ASCII trees / diagrams / tables in a Markdown preview after
+  editing them.** Regex gates don't catch broken box-drawing: a mis-placed
+  `└──` or a dangling `│` renders as visual garbage but passes every
+  lint. Open the diff in the GitHub preview, mdcat, or your editor's
+  Markdown preview — eyeball the actual rendered output before commit.
 
 ## Common mistakes to avoid
 
@@ -330,11 +335,11 @@ If it's read by a user, it's a doc, and every rule here applies.
 
 ## Back-compat aliases are documented once, at the point of the alias — never in each doc
 
-When a symbol is renamed or superseded but the old name stays exported as an
-alias (e.g. `polyris.pull` → `polyris.xcom.get`, `PullError` → `XComMissingError`),
-the alias is documented in **exactly one place**: the deprecation/back-compat
-paragraph next to the new symbol's reference entry. Every other doc uses the
-canonical name and does not re-explain the alias.
+When a symbol is renamed or superseded, the old name may stay exported as
+an alias (e.g. `polyris.pull` → `polyris.xcom.get`, `PullError` →
+`XComMissingError`). Document the alias in **exactly one place**: the
+deprecation/back-compat paragraph next to the new symbol's reference entry.
+Every other doc uses the canonical name and does not re-explain the alias.
 
 The alias docstring itself carries the deprecation note (visible in IDE
 autocomplete + `help()`); the reference doc's back-compat paragraph is the

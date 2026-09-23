@@ -32,22 +32,16 @@ state machines, with no scheduler or worker pool to operate.
 **Every `@task.<service>` decorator orchestrates an AWS resource that already
 exists.** polyris does not provision the state machine, function, job, cluster,
 or database on your behalf — it only wires the deploy / trigger / retry /
-monitor logic.
+monitor logic. Before you write
+`@task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:my-workflow")`, that
+state machine must already exist, created by your own provisioning tool (SAM,
+CDK, Terraform, hand-created). Same for Lambda / Glue / ECS / Athena / EMR /
+Batch — polyris expects them there and calls them by AWS identifier.
 
-Before you write:
-
-```python
-@task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:my-workflow")
-```
-
-that Step Function state machine must already be in your AWS account, created
-by whatever provisioning tool you use (SAM, CDK, Terraform, hand-created).
-Same for Lambda functions, Glue jobs, ECS task definitions, Athena databases,
-EMR clusters, and Batch job definitions/queues — polyris expects them to be
-there, and calls them by their AWS identifier.
-
-The one thing polyris deploys is your pipeline itself (a set of Step Function
-state machines that glue your existing resources together into a DAG).
+The one thing polyris deploys is your pipeline itself — a set of orchestration
+state machines that glue your existing resources into a DAG. For the full
+wrapper-vs-workload split, see
+[INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-wrappers-vs-workloads).
 
 ### `namespace` is a resource-naming prefix, not a DSL concept
 
@@ -115,15 +109,14 @@ with DAG(
 
 ### Alerts Configuration
 
-> **Removed (ADR #103).** The `alerts=` argument has been removed — passing
+> **Removed.** The `alerts=` argument has been removed — passing
 > `alerts={...}` now raises a `TypeError`. Remove it from your DAGs. Alert
 > delivery moved out of the DSL:
 >
 > - **Browser notifications** (in-app) are automatic and free — no setup.
-> - Alert config is not part of the DSL (ADR #103) — there is no `alerts=`
->   argument.
+> - Alert config is not part of the DSL — there is no `alerts=` argument.
 >
-> `DAG` has no `alerts=` argument (ADR #103) — passing `alerts={...}` now raises
+> `DAG` has no `alerts=` argument — passing `alerts={...}` now raises
 > a `TypeError`. Configure alerts in Settings → Alerts instead.
 
 ## Schedule Options
@@ -733,6 +726,41 @@ with DAG(
 # Deploy
 # Deploy: polyris-deploy --stage $STAGE
 ```
+
+---
+
+## JSONata expressions (reference)
+
+The generated ASL uses **JSONata** as its query language. When writing
+custom `@task.sfn` bodies, `variables=` values, or reading intermediate
+state, these five patterns cover most cases:
+
+**Get today's date (UTC):**
+```
+{% $substringBefore($now(), 'T') %}
+```
+
+**Conditional / default:**
+```
+{% $exists($states.input.foo) ? $states.input.foo : 'default' %}
+```
+
+**String concatenation:**
+```
+{% 'prefix-' & $states.input.name & '-suffix' %}
+```
+
+**Filter an array:**
+```
+{% $filter($states.input.items, function($v) { $v.status = 'active' }) %}
+```
+
+**Merge two objects:**
+```
+{% $merge([$states.input, {'new_field': 'value'}]) %}
+```
+
+Full JSONata reference: [jsonata.org/docs](https://docs.jsonata.org/).
 
 ---
 

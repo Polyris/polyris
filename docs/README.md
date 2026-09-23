@@ -2,19 +2,32 @@
 
 ## Getting Started
 
-| Document | Description |
-|----------|-------------|
-| [QUICKSTART.md](getting-started/QUICKSTART.md) | Complete setup from blank AWS account (~30-45 min) |
-| [TUTORIAL.md](getting-started/TUTORIAL.md) | Detailed walkthrough with explanations |
-| [PROJECT_STRUCTURE.md](getting-started/PROJECT_STRUCTURE.md) | Repository layouts, CI/CD |
+| Document | Purpose | Reader |
+|----------|---------|--------|
+| [QUICKSTART.md](getting-started/QUICKSTART.md) | **How-to** — deploy polyris to a blank AWS account in ~10-15 min | I know what polyris does; show me how to install it |
+| [PROJECT_STRUCTURE.md](getting-started/PROJECT_STRUCTURE.md) | **Reference** — monorepo vs split-repo layouts, CI/CD patterns | I'm setting up a real project; show me the shape |
+
+To explore the DSL locally without AWS, follow the "Try It Now" section in
+the [root README](../README.md#try-it-locally-no-aws) — install, `polyris-init`,
+inspect the ASL / graph / Mermaid output.
+
+## How-to Guides
+
+Task-oriented recipes for specific problems. Each answers one question.
+
+| Document | Question it answers |
+|----------|---------------------|
+| [configure-retries.md](how-to/configure-retries.md) | How do I set retries + backoff + jitter for a task, and when do I use each? |
+| [schedule-and-redeploy.md](how-to/schedule-and-redeploy.md) | When does the first run fire? How do I pause a schedule? What happens to in-flight runs when I redeploy? |
+| [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | How do I test a pipeline without deploying to AWS? |
+| [REGISTRATION.md](features/REGISTRATION.md) | How do I manually register a pipeline (or diagnose why it's missing from the Console)? |
 
 ## Features
 
 | Document | Description |
 |----------|-------------|
 | [DSL.md](features/DSL.md) | Python DSL reference |
-| [ASSETS.md](features/ASSETS.md) | Asset-based orchestration |
-| [ASSET_PULL_FEATURE.md](features/ASSET_PULL_FEATURE.md) | wait_for / pull-based assets |
+| [ASSETS.md](features/ASSETS.md) | Asset-based orchestration (including `wait_for` pull-based dependencies) |
 | [authentication.md](features/authentication.md) | Cognito authentication setup |
 
 ## Tools
@@ -22,7 +35,6 @@
 | Document | Description |
 |----------|-------------|
 | [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | validate, dry_run, mock execution |
-| [REGISTRATION.md](tools/REGISTRATION.md) | Pipeline registration CLI |
 | [DEVELOPMENT.md](tools/DEVELOPMENT.md) | Dev scripts, testing, code quality |
 
 ## Deployment
@@ -30,7 +42,8 @@
 | Document | Description |
 |----------|-------------|
 | [DEPLOY.md](deployment/DEPLOY.md) | Pipeline deployment (polyris-deploy) |
-| [SAM.md](deployment/SAM.md) | SAM infrastructure deployment and parameters |
+| [INFRASTRUCTURE.md](deployment/INFRASTRUCTURE.md) | What the polyris SAM stack deploys (resource inventory, stack outputs, SFN template sources) |
+| [IAM_PERMISSIONS.md](deployment/IAM_PERMISSIONS.md) | Minimum permissions for install / deploy / operate / remove |
 | [RELEASE.md](deployment/RELEASE.md) | Release process and Launch Stack |
 | [CROSS_ACCOUNT_ROLES.md](deployment/CROSS_ACCOUNT_ROLES.md) | Multi-account IAM setup |
 
@@ -48,7 +61,6 @@
 |----------|-------------|
 | [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | System architecture |
 | [BACKEND.md](architecture/BACKEND.md) | Backend implementation |
-| [STEP_FUNCTIONS.md](architecture/STEP_FUNCTIONS.md) | ASL patterns and helpers |
 
 ## Reference
 

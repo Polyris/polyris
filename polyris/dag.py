@@ -31,8 +31,8 @@ class DAG:
         ) as dag:
             ...
     
-    Alerts (Slack / PagerDuty) are configured in the Console UI
-    (Settings → Alerts), not in the DSL (ADR #103).
+    Alerts are configured in the Console UI (Settings → Alerts), not in
+    the DSL.
     """
     dag_id: str
     description: str = ""

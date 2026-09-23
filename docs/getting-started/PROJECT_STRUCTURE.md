@@ -5,8 +5,9 @@ This guide covers different ways to organize polyris projects.
 ## Installation
 
 ```bash
-# From PyPI
-pip install polyris
+# Replace <VERSION> with a real tag from
+# https://github.com/Polyris/polyris/tags (e.g. v1.0.1).
+pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 ```
 
 ## Structure Options
@@ -20,16 +21,16 @@ mycompany-data/
 ├── pyproject.toml              # Python packaging + dev tools
 ├── sam/
 │   └── shared/                 # Shared infrastructure
-│       ├── template.yaml    # SAM template
-│       └── ...
+│       ├── template.yaml       # SAM template
+│       └── samconfig.toml
 │
 ├── pipelines/                  # (whole directory is gitignored — real
 │   ├── config.py               #  account_id / profile stay out of git)
 │   ├── acme-daily/
-│   │   ├── dag.py
-│   │   └── │   └── nexus-hourly/
-│       ├── dag.py
-│       └── │
+│   │   └── dag.py
+│   └── nexus-hourly/
+│       └── dag.py
+│
 └── .github/
     └── workflows/
         └── ci.yml
@@ -233,5 +234,4 @@ f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-task"
 ## Next Steps
 
 - [CONFIGURATION.md](../reference/CONFIGURATION.md) — All config options
-- [TUTORIAL.md](TUTORIAL.md) — Step-by-step guide
 - [DSL.md](../features/DSL.md) — Pipeline DSL reference

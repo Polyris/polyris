@@ -288,10 +288,11 @@ with `mismatched input '>'` because the `{` bytes went straight to Athena.
 **How to apply:** interpolate at DAG-definition time using plain Python
 f-strings or `.format()`, not template syntax. If the value must vary at
 runtime (per-run date, upstream xcom output), route it through
-`variables=` on the DAG (visible in the Console, still constant per-run) or
-wrap the service call in a Lambda that does the substitution before invoking
-Athena/Batch. Never rely on `{{ }}` or `{% %}` inside `query_string` /
-`batch_parameters` / similar until the SDK grows a real templating layer.
+`variables=` on the DAG — visible in the Console, still constant per-run.
+Or wrap the service call in a Lambda that does the substitution before
+invoking Athena/Batch. Never rely on `{{ }}` or `{% %}` inside
+`query_string` / `batch_parameters` / similar until the SDK grows a real
+templating layer.
 
 ```python
 # WRONG — sent to Athena verbatim, fails with InvalidRequestException

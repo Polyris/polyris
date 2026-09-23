@@ -89,6 +89,11 @@ These are patterns I catch myself producing. Delete on sight:
   covers…", "As mentioned above…". Talk to the reader like a colleague.
 - **Restating structure**: "This section will cover A, B, C. First A: …"
   — cut the announcement; write A directly.
+- **Apologetic TOCs**: "On this page: skip section X, section Y is
+  advanced, come back to Z if you care about W." A TOC lists sections; it
+  does not tell the reader what to skip or apologise for the doc's order.
+  If sections need "skip" labels, the doc is mis-ordered — put the
+  most-read section first instead.
 - **False dichotomies for drama**: "Traditionally, doing X was painful.
   Now, with polyris, it's easy." Nobody reads for the narrative arc.
 - **Over-precise numbers where the range is what matters**: "This takes
@@ -149,6 +154,45 @@ most rot happens. Every time you edit an existing doc, run this pass:
 - Contractions are fine ("don't", "you'll"). This is documentation, not a
   legal filing.
 
+## Semantic self-review (LLM-native check)
+
+The three mechanical gates (pytest / lychee / Vale) catch drift they can
+detect with regex, file existence, and grep against source of truth. They
+do NOT catch **semantic** problems — logical contradictions, claims that
+disagree with each other, code blocks whose behavior conflicts with the
+prose above them. Those are your job as the writer.
+
+Before commit, read the whole doc top-to-bottom (not just your edit) and
+answer:
+
+1. **Internal contradictions.** Does any claim disagree with another claim
+   in the same doc? "Section 2 says the API is async; Section 5 shows
+   `sync_only=True` in the example." "Prose says 'returns a list', code
+   block shows `return {}`." These slip past every regex-based tool.
+2. **Doc↔doc contradictions.** Read at least one sibling doc in the same
+   directory. Does your edit now contradict something a neighbour says?
+   If yes, one is wrong — decide which and fix in the same commit.
+3. **Behavior claims not covered by mechanical checks.** pytest catches
+   flag names, entry-point commands, resource counts, ADR refs, PyPI
+   installs. It does NOT catch:
+   - Latency claims ("runs in <1s", "sub-second") — verify with a
+     benchmark or delete.
+   - Response-shape claims ("returns 200 on success", "the payload
+     includes `foo`") — grep the handler to confirm.
+   - Timing / ordering ("this fires before X", "X blocks until Y") —
+     read the code, don't guess.
+4. **Deprecated / removed features still cited.** Search the doc for
+   symbols you know were removed in recent releases. Regex sometimes
+   misses these because the citation is embedded in prose ("as the old
+   `pull()` did") rather than a code block.
+
+Why this belongs in the skill and not in a mechanical gate: LLMs (Claude,
+GPT) do this class of check well when asked explicitly. Semantic
+contradiction detection has no widely-adopted OSS tool — the state of
+the art is either NLI models (research territory) or an LLM. Doing it
+manually / with an LLM is the right frontier here, not adding a gate
+that gives false confidence.
+
 ## Before you commit
 
 - [ ] Step 0 done: `docs/CLAUDE.md` + root `CLAUDE.md` actually Read this
@@ -163,6 +207,129 @@ most rot happens. Every time you edit an existing doc, run this pass:
 - [ ] English throughout.
 - [ ] If the doc mentions a non-OSS feature by name — delete the mention.
 - [ ] Same-commit as the code change that made it necessary (root #9).
+- [ ] **`python3 -m pytest tests/docs/ -q` reports 0 failures** — five
+      pytest checks (cli flags, entry points, ADR refs, resource counts,
+      PyPI-style installs) run as CI gates.
+- [ ] **`lychee --config .config/lychee.toml './**/*.md'` reports 0
+      errors** — broken relative links + broken heading anchors. Also
+      a CI gate.
+- [ ] **`vale --config .config/vale.ini docs/ README.md polyris/ sam/lambdas/`
+      reports 0 warnings** — sentence-start filler adverbs, marketing
+      verbs, corp voice, sentences over 40 words. Applies to docs AND to
+      docstrings/comments in Python. Also a CI gate.
+- [ ] **Semantic self-review** — read the whole doc top-to-bottom,
+      check for internal contradictions and claims that mechanical
+      gates can't verify (latency, response shape, timing/ordering).
+      See "Semantic self-review" section above.
+
+## The mechanical gates
+
+Doc↔code consistency and prose style are enforced by three gates, all
+running in CI as blockers:
+
+### `tests/docs/` — pytest checks
+
+Five focused tests, each one file, ~30-100 lines:
+
+- `test_cli_flags.py` — every `polyris-<cmd> --flag` referenced in docs
+  must exist as an `add_argument("--flag")` in `polyris/*.py`.
+- `test_entry_points.py` — every `polyris-<cmd>` in docs must be
+  declared in `pyproject.toml [project.scripts]`.
+- `test_adr_refs.py` — every `ADR #N` / `adr-N-slug` reference must
+  resolve to either a `docs/reference/adr-N-*.md` file or a `### N.`
+  heading in `DESIGN_DECISIONS.md`.
+- `test_resource_counts.py` — prose claims like "8 Lambda functions"
+  must match `sam/template.yaml` counts.
+- `test_pypi_installs.py` — bare `pip install polyris` is rejected;
+  use `polyris @ git+…@<VERSION>`.
+
+Suppression escape hatches:
+
+- **Whole file** — add a glob to `DEFAULT_SKIP_GLOBS` in
+  `tests/docs/_helpers.py`. Reserve for historical / meta docs that are
+  allowed to reference removed symbols (default list already covers ADR
+  archives, spikes, completeness reports, `CHANGELOG.md`,
+  `docs/CLAUDE.md`).
+- **Single line** — append `<!-- audit-docs: skip-line -->` to the end
+  of the line. Currently honored by `test_pypi_installs.py` only.
+  Reserve for legitimate meta-references (e.g. a gotchas section
+  explaining *why* the bare form does not work).
+
+If a test flags a doc you edited, the answer is almost always to **fix
+the doc**. Suppression is the escape hatch for the ~1% of cases where
+the doc is genuinely correct and the check's shape catches a legit
+meta-reference.
+
+### `lychee` — link checker
+
+`.config/lychee.toml` configures the [lychee](https://github.com/lycheeverse/lychee)
+Rust link checker. It runs on every `*.md`, verifies:
+- Relative file links (`](../features/DSL.md)`) resolve.
+- Heading anchors (`](../features/DSL.md#retries)`) point at real
+  headings — enabled via `include_fragments = "full"`.
+- External URLs (`https://…`) reach a 2xx or 429.
+
+To run locally, install lychee from
+[github.com/lycheeverse/lychee/releases](https://github.com/lycheeverse/lychee/releases)
+and:
+
+```bash
+lychee --config .config/lychee.toml './**/*.md'          # online, checks external URLs too
+lychee --config .config/lychee.toml --offline './**/*.md' # local links + anchors only
+```
+
+Historical archives (`DESIGN_DECISIONS.md`, `adr-[0-9]*.md`,
+`SPIKE_*.md`, `COMPLETENESS_REPORT_*.md`) are excluded via
+`exclude_path` regex in `.config/lychee.toml`.
+
+### `vale` — prose style linter
+
+[Vale](https://vale.sh) enforces the anti-patterns from this SKILL as a
+CI gate. Config: `.config/vale.ini` + `.config/vale/styles/PolyrisDocs/`
+(rules).
+
+Four rules ship today:
+
+- `MarketingVerbs.yml` — bans `hardening`, `comprehensive`, `robust`,
+  `seamless`, `powerful`, `elegant`, `thoughtful`, `battle-tested`,
+  `production-grade`, `best-in-class`, `cutting-edge`, and similar
+  self-assessment language.
+- `FillerAdverbs.yml` — bans **sentence-start** `Simply`, `Just`,
+  `Easily`, `Obviously`, `Basically`, `Essentially`, `Of course`.
+  Mid-sentence uses (`not just X`, `simply no longer projects`) are
+  legitimate English and are NOT flagged.
+- `CorpVoice.yml` — bans `This document introduces`, `The following
+  section covers`, `As mentioned above`, `It should be noted that`,
+  and similar ceremonial phrasing.
+- `SentenceLength.yml` — flags sentences over 40 words. Long sentences
+  in technical prose usually mean two ideas glued together — split for
+  scannability. Threshold is a **ratchet** (Principle #22-style): started
+  at 40 for a feasible one-time cleanup (11 hits), ratchet down to 30
+  (Microsoft style) or 25 (Google style) once the baseline stays clean
+  for a release cycle.
+
+To run locally, install Vale from
+[github.com/vale-cli/vale/releases](https://github.com/vale-cli/vale/releases)
+and:
+
+```bash
+vale --config .config/vale.ini docs/ README.md polyris/ sam/lambdas/   # full CI scope
+vale --config .config/vale.ini docs/features/DSL.md                    # single file
+vale --config .config/vale.ini polyris/task.py                         # single .py file
+```
+
+Python scope: Vale's built-in Python parser sees **only** docstrings and
+`#` comments — identifiers, string literals, and type hints are ignored.
+So `def elegantly_process()` does NOT flag `elegantly`, but a docstring
+saying "elegantly handles" does.
+
+Historical archives are excluded via per-file sections in
+`.config/vale.ini` (same list as lychee / pytest).
+
+When adding a new rule: create `.config/vale/styles/PolyrisDocs/<Name>.yml`,
+add the same anti-pattern text to this SKILL's "Anti-patterns" section,
+run `vale` against the current docs, fix or suppress every hit before
+merging so the baseline stays at 0.
 
 ## Done when
 

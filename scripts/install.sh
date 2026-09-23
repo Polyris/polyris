@@ -2,7 +2,7 @@
 # scripts/install.sh — one-line onboarding for polyris.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh | bash
+#   curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
 #
 # Env vars:
 #   POLYRIS_DIR   — clone destination (default: $PWD/polyris, matching
@@ -29,7 +29,7 @@ set -euo pipefail
 INSTALL_DIR="${POLYRIS_DIR:-$PWD/polyris}"
 REPO_URL="https://github.com/Polyris/polyris.git"
 REPO_API="https://api.github.com/repos/Polyris/polyris"
-SELF_URL="https://raw.githubusercontent.com/Polyris/polyris/main/scripts/install.sh"
+SELF_URL="https://github.com/Polyris/polyris/releases/latest/download/install.sh"
 
 # Resolve the default POLYRIS_REF to the latest GitHub release tag, so a
 # fresh curl-install gives a reproducible, released version of polyris

@@ -22,26 +22,14 @@ without hardcoded references between pipelines.
 
 Inspect lineage from the CLI with `polyris-output --graph`.
 
-## On this page
+## Contents
 
-If you want to produce or consume assets, skip to
-[Producer tasks](#producer-tasks-outlets) and
-[Consumer DAGs](#consumer-dags-schedule).
-The schema-declaration sections that come right after "Defining Assets" are
-advanced — read them when you want Glue-catalog integration or typed schemas,
-not on first read.
-
-Order of the doc:
-
-1. [Defining assets](#defining-assets) — naming, minimal example
-2. Schema declaration (advanced — skip on first read)
-3. [Producer tasks (`outlets`)](#producer-tasks-outlets) ← what you probably want
-4. [Consumer DAGs (`schedule`)](#consumer-dags-schedule) ← what you probably want
-5. [AND / OR / mixed logic](#and-logic-all-assets-required)
-6. [Inlets](#inlets-documentation), [asset events](#asset-events),
-   [queue management](#queue-management)
-7. [Lineage graph](#asset-lineage-graph), [timeouts](#timeout-for-cross-pipeline-dependencies)
-8. [Complete example](#complete-example), [best practices](#best-practices)
+- [Defining Assets](#defining-assets) — naming, minimal example, schema declaration (schema is optional; skip on first read)
+- [Producer Tasks (`outlets`)](#producer-tasks-outlets)
+- [Consumer DAGs (`schedule`)](#consumer-dags-schedule) — AND / OR / mixed logic
+- [Inlets](#inlets-documentation), [pull-based dependencies (`wait_for`)](#pull-based-dependencies-wait_for)
+- [Asset events](#asset-events), [queue management](#queue-management), [lineage graph](#asset-lineage-graph)
+- [Complete example](#complete-example), [best practices](#best-practices)
 
 ---
 
@@ -151,11 +139,11 @@ Asset(name="retail/orders", schema=[
 All three forms are normalized to `List[Column]` internally. You can mix them
 in a single declaration if you are migrating gradually.
 
-**Schema conflict detection:** when the same asset is declared in multiple
-pipelines with different schemas (e.g. a producer pipeline declares 8 columns,
-a consumer references the asset and declares 3), the backend keeps the richer
-schema (more columns) and emits a warning to CloudWatch Logs so the divergent
-declaration can be reconciled.
+**Schema conflict detection:** the same asset can be declared in multiple
+pipelines with different schemas — say a producer declares 8 columns and a
+consumer declares 3. The backend keeps the richer schema (more columns) and
+emits a warning to CloudWatch Logs. Reconcile the divergent declaration
+based on the warning.
 
 ### Glue Catalog Reference
 
@@ -328,9 +316,10 @@ orders = Asset.from_pyarrow(
 )
 ```
 
-Requires `pip install 'polyris[pyarrow]'`. The bridge to all six
-formats above goes through pyarrow as a hub — one optional dependency,
-many integrations.
+Requires the `pyarrow` extra:
+`pip install "polyris[pyarrow] @ git+https://github.com/Polyris/polyris@<VERSION>"`.
+The bridge to all six formats above goes through pyarrow as a hub — one
+optional dependency, many integrations.
 
 **Shortcut: from a Parquet file directly.**
 
@@ -369,8 +358,10 @@ class Order(BaseModel):
 orders = Asset.from_pydantic(Order, name="retail/orders")
 ```
 
-Requires `pip install 'polyris[pydantic]'`. Pydantic field
-descriptions, defaults, and `Optional[...]` markers all carry over.
+Requires the `pydantic` extra:
+`pip install "polyris[pydantic] @ git+https://github.com/Polyris/polyris@<VERSION>"`.
+Pydantic field descriptions, defaults, and `Optional[...]` markers all
+carry over.
 
 **Naming note.** If `name=` is omitted, `from_pydantic` falls back to
 the model's class name (`Order` → `name="Order"`). This is convenient
@@ -530,6 +521,121 @@ def transform():
 ```
 
 **Note:** Inlets don't affect execution - they're for lineage tracking.
+
+---
+
+## Pull-based dependencies (`wait_for`)
+
+`wait_for` makes a task pause until an upstream `Asset` is available (and
+optionally fresh). Unlike push-based schedules (`schedule=[asset]`),
+pull-based `wait_for` runs on the consumer's own cadence and blocks the
+individual task until the asset condition holds.
+
+### `wait_for` patterns
+
+| Pattern | Meaning |
+|---------|---------|
+| `wait_for=[asset_x]` | Latest materialization — no freshness check |
+| `wait_for=[asset_x.within(hours=6)]` | Latest event must be ≤ 6 hours old |
+| `wait_for=[asset_x.within(days=1)]` | ≤ 1 day old |
+| `wait_for=[asset_x.within(weeks=2)]` | ≤ 2 weeks old |
+| `wait_for=[asset_x.within(days=1, hours=12)]` | ≤ 36 hours old (combined units) |
+| `wait_for=[asset_x.consecutive(days=7)]` | 7 consecutive daily events required |
+| `wait_for=[a, b]` | AND — wait for both `a` and `b` |
+| `wait_for=[a \| b]` | OR — wait for either `a` or `b` |
+| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) |
+| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event |
+| `wait_for=[a.consecutive(days=7) \| manual_override]` | 7-day run OR manual override |
+
+### Full example — producer + consumer
+
+```python
+from polyris import DAG, task, Asset
+
+inventory = Asset("inventory", uri="s3://bucket/inventory/")
+catalog = Asset("catalog")
+
+# Producer pipeline — publishes the inventory asset when extract completes.
+with DAG("producer", schedule="@daily") as pipeline:
+    @task.sfn(arn="${extract_arn}", outlets=[inventory])
+    def extract():
+        pass
+
+# Consumer pipeline — runs hourly, but individual tasks block on the asset.
+with DAG("consumer", schedule="@hourly") as pipeline:
+    # Latest inventory event, no freshness check.
+    @task.sfn(arn="${process_arn}", wait_for=[inventory])
+    def process():
+        pass
+
+    # Latest catalog event must be within 24 hours.
+    @task.sfn(arn="${report_arn}", wait_for=[catalog.within(hours=24)])
+    def report():
+        pass
+```
+
+### In the Console
+
+A task with `wait_for` appears as a consumer of the asset in the lineage
+view. The Task Detail modal shows asset dependencies as a labelled
+section, with the freshness constraint as a badge:
+
+```
+Dependencies:        None (no task dependencies)
+Asset Dependencies:  acme/weekly-complete (192h)
+```
+
+`192h` = 8 days (whatever was declared in `.within(...)`).
+
+### How it works
+
+Consumer side (the task with `wait_for`):
+
+```
+Consumer task starts
+        │
+        ▼
+Registration helper
+        │
+        ├── Check task dependencies (existing)
+        └── Check asset dependencies
+            │
+            ▼
+        CheckAssets Lambda
+            │
+            ├── Query asset-events table (latest event per asset)
+            ├── Check freshness (if `.within(...)` was specified)
+            └── If not ready → save subscription to asset-subscriptions
+        │
+        ▼
+If ready → signal wrapper → task continues
+If not  → wait for signal (waitForTaskToken)
+```
+
+Producer side (a task with `outlets=[...]`):
+
+```
+Producer task completes with outlets
+        │
+        ▼
+RunTask helper
+        │
+        ├── Emit EventBridge events (existing push path)
+        ├── Record asset event in asset-events table
+        └── NotifyAssetSubscribers Lambda
+            │
+            ├── Query subscribers for each outlet
+            └── sendTaskSuccess to each waiting task
+```
+
+The two DynamoDB tables involved:
+
+| Table | Purpose |
+|-------|---------|
+| `asset-events` | Every asset materialization (PK: `asset_name`, SK: `event_time`) |
+| `asset-subscriptions` | Cross-pipeline triggers waiting on an asset (PK: `asset_name`, SK: `pipeline_name`) |
+
+Everything provisions with `sam build && sam deploy` — no manual steps.
 
 ---
 

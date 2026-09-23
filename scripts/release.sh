@@ -121,6 +121,17 @@ read -r -p "Create GitHub Release with auto-generated notes? [y/N] " confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
   gh release create "$VERSION" --title "$VERSION" --generate-notes
   echo "✅ GitHub Release $VERSION created"
+
+  # Attach scripts/install.sh as a release asset so the README's install
+  # URL (github.com/Polyris/polyris/releases/latest/download/install.sh)
+  # always serves the installer that shipped with the latest tag, not
+  # whatever is on main. Without this, curl-installers get the main branch
+  # version of install.sh even when they clone the release tag — see
+  # README "Install" section for context.
+  echo "→ uploading scripts/install.sh as release asset"
+  gh release upload "$VERSION" scripts/install.sh
+  echo "✅ install.sh attached to $VERSION"
 else
   echo "ℹ️  skipped — create manually: gh release create $VERSION --title $VERSION --generate-notes"
+  echo "    then: gh release upload $VERSION scripts/install.sh"
 fi

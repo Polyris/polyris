@@ -1,0 +1,24 @@
+extends: existence
+message: "'%s' names paid Team-tier behaviour — OSS docs describe what OSS ships (Principle #24)."
+level: warning
+ignorecase: false
+# Paid Team-tier features per root CLAUDE.md #24 and ADR #99. OSS docs
+# must be silent about them, comparison phrases included.
+#
+# Legitimate OSS mentions (scaffold-only, no behaviour): a plain reference
+# to the notify Lambda or an SSM param name is fine — the rule targets
+# feature *behaviour* (integrations, buttons, channels, alert paths), not
+# infrastructure names.
+#
+# Escape hatch: inline `<!-- audit-docs: skip-line -->` — reserve for
+# seam ADRs (#97/#98/#99/#100) that must describe the boundary itself.
+tokens:
+  - '\bPagerDuty\b'
+  - '\bSlack\s+(?:button|buttons|channel|channels|webhook|webhooks|integration|integrations|alert|alerts|mention|mentions|routing|notification|notifications|message|messages|interactive|post|posts|API)\b'
+  - '\bSlack/PD\b'
+  - '\bSlack/PagerDuty\b'
+  - '\bTeam[- ]tier\s+(?:only|feature)\b'
+  - '\bTeam[- ]only\b'
+  - '\bpaid\s+(?:tier|version|feature|features|edition|overlay)\b'
+  - '\bcoming\s+(?:in|to)\s+(?:paid|Team|OSS|the\s+full)\b'
+  - '\bavailable\s+in\s+(?:paid|Team|the\s+full)\b'
