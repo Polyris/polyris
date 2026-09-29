@@ -9,36 +9,24 @@ Turn a fuzzy intention into settled decisions. **You do not write code here.** Y
 
 ## Method
 
-**One question at a time.** Ask, wait, record, ask the next. Never dump a
-questionnaire — the maintainer has said plainly that walls of text are useless.
+**One question at a time.** Ask, wait, record, ask the next. Never dump a questionnaire.
 
-**Answer your own question first.** Before asking anything, check whether the
-codebase answers it. `grep`, read the ADR index, read the tests. Only ask what
-the repo genuinely cannot tell you. A question you could have answered yourself
-is a waste of the one resource this stage spends: the maintainer's attention.
+**Answer your own question first.** Before asking anything, check whether the codebase answers it — `grep`, read the ADR index, read the tests. Only ask what the repo genuinely cannot tell you.
 
-**Always offer a recommendation.** Never "what would you like?" — always "I'd do
-X, because Y. Agree?" The maintainer wants direct recommendations, not option
-menus. A bare menu is a failure of this stage.
+**Always offer a recommendation.** Never "what would you like?" — always "I'd do X, because Y. Agree?" A bare menu is a failure of this stage.
 
-**Resolve dependencies in order.** If decision B only makes sense once A is
-settled, ask A first. Say so when you skip ahead.
+**Resolve dependencies in order.** If decision B only makes sense once A is settled, ask A first.
 
-**Stop when the decisions are settled**, not when you have a design. The design
-belongs to stage 2.
+**Stop when the decisions are settled**, not when you have a design. The design belongs to stage 2.
 
 ## What to interrogate
 
-- **Boundary.** Free or paid? (See CONTRIBUTING.md open-core section.) This decides half the
-  design and is the single most expensive thing to get wrong late.
+- **Boundary.** Free or paid? This decides half the design and is the single most expensive thing to get wrong late.
 - **Scope.** What is explicitly *not* in this change?
-- **Contract.** New/changed DDB fields, API routes, SFN states, enum members?
-  Anything crossing a producer↔consumer boundary needs naming now.
-- **Vocabulary.** Any term used loosely? Pin it. `run` vs `execution` vs
-  `backfill`; `partition` vs `granularity`. Ambiguity here becomes bugs later.
+- **Contract.** New/changed DDB fields, API routes, SFN states, enum members? Anything crossing a producer↔consumer boundary needs naming now.
+- **Vocabulary.** Any term used loosely? Pin it. `run` vs `execution` vs `backfill`; `partition` vs `granularity`. Ambiguity becomes bugs.
 - **Reversibility.** Which decisions are one-way? Those become ADRs.
-- **Failure shape.** What does this do when the input is empty, the AWS call
-  fails, the row is missing?
+- **Failure shape.** What does this do when the input is empty, the AWS call fails, the row is missing?
 
 ## Output
 
@@ -57,18 +45,12 @@ Status: shaping | settled
 - <thing> — because <reason>
 ```
 
-For genuinely one-way decisions, draft the ADR now under
-`docs/reference/` and reference it. **Sparingly** — an ADR is for a decision that
-is hard to reverse, surprising without context, and the result of a real
-trade-off. A convention is not an ADR. There are already 81+; most shaping
-sessions should add zero.
+For genuinely one-way decisions, draft the ADR now under `docs/reference/` and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 81+; most shaping sessions should add zero.
 
 ## Done when
 
-Every question in **Open** is either answered or explicitly deferred with a
-reason, and the maintainer says so. Not when you think it is enough.
+Every question in **Open** is either answered or explicitly deferred with a reason, and the maintainer says so. Not when you think it is enough.
 
 ## Then
 
-Stop. The decisions document is the deliverable. Implementation happens in a
-**new session** — say so, and do not start coding here.
+Stop. The decisions document is the deliverable. Implementation happens in a **new session** — say so, and do not start coding here.
