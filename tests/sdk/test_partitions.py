@@ -38,6 +38,19 @@ class TestConstruction:
         with pytest.raises(ValueError, match="does not match"):
             PartitionRange(keys=["2024-01-15"], granularity="hourly")
 
+    @pytest.mark.parametrize("granularity,bad_key", [
+        ("daily",   "2024-02-31"),   # Feb has no 31st
+        ("daily",   "2023-02-29"),   # 2023 is not a leap year
+        ("weekly",  "2024-W99"),     # week 99 does not exist
+        ("weekly",  "2024-W53"),     # 2024 has only 52 ISO weeks
+        ("weekly",  "2024-W00"),     # week 0 does not exist
+        ("monthly", "2024-13"),      # month 13 does not exist
+        ("hourly",  "2024-02-31T10"), # Feb has no 31st
+    ])
+    def test_key_calendar_validity(self, granularity, bad_key):
+        with pytest.raises(ValueError, match="is not a valid"):
+            PartitionRange(keys=[bad_key], granularity=granularity)
+
     def test_iteration(self):
         pr = PartitionRange(keys=["2024-01-15", "2024-01-16"], granularity="daily")
         assert list(pr) == ["2024-01-15", "2024-01-16"]

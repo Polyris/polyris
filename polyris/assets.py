@@ -40,6 +40,7 @@ import warnings
 from typing import List, Literal, Optional, Dict, Any, Union, TYPE_CHECKING, cast
 from dataclasses import dataclass, field
 
+from .partitions import validate_partition_key
 from .schema import (
     Schema, column_to_dict, normalize_schema,
     _polyris_type_to_jsonschema,
@@ -98,16 +99,6 @@ _EXPECTED_PER_30_DAYS: Dict[str, int] = {
     "daily":   30,
     "weekly":  4,
     "monthly": 1,
-}
-
-# `partition_start` format per granularity. Validated at Asset construction.
-# Forward-only patterns — anchored, not full-match, so timezone suffixes
-# (`Z`, `+02:00`) on hourly are accepted by the SDK and stripped server-side.
-_PARTITION_START_PATTERNS: Dict[str, str] = {
-    "hourly":  r"^\d{4}-\d{2}-\d{2}T\d{2}",
-    "daily":   r"^\d{4}-\d{2}-\d{2}$",
-    "weekly":  r"^\d{4}-W\d{2}$",
-    "monthly": r"^\d{4}-\d{2}$",
 }
 
 
@@ -343,16 +334,7 @@ class Asset:
         self.granularity: str = granularity
 
         if partition_start is not None:
-            import re as _re
-            pattern = _PARTITION_START_PATTERNS[granularity]
-            if not _re.match(pattern, partition_start):
-                raise ValueError(
-                    f"partition_start {partition_start!r} does not match the "
-                    f"format expected for granularity={granularity!r}. "
-                    f"Expected format: "
-                    f"daily=YYYY-MM-DD, weekly=YYYY-Www, "
-                    f"monthly=YYYY-MM, hourly=YYYY-MM-DDTHH"
-                )
+            validate_partition_key(partition_start, granularity)
         self.partition_start: Optional[str] = partition_start
 
         # Validate glue_table format up front: backend parses it as
