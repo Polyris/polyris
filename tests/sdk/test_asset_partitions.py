@@ -61,6 +61,27 @@ class TestValidation:
         with pytest.raises(ValueError, match="does not match the format"):
             Asset("x", granularity=granularity, partition_start=bad_start)
 
+    @pytest.mark.parametrize("granularity,bad_start", [
+        ("daily",   "2024-02-31"),   # Feb has no 31st
+        ("daily",   "2023-02-29"),   # 2023 is not a leap year
+        ("weekly",  "2024-W99"),     # week 99 does not exist
+        ("weekly",  "2024-W53"),     # 2024 has only 52 ISO weeks
+        ("weekly",  "2024-W00"),     # week 0 does not exist
+        ("monthly", "2024-13"),      # month 13 does not exist
+        ("hourly",  "2024-02-31T10"), # Feb has no 31st
+    ])
+    def test_partition_start_calendar_validity(self, granularity, bad_start):
+        with pytest.raises(ValueError, match="is not a valid"):
+            Asset("x", granularity=granularity, partition_start=bad_start)
+
+    @pytest.mark.parametrize("granularity,good_start", [
+        ("daily",  "2024-02-29"),   # 2024 is a leap year
+        ("weekly", "2015-W53"),     # 2015 is a long ISO year with 53 weeks
+    ])
+    def test_partition_start_valid_boundary_accepted(self, granularity, good_start):
+        asset = Asset("x", granularity=granularity, partition_start=good_start)
+        assert asset.partition_start == good_start
+
     def test_hourly_accepts_timezone_suffix(self):
         asset = Asset(
             "x",

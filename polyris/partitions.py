@@ -32,12 +32,49 @@ GRANULARITIES: tuple = ("hourly", "daily", "weekly", "monthly")
 
 # Format validators per granularity. Used at the boundary (user input,
 # Asset.partition_start). Internal storage always uses the formal format.
+# Keep in sync with _parse_to_datetime — the pattern is a fast shape pre-filter;
+# _parse_to_datetime is the calendar-validity authority for the same key space.
 _FORMAT_PATTERNS = {
     "hourly":  re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$"),
     "daily":   re.compile(r"^\d{4}-\d{2}-\d{2}$"),
     "weekly":  re.compile(r"^\d{4}-W\d{2}$"),
     "monthly": re.compile(r"^\d{4}-\d{2}$"),
 }
+
+def validate_partition_key(key: str, granularity: Granularity) -> None:
+    """Raise ValueError if key is not a valid partition key for the given granularity.
+
+    Validates both shape and calendar validity — rejects 2024-02-31,
+    2024-W99, 2024-13. For hourly keys an optional timezone suffix is accepted.
+    """
+    if granularity == "hourly":
+        if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}", key):
+            raise ValueError(
+                f"{key!r} does not match the format expected for {granularity!r} partitions "
+                f"(daily=YYYY-MM-DD, weekly=YYYY-Www, monthly=YYYY-MM, hourly=YYYY-MM-DDTHH)"
+            )
+        try:
+            datetime.strptime(key[:13], "%Y-%m-%dT%H")
+        except ValueError as exc:
+            raise ValueError(
+                f"{key!r} is not a valid {granularity} partition key "
+                f"(the date does not exist: {exc})"
+            ) from exc
+        return
+
+    if not _FORMAT_PATTERNS[granularity].match(key):
+        raise ValueError(
+            f"{key!r} does not match the format expected for {granularity!r} partitions "
+            f"(daily=YYYY-MM-DD, weekly=YYYY-Www, monthly=YYYY-MM, hourly=YYYY-MM-DDTHH)"
+        )
+    try:
+        _parse_to_datetime(key, granularity)
+    except ValueError as exc:
+        raise ValueError(
+            f"{key!r} is not a valid {granularity} partition key "
+            f"(the date does not exist: {exc})"
+        ) from exc
+
 
 # Hard limit per ADR #51 Q8 — must match BackfillLimits.PARTITION_HARD_LIMIT
 # in sam/lambdas/console_api/constants.py. Lowered from 5000 to 1000 because
@@ -205,13 +242,8 @@ class PartitionRange:
                 f"Unknown granularity {self.granularity!r}; "
                 f"must be one of {GRANULARITIES}"
             )
-        # Validate every key matches the granularity format
-        pattern = _FORMAT_PATTERNS[self.granularity]
         for k in self.keys:
-            if not pattern.match(k):
-                raise ValueError(
-                    f"Partition key {k!r} does not match {self.granularity} format"
-                )
+            validate_partition_key(k, self.granularity)
 
     def __len__(self) -> int:
         return len(self.keys)
