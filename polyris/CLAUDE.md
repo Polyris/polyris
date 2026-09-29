@@ -354,3 +354,23 @@ package) into Glue jobs via an S3 wheel referenced by `--extra-py-files`.**
   See `XcomAllComputeTaskDefinition` / `XcomAllRenderJobDefinition`.
 - Never mix — Glue always S3 wheel, containers always git+URL (or pre-built
   image), so consistency in each surface is easy to follow.
+
+## `SCHEDULE_PRESETS` ↔ `infer_cron_cadence` coupling (Principle #28)
+
+`SCHEDULE_PRESETS` in `constants.py` defines what schedule strings polyris emits to
+EventBridge; `infer_cron_cadence` in `granularity.py` must correctly parse every one
+of them. The parity gate is `TestSchedulePresetsParity` in
+`tests/sdk/test_granularity.py` — it imports `SCHEDULE_PRESETS` directly and asserts
+the expected granularity for each value.
+
+**When adding a preset:** add a row to `TestSchedulePresetsParity`. A new preset whose
+expression `infer_cron_cadence` cannot parse will fail that test immediately.
+
+**When changing a preset expression:** the parity test fails until `infer_cron_cadence`
+is updated to handle the new form — the coupling is enforced, not advisory.
+
+**Sub-daily rate/step cadences return `None`, never `"hourly"`:** `rate(N hours)` and
+`*/N` in the hours cron field for N>1 fire every N hours (sub-daily). Returning
+`"hourly"` would cause backfill expansion to create 24 partitions per day instead of
+24/N, over-expanding by N×. Only `rate(1 hour)`, `hour == "*"`, and `hour == "*/1"`
+map to `"hourly"`.

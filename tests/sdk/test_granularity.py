@@ -6,6 +6,7 @@ recognized patterns return granularity, ambiguous ones return None.
 
 import pytest
 
+from polyris.constants import SCHEDULE_PRESETS
 from polyris.granularity import infer_cron_cadence
 
 
@@ -25,7 +26,8 @@ class TestStandardCron:
         assert infer_cron_cadence("0 * * * *") == "hourly"
 
     def test_hourly_step(self):
-        assert infer_cron_cadence("0 */6 * * *") == "hourly"
+        # */6 in hours = every 6 hours (sub-daily), NOT hourly — would over-expand backfill
+        assert infer_cron_cadence("0 */6 * * *") is None
 
     def test_hourly_every_15min(self):
         # Sub-hourly buckets as hourly
@@ -130,8 +132,47 @@ class TestAWSRate:
         assert infer_cron_cadence("rate(2 days)") is None
 
     def test_rate_multi_hour(self):
-        # Multiple hours = still hourly-bucketed cadence
-        assert infer_cron_cadence("rate(6 hours)") == "hourly"
+        # rate(6 hours) fires every 6 hours — sub-daily, same logic as */6 in hours → None
+        assert infer_cron_cadence("rate(6 hours)") is None
+
+    def test_rate_7_days_weekly(self):
+        # polyris @weekly preset emits rate(7 days) via SCHEDULE_PRESETS
+        assert infer_cron_cadence("rate(7 days)") == "weekly"
+
+    def test_rate_14_days_ambiguous(self):
+        assert infer_cron_cadence("rate(14 days)") is None
+
+
+class TestAWSEventBridgeCron:
+    """AWS EventBridge cron(...) wrapper format (6-field with Year)."""
+
+    def test_cron_wrapper_monthly(self):
+        assert infer_cron_cadence("cron(0 0 1 * ? *)") == "monthly"
+
+    def test_cron_wrapper_yearly_month_pinned(self):
+        # month=1 is non-wildcard → not a recurring four-bucket pattern
+        assert infer_cron_cadence("cron(0 0 1 1 ? *)") is None
+
+    def test_daily_eventbridge(self):
+        assert infer_cron_cadence("cron(0 8 * * ? *)") == "daily"
+
+    def test_weekly_eventbridge(self):
+        assert infer_cron_cadence("cron(0 8 * * MON *)") == "weekly"
+
+    def test_question_mark_in_day_month_position(self):
+        # ? in day-of-month (EventBridge style when day-of-week is specified)
+        assert infer_cron_cadence("cron(0 8 ? * MON *)") == "weekly"
+
+    def test_pinned_year_ambiguous(self):
+        # Year = 2025 means a one-off, not a recurring schedule
+        assert infer_cron_cadence("cron(0 8 1 1 ? 2025)") is None
+
+    def test_sub_daily_step_eventbridge(self):
+        assert infer_cron_cadence("cron(0 */6 * * ? *)") is None
+
+    def test_six_field_eventbridge_no_wrapper(self):
+        # bare 6-field treated as EventBridge format (Year = 6th field = *)
+        assert infer_cron_cadence("0 0 8 * * *") == "monthly"
 
 
 class TestEmptyAndInvalid:
@@ -150,12 +191,36 @@ class TestEmptyAndInvalid:
     def test_malformed_too_few_fields(self):
         assert infer_cron_cadence("0 8 *") is None
 
-    def test_malformed_too_many_fields(self):
-        # 6-field cron (with seconds) is not supported
-        assert infer_cron_cadence("0 0 8 * * *") is None
-
     def test_garbage_input(self):
         assert infer_cron_cadence("this is not cron") is None
+
+
+class TestSchedulePresetsParity:
+    """Every SCHEDULE_PRESETS value must be correctly parsed by infer_cron_cadence.
+
+    Imports directly from constants so a change to SCHEDULE_PRESETS breaks here,
+    not silently (Principle #28).
+    """
+
+    def test_hourly_preset(self):
+        assert infer_cron_cadence(SCHEDULE_PRESETS["@hourly"]) == "hourly"
+
+    def test_daily_preset(self):
+        assert infer_cron_cadence(SCHEDULE_PRESETS["@daily"]) == "daily"
+
+    def test_weekly_preset(self):
+        assert infer_cron_cadence(SCHEDULE_PRESETS["@weekly"]) == "weekly"
+
+    def test_monthly_preset(self):
+        assert infer_cron_cadence(SCHEDULE_PRESETS["@monthly"]) == "monthly"
+
+    def test_yearly_preset(self):
+        # @yearly fires once a year — not in our four granularities
+        assert infer_cron_cadence(SCHEDULE_PRESETS["@yearly"]) is None
+
+    def test_annually_preset(self):
+        # alias for @yearly
+        assert infer_cron_cadence(SCHEDULE_PRESETS["@annually"]) is None
 
 
 class TestNoExceptions:
