@@ -11,6 +11,14 @@ in backfill preview.
 Inference is best-effort. We do NOT try to support pathological cron
 patterns; if pattern is irregular, return ``None`` and let the caller
 handle it. See ADR #52 "edge cases" section for the supported matrix.
+
+Supported input formats:
+- Standard 5-field cron: ``"0 8 * * *"``
+- AWS EventBridge 6-field cron (Year as 6th field): ``"cron(0 0 1 * ? *)"``
+  — bare 6-field without the wrapper is also accepted.
+- AWS EventBridge ``rate(N unit)`` expressions: ``"rate(1 day)"``,
+  ``"rate(7 days)"`` (→ "weekly"), ``"rate(1 hour)"``
+- ``@shorthand`` aliases: ``@daily``, ``@weekly``, ``@monthly``, etc.
 """
 
 import re
@@ -52,8 +60,9 @@ def infer_cron_cadence(cron: Optional[str]) -> Optional[Granularity]:
     """Infer a backfill granularity from a cron string.
 
     Args:
-        cron: Standard 5-field cron, AWS EventBridge ``rate(...)``,
-              or ``@shorthand``. Empty or ``None`` returns ``"daily"``.
+        cron: Standard 5-field cron, AWS EventBridge ``cron(...)``,
+              AWS EventBridge ``rate(...)``, or ``@shorthand``.
+              Empty or ``None`` returns ``"daily"``.
 
     Returns:
         ``"hourly" | "daily" | "weekly" | "monthly"`` for recognized
@@ -77,14 +86,34 @@ def infer_cron_cadence(cron: Optional[str]) -> Optional[Granularity]:
         if unit.startswith("minute"):
             return "hourly"  # sub-hourly cadence buckets as hourly
         if unit.startswith("hour"):
-            return "hourly"
+            if n == 1:
+                return "hourly"
+            return None  # sub-daily cadence; same logic as */N in hours field
         if unit.startswith("day"):
-            return "daily" if n == 1 else None  # rate(2 days) is not in our set
+            if n == 1:
+                return "daily"
+            if n == 7:
+                return "weekly"  # rate(7 days) is polyris's @weekly preset
+            return None
         return None  # pragma: no cover -- _RATE_PATTERN only admits minute/hour/day units, all handled above, so this fallthrough is unreachable
 
+    # Strip AWS EventBridge cron(...) wrapper if present.
+    if cron.startswith("cron(") and cron.endswith(")"):
+        cron = cron[5:-1].strip()
+
     parts = cron.split()
-    if len(parts) != 5:
-        return None  # invalid → ambiguous
+
+    # Accept 6-field EventBridge cron (Minutes Hours Day-of-month Month Day-of-week Year).
+    # Year pinned to a specific value means a non-recurring one-off — ambiguous for backfill.
+    if len(parts) == 6:
+        if parts[5] != "*":
+            return None
+        parts = parts[:5]
+    elif len(parts) != 5:
+        return None
+
+    # EventBridge uses "?" (no specific value) for mutually-exclusive day fields; treat as "*".
+    parts = ["*" if f == "?" else f for f in parts]
 
     minute, hour, day_month, month, day_week = parts
 
@@ -92,9 +121,14 @@ def infer_cron_cadence(cron: Optional[str]) -> Optional[Granularity]:
     if month != "*":
         return None
 
-    # Hourly: hour is wildcard or step
-    if hour in ("*", "*/1") or _is_wildcard_step(hour):
+    # Hourly: hour field fires on every hour (wildcard or */1).
+    # Sub-daily steps like */6 fire every N hours — not classifiable as hourly
+    # and would over-expand backfill partitions by N×.
+    if hour in ("*", "*/1"):
         return "hourly"
+
+    if _is_wildcard_step(hour):
+        return None  # sub-daily cadence; caller falls back to daily with warning
 
     # From here, hour must be a single fixed value
     if not _is_single_value(hour):
