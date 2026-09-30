@@ -6,8 +6,6 @@ config stays quiet and a valid one loads.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from polyris.config import _load_project_config, _find_project_config, _has_environments_assignment
 
 
