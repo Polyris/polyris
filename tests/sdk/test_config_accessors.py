@@ -10,9 +10,10 @@ from polyris.config import PolyrisConfig, _StageConfig, _RolesDict
 
 
 def _cfg(environments, default_stage="dev"):
-    c = PolyrisConfig.__new__(PolyrisConfig)  # bypass file-loading __init__
+    c = PolyrisConfig()
     c._environments = environments
     c._default_stage = default_stage
+    PolyrisConfig._loaded = True
     return c
 
 
