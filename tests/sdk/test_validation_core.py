@@ -22,6 +22,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from polyris.validation import (
     DAGInfo,
     build_asset_graph,
@@ -262,10 +264,12 @@ class TestExtractDagInfo:
         names = {c.get("name") for c in cols}
         assert {"id", "amount"} <= names
 
-    def test_broken_file_returns_empty_not_raises(self, tmp_path):
+    def test_broken_file_raises(self, tmp_path):
+        # extract_dag_info must surface import failures so validate_all can
+        # append them to results['errors'] rather than silently using partial data.
         f = _write(tmp_path, "broken/dag.py", BROKEN_DAG)
-        # Import error is swallowed; no DAG is produced.
-        assert extract_dag_info(str(f)) == []
+        with pytest.raises(Exception, match="boom at import time"):
+            extract_dag_info(str(f))
 
 
 # ============================================================ #
@@ -398,6 +402,25 @@ class TestValidateAll:
         res = validate_all(str(tmp_path), verbose=False)
         assert any("no producer" in w for w in res["warnings"])
 
+    def test_broken_pipeline_error_in_results(self, tmp_path):
+        # A pipeline that raises on import must appear in errors[], not be silently
+        # skipped or cause partial/stale DAGInfo to pollute the graph.
+        _write(tmp_path, "broken/dag.py", BROKEN_DAG)
+        res = validate_all(str(tmp_path), verbose=False)
+        assert any("boom at import time" in e for e in res["errors"])
+        assert res["pipelines"] == []
+
+    def test_broken_and_valid_pipeline_continue(self, tmp_path):
+        # validate_all must continue processing after one file fails —
+        # the valid pipeline's DAGInfo appears in results['pipelines'] and
+        # the broken file's error appears in results['errors'].
+        _write(tmp_path, "good/dag.py", SOLO_DAG)
+        _write(tmp_path, "bad/dag.py", BROKEN_DAG)
+        res = validate_all(str(tmp_path), verbose=False)
+        assert len(res["pipelines"]) == 1
+        assert res["pipelines"][0].dag_id == "solo"
+        assert any("boom at import time" in e for e in res["errors"])
+
     def test_cross_pipeline_cycle_reported_end_to_end(self, tmp_path):
         # Two asset-triggered pipelines forming a real loop:
         #   A (triggered by cyc/x) produces cyc/y
@@ -435,12 +458,16 @@ class TestValidateAll:
 # ============================================================ #
 class TestValidateSingle:
     def test_missing_file_is_invalid(self, tmp_path):
-        assert _validate_single(str(tmp_path / "nope.py"), verbose=False) is False
+        valid, _ = _validate_single(str(tmp_path / "nope.py"), verbose=False)
+        assert valid is False
 
     def test_valid_dag_file_is_valid(self, tmp_path):
         f = _write(tmp_path, "solo/dag.py", SOLO_DAG)
-        assert _validate_single(str(f), verbose=False) is True
+        valid, errors = _validate_single(str(f), verbose=False)
+        assert valid is True
+        assert errors == []
 
     def test_file_without_dag_is_invalid(self, tmp_path):
         f = _write(tmp_path, "nodag.py", "x = 1\ny = 2\n")
-        assert _validate_single(str(f), verbose=False) is False
+        valid, _ = _validate_single(str(f), verbose=False)
+        assert valid is False

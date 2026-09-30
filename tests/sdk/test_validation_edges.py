@@ -42,6 +42,11 @@ _BROKEN_DAG = """
         pass
 """
 
+_SYSEXIT_DAG = """
+    import sys
+    sys.exit(42)
+"""
+
 # Looks like a pipeline to the discoverer (contains the marker) but defines no DAG.
 _NO_DAG_FILE = '''
     marker = "with DAG("  # discovery sees this; there is no real DAG here
@@ -80,15 +85,38 @@ class TestValidateAll:
         assert "warning" in out.lower()
         assert "No cycles detected" in out
 
+    def test_sysexit_pipeline_captured_as_error(self, tmp_path):
+        """validate_all must catch SystemExit from a pipeline that calls sys.exit()
+        at import time — previously `except Exception` missed BaseException subclasses."""
+        _write(tmp_path, "dag.py", _SYSEXIT_DAG)
+        results = validate_all(str(tmp_path), verbose=False)
+        assert results['errors']
+        assert any("sys.exit" in e for e in results['errors'])
+
 
 class TestMainAll:
-    def test_all_with_broken_pipeline_exits_one(self, tmp_path, monkeypatch):
+    def test_all_with_broken_pipeline_exits_one(self, tmp_path, monkeypatch, capsys):
         _write(tmp_path, "dag.py", _BROKEN_DAG)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
         with pytest.raises(SystemExit) as e:
             main()
         assert e.value.code == 1
+        out = capsys.readouterr().out
+        assert "❌" in out
+
+    def test_all_verbose_broken_pipeline_shows_error(self, tmp_path, monkeypatch, capsys):
+        """--all -v with an unloadable pipeline must print the load error.
+        Previously validate_all's early-return bypassed the verbose summary block
+        and main()'s elif not effective_verbose was skipped, giving a silent exit 1."""
+        _write(tmp_path, "dag.py", _BROKEN_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all", "-v"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 1
+        out = capsys.readouterr().out
+        assert "❌" in out
 
 
 class TestValidateSingle:
@@ -96,7 +124,9 @@ class TestValidateSingle:
         from polyris.validation import _validate_single
 
         f = _write(tmp_path, "dag.py", _VALID_DAG)
-        assert _validate_single(str(f), verbose=True) is True
+        valid, errors = _validate_single(str(f), verbose=True)
+        assert valid is True
+        assert errors == []
 
 
 # Two pipelines declaring the *same* asset with conflicting column types — the
@@ -136,8 +166,7 @@ class TestAslFromDag:
         from polyris.validation import validate_asl_from_dag
 
         # A well-formed DAG validates clean — no errors, no warnings. Verbose mode
-        # prints the summary and the valid marker. (The errors/warnings print
-        # branches only fire for hand-written ASL — see their pragmas.)
+        # prints the summary and the valid marker.
         with DAG("one_task", schedule="@daily") as dag:
             @task.sfn(arn="arn:aws:states:us-east-1:1:stateMachine:s")
             def only():
