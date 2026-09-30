@@ -61,7 +61,7 @@ def _has_environments_assignment(config_path: Path) -> bool:
     """
     try:
         source = config_path.read_text(encoding="utf-8")
-    except OSError:
+    except OSError:  # pragma: no cover -- file exists but is unreadable; requires OS-level permission manipulation to test
         return False
     tree = ast.parse(source, filename=str(config_path))
 

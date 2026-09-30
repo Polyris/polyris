@@ -127,6 +127,29 @@ def test_has_environments_assignment_ignores_non_environments(tmp_path):
     assert _has_environments_assignment(f) is False
 
 
+def test_has_environments_assignment_ignores_attribute_target(tmp_path):
+    # some_mod.ENVIRONMENTS = {} — ast.Attribute target, not ast.Name
+    f = tmp_path / "config.py"
+    f.write_text("some_mod.ENVIRONMENTS = {'dev': {}}\n")
+    assert _has_environments_assignment(f) is False
+
+
+def test_polyris_config_env_var_nonexistent_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("POLYRIS_CONFIG", str(tmp_path / "does_not_exist.py"))
+    assert _find_project_config() is None
+
+
+def test_polyris_config_env_var_syntax_error_surfaced(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "bad_config.py"
+    cfg.write_text("ENVIRONMENTS = {\n")  # unterminated
+    monkeypatch.setenv("POLYRIS_CONFIG", str(cfg))
+
+    result = _find_project_config()
+
+    assert result is None
+    assert "Skipping" in capsys.readouterr().out
+
+
 def test_syntax_error_config_is_surfaced(tmp_path, monkeypatch, capsys):
     (tmp_path / "config.py").write_text("ENVIRONMENTS = {\n")  # unterminated
     (tmp_path / "pyproject.toml").write_text("[project]\n")
