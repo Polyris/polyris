@@ -374,3 +374,66 @@ is updated to handle the new form — the coupling is enforced, not advisory.
 `"hourly"` would cause backfill expansion to create 24 partitions per day instead of
 24/N, over-expanding by N×. Only `rate(1 hour)`, `hour == "*"`, and `hour == "*/1"`
 map to `"hourly"`.
+
+## `--json` callers must pass `effective_verbose = args.verbose and not args.json`
+
+Any code path that combines `--json` with `--verbose` must suppress verbose prints so
+JSON consumers receive clean stdout. Never pass `args.verbose` directly to functions
+that print progress text (`validate_all`, `_validate_single`, `validate_asl_from_dag`)
+when `args.json` may also be True — compute `effective_verbose = args.verbose and not
+args.json` once after `parse_args()` and thread it through all call sites.
+
+A function that prints to stdout when `verbose=True` is called by `main()` with
+`args.verbose=True` and `args.json=True` produces mixed text + JSON output that breaks
+any caller doing `json.loads(output)`. `_validate_single` prints progress when
+`verbose=True` and produces no stdout when `verbose=False`. Callers must pass
+`verbose=False` when `--json` is active so that JSON consumers receive clean stdout.
+
+## Dynamic imports of user code must catch `(Exception, SystemExit)`, not just `Exception`
+
+`SystemExit` is a `BaseException` subclass — it does not inherit from `Exception` and is
+not caught by `except Exception`. Any code that calls `spec.loader.exec_module()` on a
+user-supplied pipeline file must use `except (Exception, SystemExit)`:
+
+```python
+try:
+    dags = extract_dag_info(file_path)
+except (Exception, SystemExit) as e:
+    msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
+    errors.append(f"{file_path}: {msg}")
+```
+
+**Why:** A pipeline file that calls `sys.exit()` at module level (e.g., it imports a module
+that calls argparse and exits on `--help`) raises `SystemExit` from inside `exec_module`.
+With `except Exception` only, the `SystemExit` propagates through all callers and kills the
+CLI process with the pipeline's own exit code and zero diagnostic output. Hit in
+`validate_all`, `_validate_single`, and `_run_test` before 1.0.3.
+
+**How to apply:** Anywhere `exec_module` is called on a file path the user provided —
+not on modules we control internally.
+
+## DAG discovery in loaded modules must use `DAG.__exit__` instrumentation, never `vars(mod)`
+
+Any code that loads a pipeline file and searches for DAG instances must use the
+`DAG.__exit__` hook pattern (same as `extract_dag_info`):
+
+```python
+created_dags = []
+original_exit = DAG.__exit__
+def tracking_exit(self, *args):
+    created_dags.append(self)
+    return original_exit(self, *args)
+DAG.__exit__ = tracking_exit
+try:
+    spec.loader.exec_module(module)
+finally:
+    DAG.__exit__ = original_exit
+```
+
+Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]`.
+
+`vars(mod)` only finds objects bound to a module-level name. A pipeline written
+`with DAG("name"):` (without `as dag`) creates no binding — `vars(mod)` returns an
+empty list, producing a false-positive "No DAG found" error on a perfectly valid
+file. The `DAG.__exit__` hook fires unconditionally when the `with` block exits,
+regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3.

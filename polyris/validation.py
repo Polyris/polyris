@@ -103,102 +103,89 @@ def extract_dag_info(file_path: str) -> List[DAGInfo]:
         List of DAGInfo objects found in file
     """
     dags = []
-    
+
     try:
-        import sys
-        
+        # Track DAGs created via context manager
+        from polyris.dag import DAG
+        created_dags = []
+        original_exit = DAG.__exit__
+
+        def tracking_exit(self, *args):
+            created_dags.append(self)
+            return original_exit(self, *args)
+
+        DAG.__exit__ = tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
+
         try:
-            # Track DAGs created via context manager
-            from polyris.dag import DAG
-            created_dags = []
-            original_exit = DAG.__exit__
-            
-            def tracking_exit(self, *args):
-                created_dags.append(self)
-                return original_exit(self, *args)
-            
-            DAG.__exit__ = tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
-            
+            spec = importlib.util.spec_from_file_location("pipeline_module", file_path)
+            if not spec or not spec.loader:  # pragma: no cover -- spec_from_file_location returns None only for a path Python cannot load; defensive
+                return []
+
+            module = importlib.util.module_from_spec(spec)
+
+            parent_dir = str(Path(file_path).parent)
+            grandparent_dir = str(Path(file_path).parent.parent)
+            added_paths = []
+            for p in [parent_dir, grandparent_dir]:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+                    added_paths.append(p)
+
             try:
-                # Load module
-                spec = importlib.util.spec_from_file_location("pipeline_module", file_path)
-                if not spec or not spec.loader:  # pragma: no cover -- spec_from_file_location returns None only for a path Python cannot load; defensive
-                    return []
-                    
-                module = importlib.util.module_from_spec(spec)
-                
-                # Temporarily add parent dirs to path for imports
-                parent_dir = str(Path(file_path).parent)
-                grandparent_dir = str(Path(file_path).parent.parent)
-                added_paths = []
-                for p in [parent_dir, grandparent_dir]:
-                    if p not in sys.path:
-                        sys.path.insert(0, p)
-                        added_paths.append(p)
-                
-                try:
-                    spec.loader.exec_module(module)
-                except Exception as e:
-                    err_str = str(e)
-                    print(f"  Warning: {Path(file_path).name} import error: {err_str}")
-                
-                # Cleanup paths
+                spec.loader.exec_module(module)
+            finally:
+                # Always restore sys.path — whether exec_module succeeded or raised.
+                # On failure the exception propagates; created_dags (partial) is
+                # never processed, so validate_all sees a clean error, not stale data.
                 for p in added_paths:
                     if p in sys.path:
                         sys.path.remove(p)
-                
-                # Process created DAGs
-                for dag in created_dags:
-                    info = DAGInfo(
-                        dag_id=dag.dag_id,
-                        file_path=file_path,
-                        schedule=dag.schedule,
-                        is_asset_triggered=dag.is_asset_triggered
-                    )
-                    
-                    # Extract asset trigger info
-                    if dag.is_asset_triggered:
-                        schedule_info = dag.asset_schedule_info
-                        info.trigger_assets = schedule_info.get('assets', [])
-                        info.trigger_operator = schedule_info.get('operator', 'OR')
-                    
-                    # Extract produced/consumed assets from tasks
-                    for task in dag.tasks:
-                        for outlet in getattr(task, 'outlets', []):
-                            asset_name = outlet.name if hasattr(outlet, 'name') else str(outlet)
-                            if asset_name not in info.produced_assets:
-                                info.produced_assets.append(asset_name)
-                            # Capture the typed schema declared on this outlet so
-                            # cross-pipeline schema validation can compare them.
-                            # Schema lives on real `Asset` instances; refs / bare
-                            # strings have nothing to capture.
-                            outlet_schema = getattr(outlet, 'schema', None)
-                            if outlet_schema:
-                                from .schema import column_to_dict
-                                info.outlet_schemas[asset_name] = [
-                                    column_to_dict(c) for c in outlet_schema
-                                ]
-                        
-                        for inlet in getattr(task, 'inlets', []):
-                            asset_name = inlet.name if hasattr(inlet, 'name') else str(inlet)
-                            if asset_name not in info.consumed_assets:
-                                info.consumed_assets.append(asset_name)
-                    
-                    dags.append(info)
-                    
-            finally:
-                # Restore DAG.__exit__
-                DAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
-                
+
+            # Only reached when exec_module succeeded — no partial DAGs here.
+            for dag in created_dags:
+                info = DAGInfo(
+                    dag_id=dag.dag_id,
+                    file_path=file_path,
+                    schedule=dag.schedule,
+                    is_asset_triggered=dag.is_asset_triggered
+                )
+
+                if dag.is_asset_triggered:
+                    schedule_info = dag.asset_schedule_info
+                    info.trigger_assets = schedule_info.get('assets', [])
+                    info.trigger_operator = schedule_info.get('operator', 'OR')
+
+                for task in dag.tasks:
+                    for outlet in getattr(task, 'outlets', []):
+                        asset_name = outlet.name if hasattr(outlet, 'name') else str(outlet)
+                        if asset_name not in info.produced_assets:
+                            info.produced_assets.append(asset_name)
+                        # Capture the typed schema declared on this outlet so
+                        # cross-pipeline schema validation can compare them.
+                        # Schema lives on real `Asset` instances; refs / bare
+                        # strings have nothing to capture.
+                        outlet_schema = getattr(outlet, 'schema', None)
+                        if outlet_schema:
+                            from .schema import column_to_dict
+                            info.outlet_schemas[asset_name] = [
+                                column_to_dict(c) for c in outlet_schema
+                            ]
+
+                    for inlet in getattr(task, 'inlets', []):
+                        asset_name = inlet.name if hasattr(inlet, 'name') else str(inlet)
+                        if asset_name not in info.consumed_assets:
+                            info.consumed_assets.append(asset_name)
+
+                dags.append(info)
+
         finally:
-            # Cleanup pipeline-specific mocks
-            for mod in ['pipelines', 'pipelines.config']:  # pragma: no cover -- cleanup of optionally-cached pipeline modules; only runs when the pipeline imported them
-                if mod in sys.modules:
-                    del sys.modules[mod]
-                
-    except Exception as e:  # pragma: no cover -- defensive outer guard; the inner import-error handler covers the load-failure path
-        print(f"Warning: Could not load {file_path}: {e}")
-    
+            DAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
+
+    finally:
+        for mod in ['pipelines', 'pipelines.config']:  # pragma: no cover -- cleanup of optionally-cached pipeline modules; only runs when the pipeline imported them
+            if mod in sys.modules:
+                del sys.modules[mod]
+
     return dags
 
 
@@ -432,20 +419,36 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
     if verbose:
         print(f"Found {len(files)} pipeline file(s)")
     
-    # Extract DAG info from each file
+    # Extract DAG info from each file; surface import failures as errors.
+    # SystemExit is a BaseException, not Exception — a pipeline that calls
+    # sys.exit() at module level must be caught here rather than propagating
+    # through the process and killing the CLI with a Python traceback.
     all_dags = []
     for file_path in files:
-        dags = extract_dag_info(file_path)
+        try:
+            dags = extract_dag_info(file_path)
+        except (Exception, SystemExit) as e:
+            msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
+            results['errors'].append(f"{file_path}: {msg}")
+            continue
         all_dags.extend(dags)
         results['pipelines'].extend(dags)
-    
+
     if verbose:
         print(f"Loaded {len(all_dags)} DAG(s):")
         for dag in all_dags:
             trigger = dag.schedule if not dag.is_asset_triggered else f"asset:{dag.trigger_operator}"
             print(f"  • {dag.dag_id} ({trigger})")
-    
+
     if not all_dags:
+        # Surface load errors here — the verbose summary block below is never
+        # reached when we return early, and main()'s elif not effective_verbose
+        # branch is skipped when effective_verbose=True, so without this print
+        # the user would see a silent exit 1 under --all -v with broken imports.
+        if verbose and results['errors']:
+            print(f"\n❌ {len(results['errors'])} error(s) loading pipeline files:")
+            for err in results['errors']:
+                print(f"   {err}")
         results['warnings'].append("No DAGs found in pipeline files")
         return results
     
@@ -498,42 +501,85 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
     return results
 
 
-def _validate_single(dag_file: str, verbose: bool) -> bool:
-    """Validate a single pipeline file. Returns True if valid."""
-    import importlib.util
-    from pathlib import Path
+def _validate_single(dag_file: str, verbose: bool) -> Tuple[bool, List[str]]:
+    """Validate a single pipeline file. Returns (valid, errors).
 
+    Prints progress lines when verbose=True. Produces no stdout when
+    verbose=False — the caller must pass verbose=False (via effective_verbose)
+    when --json is active so that JSON consumers receive clean stdout.
+
+    Uses DAG.__exit__ instrumentation (same as extract_dag_info) so that DAGs
+    defined without an `as dag` binding are found correctly.  vars(mod) only
+    finds names bound at module level and misses `with DAG():` blocks.
+    """
     path = Path(dag_file)
     if not path.exists():
-        print(f"❌ Pipeline file not found: {dag_file}")
-        return False
+        return False, [f"Pipeline file not found: {dag_file}"]
 
     try:
-        spec = importlib.util.spec_from_file_location("_dag", path)
-        if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-            raise ImportError(f"Cannot load module from {path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        # Find DAGs in module
         from polyris.dag import DAG as PolyrisDAG
-        dags = [v for v in vars(mod).values() if isinstance(v, PolyrisDAG)]
+        created_dags: List = []
+        original_exit = PolyrisDAG.__exit__
+
+        def _tracking_exit(self, *args):
+            created_dags.append(self)
+            return original_exit(self, *args)
+
+        PolyrisDAG.__exit__ = _tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
+
+        try:
+            spec = importlib.util.spec_from_file_location("_dag", path)
+            if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
+                raise ImportError(f"Cannot load module from {path}")
+            mod = importlib.util.module_from_spec(spec)
+
+            # Add parent and grandparent dirs so `from config import X` resolves —
+            # mirrors extract_dag_info's sys.path treatment.
+            parent_dir = str(path.parent)
+            grandparent_dir = str(path.parent.parent)
+            added_paths = []
+            for p in [parent_dir, grandparent_dir]:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+                    added_paths.append(p)
+
+            try:
+                spec.loader.exec_module(mod)
+            finally:
+                for p in added_paths:
+                    if p in sys.path:
+                        sys.path.remove(p)
+
+        finally:
+            PolyrisDAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
+
+        dags = created_dags
 
         if not dags:
-            print(f"❌ No DAG found in {dag_file}")
-            return False
+            return False, [f"No DAG found in {dag_file}"]
 
         all_valid = True
+        all_errors: List[str] = []
         for dag in dags:
-            print(f"Validating: {dag.dag_id}")
+            if verbose:
+                print(f"Validating: {dag.dag_id}")
             is_valid, errors, warnings = validate_asl_from_dag(dag, verbose=verbose)
             if not is_valid:
-                all_valid = False  # pragma: no cover -- generated ASL for a DSL DAG validates clean, so the invalid branch is unreachable from a valid-importing pipeline
-        return all_valid
+                all_valid = False
+                all_errors.extend(errors)
+        return all_valid, all_errors
 
-    except Exception as e:
-        print(f"❌ Failed to load {dag_file}: {e}")
-        return False
+    except (Exception, SystemExit) as e:
+        # SystemExit is BaseException, not Exception — catch it here so a
+        # pipeline that calls sys.exit() at module level produces a clean
+        # "Failed to load" message rather than killing the process.
+        msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
+        return False, [f"Failed to load {dag_file}: {msg}"]
+
+    finally:
+        for _mod_name in ['pipelines', 'pipelines.config']:  # pragma: no cover -- the del body only runs when a pipeline imported those names; unit-test pipelines never do
+            if _mod_name in sys.modules:
+                del sys.modules[_mod_name]
 
 
 def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
@@ -608,43 +654,22 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
             print(f"  Schedule: {dag.schedule or 'manual'}")
             print(f"  Tasks: {len(dag.tasks)}")
             print(f"  States: {len(asl.get('States', {}))}")
-
-        if errors:  # pragma: no cover -- rare in practice (e.g. an empty DAG with
-                    # zero tasks/steps produces a real 'Parallel has no branches'
-                    # error, or a task references an undefined role — both
-                    # verified, both reachable, not hand-written-ASL-only);
-                    # deploy_pipeline's gate gets to it before AWS does either way.
-            print(f"  ❌ Errors ({len(errors)}):")
-            for e in errors:
-                print(f"     • {e}")
-        if warnings:  # pragma: no cover -- generated ASL for a DSL DAG has no warnings (the Catch-reachability fix removed the only ones); this prints validate_asl warnings that only hand-written ASL triggers
-            print(f"  ⚠️  Warnings ({len(warnings)}):")
-            for w in warnings:
-                print(f"     • {w}")
-        if is_valid:
-            print("  ✅ Valid")
+            if errors:
+                print(f"  ❌ Errors ({len(errors)}):")
+                for e in errors:
+                    print(f"     • {e}")
+            if warnings:  # pragma: no cover -- generated ASL for a DSL DAG has no warnings
+                print(f"  ⚠️  Warnings ({len(warnings)}):")
+                for w in warnings:
+                    print(f"     • {w}")
+            if is_valid:
+                print("  ✅ Valid")
 
         return is_valid, errors, warnings
 
     except Exception as e:
-        print(f"  ❌ Generation failed: {e}")
         return False, [str(e)], []
 
-
-def _find_all_pipelines() -> list:
-    """Discover all dag.py files from cwd upwards/downwards."""
-    from pathlib import Path
-
-    cwd = Path.cwd()
-    dag_files = []
-
-    # Search in common locations
-    for pattern in ['**/dag.py', '**/pipeline.py']:
-        for p in cwd.rglob(pattern.split('/')[-1]):
-            if '__pycache__' not in str(p) and '.git' not in str(p):
-                dag_files.append(str(p))
-
-    return sorted(set(dag_files))
 
 
 def _run_test(dag_file: str) -> bool:
@@ -652,22 +677,57 @@ def _run_test(dag_file: str) -> bool:
 
     Returns True if all callables succeeded, False if any raised.
     """
-    import importlib.util
-    from pathlib import Path
-
     path = Path(dag_file)
     if not path.exists():
         print(f"❌ Pipeline file not found: {dag_file}")
         sys.exit(1)
 
-    spec = importlib.util.spec_from_file_location("_dag", path)
-    if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-        raise ImportError(f"Cannot load module from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
     from polyris.dag import DAG as PolyrisDAG
-    dags = [v for v in vars(mod).values() if isinstance(v, PolyrisDAG)]
+    created_dags: List = []
+    original_exit = PolyrisDAG.__exit__
+
+    def _tracking_exit(self, *args):
+        created_dags.append(self)
+        return original_exit(self, *args)
+
+    PolyrisDAG.__exit__ = _tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
+
+    try:
+        spec = importlib.util.spec_from_file_location("_dag", path)
+        if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
+            raise ImportError(f"Cannot load module from {path}")
+        mod = importlib.util.module_from_spec(spec)
+
+        parent_dir = str(path.parent)
+        grandparent_dir = str(path.parent.parent)
+        added_paths = []
+        for p in [parent_dir, grandparent_dir]:
+            if p not in sys.path:
+                sys.path.insert(0, p)
+                added_paths.append(p)
+
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            for p in added_paths:
+                if p in sys.path:
+                    sys.path.remove(p)
+
+    except (Exception, SystemExit) as e:
+        # SystemExit is BaseException, not Exception — catch it here so a
+        # pipeline that calls sys.exit() at module level produces a clean
+        # "Failed to load" message rather than killing the CLI with a traceback.
+        msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
+        print(f"❌ Failed to load {dag_file}: {msg}")
+        sys.exit(1)
+
+    finally:
+        PolyrisDAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
+        for _mod_name in ['pipelines', 'pipelines.config']:  # pragma: no cover -- the del body only runs when a pipeline imported those names; unit-test pipelines never do
+            if _mod_name in sys.modules:
+                del sys.modules[_mod_name]
+
+    dags = created_dags
 
     if not dags:
         print(f"❌ No DAG found in {dag_file}")
@@ -744,25 +804,48 @@ def main():
 
     args = parser.parse_args()
 
+    # --json requires clean stdout. Suppress verbose prints when --json is
+    # active so that JSON consumers are not handed mixed text + JSON output.
+    # Scripts that pass --verbose globally still work when --json is added.
+    effective_verbose = args.verbose and not args.json
+
     if args.all:
-        dag_files = _find_all_pipelines()
-        if not dag_files:
-            print("❌ No pipeline files found")
+        results = validate_all('.', verbose=effective_verbose)
+        if not results['pipelines'] and not results['errors']:
+            # validate_all added an informative warning; surface it without
+            # contaminating --json stdout.
+            if args.json:
+                print(json.dumps({
+                    'errors': [],
+                    'warnings': results['warnings'],
+                    'pipeline_count': 0,
+                }, indent=2))
+            else:
+                for w in results['warnings']:
+                    print(f"⚠️  {w}")
             sys.exit(1)
-
-        print(f"Found {len(dag_files)} pipeline(s)")
-        all_valid = True
-        results = []
-        for f in dag_files:
-            valid = _validate_single(f, verbose=args.verbose)
-            if not valid:
-                all_valid = False
-            results.append({'file': f, 'valid': valid})
-
+        # Per-file ASL/role/trigger_rule validation — validate_all only does
+        # cross-pipeline checks; _validate_single covers the per-DAG contract.
+        seen_files = sorted({info.file_path for info in results['pipelines']})
+        for fp in seen_files:
+            asl_valid, asl_errors = _validate_single(fp, verbose=effective_verbose)
+            if not asl_valid:
+                detail = "; ".join(asl_errors) if asl_errors else "ASL validation failed"  # pragma: no cover -- asl_errors is always non-empty when asl_valid is False (all _validate_single return paths include at least one error string)
+                results['errors'].append(f"{fp}: {detail}")
         if args.json:
-            print(json.dumps(results, indent=2))
-
-        sys.exit(0 if all_valid else 1)
+            print(json.dumps({
+                'errors': results['errors'],
+                'warnings': results['warnings'],
+                'pipeline_count': len(results['pipelines']),
+            }, indent=2))
+        elif not effective_verbose and results['errors']:
+            # Non-verbose non-json: print all errors (import failures from
+            # validate_all AND ASL failures from _validate_single) so the user
+            # never sees a silent exit 1. Verbose mode already surfaced these
+            # via validate_all's summary and validate_asl_from_dag's verbose block.
+            for e in results['errors']:
+                print(f"  ❌ {e}")
+        sys.exit(0 if not results['errors'] else 1)
 
     elif args.test:
         result = _run_test(args.file)
@@ -770,8 +853,12 @@ def main():
             sys.exit(1)
 
     else:
-        # Single pipeline in cwd
-        valid = _validate_single(args.file, verbose=args.verbose)
+        valid, errors = _validate_single(args.file, verbose=effective_verbose)
+        if not valid and not args.json and not effective_verbose:
+            for e in errors:
+                print(f"  ❌ {e}")
+        if args.json:
+            print(json.dumps({'file': args.file, 'valid': valid, 'errors': errors}, indent=2))
         sys.exit(0 if valid else 1)
 
 

@@ -47,6 +47,8 @@ Every change affecting behavior, API, config, or architecture updates the releva
 
 **Exception:** `cmd_*` argparse handlers in `polyris/cli.py` may omit docstrings when they only unpack args and delegate to a documented function — the argparse help text is the doc.
 
+**CLAUDE.md itself is a doc — Principle #9 applies to it too.** If a rule in CLAUDE.md quotes a specific docstring or cites a specific function signature, and that docstring or signature changes, update the rule in the same commit. A CLAUDE.md rule that describes code that no longer exists misleads more than silence would.
+
 **10. English only**
 Docs, comments, ADRs, README, CHANGELOG — English, no exceptions.
 

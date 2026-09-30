@@ -1,3 +1,24 @@
+## Unreleased
+
+### Fixed — `polyris-validate` validation stack wired up end to end
+
+`polyris-validate --all` previously ran cross-pipeline checks only (asset cycle detection, schema consistency) and skipped per-file ASL, role, and `trigger_rule` validation. The per-file path existed but was not connected.
+
+- `--all` now runs `_validate_single` (ASL, role, `trigger_rule` checks) on every pipeline that loaded cleanly in the cross-pipeline pass.
+- `--all --json` now includes actual error detail in `errors[]` instead of the generic `"ASL validation failed"` placeholder. JSON output is no longer contaminated by unconditional prints — all output from `validate_asl_from_dag` is now verbose-gated, keeping `--json` mode parseable by `json.loads`.
+- `--json --verbose` now produces clean parseable JSON. Previously, passing both flags caused verbose progress text to be printed before the JSON object, breaking any caller doing `json.loads(output)`. `main()` now computes `effective_verbose = args.verbose and not args.json` and threads it through all call sites.
+- `_validate_single` now manipulates `sys.path` (parent + grandparent dirs), matching `extract_dag_info`, so pipelines that import local helpers (`from config import X`) no longer false-fail.
+- `_validate_single` and `_run_test` now clean up `sys.modules` after each load, matching `extract_dag_info`. Previously, `config.py` cached from one pipeline could bleed into the next file in `--all` mode, causing silent wrong values.
+- `_validate_single` and `_run_test` now use `DAG.__exit__` instrumentation to discover DAGs instead of `vars(mod)`. `vars(mod)` only finds DAGs bound to a module-level name and produced a false-positive "No DAG found" error for valid pipelines written as `with DAG("name"):` without an `as dag` clause.
+- `extract_dag_info` import errors now propagate instead of being swallowed. `validate_all` catches them per-file, appends to `results['errors']`, and continues to the next file.
+
+### Fixed — `polyris.config` AST sniff and `POLYRIS_CONFIG` edge cases
+
+- `_has_environments_assignment` now recognises annotated assignments (`ENVIRONMENTS: dict = ...`) and tuple unpacking (`_unused, ENVIRONMENTS = ...`), not just plain assignment.
+- `POLYRIS_CONFIG` pointing to a file without an `ENVIRONMENTS` assignment is now surfaced with a warning and skipped instead of silently falling through to an empty config.
+- `POLYRIS_CONFIG` pointing to a file with a syntax error is surfaced with a warning and skipped.
+- `PolyrisConfig.reload()` now sets `_loaded = True` so a subsequent `_ensure_loaded` does not re-run `_load()`.
+
 ## v1.0.1 - 2026-09-18
 
 ### Fixed — Athena/Glue onboarding + verbatim-template gotchas
