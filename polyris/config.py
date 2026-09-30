@@ -43,10 +43,43 @@ Usage:
 See docs/reference/CONFIGURATION.md for details.
 """
 
+import ast
 import importlib.util
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+
+def _has_environments_assignment(config_path: Path) -> bool:
+    """Return True if config_path has a top-level ENVIRONMENTS assignment.
+
+    Uses ast.parse — never executes the file.  SyntaxError propagates so the
+    caller can surface it (ADR #38); OSError (unreadable file) returns False.
+
+    Recognises plain assignment (``ENVIRONMENTS = ...``), annotated assignment
+    (``ENVIRONMENTS: dict = ...``), and tuple unpacking (``X, ENVIRONMENTS = ...``).
+    """
+    try:
+        source = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    tree = ast.parse(source, filename=str(config_path))
+
+    def _names_environments(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id == "ENVIRONMENTS"
+        if isinstance(node, ast.Tuple):
+            return any(isinstance(elt, ast.Name) and elt.id == "ENVIRONMENTS" for elt in node.elts)
+        return False
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(_names_environments(t) for t in node.targets):
+                return True
+        elif isinstance(node, ast.AnnAssign):
+            if _names_environments(node.target):
+                return True
+    return False
 
 
 def _exec_config_module(config_path: Path):
@@ -65,23 +98,41 @@ def _exec_config_module(config_path: Path):
 
 
 def _find_project_config() -> Optional[Path]:
-    """Find config.py in current directory or parents."""
+    """Find config.py in current directory or parents.
+
+    Uses ast.parse to check for ENVIRONMENTS — never executes files during
+    discovery.  Stops walking at a project boundary (.git, pyproject.toml) so
+    unrelated config.py files above the project root are never read.
+
+    POLYRIS_CONFIG env var skips the walk but still sniffs the pointed-to file
+    so that a file without ENVIRONMENTS is never silently executed.
+    """
+    env_path = os.environ.get("POLYRIS_CONFIG")
+    if env_path:
+        p = Path(env_path)
+        if not p.exists():
+            return None
+        try:
+            if not _has_environments_assignment(p):
+                print(f"⚠️  POLYRIS_CONFIG={p} has no ENVIRONMENTS assignment — skipping")
+                return None
+        except SyntaxError as e:
+            print(f"⚠️  Skipping {p}: syntax error ({e})")
+            return None
+        return p
+
     current = Path.cwd()
     for directory in [current, *current.parents]:
         config_path = directory / "config.py"
-        if not config_path.exists():
-            continue
-        # Make sure it's a polyris config (has ENVIRONMENTS key)
-        try:
-            mod = _exec_config_module(config_path)
-        except Exception as e:
-            # A config.py that exists but fails to import is almost always a
-            # mistake the user wants to know about — surface it (ADR #38)
-            # rather than silently skipping and falling back to defaults.
-            print(f"⚠️  Skipping {config_path}: failed to load ({e})")
-            continue
-        if hasattr(mod, "ENVIRONMENTS"):
-            return config_path
+        if config_path.exists():
+            try:
+                if _has_environments_assignment(config_path):
+                    return config_path
+            except SyntaxError as e:
+                print(f"⚠️  Skipping {config_path}: syntax error ({e})")
+        # Stop at project boundary — don't read files outside this project
+        if (directory / ".git").exists() or (directory / "pyproject.toml").exists():
+            break
     return None
 
 
@@ -162,7 +213,12 @@ class PolyrisConfig:
         return cls._instance
 
     def __init__(self):
-        if not self._loaded:
+        if not hasattr(self, "_environments"):
+            self._environments: Dict[str, Any] = {}
+            self._default_stage: str = "dev"
+
+    def _ensure_loaded(self) -> None:
+        if not PolyrisConfig._loaded:
             self._load()
             PolyrisConfig._loaded = True
 
@@ -173,6 +229,7 @@ class PolyrisConfig:
 
     def _env_config(self, stage: Optional[str] = None) -> Dict[str, Any]:
         """Get config for a specific stage."""
+        self._ensure_loaded()
         s = stage or self.stage
         return self._environments.get(s, {})
 
@@ -188,6 +245,7 @@ class PolyrisConfig:
         env_value = os.environ.get("POLYRIS_STAGE")
         if env_value:
             return env_value
+        self._ensure_loaded()
         return self._default_stage
 
     @property
@@ -229,6 +287,7 @@ class PolyrisConfig:
 
     def reload(self) -> None:
         self._load()
+        PolyrisConfig._loaded = True
 
     def reset(self) -> None:
         PolyrisConfig._loaded = False
