@@ -76,17 +76,25 @@ class Step:
         return NotImplemented
 
     def __lshift__(self, other):
-        """step << other"""
+        """step << other.
+
+        Returns ``other`` (not ``self``) so that 3+-item chains like
+        ``step_c << step_b << step_a`` evaluate correctly: the result of
+        ``step_c << step_b`` must be ``step_b`` so the next ``<< step_a``
+        adds step_a as a dep of step_b, not step_c.  Returning ``self``
+        would silently connect every operand directly to step_c and drop
+        intermediate steps from the chain.
+        """
         from .task import Task
 
         if isinstance(other, (Step, Task)):
             self._add_dependency(other)
-            return self
+            return other
         elif isinstance(other, list):
             for t in other:
                 if isinstance(t, (Step, Task)):
                     self._add_dependency(t)
-            return self
+            return other
         return NotImplemented
 
     def __rrshift__(self, other):
