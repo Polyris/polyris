@@ -669,27 +669,25 @@ class Asset:
             return self.name == other.name
         return False
     
-    def __and__(self, other: 'Asset') -> 'AssetAll':
-        """
-        asset_a & asset_b creates AND condition.
-        DAG will trigger only when ALL assets are updated.
-        """
-        if isinstance(other, AssetAll):
-            return AssetAll(assets=[self] + other.assets)
-        elif isinstance(other, (Asset, AssetRef, AssetConsecutiveRef)):
-            return AssetAll(assets=[self, other])
-        raise TypeError(f"Cannot combine Asset with {type(other)}")
-    
-    def __or__(self, other: 'Asset') -> 'AssetAny':
-        """
-        asset_a | asset_b creates OR condition.
-        DAG will trigger when ANY asset is updated.
-        """
-        if isinstance(other, AssetAny):
-            return AssetAny(assets=[self] + other.assets)
-        elif isinstance(other, (Asset, AssetRef, AssetConsecutiveRef)):
-            return AssetAny(assets=[self, other])
-        raise TypeError(f"Cannot combine Asset with {type(other)}")
+    def __and__(self, other: Any) -> 'AssetAll':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(self, other)
+
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(other, self)
+
+    def __or__(self, other: Any) -> 'AssetAny':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(self, other)
+
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(other, self)
     
     def add_producer(self, task: 'Task'):
         """Register a task as producer of this asset."""
@@ -971,21 +969,25 @@ class AssetRef:
             return self.asset == other.asset and self.freshness_hours == other.freshness_hours
         return False
     
-    def __and__(self, other: Union[Asset, 'AssetRef', 'AssetConsecutiveRef', 'AssetAll']) -> 'AssetAll':
-        """asset_x.within(24) & asset_y creates AND condition."""
-        if isinstance(other, AssetAll):
-            return AssetAll(assets=[self] + other.assets)
-        elif isinstance(other, (Asset, AssetRef, AssetConsecutiveRef)):
-            return AssetAll(assets=[self, other])
-        raise TypeError(f"Cannot combine AssetRef with {type(other)}")
-    
-    def __or__(self, other: Union[Asset, 'AssetRef', 'AssetConsecutiveRef', 'AssetAny']) -> 'AssetAny':
-        """asset_x.within(24) | asset_y creates OR condition."""
-        if isinstance(other, AssetAny):
-            return AssetAny(assets=[self] + other.assets)
-        elif isinstance(other, (Asset, AssetRef, AssetConsecutiveRef)):
-            return AssetAny(assets=[self, other])
-        raise TypeError(f"Cannot combine AssetRef with {type(other)}")
+    def __and__(self, other: Any) -> 'AssetAll':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(self, other)
+
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(other, self)
+
+    def __or__(self, other: Any) -> 'AssetAny':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(self, other)
+
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(other, self)
     
     @property
     def name(self) -> str:
@@ -1039,21 +1041,25 @@ class AssetConsecutiveRef:
             return self.asset == other.asset and self.consecutive_days == other.consecutive_days
         return False
     
-    def __and__(self, other: Union[Asset, AssetRef, 'AssetConsecutiveRef', 'AssetAll']) -> 'AssetAll':
-        """asset.consecutive(7) & other creates AND condition."""
-        if isinstance(other, AssetAll):
-            return AssetAll(assets=[self] + other.assets)
-        elif isinstance(other, (Asset, AssetRef, AssetConsecutiveRef)):
-            return AssetAll(assets=[self, other])
-        raise TypeError(f"Cannot combine AssetConsecutiveRef with {type(other)}")
-    
-    def __or__(self, other: Union[Asset, AssetRef, 'AssetConsecutiveRef', 'AssetAny']) -> 'AssetAny':
-        """asset.consecutive(7) | other creates OR condition."""
-        if isinstance(other, AssetAny):
-            return AssetAny(assets=[self] + other.assets)
-        elif isinstance(other, (Asset, AssetRef, AssetConsecutiveRef)):
-            return AssetAny(assets=[self, other])
-        raise TypeError(f"Cannot combine AssetConsecutiveRef with {type(other)}")
+    def __and__(self, other: Any) -> 'AssetAll':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(self, other)
+
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(other, self)
+
+    def __or__(self, other: Any) -> 'AssetAny':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(self, other)
+
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(other, self)
     
     @property
     def name(self) -> str:
@@ -1100,28 +1106,25 @@ class AssetAll:
     # Symmetric with AssetAny.assets, which already permits nesting.
     assets: List[AssetAllOperand] = field(default_factory=list)
     
-    def __and__(self, other: Union[Asset, 'AssetAll']) -> 'AssetAll':
-        """Chain AND: (a & b) & c"""
-        if isinstance(other, AssetAll):
-            return AssetAll(assets=cast("List[AssetAllOperand]", self.assets + other.assets))
-        elif isinstance(other, Asset):
-            return AssetAll(assets=cast("List[AssetAllOperand]", self.assets + [other]))
-        raise TypeError(f"Cannot combine AssetAll with {type(other)}")
-    
-    def __or__(self, other) -> 'AssetAny':
-        """Mixed: (a & b) | c — creates AssetAny containing AssetAll.
+    def __and__(self, other: Any) -> 'AssetAll':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(self, other)
 
-        OR is associative, so an AssetAny operand is flattened into the
-        result rather than nested: nested AssetAny is invisible to
-        asset_names/to_dict and would silently drop trigger operands.
-        """
-        if isinstance(other, AssetAny):
-            ops: List[Union[AssetOperand, AssetAll]] = [self]
-            ops.extend(other.assets)
-            return AssetAny(assets=ops)
-        if isinstance(other, Asset):
-            return AssetAny(assets=[self, other])
-        raise TypeError(f"Cannot combine AssetAll with {type(other)}")
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(other, self)
+
+    def __or__(self, other: Any) -> 'AssetAny':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(self, other)
+
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(other, self)
     
     @property
     def operator(self) -> str:
@@ -1173,13 +1176,25 @@ class AssetAny:
     """
     assets: List[Union[AssetOperand, AssetAll]] = field(default_factory=list)
     
-    def __or__(self, other: Union[Asset, 'AssetAny', AssetAll]) -> 'AssetAny':
-        """Chain OR: (a | b) | c"""
-        if isinstance(other, AssetAny):
-            return AssetAny(assets=cast("List[Union[AssetOperand, AssetAll]]", self.assets + other.assets))
-        elif isinstance(other, (Asset, AssetAll)):
-            return AssetAny(assets=cast("List[Union[AssetOperand, AssetAll]]", self.assets + [other]))
-        raise TypeError(f"Cannot combine AssetAny with {type(other)}")
+    def __and__(self, other: Any) -> 'AssetAll':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(self, other)
+
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(other, self)
+
+    def __or__(self, other: Any) -> 'AssetAny':
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(self, other)
+
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(other, self)
     
     @property
     def operator(self) -> str:
@@ -1254,25 +1269,25 @@ class AssetAlias:
             return self.name == other.name
         return False
     
-    def __and__(self, other: Union[Asset, 'AssetAlias', AssetAll]) -> AssetAll:
-        """Alias & something → AND condition with all assets in alias"""
-        if isinstance(other, AssetAlias):
-            return AssetAll(assets=cast("List[AssetAllOperand]", self.assets + other.assets))
-        elif isinstance(other, AssetAll):
-            return AssetAll(assets=cast("List[AssetAllOperand]", self.assets + other.assets))
-        elif isinstance(other, Asset):
-            return AssetAll(assets=cast("List[AssetAllOperand]", self.assets + [other]))
-        raise TypeError(f"Cannot combine AssetAlias with {type(other)}")
-    
-    def __or__(self, other: Union[Asset, 'AssetAlias', AssetAny]) -> AssetAny:
-        """Alias | something → OR condition"""
-        if isinstance(other, AssetAlias):
-            return AssetAny(assets=cast("List[Union[AssetOperand, AssetAll]]", self.assets + other.assets))
-        elif isinstance(other, AssetAny):
-            return AssetAny(assets=cast("List[Union[AssetOperand, AssetAll]]", self.assets + other.assets))
-        elif isinstance(other, Asset):
-            return AssetAny(assets=cast("List[Union[AssetOperand, AssetAll]]", self.assets + [other]))
-        raise TypeError(f"Cannot combine AssetAlias with {type(other)}")
+    def __and__(self, other: Any) -> AssetAll:
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(self, other)
+
+    def __rand__(self, other: Any) -> AssetAll:  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_and(other, self)
+
+    def __or__(self, other: Any) -> AssetAny:
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(self, other)
+
+    def __ror__(self, other: Any) -> AssetAny:  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
+        if not isinstance(other, _ALGEBRA_TYPES):
+            return NotImplemented
+        return _combine_or(other, self)
     
     @property
     def asset_names(self) -> List[str]:
@@ -1289,6 +1304,42 @@ class AssetAlias:
     
     def __repr__(self):
         return f"AssetAlias('{self.name}', {len(self.assets)} assets)"
+
+
+# All types that participate in the & / | algebra.
+# Defined here (after all classes) so the tuple can be evaluated.
+# Method bodies reference this name at call time — never at class-definition time.
+_ALGEBRA_TYPES = (Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, AssetAlias)
+
+
+def _combine_and(left: Any, right: Any) -> AssetAll:
+    """Return AssetAll(left & right).
+
+    Flattens AssetAll operands (AND is associative).
+    Normalises AssetAlias → AssetAny(alias.assets) to preserve OR semantics.
+    All other operand types are kept as leaves.
+    """
+    def _items(op: Any) -> list:
+        if isinstance(op, AssetAll):
+            return list(op.assets)
+        if isinstance(op, AssetAlias):
+            return [AssetAny(assets=list(op.assets))]
+        return [op]
+    return AssetAll(assets=_items(left) + _items(right))
+
+
+def _combine_or(left: Any, right: Any) -> AssetAny:
+    """Return AssetAny(left | right).
+
+    Flattens AssetAny operands (OR is associative).
+    Flattens AssetAlias members directly (alias IS an OR of its members).
+    All other operand types are kept as leaves.
+    """
+    def _items(op: Any) -> list:
+        if isinstance(op, (AssetAny, AssetAlias)):
+            return list(op.assets)
+        return [op]
+    return AssetAny(assets=_items(left) + _items(right))
 
 
 # Type alias for schedule parameter

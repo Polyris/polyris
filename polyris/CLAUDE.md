@@ -437,3 +437,32 @@ Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]`.
 empty list, producing a false-positive "No DAG found" error on a perfectly valid
 file. The `DAG.__exit__` hook fires unconditionally when the `with` block exits,
 regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3.
+
+## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
+
+All `__and__`, `__or__`, `__rand__`, `__ror__` methods on every asset combinator class
+(`Asset`, `AssetRef`, `AssetConsecutiveRef`, `AssetAll`, `AssetAny`, `AssetAlias`) must
+delegate to the module-level `_combine_and(left, right)` or `_combine_or(left, right)` helpers
+in `polyris/assets.py`. Per-class dispatch (each class handling only a subset of operand types)
+caused asymmetry: `a & (b | c)` raised `TypeError` even though `AssetAll`'s docstring listed
+nested `AssetAny` as a supported case.
+
+Rules:
+- `_combine_and`: flattens `AssetAll` operands (AND is associative); normalises `AssetAlias` →
+  `AssetAny(alias.assets)` as a leaf (alias semantics are OR — keeping it as an opaque leaf
+  would write the alias name string into EventBridge patterns, which never match any real event);
+  keeps all other types as leaves.
+- `_combine_or`: flattens `AssetAny` operands (OR is associative) AND flattens `AssetAlias`
+  members directly into the result list (alias IS an OR of its members, so alias's assets become
+  peer members of the outer `AssetAny`); keeps all other types as leaves.
+- For invalid operand types (`int`, `str`, …): return `NotImplemented` — Python then raises `TypeError`.
+  Do NOT add `# type: ignore[return-value]` to `return NotImplemented` in dunder methods — mypy
+  treats this as legal and the suppression will be flagged as unused (`warn_unused_ignores = true`).
+- `_ALGEBRA_TYPES` (defined after all classes in `assets.py`) is the single authoritative set of valid
+  operand types. Method bodies look this up at call time — it is safe to reference it inside class
+  bodies defined before the tuple is assigned.
+- `__rand__` and `__ror__` are required on every class; without them Python cannot resolve symmetric
+  expressions like `(b | c) & a` when `AssetAny.__and__` is absent.
+- All `other:` parameter annotations on `__and__`/`__or__`/`__rand__`/`__ror__` must be `Any` — the
+  guard `isinstance(other, _ALGEBRA_TYPES)` is the runtime boundary; narrower annotations lie to
+  callers and will become stale again as new operand types are added.
