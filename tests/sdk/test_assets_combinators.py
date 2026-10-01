@@ -19,6 +19,7 @@ from polyris.assets import (
     AssetAlias,
     Metadata,
     normalize_asset_schedule,
+    _flatten_asset_names,
 )
 
 a = Asset("ns/a")
@@ -281,3 +282,178 @@ def test_serialize_wait_for_metadata_unknown_type_raises():
     from polyris.generators import _serialize_wait_for_metadata
     with pytest.raises(TypeError, match="wait_for"):
         _serialize_wait_for_metadata([42])
+
+
+# ============================================================ #
+# Asymmetric algebra cases — previously raised TypeError
+# ============================================================ #
+class TestAsymmetricAlgebra:
+    """Verify that & and | are symmetric: left & right == right & left (up to ordering)."""
+
+    def test_asset_and_assetany(self):
+        # a & (b | c) — Asset on left, AssetAny on right
+        result = a & (b | c)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        assert result.assets[0] is a
+        assert isinstance(result.assets[1], AssetAny)
+
+    def test_assetany_and_asset(self):
+        # (b | c) & a — AssetAny on left, Asset on right (needed __and__ on AssetAny)
+        result = (b | c) & a
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        assert isinstance(result.assets[0], AssetAny)
+        assert result.assets[1] is a
+
+    def test_asset_and_assetany_symmetric(self):
+        # Commutativity: both orderings produce the same structure (reversed)
+        left_first = a & (b | c)
+        right_first = (b | c) & a
+        assert left_first.asset_names == list(reversed(right_first.asset_names))
+
+    def test_asset_and_alias(self):
+        # a & alias — alias normalised to AssetAny to preserve OR semantics
+        alias = AssetAlias(name="grp", assets=[b, c])
+        result = a & alias
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        assert result.assets[0] is a
+        assert isinstance(result.assets[1], AssetAny)
+        # Serialization chain must not crash and must surface all leaf assets
+        names = result.asset_names
+        assert "ns/a" in names
+        d = result.to_dict()
+        assert d["operator"] == "AND"
+        assert len(d["assets"]) == 2
+        assert _flatten_asset_names(result) == ["ns/a", "ns/b", "ns/c"]
+
+    def test_alias_and_asset_symmetric(self):
+        # alias & a — normalises alias → AssetAny, symmetric with a & alias
+        alias = AssetAlias(name="grp", assets=[b, c])
+        result = alias & a
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        assert isinstance(result.assets[0], AssetAny)
+        assert result.assets[1] is a
+        assert _flatten_asset_names(result) == ["ns/b", "ns/c", "ns/a"]
+
+    def test_alias_and_assetany(self):
+        # alias & (b | c) — alias on left, AssetAny on right
+        alias = AssetAlias(name="grp", assets=[b, c])
+        result = alias & (a | b)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        assert isinstance(result.assets[0], AssetAny)  # alias → AssetAny
+        assert isinstance(result.assets[1], AssetAny)  # explicit OR group
+
+    def test_asset_or_alias_flattens(self):
+        # a | alias — alias members flatten into OR (alias IS an OR group)
+        alias = AssetAlias(name="grp", assets=[b, c])
+        result = a | alias
+        assert isinstance(result, AssetAny)
+        # alias members are flattened: a, b, c
+        assert len(result.assets) == 3
+        assert result.assets[0] is a
+        assert result.assets[1] is b
+        assert result.assets[2] is c
+        assert _flatten_asset_names(result) == ["ns/a", "ns/b", "ns/c"]
+
+    def test_alias_or_asset_flattens(self):
+        # alias | a — alias members flatten into OR
+        alias = AssetAlias(name="grp", assets=[b, c])
+        result = alias | a
+        assert isinstance(result, AssetAny)
+        assert len(result.assets) == 3
+        assert _flatten_asset_names(result) == ["ns/b", "ns/c", "ns/a"]
+
+    def test_alias_or_assetany(self):
+        # alias | (b | c) — alias on left, AssetAny on right
+        alias = AssetAlias(name="grp", assets=[b, c])
+        result = alias | (a | b)
+        assert isinstance(result, AssetAny)
+        # alias members flatten + AssetAny operands flatten: b, c, a, b
+        assert len(result.assets) == 4
+
+    def test_assetany_and_assetany(self):
+        # (a | b) & (c | d) — both sides AssetAny, no flattening
+        d = Asset("ns/d")
+        result = (a | b) & (c | d)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        assert all(isinstance(x, AssetAny) for x in result.assets)
+
+    def test_asset_or_assetall(self):
+        # a | (b & c) — Asset on left, AssetAll on right
+        result = a | (b & c)
+        assert isinstance(result, AssetAny)
+        assert len(result.assets) == 2
+        assert result.assets[0] is a
+        assert isinstance(result.assets[1], AssetAll)
+
+    def test_assetall_or_asset(self):
+        # (b & c) | a — AssetAll on left, Asset on right
+        result = (b & c) | a
+        assert isinstance(result, AssetAny)
+        assert len(result.assets) == 2
+        assert isinstance(result.assets[0], AssetAll)
+        assert result.assets[1] is a
+
+    def test_assetref_and_assetany(self):
+        # ref & (b | c)
+        ref = a.within(hours=24)
+        result = ref & (b | c)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+
+    def test_assetany_and_assetref(self):
+        # (b | c) & ref
+        ref = a.within(hours=24)
+        result = (b | c) & ref
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+
+    def test_consecutive_and_assetany(self):
+        # consecutive & (b | c)
+        result = a.consecutive(days=3) & (b | c)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+
+    def test_assetany_and_consecutive(self):
+        # (b | c) & consecutive
+        result = (b | c) & a.consecutive(days=3)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+
+    def test_assetall_and_assetref(self):
+        # (b & c) & ref — AssetAll on left, AssetRef on right (was TypeError before)
+        ref = a.within(hours=24)
+        result = (b & c) & ref
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 3  # flattened: b, c, ref
+
+    def test_assetall_and_consecutive(self):
+        # (b & c) & consecutive — AssetAll on left, AssetConsecutiveRef on right
+        result = (b & c) & a.consecutive(days=3)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 3
+
+    def test_double_nested_flatten_asset_names(self):
+        # (a | b) & (c | d) — EventBridge must see all 4 leaf names
+        d_asset = Asset("ns/d")
+        result = (a | b) & (c | d_asset)
+        assert isinstance(result, AssetAll)
+        assert len(result.assets) == 2
+        leaves = _flatten_asset_names(result)
+        assert set(leaves) == {"ns/a", "ns/b", "ns/c", "ns/d"}
+
+    def test_bad_type_still_raises(self):
+        # Non-algebra types must still raise TypeError (Python protocol)
+        with pytest.raises(TypeError):
+            a & 42
+        with pytest.raises(TypeError):
+            a | "not-an-asset"
+        with pytest.raises(TypeError):
+            (a | b) & 42
+        with pytest.raises(TypeError):
+            (a & b) | 42
