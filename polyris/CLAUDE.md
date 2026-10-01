@@ -466,3 +466,40 @@ Rules:
 - All `other:` parameter annotations on `__and__`/`__or__`/`__rand__`/`__ror__` must be `Any` — the
   guard `isinstance(other, _ALGEBRA_TYPES)` is the runtime boundary; narrower annotations lie to
   callers and will become stale again as new operand types are added.
+
+## Graph traversal over tasks and assets must be iterative, never recursive
+
+`topological_sort` (dag.py) and `discover` (upstream_resolver.py) — and any future DFS over task
+or asset graphs — must use an explicit stack, not recursion. Python's default recursion limit is 1000;
+a linear pipeline with ~1000 tasks hits `RecursionError` with no useful diagnostic.
+
+Standard iterative pattern for post-order DFS with cycle detection:
+
+```python
+stack: list[tuple[Node, bool]] = [(start, False)]
+while stack:
+    node, finalizing = stack[-1]
+    if finalizing:
+        stack.pop()
+        path.pop()
+        state[node] = 2
+        result.append(node)
+        continue
+    if state[node] == 2:
+        stack.pop()
+        continue
+    if state[node] == 1:  # cycle
+        raise ...
+    state[node] = 1
+    path.append(node)
+    stack[-1] = (node, True)  # in-place mutation — only one finalizing entry per node
+    for child in reversed(children(node)):  # reversed so first child is processed first (LIFO)
+        stack.append((child, False))
+```
+
+Invariant: `path` is always empty when a new root's traversal begins — every `append` on first
+visit is matched by a `pop` in the `finalizing=True` branch.
+
+Regression gate: deep-chain tests (`test_topological_sort_survives_deep_chain`,
+`TestDeepChain::test_discover_survives_deep_chain`) explicitly call `sys.setrecursionlimit(100)`
+before the traversal to prove the iterative path is taken regardless of the runtime's default limit.

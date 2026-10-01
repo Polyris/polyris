@@ -10,9 +10,10 @@ Drives ``polyris.dag.DAG`` directly (CLAUDE.md #13):
 """
 from __future__ import annotations
 
+import sys
 import pytest
 
-from polyris import DAG, task, Asset
+from polyris import DAG, Task, task, Asset
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
 
@@ -275,6 +276,39 @@ class TestGraphMethods:
     def test_task_dict_maps_ids(self):
         dag, a, b, c = _chain()
         assert set(dag.task_dict.keys()) == {"a", "b", "c"}
+
+    def test_topological_sort_skips_already_processed_task(self):
+        # When self.tasks lists B before A and B depends on A, the outer loop
+        # processes B first (which pulls A in as a dep), so when the outer loop
+        # later reaches A it is already state==2 and is skipped via `continue`.
+        dag = DAG("dag_skip", schedule=None)
+        a = Task(task_id="a", arn=ARN)
+        b = Task(task_id="b", arn=ARN)
+        b.dependencies.append(a)
+        dag.tasks = [b, a]
+        order = dag.topological_sort()
+        assert [t.task_id for t in order] == ["a", "b"]
+
+    def test_topological_sort_survives_deep_chain(self):
+        # Prove the iterative implementation does not hit Python's recursion
+        # limit by explicitly lowering it below the chain depth.  The recursive
+        # version would raise RecursionError at ~limit frames; the iterative
+        # version adds O(1) frames regardless of chain length.
+        n = 200
+        dag = DAG("dag_deep", schedule=None)
+        tasks = [Task(task_id=f"t{i}", arn=ARN) for i in range(n)]
+        dag.tasks = tasks
+        for i in range(1, n):
+            tasks[i].dependencies.append(tasks[i - 1])
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(100)
+        try:
+            order = dag.topological_sort()
+        finally:
+            sys.setrecursionlimit(old_limit)
+        assert len(order) == n
+        assert order[0].task_id == "t0"
+        assert order[-1].task_id == f"t{n - 1}"
 
 
 # ============================================================ #
