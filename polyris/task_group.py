@@ -97,26 +97,23 @@ class TaskGroup:
             # TaskGroup >> TaskGroup: connect leaves to roots
             for leaf in leaves:
                 for root in other.roots:
-                    if leaf not in root.dependencies:
-                        root.dependencies.append(leaf)
+                    root._add_dependency(leaf)
             return other
         elif isinstance(other, TaskInstance):
             for leaf in leaves:
-                if leaf not in other.task.dependencies:
-                    other.task.dependencies.append(leaf)
+                other.task._add_dependency(leaf)
             return other
         elif isinstance(other, Task):
             for leaf in leaves:
-                if leaf not in other.dependencies:
-                    other.dependencies.append(leaf)
+                other._add_dependency(leaf)
             return other
         elif isinstance(other, list):
             for leaf in leaves:
                 for t in other:
-                    if isinstance(t, TaskInstance) and leaf not in t.task.dependencies:
-                        t.task.dependencies.append(leaf)
-                    elif isinstance(t, Task) and leaf not in t.dependencies:
-                        t.dependencies.append(leaf)
+                    if isinstance(t, TaskInstance):
+                        t.task._add_dependency(leaf)
+                    elif isinstance(t, Task):
+                        t._add_dependency(leaf)
             return other
         return NotImplemented
     
@@ -137,18 +134,15 @@ class TaskGroup:
             # TaskGroup << TaskGroup: connect other's leaves to our roots
             for other_leaf in other.leaves:
                 for root in roots:
-                    if other_leaf not in root.dependencies:
-                        root.dependencies.append(other_leaf)
+                    root._add_dependency(other_leaf)
             return other
         elif isinstance(other, TaskInstance):
             for root in roots:
-                if other.task not in root.dependencies:
-                    root.dependencies.append(other.task)
+                root._add_dependency(other.task)
             return other
         elif isinstance(other, Task):
             for root in roots:
-                if other not in root.dependencies:
-                    root.dependencies.append(other)
+                root._add_dependency(other)
             return other
         return NotImplemented
 

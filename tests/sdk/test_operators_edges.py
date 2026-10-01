@@ -49,6 +49,20 @@ class TestStepOperatorEdges:
         p << [a, b]
         assert a in p.dependencies and b in p.dependencies
 
+    def test_lshift_chain_of_three(self):
+        """step_c << step_b << step_a must produce a -> b -> c, not a,b -> c.
+
+        Previously __lshift__ returned ``self`` instead of ``other``, so
+        ``(step_c << step_b) << step_a`` evaluated as ``step_c << step_a``
+        (the second operand of the first << was discarded) — step_b had no
+        dependency on step_a, and step_c depended on both directly.
+        """
+        a, b, c = Pass(), Pass(), Pass()
+        c << b << a
+        assert a in b.dependencies, "b must depend on a"
+        assert b in c.dependencies, "c must depend on b"
+        assert a not in c.dependencies, "c must not depend directly on a"
+
     def test_lshift_unsupported_raises(self):
         with pytest.raises(TypeError):
             Pass() << 42

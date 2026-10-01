@@ -154,38 +154,51 @@ def resolve_plan(
     adj: Dict[Unit, List[Unit]] = {}
     state: Dict[Unit, int] = {}  # 0 unvisited, 1 in-progress, 2 done
 
-    def discover(unit: Unit, path: List[str]) -> None:
-        label = f"{unit[0]}@{unit[1]}"
-        st = state.get(unit, 0)
-        if st == 1:
-            cyc = path[path.index(label):] + [label]
-            raise CycleError("cycle detected: " + " -> ".join(cyc))
-        if st == 2:
-            return
-        state[unit] = 1
-        path = path + [label]
-        asset, partition = unit
-        a_node = graph.node(asset)
-        ups: List[Unit] = []
-        for edge in graph.upstream_edges(asset):
-            up_node = graph.node(edge.upstream)
-            if edge.offset is not None:
-                warnings.append(
-                    f"window offset on {edge.asset} <- {edge.upstream} is not "
-                    f"yet honored (Phase 2); resolving as same-period 1↔1"
-                )
-            for up_part in partitions_covering(
-                partition, a_node.granularity, up_node.granularity
-            ):
-                up_unit = (edge.upstream, up_part)
-                ups.append(up_unit)
-                discover(up_unit, path)
-        adj[unit] = ups
-        state[unit] = 2
+    _path: List[str] = []  # current DFS path for cycle reporting
+
+    def discover(seed: Unit) -> None:
+        stack: List[Tuple[Unit, bool, List[Unit]]] = [(seed, False, [])]
+        while stack:
+            unit, finalizing, ups = stack[-1]
+            label = f"{unit[0]}@{unit[1]}"
+            if finalizing:
+                stack.pop()
+                _path.pop()
+                adj[unit] = ups
+                state[unit] = 2
+                continue
+            st = state.get(unit, 0)
+            if st == 2:
+                stack.pop()
+                continue
+            if st == 1:
+                cyc = _path[_path.index(label):] + [label]
+                raise CycleError("cycle detected: " + " -> ".join(cyc))
+            state[unit] = 1
+            _path.append(label)
+            asset, partition = unit
+            a_node = graph.node(asset)
+            ups_local: List[Unit] = []
+            for edge in graph.upstream_edges(asset):
+                up_node = graph.node(edge.upstream)
+                if edge.offset is not None:
+                    warnings.append(
+                        f"window offset on {edge.asset} <- {edge.upstream} is not "
+                        f"yet honored (Phase 2); resolving as same-period 1↔1"
+                    )
+                for up_part in partitions_covering(
+                    partition, a_node.granularity, up_node.granularity
+                ):
+                    up_unit = (edge.upstream, up_part)
+                    ups_local.append(up_unit)
+            stack[-1] = (unit, True, ups_local)
+            # reversed so first upstream is pushed last → processed first (LIFO)
+            for up_unit in reversed(ups_local):
+                stack.append((up_unit, False, []))
 
     seeds: List[Unit] = [(target_asset, p) for p in target_partitions]
     for seed in seeds:
-        discover(seed, [])
+        discover(seed)
 
     # ── Phase B: depth = longest distance from any target seed. Forward
     # propagation in topological order (Kahn) — O(V+E), no re-walking.

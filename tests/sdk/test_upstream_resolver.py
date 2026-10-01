@@ -9,6 +9,7 @@ Pure stdlib, no AWS — fast.
 """
 from __future__ import annotations
 
+import sys
 import pytest
 
 from polyris.partitions import partitions_covering
@@ -271,3 +272,27 @@ class TestSamePipelineExcluded:
         plan = resolve_plan("solo", ["2026-05-20"], g, NONE_EXIST)
         assert len(plan.all_items) == 1
         assert plan.all_items[0].asset == "solo"
+
+
+# ===========================================================================
+# Recursion-limit regression
+# ===========================================================================
+
+class TestDeepChain:
+    def test_discover_survives_deep_chain(self):
+        # Prove the iterative implementation does not hit Python's recursion
+        # limit by explicitly lowering it below the chain depth.
+        n = 200
+        g = AssetGraph()
+        names = [f"asset_{i}" for i in range(n)]
+        for name in names:
+            g.add_node(AssetNode(name, f"p_{name}", "daily"))
+        for i in range(1, n):
+            g.add_edge(names[i], names[i - 1])
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(100)
+        try:
+            plan = resolve_plan(names[-1], ["2026-05-20"], g, NONE_EXIST)
+        finally:
+            sys.setrecursionlimit(old_limit)
+        assert len(plan.all_items) == n

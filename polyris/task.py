@@ -8,7 +8,7 @@ This module contains:
 - task: Singleton TaskDecorator instance
 """
 
-from typing import List, Optional, Dict, Any, Union, Callable, Tuple, TYPE_CHECKING, TypedDict, Unpack, Mapping
+from typing import List, Optional, Dict, Any, Union, Callable, Tuple, TYPE_CHECKING, TypedDict, Unpack, Mapping, Set
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -85,8 +85,7 @@ class TaskInstance:
             self._upstream.append(upstream)
         if self not in upstream._downstream:
             upstream._downstream.append(self)
-        if upstream.task not in self.task.dependencies:
-            self.task.dependencies.append(upstream.task)
+        self.task._add_dependency(upstream.task)
 
     def _extract_dependencies(self):
         """Extract task dependencies from XComArg / TaskInstance arguments.
@@ -133,8 +132,7 @@ class TaskInstance:
         if isinstance(other, TaskGroup):
             # Connect to all roots of the group
             for root in other.roots:
-                if self.task not in root.dependencies:
-                    root.dependencies.append(self.task)
+                root._add_dependency(self.task)
             return other
         elif isinstance(other, Label):
             # TaskInstance >> Label: store upstream in label and return label
@@ -142,14 +140,12 @@ class TaskInstance:
             return other
         elif isinstance(other, Step):
             # TaskInstance >> Step: add task as dependency of step
-            if self.task not in other.dependencies:
-                other.dependencies.append(self.task)
+            other._add_dependency(self.task)
             return other
         elif isinstance(other, list):
             for t in other:
                 if isinstance(t, Step):
-                    if self.task not in t.dependencies:
-                        t.dependencies.append(self.task)
+                    t._add_dependency(self.task)
                 else:
                     self._set_downstream(t)
             return other
@@ -190,8 +186,7 @@ class TaskInstance:
             # Mirror of __rshift__'s "connect to all roots": here self is
             # downstream, so connect it after all of the group's leaves.
             for leaf in other.leaves:
-                if leaf not in self.task.dependencies:
-                    self.task.dependencies.append(leaf)
+                self.task._add_dependency(leaf)
             return other
         elif isinstance(other, Label):
             # Delegate to Label's own reverse-chain support (task2 << Label
@@ -201,14 +196,12 @@ class TaskInstance:
             # Mirror of __rshift__'s Step branch (which adds the *task* as a
             # dependency of the step): here self is downstream, so add the
             # step as a dependency of self.task instead.
-            if other not in self.task.dependencies:
-                self.task.dependencies.append(other)
+            self.task._add_dependency(other)
             return other
         elif isinstance(other, list):
             for t in other:
                 if isinstance(t, Step):
-                    if t not in self.task.dependencies:
-                        self.task.dependencies.append(t)
+                    self.task._add_dependency(t)
                 else:
                     t._set_downstream(self)
             return other
@@ -222,27 +215,24 @@ class TaskInstance:
         
         if isinstance(other, Step):  # pragma: no cover -- Step.__rshift__ handles TaskInstance directly, so `step >> task()` never falls through to here
             # Step >> TaskInstance: add step as dependency
-            if other not in self.task.dependencies:
-                self.task.dependencies.append(other)
+            self.task._add_dependency(other)
             return self
         elif isinstance(other, list):
             for t in other:
                 if isinstance(t, Step):
-                    if t not in self.task.dependencies:
-                        self.task.dependencies.append(t)
+                    self.task._add_dependency(t)
                 else:
                     t._set_downstream(self)
             return self
         return NotImplemented
-    
+
     def _set_downstream(self, task_instance: 'TaskInstance'):
         """Set a task instance as downstream."""
         if task_instance not in self._downstream:
             self._downstream.append(task_instance)
         if self not in task_instance._upstream:
             task_instance._upstream.append(self)
-        if self.task not in task_instance.task.dependencies:
-            task_instance.task.dependencies.append(self.task)
+        task_instance.task._add_dependency(self.task)
     
     def set_downstream(self, task_or_list):
         """Explicitly set downstream task(s)."""
@@ -352,10 +342,18 @@ class Task:
     
     # Internal
     # Runtime truth: mixed DAGs bridge Steps into task deps (see __rshift__).
-    dependencies: List[Union['Task', 'Step']] = field(default_factory=list)
+    # init=False: write path is _add_dependency only; direct constructor kwarg
+    # would populate the list without updating _dependency_set (silent desync).
+    dependencies: List[Union['Task', 'Step']] = field(default_factory=list, init=False, repr=False)
+    _dependency_set: Set[Any] = field(default_factory=set, init=False, repr=False)  # Set[Union[Task, Step]] — Any avoids circular TYPE_CHECKING import
     _dag: Optional['DAG'] = field(default=None, repr=False)
     _task_instances: List[TaskInstance] = field(default_factory=list, repr=False)
-    
+
+    def _add_dependency(self, dep: Union['Task', 'Step']) -> None:
+        if dep not in self._dependency_set:
+            self._dependency_set.add(dep)
+            self.dependencies.append(dep)
+
     def __post_init__(self):
         """Register asset relationships after task creation."""
         # Register this task as producer for outlet assets
@@ -411,16 +409,15 @@ class Task:
     def __rshift__(self, other):
         """task >> other - works on Task objects directly too"""
         if isinstance(other, Task):
-            if self not in other.dependencies:
-                other.dependencies.append(self)
+            other._add_dependency(self)
             return other
         elif isinstance(other, list):
             for t in other:
-                if isinstance(t, Task) and self not in t.dependencies:
-                    t.dependencies.append(self)
+                if isinstance(t, Task):
+                    t._add_dependency(self)
             return other
         return NotImplemented
-    
+
     def __lshift__(self, other):
         """task << other.
 
@@ -430,22 +427,21 @@ class Task:
         of the chain (verified: this exact bug, at the raw-Task level).
         """
         if isinstance(other, Task):
-            if other not in self.dependencies:
-                self.dependencies.append(other)
+            self._add_dependency(other)
             return other
         elif isinstance(other, list):
             for t in other:
-                if isinstance(t, Task) and t not in self.dependencies:
-                    self.dependencies.append(t)
+                if isinstance(t, Task):
+                    self._add_dependency(t)
             return other
         return NotImplemented
-    
+
     def __rrshift__(self, other):
         """[task1, task2] >> task"""
         if isinstance(other, list):
             for t in other:
-                if isinstance(t, Task) and t not in self.dependencies:
-                    self.dependencies.append(t)
+                if isinstance(t, Task):
+                    self._add_dependency(t)
             return self
         return NotImplemented
 

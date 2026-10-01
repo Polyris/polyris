@@ -2,7 +2,7 @@
 DAG class for SFN-DSL.
 """
 
-from typing import List, Optional, Dict, Any, Callable, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, Callable, TYPE_CHECKING, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -217,43 +217,51 @@ class DAG:
         """
         Return tasks in topological order.
         Raises ValueError if cycle detected.
-        
+
         Note: Only considers Task dependencies, not Step dependencies.
         Steps are inline and don't affect task ordering.
         """
         from .task import Task
-        
+
         # States: 0 = unvisited, 1 = in progress, 2 = done
         state = {t.task_id: 0 for t in self.tasks}
-        result = []
-        
-        def visit(task: 'Task', path: List[str]):
-            if task.task_id not in state:
-                raise ValueError(
-                    f"Task '{task.task_id}' is referenced as a dependency but was "
-                    f"not added to this DAG"
-                )
-            if state[task.task_id] == 2:  # Already processed
-                return
-            if state[task.task_id] == 1:  # Cycle detected!
-                cycle_path = path[path.index(task.task_id):] + [task.task_id]
-                raise ValueError(f"Cycle detected in DAG: {' -> '.join(cycle_path)}")
-            
-            state[task.task_id] = 1  # Mark as in progress
-            path.append(task.task_id)
-            
-            # Only visit Task dependencies (filter out Step objects)
-            for dep in task.dependencies:
-                if isinstance(dep, Task):
-                    visit(dep, path.copy())
-            
-            state[task.task_id] = 2  # Mark as done
-            result.append(task)
-        
-        for task in self.tasks:
-            if state[task.task_id] == 0:
-                visit(task, [])
-        
+        result: List['Task'] = []
+        # path is always empty at the start of each root's traversal: every
+        # append on first visit is matched by a pop in the finalizing branch.
+        path: List[str] = []
+
+        for start in self.tasks:
+            if state[start.task_id] != 0:
+                continue
+            stack: List[Tuple['Task', bool]] = [(start, False)]
+            while stack:
+                task, finalizing = stack[-1]
+                tid = task.task_id
+                if finalizing:
+                    stack.pop()
+                    path.pop()
+                    state[tid] = 2
+                    result.append(task)
+                    continue
+                if tid not in state:
+                    raise ValueError(
+                        f"Task '{tid}' is referenced as a dependency but was "
+                        f"not added to this DAG"
+                    )
+                if state[tid] == 2:
+                    stack.pop()
+                    continue
+                if state[tid] == 1:
+                    cycle_path = path[path.index(tid):] + [tid]
+                    raise ValueError(f"Cycle detected in DAG: {' -> '.join(cycle_path)}")
+                state[tid] = 1
+                path.append(tid)
+                stack[-1] = (task, True)
+                # reversed so first dep is pushed last → processed first (LIFO)
+                for dep in reversed(task.dependencies):
+                    if isinstance(dep, Task):
+                        stack.append((dep, False))
+
         return result
     
     def roots(self) -> List['Task']:
