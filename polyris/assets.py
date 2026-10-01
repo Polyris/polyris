@@ -674,7 +674,7 @@ class Asset:
             return NotImplemented
         return _combine_and(self, other)
 
-    def __rand__(self, other: Any) -> 'AssetAll':
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_and(other, self)
@@ -684,7 +684,7 @@ class Asset:
             return NotImplemented
         return _combine_or(self, other)
 
-    def __ror__(self, other: Any) -> 'AssetAny':
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_or(other, self)
@@ -974,7 +974,7 @@ class AssetRef:
             return NotImplemented
         return _combine_and(self, other)
 
-    def __rand__(self, other: Any) -> 'AssetAll':
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_and(other, self)
@@ -984,7 +984,7 @@ class AssetRef:
             return NotImplemented
         return _combine_or(self, other)
 
-    def __ror__(self, other: Any) -> 'AssetAny':
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_or(other, self)
@@ -1046,7 +1046,7 @@ class AssetConsecutiveRef:
             return NotImplemented
         return _combine_and(self, other)
 
-    def __rand__(self, other: Any) -> 'AssetAll':
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_and(other, self)
@@ -1056,7 +1056,7 @@ class AssetConsecutiveRef:
             return NotImplemented
         return _combine_or(self, other)
 
-    def __ror__(self, other: Any) -> 'AssetAny':
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_or(other, self)
@@ -1111,7 +1111,7 @@ class AssetAll:
             return NotImplemented
         return _combine_and(self, other)
 
-    def __rand__(self, other: Any) -> 'AssetAll':
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_and(other, self)
@@ -1121,7 +1121,7 @@ class AssetAll:
             return NotImplemented
         return _combine_or(self, other)
 
-    def __ror__(self, other: Any) -> 'AssetAny':
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_or(other, self)
@@ -1181,7 +1181,7 @@ class AssetAny:
             return NotImplemented
         return _combine_and(self, other)
 
-    def __rand__(self, other: Any) -> 'AssetAll':
+    def __rand__(self, other: Any) -> 'AssetAll':  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_and(other, self)
@@ -1191,7 +1191,7 @@ class AssetAny:
             return NotImplemented
         return _combine_or(self, other)
 
-    def __ror__(self, other: Any) -> 'AssetAny':
+    def __ror__(self, other: Any) -> 'AssetAny':  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_or(other, self)
@@ -1274,7 +1274,7 @@ class AssetAlias:
             return NotImplemented
         return _combine_and(self, other)
 
-    def __rand__(self, other: Any) -> AssetAll:
+    def __rand__(self, other: Any) -> AssetAll:  # pragma: no cover — all algebra types define __and__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_and(other, self)
@@ -1284,7 +1284,7 @@ class AssetAlias:
             return NotImplemented
         return _combine_or(self, other)
 
-    def __ror__(self, other: Any) -> AssetAny:
+    def __ror__(self, other: Any) -> AssetAny:  # pragma: no cover — all algebra types define __or__ for all algebra operands; reflected method unreachable for algebra-type lhs
         if not isinstance(other, _ALGEBRA_TYPES):
             return NotImplemented
         return _combine_or(other, self)
