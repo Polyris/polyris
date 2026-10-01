@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Fixed — internals
+
+- `topological_sort` and cross-pipeline `discover` rewritten as iterative DFS; pipelines with ~200+ tasks no longer raise `RecursionError`.
+- `Task` and `Step` dependency deduplication is now O(1) via a companion `_dependency_set`; the `dependencies` field can no longer be populated via the dataclass constructor (silent list/set desync was possible before).
+
 ### Fixed — `polyris-validate` validation stack wired up end to end
 
 `polyris-validate --all` previously ran cross-pipeline checks only (asset cycle detection, schema consistency) and skipped per-file ASL, role, and `trigger_rule` validation. The per-file path existed but was not connected.
