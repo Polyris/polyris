@@ -263,7 +263,7 @@ class TestGraphMethods:
     def test_double_wiring_deduplicates_dependency(self):
         """_add_dependency must be idempotent: wiring the same edge twice must
         not produce a duplicate in dependencies or _dependency_set."""
-        with DAG("dag_dedup", schedule=None) as dag:
+        with DAG("dag_dedup", schedule=None):
             @task.sfn(arn=ARN)
             def a():
                 pass
