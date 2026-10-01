@@ -1,5 +1,16 @@
 ## Unreleased
 
+### Added — `polyris-build-lambda`
+
+New CLI command that stamps `polyris/xcom.py` and a minimal `polyris/__init__.py` into a Lambda handler directory so Lambda functions can `from polyris import xcom` without a pip install step in the zip build.
+
+```bash
+polyris-build-lambda ./my_lambda_dir/
+polyris-build-lambda ./my_lambda_dir/ --force   # overwrite existing
+```
+
+The stamped copy is a snapshot of the installed polyris version. Re-run the command after a polyris upgrade to refresh it (ADR #124).
+
 ### Fixed — internals
 
 - `topological_sort` and cross-pipeline `discover` rewritten as iterative DFS; pipelines with ~200+ tasks no longer raise `RecursionError`.

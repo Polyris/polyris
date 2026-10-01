@@ -99,6 +99,7 @@ hello-world through assets and lineage.
 | Learn the Python DSL — every task type, parameter, trigger rule | [DSL.md](docs/features/DSL.md) |
 | Test pipelines locally (validate / dry_run / mock) | [LOCAL_TESTING.md](docs/tools/LOCAL_TESTING.md) |
 | Pass data between tasks (xcom) | [DATA_PASSING.md](docs/features/DATA_PASSING.md) |
+| Package xcom helpers into a Lambda zip (no pip step) | [DATA_PASSING.md](docs/features/DATA_PASSING.md) |
 | Configure retries, backoff, jitter | [how-to/configure-retries.md](docs/how-to/configure-retries.md) |
 | Schedule a pipeline, pause, redeploy safely | [how-to/schedule-and-redeploy.md](docs/how-to/schedule-and-redeploy.md) |
 | Set up asset-based orchestration + `wait_for` | [ASSETS.md](docs/features/ASSETS.md) |

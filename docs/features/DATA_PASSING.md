@@ -379,8 +379,26 @@ RUN pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 install. Use `-slim` only if you download the wheel from S3 in the container
 entrypoint instead.
 
-**Lambda** — ship in the deployment zip. `requirements.txt` one-liner:
-`polyris @ git+https://github.com/Polyris/polyris@<VERSION>`.
+**Lambda** — two options:
+
+*Option A — `polyris-build-lambda` (no pip in the zip build):*
+
+```bash
+polyris-build-lambda ./my_lambda_dir/
+```
+
+Stamps `polyris/xcom.py` + `polyris/__init__.py` into the handler directory.
+`from polyris import xcom` works in the deployed function without any pip step.
+Re-run after a polyris upgrade to refresh the snapshot. Pass `--force` to
+overwrite an existing `polyris/` directory.
+
+*Option B — `requirements.txt` (standard pip approach):*
+
+Add one line to your Lambda's `requirements.txt`:
+```
+polyris @ git+https://github.com/Polyris/polyris@<VERSION>
+```
+Then `pip install -r requirements.txt -t .` before zipping.
 
 **EMR** — bootstrap script:
 

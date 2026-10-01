@@ -20,8 +20,9 @@ Available commands:
   polyris-init         Create a new pipeline or project config
   polyris-deploy       Deploy pipeline via CloudFormation
   polyris-validate     Validate pipeline(s) for errors
-  polyris-output       Generate pipeline artifacts (JSON, Mermaid, graph)
-  polyris-register     Register pipeline in DynamoDB
+  polyris-output        Generate pipeline artifacts (JSON, Mermaid, graph)
+  polyris-register      Register pipeline in DynamoDB
+  polyris-build-lambda  Stamp XCom helpers into a Lambda handler directory
 
 Each command has its own --help. Run e.g. `polyris-deploy --help`.
 

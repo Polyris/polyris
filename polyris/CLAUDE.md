@@ -518,3 +518,24 @@ of that shape.
 
 When writing tests that build dependency graphs directly (without DAG context), always use
 `task._add_dependency(dep)` — never `task.dependencies.append(dep)`.
+
+## `stamp()`-style tools that vendor a module must guard against non-source installs
+
+Any tool that copies a module out of the installed wheel (like `polyris-build-lambda` copying
+`polyris/xcom.py`) must verify the resolved `__file__` path has a `.py` suffix before copying.
+
+A compiled-only wheel sets `module.__file__` to the `.pyc` in `__pycache__/`. Copying bytecode
+as a `.py` file produces a Lambda that crashes at import with `SyntaxError: source code string
+cannot contain null bytes` — no indication the file was bytecode.
+
+```python
+if src.suffix != '.py' or not src.exists():  # pragma: no cover
+    raise FileNotFoundError(
+        f"Cannot locate source at {src!r}. "
+        "Ensure polyris is installed with source (not a compiled-only wheel)."
+    )
+```
+
+The copied snapshot is tied to the installed version. Print the stamped version on success so
+users can assert it in CI. There is no mechanical guard against drift — document this in the
+command's help text and docstring (see ADR #124).

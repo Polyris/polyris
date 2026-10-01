@@ -61,6 +61,7 @@ polyris-init = "polyris.init:main"
 polyris-output = "polyris.output:main"
 polyris-register = "polyris.register:main"
 polyris-validate = "polyris.validation:main"
+polyris-build-lambda = "polyris.build_lambda:main"
 
 [tool.setuptools.package-data]
 polyris = ["py.typed"]
