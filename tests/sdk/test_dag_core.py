@@ -246,7 +246,7 @@ class TestGraphMethods:
         def orphan():
             pass
 
-        ai.task.dependencies.append(orphan)  # a Task never added to the DAG
+        ai.task._add_dependency(orphan)  # a Task never added to the DAG
         with pytest.raises(ValueError, match="not added to this DAG"):
             dag.topological_sort()
 
@@ -259,6 +259,25 @@ class TestGraphMethods:
             ai = a("literal", 42)  # plain values, not XComArg / TaskInstance
 
         assert ai.task.dependencies == []
+
+    def test_double_wiring_deduplicates_dependency(self):
+        """_add_dependency must be idempotent: wiring the same edge twice must
+        not produce a duplicate in dependencies or _dependency_set."""
+        with DAG("dag_dedup", schedule=None) as dag:
+            @task.sfn(arn=ARN)
+            def a():
+                pass
+
+            @task.sfn(arn=ARN)
+            def b():
+                pass
+
+            ai, bi = a(), b()
+            ai >> bi
+            ai >> bi  # second wire — must be a no-op
+
+        assert len(bi.task.dependencies) == 1
+        assert len(bi.task._dependency_set) == 1
 
     def test_roots_have_no_task_deps(self):
         dag, a, b, c = _chain()
@@ -284,7 +303,7 @@ class TestGraphMethods:
         dag = DAG("dag_skip", schedule=None)
         a = Task(task_id="a", arn=ARN)
         b = Task(task_id="b", arn=ARN)
-        b.dependencies.append(a)
+        b._add_dependency(a)
         dag.tasks = [b, a]
         order = dag.topological_sort()
         assert [t.task_id for t in order] == ["a", "b"]
@@ -297,9 +316,14 @@ class TestGraphMethods:
         n = 200
         dag = DAG("dag_deep", schedule=None)
         tasks = [Task(task_id=f"t{i}", arn=ARN) for i in range(n)]
-        dag.tasks = tasks
         for i in range(1, n):
-            tasks[i].dependencies.append(tasks[i - 1])
+            tasks[i]._add_dependency(tasks[i - 1])
+        # Reversed so the outer loop starts at t199 (the deepest leaf).
+        # Forward order would let each node find its dep already processed
+        # (max depth 2), hiding the recursion bug.  Reversed order forces a
+        # full 200-frame DFS descent from t199 through t0, which the old
+        # recursive implementation hits at setrecursionlimit(100).
+        dag.tasks = list(reversed(tasks))
         old_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(100)
         try:

@@ -503,3 +503,18 @@ visit is matched by a `pop` in the `finalizing=True` branch.
 Regression gate: deep-chain tests (`test_topological_sort_survives_deep_chain`,
 `TestDeepChain::test_discover_survives_deep_chain`) explicitly call `sys.setrecursionlimit(100)`
 before the traversal to prove the iterative path is taken regardless of the runtime's default limit.
+
+## `_add_dependency` is the only write path for `Task.dependencies` and `Step.dependencies`
+
+`Task.dependencies` and `Step.dependencies` each have a companion `_dependency_set: Set[Any]` for
+O(1) membership. Both fields carry `init=False` so they cannot be populated via the dataclass
+constructor. The only legal write path is `_add_dependency(dep)`, which keeps list and set in sync
+and is idempotent (double-wiring the same edge is a no-op).
+
+Direct `.append()` bypasses the set and causes silent duplicates. Only one place bypasses it
+intentionally: `tests/sdk/test_asl_snapshots_steps.py` — to inject a step dependency that would
+be rejected by `_add_dependency`'s normal DAG context, precisely to test the generator's rejection
+of that shape.
+
+When writing tests that build dependency graphs directly (without DAG context), always use
+`task._add_dependency(dep)` — never `task.dependencies.append(dep)`.

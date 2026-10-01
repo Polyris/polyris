@@ -769,7 +769,8 @@ def test_task_depending_on_direct_step_raises():
             pass
 
         p = process()
-        # Task depending on direct step
+        # Bypass _add_dependency intentionally: we're testing that the generator
+        # rejects a direct-step dependency regardless of how it was wired.
         p.task.dependencies.append(notify)
 
     with pytest.raises(ValueError, match="depends on direct step"):

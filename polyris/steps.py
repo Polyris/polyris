@@ -7,7 +7,7 @@ This module contains the base Step class and all Step subclasses:
   AthenaTask, ECSTask, EventBridgeTask, BedrockTask
 """
 
-from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING, Union
+from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING, Union, Set
 from dataclasses import dataclass, field
 
 from .context import get_current_dag
@@ -32,9 +32,17 @@ class Step:
     
     # Internal
     # Runtime truth: TaskInstance >> Step appends Task objects here too.
-    dependencies: List[Union['Step', 'Task']] = field(default_factory=list)
+    # init=False: write path is _add_dependency only; direct constructor kwarg
+    # would populate the list without updating _dependency_set (silent desync).
+    dependencies: List[Union['Step', 'Task']] = field(default_factory=list, init=False)
+    _dependency_set: Set[Any] = field(default_factory=set, init=False, repr=False)
     _dag: Optional['DAG'] = field(default=None, repr=False)
-    
+
+    def _add_dependency(self, dep: Union['Step', 'Task']) -> None:
+        if dep not in self._dependency_set:
+            self._dependency_set.add(dep)
+            self.dependencies.append(dep)
+
     @property
     def node_id(self) -> str:
         """Unique identifier for this node in the DAG graph."""
@@ -49,50 +57,46 @@ class Step:
         if isinstance(other, TaskGroup):
             # Step >> TaskGroup: connect step to all roots of the group
             for root in other.roots:
-                if self not in root.dependencies:
-                    root.dependencies.append(self)
+                root._add_dependency(self)
             return other
         elif isinstance(other, (Step, Task)):
-            if self not in other.dependencies:
-                other.dependencies.append(self)
+            other._add_dependency(self)
             return other
         elif hasattr(other, 'task') and hasattr(other.task, 'dependencies'):
             # TaskInstance - access underlying Task
-            if self not in other.task.dependencies:
-                other.task.dependencies.append(self)
+            other.task._add_dependency(self)
             return other
         elif isinstance(other, list):
             for t in other:
-                if isinstance(t, (Step, Task)) and self not in t.dependencies:
-                    t.dependencies.append(self)
-                elif hasattr(t, 'task') and self not in t.task.dependencies:
-                    t.task.dependencies.append(self)
+                if isinstance(t, (Step, Task)):
+                    t._add_dependency(self)
+                elif hasattr(t, 'task'):
+                    t.task._add_dependency(self)
             return other
         return NotImplemented
-    
+
     def __lshift__(self, other):
         """step << other"""
         from .task import Task
-        
+
         if isinstance(other, (Step, Task)):
-            if other not in self.dependencies:
-                self.dependencies.append(other)
+            self._add_dependency(other)
             return self
         elif isinstance(other, list):
             for t in other:
-                if isinstance(t, (Step, Task)) and t not in self.dependencies:
-                    self.dependencies.append(t)
+                if isinstance(t, (Step, Task)):
+                    self._add_dependency(t)
             return self
         return NotImplemented
-    
+
     def __rrshift__(self, other):
         """[step1, step2] >> step"""
         from .task import Task
-        
+
         if isinstance(other, list):
             for t in other:
-                if isinstance(t, (Step, Task)) and t not in self.dependencies:
-                    self.dependencies.append(t)
+                if isinstance(t, (Step, Task)):
+                    self._add_dependency(t)
             return self
         return NotImplemented
 
