@@ -121,7 +121,7 @@ class TestStarterPipelineRetryDefaults:
         (N+1 total attempts).  Other tasks keep retries=0."""
         from polyris import DAG, task
 
-        with DAG("override-test", schedule=None, default_args={"retries": 0}) as dag:
+        with DAG("override-test", schedule=None, default_args={"retries": 0}):
             @task.sfn(
                 arn="arn:aws:states:us-east-1:123456789012:stateMachine:with-retry",
                 retries=2,
