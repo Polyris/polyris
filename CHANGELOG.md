@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Fixed — `polyris-init` starter pipeline retry default
+
+`polyris-init` now scaffolds `default_args={"retries": 0}` (pause on first failure, 1 total attempt) instead of the previous `{"retries": 2}`. The previous value contradicted the documented system default and the intervention-first model (ADR #114). Explicitly setting `retries=N` on any individual task still overrides the DAG-level default.
+
 ### Added — `polyris-build-lambda`
 
 New CLI command that stamps `polyris/xcom.py` and a minimal `polyris/__init__.py` into a Lambda handler directory so Lambda functions can `from polyris import xcom` without a pip install step in the zip build.

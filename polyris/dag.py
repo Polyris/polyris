@@ -26,7 +26,7 @@ class DAG:
             schedule="@daily",
             start_date=datetime(2025, 1, 1),
             catchup=False,
-            default_args={"retries": 2},
+            default_args={"retries": 0},
             tags=["production"],
         ) as dag:
             ...
