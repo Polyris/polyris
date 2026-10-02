@@ -96,15 +96,15 @@ with DAG(
     "my-pipeline",
     schedule="@daily",
     default_args={
-        "retries": 2,
+        "retries": 0,
         "retry_delay": timedelta(minutes=10),
         "execution_timeout": timedelta(hours=4),
         "orchestration_timeout": timedelta(hours=12),  # Wait for deps up to 12h
     }
 ) as dag:
     # All tasks inherit these defaults unless overridden
-    @task.sfn(arn=..., retries=0)  # Override: no retries for this task
-    def fragile_task(): pass
+    @task.sfn(arn=..., retries=3)  # Override: retry this task up to 3 times
+    def retried_task(): pass
 ```
 
 ### Alerts Configuration

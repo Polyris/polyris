@@ -47,7 +47,7 @@ with DAG(
     # default_args is applied to every task in this DAG unless overridden.
     # Use it for retry / timeout policy — NOT for runtime data. Runtime data
     # goes in `variables=` (available to tasks via xcom / templates).
-    default_args={{"retries": 2}},
+    default_args={{"retries": 0}},
 ) as dag:
 
     # Replace ARNs with your real Step Function ARNs when ready to deploy.
@@ -107,7 +107,7 @@ with DAG(
     # default_args is applied to every task in this DAG unless overridden.
     # Use it for retry / timeout policy — NOT for runtime data. Runtime data
     # goes in `variables=` (available to tasks via xcom / templates).
-    default_args={{"retries": 2}},
+    default_args={{"retries": 0}},
 ) as dag:
 
     # Replace these placeholder ARNs with your real Step Function ARNs.

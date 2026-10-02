@@ -5,12 +5,11 @@ Define pipelines in Python, deploy to AWS Step Functions.
 
 Example:
     from polyris import DAG, task, Asset, config
-    from datetime import timedelta
-    
+
     with DAG(
         dag_id="my-etl",
         schedule="@daily",
-        default_args={"retries": 2, "retry_delay": timedelta(minutes=5)},
+        default_args={"retries": 0},
     ) as dag:
         
         @task.sfn(arn="arn:aws:states:us-east-1:111111111111:stateMachine:myorg-dev-extract")
