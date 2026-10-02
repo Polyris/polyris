@@ -495,7 +495,7 @@ from dal import executions_repo, pipelines_repo
 
 One deliberate exception: `notify/registry.py` has no `dal/` and one table accessor — `registry_table()` is the accessor. A DAL for a single function would be over-engineering.
 
-**GSI INCLUDE projections:** when a field is absent from `NonKeyAttributes`, fetch from base table with `executions_repo.batch_get_triggered_by` (chunks at 100, retries `UnprocessedKeys`). Never loop N individual `GetItem` calls.
+**GSI INCLUDE projections:** when a field is absent from `NonKeyAttributes`, fetch from base table with `executions_repo.batch_get_run_meta` (projects `triggered_by`, `attempt`, `task_config`; chunks at 100, retries `UnprocessedKeys`). Never loop N individual `GetItem` calls.
 
 **Error handling:**
 ```python

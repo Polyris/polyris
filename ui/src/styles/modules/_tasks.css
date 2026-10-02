@@ -562,6 +562,13 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     margin-top: 0.25rem;
 }
 
+/* Attempt stat — "/max" part is smaller, secondary colour */
+.td-attempt-max {
+    font-size: 0.85rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
 /* Task Type badge — neutral mono chip in the right column */
 .td-task-type-badge {
     display: inline-block;

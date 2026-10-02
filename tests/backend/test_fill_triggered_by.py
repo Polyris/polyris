@@ -16,10 +16,18 @@ def pl(mocker):
     return m, mock_repo
 
 
+def _meta(name, triggered_by):
+    """Build a batch_get_run_meta result item."""
+    item = {'execution_name': name}
+    if triggered_by is not None:
+        item['triggered_by'] = triggered_by
+    return {name: item}
+
+
 class TestFillTriggeredBy:
     def test_fills_triggered_by_from_batch_result(self, pl):
         m, repo = pl
-        repo.batch_get_triggered_by.return_value = {'task-a': 'console_run'}
+        repo.batch_get_run_meta.return_value = _meta('task-a', 'console_run')
         runs = [{'pipeline_execution': 'pe-1', '_sample_exec_name': 'task-a'}]
         m._fill_triggered_by(runs, id_field='pipeline_execution')
         assert runs[0]['triggered_by'] == 'console_run'
@@ -27,7 +35,7 @@ class TestFillTriggeredBy:
     def test_pops_sample_exec_name_from_every_execution(self, pl):
         """_sample_exec_name must never leak into the API response."""
         m, repo = pl
-        repo.batch_get_triggered_by.return_value = {'task-a': 'schedule'}
+        repo.batch_get_run_meta.return_value = _meta('task-a', 'schedule')
         runs = [{'pipeline_execution': 'pe-1', '_sample_exec_name': 'task-a'}]
         m._fill_triggered_by(runs, id_field='pipeline_execution')
         assert '_sample_exec_name' not in runs[0]
@@ -39,18 +47,18 @@ class TestFillTriggeredBy:
         m._fill_triggered_by(runs, id_field='pipeline_execution')
         assert '_sample_exec_name' not in runs[0]
         assert runs[0]['triggered_by'] == 'schedule'
-        repo.batch_get_triggered_by.assert_not_called()
+        repo.batch_get_run_meta.assert_not_called()
 
     def test_empty_sample_name_skips_batch_call(self, pl):
         m, repo = pl
         runs = [{'pipeline_execution': 'pe-1', '_sample_exec_name': ''}]
         m._fill_triggered_by(runs, id_field='pipeline_execution')
-        repo.batch_get_triggered_by.assert_not_called()
+        repo.batch_get_run_meta.assert_not_called()
 
     def test_none_from_base_table_sets_none(self, pl):
         """Row exists but triggered_by absent (old run before feature) → None."""
         m, repo = pl
-        repo.batch_get_triggered_by.return_value = {'task-a': None}
+        repo.batch_get_run_meta.return_value = {'task-a': {'execution_name': 'task-a'}}
         runs = [{'pipeline_execution': 'pe-1', '_sample_exec_name': 'task-a'}]
         m._fill_triggered_by(runs, id_field='pipeline_execution')
         assert runs[0]['triggered_by'] is None
@@ -58,7 +66,7 @@ class TestFillTriggeredBy:
     def test_client_error_leaves_triggered_by_unset(self, pl):
         """DDB error must not raise; triggered_by stays absent (display-only)."""
         m, repo = pl
-        repo.batch_get_triggered_by.side_effect = ClientError(
+        repo.batch_get_run_meta.side_effect = ClientError(
             {'Error': {'Code': 'ProvisionedThroughputExceededException', 'Message': ''}},
             'BatchGetItem',
         )
@@ -69,7 +77,7 @@ class TestFillTriggeredBy:
     def test_default_id_field_is_execution_id(self, pl):
         """get_pipeline_executions uses default id_field='execution_id'."""
         m, repo = pl
-        repo.batch_get_triggered_by.return_value = {'task-a': 'asset'}
+        repo.batch_get_run_meta.return_value = _meta('task-a', 'asset')
         runs = [{'execution_id': 'exe-1', '_sample_exec_name': 'task-a'}]
         m._fill_triggered_by(runs)
         assert runs[0]['triggered_by'] == 'asset'
@@ -77,12 +85,12 @@ class TestFillTriggeredBy:
     def test_two_executions_sharing_sample_both_get_filled(self, pl):
         """Two pipeline executions with the same sample → one batch call, both filled."""
         m, repo = pl
-        repo.batch_get_triggered_by.return_value = {'task-a': 'backfill'}
+        repo.batch_get_run_meta.return_value = _meta('task-a', 'backfill')
         runs = [
             {'pipeline_execution': 'pe-1', '_sample_exec_name': 'task-a'},
             {'pipeline_execution': 'pe-2', '_sample_exec_name': 'task-a'},
         ]
         m._fill_triggered_by(runs, id_field='pipeline_execution')
-        assert repo.batch_get_triggered_by.call_count == 1
+        assert repo.batch_get_run_meta.call_count == 1
         assert runs[0]['triggered_by'] == 'backfill'
         assert runs[1]['triggered_by'] == 'backfill'
