@@ -59,7 +59,6 @@ export interface Task {
   date?: string;
   duration_ms?: number;
   error?: TaskError | string | null;
-  retries?: number;
   max_retries?: number;
   tags?: string[] | Record<string, string>;
   lambda_arn?: string;
@@ -73,6 +72,7 @@ export interface Task {
   slack_notification_failed?: boolean;
   notification_failed?: boolean;
   attempt?: number;
+  triggered_by?: string;
   [key: string]: unknown;
 }
 

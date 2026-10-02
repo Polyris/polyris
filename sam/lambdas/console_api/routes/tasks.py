@@ -32,7 +32,7 @@ from utils import (
     should_skip_token_row,
     is_execution_name, safe_int, safe_param_int,
     stop_task_executions, record_manual_decision, ensure_pipeline_execution_short,
-    resolve_pagerduty, retrieve_result
+    resolve_pagerduty, retrieve_result, resolve_max_retries
 )
 from task_actions import (
     notify_dependents_via_sfn,
@@ -201,10 +201,13 @@ def _reconcile_orphaned_tasks(tasks):
     return tasks
 
 
+# triggered_by, attempt, task_config are listed here for base-table reads (consistent
+# read paths).  GSI reads (date-pipeline-index, pipeline-date-index) silently omit them
+# because they are not in NonKeyAttributes — batch_get_run_meta fills them post-query.
 _TASKS_PROJECTION = ('execution_name, task_name, pipeline_name, #s, #d, started_at, '
                      'running_at, finished_at, dependencies, pipeline_execution, wait_for, '
-                     'wrapper_execution_arn')
-_TASKS_EXPR_NAMES = {'#s': 'status', '#d': 'date'}
+                     'wrapper_execution_arn, triggered_by, #attempt, task_config')
+_TASKS_EXPR_NAMES = {'#s': 'status', '#d': 'date', '#attempt': 'attempt'}
 
 
 def _format_task_row(item: Dict) -> Dict:
@@ -224,6 +227,8 @@ def _format_task_row(item: Dict) -> Dict:
                      finished_at=item.get('finished_at'),
                      error=str(e))
 
+    max_retries = resolve_max_retries(item)
+
     return {
         'execution_name': item.get('execution_name'),
         'task_name': item.get('task_name'),
@@ -238,7 +243,13 @@ def _format_task_row(item: Dict) -> Dict:
         'wait_for': item.get('wait_for', '[]'),
         'pipeline_execution': item.get('pipeline_execution'),
         'wrapper_execution_arn': item.get('wrapper_execution_arn'),
-        'notification_failed': item.get('notification_failed')
+        'notification_failed': item.get('notification_failed'),
+        'triggered_by': item.get('triggered_by'),
+        'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
+        # max_retries is static config (auto-retries per wrapper run). Not displayed in the
+        # list view (a static ceiling in a live feed is misleading). Included for the task
+        # detail panel to surface alongside attempt.
+        'max_retries': max_retries,
     }
 
 
@@ -323,6 +334,24 @@ def get_all_tasks(event: Dict) -> Dict:
         rows = [i for i in items if not should_skip_token_row(i) and i.get('task_name')]
 
         page, next_cursor = page_by_started_at(rows, before, limit)
+
+        # triggered_by, attempt, task_config are not in the GSI NonKeyAttributes so
+        # they are absent from every GSI read.  Back-fill from the base table for the
+        # current page only (bounded cost: ≤ limit rows = ≤ 5 BatchGetItem calls).
+        try:
+            names = [r['execution_name'] for r in page if r.get('execution_name')]
+            if names:
+                meta = executions_repo.batch_get_run_meta(names)
+                for r in page:
+                    m = meta.get(r.get('execution_name', ''))
+                    if m:
+                        for field in ('triggered_by', 'attempt', 'task_config'):
+                            if r.get(field) is None:
+                                r[field] = m.get(field)
+        except (ClientError, BotoCoreError) as e:
+            log.warn("get_all_tasks", "batch_get_run_meta failed; run-meta fields left null",
+                     error=str(e))
+
         tasks = [_format_task_row(i) for i in page]
 
         # Reconcile: tasks stuck in non-terminal status but execution already failed.
@@ -369,7 +398,7 @@ def get_task_config(task_name: str, event: Dict) -> Dict:
         'execution_name': execution_name,
         'config': {
             'timeout_seconds': safe_int(item.get('timeout_seconds'), 14400),
-            'max_retries': safe_int(item.get('max_retries'), 3)
+            'max_retries': resolve_max_retries(item)
         },
         # Runtime state (read-only, for reference)
         'runtime': {

@@ -320,6 +320,19 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         </div>
                         <div className="td-duration-label">Dependencies</div>
                     </div>
+                    {task.attempt != null && task.attempt > 1 && (
+                        <div className="td-duration-stat">
+                            <div className="td-duration-value text-secondary">
+                                <span>
+                                    {task.attempt}
+                                    {task.max_retries != null && task.max_retries > 0 && (
+                                        <span className="td-attempt-max">/{task.max_retries + 1}</span>
+                                    )}
+                                </span>
+                            </div>
+                            <div className="td-duration-label">Attempt</div>
+                        </div>
+                    )}
                 </div>
                 
                 {/* Main details */}

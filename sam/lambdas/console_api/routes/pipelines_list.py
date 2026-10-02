@@ -23,7 +23,7 @@ from constants import Limits, normalize_execution_status, derive_execution_statu
 from feed import feed_dates
 from response import cors_response
 from logger import log
-from utils import safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row
+from utils import safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries
 
 def list_pipelines(event: Dict) -> Dict:
     """
@@ -344,6 +344,8 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'notification_failed': item.get('notification_failed'),
             'task_type': item.get('task_type', 'sfn'),
             'date': item.get('date', date),
+            'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
+            'max_retries': resolve_max_retries(item),
         })
     
     # Reconcile: if the execution is failed/aborted, mark not-yet-settled tasks as
@@ -508,13 +510,13 @@ def _fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None
         return
 
     try:
-        results = executions_repo.batch_get_triggered_by(list(samples.values()))
+        meta = executions_repo.batch_get_run_meta(list(samples.values()))
         for e in executions:
             if e.get('triggered_by'):
                 continue
             sample = samples.get(e[id_field])
             if sample:
-                e['triggered_by'] = results.get(sample) or None
+                e['triggered_by'] = (meta.get(sample) or {}).get('triggered_by') or None
     except (ClientError, BotoCoreError) as err:
         log.warn("_fill_triggered_by", "batch_get failed; triggered_by left null",
                  error=str(err))

@@ -135,3 +135,12 @@
 
 .hc-pager-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
 .hc-pager-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* AllTasksView — attempt badge (shown below the status badge when attempt > 1) */
+.atv-attempt-badge {
+    display: inline;
+    margin-left: 0.375rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}

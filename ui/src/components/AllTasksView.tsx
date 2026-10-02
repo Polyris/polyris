@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
-import { formatDuration, formatApiErrorMessage } from '../utils';
+import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
 import { Search, Inbox, AlertTriangle } from '../utils/icons';
 import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
@@ -118,6 +118,7 @@ export function AllTasksView({
                 case 'task_name': va = a.task_name || ''; vb = b.task_name || ''; break;
                 case 'pipeline_name': va = a.pipeline_name || ''; vb = b.pipeline_name || ''; break;
                 case 'status': va = a.status || ''; vb = b.status || ''; break;
+                case 'triggered_by': va = a.triggered_by || ''; vb = b.triggered_by || ''; break;
                 case 'date': va = a.date || ''; vb = b.date || ''; break;
                 case 'duration_ms': va = a.duration_ms || 0; vb = b.duration_ms || 0; break;
                 case 'started_at': va = a.running_at || a.started_at || ''; vb = b.running_at || b.started_at || ''; break;
@@ -225,7 +226,7 @@ export function AllTasksView({
 
             <div className="card">
                 {loading ? (
-                    <TableSkeleton rows={10} cols={6} />
+                    <TableSkeleton rows={10} cols={7} />
                 ) : isError ? (
                     <EmptyState
                         icon={AlertTriangle}
@@ -249,6 +250,7 @@ export function AllTasksView({
                                 <SortableHeader label="Task" sortKey="task_name" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Pipeline" sortKey="pipeline_name" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Status" sortKey="status" currentSort={sort} onSort={handleSort} />
+                                <SortableHeader label="Source" sortKey="triggered_by" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Date" sortKey="date" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Duration" sortKey="duration_ms" currentSort={sort} onSort={handleSort} />
                                 <SortableHeader label="Started" sortKey="started_at" currentSort={sort} onSort={handleSort} />
@@ -272,6 +274,15 @@ export function AllTasksView({
                                         <span className={`task-status-badge ${task.status}`}>
                                             {task.status}
                                         </span>
+                                        {task.attempt != null && task.attempt > 1 && (
+                                            <span className="atv-attempt-badge">Attempt {task.attempt}</span>
+                                        )}
+                                    </td>
+                                    <td className="p-md text-sm text-muted">
+                                        {(() => {
+                                            const label = formatTriggerSource(task.triggered_by);
+                                            return label ? <strong>{label}</strong> : <span className="text-muted">—</span>;
+                                        })()}
                                     </td>
                                     <td className="table-cell-mono">{task.date}</td>
                                     <td className="table-cell-mono">
