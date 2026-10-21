@@ -245,7 +245,9 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
     // Close dropdown on outside click
     React.useEffect(() => {
         const handleClick = (e: Event) => {
-            if ((e.target as HTMLElement).closest('.pd-dropdown-container')) return;
+            const t = e.target as HTMLElement;
+            if (t.closest('.pd-dropdown-container')) return;
+            if (t.closest('.dp-popup')) return;
             setShowHistory(false);
         };
         if (showHistory) {
