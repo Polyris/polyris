@@ -123,6 +123,17 @@ describe('CountdownTimer', () => {
             expect(screen.getByText(/waited/)).toBeInTheDocument();
             expect(screen.getByText('Wait completed')).toBeInTheDocument();
         });
+
+        it('shows active countdown during in-SFN retry wait (status=running, future deadline)', () => {
+            // ADR #125: Save_Retry_Wait_Delay writes wait_delay_until_ms while status stays 'running'.
+            // Must show a live countdown, not "Wait completed".
+            const futureMs = nowMs + 90_000; // 90s retry delay remaining
+            render(
+                <CountdownTimer waitBefore={30} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 30_000} status="running" serverOffsetMs={0} />
+            );
+            expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
+            expect(screen.getByText(/remaining/)).toBeInTheDocument();
+        });
     });
 
     describe('serverOffsetMs', () => {

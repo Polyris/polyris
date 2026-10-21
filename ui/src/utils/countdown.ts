@@ -64,7 +64,11 @@ export function computeWaitCountdown({
     const isWaitingDelay = status === 'waiting_delay';
     const isDepsReady = status === 'deps_ready';
     const isTerminal = TASK_SETTLED_STATUSES.includes(status) || status === 'running';
-    
+    // Retry wait: status stays 'running' while SFN waits between retries.
+    // Save_Retry_Wait_Delay writes wait_delay_until_ms; Save_Retry_Attempt removes it.
+    // Takes precedence over isTerminal so the countdown shows instead of "completed".
+    const isRetryWaiting = status === 'running' && !!waitDelayUntilMs && waitDelayUntilMs > nowMs;
+
     if (isWaitingDelay) {
         // Priority 1: Use deadline if available
         if (waitDelayUntilMs && waitDelayUntilMs > 0) {
@@ -87,15 +91,23 @@ export function computeWaitCountdown({
         result.remainingSeconds = waitBefore;
         result.isPending = true;  // Countdown will start when deps complete
         result.isCountingDown = false;  // Not actively counting yet
+    } else if (isRetryWaiting) {
+        // In-SFN retry delay: deadline is known from Save_Retry_Wait_Delay
+        result.remainingSeconds = Math.max(0, Math.floor((waitDelayUntilMs! - nowMs) / 1000));
+        result.isCountingDown = result.remainingSeconds > 0;
     } else if (isTerminal) {
         // Task completed - show that wait was done
         result.remainingSeconds = 0;
         result.isCompleted = true;
     }
-    
+
     // Calculate progress (for progress bar)
     if (waitBefore > 0) {
-        if (result.isCountingDown) {
+        if (result.isCountingDown && isRetryWaiting && waitDelayStartedMs && waitDelayUntilMs! > waitDelayStartedMs) {
+            // Use actual retry delay span (start→deadline) for correct progress
+            const totalMs = waitDelayUntilMs! - waitDelayStartedMs;
+            result.progressPercent = Math.min(100, ((waitDelayUntilMs! - nowMs) / totalMs) * 100);
+        } else if (result.isCountingDown) {
             // Active countdown - show remaining percentage
             result.progressPercent = Math.min(100, (result.remainingSeconds / waitBefore) * 100);
         } else if (result.isPending) {

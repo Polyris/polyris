@@ -17,6 +17,7 @@ import {
     Play,
     SkipForward,
     RotateCcw,
+    Repeat2,
     RefreshCw,
     Target,
     CircleDot,
@@ -342,7 +343,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                             >
                                 {task.attempt != null && task.attempt > 1 && (
                                     <span className="td-attempt-chip" title="Manual restarts">
-                                        <RotateCcw size={12} aria-hidden /> {task.attempt - 1}
+                                        <Repeat2 size={12} aria-hidden /> {task.attempt - 1}
                                     </span>
                                 )}
                                 {task.retry_attempt != null && task.retry_attempt > 0 && (

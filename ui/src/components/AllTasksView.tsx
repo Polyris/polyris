@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
 import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
-import { Search, Inbox, AlertTriangle, RotateCcw, RefreshCw } from '../utils/icons';
+import { Search, Inbox, AlertTriangle, RotateCcw, RefreshCw, Repeat2 } from '../utils/icons';
 import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
 import { HistoryChrome } from './HistoryChrome';
@@ -284,7 +284,7 @@ export function AllTasksView({
                                                 title={`Manual restarts: ${task.attempt - 1}`}
                                                 aria-label={`Manual restart ${task.attempt - 1}`}
                                             >
-                                                <RotateCcw size={10} aria-hidden /> {task.attempt - 1}
+                                                <Repeat2 size={10} aria-hidden /> {task.attempt - 1}
                                             </span>
                                         )}
                                         {task.retry_attempt != null && task.retry_attempt > 0 && (
