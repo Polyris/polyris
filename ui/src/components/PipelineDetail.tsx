@@ -270,14 +270,16 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
                         {pipeline ? (
                             <>
                                 {dagViewSource === 'current'
-                                    ? <span>Current deployed structure</span>
+                                    ? <>
+                                        <span>Current deployed structure</span>
+                                        {pipeline.registered_at && (
+                                            <span title={pipeline.registered_at}>
+                                                {' · '}Deployed {formatRelativeTime(pipeline.registered_at)}
+                                            </span>
+                                        )}
+                                      </>
                                     : <span>{selectedExecution?.date || date}</span>
                                 }
-                                {pipeline.registered_at && (
-                                    <span title={pipeline.registered_at}>
-                                        {' · '}Deployed {formatRelativeTime(pipeline.registered_at)}
-                                    </span>
-                                )}
                             </>
                         ) : (
                             'Choose from the sidebar'
