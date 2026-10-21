@@ -80,3 +80,30 @@ def test_task_retry_started_is_emitted_by_run_task(sfn_event_type_literals: set[
         "run_task/sfn.tpl.json does not emit TASK_RETRY_STARTED (ADR #125). "
         "Add an Emit_Task_Retry_Started state after Save_Retry_Attempt."
     )
+
+
+# ── Explicit pins for EventType members added by this PR ────────────────────
+
+
+def test_wrapper_started_is_declared(event_type_members: set[str]) -> None:
+    """dependency_wrapper emits WRAPPER_STARTED; the declaration must exist."""
+    assert "WRAPPER_STARTED" in event_type_members, (
+        "EventType.WRAPPER_STARTED missing. "
+        "Add `WRAPPER_STARTED = 'WRAPPER_STARTED'` to console_api/constants.py:EventType."
+    )
+
+
+def test_deps_skipped_is_declared(event_type_members: set[str]) -> None:
+    """dependency_wrapper emits DEPS_SKIPPED; the declaration must exist."""
+    assert "DEPS_SKIPPED" in event_type_members, (
+        "EventType.DEPS_SKIPPED missing. "
+        "Add `DEPS_SKIPPED = 'DEPS_SKIPPED'` to console_api/constants.py:EventType."
+    )
+
+
+def test_deps_blocked_is_declared(event_type_members: set[str]) -> None:
+    """dependency_wrapper emits DEPS_BLOCKED; the declaration must exist."""
+    assert "DEPS_BLOCKED" in event_type_members, (
+        "EventType.DEPS_BLOCKED missing. "
+        "Add `DEPS_BLOCKED = 'DEPS_BLOCKED'` to console_api/constants.py:EventType."
+    )

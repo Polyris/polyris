@@ -139,11 +139,11 @@ field they can't guard against.
   same millisecond. Encoding `retry_attempt` into the `event_time` suffix
   (`#15-<n>`) makes the `(task_run_id, event_time)` composite PK unique per
   retry; without this, DDB `PutItem` silently overwrites the earlier row.
-  **Known edge case:** DynamoDB sorts `event_time` lexicographically, so
-  `#15-10` sorts before `#15-9` when `retry_attempt >= 10`. Uniqueness is
-  unaffected; only the timeline display order would be wrong for ten or more
-  consecutive in-SFN retries within one wrapper — a configuration far outside
-  normal use.
+  **Sort order above 9 retries:** DynamoDB sorts `event_time` lexicographically,
+  so `#15-10` would sort before `#15-9` when `retry_attempt >= 10`. This case
+  is now prevented at the decorator level — `retries > 9` raises `ValueError`
+  at DAG-definition time, enforced in `polyris/task.py` and tested in
+  `tests/sdk/test_task_config_contract.py::TestRetriesValidation`.
 - **Row is a convenience; events are the source of truth.** On DDB throttle after
   the standard retry block, `Save_Retry_Attempt` falls through to the event
   emit. The row-side counter can lag the event sequence by one retry; the UI

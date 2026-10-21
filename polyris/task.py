@@ -609,7 +609,16 @@ class TaskDecorator:
             # Get default_args from current DAG context
             dag = get_current_dag()
             default_args = dag.default_args if dag else {}
-            
+
+            resolved_retries = retries if retries is not None else default_args.get('retries', 0)
+            if resolved_retries > 9:
+                raise ValueError(
+                    f"retries={resolved_retries} exceeds the maximum of 9. "
+                    "Values ≥ 10 cause the TASK_RETRY_STARTED event sort-key suffix "
+                    "('#15-N') to sort lexicographically wrong in the Console timeline "
+                    "(ADR #125)."
+                )
+
             # Create Task with all fields
             t = Task(
                 task_id=tid,
@@ -617,7 +626,7 @@ class TaskDecorator:
                 task_type=task_type,
                 arn=arn or "",
                 role=role,
-                retries=retries if retries is not None else default_args.get('retries', 0),
+                retries=resolved_retries,
                 retry_delay=(
                     retry_delay if retry_delay is not None
                     else default_args.get('retry_delay', timedelta(minutes=5))

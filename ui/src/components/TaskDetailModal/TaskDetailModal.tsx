@@ -589,6 +589,17 @@ interface TimelineTabProps {
     taskEventsLoading: boolean;
 }
 
+const EVENT_LABELS: Record<string, string> = {
+    WRAPPER_STARTED: 'Wrapper',
+    DEPS_READY: 'Deps ready',
+    DEPS_SKIPPED: 'Deps skipped',
+    DEPS_BLOCKED: 'Deps blocked',
+    TASK_STARTED: 'Started',
+    TASK_RETRY_STARTED: 'Auto-retry',
+    TASK_FINISHED: 'Finished',
+    MANUAL_DECISION: 'Decision',
+};
+
 function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) {
     return (
         <div className="td-status-history-container">
@@ -604,7 +615,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                             <div key={idx} className="td-status-event">
                                 <span className="td-event-time">{formatEventTime(evt.event_time)}</span>
                                 <span className={`td-event-badge td-event-${evt.event_type.toLowerCase().replaceAll('_', '-')}`}>
-                                    {evt.event_type.replaceAll('_', ' ')}
+                                    {EVENT_LABELS[evt.event_type] ?? evt.event_type.replaceAll('_', ' ')}
                                 </span>
                                 <span className="td-event-text">
                                     {evt.event_type === 'WRAPPER_STARTED' && `Task wrapper started (attempt ${evt.attempt || 1})`}
@@ -613,7 +624,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                     {evt.event_type === 'TASK_STARTED' && `${evt.task_type || 'Task'} execution started${evt.task_arn ? ` (${evt.task_arn.split(':').pop()})` : ''}`}
                                     {/* ADR #125 — automatic retry re-dispatch */}
                                     {evt.event_type === 'TASK_RETRY_STARTED' && (
-                                        <>Retrying (attempt {(evt.attempt || 1)}, retry {evt.retry_attempt || 1}): {evt.task_type || 'task'} re-dispatched</>
+                                        <>Auto-retry {evt.retry_attempt || 1}{task.max_retries ? ` of ${task.max_retries}` : ''}: {evt.task_type || 'task'} re-dispatched</>
                                     )}
                                     {evt.event_type === 'TASK_FINISHED' && evt.status === 'success' && (
                                         <>Task completed successfully{evt.retry_attempt && evt.retry_attempt > 0 ? ` on retry ${evt.retry_attempt}` : ''}</>

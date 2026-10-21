@@ -769,14 +769,11 @@
                         "S": "{% $states.input.execution_name %}"
                     }
                 },
-                "UpdateExpression": "SET retry_attempt = :ra, last_retry_at = :now REMOVE wait_delay_until_ms, wait_delay_started_ms",
+                "UpdateExpression": "SET retry_attempt = :ra REMOVE wait_delay_until_ms, wait_delay_started_ms",
                 "ConditionExpression": "attempt = :expectedAttempt",
                 "ExpressionAttributeValues": {
                     ":ra": {
                         "N": "{% $string($retry_attempt) %}"
-                    },
-                    ":now": {
-                        "S": "{% $now() %}"
                     },
                     ":expectedAttempt": {
                         "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"

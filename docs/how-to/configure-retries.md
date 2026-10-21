@@ -6,7 +6,7 @@ For the parameter reference (types + defaults) see [DSL.md#common-parameters](..
 
 ## What polyris retries mean
 
-A task that fails *fully* (task code returned an error, or the AWS service reported failure after all its own internal retries) enters polyris's retry loop. Each retry attempt reuses the same task record — the `attempt` counter bumps, the task re-executes, and the wrapper waits according to your policy between attempts.
+A task that fails *fully* (task code returned an error, or the AWS service reported failure after all its own internal retries) enters polyris's retry loop. Each retry attempt reuses the same task record — the task re-executes, and the wrapper waits according to your policy between attempts. The `retry_attempt` counter tracks how many automatic retries have occurred within the current wrapper execution; `attempt` tracks only manual Restart generations (ADR #125).
 
 Two layers of retry that are easy to confuse — polyris takes care of both, and only the first one is your knob:
 
@@ -32,7 +32,7 @@ This matters when you pick a retry count: **retries buy the task a chance to sel
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `retries` | `0` | Attempts *after* the first failure. `retries=3` = up to 4 total attempts. `0` = pause on first failure |
+| `retries` | `0` | Attempts *after* the first failure. `retries=3` = up to 4 total attempts. `0` = pause on first failure. Maximum value: `9` |
 | `retry_delay` | `timedelta(minutes=5)` | Base wait between attempts. With backoff off, wait is exactly this every time |
 | `retry_exponential_backoff` | `False` | If `True`, wait doubles each attempt: `min(retry_delay * 2^attempt, max_retry_delay)` |
 | `max_retry_delay` | `None` (cap of 3600s applies) | Ceiling for the exponential curve. Only relevant with backoff on |
@@ -139,13 +139,19 @@ with DAG(
 
 ## Debugging retry behavior
 
-- Console → Task Detail → **History** tab shows every attempt: start time, duration, status, error message. If you configured `retries=3` and see only two attempts, either the task succeeded, or a human acted on the pause before the third retry.
-- Console → Task Detail → **Details** tab → `attempt` field shows the current attempt number (1-indexed).
-- CloudWatch log group `/aws/vendedlogs/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Wait_Between_Retries` state entries).
+- Console → Task Detail → **Timeline** tab shows every dispatch: one `TASK STARTED` event for the first dispatch, then one `AUTO RETRY` event per automatic retry. If you configured `retries=3` and see only two `AUTO RETRY` events, either the task succeeded on that retry, or a human acted on the pause before the third retry.
+- Console → Task Detail → **Details** tab → **Attempt** stat tile shows two chips when retries have occurred:
+  - ↻ N — number of manual Restarts (bumps only when an operator clicks Restart)
+  - ⭮ N/M — current in-SFN retry index / max retries configured
+  - Neither chip appears when the task is on its first attempt with no auto-retries.
+- Console → **Tasks** view → **Status** column shows the same chips inline for at-a-glance visibility across all tasks.
+- The **Status** cell also shows a countdown timer while the wrapper is sleeping between retries — the same timer used for `wait_before` delays.
+- CloudWatch log group `/aws/vendedlogs/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt` state entries).
 
 ## Related
 
 - [DSL.md#common-parameters](../features/DSL.md#common-parameters-apply-to-every-task-type) — parameter reference (types, defaults)
 - ADR #107 — the wrapper retry loop design (why in-place, why the wait formula)
 - ADR #114 — intervention-first failure model (why retries exhaust into a human decision, not automatic propagation)
+- ADR #125 — retry visibility contract (`retry_attempt` field, `TASK_RETRY_STARTED` event, two-chip UI)
 - [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md) — `run(dag, mock=True)` for testing retry logic locally
