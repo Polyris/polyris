@@ -77,12 +77,13 @@ class TestBatchGetRunMeta:
         call_kwargs = mock_ddb.batch_get_item.call_args[1]['RequestItems'][table]
         assert '#attempt' in call_kwargs['ProjectionExpression']
         assert call_kwargs['ExpressionAttributeNames']['#attempt'] == 'attempt'
+        assert 'retry_attempt' in call_kwargs['ProjectionExpression']
 
     def test_retries_unprocessed_keys_until_empty(self, repo_setup):
         repo, mock_ddb, table = repo_setup
         unprocessed = {table: {
             'Keys': [{'execution_name': 'task-b'}],
-            'ProjectionExpression': 'execution_name, triggered_by, #attempt, task_config',
+            'ProjectionExpression': 'execution_name, triggered_by, #attempt, retry_attempt, task_config',
             'ExpressionAttributeNames': {'#attempt': 'attempt'},
         }}
         mock_ddb.batch_get_item.side_effect = [

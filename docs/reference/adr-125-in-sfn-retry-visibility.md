@@ -139,6 +139,11 @@ field they can't guard against.
   same millisecond. Encoding `retry_attempt` into the `event_time` suffix
   (`#15-<n>`) makes the `(task_run_id, event_time)` composite PK unique per
   retry; without this, DDB `PutItem` silently overwrites the earlier row.
+  **Known edge case:** DynamoDB sorts `event_time` lexicographically, so
+  `#15-10` sorts before `#15-9` when `retry_attempt >= 10`. Uniqueness is
+  unaffected; only the timeline display order would be wrong for ten or more
+  consecutive in-SFN retries within one wrapper — a configuration far outside
+  normal use.
 - **Row is a convenience; events are the source of truth.** On DDB throttle after
   the standard retry block, `Save_Retry_Attempt` falls through to the event
   emit. The row-side counter can lag the event sequence by one retry; the UI

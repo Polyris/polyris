@@ -11,7 +11,6 @@ immediately.
 `TASK_RETRY_STARTED` (ADR #125) is the member this test pins first: it must
 exist on `EventType` AND be emitted somewhere in `run_task/sfn.tpl.json`.
 """
-import importlib.util
 import re
 from pathlib import Path
 

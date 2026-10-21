@@ -137,7 +137,7 @@
 .hc-pager-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* AllTasksView — compact chip shown next to the status badge.
-   Two chips can appear side-by-side (ADR #125): manual restart (RotateCcw) and
+   Two chips can appear side-by-side (ADR #125): manual restart (Repeat2) and
    auto-retry (RefreshCw). inline-flex so icon + number stay on one line; the
    row wraps rather than overflows on narrow screens. */
 .atv-attempt-badge {
@@ -145,7 +145,7 @@
     align-items: center;
     gap: 0.25rem;
     margin-left: 0.375rem;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: 500;
     color: var(--text-secondary);
     vertical-align: middle;

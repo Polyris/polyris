@@ -59,7 +59,7 @@ class EventType:
     TASK_PAUSED = 'TASK_PAUSED'
     TASK_RESUMED = 'TASK_RESUMED'
     MANUAL_DECISION = 'MANUAL_DECISION'
-    RETRY_SCHEDULED = 'RETRY_SCHEDULED'
+    RETRY_SCHEDULED = 'RETRY_SCHEDULED'  # reserved — no SFN state emits this yet
 
 
 # SFN status to internal status mapping
