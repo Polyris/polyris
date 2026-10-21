@@ -22,9 +22,10 @@ export function CountdownTimer({
     // Use centralized status check (STOPPED is not terminal but should stop countdown)
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
     
-    // Only tick when actively counting down (waiting_delay), not when pending (deps_ready)
-    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY;
-    
+    // Tick when actively counting down: initial wait_before delay OR in-SFN retry wait
+    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
+        || (status === TASK_STATUS.RUNNING && !!waitDelayUntilMs);
+
     useEffect(() => {
         if (!isActivelyCountingDown || !waitBefore || waitBefore <= 0 || isTerminal) return;
         

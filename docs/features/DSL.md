@@ -379,7 +379,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `task_id` | str | (inferred from function name) | Override the auto-inferred task id |
 | `execution_timeout` | timedelta | 24 hours | Max task execution time |
 | `orchestration_timeout` | timedelta | same as `execution_timeout` | Max time waiting for dependencies |
-| `retries` | int | 0 | Number of retry attempts |
+| `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
 | `retry_exponential_backoff` | bool | False | Double the wait each retry: `min(retry_delay·2^n, max_retry_delay)` |
 | `max_retry_delay` | timedelta | none (3600s cap) | Ceiling for exponential backoff |

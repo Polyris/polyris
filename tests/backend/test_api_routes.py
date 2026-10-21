@@ -14,6 +14,7 @@ Covers:
 import json
 import os
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 # pytest-mock: mocker fixture used instead of unittest.mock
 from botocore.exceptions import ClientError
 
@@ -465,6 +466,79 @@ def test_pipeline_status_no_reconciliation_when_running(mocker):
     assert resp['tasks'][0]['status'] == 'waiting_delay'
 
 
+def test_pipeline_status_attempt_and_max_retries_in_task(mocker):
+    """attempt and max_retries are present on each task row returned by get_pipeline_status."""
+    mock_execs = MockRepo([
+        {'execution_name': 'extract-2026-01-01-abc', 'pipeline_name': 'daily',
+         'pipeline_execution': 'exec-1', 'task_name': 'extract', 'status': 'failed',
+         'date': TODAY, 'started_at': '2026-01-01T00:00:00Z',
+         'attempt': Decimal('2'), 'task_config': '{"retries": 3, "timeout": 7200}'},
+    ])
+    mock_pipelines = MockRepo([
+        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
+    ])
+    mock_sfn = mocker.MagicMock()
+    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
+
+    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
+    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
+    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    from routes.pipelines_list import get_pipeline_status
+    resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
+
+    task = resp['tasks'][0]
+    assert task['attempt'] == 2, "attempt must be int, not Decimal"
+    assert task['max_retries'] == 3
+
+
+def test_pipeline_status_max_retries_top_level_wins(mocker):
+    """Top-level max_retries (EE-updated) takes precedence over task_config.retries."""
+    mock_execs = MockRepo([
+        {'execution_name': 'extract-2026-01-01-abc', 'pipeline_name': 'daily',
+         'pipeline_execution': 'exec-1', 'task_name': 'extract', 'status': 'failed',
+         'date': TODAY, 'started_at': '2026-01-01T00:00:00Z',
+         'max_retries': 5,
+         'task_config': '{"retries": 3, "timeout": 7200}'},
+    ])
+    mock_pipelines = MockRepo([
+        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
+    ])
+    mock_sfn = mocker.MagicMock()
+    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
+
+    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
+    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
+    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    from routes.pipelines_list import get_pipeline_status
+    resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
+
+    assert resp['tasks'][0]['max_retries'] == 5
+
+
+def test_pipeline_status_attempt_absent_returns_none(mocker):
+    """A task row with no attempt or task_config in DDB yields attempt=None, max_retries=None."""
+    mock_execs = MockRepo([
+        {'execution_name': 'extract-2026-01-01-abc', 'pipeline_name': 'daily',
+         'pipeline_execution': 'exec-1', 'task_name': 'extract', 'status': 'success',
+         'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
+    ])
+    mock_pipelines = MockRepo([
+        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
+    ])
+    mock_sfn = mocker.MagicMock()
+    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
+
+    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
+    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
+    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    from routes.pipelines_list import get_pipeline_status
+    resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
+
+    task = resp['tasks'][0]
+    assert task['attempt'] is None
+    assert task['max_retries'] is None
+
+
 # ============================================================
 # get_pipeline_dag tests
 # ============================================================
@@ -680,3 +754,261 @@ def test_reconcile_running_execution_unchanged(mocker):
     result = _reconcile_orphaned_tasks(tasks)
 
     assert result[0]['status'] == 'waiting_delay'
+
+
+# ============================================================
+# _format_task_row tests — triggered_by, attempt, max_retries
+# ============================================================
+
+class TestFormatTaskRow:
+    """_format_task_row projects triggered_by, attempt, and max_retries
+    (parsed from the task_config JSON blob) into the feed row."""
+
+    def _call(self, item):
+        from routes.tasks import _format_task_row
+        return _format_task_row(item)
+
+    def test_triggered_by_passed_through(self):
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'success', 'date': TODAY, 'triggered_by': 'console_run',
+        })
+        assert row['triggered_by'] == 'console_run'
+
+    def test_triggered_by_absent_is_none(self):
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'success', 'date': TODAY,
+        })
+        assert row['triggered_by'] is None
+
+    def test_attempt_decimal_converted_to_int(self):
+        """boto3.resource returns DDB N values as Decimal; safe_int must convert."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY, 'attempt': Decimal('2'),
+        })
+        assert row['attempt'] == 2
+        assert isinstance(row['attempt'], int)
+
+    def test_attempt_absent_is_none(self):
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'waiting', 'date': TODAY,
+        })
+        assert row['attempt'] is None
+
+    def test_max_retries_parsed_from_task_config(self):
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'failed', 'date': TODAY,
+            'task_config': '{"retries": 3, "timeout": 14400}',
+        })
+        assert row['max_retries'] == 3
+
+    def test_max_retries_zero_when_not_in_task_config(self):
+        """task_config present but no retries key → max_retries is None (retries=0 stores no key)."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'success', 'date': TODAY,
+            'task_config': '{"timeout": 14400}',
+        })
+        assert row['max_retries'] is None
+
+    def test_max_retries_none_when_task_config_absent(self):
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'success', 'date': TODAY,
+        })
+        assert row['max_retries'] is None
+
+    def test_max_retries_none_on_malformed_task_config(self):
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'success', 'date': TODAY,
+            'task_config': 'not-valid-json{',
+        })
+        assert row['max_retries'] is None
+
+    def test_max_retries_from_dict_task_config(self):
+        """task_config stored as a DDB Map (dict after boto3 deserialize) is handled."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'success', 'date': TODAY,
+            'task_config': {'retries': 3, 'timeout': 14400},
+        })
+        assert row['max_retries'] == 3
+
+    def test_max_retries_top_level_wins_over_task_config(self):
+        """Top-level max_retries (written by EE update_task_config) takes precedence
+        over task_config.retries (written at registration). After an EE edit both
+        fields coexist; the top-level value is always more recent."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'failed', 'date': TODAY,
+            'max_retries': 5,
+            'task_config': '{"retries": 3, "timeout": 14400}',
+        })
+        assert row['max_retries'] == 5
+
+    def test_max_retries_top_level_decimal_converted_to_int(self):
+        """Top-level max_retries stored as DDB Number (Decimal) is converted to int."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'failed', 'date': TODAY,
+            'max_retries': Decimal('5'),
+        })
+        assert row['max_retries'] == 5
+        assert isinstance(row['max_retries'], int)
+
+    # ──── ADR #125: retry_attempt surface ────
+
+    def test_retry_attempt_absent_defaults_to_zero(self):
+        """Pre-ADR #125 rows without retry_attempt render as 0, not None — the UI
+        chip is gated on `> 0` so this ensures no accidental badge."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY,
+        })
+        assert row['retry_attempt'] == 0
+        assert isinstance(row['retry_attempt'], int)
+
+    def test_retry_attempt_bumped_during_in_sfn_retry(self):
+        """Save_Retry_Attempt wrote retry_attempt=2 during the loop; _format_task_row
+        must surface it so the UI's RefreshCw chip renders `2/N`."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY,
+            'attempt': 1,            # no manual restart
+            'retry_attempt': Decimal('2'),  # in-SFN auto-retry index
+            'task_config': '{"retries": 3}',
+        })
+        assert row['attempt'] == 1
+        assert row['retry_attempt'] == 2
+        assert row['max_retries'] == 3
+
+    def test_retry_attempt_distinct_from_attempt_after_restart_and_retry(self):
+        """ADR #125 — the two axes stay separate: `attempt=2` means a user
+        restarted once; `retry_attempt=1` means the current wrapper auto-retried
+        once. The UI badge renders both chips distinctly."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY,
+            'attempt': 2,
+            'retry_attempt': 1,
+        })
+        assert row['attempt'] == 2
+        assert row['retry_attempt'] == 1
+
+
+# ============================================================
+# get_task_config — max_retries field resolution
+# ============================================================
+
+class TestGetTaskConfig:
+    """get_task_config must use resolve_max_retries so it reads the registration
+    value (task_config.retries) and gives EE-updated values (top-level max_retries)
+    priority — same contract as _format_task_row and get_pipeline_status."""
+
+    def _call(self, mocker, item):
+        execution_name = 'extract-2026-01-01-abc12345'
+        mock_repo = MockRepo([{**item, 'execution_name': execution_name}])
+        mocker.patch('routes.tasks.executions_repo', mock_repo)
+        from routes.tasks import get_task_config
+        resp = _parse_response(get_task_config(execution_name, _make_event({'date': TODAY})))
+        return resp['config']
+
+    def test_reads_max_retries_from_task_config_blob(self, mocker):
+        """Registration-only task: max_retries comes from task_config.retries, not a default."""
+        cfg = self._call(mocker, {'task_name': 'extract', 'task_config': '{"retries": 5}'})
+        assert cfg['max_retries'] == 5
+
+    def test_top_level_wins_over_task_config(self, mocker):
+        """EE-updated top-level field takes precedence over stale task_config.retries."""
+        cfg = self._call(mocker, {
+            'task_name': 'extract',
+            'max_retries': 7,
+            'task_config': '{"retries": 3}',
+        })
+        assert cfg['max_retries'] == 7
+
+    def test_returns_none_when_no_retry_config(self, mocker):
+        """No fabricated default: when neither field is set, max_retries is null."""
+        cfg = self._call(mocker, {'task_name': 'extract'})
+        assert cfg['max_retries'] is None
+
+
+# ============================================================
+# ADR #125 — get_task_events history endpoint
+# ============================================================
+
+class TestGetTaskEventsRetryAttempt:
+    """get_task_events must surface the new retry_attempt field so the UI
+    history line can distinguish initial dispatch, in-SFN retries, and the
+    terminating TASK_FINISHED. The sort-key suffix (#15-N) must be stripped
+    from event_time before returning to the client, matching the existing
+    convention for TASK_STARTED's #10 suffix."""
+
+    def _invoke(self, mocker, events):
+        mock_repo = MockRepo([{'execution_name': 'e1', 'task_run_id': 'trid1'}])
+        mocker.patch('routes.tasks.executions_repo', mock_repo)
+        mocker.patch(
+            'routes.tasks.task_events_repo.query_by_task_run_id',
+            return_value=events,
+        )
+        from routes.tasks import get_task_events
+        return _parse_response(get_task_events('e1', _make_event({})))
+
+    def test_retry_started_event_surfaces_retry_attempt(self, mocker):
+        """A TASK_RETRY_STARTED event with retry_attempt=1 is returned verbatim,
+        with the #15-N sort suffix stripped from event_time."""
+        resp = self._invoke(mocker, [
+            {
+                'event_type': 'TASK_STARTED',
+                'event_time': '2026-10-08T13:26:53.100Z#10',
+                'attempt': 1, 'retry_attempt': 0,
+                'task_name': 't1', 'task_type': 'glue',
+            },
+            {
+                'event_type': 'TASK_RETRY_STARTED',
+                'event_time': '2026-10-08T13:31:53.100Z#15-1',
+                'attempt': 1, 'retry_attempt': 1,
+                'task_name': 't1', 'task_type': 'glue',
+            },
+        ])
+        evts = resp['events']
+        assert evts[0]['event_type'] == 'TASK_STARTED'
+        assert evts[0]['retry_attempt'] == 0
+        assert evts[1]['event_type'] == 'TASK_RETRY_STARTED'
+        assert evts[1]['retry_attempt'] == 1
+        # Sort-key suffix stripped — the UI shows ISO time, not the DDB sort key.
+        assert '#' not in evts[1]['event_time']
+
+    def test_pre_adr_events_default_retry_attempt_to_zero(self, mocker):
+        """Legacy events (pre-ADR #125) without retry_attempt in the Item default
+        to 0 via safe_int — the UI chip stays hidden rather than crashing."""
+        resp = self._invoke(mocker, [
+            {
+                'event_type': 'TASK_STARTED',
+                'event_time': '2026-10-08T13:26:53.100Z#10',
+                'attempt': 1,
+                'task_name': 't1',
+            },
+        ])
+        assert resp['events'][0]['retry_attempt'] == 0
+
+    def test_task_finished_carries_retry_attempt_for_timeline_grouping(self, mocker):
+        """A failed retry's TASK_FINISHED must carry retry_attempt so the timeline
+        can show 'failed after retry 2' instead of just 'failed'."""
+        resp = self._invoke(mocker, [
+            {
+                'event_type': 'TASK_FINISHED',
+                'event_time': '2026-10-08T13:40:00.000Z#20',
+                'attempt': 1, 'retry_attempt': 2,
+                'status': 'failed',
+                'error_summary': 'boom',
+            },
+        ])
+        evt = resp['events'][0]
+        assert evt['status'] == 'failed'
+        assert evt['retry_attempt'] == 2

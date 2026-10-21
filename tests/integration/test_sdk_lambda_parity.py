@@ -43,7 +43,7 @@ def lambda_symbols() -> Dict[str, Any]:
     """
     src = open(LAMBDA_UTILS_PATH).read()
     defaults_match = re.search(r'_SCHEMA_COLUMN_DEFAULTS\s*=\s*\{[^}]+\}', src, re.DOTALL)
-    func_match = re.search(r'def dict_schema_richness\([^)]*\)[^:]*:\s*\".*', src, re.DOTALL)
+    func_match = re.search(r'def dict_schema_richness\([^)]*\)[^:]*:.*?(?=\ndef |\Z)', src, re.DOTALL)
     assert defaults_match, "Lambda utils.py must define _SCHEMA_COLUMN_DEFAULTS"
     assert func_match, "Lambda utils.py must define dict_schema_richness(...)"
 

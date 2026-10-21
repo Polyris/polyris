@@ -40,17 +40,26 @@ from constants_generated import (
 
 
 class EventType:
-    """Event types for task_events table."""
+    """Event types for task_events table.
+
+    `TASK_STARTED` fires once per wrapper on the first dispatch. `TASK_RETRY_STARTED`
+    (ADR #125) fires on each in-SFN retry re-dispatch inside the same wrapper. Count
+    "task starts" from `TASK_STARTED` only; sum both for total dispatches.
+    """
     TASK_REGISTERED = 'TASK_REGISTERED'
+    WRAPPER_STARTED = 'WRAPPER_STARTED'
     DEPS_READY = 'DEPS_READY'
+    DEPS_SKIPPED = 'DEPS_SKIPPED'
+    DEPS_BLOCKED = 'DEPS_BLOCKED'
     TASK_STARTED = 'TASK_STARTED'
+    TASK_RETRY_STARTED = 'TASK_RETRY_STARTED'
     TASK_FINISHED = 'TASK_FINISHED'
     TASK_FAILED = 'TASK_FAILED'
     TASK_SKIPPED = 'TASK_SKIPPED'
     TASK_PAUSED = 'TASK_PAUSED'
     TASK_RESUMED = 'TASK_RESUMED'
     MANUAL_DECISION = 'MANUAL_DECISION'
-    RETRY_SCHEDULED = 'RETRY_SCHEDULED'
+    RETRY_SCHEDULED = 'RETRY_SCHEDULED'  # reserved — no SFN state emits this yet
 
 
 # SFN status to internal status mapping

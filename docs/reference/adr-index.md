@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_96 rows indexed (74 inline, 22 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_97 rows indexed (74 inline, 24 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|
@@ -106,3 +106,4 @@ _96 rows indexed (74 inline, 22 standalone). Actual ADR count is higher — ADRs
 | 122 | Registration fast-path resolves `deps_skip`/`deps_blocked`; `evaluate_deps` gates on `assets_ready` for wait_for coordination | [`adr-122-registration-fast-path-and-asset-coordination.md`](adr-122-registration-fast-path-and-asset-coordination.md) |
 | 123 | XCom reliable data passing — separate input record + `xcom.push()` for service tasks | [`adr-123-xcom-reliable-data-passing.md`](adr-123-xcom-reliable-data-passing.md) |
 | 124 | `polyris-build-lambda`: stamp XCom helpers into Lambda handler directories | inline |
+| 125 | In-SFN retry visibility (`retry_attempt` field + `TASK_RETRY_STARTED` event) | [`adr-125-in-sfn-retry-visibility.md`](adr-125-in-sfn-retry-visibility.md) |

@@ -70,9 +70,10 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     // Use centralized status check
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
     
-    // Only tick when actively counting down (waiting_delay), not when pending (deps_ready)
-    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY;
-    
+    // Tick when actively counting down: initial wait_before delay OR in-SFN retry wait
+    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
+        || (status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms);
+
     // Only run interval when actually counting down
     useEffect(() => {
         if (!isActivelyCountingDown || !waitBefore || isTerminal) return;

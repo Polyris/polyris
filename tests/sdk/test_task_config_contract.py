@@ -306,3 +306,32 @@ class TestBuildTaskConfigAndArnDirectly:
         first = _build_task_config_and_arn(task_obj)
         second = _build_task_config_and_arn(task_obj)
         assert first == second
+
+
+class TestRetriesValidation:
+    """retries > 9 must be rejected at decorator time (ADR #125 — sort-key uniqueness)."""
+
+    def test_retries_within_bound_accepted(self):
+        from polyris import DAG, task
+        with DAG(dag_id="rv_ok", schedule="@daily"):
+            @task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:t", retries=9)
+            def t():
+                pass
+
+    def test_retries_above_bound_raises(self):
+        import pytest
+        from polyris import DAG, task
+        with pytest.raises(ValueError, match="retries=10"):
+            with DAG(dag_id="rv_bad", schedule="@daily"):
+                @task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:t", retries=10)
+                def t():
+                    pass
+
+    def test_retries_from_default_args_also_validated(self):
+        import pytest
+        from polyris import DAG, task
+        with pytest.raises(ValueError, match="retries=15"):
+            with DAG(dag_id="rv_da", schedule="@daily", default_args={"retries": 15}):
+                @task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:t")
+                def t():
+                    pass

@@ -37,6 +37,7 @@ vi.mock('@/utils/icons', () => ({
     StatusIcon: ({ status }: { status: string }) => <span data-testid={`status-${status}`} />,
     ListTodo: () => <span data-testid="icon-list" />,
     RefreshCw: () => <span data-testid="icon-refresh" />,
+    Repeat2: () => <span data-testid="icon-repeat2" />,
     AlertTriangle: () => <span data-testid="icon-alert" />,
     X: () => <span data-testid="icon-x" />,
 }));
@@ -52,6 +53,7 @@ vi.mock('../utils/icons', () => ({
     StatusIcon: ({ status }: { status: string }) => <span data-testid={`status-${status}`} />,
     ListTodo: () => <span data-testid="icon-list" />,
     RefreshCw: () => <span data-testid="icon-refresh" />,
+    Repeat2: () => <span data-testid="icon-repeat2" />,
     AlertTriangle: () => <span data-testid="icon-alert" />,
     X: () => <span data-testid="icon-x" />,
 }));
@@ -238,6 +240,45 @@ describe('AllTasksView', () => {
             setup({ hasNextPage: true, isFetchingNextPage: true });
             render(<AllTasksView {...defaultProps} />);
             expect(screen.getByRole('button', { name: 'Loading…' })).toBeDisabled();
+        });
+    });
+
+    // ──────────────────────────────────────────────────────────────────────
+    // ADR #125 — two-chip retry indicator (Repeat2 = manual restart, RefreshCw = auto-retry).
+    // ──────────────────────────────────────────────────────────────────────
+    describe('retry chips (ADR #125)', () => {
+        it('shows no chips when attempt=1 and retry_attempt=0', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 1, retry_attempt: 0 }] });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.queryByLabelText(/manual restart/i)).not.toBeInTheDocument();
+            expect(screen.queryByLabelText(/auto-retry/i)).not.toBeInTheDocument();
+        });
+
+        it('shows manual restart chip (Repeat2) when attempt > 1', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 2, retry_attempt: 0 }] });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.getByLabelText('Manual restart 1')).toBeInTheDocument();
+            expect(screen.queryByLabelText(/auto-retry/i)).not.toBeInTheDocument();
+        });
+
+        it('shows auto-retry chip (RefreshCw) when retry_attempt > 0', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 1, retry_attempt: 3 }] });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.queryByLabelText(/manual restart/i)).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Auto-retry 3')).toBeInTheDocument();
+        });
+
+        it('shows both chips when attempt > 1 and retry_attempt > 0', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 2, retry_attempt: 2 }] });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.getByLabelText('Manual restart 1')).toBeInTheDocument();
+            expect(screen.getByLabelText('Auto-retry 2')).toBeInTheDocument();
+        });
+
+        it('auto-retry chip includes max_retries denominator when present', () => {
+            setup({ tasks: [{ ...mockTasks[0], attempt: 1, retry_attempt: 1, max_retries: 3 }] });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.getByLabelText('Auto-retry 1 of 3')).toBeInTheDocument();
         });
     });
 

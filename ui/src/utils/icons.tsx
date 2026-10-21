@@ -42,6 +42,7 @@ import {
     
     // Action icons
     RefreshCw,
+    Repeat2,
     Zap,
     Rocket,
     Rewind,
@@ -416,6 +417,7 @@ export {
     CircleDot,
     HelpCircle,
     RefreshCw,
+    Repeat2,
     Zap,
     Rocket,
     Rewind,
