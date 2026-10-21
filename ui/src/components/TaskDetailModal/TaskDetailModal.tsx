@@ -17,6 +17,7 @@ import {
     Play,
     SkipForward,
     RotateCcw,
+    RefreshCw,
     Target,
     CircleDot,
     Copy,
@@ -320,15 +321,38 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         </div>
                         <div className="td-duration-label">Dependencies</div>
                     </div>
-                    {task.attempt != null && task.attempt > 1 && (
+                    {/* ADR #125 — two distinct chips so the operator can tell a human
+                        Restart (↻) apart from an automatic in-SFN retry (⭮). Each
+                        appears only when its counter is > 0; aria-label spells both out
+                        for screen readers. */}
+                    {((task.attempt != null && task.attempt > 1) ||
+                      (task.retry_attempt != null && task.retry_attempt > 0)) && (
                         <div className="td-duration-stat">
-                            <div className="td-duration-value text-secondary">
-                                <span>
-                                    {task.attempt}
-                                    {task.max_retries != null && task.max_retries > 0 && (
-                                        <span className="td-attempt-max">/{task.max_retries + 1}</span>
-                                    )}
-                                </span>
+                            <div
+                                className="td-duration-value text-secondary td-attempt-chips"
+                                aria-label={[
+                                    task.attempt != null && task.attempt > 1
+                                        ? `Manual restart ${task.attempt - 1}`
+                                        : null,
+                                    task.retry_attempt != null && task.retry_attempt > 0
+                                        ? `auto-retry ${task.retry_attempt}` +
+                                          (task.max_retries ? ` of ${task.max_retries}` : '')
+                                        : null,
+                                ].filter(Boolean).join(', ')}
+                            >
+                                {task.attempt != null && task.attempt > 1 && (
+                                    <span className="td-attempt-chip" title="Manual restarts">
+                                        <RotateCcw size={12} aria-hidden /> {task.attempt - 1}
+                                    </span>
+                                )}
+                                {task.retry_attempt != null && task.retry_attempt > 0 && (
+                                    <span className="td-attempt-chip" title="Automatic retries">
+                                        <RefreshCw size={12} aria-hidden /> {task.retry_attempt}
+                                        {task.max_retries != null && task.max_retries > 0 && (
+                                            <span className="td-attempt-max">/{task.max_retries}</span>
+                                        )}
+                                    </span>
+                                )}
                             </div>
                             <div className="td-duration-label">Attempt</div>
                         </div>
@@ -578,18 +602,26 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                         {taskEvents.map((evt, idx) => (
                             <div key={idx} className="td-status-event">
                                 <span className="td-event-time">{formatEventTime(evt.event_time)}</span>
-                                <span className={`td-event-badge td-event-${evt.event_type.toLowerCase().replace('_', '-')}`}>
-                                    {evt.event_type.replace('_', ' ')}
+                                <span className={`td-event-badge td-event-${evt.event_type.toLowerCase().replaceAll('_', '-')}`}>
+                                    {evt.event_type.replaceAll('_', ' ')}
                                 </span>
                                 <span className="td-event-text">
                                     {evt.event_type === 'WRAPPER_STARTED' && `Task wrapper started (attempt ${evt.attempt || 1})`}
                                     {evt.event_type === 'DEPS_READY' && `Dependencies satisfied${evt.dependencies ? `: ${evt.dependencies}` : ''}`}
                                     {evt.event_type === 'DEPS_BLOCKED' && `Blocked: ${evt.reason || 'upstream failed'}`}
                                     {evt.event_type === 'TASK_STARTED' && `${evt.task_type || 'Task'} execution started${evt.task_arn ? ` (${evt.task_arn.split(':').pop()})` : ''}`}
-                                    {evt.event_type === 'TASK_FINISHED' && evt.status === 'success' && 'Task completed successfully'}
-                                    {evt.event_type === 'TASK_FINISHED' && evt.status === 'failed' && `Task failed${evt.error_summary ? `: ${evt.error_summary}` : ''}`}
+                                    {/* ADR #125 — automatic retry re-dispatch */}
+                                    {evt.event_type === 'TASK_RETRY_STARTED' && (
+                                        <>Retrying (attempt {(evt.attempt || 1)}, retry {evt.retry_attempt || 1}): {evt.task_type || 'task'} re-dispatched</>
+                                    )}
+                                    {evt.event_type === 'TASK_FINISHED' && evt.status === 'success' && (
+                                        <>Task completed successfully{evt.retry_attempt && evt.retry_attempt > 0 ? ` on retry ${evt.retry_attempt}` : ''}</>
+                                    )}
+                                    {evt.event_type === 'TASK_FINISHED' && evt.status === 'failed' && (
+                                        <>Task failed{evt.retry_attempt && evt.retry_attempt > 0 ? ` after retry ${evt.retry_attempt}` : ''}{evt.error_summary ? `: ${evt.error_summary}` : ''}</>
+                                    )}
                                     {evt.event_type === 'MANUAL_DECISION' && <><User size={12} className="inline mr-1" />{evt.decision?.toUpperCase() || 'Action'}: {evt.reason || 'via UI'}</>}
-                                    {!['WRAPPER_STARTED', 'DEPS_READY', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
+                                    {!['WRAPPER_STARTED', 'DEPS_READY', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
                                 </span>
                             </div>
                         ))}

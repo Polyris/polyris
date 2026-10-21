@@ -72,6 +72,9 @@ export interface Task {
   slack_notification_failed?: boolean;
   notification_failed?: boolean;
   attempt?: number;
+  /** ADR #125 — in-SFN auto-retry index within the current wrapper. 0 for first dispatch;
+   * bumps on every automatic retry. Distinct from `attempt` which bumps only on manual Restart. */
+  retry_attempt?: number;
   triggered_by?: string;
   [key: string]: unknown;
 }
@@ -607,6 +610,9 @@ export interface TaskEvent {
   dependencies?: string;
   decision?: string;
   attempt?: number;
+  /** ADR #125 — set on TASK_STARTED (0), TASK_RETRY_STARTED (1..retries),
+   * and TASK_FINISHED (whichever retry terminated). */
+  retry_attempt?: number;
   task_type?: string;
   event_time?: string;
 }

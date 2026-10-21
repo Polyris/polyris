@@ -29,9 +29,13 @@ class ExecutionsRepo:
     # ── Single-item operations ────────────────────────────────────────────
 
     def batch_get_run_meta(self, execution_names: list[str]) -> dict[str, dict]:
-        """Fetch triggered_by, attempt, task_config from the base table for a batch of
-        execution_names.  Used after GSI reads whose NonKeyAttributes don't include these
-        fields.  Returns {execution_name: {field: value, …}}.
+        """Fetch triggered_by, attempt, retry_attempt, task_config from the base table for
+        a batch of execution_names. Used after GSI reads whose NonKeyAttributes don't
+        include these fields. Returns {execution_name: {field: value, …}}.
+
+        retry_attempt (ADR #125) is the in-SFN auto-retry index; without it in this
+        projection the History feed would show 0 for every row even on actively
+        retrying tasks.
 
         Chunks at 100 (AWS limit) and retries UnprocessedKeys automatically.
         """
@@ -44,7 +48,7 @@ class ExecutionsRepo:
                 self._table_name: {
                     'Keys': [{'execution_name': n} for n in unique[i:i + 100]],
                     # `attempt` is a DynamoDB reserved word — alias required.
-                    'ProjectionExpression': 'execution_name, triggered_by, #attempt, task_config',
+                    'ProjectionExpression': 'execution_name, triggered_by, #attempt, retry_attempt, task_config',
                     'ExpressionAttributeNames': {'#attempt': 'attempt'},
                 }
             }

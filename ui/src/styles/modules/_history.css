@@ -136,11 +136,17 @@
 .hc-pager-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
 .hc-pager-btn:disabled { opacity: 0.4; cursor: default; }
 
-/* AllTasksView — attempt badge (shown below the status badge when attempt > 1) */
+/* AllTasksView — compact chip shown next to the status badge.
+   Two chips can appear side-by-side (ADR #125): manual restart (RotateCcw) and
+   auto-retry (RefreshCw). inline-flex so icon + number stay on one line; the
+   row wraps rather than overflows on narrow screens. */
 .atv-attempt-badge {
-    display: inline;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
     margin-left: 0.375rem;
     font-size: 0.7rem;
     font-weight: 500;
     color: var(--text-secondary);
+    vertical-align: middle;
 }

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
 import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
-import { Search, Inbox, AlertTriangle } from '../utils/icons';
+import { Search, Inbox, AlertTriangle, RotateCcw, RefreshCw } from '../utils/icons';
 import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
 import { HistoryChrome } from './HistoryChrome';
@@ -274,8 +274,30 @@ export function AllTasksView({
                                         <span className={`task-status-badge ${task.status}`}>
                                             {task.status}
                                         </span>
+                                        {/* ADR #125 — compact two-chip retry indicator.
+                                            Restart (↻ N) comes from manual UI action;
+                                            Retry (⭮ N/M) is the in-SFN auto-retry index.
+                                            Each chip appears only when its counter > 0. */}
                                         {task.attempt != null && task.attempt > 1 && (
-                                            <span className="atv-attempt-badge">Attempt {task.attempt}</span>
+                                            <span
+                                                className="atv-attempt-badge"
+                                                title={`Manual restarts: ${task.attempt - 1}`}
+                                                aria-label={`Manual restart ${task.attempt - 1}`}
+                                            >
+                                                <RotateCcw size={10} aria-hidden /> {task.attempt - 1}
+                                            </span>
+                                        )}
+                                        {task.retry_attempt != null && task.retry_attempt > 0 && (
+                                            <span
+                                                className="atv-attempt-badge"
+                                                title={`Auto-retries this wrapper: ${task.retry_attempt}${task.max_retries ? ` of ${task.max_retries}` : ''}`}
+                                                aria-label={`Auto-retry ${task.retry_attempt}${task.max_retries ? ` of ${task.max_retries}` : ''}`}
+                                            >
+                                                <RefreshCw size={10} aria-hidden /> {task.retry_attempt}
+                                                {task.max_retries != null && task.max_retries > 0 && (
+                                                    <>/{task.max_retries}</>
+                                                )}
+                                            </span>
                                         )}
                                     </td>
                                     <td className="p-md text-sm text-muted">

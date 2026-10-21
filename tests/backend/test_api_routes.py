@@ -861,6 +861,45 @@ class TestFormatTaskRow:
         assert row['max_retries'] == 5
         assert isinstance(row['max_retries'], int)
 
+    # ──── ADR #125: retry_attempt surface ────
+
+    def test_retry_attempt_absent_defaults_to_zero(self):
+        """Pre-ADR #125 rows without retry_attempt render as 0, not None — the UI
+        chip is gated on `> 0` so this ensures no accidental badge."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY,
+        })
+        assert row['retry_attempt'] == 0
+        assert isinstance(row['retry_attempt'], int)
+
+    def test_retry_attempt_bumped_during_in_sfn_retry(self):
+        """Save_Retry_Attempt wrote retry_attempt=2 during the loop; _format_task_row
+        must surface it so the UI's RefreshCw chip renders `2/N`."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY,
+            'attempt': 1,            # no manual restart
+            'retry_attempt': Decimal('2'),  # in-SFN auto-retry index
+            'task_config': '{"retries": 3}',
+        })
+        assert row['attempt'] == 1
+        assert row['retry_attempt'] == 2
+        assert row['max_retries'] == 3
+
+    def test_retry_attempt_distinct_from_attempt_after_restart_and_retry(self):
+        """ADR #125 — the two axes stay separate: `attempt=2` means a user
+        restarted once; `retry_attempt=1` means the current wrapper auto-retried
+        once. The UI badge renders both chips distinctly."""
+        row = self._call({
+            'execution_name': 'e1', 'task_name': 't1', 'pipeline_name': 'p',
+            'status': 'running', 'date': TODAY,
+            'attempt': 2,
+            'retry_attempt': 1,
+        })
+        assert row['attempt'] == 2
+        assert row['retry_attempt'] == 1
+
 
 # ============================================================
 # get_task_config — max_retries field resolution
@@ -897,3 +936,79 @@ class TestGetTaskConfig:
         """No fabricated default: when neither field is set, max_retries is null."""
         cfg = self._call(mocker, {'task_name': 'extract'})
         assert cfg['max_retries'] is None
+
+
+# ============================================================
+# ADR #125 — get_task_events history endpoint
+# ============================================================
+
+class TestGetTaskEventsRetryAttempt:
+    """get_task_events must surface the new retry_attempt field so the UI
+    history line can distinguish initial dispatch, in-SFN retries, and the
+    terminating TASK_FINISHED. The sort-key suffix (#15-N) must be stripped
+    from event_time before returning to the client, matching the existing
+    convention for TASK_STARTED's #10 suffix."""
+
+    def _invoke(self, mocker, events):
+        mock_repo = MockRepo([{'execution_name': 'e1', 'task_run_id': 'trid1'}])
+        mocker.patch('routes.tasks.executions_repo', mock_repo)
+        mocker.patch(
+            'routes.tasks.task_events_repo.query_by_task_run_id',
+            return_value=events,
+        )
+        from routes.tasks import get_task_events
+        return _parse_response(get_task_events('e1', _make_event({})))
+
+    def test_retry_started_event_surfaces_retry_attempt(self, mocker):
+        """A TASK_RETRY_STARTED event with retry_attempt=1 is returned verbatim,
+        with the #15-N sort suffix stripped from event_time."""
+        resp = self._invoke(mocker, [
+            {
+                'event_type': 'TASK_STARTED',
+                'event_time': '2026-10-08T13:26:53.100Z#10',
+                'attempt': 1, 'retry_attempt': 0,
+                'task_name': 't1', 'task_type': 'glue',
+            },
+            {
+                'event_type': 'TASK_RETRY_STARTED',
+                'event_time': '2026-10-08T13:31:53.100Z#15-1',
+                'attempt': 1, 'retry_attempt': 1,
+                'task_name': 't1', 'task_type': 'glue',
+            },
+        ])
+        evts = resp['events']
+        assert evts[0]['event_type'] == 'TASK_STARTED'
+        assert evts[0]['retry_attempt'] == 0
+        assert evts[1]['event_type'] == 'TASK_RETRY_STARTED'
+        assert evts[1]['retry_attempt'] == 1
+        # Sort-key suffix stripped — the UI shows ISO time, not the DDB sort key.
+        assert '#' not in evts[1]['event_time']
+
+    def test_pre_adr_events_default_retry_attempt_to_zero(self, mocker):
+        """Legacy events (pre-ADR #125) without retry_attempt in the Item default
+        to 0 via safe_int — the UI chip stays hidden rather than crashing."""
+        resp = self._invoke(mocker, [
+            {
+                'event_type': 'TASK_STARTED',
+                'event_time': '2026-10-08T13:26:53.100Z#10',
+                'attempt': 1,
+                'task_name': 't1',
+            },
+        ])
+        assert resp['events'][0]['retry_attempt'] == 0
+
+    def test_task_finished_carries_retry_attempt_for_timeline_grouping(self, mocker):
+        """A failed retry's TASK_FINISHED must carry retry_attempt so the timeline
+        can show 'failed after retry 2' instead of just 'failed'."""
+        resp = self._invoke(mocker, [
+            {
+                'event_type': 'TASK_FINISHED',
+                'event_time': '2026-10-08T13:40:00.000Z#20',
+                'attempt': 1, 'retry_attempt': 2,
+                'status': 'failed',
+                'error_summary': 'boom',
+            },
+        ])
+        evt = resp['events'][0]
+        assert evt['status'] == 'failed'
+        assert evt['retry_attempt'] == 2

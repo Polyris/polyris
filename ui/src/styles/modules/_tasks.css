@@ -569,6 +569,23 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     color: var(--text-muted);
 }
 
+/* ADR #125 — attempt stat holds two chips side-by-side: RotateCcw for manual
+   restart, RefreshCw for auto-retry. flex-wrap so each chip keeps its icon
+   with its number when the cell shrinks on mobile. */
+.td-attempt-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.td-attempt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
 /* Task Type badge — neutral mono chip in the right column */
 .td-task-type-badge {
     display: inline-block;

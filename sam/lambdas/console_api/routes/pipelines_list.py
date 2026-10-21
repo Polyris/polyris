@@ -345,6 +345,9 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'task_type': item.get('task_type', 'sfn'),
             'date': item.get('date', date),
             'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
+            # retry_attempt (ADR #125) — in-SFN auto-retry index for the current wrapper.
+            # Distinct from `attempt` which bumps only on manual Restart.
+            'retry_attempt': safe_int(item.get('retry_attempt'), 0),
             'max_retries': resolve_max_retries(item),
         })
     
