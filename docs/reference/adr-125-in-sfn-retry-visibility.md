@@ -126,15 +126,23 @@ field they can't guard against.
   as `retry_attempt=0`. Old UI pointed at new backend ignores the new field.
   New UI pointed at old backend sees `undefined`, falls through to the "no
   retries happened" branch.
-- **Snapshot churn.** `run_task/sfn.tpl.json` gains three states (`Save_Wait_Delay`
-  before `Wait_Before_Retry`, `Save_Retry_Attempt`, `Emit_Task_Retry_Started`)
-  and bumps three Items (`Emit_Task_Started`, both `Emit_Task_Finished_*`) to
-  carry `attempt` + `retry_attempt`. The pipeline-level ASL snapshots in
-  `tests/sdk/test_asl_snapshots*` are unaffected: `run_task` is a shared helper,
-  not inlined by `generators.py`. The structural tests in
+- **Snapshot churn.** `run_task/sfn.tpl.json` gains four states (`Prepare_Retry_Wait`
+  Pass state, `Save_Retry_Wait_Delay` before `Wait_Before_Retry`, `Save_Retry_Attempt`,
+  `Emit_Task_Retry_Started`) and bumps three Items (`Emit_Task_Started`, both
+  `Emit_Task_Finished_*`) to carry `attempt` + `retry_attempt`. The pipeline-level
+  ASL snapshots in `tests/sdk/test_asl_snapshots*` are unaffected: `run_task` is a
+  shared helper, not inlined by `generators.py`. The structural tests in
   `tests/sdk/test_run_task_template.py` do change — the existing
   `Increment_Retry.Next == 'Check_Task_Type'` assertion flips to point at
   `Save_Retry_Attempt`.
+- **SFN execution-history budget.** The full retry cycle (`Prepare_Retry_Wait`,
+  `Save_Retry_Wait_Delay`, `Wait_Before_Retry`, `Increment_Retry`, `Save_Retry_Attempt`,
+  `Emit_Task_Retry_Started` plus `Check_Task_Type` + task dispatch + `Check_Should_Retry`)
+  generates 21–48 events per iteration: 21 when all DDB operations succeed on the first
+  try; up to 48 when all three Task states exhaust their 3-attempt Retry block. A 9-retry
+  exhausted task generates: 60 (initial path) + 9 × 21–48 (retry cycle) + 60 (failure
+  path) = 309–552 events — well within the 25,000-event execution-history limit.
+  No guard needed at current `retries ≤ 9` cap.
 - **Event sort uniqueness.** With `retry_delay=0`, two retries can land in the
   same millisecond. Encoding `retry_attempt` into the `event_time` suffix
   (`#15-<n>`) makes the `(task_run_id, event_time)` composite PK unique per
@@ -144,6 +152,12 @@ field they can't guard against.
   is now prevented at the decorator level — `retries > 9` raises `ValueError`
   at DAG-definition time, enforced in `polyris/task.py` and tested in
   `tests/sdk/test_task_config_contract.py::TestRetriesValidation`.
+  **Note on `max_retries` field scope:** the top-level `max_retries` DDB field is a
+  display-only denominator (badge) resolved by `resolve_max_retries`. The SFN retry
+  loop reads `task_config.retries` (baked into the execution input at registration time)
+  for the actual retry count gate. Setting `max_retries` via the EE
+  `update_task_config` API changes only the UI badge denominator; it does not change
+  how many retries SFN will execute for the current run.
 - **Row is a convenience; events are the source of truth.** On DDB throttle after
   the standard retry block, `Save_Retry_Attempt` falls through (via `States.ALL`
   catch) to the event emit. The row-side counter can lag the event sequence by one

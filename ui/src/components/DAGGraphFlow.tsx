@@ -14,7 +14,7 @@ import ReactFlow, {
     Panel
 } from 'reactflow';
 import dagre from 'dagre';
-import { formatCountdown, formatWaitBadge, formatDuration } from '../utils';
+import { formatCountdown, formatWaitBadge, formatDuration, isInRetryWait } from '../utils';
 import { TASK_SUCCESS_STATUSES, TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { taskTypeBadge } from '../utils/taskTypeBadge';
 import { mergeNodePositions } from '../utils/reactFlowHelpers';
@@ -76,7 +76,7 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
 
     // Compute now first so isRetryWaiting can guard the early-return below
     const nowMs = tick + (serverOffsetMs || 0);
-    const isRetryWaiting = status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms && task?.wait_delay_until_ms > nowMs;
+    const isRetryWaiting = isInRetryWait(status, task?.wait_delay_until_ms, nowMs);
 
     // Only run interval when actually counting down
     useEffect(() => {
@@ -100,23 +100,32 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     
     if (!badge) return null;
     
+    const badgeTitle = badge.type === 'countdown'
+        ? (isRetryWaiting ? `Waiting to retry — ${badge.text} remaining` : `Waiting to start — ${badge.text} remaining`)
+        : badge.type === 'pending'
+            ? `Wait before start — ${badge.text}`
+            : `Wait completed — ${badge.text} waited`;
+
     return (
-        <div style={{
-            position: 'absolute',
-            top: '-8px',
-            right: '-4px',
-            fontSize: '10px',
-            padding: '2px 6px',
-            background: badge.type === 'countdown' ? 'var(--warning)' 
-                      : badge.type === 'pending' ? 'var(--accent)' 
-                      : 'var(--success)',
-            color: 'white',
-            borderRadius: '4px',
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '2px'
-        }}>
+        <div
+            title={badgeTitle}
+            style={{
+                position: 'absolute',
+                top: '-8px',
+                right: '-4px',
+                fontSize: '10px',
+                padding: '2px 6px',
+                background: badge.type === 'countdown' ? 'var(--warning)'
+                          : badge.type === 'pending' ? 'var(--accent)'
+                          : 'var(--success)',
+                color: 'white',
+                borderRadius: '4px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '2px'
+            }}
+        >
             {badge.type === 'countdown' ? (
                 <Hourglass size={10} />
             ) : badge.type === 'pending' ? (

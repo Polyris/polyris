@@ -335,3 +335,12 @@ class TestRetriesValidation:
                 @task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:t")
                 def t():
                     pass
+
+    def test_retries_per_task_overrides_invalid_dag_default(self):
+        # A task's explicit retries=5 must be validated, not the dag default=10.
+        # The validator resolves per-task value first; dag default is only the fallback.
+        from polyris import DAG, task
+        with DAG(dag_id="rv_override", schedule="@daily", default_args={"retries": 10}):
+            @task.sfn(arn="arn:aws:states:us-east-1:123:stateMachine:t", retries=5)
+            def t():
+                pass

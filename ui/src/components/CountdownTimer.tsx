@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { formatCountdown, computeWaitCountdown } from '../utils';
+import { formatCountdown, computeWaitCountdown, isInRetryWait } from '../utils';
 import { Hourglass, Timer, Check } from '@/utils/icons';
 import { TASK_STATUS, isTerminalStatus, MS } from '@/utils/constants';
 
@@ -21,7 +21,7 @@ export function CountdownTimer({
 
     // Compute now first so isRetryWaiting can guard the early-return below
     const nowMs = tick + (serverOffsetMs || 0);
-    const isRetryWaiting = status === TASK_STATUS.RUNNING && !!waitDelayUntilMs && waitDelayUntilMs > nowMs;
+    const isRetryWaiting = isInRetryWait(status, waitDelayUntilMs, nowMs);
 
     // Use centralized status check (STOPPED is not terminal but should stop countdown)
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
@@ -66,7 +66,7 @@ export function CountdownTimer({
                     : <Timer size={14} className="text-indigo-500" />
                 }
                 <span>{isCountingDown
-                    ? (isRetryWaiting ? 'Retrying after delay' : 'Waiting to Start')
+                    ? (isRetryWaiting ? 'Waiting to retry' : 'Waiting to Start')
                     : 'Wait Before Start'
                 }</span>
             </div>

@@ -63,7 +63,7 @@ export const TERMINAL_STATUSES = new Set<string>(TASK_TERMINAL_STATUSES);
 export const isTerminalStatus = (status: string) => TERMINAL_STATUSES.has(status);
 
 // "Why waiting" reasons for tooltip
-export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | Array<{ asset_name?: string; name?: string }>; wait_before?: number } | null): string | null => {
+export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | Array<{ asset_name?: string; name?: string }>; wait_before?: number; wait_delay_until_ms?: number } | null): string | null => {
     if (!task) return null;
     
     const status = task.status;
@@ -112,6 +112,9 @@ export const getWaitingReason = (task: { status?: string; dependencies?: string[
             return 'Waiting for manual decision';
             
         case TASK_STATUS.RUNNING:
+            if (task.wait_delay_until_ms && task.wait_delay_until_ms > Date.now()) {
+                return 'Waiting to retry';
+            }
             return 'Task is executing';
             
         case TASK_STATUS.PENDING:

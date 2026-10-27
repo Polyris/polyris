@@ -40,6 +40,15 @@ interface CountdownResult {
     progressPercent: number;
 }
 
+/**
+ * True when the task is in an in-SFN retry delay (status stays 'running' while
+ * SFN waits between retries). Single source of truth — used by countdown.ts,
+ * CountdownTimer, and DAGGraphFlow.
+ */
+export function isInRetryWait(status: string, waitDelayUntilMs: number | null | undefined, nowMs: number): boolean {
+    return status === 'running' && !!waitDelayUntilMs && waitDelayUntilMs > nowMs;
+}
+
 export function computeWaitCountdown({
     status,
     waitBefore,
@@ -59,7 +68,7 @@ export function computeWaitCountdown({
     // Retry wait: status stays 'running' while SFN sleeps between retries.
     // Must be computed before the waitBefore guard so tasks without wait_before
     // configured (the common case) still show the retry countdown.
-    const isRetryWaiting = status === 'running' && !!waitDelayUntilMs && waitDelayUntilMs > nowMs;
+    const isRetryWaiting = isInRetryWait(status, waitDelayUntilMs, nowMs);
 
     // No wait_before configured and not in a retry wait — nothing to show
     if ((!waitBefore || waitBefore <= 0) && !isRetryWaiting) {
@@ -151,7 +160,7 @@ export function formatWaitBadge({
     nowMs,
     formatFn
 }: FormatWaitBadgeParams): WaitBadgeResult | null {
-    const _isRetryWaiting = status === 'running' && !!waitDelayUntilMs && waitDelayUntilMs > nowMs;
+    const _isRetryWaiting = isInRetryWait(status, waitDelayUntilMs, nowMs);
     if ((!waitBefore || waitBefore <= 0) && !_isRetryWaiting) {
         return null;
     }

@@ -133,7 +133,7 @@ describe('CountdownTimer', () => {
             );
             expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
             expect(screen.getByText(/remaining/)).toBeInTheDocument();
-            expect(screen.getByText('Retrying after delay')).toBeInTheDocument();
+            expect(screen.getByText('Waiting to retry')).toBeInTheDocument();
             expect(screen.getByText('Task will retry after countdown')).toBeInTheDocument();
         });
 
@@ -146,7 +146,7 @@ describe('CountdownTimer', () => {
             );
             expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
             expect(screen.getByText(/remaining/)).toBeInTheDocument();
-            expect(screen.getByText('Retrying after delay')).toBeInTheDocument();
+            expect(screen.getByText('Waiting to retry')).toBeInTheDocument();
         });
 
         it('still returns null for running status with waitBefore=0 and no deadline (no retry wait)', () => {

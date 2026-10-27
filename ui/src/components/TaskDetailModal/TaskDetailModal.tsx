@@ -342,12 +342,20 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                 ].filter(Boolean).join(', ')}
                             >
                                 {task.attempt != null && task.attempt > 1 && (
-                                    <span className="td-attempt-chip" title="Manual restarts">
+                                    <span
+                                        className="td-attempt-chip"
+                                        title="Manual restarts"
+                                        aria-label={`Manual restart ${task.attempt - 1}`}
+                                    >
                                         <Repeat2 size={12} aria-hidden={true} /> {task.attempt - 1}
                                     </span>
                                 )}
                                 {task.retry_attempt != null && task.retry_attempt > 0 && (
-                                    <span className="td-attempt-chip" title={`Auto-retries: ${task.retry_attempt}${task.max_retries != null && task.max_retries > 0 ? ` of ${task.max_retries}` : ''}`}>
+                                    <span
+                                        className="td-attempt-chip"
+                                        title={`Auto-retries: ${task.retry_attempt}${task.max_retries != null && task.max_retries > 0 ? ` of ${task.max_retries}` : ''}`}
+                                        aria-label={`Auto-retry ${task.retry_attempt}${task.max_retries != null && task.max_retries > 0 ? ` of ${task.max_retries}` : ''}`}
+                                    >
                                         <RefreshCw size={12} aria-hidden={true} /> {task.retry_attempt}
                                         {task.max_retries != null && task.max_retries > 0 && (
                                             <span className="td-attempt-max">/{task.max_retries}</span>
@@ -620,7 +628,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                 <span className="td-event-text">
                                     {evt.event_type === 'WRAPPER_STARTED' && `Task wrapper started (attempt ${evt.attempt || 1})`}
                                     {evt.event_type === 'DEPS_READY' && `Dependencies satisfied${evt.dependencies ? `: ${evt.dependencies}` : ''}`}
-                                    {evt.event_type === 'DEPS_SKIPPED' && 'No upstream dependencies — task dispatched immediately'}
+                                    {evt.event_type === 'DEPS_SKIPPED' && `Trigger condition not met: ${evt.reason || 'task skipped'}`}
                                     {evt.event_type === 'DEPS_BLOCKED' && `Blocked: ${evt.reason || 'upstream failed'}`}
                                     {evt.event_type === 'TASK_STARTED' && `${evt.task_type || 'Task'} execution started${evt.task_arn ? ` (${evt.task_arn.split(':').pop()})` : ''}`}
                                     {/* ADR #125 — automatic retry re-dispatch */}
