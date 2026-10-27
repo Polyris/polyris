@@ -1707,6 +1707,18 @@ class TestRetryVisibility:
         guard_catch = next(c for c in catches if "DynamoDB.ConditionalCheckFailedException" in c["ErrorEquals"])
         assert guard_catch["Next"] == "Stale_Attempt_Superseded"
 
+    def test_save_retry_attempt_throttle_fallthrough_routes_to_emit(self):
+        """On DDB throttle, Save_Retry_Attempt must fall through to
+        Emit_Task_Retry_Started so events remain authoritative even when the row
+        lags (ADR #125 § Consequences — "events are source of truth")."""
+        s = self.rt["States"]["Save_Retry_Attempt"]
+        catches = s["Catch"]
+        states_all_catch = next(c for c in catches if "States.ALL" in c["ErrorEquals"])
+        assert states_all_catch["Next"] == "Emit_Task_Retry_Started", (
+            "States.ALL catch on Save_Retry_Attempt must route to Emit_Task_Retry_Started, "
+            "not Stale_Attempt_Superseded — DDB throttle must not silently kill the retry."
+        )
+
     def test_emit_task_retry_started_event_time_is_unique_per_attempt(self):
         """With retry_delay=0 the same wall-clock millisecond can hold multiple
         emits. Encoding $retry_attempt into the sort key makes the composite

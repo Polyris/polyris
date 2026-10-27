@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
 import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
-import { Search, Inbox, AlertTriangle, RotateCcw, RefreshCw, Repeat2 } from '../utils/icons';
+import { Search, Inbox, AlertTriangle, RefreshCw, Repeat2 } from '../utils/icons';
 import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
 import { HistoryChrome } from './HistoryChrome';
@@ -284,16 +284,16 @@ export function AllTasksView({
                                                 title={`Manual restarts: ${task.attempt - 1}`}
                                                 aria-label={`Manual restart ${task.attempt - 1}`}
                                             >
-                                                <Repeat2 size={10} aria-hidden /> {task.attempt - 1}
+                                                <Repeat2 size={10} aria-hidden={true} /> {task.attempt - 1}
                                             </span>
                                         )}
                                         {task.retry_attempt != null && task.retry_attempt > 0 && (
                                             <span
                                                 className="atv-attempt-badge"
-                                                title={`Auto-retries this wrapper: ${task.retry_attempt}${task.max_retries ? ` of ${task.max_retries}` : ''}`}
+                                                title={`Auto-retries: ${task.retry_attempt}${task.max_retries ? ` of ${task.max_retries}` : ''}`}
                                                 aria-label={`Auto-retry ${task.retry_attempt}${task.max_retries ? ` of ${task.max_retries}` : ''}`}
                                             >
-                                                <RefreshCw size={10} aria-hidden /> {task.retry_attempt}
+                                                <RefreshCw size={10} aria-hidden={true} /> {task.retry_attempt}
                                                 {task.max_retries != null && task.max_retries > 0 && (
                                                     <>/{task.max_retries}</>
                                                 )}

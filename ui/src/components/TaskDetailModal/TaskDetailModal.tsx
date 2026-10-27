@@ -336,19 +336,19 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         ? `Manual restart ${task.attempt - 1}`
                                         : null,
                                     task.retry_attempt != null && task.retry_attempt > 0
-                                        ? `auto-retry ${task.retry_attempt}` +
+                                        ? `Auto-retry ${task.retry_attempt}` +
                                           (task.max_retries ? ` of ${task.max_retries}` : '')
                                         : null,
                                 ].filter(Boolean).join(', ')}
                             >
                                 {task.attempt != null && task.attempt > 1 && (
                                     <span className="td-attempt-chip" title="Manual restarts">
-                                        <Repeat2 size={12} aria-hidden /> {task.attempt - 1}
+                                        <Repeat2 size={12} aria-hidden={true} /> {task.attempt - 1}
                                     </span>
                                 )}
                                 {task.retry_attempt != null && task.retry_attempt > 0 && (
-                                    <span className="td-attempt-chip" title="Automatic retries">
-                                        <RefreshCw size={12} aria-hidden /> {task.retry_attempt}
+                                    <span className="td-attempt-chip" title={`Auto-retries: ${task.retry_attempt}${task.max_retries != null && task.max_retries > 0 ? ` of ${task.max_retries}` : ''}`}>
+                                        <RefreshCw size={12} aria-hidden={true} /> {task.retry_attempt}
                                         {task.max_retries != null && task.max_retries > 0 && (
                                             <span className="td-attempt-max">/{task.max_retries}</span>
                                         )}
@@ -620,6 +620,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                 <span className="td-event-text">
                                     {evt.event_type === 'WRAPPER_STARTED' && `Task wrapper started (attempt ${evt.attempt || 1})`}
                                     {evt.event_type === 'DEPS_READY' && `Dependencies satisfied${evt.dependencies ? `: ${evt.dependencies}` : ''}`}
+                                    {evt.event_type === 'DEPS_SKIPPED' && 'No upstream dependencies — task dispatched immediately'}
                                     {evt.event_type === 'DEPS_BLOCKED' && `Blocked: ${evt.reason || 'upstream failed'}`}
                                     {evt.event_type === 'TASK_STARTED' && `${evt.task_type || 'Task'} execution started${evt.task_arn ? ` (${evt.task_arn.split(':').pop()})` : ''}`}
                                     {/* ADR #125 — automatic retry re-dispatch */}
@@ -633,7 +634,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                         <>Task failed{evt.retry_attempt && evt.retry_attempt > 0 ? ` after retry ${evt.retry_attempt}` : ''}{evt.error_summary ? `: ${evt.error_summary}` : ''}</>
                                     )}
                                     {evt.event_type === 'MANUAL_DECISION' && <><User size={12} className="inline mr-1" />{evt.decision?.toUpperCase() || 'Action'}: {evt.reason || 'via UI'}</>}
-                                    {!['WRAPPER_STARTED', 'DEPS_READY', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
+                                    {!['WRAPPER_STARTED', 'DEPS_READY', 'DEPS_SKIPPED', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
                                 </span>
                             </div>
                         ))}

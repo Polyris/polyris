@@ -74,17 +74,21 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
         || (status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms);
 
+    // Compute now first so isRetryWaiting can guard the early-return below
+    const nowMs = tick + (serverOffsetMs || 0);
+    const isRetryWaiting = status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms && task?.wait_delay_until_ms > nowMs;
+
     // Only run interval when actually counting down
     useEffect(() => {
-        if (!isActivelyCountingDown || !waitBefore || isTerminal) return;
+        if (!isActivelyCountingDown || isTerminal) return;
+        // Tick for retry wait even when task has no wait_before configured
+        if (!waitBefore && !task?.wait_delay_until_ms) return;
         const interval = setInterval(() => setTick(Date.now()), MS.TICK_INTERVAL);
         return () => clearInterval(interval);
-    }, [isActivelyCountingDown, waitBefore, isTerminal]);
-    
-    // Don't show badge for terminal statuses or no wait_before
-    if (isTerminal || !waitBefore || waitBefore <= 0) return null;
-    
-    const nowMs = tick + (serverOffsetMs || 0);
+    }, [isActivelyCountingDown, waitBefore, task?.wait_delay_until_ms, isTerminal]);
+
+    // Show badge for retry wait even when task has no wait_before configured
+    if (isTerminal || ((!waitBefore || waitBefore <= 0) && !isRetryWaiting)) return null;
     const badge = formatWaitBadge({
         status,
         waitBefore,

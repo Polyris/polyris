@@ -133,6 +133,27 @@ describe('CountdownTimer', () => {
             );
             expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
             expect(screen.getByText(/remaining/)).toBeInTheDocument();
+            expect(screen.getByText('Retrying after delay')).toBeInTheDocument();
+            expect(screen.getByText('Task will retry after countdown')).toBeInTheDocument();
+        });
+
+        it('shows retry countdown for tasks with waitBefore=0 (most real tasks have no wait_before)', () => {
+            // The common case: task configured with retries but no wait_before.
+            // The waitBefore=0 guard must not block the retry countdown display.
+            const futureMs = nowMs + 60_000;
+            render(
+                <CountdownTimer waitBefore={0} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs} status="running" serverOffsetMs={0} />
+            );
+            expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
+            expect(screen.getByText(/remaining/)).toBeInTheDocument();
+            expect(screen.getByText('Retrying after delay')).toBeInTheDocument();
+        });
+
+        it('still returns null for running status with waitBefore=0 and no deadline (no retry wait)', () => {
+            const { container } = render(
+                <CountdownTimer waitBefore={0} waitDelayUntilMs={null} waitDelayStartedMs={null} status="running" serverOffsetMs={0} />
+            );
+            expect(container.innerHTML).toBe('');
         });
     });
 

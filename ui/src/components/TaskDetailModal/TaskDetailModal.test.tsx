@@ -1033,34 +1033,34 @@ describe('TaskDetailModal', () => {
             const task = createTask({ attempt: 1, retry_attempt: 0 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.queryByTitle('Manual restarts')).not.toBeInTheDocument();
-            expect(screen.queryByTitle('Automatic retries')).not.toBeInTheDocument();
+            expect(screen.queryByTitle(/^Auto-retries:/)).not.toBeInTheDocument();
         });
 
         it('shows manual restart chip (Repeat2) when attempt > 1', () => {
             const task = createTask({ attempt: 2, retry_attempt: 0 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByTitle('Manual restarts')).toBeInTheDocument();
-            expect(screen.queryByTitle('Automatic retries')).not.toBeInTheDocument();
+            expect(screen.queryByTitle(/^Auto-retries:/)).not.toBeInTheDocument();
         });
 
         it('shows auto-retry chip (RefreshCw) when retry_attempt > 0', () => {
             const task = createTask({ attempt: 1, retry_attempt: 3 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.queryByTitle('Manual restarts')).not.toBeInTheDocument();
-            expect(screen.getByTitle('Automatic retries')).toBeInTheDocument();
+            expect(screen.getByTitle(/^Auto-retries:/)).toBeInTheDocument();
         });
 
         it('shows both chips when attempt > 1 and retry_attempt > 0', () => {
             const task = createTask({ attempt: 2, retry_attempt: 2 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByTitle('Manual restarts')).toBeInTheDocument();
-            expect(screen.getByTitle('Automatic retries')).toBeInTheDocument();
+            expect(screen.getByTitle(/^Auto-retries:/)).toBeInTheDocument();
         });
 
         it('chips container aria-label names both counters for screen readers', () => {
             const task = createTask({ attempt: 2, retry_attempt: 3 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
-            expect(screen.getByLabelText('Manual restart 1, auto-retry 3')).toBeInTheDocument();
+            expect(screen.getByLabelText('Manual restart 1, Auto-retry 3')).toBeInTheDocument();
         });
     });
 

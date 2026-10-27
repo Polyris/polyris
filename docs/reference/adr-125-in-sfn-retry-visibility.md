@@ -145,11 +145,17 @@ field they can't guard against.
   at DAG-definition time, enforced in `polyris/task.py` and tested in
   `tests/sdk/test_task_config_contract.py::TestRetriesValidation`.
 - **Row is a convenience; events are the source of truth.** On DDB throttle after
-  the standard retry block, `Save_Retry_Attempt` falls through to the event
-  emit. The row-side counter can lag the event sequence by one retry; the UI
-  reads the row for the badge and the event stream for the timeline, so the two
-  recover on the next successful write. Documented so a future consumer does
-  not treat the row as authoritative.
+  the standard retry block, `Save_Retry_Attempt` falls through (via `States.ALL`
+  catch) to the event emit. The row-side counter can lag the event sequence by one
+  retry; the UI reads the row for the badge and the event stream for the timeline,
+  so the two recover on the next successful write. Documented so a future consumer
+  does not treat the row as authoritative.
+- **Stale countdown on DDB throttle.** When `Save_Retry_Attempt` falls through via
+  `States.ALL`, its `UpdateItem` — which also REMOVEs `wait_delay_until_ms` /
+  `wait_delay_started_ms` — never executes. The UI `CountdownTimer` will show a
+  stale expired countdown until `Update_Status_Running` cleans those fields on the
+  next wrapper start. This is cosmetic (the actual sleep has already finished) and
+  self-heals on the next run.
 - **Legacy `retry_attempts` (plural) field removed.** `get_task_config` returned
   a dead `retry_attempts` field no SFN state wrote — removing it alongside the
   new `retry_attempt` prevents a two-field trap (Principle #1).
@@ -159,7 +165,9 @@ field they can't guard against.
 Structural tests in `tests/sdk/test_run_task_template.py`:
 
 - `Save_Retry_Attempt` carries `ConditionExpression: attempt = :expectedAttempt`,
-  catches `ConditionalCheckFailedException` → `Stale_Attempt_Superseded`.
+  catches `ConditionalCheckFailedException` → `Stale_Attempt_Superseded`, and
+  catches `States.ALL` → `Emit_Task_Retry_Started` (throttle fallthrough preserves
+  event-as-truth guarantee).
 - `Emit_Task_Retry_Started` writes `event_type = "TASK_RETRY_STARTED"` with both
   `attempt` and `retry_attempt`, `event_time` suffix unique per `retry_attempt`.
 - Every `task-events` emitter (`Emit_Task_Started`, `Emit_Task_Retry_Started`,
@@ -171,8 +179,10 @@ Structural tests in `tests/sdk/test_run_task_template.py`:
   `pipeline_execution_short`).
 
 Parity test in `tests/sdk/test_task_event_type_parity.py` pins the
-`TASK_RETRY_STARTED` literal across `polyris/constants.py`,
-`run_task/sfn.tpl.json`, backend `EventType`, and the UI renderer.
+`TASK_RETRY_STARTED` literal across `console_api/constants.py:EventType` and
+`run_task/sfn.tpl.json`. The UI renderer's `EVENT_LABELS` entry in
+`TaskDetailModal.tsx` is not covered by the automated parity test; it is
+verified at PR review time via `grep`.
 
 Backend tests in `tests/backend/test_api_routes.py` cover `_format_task_row`
 surfacing `retry_attempt`, the history endpoint serializing the new event type,
@@ -183,7 +193,7 @@ UI tests cover the four `(attempt, retry_attempt)` badge combinations in
 `TaskDetailModal.test.tsx` and the chip rendering in `AllTasksView.test.tsx`.
 `aria-label` is pinned so screen readers hear the full phrase.
 
-Smoke test in `tests/e2e/test_retries.py` (gated by `@pytest.mark.smoke`) runs a
-flaky Lambda fixture that fails until `attempt >= desired`, asserts the
-History tab shows one `TASK_STARTED` + N `TASK_RETRY_STARTED` events, and the
-final row has `retry_attempt = N`.
+E2E tests in `tests/e2e/test_retries.py` verify the API contract against a live
+deployment (`POLYRIS_API_URL` required): every task row exposes `retry_attempt`
+(int ≥ 0) and `attempt` (int ≥ 1); `TASK_RETRY_STARTED` events carry both
+counters. Tests `pytest.skip` when no retried tasks exist in the deployment.
