@@ -40,6 +40,15 @@ interface CountdownResult {
     progressPercent: number;
 }
 
+/**
+ * True when the task is in an in-SFN retry delay (status stays 'running' while
+ * SFN waits between retries). Single source of truth — used by countdown.ts,
+ * CountdownTimer, and DAGGraphFlow.
+ */
+export function isInRetryWait(status: string, waitDelayUntilMs: number | null | undefined, nowMs: number): boolean {
+    return status === 'running' && !!waitDelayUntilMs && waitDelayUntilMs > nowMs;
+}
+
 export function computeWaitCountdown({
     status,
     waitBefore,
@@ -56,15 +65,20 @@ export function computeWaitCountdown({
         progressPercent: 0
     };
     
-    // No wait_before configured
-    if (!waitBefore || waitBefore <= 0) {
+    // Retry wait: status stays 'running' while SFN sleeps between retries.
+    // Must be computed before the waitBefore guard so tasks without wait_before
+    // configured (the common case) still show the retry countdown.
+    const isRetryWaiting = isInRetryWait(status, waitDelayUntilMs, nowMs);
+
+    // No wait_before configured and not in a retry wait — nothing to show
+    if ((!waitBefore || waitBefore <= 0) && !isRetryWaiting) {
         return result;
     }
-    
+
     const isWaitingDelay = status === 'waiting_delay';
     const isDepsReady = status === 'deps_ready';
     const isTerminal = TASK_SETTLED_STATUSES.includes(status) || status === 'running';
-    
+
     if (isWaitingDelay) {
         // Priority 1: Use deadline if available
         if (waitDelayUntilMs && waitDelayUntilMs > 0) {
@@ -87,16 +101,25 @@ export function computeWaitCountdown({
         result.remainingSeconds = waitBefore;
         result.isPending = true;  // Countdown will start when deps complete
         result.isCountingDown = false;  // Not actively counting yet
+    } else if (isRetryWaiting) {
+        // In-SFN retry delay: deadline is known from Save_Retry_Wait_Delay
+        result.remainingSeconds = Math.max(0, Math.floor((waitDelayUntilMs! - nowMs) / 1000));
+        result.isCountingDown = result.remainingSeconds > 0;
     } else if (isTerminal) {
         // Task completed - show that wait was done
         result.remainingSeconds = 0;
         result.isCompleted = true;
     }
-    
-    // Calculate progress (for progress bar)
-    if (waitBefore > 0) {
-        if (result.isCountingDown) {
-            // Active countdown - show remaining percentage
+
+    // Calculate progress (for progress bar).
+    // Allow retry-wait progress even when waitBefore=0 (uses deadline span, not waitBefore).
+    if (waitBefore > 0 || isRetryWaiting) {
+        if (result.isCountingDown && isRetryWaiting && waitDelayStartedMs && waitDelayUntilMs! > waitDelayStartedMs) {
+            // Use actual retry delay span (start→deadline) for correct progress
+            const totalMs = waitDelayUntilMs! - waitDelayStartedMs;
+            result.progressPercent = Math.min(100, ((waitDelayUntilMs! - nowMs) / totalMs) * 100);
+        } else if (result.isCountingDown && waitBefore > 0) {
+            // Active initial-wait countdown - show remaining percentage
             result.progressPercent = Math.min(100, (result.remainingSeconds / waitBefore) * 100);
         } else if (result.isPending) {
             // Pending state - show full bar (100%) to indicate countdown hasn't started
@@ -137,7 +160,8 @@ export function formatWaitBadge({
     nowMs,
     formatFn
 }: FormatWaitBadgeParams): WaitBadgeResult | null {
-    if (!waitBefore || waitBefore <= 0) {
+    const _isRetryWaiting = isInRetryWait(status, waitDelayUntilMs, nowMs);
+    if ((!waitBefore || waitBefore <= 0) && !_isRetryWaiting) {
         return null;
     }
     

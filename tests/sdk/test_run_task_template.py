@@ -805,22 +805,30 @@ def test_retry_decision_condition(template):
 
 
 def test_retry_wait_reads_retry_delay(template):
-    """Wait_Before_Retry must wait task_config.retry_delay seconds (dynamic)."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    """Prepare_Retry_Wait computes retry_wait_seconds from task_config.retry_delay (dynamic).
+    The formula was moved from Wait_Before_Retry.Seconds into an Assign so Save_Retry_Wait_Delay
+    and Wait_Before_Retry both use the identical value (ADR #125)."""
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     assert _eval_jsonata(secs, {"task_config": {"retry_delay": 45}}) == 45
     # default when unset
     assert _eval_jsonata(secs, {"task_config": {}}) == 0
 
 
 def test_retry_loop_closes_back_to_dispatch(template):
-    """The retry path must form a terminating loop: decision → wait → increment
-    (bump counter) → back to Check_Task_Type to re-dispatch the same task."""
+    """The retry path must form a terminating loop. Current shape (ADR #125):
+    Check_Should_Retry → Prepare_Retry_Wait → Save_Retry_Wait_Delay → Wait_Before_Retry
+    → Increment_Retry → Save_Retry_Attempt → Emit_Task_Retry_Started → Check_Task_Type.
+    """
     states = template["States"]
-    assert states["Check_Should_Retry"]["Choices"][0]["Next"] == "Wait_Before_Retry"
+    assert states["Check_Should_Retry"]["Choices"][0]["Next"] == "Prepare_Retry_Wait"
+    assert states["Prepare_Retry_Wait"]["Next"] == "Save_Retry_Wait_Delay"
+    assert states["Save_Retry_Wait_Delay"]["Next"] == "Wait_Before_Retry"
     assert states["Wait_Before_Retry"]["Next"] == "Increment_Retry"
     inc = states["Increment_Retry"]
-    assert inc["Next"] == "Check_Task_Type"        # re-dispatch
-    assert "retry_attempt" in inc["Assign"]        # counter bump => loop terminates
+    assert inc["Next"] == "Save_Retry_Attempt"      # ADR #125 bookkeeping before dispatch
+    assert "retry_attempt" in inc["Assign"]         # counter bump => loop terminates
+    assert states["Save_Retry_Attempt"]["Next"] == "Emit_Task_Retry_Started"
+    assert states["Emit_Task_Retry_Started"]["Next"] == "Check_Task_Type"  # re-dispatch
 
 
 def test_decorators_reject_unknown_kwargs():
@@ -1002,7 +1010,7 @@ def test_lambda_function_name_reaches_invoke(template):
 
 def test_retry_wait_exponential_backoff_when_enabled(template):
     """With retry_backoff the wait doubles per attempt, capped at max_retry_delay."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     tc = {"task_config": {"retry_delay": 10, "retry_backoff": True, "max_retry_delay": 60}}
     assert _eval_jsonata(secs, tc, {"retry_attempt": 0}) == 10   # 10 * 2^0
     assert _eval_jsonata(secs, tc, {"retry_attempt": 1}) == 20   # 10 * 2^1
@@ -1013,7 +1021,7 @@ def test_retry_wait_exponential_backoff_when_enabled(template):
 
 def test_retry_wait_backoff_uncapped_defaults_to_ceiling(template):
     """Backoff without max_retry_delay still bounds the wait at the 3600s default."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     tc = {"task_config": {"retry_delay": 10, "retry_backoff": True}}  # no cap set
     assert _eval_jsonata(secs, tc, {"retry_attempt": 2}) == 40
     assert _eval_jsonata(secs, tc, {"retry_attempt": 20}) == 3600   # default ceiling
@@ -1021,7 +1029,7 @@ def test_retry_wait_backoff_uncapped_defaults_to_ceiling(template):
 
 def test_retry_wait_fixed_when_backoff_disabled(template):
     """Without retry_backoff the wait stays fixed regardless of attempt (default)."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     tc = {"task_config": {"retry_delay": 10}}
     assert _eval_jsonata(secs, tc, {"retry_attempt": 0}) == 10
     assert _eval_jsonata(secs, tc, {"retry_attempt": 5}) == 10
@@ -1074,7 +1082,7 @@ def test_backoff_without_cap_omits_max_retry_delay():
 def test_retry_wait_jitter_bounds_over_backoff(template):
     """With retry_jitter over exponential backoff, each wait is a random integer in
     [base/2, base) where base = min(retry_delay*2^attempt, cap)."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     tc = {"task_config": {"retry_delay": 10, "retry_backoff": True,
                           "max_retry_delay": 60, "retry_jitter": True}}
     vals = [_eval_jsonata(secs, tc, {"retry_attempt": 2}) for _ in range(200)]  # base=40
@@ -1085,7 +1093,7 @@ def test_retry_wait_jitter_bounds_over_backoff(template):
 
 def test_retry_wait_jitter_bounds_over_fixed(template):
     """Jitter also applies over a fixed (non-backoff) delay: [base/2, base)."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     tc = {"task_config": {"retry_delay": 45, "retry_jitter": True}}
     vals = [_eval_jsonata(secs, tc, {"retry_attempt": 3}) for _ in range(200)]
     assert all(22 <= v < 45 for v in vals), (min(vals), max(vals))
@@ -1093,7 +1101,7 @@ def test_retry_wait_jitter_bounds_over_fixed(template):
 
 def test_retry_wait_no_jitter_is_deterministic(template):
     """Without retry_jitter the wait is exactly the computed value (no randomness)."""
-    secs = template["States"]["Wait_Before_Retry"]["Seconds"]
+    secs = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
     tc = {"task_config": {"retry_delay": 10, "retry_backoff": True, "max_retry_delay": 60}}
     vals = {_eval_jsonata(secs, tc, {"retry_attempt": 2}) for _ in range(20)}
     assert vals == {40}
@@ -1641,3 +1649,136 @@ def test_emr_does_not_inject_task_name_env(template):
     args = resolved["Step"]["HadoopJarStep"]["Args"]
     assert "--POLYRIS_TASK_NAME" not in args
     assert "--POLYRIS_WRAPPER_RUN_ID" not in args
+
+
+# =============================================================================
+# ADR #125 — In-SFN retry visibility (retry_attempt field + TASK_RETRY_STARTED)
+# =============================================================================
+
+class TestRetryVisibility:
+    """Structural guards for the ADR #125 contract.
+
+    Changes mean little without protection against regression; these tests pin
+    the invariants a future refactor is most likely to break silently."""
+
+    @pytest.fixture(autouse=True)
+    def _tpl(self, template):
+        self.rt = template
+
+    def _task_events_emitters(self):
+        """Every state that writes to ${task_events_table} via dynamodb:putItem."""
+        for name, body in self.rt["States"].items():
+            if body.get("Resource") != "arn:aws:states:::dynamodb:putItem":
+                continue
+            args = body.get("Arguments", {})
+            if args.get("TableName") == "${task_events_table}":
+                yield name, body
+
+    def test_every_task_event_emitter_carries_attempt_and_retry_attempt(self):
+        """Regression gate for the original Emit_Task_Started bug: it emitted no
+        `attempt` field, so the backend defaulted every start to attempt=1 and
+        the UI could not render a bumped attempt. Every emitter of a task-events
+        row must carry both axes (ADR #125)."""
+        missing_attempt: list[str] = []
+        missing_retry_attempt: list[str] = []
+        for name, body in self._task_events_emitters():
+            item = body.get("Arguments", {}).get("Item", {})
+            if "attempt" not in item:
+                missing_attempt.append(name)
+            if "retry_attempt" not in item:
+                missing_retry_attempt.append(name)
+        assert not missing_attempt, (
+            f"task-events emitters missing `attempt` field: {missing_attempt}. "
+            "Add `\"attempt\": {\"N\": ...}` to each Item (ADR #125 regression gate)."
+        )
+        assert not missing_retry_attempt, (
+            f"task-events emitters missing `retry_attempt` field: {missing_retry_attempt}. "
+            "Add `\"retry_attempt\": {\"N\": ...}` to each Item (ADR #125 regression gate)."
+        )
+
+    def test_save_retry_attempt_has_stale_attempt_guard(self):
+        """A ghost retry from a wrapper that was superseded by Restart writes with
+        an old :expectedAttempt — the ConditionExpression must reject it so the
+        new wrapper's state is never clobbered mid-flight (ADR #125 + ADR #107)."""
+        s = self.rt["States"]["Save_Retry_Attempt"]
+        assert s["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+        # And the stale-write Catch must terminate quietly, not continue the loop.
+        catches = s["Catch"]
+        guard_catch = next(c for c in catches if "DynamoDB.ConditionalCheckFailedException" in c["ErrorEquals"])
+        assert guard_catch["Next"] == "Stale_Attempt_Superseded"
+
+    def test_save_retry_attempt_throttle_fallthrough_routes_to_emit(self):
+        """On DDB throttle, Save_Retry_Attempt must fall through to
+        Emit_Task_Retry_Started so events remain authoritative even when the row
+        lags (ADR #125 § Consequences — "events are source of truth")."""
+        s = self.rt["States"]["Save_Retry_Attempt"]
+        catches = s["Catch"]
+        states_all_catch = next(c for c in catches if "States.ALL" in c["ErrorEquals"])
+        assert states_all_catch["Next"] == "Emit_Task_Retry_Started", (
+            "States.ALL catch on Save_Retry_Attempt must route to Emit_Task_Retry_Started, "
+            "not Stale_Attempt_Superseded — DDB throttle must not silently kill the retry."
+        )
+
+    def test_emit_task_retry_started_event_time_is_unique_per_attempt(self):
+        """With retry_delay=0 the same wall-clock millisecond can hold multiple
+        emits. Encoding $retry_attempt into the sort key makes the composite
+        (task_run_id, event_time) PK unique so DynamoDB does not silently
+        overwrite earlier retry rows."""
+        emit = self.rt["States"]["Emit_Task_Retry_Started"]
+        event_time_expr = emit["Arguments"]["Item"]["event_time"]["S"]
+        assert "$retry_attempt" in event_time_expr, (
+            "event_time must include $retry_attempt — otherwise two retries in "
+            "the same ms produce the same PK and overwrite in task-events."
+        )
+        # And the suffix must sort AFTER TASK_STARTED's #10 so the timeline is
+        # chronological; our convention is `#15-N`.
+        assert "'#15-'" in event_time_expr
+
+    def test_emit_task_retry_started_event_type_literal(self):
+        """ADR #125 — the new event type literal is pinned by the parity test
+        (test_task_event_type_parity.py); this test additionally pins it is the
+        literal emitted here, not a typo like TASK_RETRY_START."""
+        emit = self.rt["States"]["Emit_Task_Retry_Started"]
+        assert emit["Arguments"]["Item"]["event_type"]["S"] == "TASK_RETRY_STARTED"
+
+    def test_update_status_running_resets_retry_attempt(self):
+        """A fresh wrapper (initial dispatch or manual Restart) must begin with
+        retry_attempt=0 so the UI badge and the row agree. Without the reset a
+        Restart would inherit the previous wrapper's retry_attempt and show a
+        stale value until the first retry (ADR #125)."""
+        us = self.rt["States"]["Update_Status_Running"]
+        update_expr = us["Arguments"]["UpdateExpression"]
+        assert "retry_attempt = :ra0" in update_expr
+        assert us["Arguments"]["ExpressionAttributeValues"][":ra0"] == {"N": "0"}
+
+    def test_save_retry_wait_delay_writes_countdown_fields(self):
+        """The retry Wait must surface via the same wait_delay_until_ms /
+        wait_delay_started_ms fields the UI's CountdownTimer already consumes
+        for pause/delay waits — one display path, not two."""
+        s = self.rt["States"]["Save_Retry_Wait_Delay"]
+        upd = s["Arguments"]["UpdateExpression"]
+        assert "wait_delay_started_ms = :started_ms" in upd
+        assert "wait_delay_until_ms = :until_ms" in upd
+        # And the until_ms derivation must use the retry_wait_seconds variable
+        # that Prepare_Retry_Wait assigned — otherwise the row and the Wait
+        # could drift (one jitter sample vs another).
+        until_ms_expr = s["Arguments"]["ExpressionAttributeValues"][":until_ms"]["N"]
+        assert "$retry_wait_seconds" in until_ms_expr
+
+    def test_wait_before_retry_uses_prepared_variable(self):
+        """Wait_Before_Retry.Seconds must read the $retry_wait_seconds variable
+        assigned in Prepare_Retry_Wait — reusing the same value as Save_Retry_Wait_Delay
+        so the UI countdown and the actual sleep agree to the millisecond."""
+        wait = self.rt["States"]["Wait_Before_Retry"]
+        assert wait["Seconds"] == "{% $retry_wait_seconds %}"
+
+    def test_increment_retry_output_strips_prior_error(self):
+        """ADR #107 — the retry loop must drop the prior attempt's error from
+        the forwarded input so the re-dispatch does not accidentally see a
+        stale `error` field. Pinned to prevent regression after the loop
+        rewiring in ADR #125."""
+        inc = self.rt["States"]["Increment_Retry"]
+        output = inc["Output"]
+        assert "'error'" in output
+        assert "'error_obj'" in output
+        assert "'task_execution_arn'" in output

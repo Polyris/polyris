@@ -326,6 +326,7 @@
 .td-event-stopped { background: var(--stopped-light); color: var(--stopped); }
 .td-event-aborted { background: var(--aborted-light); color: var(--aborted); }
 .td-event-decision { background: #fff7ed; color: #f97316; }
+.td-event-task-retry-started { background: #fef3c7; color: #d97706; }
 
 /* Empty States */
 /* Loading */

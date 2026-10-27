@@ -24,6 +24,7 @@ with DAG(
     tags=["example", "analytics", "daily"],
     doc_md="End-to-end reference pipeline combining several services.",
     default_args={
+        "retries": 2,
         "retry_exponential_backoff": True,
         "execution_timeout": timedelta(hours=1),
         "orchestration_timeout": timedelta(hours=4),

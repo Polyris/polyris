@@ -1,5 +1,16 @@
 ## Unreleased
 
+### Added — retry visibility in the Console (ADR #125)
+
+Auto-retries are now visible without opening the AWS console.
+
+- **All Tasks list** — new **Source** column (Console / Schedule / Asset / Backfill) and compact retry chips in the Status cell: ↻ N for manual Restarts, ⭮ N/M for in-SFN auto-retries.
+- **Task detail modal** — new **Attempt** stat tile in the Details tab showing both chips when either counter is above zero. The Timeline tab shows one `AUTO RETRY` event per retry dispatch, with a countdown timer during the inter-retry wait.
+- **Backend** — `retry_attempt` field on `pipeline-tokens` rows (reset to `0` on every wrapper start; bumped by `Save_Retry_Attempt` on each retry). `TASK_RETRY_STARTED` event type in `task-events`. `resolve_max_retries` helper unifies the EE top-level field and the registration `task_config.retries` blob.
+- **SDK validation** — `retries > 9` now raises `ValueError` at DAG-definition time.
+
+Backward-compatible: rows and events without the new field default to `0` via the backend's `safe_int` fallback.
+
 ### Fixed — `polyris-init` starter pipeline retry default
 
 `polyris-init` now scaffolds `default_args={"retries": 0}` (pause on first failure, 1 total attempt) instead of the previous `{"retries": 2}`. The previous value contradicted the documented system default and the intervention-first model (ADR #114). Explicitly setting `retries=N` on any individual task still overrides the DAG-level default.

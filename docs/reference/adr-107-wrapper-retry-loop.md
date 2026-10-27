@@ -80,10 +80,12 @@ instead of fighting it.
 - **Backward-compatible.** `retries=0` ⇒ `0 < 0` is false ⇒ straight to
   `Save_Error_Waiting`, i.e. today's behavior. Existing snapshots change only for
   tasks that actually set retries.
-- **Observability trade-off.** Retries are internal to one execution, so each
+- **Observability.** Retries are internal to one execution, so each
   attempt is **not** a separate console execution; DynamoDB status stays
   `running` across attempts. (C's per-attempt executions would have been more
-  granular but at the cost above.)
+  granular but at the cost above.) The Console visibility gap is addressed by
+  ADR #125: a new `retry_attempt` DDB field + `TASK_RETRY_STARTED` event type +
+  two-chip UI indicator in the Details tab and Tasks list.
 - **Exponential backoff (opt-in).** With `retry_exponential_backoff=True` the wait
   is `min(retry_delay * 2^attempt, max_retry_delay)` — computed in
   `Wait_Before_Retry` as a JSONata expression over the runtime `retry_attempt`

@@ -119,7 +119,7 @@
                         "S": "{% $states.input.execution_name %}"
                     }
                 },
-                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, task_arn = :task_arn, task_type = :task_type",
+                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, retry_attempt = :ra0, task_arn = :task_arn, task_type = :task_type REMOVE wait_delay_until_ms, wait_delay_started_ms",
                 "ConditionExpression": "attribute_not_exists(attempt) OR attempt <= :expectedAttempt",
                 "ExpressionAttributeNames": {
                     "#s": "status"
@@ -139,6 +139,9 @@
                     },
                     ":attempt": {
                         "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    },
+                    ":ra0": {
+                        "N": "0"
                     },
                     ":task_arn": {
                         "S": "{% $exists($states.input.task_arn) ? $states.input.task_arn : '' %}"
@@ -188,7 +191,7 @@
         },
         "Emit_Task_Started": {
             "Type": "Task",
-            "Comment": "Record TASK_STARTED event for timeline",
+            "Comment": "Record TASK_STARTED event for timeline. Carries attempt (wrapper gen, ADR #125) and retry_attempt=0 — the UI's history renderer reads both; without them, every start would render as attempt=1 via the backend safe_int default.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${task_events_table}",
@@ -222,6 +225,12 @@
                     },
                     "task_arn": {
                         "S": "{% $states.input.task_arn %}"
+                    },
+                    "attempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    },
+                    "retry_attempt": {
+                        "N": "0"
                     },
                     "ttl": {
                         "N": "{% $string($states.input.ttl) %}"
@@ -672,25 +681,214 @@
             "Choices": [
                 {
                     "Condition": "{% $retry_attempt < ($exists($states.input.task_config.retries) ? $states.input.task_config.retries : 0) %}",
-                    "Next": "Wait_Before_Retry"
+                    "Next": "Prepare_Retry_Wait"
                 }
             ],
             "Default": "Save_Error_Waiting"
         },
+        "Prepare_Retry_Wait": {
+            "Type": "Pass",
+            "Comment": "Compute the retry wait seconds once and bind as $retry_wait_seconds — reused by both Save_Retry_Wait_Delay (writes wait_delay_until_ms for UI CountdownTimer, ADR #125) and Wait_Before_Retry (actually sleeps). Formula per ADR #107: base = fixed retry_delay, or exponential min(retry_delay*2^attempt, max_retry_delay) when retry_backoff; with retry_jitter apply equal jitter in [base/2, base).",
+            "Assign": {
+                "retry_wait_seconds": "{% ($base := ($exists($states.input.task_config.retry_backoff) and $states.input.task_config.retry_backoff) ? $min([$states.input.task_config.retry_delay * $power(2, $retry_attempt), ($exists($states.input.task_config.max_retry_delay) ? $states.input.task_config.max_retry_delay : 3600)]) : ($exists($states.input.task_config.retry_delay) ? $states.input.task_config.retry_delay : 0); ($exists($states.input.task_config.retry_jitter) and $states.input.task_config.retry_jitter) ? $floor($base * (0.5 + $random() * 0.5)) : $base) %}"
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Save_Retry_Wait_Delay"
+        },
+        "Save_Retry_Wait_Delay": {
+            "Type": "Task",
+            "Comment": "Write wait_delay_started_ms + wait_delay_until_ms on the row so the UI's CountdownTimer renders the retry wait exactly as it does the pause/delay wait (ADR #125). Unconditional SET (not if_not_exists) because each retry recomputes the deadline. Best-effort — a DDB failure here never blocks the sleep itself.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET wait_delay_started_ms = :started_ms, wait_delay_until_ms = :until_ms",
+                "ExpressionAttributeValues": {
+                    ":started_ms": {
+                        "N": "{% $string($millis()) %}"
+                    },
+                    ":until_ms": {
+                        "N": "{% $string($millis() + ($retry_wait_seconds * 1000)) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Wait_Before_Retry",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure — proceed to Wait anyway; the retry still runs correctly, UI countdown just won't render for this attempt.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Wait_Before_Retry"
+                }
+            ]
+        },
         "Wait_Before_Retry": {
             "Type": "Wait",
-            "Comment": "Wait between retries. Base = fixed retry_delay, or exponential min(retry_delay*2^attempt, max_retry_delay) when retry_backoff. With retry_jitter, apply equal jitter: a random value in [base/2, base) (ADR #107).",
-            "Seconds": "{% ($base := ($exists($states.input.task_config.retry_backoff) and $states.input.task_config.retry_backoff) ? $min([$states.input.task_config.retry_delay * $power(2, $retry_attempt), ($exists($states.input.task_config.max_retry_delay) ? $states.input.task_config.max_retry_delay : 3600)]) : ($exists($states.input.task_config.retry_delay) ? $states.input.task_config.retry_delay : 0); ($exists($states.input.task_config.retry_jitter) and $states.input.task_config.retry_jitter) ? $floor($base * (0.5 + $random() * 0.5)) : $base) %}",
+            "Comment": "Wait between retries. Seconds comes from $retry_wait_seconds assigned in Prepare_Retry_Wait so the row's wait_delay_until_ms and this Wait use the identical value — no drift between what the UI shows and what SFN sleeps.",
+            "Seconds": "{% $retry_wait_seconds %}",
             "Next": "Increment_Retry"
         },
         "Increment_Retry": {
             "Type": "Pass",
-            "Comment": "Bump the attempt counter and strip the prior error before re-dispatching via Check_Task_Type.",
+            "Comment": "Bump the retry index and strip the prior error. Routes to Save_Retry_Attempt (ADR #125) so the row's retry_attempt field and a TASK_RETRY_STARTED event land before re-dispatch — this is what makes retries visible in the UI.",
             "Assign": {
                 "retry_attempt": "{% $retry_attempt + 1 %}"
             },
             "Output": "{% $states.input ~> |$|{}, ['error', 'error_obj', 'task_execution_arn']| %}",
-            "Next": "Check_Task_Type"
+            "Next": "Save_Retry_Attempt"
+        },
+        "Save_Retry_Attempt": {
+            "Type": "Task",
+            "Comment": "Persist the bumped retry_attempt on the row with the stale-attempt guard (ADR #125): a ghost retry from a wrapper that was superseded by a user Restart has an old :expectedAttempt and the ConditionExpression rejects it, routing to Stale_Attempt_Superseded. Also clears wait_delay fields now that the Wait is over.",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    }
+                },
+                "UpdateExpression": "SET retry_attempt = :ra REMOVE wait_delay_until_ms, wait_delay_started_ms",
+                "ConditionExpression": "attempt = :expectedAttempt",
+                "ExpressionAttributeValues": {
+                    ":ra": {
+                        "N": "{% $string($retry_attempt) %}"
+                    },
+                    ":expectedAttempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Emit_Task_Retry_Started",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer wrapper (Restart) has already bumped `attempt`; this retry is a ghost. End quietly — the newer wrapper is in flight and will emit its own TASK_STARTED.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure — proceed to emit the event (events are source of truth; the row may lag by one retry).",
+                    "Output": "{% $states.input %}",
+                    "Next": "Emit_Task_Retry_Started"
+                }
+            ]
+        },
+        "Emit_Task_Retry_Started": {
+            "Type": "Task",
+            "Comment": "Record TASK_RETRY_STARTED event for timeline (ADR #125). event_time suffix encodes retry_attempt so the composite (task_run_id, event_time) PK is unique even when retry_delay=0 and two retries land in the same millisecond. Suffix `#15-N` sorts between the attempt's TASK_STARTED (`#10`) and TASK_FINISHED (`#20`).",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${task_events_table}",
+                "Item": {
+                    "task_run_id": {
+                        "S": "{% $exists($states.input.task_run_id) ? $states.input.task_run_id : $states.input.execution_name %}"
+                    },
+                    "event_time": {
+                        "S": "{% $now() & '#15-' & $string($retry_attempt) %}"
+                    },
+                    "event_type": {
+                        "S": "TASK_RETRY_STARTED"
+                    },
+                    "execution_name": {
+                        "S": "{% $states.input.execution_name %}"
+                    },
+                    "parent_execution_id": {
+                        "S": "{% $exists($states.input.parent_execution_id) ? $states.input.parent_execution_id : $states.input.pipeline_execution %}"
+                    },
+                    "backfill_id": {
+                        "S": "{% $exists($states.input.backfill_id) ? $states.input.backfill_id : '' %}"
+                    },
+                    "partition_key": {
+                        "S": "{% $exists($states.input.partition_key) ? $states.input.partition_key : ($exists($states.input.current_date) ? $states.input.current_date : '') %}"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "task_type": {
+                        "S": "{% $exists($states.input.task_type) ? $states.input.task_type : 'sfn' %}"
+                    },
+                    "task_arn": {
+                        "S": "{% $exists($states.input.task_arn) ? $states.input.task_arn : '' %}"
+                    },
+                    "attempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    },
+                    "retry_attempt": {
+                        "N": "{% $string($retry_attempt) %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($states.input.ttl) %}"
+                    }
+                }
+            },
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Output": "{% $states.input %}",
+            "Next": "Check_Task_Type",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "DDB failure — proceed to re-dispatch; the event will be missing in history but the retry still runs.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Check_Task_Type"
+                }
+            ]
         },
         "Save_Error_Waiting": {
             "Type": "Task",
@@ -1064,7 +1262,7 @@
         },
         "Emit_Task_Finished_Success": {
             "Type": "Task",
-            "Comment": "Record TASK_FINISHED event for timeline (success)",
+            "Comment": "Record TASK_FINISHED event for timeline (success). Carries attempt + retry_attempt (ADR #125) so the UI timeline can tell which attempt succeeded.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${task_events_table}",
@@ -1095,6 +1293,12 @@
                     },
                     "status": {
                         "S": "success"
+                    },
+                    "attempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    },
+                    "retry_attempt": {
+                        "N": "{% $string($retry_attempt) %}"
                     },
                     "ttl": {
                         "N": "{% $string($states.input.ttl) %}"
@@ -1517,7 +1721,7 @@
         },
         "Emit_Task_Finished_Failed": {
             "Type": "Task",
-            "Comment": "Record TASK_FINISHED event for timeline (failed)",
+            "Comment": "Record TASK_FINISHED event for timeline (failed). Carries attempt + retry_attempt (ADR #125) so the UI timeline can tell which attempt failed terminally.",
             "Resource": "arn:aws:states:::dynamodb:putItem",
             "Arguments": {
                 "TableName": "${task_events_table}",
@@ -1548,6 +1752,12 @@
                     },
                     "status": {
                         "S": "failed"
+                    },
+                    "attempt": {
+                        "N": "{% $string($exists($states.input.attempt) ? $states.input.attempt : 1) %}"
+                    },
+                    "retry_attempt": {
+                        "N": "{% $string($retry_attempt) %}"
                     },
                     "error_summary": {
                         "S": "{% ( $err := $string($states.input.error); $length($err) > 500 ? $substring($err, 0, 500) & '...' : $err ) %}"

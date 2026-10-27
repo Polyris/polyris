@@ -123,6 +123,38 @@ describe('CountdownTimer', () => {
             expect(screen.getByText(/waited/)).toBeInTheDocument();
             expect(screen.getByText('Wait completed')).toBeInTheDocument();
         });
+
+        it('shows active countdown during in-SFN retry wait (status=running, future deadline)', () => {
+            // ADR #125: Save_Retry_Wait_Delay writes wait_delay_until_ms while status stays 'running'.
+            // Must show a live countdown, not "Wait completed".
+            const futureMs = nowMs + 90_000; // 90s retry delay remaining
+            render(
+                <CountdownTimer waitBefore={30} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 30_000} status="running" serverOffsetMs={0} />
+            );
+            expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
+            expect(screen.getByText(/remaining/)).toBeInTheDocument();
+            expect(screen.getByText('Waiting to retry')).toBeInTheDocument();
+            expect(screen.getByText('Task will retry after countdown')).toBeInTheDocument();
+        });
+
+        it('shows retry countdown for tasks with waitBefore=0 (most real tasks have no wait_before)', () => {
+            // The common case: task configured with retries but no wait_before.
+            // The waitBefore=0 guard must not block the retry countdown display.
+            const futureMs = nowMs + 60_000;
+            render(
+                <CountdownTimer waitBefore={0} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs} status="running" serverOffsetMs={0} />
+            );
+            expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
+            expect(screen.getByText(/remaining/)).toBeInTheDocument();
+            expect(screen.getByText('Waiting to retry')).toBeInTheDocument();
+        });
+
+        it('still returns null for running status with waitBefore=0 and no deadline (no retry wait)', () => {
+            const { container } = render(
+                <CountdownTimer waitBefore={0} waitDelayUntilMs={null} waitDelayStartedMs={null} status="running" serverOffsetMs={0} />
+            );
+            expect(container.innerHTML).toBe('');
+        });
     });
 
     describe('serverOffsetMs', () => {

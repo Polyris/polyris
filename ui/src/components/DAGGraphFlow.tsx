@@ -14,7 +14,7 @@ import ReactFlow, {
     Panel
 } from 'reactflow';
 import dagre from 'dagre';
-import { formatCountdown, formatWaitBadge, formatDuration } from '../utils';
+import { formatCountdown, formatWaitBadge, formatDuration, isInRetryWait } from '../utils';
 import { TASK_SUCCESS_STATUSES, TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { taskTypeBadge } from '../utils/taskTypeBadge';
 import { mergeNodePositions } from '../utils/reactFlowHelpers';
@@ -70,20 +70,25 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     // Use centralized status check
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
     
-    // Only tick when actively counting down (waiting_delay), not when pending (deps_ready)
-    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY;
-    
+    // Tick when actively counting down: initial wait_before delay OR in-SFN retry wait
+    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
+        || (status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms);
+
+    // Compute now first so isRetryWaiting can guard the early-return below
+    const nowMs = tick + (serverOffsetMs || 0);
+    const isRetryWaiting = isInRetryWait(status, task?.wait_delay_until_ms, nowMs);
+
     // Only run interval when actually counting down
     useEffect(() => {
-        if (!isActivelyCountingDown || !waitBefore || isTerminal) return;
+        if (!isActivelyCountingDown || isTerminal) return;
+        // Tick for retry wait even when task has no wait_before configured
+        if (!waitBefore && !task?.wait_delay_until_ms) return;
         const interval = setInterval(() => setTick(Date.now()), MS.TICK_INTERVAL);
         return () => clearInterval(interval);
-    }, [isActivelyCountingDown, waitBefore, isTerminal]);
-    
-    // Don't show badge for terminal statuses or no wait_before
-    if (isTerminal || !waitBefore || waitBefore <= 0) return null;
-    
-    const nowMs = tick + (serverOffsetMs || 0);
+    }, [isActivelyCountingDown, waitBefore, task?.wait_delay_until_ms, isTerminal]);
+
+    // Show badge for retry wait even when task has no wait_before configured
+    if (isTerminal || ((!waitBefore || waitBefore <= 0) && !isRetryWaiting)) return null;
     const badge = formatWaitBadge({
         status,
         waitBefore,
@@ -95,23 +100,32 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     
     if (!badge) return null;
     
+    const badgeTitle = badge.type === 'countdown'
+        ? (isRetryWaiting ? `Waiting to retry — ${badge.text} remaining` : `Waiting to start — ${badge.text} remaining`)
+        : badge.type === 'pending'
+            ? `Wait before start — ${badge.text}`
+            : `Wait completed — ${badge.text} waited`;
+
     return (
-        <div style={{
-            position: 'absolute',
-            top: '-8px',
-            right: '-4px',
-            fontSize: '10px',
-            padding: '2px 6px',
-            background: badge.type === 'countdown' ? 'var(--warning)' 
-                      : badge.type === 'pending' ? 'var(--accent)' 
-                      : 'var(--success)',
-            color: 'white',
-            borderRadius: '4px',
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '2px'
-        }}>
+        <div
+            title={badgeTitle}
+            style={{
+                position: 'absolute',
+                top: '-8px',
+                right: '-4px',
+                fontSize: '10px',
+                padding: '2px 6px',
+                background: badge.type === 'countdown' ? 'var(--warning)'
+                          : badge.type === 'pending' ? 'var(--accent)'
+                          : 'var(--success)',
+                color: 'white',
+                borderRadius: '4px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '2px'
+            }}
+        >
             {badge.type === 'countdown' ? (
                 <Hourglass size={10} />
             ) : badge.type === 'pending' ? (

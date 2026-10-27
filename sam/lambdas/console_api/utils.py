@@ -582,3 +582,35 @@ def dict_schema_richness(schema: List[Dict]) -> int:
             if key in col and value != default and value is not None:
                 score += 1
     return score
+
+
+def parse_task_config(raw) -> Dict:
+    """Parse the task_config DDB field (JSON string or dict) into a Python dict.
+
+    task_config is stored as a JSON string by the registration SFN.  Older
+    boto3 paths or direct dict injection (e.g. in tests) may produce a dict.
+    Returns an empty dict on any parse failure so callers can safely .get().
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def resolve_max_retries(item: Dict):
+    """Return the task's current max_retries, preferring the EE-editable
+    top-level field over the registration-written task_config blob.
+
+    EE update_task_config writes 'max_retries' directly on the DDB row;
+    the registration SFN embeds 'retries' inside the 'task_config' JSON
+    string.  The top-level field is always more recent when present.
+    Returns None if neither source is set.
+    """
+    top = item.get('max_retries')
+    if top is not None:
+        return safe_int(top)
+    return parse_task_config(item.get('task_config')).get('retries')

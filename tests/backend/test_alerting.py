@@ -253,9 +253,24 @@ class TestRetryLoopComposesWithHumanDecision:
     def setup(self):
         self.rt = load('run_task')
 
-    # the only states allowed to read/write the retry counter
+    # the only states allowed to read/write the retry counter. ADR #125 added
+    # Save_Retry_Wait_Delay / Save_Retry_Attempt / Emit_Task_Retry_Started as the
+    # per-retry bookkeeping states inside the loop. Update_Status_Running also
+    # resets retry_attempt=0 on every wrapper start (so a Restart's fresh wrapper
+    # begins with a clean counter and the UI badge agrees).
     RETRY_LOOP_STATES = {
-        'Prepare_Task_Input', 'Check_Should_Retry', 'Wait_Before_Retry', 'Increment_Retry',
+        'Prepare_Task_Input',
+        'Check_Should_Retry',
+        'Prepare_Retry_Wait',
+        'Save_Retry_Wait_Delay',
+        'Wait_Before_Retry',
+        'Increment_Retry',
+        'Save_Retry_Attempt',
+        'Emit_Task_Retry_Started',
+        'Update_Status_Running',  # ADR #125: resets retry_attempt=0 on wrapper start
+        'Emit_Task_Started',       # ADR #125: emits retry_attempt=0 for timeline
+        'Emit_Task_Finished_Success',  # ADR #125: emits retry_attempt in final event
+        'Emit_Task_Finished_Failed',   # ADR #125: emits retry_attempt in final event
     }
 
     @classmethod
@@ -291,17 +306,19 @@ class TestRetryLoopComposesWithHumanDecision:
     def test_only_dispatch_and_increment_reenter_the_task(self):
         """Check_Task_Type (task dispatch) is re-entered ONLY by the initial dispatch
         chain (Prepare_Task_Input -> Init_Output_Row -> Save_Input_Record) and the
-        retry increment (Increment_Retry). No decision-flow state loops back into
-        the task, so a human Restart cannot race the counter mid-flight — it can
-        only arrive as a brand-new execution. Init_Output_Row + Save_Input_Record
-        (which write task metadata and the task_input record as soon as the task
-        starts, independent of eventual success/failure) sit between
-        Prepare_Task_Input and Check_Task_Type — part of the same initial
-        dispatch, not new re-entry paths."""
+        retry loop closure (Emit_Task_Retry_Started — ADR #125, the final
+        bookkeeping state after Increment_Retry → Save_Retry_Attempt). No
+        decision-flow state loops back into the task, so a human Restart cannot
+        race the counter mid-flight — it can only arrive as a brand-new execution.
+        Init_Output_Row + Save_Input_Record (which write task metadata and the
+        task_input record as soon as the task starts, independent of eventual
+        success/failure) sit between Prepare_Task_Input and Check_Task_Type —
+        part of the same initial dispatch, not new re-entry paths."""
         feeders = {n for n, b in self.rt['States'].items()
                    if 'Check_Task_Type' in self._targets(b)}
-        assert feeders == {'Save_Input_Record', 'Increment_Retry'}, \
-            f"unexpected re-dispatch into the task from: {feeders - {'Save_Input_Record', 'Increment_Retry'}}"
+        allowed = {'Save_Input_Record', 'Emit_Task_Retry_Started'}
+        assert feeders == allowed, \
+            f"unexpected re-dispatch into the task from: {feeders - allowed}"
         # And Save_Input_Record itself must only be reachable from Init_Output_Row
         # (its Next AND its Catch fallback), so it can't become a second entry point.
         save_input_feeders = {n for n, b in self.rt['States'].items()
