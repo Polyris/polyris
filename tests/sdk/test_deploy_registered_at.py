@@ -8,7 +8,7 @@ writes registered_at — asserted in test_register_pipeline_omits_registered_at;
 asserted here. Any regression on either half re-opens the bug.
 """
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
