@@ -4,39 +4,45 @@
   "States": {
     "Register_Pipeline": {
       "Type": "Task",
-      "Comment": "Register pipeline metadata for UI and asset triggers",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Comment": "Refresh pipeline metadata for UI and asset triggers (registered_at is owned by polyris-deploy, not written here)",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${registry_table}",
-        "Item": {
+        "Key": {
           "pipeline_name": {
             "S": "consecutive_wait_for"
-          },
-          "sfn_arn": {
+          }
+        },
+        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution",
+        "ExpressionAttributeNames": {
+          "#description": "description",
+          "#tasks": "tasks",
+          "#dag": "dag",
+          "#schedule": "schedule"
+        },
+        "ExpressionAttributeValues": {
+          ":sfn_arn": {
             "S": "{% $states.context.StateMachine.Id %}"
           },
-          "description": {
+          ":description": {
             "S": ""
           },
-          "pipeline_group": {
+          ":pipeline_group": {
             "S": ""
           },
-          "tasks": {
+          ":tasks": {
             "S": "[{\"task_id\": \"mark_weekly_complete\", \"task_type\": \"sfn\", \"dependencies\": [], \"outlets\": [{\"name\": \"acme/weekly-complete\", \"uri\": \"\", \"granularity\": \"daily\"}], \"wait_for\": [{\"name\": \"acme/daily-complete\", \"consecutive_days\": 7}]}]"
           },
-          "dag": {
+          ":dag": {
             "S": "{\"nodes\": [{\"id\": \"mark_weekly_complete\", \"name\": \"mark_weekly_complete\", \"type\": \"task\", \"task_type\": \"sfn\", \"outlets\": [{\"name\": \"acme/weekly-complete\", \"uri\": \"\", \"granularity\": \"daily\"}], \"wait_for\": [{\"name\": \"acme/daily-complete\", \"consecutive_days\": 7}]}], \"edges\": []}"
           },
-          "schedule": {
+          ":schedule": {
             "S": "cron(0 22 ? * SUN *)"
           },
-          "asset_schedule": {
+          ":asset_schedule": {
             "S": "{}"
           },
-          "registered_at": {
-            "S": "{% $now() %}"
-          },
-          "last_execution": {
+          ":last_execution": {
             "S": "{% $states.context.Execution.Name %}"
           }
         }

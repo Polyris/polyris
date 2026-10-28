@@ -12,6 +12,11 @@ Use cases:
 - Re-register after manual table cleanup
 - Testing registration flow
 
+Note: this command does NOT write `registered_at`. It triggers the pipeline SFN
+with register_only=true, which refreshes runtime metadata (tasks, dag, schedule,
+etc.) but never touches deploy-owned fields. The Console's "Deployed at" timestamp
+is written exclusively by `polyris-deploy`.
+
 Authentication:
 - Uses standard AWS credential chain (same as AWS CLI)
 - Reads from ~/.aws/credentials and ~/.aws/config
@@ -143,9 +148,11 @@ def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optio
             'error': f"State machine not found: {sfn_arn}"
         }
     except sfn.exceptions.ExecutionAlreadyExists:
+        # idempotent — a concurrent registration already started; this is a no-op
         return {
-            'success': False,
-            'error': "Execution already exists (try again in a moment)"
+            'success': True,
+            'execution_arn': '',
+            'started_at': '',
         }
     except ClientError as e:
         return {
@@ -300,13 +307,16 @@ Authentication:
         if not result['success']:
             sys.exit(1)
     elif result['success']:
-        print("✅ Registration triggered!")
-        print(f"   Execution: {result['execution_arn']}")
-        print(f"   Started: {result['started_at']}")
-        print()
-        print("   Pipeline will be registered in:")
-        print("   • pipeline_registry (for UI discovery)")
-        print("   • asset_subscriptions (for asset triggers)")
+        if result['execution_arn']:
+            print("✅ Registration triggered!")
+            print(f"   Execution: {result['execution_arn']}")
+            print(f"   Started: {result['started_at']}")
+            print()
+            print("   Pipeline will be registered in:")
+            print("   • pipeline_registry (for UI discovery)")
+            print("   • asset_subscriptions (for asset triggers)")
+        else:
+            print("✅ Already registered (concurrent registration in progress — no-op)")
     else:
         print(f"❌ Registration failed: {result['error']}")
         sys.exit(1)

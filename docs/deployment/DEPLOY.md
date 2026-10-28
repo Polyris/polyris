@@ -25,7 +25,7 @@ polyris-deploy --stage prod --profile my-aws-profile
 polyris-deploy --dry-run
 
 # Remove pipeline
-polyris-deploy --destroy
+polyris-destroy
 
 # Multi-DAG file — deploy specific DAG
 polyris-deploy --select acme-daily
@@ -37,7 +37,7 @@ polyris-deploy --all
 polyris-deploy --only acme/daily acme/hourly
 
 # Bulk + destroy, bulk + --select — see CLI.md for the full combination table
-polyris-deploy --destroy --all
+polyris-destroy --all
 ```
 
 See [CLI.md](../reference/CLI.md) for full options reference, including the

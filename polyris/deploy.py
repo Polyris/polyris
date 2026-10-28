@@ -30,6 +30,7 @@ import importlib.util
 import argparse
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Tuple
 
@@ -305,6 +306,38 @@ def _generate_cfn_template(
 # Registration
 # =============================================================================
 
+def _stamp_registered_at(
+    session: "boto3.Session",
+    registry_table: str,
+    dag_id: str,
+) -> None:
+    """Write registered_at on pipeline-registry — the "last deploy" timestamp.
+
+    This is the authoritative writer for `registered_at`. The pipeline SFN's
+    own Register_Pipeline state deliberately does NOT touch this field, so
+    every normal run leaves it alone and the UI's "Deployed at X" stays
+    anchored to the actual deploy, not the last execution start.
+
+    First-ever deploy: the registry row doesn't exist yet; UpdateItem upserts
+    with just pipeline_name + registered_at. The subsequent register_only SFN
+    run fills in sfn_arn / tasks / dag / schedule / asset_schedule via its own
+    UpdateItem — the two writes merge into the same row.
+    """
+    ddb = session.client("dynamodb")
+    try:
+        ddb.update_item(
+            TableName=registry_table,
+            Key={"pipeline_name": {"S": dag_id}},
+            UpdateExpression="SET registered_at = :now",
+            ExpressionAttributeValues={
+                ":now": {"S": datetime.now(timezone.utc).isoformat()},
+            },
+        )
+    except (ClientError, BotoCoreError) as e:
+        print(f"\n❌ Could not record deploy time for '{dag_id}' on '{registry_table}': {e}")
+        sys.exit(1)
+
+
 def _register_pipeline(
     sfn_arn: str,
     dag_id: str,
@@ -323,7 +356,7 @@ def _register_pipeline(
         sfn.start_execution(
             stateMachineArn=sfn_arn,
             name=execution_name,
-            input=json.dumps({"register_only": True}),
+            input=json.dumps({"register_only": True, "triggered_by": "polyris-deploy"}),
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ExecutionAlreadyExists":
@@ -830,6 +863,12 @@ def deploy_pipeline(
 
     # Register pipeline
     if sfn_arn and registry_table:
+        # Stamp registered_at first — this is the only writer of that field.
+        # The SFN's Register_Pipeline state no longer touches it, so a
+        # registration failure (which still writes a _notify_warn_ record)
+        # does not need to roll back this timestamp: CFN deploy already
+        # succeeded, which is what "Deployed at" claims.
+        _stamp_registered_at(session, registry_table, dag.dag_id)
         _register_pipeline(sfn_arn, dag.dag_id, region, profile=profile)
 
     print("\n✅ Pipeline deployed successfully!")

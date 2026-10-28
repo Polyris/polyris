@@ -439,9 +439,9 @@ def test_dag_group_field():
     definition = json.loads(asl)
     assert 'Comment' not in definition, "Comment must be absent (removed to reduce definition size)"
     register_state = definition['States'].get('Register_Pipeline', {})
-    register_item = register_state.get('Arguments', {}).get('Item', {})
-    assert 'pipeline_group' in register_item, "Register_Pipeline missing pipeline_group in DDB Item"
-    assert register_item['pipeline_group']['S'] == 'mygroup', f"Wrong pipeline_group value: {register_item['pipeline_group']}"
+    attr_values = register_state.get('Arguments', {}).get('ExpressionAttributeValues', {})
+    assert ':pipeline_group' in attr_values, "Register_Pipeline missing pipeline_group in UpdateItem"
+    assert attr_values[':pipeline_group']['S'] == 'mygroup', f"Wrong pipeline_group value: {attr_values[':pipeline_group']}"
 
     print("✅ DAG group field flows to DDB registration")
 

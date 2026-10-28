@@ -198,10 +198,7 @@ Check *why* the upstream was skipped:
 **Symptoms:** Deployed with `polyris-deploy` but pipeline doesn't appear in sidebar.
 
 **Check:**
-1. `polyris-deploy` output shows `PipelineRegistration` created:
-   ```
-   +  polyris:PipelineRegistration  my-pipeline-reg  created (2s)
-   ```
+1. `polyris-deploy` output ends with `✅ Pipeline deployed successfully!` and shows a registration step. If the deploy printed `❌ Could not record deploy time`, the pipeline was deployed but `registered_at` was not stamped — re-run `polyris-deploy`.
 
 2. Pipeline exists in registry:
    ```bash
@@ -211,8 +208,7 @@ Check *why* the upstream was skipped:
    ```
 
 **Fix:**
-- If PipelineRegistration failed: `polyris-deploy` again (retry). The registration Custom Resource is idempotent — re-running is safe.
-- If registration missing: `polyris-register --name my-pipeline`. See [REGISTRATION.md](../features/REGISTRATION.md#manual-registration-cli).
+- If the DDB row is missing: `polyris-deploy` again (retry) or `polyris-register --name my-pipeline`. See [REGISTRATION.md](../features/REGISTRATION.md#manual-registration-cli).
 - Every pipeline run also self-heals registration as its first state, so if you can trigger a run manually the pipeline reappears in the sidebar automatically.
 
 ---
