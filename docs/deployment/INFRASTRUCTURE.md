@@ -62,8 +62,8 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-restart-task-helper` | Manual "Restart task" action from Console |
 | `polyris-restart-wrapper` | Manual "Restart pipeline" action from Console |
 | `polyris-notify-asset-consumers` | An asset publishes an event; downstream asset-triggered pipelines start |
-| `polyris-registration-helper` | Called by each pipeline's registration Custom Resource on `polyris-deploy` |
-| `polyris-register-pipeline` | Idempotent write to `pipeline-registry` DDB — the DSL snapshot for the Console DAG view |
+| `polyris-registration-helper` | Triggered by `polyris-deploy` after CFN deploy; registers pipeline deps and asset subscriptions |
+| `polyris-register-pipeline` | Deployed but not called by any current code path — superseded by the inline `Register_Pipeline` state in each pipeline's generated SFN |
 
 **Demo state machines** — safe targets to point `@task.sfn(arn=...)` at while learning:
 

@@ -1313,25 +1313,53 @@ def _build_registration_chain(
     # Compute next state after Save_DAG_Snapshot (used for both success and warn paths)
     _after_snapshot = "Register_Asset_Subscriptions" if asset_schedule.get("assets") else "Check_Register_Only"
 
-    # Register_Pipeline — registers DAG metadata on each execution
+    # Register_Pipeline — refreshes DAG metadata on each execution.
+    # Deliberately does NOT touch `registered_at`: that field means "last
+    # polyris-deploy", not "last run", and polyris-deploy writes it directly
+    # to pipeline-registry. If this state included it, every normal run would
+    # overwrite the deploy timestamp with the run start time. updateItem (not
+    # putItem) is required so the deploy-written `registered_at` survives.
     states["Register_Pipeline"] = {
         "Type": "Task",
-        "Comment": "Register pipeline metadata for UI and asset triggers",
-        "Resource": "arn:aws:states:::dynamodb:putItem",
+        "Comment": "Refresh pipeline metadata for UI and asset triggers "
+                   "(registered_at is owned by polyris-deploy, not written here)",
+        "Resource": "arn:aws:states:::dynamodb:updateItem",
         "Arguments": {
             "TableName": registry_table,
-            "Item": {
+            "Key": {
                 "pipeline_name": {"S": dag.dag_id},
-                "sfn_arn": {"S": JSONATA_SFN_ARN},
-                "description": {"S": dag.description or ""},
-                "pipeline_group": {"S": dag.group or ""},
-                "tasks": {"S": json.dumps(tasks_metadata)},
-                "dag": {"S": json.dumps(dag_metadata)},
-                "schedule": {"S": dag.schedule if isinstance(dag.schedule, str) else ""},
-                "asset_schedule": {"S": json.dumps(asset_schedule)},
-                "registered_at": {"S": JSONATA_NOW},
-                "last_execution": {"S": JSONATA_EXECUTION_NAME}
-            }
+            },
+            # `description`, `dag`, `schedule`, and `tasks` are DynamoDB reserved
+            # words and must be aliased via ExpressionAttributeNames in any
+            # expression (UpdateExpression, ConditionExpression, etc.). They work
+            # fine as bare keys in PutItem's `Item` map because that is not an
+            # expression, which is why the previous putItem never triggered this.
+            "UpdateExpression": (
+                "SET sfn_arn = :sfn_arn, "
+                "#description = :description, "
+                "pipeline_group = :pipeline_group, "
+                "#tasks = :tasks, "
+                "#dag = :dag, "
+                "#schedule = :schedule, "
+                "asset_schedule = :asset_schedule, "
+                "last_execution = :last_execution"
+            ),
+            "ExpressionAttributeNames": {
+                "#description": "description",
+                "#tasks": "tasks",
+                "#dag": "dag",
+                "#schedule": "schedule",
+            },
+            "ExpressionAttributeValues": {
+                ":sfn_arn": {"S": JSONATA_SFN_ARN},
+                ":description": {"S": dag.description or ""},
+                ":pipeline_group": {"S": dag.group or ""},
+                ":tasks": {"S": json.dumps(tasks_metadata)},
+                ":dag": {"S": json.dumps(dag_metadata)},
+                ":schedule": {"S": dag.schedule if isinstance(dag.schedule, str) else ""},
+                ":asset_schedule": {"S": json.dumps(asset_schedule)},
+                ":last_execution": {"S": JSONATA_EXECUTION_NAME},
+            },
         },
         "Output": JSONATA_PASS_INPUT,
         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1613,11 +1641,7 @@ def generate_dag_json(dag: DAG) -> Dict:
 
 
 def generate_dag_hash(dag: DAG) -> str:
-    """Generate deterministic hash of DAG structure for change detection.
-    
-    Used by PipelineRegistration dynamic provider to skip re-registration
-    when DAG hasn't changed between deploys.
-    """
+    """Generate deterministic hash of DAG structure for change detection."""
     import hashlib
     dag_json = generate_dag_json(dag)
     asset_info = dag.asset_schedule_info or {}

@@ -80,7 +80,7 @@ If you changed `schedule="cron(0 8 * * ? *)"` to `schedule="cron(0 6 * * ? *)"`,
 
 ### Registration re-fires. DAG snapshot in the registry updates.
 
-The pipeline's `PipelineRegistration` Custom Resource re-runs on any template change. Writes the new DAG snapshot to `pipeline-registry` DDB. The Console UI reflects the new topology within seconds. In-flight runs continue to render against their *own* snapshot (captured at run start), so their DAG view in the Console keeps showing the old shape until they finish.
+`polyris-deploy` writes the updated DAG snapshot to `pipeline-registry` DDB after the CFN deploy completes. The Console UI reflects the new topology within seconds. In-flight runs continue to render against their *own* snapshot (captured at run start), so their DAG view in the Console keeps showing the old shape until they finish.
 
 ### Task-config changes: read at task START, not at wrapper start.
 
@@ -89,7 +89,7 @@ The dependency wrapper for a task that's currently in `waiting` state reads its 
 ### What redeploy CANNOT recover
 
 - **A run that's currently paused for a manual decision** (task in `waiting_decision`). Redeploying doesn't unstick it. Act via Console (Skip / Restart / Fail / Mark Success) or `aws stepfunctions send-task-success/failure` with the stored task token.
-- **A change to `dag_id`.** That's a *new* pipeline as far as polyris is concerned — the old CFN stack (`{namespace}-{stage}-polyris-{old_dag_id}`) stays put unless you `polyris-deploy --destroy` it first. Rename with care.
+- **A change to `dag_id`.** That's a *new* pipeline as far as polyris is concerned — the old CFN stack (`{namespace}-{stage}-polyris-{old_dag_id}`) stays put unless you run `polyris-destroy` first. Rename with care.
 - **A change to a task's `task_id`.** The task disappears from the DAG in the next run's snapshot. In-flight runs finish with the old task_id; the task-events / pipeline-tokens rows for the old id stay in DDB (subject to TTL, ~120 days).
 
 ## Safe redeploy checklist
@@ -104,19 +104,16 @@ Before you `polyris-deploy` a running pipeline:
 
 ## Destroy a pipeline
 
-`polyris-deploy --destroy` deletes:
-
-- The pipeline's CFN stack (state machine + schedule + scheduler role + log group)
-- The `pipeline-registry` DDB row (Console UI drops the pipeline from the sidebar)
-- The `asset-subscriptions` DDB rows this pipeline held (stops phantom triggers)
+`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group).
 
 Does not delete:
 
 - `pipeline-tokens` rows (task execution history) — subject to TTL, ~120 days
 - `task-events` rows — subject to TTL, ~120 days
 - `asset-events` rows produced by this pipeline's tasks — kept indefinitely by default
+- `pipeline_registry` row — the pipeline entry (including the "Deployed at" timestamp) stays in DynamoDB. Re-deploy or manually delete the item via the AWS Console / CLI if you want the UI to stop showing it.
 
-In-flight executions abort when the state machine is deleted (CFN calls `DeleteStateMachine`, which stops all running executions). If you need them to finish, stop the schedule first (`is_paused_upon_creation=True` + deploy), wait for in-flight to drain via the Console, then `--destroy`.
+In-flight executions abort when the state machine is deleted (CFN calls `DeleteStateMachine`, which stops all running executions). If you need them to finish, stop the schedule first (`is_paused_upon_creation=True` + deploy), wait for in-flight to drain via the Console, then `polyris-destroy`.
 
 ## Related
 
@@ -124,4 +121,4 @@ In-flight executions abort when the state machine is deleted (CFN calls `DeleteS
 - [DEPLOY.md](../deployment/DEPLOY.md) — `polyris-deploy` CLI reference
 - [CLI.md#polyris-deploy](../reference/CLI.md#polyris-deploy) — every deploy flag
 - [ASSETS.md](../features/ASSETS.md) — asset-triggered pipelines (no `AWS::Scheduler::Schedule` deployed)
-- [REGISTRATION.md](../features/REGISTRATION.md) — how the registration Custom Resource works
+- [REGISTRATION.md](../features/REGISTRATION.md) — how pipeline registration works

@@ -413,7 +413,7 @@ Symptom: "click X → ends up at default state Y", URL flickers to correct param
 | `polyris-restart-task-helper` | EXPRESS | Stops wrapper + restarts task |
 | `polyris-restart-wrapper` | EXPRESS | Starts new dependency_wrapper for restart |
 | `polyris-notify-asset-consumers` | EXPRESS | Triggers asset-based pipelines |
-| `polyris-register-pipeline` | EXPRESS | Registers pipeline in registry |
+| `polyris-register-pipeline` | EXPRESS | Deployed but orphaned — not called by any current code path; superseded by the inline `Register_Pipeline` state in each generated pipeline SFN |
 | `polyris-test-quick` | STANDARD | Demo/test task (fast) |
 | `polyris-test-success` | STANDARD | Demo/test task (always succeeds) |
 | `polyris-test-failure` | STANDARD | Demo/test task (always fails) |

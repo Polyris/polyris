@@ -22,39 +22,45 @@
     },
     "Register_Pipeline": {
       "Type": "Task",
-      "Comment": "Register pipeline metadata for UI and asset triggers",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Comment": "Refresh pipeline metadata for UI and asset triggers (registered_at is owned by polyris-deploy, not written here)",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${registry_table}",
-        "Item": {
+        "Key": {
           "pipeline_name": {
             "S": "with_variables"
-          },
-          "sfn_arn": {
+          }
+        },
+        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution",
+        "ExpressionAttributeNames": {
+          "#description": "description",
+          "#tasks": "tasks",
+          "#dag": "dag",
+          "#schedule": "schedule"
+        },
+        "ExpressionAttributeValues": {
+          ":sfn_arn": {
             "S": "{% $states.context.StateMachine.Id %}"
           },
-          "description": {
+          ":description": {
             "S": ""
           },
-          "pipeline_group": {
+          ":pipeline_group": {
             "S": ""
           },
-          "tasks": {
+          ":tasks": {
             "S": "[{\"task_id\": \"process\", \"task_type\": \"sfn\", \"dependencies\": []}]"
           },
-          "dag": {
+          ":dag": {
             "S": "{\"nodes\": [{\"id\": \"process\", \"name\": \"process\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": []}"
           },
-          "schedule": {
+          ":schedule": {
             "S": ""
           },
-          "asset_schedule": {
+          ":asset_schedule": {
             "S": "{}"
           },
-          "registered_at": {
-            "S": "{% $now() %}"
-          },
-          "last_execution": {
+          ":last_execution": {
             "S": "{% $states.context.Execution.Name %}"
           }
         }

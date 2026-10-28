@@ -482,7 +482,9 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 
 ### 24. Pulumi Dynamic Provider for Pipeline Lifecycle (not EventBridge)
 
-**Decision:** Use Pulumi Dynamic Provider (`PipelineRegistration`) for pipeline registration/deregistration instead of EventBridge + CloudTrail auto-registration.
+**Superseded — the Pulumi Dynamic Provider was replaced by `polyris-deploy` (SAM/CFN + direct DynamoDB `UpdateItem`) in the current release. See [REGISTRATION.md](../features/REGISTRATION.md) for the current mechanism.**
+
+**Decision (historical):** Use Pulumi Dynamic Provider (`PipelineRegistration`) for pipeline registration/deregistration instead of EventBridge + CloudTrail auto-registration.
 
 **Problem:** EventBridge auto-registration had multiple failure modes:
 - CloudTrail event propagation: 1-15 minute delay

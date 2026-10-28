@@ -4,39 +4,45 @@
   "States": {
     "Register_Pipeline": {
       "Type": "Task",
-      "Comment": "Register pipeline metadata for UI and asset triggers",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Comment": "Refresh pipeline metadata for UI and asset triggers (registered_at is owned by polyris-deploy, not written here)",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${registry_table}",
-        "Item": {
+        "Key": {
           "pipeline_name": {
             "S": "fan_in"
-          },
-          "sfn_arn": {
+          }
+        },
+        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution",
+        "ExpressionAttributeNames": {
+          "#description": "description",
+          "#tasks": "tasks",
+          "#dag": "dag",
+          "#schedule": "schedule"
+        },
+        "ExpressionAttributeValues": {
+          ":sfn_arn": {
             "S": "{% $states.context.StateMachine.Id %}"
           },
-          "description": {
+          ":description": {
             "S": ""
           },
-          "pipeline_group": {
+          ":pipeline_group": {
             "S": ""
           },
-          "tasks": {
+          ":tasks": {
             "S": "[{\"task_id\": \"task_a\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"task_b\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"task_c\", \"task_type\": \"sfn\", \"dependencies\": []}, {\"task_id\": \"load\", \"task_type\": \"sfn\", \"dependencies\": [\"task_a\", \"task_b\", \"task_c\"]}]"
           },
-          "dag": {
+          ":dag": {
             "S": "{\"nodes\": [{\"id\": \"task_a\", \"name\": \"task_a\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"task_b\", \"name\": \"task_b\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"task_c\", \"name\": \"task_c\", \"type\": \"task\", \"task_type\": \"sfn\"}, {\"id\": \"load\", \"name\": \"load\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": [{\"from\": \"task_a\", \"to\": \"load\"}, {\"from\": \"task_b\", \"to\": \"load\"}, {\"from\": \"task_c\", \"to\": \"load\"}]}"
           },
-          "schedule": {
+          ":schedule": {
             "S": ""
           },
-          "asset_schedule": {
+          ":asset_schedule": {
             "S": "{}"
           },
-          "registered_at": {
-            "S": "{% $now() %}"
-          },
-          "last_execution": {
+          ":last_execution": {
             "S": "{% $states.context.Execution.Name %}"
           }
         }

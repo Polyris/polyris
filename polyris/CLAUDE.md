@@ -5,6 +5,47 @@ Each rule is here because we shipped a bug that violated it.
 
 ---
 
+## Deploy-owned fields on `pipeline-registry` must not be written by the runtime SFN
+
+Each column on the `pipeline-registry` row has an owner — either `polyris-deploy`
+(the CLI) or the generated pipeline SFN (which refreshes metadata on every run,
+including `register_only=true` self-registrations). `registered_at` means "last
+polyris-deploy" and is owned by the CLI; `sfn_arn`, `description`,
+`pipeline_group`, `tasks`, `dag`, `schedule`, `asset_schedule`, and
+`last_execution` are owned by the runtime.
+
+Rules:
+1. `_build_registration_chain`'s `Register_Pipeline` state must be a DynamoDB
+   `updateItem` (not `putItem`). `putItem` replaces the whole row, which would
+   erase every deploy-owned field on each run — the exact bug we shipped when
+   `registered_at` was being overwritten with `$now()` on every execution and
+   the UI's "Deployed at X" was really "Last run at X".
+2. The runtime `Register_Pipeline` state's `UpdateExpression` must only mention
+   runtime-owned fields. Never add `registered_at` or any future deploy-stamp
+   there.
+3. Deploy-owned fields are written exclusively from `deploy.py`
+   (`_stamp_registered_at`), as a direct boto3 `UpdateItem` on
+   `pipeline-registry` right after a successful CloudFormation deploy — before
+   the register_only SFN kick. Errors route through the standard
+   `(ClientError, BotoCoreError)` → red `❌` → `sys.exit(1)` pattern so the
+   operator sees the failure in the same style as every other deploy step.
+
+4. `sam/sfn_templates/helpers/register_pipeline/sfn.tpl.json` (the orphaned
+   `polyris-register-pipeline` EXPRESS SFN, deployed but not called by any current
+   code path) has been migrated to `updateItem` for the same reason. Using `putItem`
+   is a landmine: a `putItem` without `registered_at` in its `Item` does NOT
+   preserve the field — it DELETES it, because `putItem` replaces the entire row.
+   The correct mitigation is `updateItem`, which only touches named attributes.
+   Do not revert this SFN back to `putItem`.
+
+Covered by `tests/sdk/test_deploy_registered_at.py` — all three checks are
+pinned there: (1) generated pipeline SFN omits `registered_at`; (2) CLI writes
+it via `_stamp_registered_at`; (3) orphaned helper SFN's `RegisterPipeline`
+state uses `updateItem` and does not write `registered_at`. Note: the same
+`.tpl.json` file writes `registered_at` in its `WriteSubscription` state to the
+`asset_subscriptions` table — that is a different field on a different table and
+is intentional.
+
 ## Context managers that push/pop shared state must save and restore, never just clear
 
 Any `__enter__` that overwrites shared state (e.g. `dag._current_task_group`) must

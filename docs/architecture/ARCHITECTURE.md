@@ -309,13 +309,13 @@ failure_handler SFN
 **Primary path (polyris-deploy lifecycle):**
 ```
 polyris-deploy
-     │  creates/updates Step Function
+     │  CloudFormation creates/updates the pipeline StateMachine
      ▼
-PipelineRegistration dynamic resource
-     │  create/update handler
+dynamodb.update_item (direct boto3 call from deploy.py)
+     └─ pipeline_registry ──── SET registered_at = <now>
      ▼
-StartExecution(register_only=true)
-     ├─ Register_Pipeline ──────► pipeline_registry [putItem]
+sfn.start_execution(register_only=true)  ← fire-and-forget
+     ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, tasks, dag, ...]
      ├─ Save_DAG_Snapshot ──────► tokens_table [putItem]
      └─ RegisterAssetSubscriptions (if asset triggers)
           └─ Map ──────────────► asset_subscriptions [putItem]
@@ -323,12 +323,11 @@ StartExecution(register_only=true)
 
 **On destroy:**
 ```
-polyris-deploy --destroy
+polyris-destroy
      │
      ▼
-PipelineRegistration.delete()
-     ├─ pipeline_registry ──── DELETE pipeline_name
-     └─ asset_subscriptions ── DELETE for each asset
+CloudFormation delete_stack
+     └─ StateMachine deleted (running executions aborted)
 ```
 
 ### Quick Debug Reference
@@ -340,7 +339,7 @@ PipelineRegistration.delete()
 | Task `deps_ready` but not running | run_task helper execution | `pipeline_registry` — is pipeline paused? |
 | Asset trigger didn't fire | notify_asset_subscribers logs | `asset_events` + `asset_subscriptions` |
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
-| Pipeline not in UI after deploy | Check `polyris-deploy` output for PipelineRegistration | `pipeline_registry` — registered? CFN stack has registration output |
+| Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
 | Wrong trigger_rule result | evaluate_deps Lambda logs | Check `dep_statuses` + `trigger_rule` in log |
 

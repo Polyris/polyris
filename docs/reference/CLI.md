@@ -145,7 +145,7 @@ polyris-deploy --stage prod --profile my-aws-profile
 polyris-deploy --dry-run
 
 # Remove pipeline stack
-polyris-deploy --destroy
+polyris-destroy
 
 # Deploy specific file
 polyris-deploy --file my_dag.py
@@ -162,8 +162,8 @@ polyris-deploy --all
 polyris-deploy --only dir1 dir2
 
 # Bulk + destroy
-polyris-deploy --destroy --all
-polyris-deploy --destroy --only dir1 dir2
+polyris-destroy --all
+polyris-destroy --only dir1 dir2
 
 # Bulk + pick one DAG per directory (directories without that DAG are skipped,
 # not an error)

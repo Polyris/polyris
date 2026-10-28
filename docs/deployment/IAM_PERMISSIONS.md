@@ -59,7 +59,7 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 
 ## Deploy — per-pipeline `polyris-deploy`
 
-After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${pipeline}-${stage}`) containing the pipeline's dependency-wrapper state machines and a registration Custom Resource that writes to the `pipeline-registry` DDB table.
+After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${pipeline}-${stage}`) containing the pipeline's dependency-wrapper state machines. After the stack deploys, `polyris-deploy` writes the pipeline's metadata to the `pipeline-registry` DDB table directly.
 
 Minimum permissions for the developer/CI role:
 
@@ -93,6 +93,7 @@ Minimum permissions for the developer/CI role:
         "states:UpdateStateMachine",
         "states:DeleteStateMachine",
         "states:DescribeStateMachine",
+        "states:StartExecution",
         "states:TagResource"
       ],
       "Resource": "*"
@@ -104,10 +105,10 @@ Minimum permissions for the developer/CI role:
       "Resource": "arn:aws:iam::*:role/*-polyris-orchestration-role"
     },
     {
-      "Sid": "InvokeRegistrationLambda",
+      "Sid": "PipelineRegistryStamp",
       "Effect": "Allow",
-      "Action": "lambda:InvokeFunction",
-      "Resource": "arn:aws:lambda:*:*:function:*-polyris-registration"
+      "Action": "dynamodb:UpdateItem",
+      "Resource": "arn:aws:dynamodb:*:*:table/*-polyris-pipeline-registry"
     },
     {
       "Sid": "PipelineLogGroups",

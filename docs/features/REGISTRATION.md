@@ -10,52 +10,46 @@ Registration happens automatically in three ways:
 
 | Method | When | Automatic | Latency |
 |--------|------|-----------|---------|
-| **polyris-deploy lifecycle** | `polyris-deploy` / `polyris-deploy --destroy` | Yes | ~2-3 seconds |
+| **polyris-deploy lifecycle** | `polyris-deploy` / `polyris-destroy` | Yes | ~2-3 seconds |
 | **Pipeline run** | Every execution (self-healing) | Yes | 0 (inline) |
 | **CLI** | Manual `polyris-register` command | No | ~2-3 seconds |
 
 ## polyris-deploy Lifecycle Registration
 
-When you deploy with `polyris-deploy`, a **CloudFormation Custom Resource**
-(`PipelineRegistration`) handles the full lifecycle:
+When you run `polyris-deploy`, it does the following after the CloudFormation
+stack succeeds:
 
 ```
-polyris-deploy (create)
+polyris-deploy
     │
     ▼
-StateMachine created
+CloudFormation deploy (creates/updates the pipeline StateMachine)
     │
     ▼
-PipelineRegistration Custom Resource fires
+DynamoDB UpdateItem on pipeline_registry
+    └──► registered_at = <now>   ← "Deployed at" timestamp in the Console
     │
     ▼
-StartExecution(register_only=true)
+SFN StartExecution(register_only=true) — fire-and-forget
     │
-    ├──► pipeline_registry
-    ├──► asset_subscriptions
-    └──► dag_snapshot
+    ▼
+Register_Pipeline state (UpdateItem)
+    ├──► sfn_arn, tasks, dag, schedule, description, ...
+    └──► asset_subscriptions (if asset-triggered)
+    │
+    ▼
+Save_DAG_Snapshot state
+    └──► tokens_table (dag_snapshot::{execution_name}, TTL 120 days)
 ```
 
-**On update** (DAG changed): re-runs registration with new structure. If DAG unchanged (`dag_hash` match), skips entirely.
+`registered_at` is written **once**, by `polyris-deploy`, and is never
+overwritten by pipeline runs. The Console's "Deployed at X" reflects the last
+actual deploy, not the last run.
 
-**On destroy** (`polyris-deploy --destroy`): cleans up DynamoDB directly:
-- Deletes `pipeline_registry` entry (removes from UI sidebar)
-- Deletes `asset_subscriptions` entries (stops phantom triggers)
-
-```
-polyris-deploy --destroy
-    │
-    ▼
-PipelineRegistration.delete()
-    │
-    ├──► pipeline_registry: DELETE pipeline_name
-    └──► asset_subscriptions: DELETE for each asset
-    │
-    ▼
-StateMachine deleted
-```
-
-No zombie pipelines, no orphaned subscriptions.
+**On destroy** (`polyris-destroy`): deletes the CloudFormation stack
+(removes the pipeline StateMachine and EventBridge schedule). DynamoDB entries
+(`pipeline_registry`, `asset_subscriptions`) are not removed automatically —
+delete the items directly via the AWS Console / CLI if needed.
 
 ## Self-Healing Registration
 
@@ -82,10 +76,12 @@ Check_Register_Only
     └── false → Run_All_Tasks
 ```
 
-This ensures pipelines stay registered even if:
-- The `polyris-deploy` Custom Resource run failed silently
-- DynamoDB items were deleted
-- Subscriptions expired (TTL)
+This ensures metadata stays current even if DynamoDB items were deleted manually
+or subscriptions expired (TTL).
+
+Note: the self-healing run does **not** update `registered_at`. Only
+`polyris-deploy` writes that field — so "Deployed at" always reflects the last
+actual deploy, not the last run.
 
 ## Manual Registration (CLI)
 
@@ -155,6 +151,13 @@ Registration triggered.
    - asset_subscriptions (for asset triggers)
 ```
 
+> **Note:** `polyris-register` does **not** write `registered_at`. It triggers the
+> pipeline's register-only SFN execution, which refreshes runtime metadata (tasks, dag,
+> schedule, etc.) but never touches deploy-owned fields. If you use `polyris-register`
+> as a recovery step instead of re-running `polyris-deploy`, the Console's "Deployed at"
+> will remain at the timestamp of the last actual deploy — or absent entirely if the
+> pipeline was never deployed before.
+
 ## When to Use Manual Registration
 
 1. **After deploy, before first asset** - Asset-triggered pipelines need subscriptions before assets arrive
@@ -170,8 +173,8 @@ deploy:
   steps:
     - run: polyris-deploy
     
-    # Optional: explicit registration (polyris-deploy does this via a CFN
-    # Custom Resource; the CLI call is a safety net if that failed silently).
+    # Optional safety net: polyris-deploy already registers inline, but
+    # an explicit call here re-triggers registration if the SFN step failed.
     - run: |
         polyris-register \
           --name ${{ env.PIPELINE_NAME }} \

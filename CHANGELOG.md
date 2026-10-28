@@ -1,5 +1,29 @@
 ## Unreleased
 
+### Fixed — "Deployed at" in the Console no longer resets on every pipeline run
+
+The pipeline detail page's "Deployed at X" is backed by `registered_at` on the
+`pipeline-registry` row. Previously every pipeline execution overwrote it with
+the run start time, so what the UI labelled "Deployed" was really "last run".
+
+- The generated pipeline SFN's `Register_Pipeline` state now uses `updateItem`
+  instead of `putItem` and no longer touches `registered_at` — runtime refreshes
+  the fields it owns (`sfn_arn`, `tasks`, `dag`, `schedule`, `asset_schedule`,
+  `last_execution`, `description`, `pipeline_group`) and leaves the deploy
+  stamp alone.
+- `polyris-deploy` is now the sole writer of `registered_at`: a direct
+  `UpdateItem` against `pipeline-registry` right after a successful CloudFormation
+  deploy. DDB errors surface as a red `❌` with the pipeline + table name and
+  `sys.exit(1)`, matching the rest of `deploy.py`.
+
+Every `polyris-deploy` — including a redeploy with no DAG changes — advances
+the "Deployed at" timestamp. This is intentional: redeployment means the operator
+chose to ship this version of the pipeline at that moment, regardless of whether
+the definition changed.
+
+Existing deployments show the stale last-run time until the next `polyris-deploy`,
+which stamps the correct value.
+
 ### Added — retry visibility in the Console (ADR #125)
 
 Auto-retries are now visible without opening the AWS console.

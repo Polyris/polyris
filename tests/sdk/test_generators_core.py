@@ -304,8 +304,8 @@ class TestPublicGeneration:
         registry fallback returns for 'current structure' (blueprint) mode.
         Must carry task_type or blueprint nodes render with no type badge."""
         asl = json.loads(generate_step_function_json(_chain_dag()))
-        item = asl["States"]["Register_Pipeline"]["Arguments"]["Item"]
-        dag = json.loads(item["dag"]["S"])
+        attr_values = asl["States"]["Register_Pipeline"]["Arguments"]["ExpressionAttributeValues"]
+        dag = json.loads(attr_values[":dag"]["S"])
         assert all(n.get("task_type") == "sfn" for n in dag["nodes"])
 
     def test_generate_dag_hash_is_deterministic(self):
@@ -359,7 +359,8 @@ class TestDagVisualizationNodesEdgesUnified:
         dag = _chain_dag()
         from_public = generate_dag_json(dag)
         asl = json.loads(generate_step_function_json(dag))
-        registry_dag = json.loads(asl["States"]["Register_Pipeline"]["Arguments"]["Item"]["dag"]["S"])
+        attr_values = asl["States"]["Register_Pipeline"]["Arguments"]["ExpressionAttributeValues"]
+        registry_dag = json.loads(attr_values[":dag"]["S"])
         assert from_public["nodes"] == registry_dag["nodes"]
         assert from_public["edges"] == registry_dag["edges"]
 
