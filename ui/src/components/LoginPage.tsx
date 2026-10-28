@@ -17,8 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuth, AUTH_STATE } from '@/hooks/useAuth';
 import { 
-    Zap, 
-    Mail, 
+    Mail,
     Lock, 
     Eye, 
     EyeOff, 
@@ -593,10 +592,8 @@ export function LoginPage() {
             <div className="lp-login-container">
                 <div className="lp-login-header">
                     <div className="lp-login-logo">
-                        <div className="lp-login-logo-icon">
-                            <Zap size={28} />
-                        </div>
-                        <span>polyris</span>
+                        <img src="/logo-icon.png" alt="" aria-hidden="true" className="lp-login-logo-icon" />
+                        <span className="lp-login-logo-text">polyris</span>
                     </div>
                     <h1 className="lp-login-title">Console</h1>
                     <p className="lp-login-subtitle">

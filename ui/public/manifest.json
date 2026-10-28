@@ -1,0 +1,13 @@
+{
+  "name": "Polyris Console",
+  "short_name": "Polyris",
+  "description": "Serverless data pipeline orchestration on AWS",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#2563eb",
+  "background_color": "#ffffff",
+  "icons": [
+    { "src": "/logo-icon.png", "sizes": "350x350", "type": "image/png" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
