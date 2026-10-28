@@ -401,12 +401,15 @@ export function DAGGraphFlow({
         });
 
         // Update edges with status-dependent styling
+        // Only animate edges while the execution is still in progress — once all
+        // tasks are settled the run is over and arrows should stop flowing.
+        const executionIsRunning = tasks?.some(t => !TASK_SETTLED_STATUSES.includes(t.status)) ?? false;
         const edges = layoutPositions.edges.map(edge => {
             if (isBlueprint) {
                 return {
                     ...edge,
                     animated: false,
-                    style: { 
+                    style: {
                         stroke: 'var(--text-muted)',
                         strokeWidth: 1,
                         strokeDasharray: '5 5'
@@ -419,7 +422,7 @@ export function DAGGraphFlow({
             }
             const sourceTask = tasks?.find(t => t.task_name === edge.source);
             const sourceStatus = sourceTask?.status || 'waiting';
-            const isActive = sourceStatus === 'success';
+            const isActive = sourceStatus === 'success' && executionIsRunning;
             
             return {
                 ...edge,
