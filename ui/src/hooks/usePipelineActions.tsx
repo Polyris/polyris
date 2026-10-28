@@ -17,8 +17,16 @@ import {
     CircleDot
 } from '@/utils/icons';
 
-import type { Task, Execution, SelectedExecution } from '@/types';
+import type { Task, Execution, SelectedExecution, TaskError } from '@/types';
 import type { PipelineActionsParams } from '@/types';
+
+export interface TaskDecisionContext {
+    error: TaskError | string | null;
+    attempt: number;
+    retryAttempt: number;
+    maxRetries: number;
+    directDownstream: Array<{ name: string; status: string; hasWaitFor: boolean }>;
+}
 
 /**
  * Resolve "the execution these pipeline-level actions (pause/resume/extend/stop)
@@ -63,17 +71,18 @@ export function usePipelineActions({
     const queryClient = useQueryClient();
     
     // Modal state
-    const [modal, setModal] = useState<{ isOpen: boolean; action: string | null; title: string; message: string | null; icon: React.ReactNode; confirmText: string; confirmStyle: string; customContent: boolean; toRun: string[] | null; toSkip: string[] | null }>({ 
-        isOpen: false, 
-        action: null, 
-        title: '', 
-        message: '', 
-        icon: '', 
-        confirmText: '', 
+    const [modal, setModal] = useState<{ isOpen: boolean; action: string | null; title: string; message: string | null; icon: React.ReactNode; confirmText: string; confirmStyle: string; customContent: boolean; toRun: string[] | null; toSkip: string[] | null; taskContext: TaskDecisionContext | null }>({
+        isOpen: false,
+        action: null,
+        title: '',
+        message: '',
+        icon: '',
+        confirmText: '',
         confirmStyle: '',
         customContent: false,
         toRun: null,
-        toSkip: null
+        toSkip: null,
+        taskContext: null
     });
     const [triggerParams, setTriggerParams] = useState('{}');
     const [executionPaused, setExecutionPaused] = useState(false);
@@ -113,7 +122,8 @@ export function usePipelineActions({
             confirmStyle: 'btn-primary',
             customContent: true,
             toRun: null,
-            toSkip: null
+            toSkip: null,
+            taskContext: null,
         });
     }, [selectedPipeline]);
     
@@ -129,7 +139,8 @@ export function usePipelineActions({
             confirmStyle: 'btn-danger',
             customContent: false,
             toRun: null,
-            toSkip: null
+            toSkip: null,
+            taskContext: null,
         });
     }, [selectedPipeline]);
     
@@ -193,58 +204,85 @@ export function usePipelineActions({
     const handleTaskAction = useCallback((action: string, task: Task | null = null) => {
         const targetTask = task || selectedTask;
         if (!targetTask) return;
-        
+
         const configs: Record<string, { title: string; message: string; icon: React.ReactNode; confirmText: string; confirmStyle: string }> = {
-            skip: { 
-                title: 'Skip Task', 
-                message: `Skip "${targetTask.task_name}"? This will mark it as complete and trigger dependent tasks.`, 
-                icon: <SkipForward size={20} className="text-amber-500" />, 
-                confirmText: 'Skip', 
-                confirmStyle: 'btn-warning' 
+            skip: {
+                title: 'Skip Task',
+                message: `Skip "${targetTask.task_name}"?`,
+                icon: <SkipForward size={20} className="text-amber-500" />,
+                confirmText: 'Skip',
+                confirmStyle: 'btn-warning'
             },
-            stop: { 
-                title: 'Stop Task', 
-                message: `Stop "${targetTask.task_name}"? The execution will be terminated. You can restart it later.`, 
-                icon: <StopCircle size={20} className="text-amber-500" />, 
-                confirmText: 'Stop', 
-                confirmStyle: 'btn-secondary' 
+            stop: {
+                title: 'Stop Task',
+                message: `Stop "${targetTask.task_name}"? The execution will be terminated. You can restart it later.`,
+                icon: <StopCircle size={20} className="text-amber-500" />,
+                confirmText: 'Stop',
+                confirmStyle: 'btn-secondary'
             },
-            fail: { 
-                title: 'Mark Failed', 
-                message: `Mark "${targetTask.task_name}" as failed? This will fail the pipeline.`, 
-                icon: <XCircle size={20} className="text-red-500" />, 
-                confirmText: 'Mark Failed', 
-                confirmStyle: 'btn-danger' 
+            fail: {
+                title: 'Mark Failed',
+                message: `Mark "${targetTask.task_name}" as failed? This will fail the pipeline.`,
+                icon: <XCircle size={20} className="text-red-500" />,
+                confirmText: 'Mark Failed',
+                confirmStyle: 'btn-danger'
             },
-            success: { 
-                title: 'Mark Successful', 
-                message: `Mark "${targetTask.task_name}" as successful? Use when work completed outside the pipeline.`, 
-                icon: <CheckCircle2 size={20} className="text-green-500" />, 
-                confirmText: 'Mark Successful', 
-                confirmStyle: 'btn-success' 
+            success: {
+                title: 'Mark Successful',
+                message: `Mark "${targetTask.task_name}" as successful?`,
+                icon: <CheckCircle2 size={20} className="text-green-500" />,
+                confirmText: 'Mark Successful',
+                confirmStyle: 'btn-success'
             },
-            restart: { 
-                title: 'Restart Task', 
-                message: `Restart "${targetTask.task_name}"? This will stop the current execution and start fresh.`, 
-                icon: <RotateCcw size={20} className="text-blue-500" />, 
-                confirmText: 'Restart', 
-                confirmStyle: 'btn-primary' 
+            restart: {
+                title: 'Restart Task',
+                message: `Restart "${targetTask.task_name}"? This will stop the current execution and start fresh.`,
+                icon: <RotateCcw size={20} className="text-blue-500" />,
+                confirmText: 'Restart',
+                confirmStyle: 'btn-primary'
             }
         };
-        
+
         const config = configs[action];
         if (!config) return;
-        
+
+        let taskContext: TaskDecisionContext | null = null;
+        if (action === 'skip' || action === 'success') {
+            const directEdges = dag?.edges?.filter(e => e.from === targetTask.task_name) ?? [];
+            const directDownstream = directEdges.map(e => {
+                const downstream = tasks.find(t => t.task_name === e.to);
+                // Fall back to the DAG node definition for tasks not yet started (no live record).
+                const dagNode = dag?.nodes?.find(n => n.id === e.to);
+                const rawWaitFor: unknown = downstream?.wait_for ?? dagNode?.['wait_for'];
+                const hasWaitFor = Array.isArray(rawWaitFor)
+                    ? rawWaitFor.length > 0
+                    : typeof rawWaitFor === 'string' && rawWaitFor.length > 0;
+                return {
+                    name: e.to,
+                    status: downstream?.status ?? 'pending',
+                    hasWaitFor,
+                };
+            });
+            taskContext = {
+                error: targetTask.error ?? null,
+                attempt: targetTask.attempt ?? 0,
+                retryAttempt: targetTask.retry_attempt ?? 0,
+                maxRetries: targetTask.max_retries ?? 0,
+                directDownstream,
+            };
+        }
+
         onSelectTask(targetTask);
-        setModal({ 
-            isOpen: true, 
-            action, 
-            ...config, 
-            customContent: false, 
-            toRun: null, 
-            toSkip: null 
+        setModal({
+            isOpen: true,
+            action,
+            ...config,
+            customContent: false,
+            toRun: null,
+            toSkip: null,
+            taskContext,
         });
-    }, [selectedTask, onSelectTask]);
+    }, [selectedTask, dag, tasks, onSelectTask]);
     
     // ========== Partial Run Actions ==========
     const runToHere = useCallback((task: Task) => {
@@ -264,7 +302,8 @@ export function usePipelineActions({
             confirmStyle: 'btn-primary',
             customContent: true,
             toRun,
-            toSkip
+            toSkip,
+            taskContext: null,
         });
     }, [dag, date]);
     
@@ -285,7 +324,8 @@ export function usePipelineActions({
             confirmStyle: 'btn-primary',
             customContent: true,
             toRun,
-            toSkip
+            toSkip,
+            taskContext: null,
         });
     }, [dag, date]);
     
@@ -304,7 +344,8 @@ export function usePipelineActions({
             confirmStyle: 'btn-primary',
             customContent: true,
             toRun: [task.task_name],
-            toSkip
+            toSkip,
+            taskContext: null,
         });
     }, [dag, date]);
     

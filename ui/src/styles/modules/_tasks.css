@@ -483,6 +483,71 @@
 
 /* Zoom Controls */
 
+/* Decision Context (Skip / Mark Successful modals) */
+.am-decision { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.75rem; }
+.am-decision-section { display: flex; flex-direction: column; gap: 0.25rem; }
+.am-decision-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+.am-decision-attempts {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+.am-decision-attempts span {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    padding: 0.125rem 0.375rem;
+}
+.am-decision-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.am-decision-task {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    padding: 0.25rem 0.625rem;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+}
+.am-decision-task-name {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.am-decision-task-status {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.am-decision-warn {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--warning);
+    padding: 0.375rem 0.5rem;
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    border-radius: 4px;
+}
+.am-decision-warn-icon { flex-shrink: 0; margin-top: 1px; }
+
 /* Run Modal - Task Lists */
 .am-run-details { margin-bottom: 0.75rem; }
 .am-run-summary {

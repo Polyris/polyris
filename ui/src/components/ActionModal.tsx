@@ -1,6 +1,9 @@
 import React from 'react';
 import { Modal } from '@/components/Modal';
-import { Check, SkipForward } from '@/utils/icons';
+import { Check, SkipForward, AlertTriangle } from '@/utils/icons';
+import { ErrorDisplay } from '@/components/TaskDetailModal/ErrorDisplay';
+import type { TaskError } from '@/types';
+import type { TaskDecisionContext } from '@/hooks/usePipelineActions';
 
 interface ModalState {
     isOpen: boolean;
@@ -13,6 +16,7 @@ interface ModalState {
     customContent?: boolean;
     toRun?: string[] | null;
     toSkip?: string[] | null;
+    taskContext?: TaskDecisionContext | null;
 }
 
 interface ActionModalProps {
@@ -23,6 +27,82 @@ interface ActionModalProps {
     pipelineName: string;
     triggerParams: string;
     onTriggerParamsChange: (value: string) => void;
+}
+
+function statusLabel(status: string): string {
+    const map: Record<string, string> = {
+        waiting: 'waiting',
+        waiting_decision: 'decision',
+        running: 'running',
+        failed: 'failed',
+        success: 'done',
+        succeeded: 'done',
+        skipped: 'skipped',
+        stopped: 'stopped',
+        aborted: 'aborted',
+        upstream_failed: 'upstream failed',
+    };
+    return map[status] ?? status;
+}
+
+function hasVisibleError(error: TaskError | string | null): boolean {
+    if (!error) return false;
+    if (typeof error === 'string') return error.length > 0;
+    return (error.Cause ?? '').length > 0 || (error.Error ?? '').length > 0;
+}
+
+function DecisionContext({ ctx }: { ctx: TaskDecisionContext }) {
+    const hasAttempts = ctx.attempt > 1 || ctx.retryAttempt > 0;
+    const withWaitFor = ctx.directDownstream.filter(d => d.hasWaitFor);
+
+    if (!hasVisibleError(ctx.error) && !hasAttempts && ctx.directDownstream.length === 0 && withWaitFor.length === 0) {
+        return null;
+    }
+
+    return (
+        <div className="am-decision">
+            {hasVisibleError(ctx.error) && (
+                <div className="am-decision-section">
+                    <div className="am-decision-label">Error</div>
+                    <ErrorDisplay error={ctx.error} />
+                </div>
+            )}
+            {hasAttempts && (
+                <div className="am-decision-attempts">
+                    {ctx.attempt > 1 && <span>Manual restart {ctx.attempt - 1}</span>}
+                    {ctx.retryAttempt > 0 && (
+                        <span>
+                            Auto-retry {ctx.retryAttempt}
+                            {ctx.maxRetries > 0 ? ` of ${ctx.maxRetries}` : ''}
+                        </span>
+                    )}
+                </div>
+            )}
+            {ctx.directDownstream.length > 0 && (
+                <div className="am-decision-section">
+                    <div className="am-decision-label">Next tasks</div>
+                    <ul className="am-decision-list">
+                        {ctx.directDownstream.map(d => (
+                            <li key={d.name} className="am-decision-task">
+                                <span className="am-decision-task-name">{d.name}</span>
+                                <span className="am-decision-task-status">{statusLabel(d.status)}</span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+            {withWaitFor.length > 0 && (
+                <div className="am-decision-warn">
+                    <AlertTriangle size={13} className="am-decision-warn-icon" />
+                    <span>
+                        {withWaitFor.length === 1
+                            ? `${withWaitFor[0].name} waits for data that may not have been produced`
+                            : `${withWaitFor.length} downstream tasks wait for data that may not have been produced`}
+                    </span>
+                </div>
+            )}
+        </div>
+    );
 }
 
 /**
@@ -55,6 +135,9 @@ export function ActionModal({
                 'default'
             }
         >
+            {modal.taskContext && (modal.action === 'skip' || modal.action === 'success') && (
+                <DecisionContext ctx={modal.taskContext} />
+            )}
             {modal.customContent && modal.action === 'runPipeline' && (
                 <div>
                     <p className="mb-md">

@@ -160,6 +160,25 @@ the diff, that's the bug.
 
 ---
 
+## TaskError serialization — always use `serializeErrorForDisplay`
+
+`serializeErrorForDisplay` (exported from `src/components/TaskDetailModal/ErrorDisplay.tsx`) is the single canonical way to turn a `TaskError | string | null` into a human-readable string. It: strips empty-string fields, expands a nested JSON `Cause`, and pretty-prints.
+
+**Never** inline-duplicate this logic. Every surface that formats a task error for display must call this helper:
+
+```ts
+import { serializeErrorForDisplay } from '@/components/TaskDetailModal/ErrorDisplay';
+
+// copy button, timeline text, tooltip, any other surface:
+const text = serializeErrorForDisplay(task.error ?? null) || 'Task execution failed';
+```
+
+**Why:** hit during the decision-context feature. `DerivedTimeline` applied the empty-field filter inline but omitted the `JSON.parse(Cause)` step, so the History tab showed an escaped Cause string while the Details tab showed the readable expanded object for the same error. Root cause: duplicated serialization logic that drifted from the canonical helper.
+
+**How to apply:** grep for `JSON.stringify(.*error` or `JSON.stringify(.*\.error` — every match outside `ErrorDisplay.tsx` itself is a violation candidate.
+
+---
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

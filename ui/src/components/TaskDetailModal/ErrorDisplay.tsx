@@ -1,40 +1,35 @@
 import React, { useState } from 'react';
 import type { TaskError } from '@/types';
 
+/** Serializes a TaskError for display: strips empty fields, expands nested Cause JSON, pretty-prints. */
+export function serializeErrorForDisplay(error: TaskError | string | null): string {
+    if (!error) return '';
+    const compact = typeof error === 'string'
+        ? error
+        : JSON.stringify(Object.fromEntries(Object.entries(error).filter(([, v]) => v !== undefined && v !== '')));
+    try {
+        let parsed = JSON.parse(compact);
+        if (parsed?.Cause && typeof parsed.Cause === 'string') {
+            try { parsed = { ...parsed, Cause: JSON.parse(parsed.Cause) }; } catch { /* Cause is not JSON */ }
+        }
+        return JSON.stringify(parsed, null, 2);
+    } catch {
+        return compact;
+    }
+}
+
 /**
  * ErrorDisplay - Formats error text as collapsible JSON or traceback
  */
 export const ErrorDisplay = ({ error }: { error: TaskError | string | null }) => {
     const [expanded, setExpanded] = useState(false);
-    
+
     if (!error) return null;
-    
-    const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
-    
-    // Try to parse as JSON
-    let parsed = null;
-    let isJson = false;
-    try {
-        parsed = JSON.parse(errorStr);
-        isJson = true;
-    } catch {
-        // Not JSON - check if it's a nested JSON string (common with Step Functions)
-        try {
-            // Sometimes error.Cause is a JSON string inside a JSON string
-            if (errorStr.includes('"Cause"')) {
-                parsed = JSON.parse(errorStr);
-                if (parsed.Cause && typeof parsed.Cause === 'string') {
-                    try { parsed.Cause = JSON.parse(parsed.Cause); } catch { /* nested JSON parse may fail */ }
-                }
-                isJson = true;
-            }
-        } catch { /* not JSON, display as-is */ }
-    }
-    
-    const isLong = errorStr.length > 300;
-    const displayText = isJson ? JSON.stringify(parsed, null, 2) : errorStr;
+
+    const displayText = serializeErrorForDisplay(error);
+    const isLong = displayText.length > 300;
     const truncated = !expanded && isLong;
-    
+
     return (
         <div className="td-error-display">
             <pre className="td-error-pre" style={{
@@ -45,7 +40,7 @@ export const ErrorDisplay = ({ error }: { error: TaskError | string | null }) =>
                 {truncated ? displayText.slice(0, 300) + '...' : displayText}
             </pre>
             {isLong && (
-                <button 
+                <button
                     className="btn-link text-xs mt-1"
                     onClick={() => setExpanded(!expanded)}
                 >

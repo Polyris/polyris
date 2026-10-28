@@ -39,7 +39,7 @@ import {
 import { CountdownTimer } from '../CountdownTimer';
 import { BaseModal } from '../BaseModal';
 import { LiveDuration } from './LiveDuration';
-import { ErrorDisplay } from './ErrorDisplay';
+import { ErrorDisplay, serializeErrorForDisplay } from './ErrorDisplay';
 import { CollapsibleJsonBlock } from './CollapsibleJsonBlock';
 import { CollapsibleSection } from './CollapsibleSection';
 import { OutputCard } from './OutputCard';
@@ -292,7 +292,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                 variant="ghost"
                                 size="icon"
                                 className="h-6 w-6 opacity-60 hover:opacity-100"
-                                onClick={() => handleCopy('error', typeof task.error === 'string' ? task.error : JSON.stringify(task.error ?? ''))}
+                                onClick={() => handleCopy('error', serializeErrorForDisplay(task.error ?? null))}
                                 title="Copy error"
                                 aria-label={copiedKey === 'error' ? 'Copied' : 'Copy error'}
                             >{copiedKey === 'error' ? <CheckCircle2 size={14} /> : <Copy size={14} />}</Button>
@@ -675,7 +675,7 @@ function DerivedTimeline({ task }: { task: Task }) {
         'running': { badge: 'Running', badgeClass: 'td-event-running', text: 'Task is currently executing' },
         'success': { badge: 'Success', badgeClass: 'td-event-success', text: 'Task completed successfully', useTime: task.finished_at },
         'succeeded': { badge: 'Success', badgeClass: 'td-event-success', text: 'Task completed successfully', useTime: task.finished_at },
-        'failed': { badge: 'Failed', badgeClass: 'td-event-failed', text: typeof task.error === 'string' ? task.error : task.error ? JSON.stringify(task.error) : 'Task execution failed', useTime: task.finished_at },
+        'failed': { badge: 'Failed', badgeClass: 'td-event-failed', text: serializeErrorForDisplay(task.error ?? null) || 'Task execution failed', useTime: task.finished_at },
         'skipped': { badge: 'Skipped', badgeClass: 'td-event-skipped', text: 'Task was skipped', useTime: task.finished_at },
         'upstream_failed': { badge: 'Upstream Failed', badgeClass: 'td-event-failed', text: 'An upstream dependency failed', useTime: task.finished_at },
         'stopped': { badge: 'Stopped', badgeClass: 'td-event-stopped', text: 'Task was manually stopped', useTime: task.finished_at },
