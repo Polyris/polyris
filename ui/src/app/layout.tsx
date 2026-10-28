@@ -4,8 +4,25 @@ import '@/styles/globals.css';
 import '@/styles/index.css';
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'),
   title: 'Polyris Console',
-  icons: { icon: '/favicon.svg' },
+  description: 'Serverless data pipeline orchestration on AWS',
+  icons: {
+    icon: '/favicon.ico',
+    apple: '/apple-touch-icon.png',
+  },
+  manifest: '/manifest.json',
+  openGraph: {
+    title: 'Polyris Console',
+    description: 'Serverless data pipeline orchestration on AWS',
+    images: [{ url: '/logo.png', width: 830, height: 350 }],
+  },
+  twitter: {
+    card: 'summary',
+    title: 'Polyris Console',
+    description: 'Serverless data pipeline orchestration on AWS',
+    images: ['/logo-icon.png'],
+  },
 };
 
 export default function RootLayout({

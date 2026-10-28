@@ -392,7 +392,7 @@
     align-items: center;
     gap: 0.5rem;
     font-size: 0.95rem;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--accent);
 }
 .hdr-brand-logo {
@@ -402,15 +402,11 @@
     width: 26px;
     height: 26px;
     border-radius: 7px;
-    background: var(--accent);
-    color: #fff;
-}
-.hdr-brand-divider {
-    width: 1px;
-    height: 20px;
-    background: var(--border);
+    overflow: hidden;
     flex-shrink: 0;
+    background: #fff;
 }
+.hdr-brand-logo img { display: block; }
 .hdr-breadcrumb-item {
     color: var(--text-muted);
 }

@@ -13,7 +13,7 @@
 import React, { useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { LoginPage } from './LoginPage';
-import { Loader2, Zap } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { setAuthTokenGetter, setAuthErrorCallback } from '@/utils/api';
 import { logger } from '@/utils/logger';
 
@@ -25,7 +25,7 @@ function AuthLoading() {
         <div className="ag-auth-loading">
             <div className="ag-auth-loading-content">
                 <div className="ag-auth-loading-logo">
-                    <Zap size={32} />
+                    <img src="/logo-icon.png" alt="" aria-hidden="true" width="64" height="64" />
                 </div>
                 <Loader2 size={24} className="animate-spin" />
                 <span>Loading...</span>

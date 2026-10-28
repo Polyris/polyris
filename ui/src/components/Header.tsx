@@ -6,7 +6,6 @@ import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import {
     RefreshCw,
-    Zap,
     Pause,
     ChevronRight,
     Menu,
@@ -123,12 +122,10 @@ function Breadcrumbs() {
 
     return (
         <div className="hdr-nav-left">
-            <span className="hdr-brand" aria-label="polyris">
-                <span className="hdr-brand-logo"><Zap size={16} /></span>
+            <span className="hdr-brand">
+                <span className="hdr-brand-logo"><img src="/logo-icon.png" alt="" aria-hidden="true" width="26" height="26" /></span>
                 polyris
             </span>
-            <span className="hdr-brand-divider" aria-hidden="true" />
-
             <nav className="hdr-breadcrumbs" aria-label="Breadcrumb">
                 {onPipeline ? (
                     <span className="hdr-breadcrumb-item clickable" onClick={goSection} role="link" tabIndex={0} onKeyDown={key(goSection)}>

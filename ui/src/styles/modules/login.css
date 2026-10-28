@@ -31,11 +31,12 @@
     justify-content: center;
     width: 64px;
     height: 64px;
-    background: var(--accent);
-    color: #fff;
     border-radius: 16px;
+    overflow: hidden;
     margin-bottom: var(--space-sm);
+    background: #fff;
 }
+.ag-auth-loading-logo img { display: block; }
 
 /* =============================================================================
    Login Page Layout
@@ -68,23 +69,21 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: var(--space-sm);
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: hsl(var(--foreground));
+    gap: 0.625rem;
     margin-bottom: var(--space-md);
 }
 
 .lp-login-logo-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: block;
+    border-radius: 12px;
     width: 48px;
     height: 48px;
-    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--primary) / 0.8) 100%);
-    color: hsl(var(--primary-foreground));
-    border-radius: 12px;
-    box-shadow: 0 4px 12px hsl(var(--primary) / 0.3);
+}
+
+.lp-login-logo-text {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
 }
 
 .lp-login-title {
@@ -324,10 +323,6 @@
 }
 
 /* =============================================================================
-   User Menu (for Header)
-   ============================================================================= */
-
-/* =============================================================================
    Dark Mode Adjustments
    ============================================================================= */
 
@@ -352,10 +347,6 @@
     
     .lp-login-card {
         padding: var(--space-lg);
-    }
-    
-    .lp-login-logo {
-        font-size: 1.5rem;
     }
     
     .lp-login-logo-icon {
