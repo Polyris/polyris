@@ -108,7 +108,12 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
 
     return (
         <div
-            title={badgeTitle}
+            className="dag-countdown-badge"
+            data-tooltip={badgeTitle}
+            aria-label={badgeTitle}
+            role="timer"
+            aria-live="off"
+            tabIndex={-1}
             style={{
                 position: 'absolute',
                 top: '-8px',
