@@ -33,6 +33,7 @@ from polyris.validation import (
     validate_all,
     validate_asl_from_dag,
     _validate_single,
+    _print_error,
 )
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
@@ -513,3 +514,30 @@ class TestValidateSingle:
         f = _write(tmp_path, "nodag.py", "x = 1\ny = 2\n")
         valid, _ = _validate_single(str(f), verbose=False)
         assert valid is False
+
+
+class TestPrintError:
+    def test_single_line_error_printed_in_red(self, mocker, capsys):
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        _print_error("role 'bad' is not recognised")
+        out = capsys.readouterr().out
+        assert "role 'bad' is not recognised" in out
+        assert "\033[31m" in out  # RED
+
+    def test_two_line_error_prints_arn_in_yellow(self, mocker, capsys):
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        _print_error(
+            "Task 'x' has a placeholder ARN — replace REGION\n"
+            "     arn:aws:states:REGION:ACCOUNT_ID:stateMachine:x"
+        )
+        out = capsys.readouterr().out
+        assert "\033[33m" in out  # YELLOW on ARN line
+        assert "arn:aws:states:REGION" in out
+
+    def test_no_ansi_when_not_a_tty(self, mocker, capsys):
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        _print_error("some error\n     arn:aws:states:REGION:x:y:z")
+        out = capsys.readouterr().out
+        assert "\033[" not in out
+        assert "some error" in out
+        assert "arn:aws:states:REGION" in out

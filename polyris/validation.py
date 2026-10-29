@@ -21,6 +21,7 @@ import importlib.util
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional, Any
 from dataclasses import dataclass, field
+from polyris._ansi import c as _c, RED, YELLOW, BOLD
 
 
 @dataclass
@@ -775,6 +776,19 @@ def _run_test(dag_file: str) -> bool:
     return not failures
 
 
+def _print_error(e: str) -> None:
+    """Print a validation error with ANSI colour when stdout is a TTY.
+
+    Errors may be single-line (role / trigger_rule) or two-line (placeholder:
+    first line is the human message, second line is the offending ARN). The
+    first line is printed in bold red; the ARN line (if present) in yellow so
+    it stands out as the value to fix.
+    """
+    lines = e.split('\n', 1)
+    print(f"  ❌ {_c(lines[0], BOLD, RED)}")
+    if len(lines) > 1:
+        print(_c(lines[1], YELLOW))
+
 
 def main():
     """
@@ -869,7 +883,7 @@ def main():
             # never sees a silent exit 1. Verbose mode already surfaced these
             # via validate_all's summary and validate_asl_from_dag's verbose block.
             for e in results['errors']:
-                print(f"  ❌ {e}")
+                _print_error(e)
         sys.exit(0 if not results['errors'] else 1)
 
     elif args.test:
@@ -881,7 +895,7 @@ def main():
         valid, errors = _validate_single(args.file, verbose=effective_verbose)
         if not valid and not args.json and not effective_verbose:
             for e in errors:
-                print(f"  ❌ {e}")
+                _print_error(e)
         if args.json:
             print(json.dumps({'file': args.file, 'valid': valid, 'errors': errors}, indent=2))
         sys.exit(0 if valid else 1)
