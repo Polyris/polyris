@@ -27,11 +27,10 @@ Update it when something moves. Paths here are checked by
   fixing it changes that function's contract.
 ## Known debt, measured
 
-- **Coverage omit list is still too wide.** `polyris/local.py` is ~20% AWS (only
-  `_run_localstack` touches boto3); in `polyris/register.py` only
-  `get_sfn_client` does. The rest is pure logic sitting unmeasured behind an
-  "AWS/CLI" exemption. The fix shape is to split the AWS call out and measure the
-  remainder — as was done for `polyris/output.py` and `polyris/init.py`.
+- **Coverage omit list is still too wide.** `polyris/register.py` only has
+  `get_sfn_client` touching boto3; the rest is pure logic sitting unmeasured behind
+  an "AWS/CLI" exemption. The fix shape is to split the AWS call out and measure the
+  remainder — as was done for `polyris/output.py`, `polyris/init.py`, and `polyris/local.py`.
 - **npm audit: 3 high, 0 critical** — `next`, `postcss`, `sharp`. All unreachable
   under `output: 'export'`; reasoning recorded in `SECURITY.md`. No patched
   `next` 16.2.x exists.

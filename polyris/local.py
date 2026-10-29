@@ -639,7 +639,7 @@ def _load_dag_from_file(dag_file: str) -> DAG:
             else:
                 code = e.code if isinstance(e, SystemExit) else None
                 msg = f"sys.exit({code})" if code is not None else str(e)
-                print(f"{c('❌ Error loading', RED)} {dag_file}: {msg}")
+                print(f"❌ Error loading {c(dag_file, BOLD)}: {c(msg, RED)}")
                 sys.exit(1)
     finally:
         DAG.__exit__ = original_exit  # type: ignore[method-assign]
@@ -660,7 +660,7 @@ def _load_dag_from_file(dag_file: str) -> DAG:
     local_dags = [d for d in created_dags if id(d) not in imported_dag_ids]
 
     if not local_dags:
-        print(f"{c('❌ No DAG found in', RED)} {dag_file}")
+        print(f"❌ No DAG found in {c(dag_file, BOLD)}")
         sys.exit(1)
 
     return local_dags[-1]
