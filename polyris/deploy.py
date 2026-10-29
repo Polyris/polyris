@@ -49,6 +49,7 @@ from .generators import (
 )
 from .dag import DAG
 from .config import config as polyris_config
+from ._ansi import c as _c, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
 
 
 # =============================================================================
@@ -366,16 +367,6 @@ def _register_pipeline(
     print("  ✅ Registration triggered")
 
 
-# ANSI color codes for stack-event status. Only applied when stdout is a
-# real terminal — piping `polyris-deploy` output to a file or CI log must
-# not embed raw escape codes.
-_COLOR_RESET = "\033[0m"
-_COLOR_GREEN = "\033[32m"
-_COLOR_RED = "\033[31m"
-_COLOR_YELLOW = "\033[33m"
-_COLOR_CYAN = "\033[36m"
-
-
 def _colorize_status(status: str) -> str:
     """Color a CloudFormation ResourceStatus by outcome: red for
     failed/rollback, green for complete, cyan for in-progress, yellow for
@@ -385,14 +376,14 @@ def _colorize_status(status: str) -> str:
     if not sys.stdout.isatty():
         return status
     if "FAILED" in status or "ROLLBACK" in status:
-        color = _COLOR_RED
+        color = RED
     elif "COMPLETE" in status:
-        color = _COLOR_GREEN
+        color = GREEN
     elif "IN_PROGRESS" in status:
-        color = _COLOR_CYAN
+        color = CYAN
     else:
-        color = _COLOR_YELLOW
-    return f"{color}{status}{_COLOR_RESET}"
+        color = YELLOW
+    return f"{color}{status}{RESET}"
 
 
 def _watch_stack_events(
@@ -695,6 +686,7 @@ def deploy_pipeline(
     tokens_table = outputs.get("PipelineTokensTable")
     asset_subscriptions_table = outputs.get("AssetSubscriptionsTable")
     results_bucket = outputs.get("ResultsBucket")
+    console_url = outputs.get("ConsoleUiUrl")
 
     if not wrapper_arn or not role_arn:
         print(f"❌ SAM stack '{sam_stack_name}' is missing required outputs.")
@@ -871,9 +863,11 @@ def deploy_pipeline(
         _stamp_registered_at(session, registry_table, dag.dag_id)
         _register_pipeline(sfn_arn, dag.dag_id, region, profile=profile)
 
-    print("\n✅ Pipeline deployed successfully!")
-    print(f"   Stack:   {stack_name}")
-    print(f"   SFN ARN: {sfn_arn}")
+    print(f"\n{_c(f'✅ {dag.dag_id} deployed successfully!', BOLD_GREEN)}")
+    if console_url:
+        print("\n   Open the Polyris console to view and trigger your pipeline:")
+        print(f"   {_c(f'→ {console_url}', CYAN)}")
+    print(f"\n   Stack: {stack_name}")
 
 
 # =============================================================================
