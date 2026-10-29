@@ -315,9 +315,9 @@ class TestExplicitDependencies:
         )
         assert "pull_raw() >> push_out()" in code
 
-    def test_remote_state_variant_reads_the_stage_from_the_env(self):
+    def test_cfn_variant_reads_the_stage_from_the_env(self):
         code = _build_custom_pipeline(
-            "orders", "@daily", [{"name": "a"}], "cfn", use_remote_state=True,
+            "orders", "@daily", [{"name": "a"}], "cfn",
         )
         assert "POLYRIS_STAGE" in code
         assert "polyris-deploy --stage" in code
