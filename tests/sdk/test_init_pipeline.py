@@ -37,14 +37,35 @@ class TestInitPipelineCfnDefault:
         init_pipeline(name="my-pipeline", base_dir=str(tmp_path), deploy_method="cfn")
         assert (tmp_path / "my-pipeline" / "dag.py").exists()
 
-    def test_generated_cfn_pipeline_is_actually_valid(self, tmp_path):
-        """The scaffolded dag.py must be a real, deployable pipeline — not
-        just any non-empty file."""
+    def test_generated_cfn_pipeline_has_correct_structure(self, tmp_path):
+        """The scaffolded dag.py must be a real pipeline (right dag_id, tasks,
+        edges) but contains placeholder ARNs that block deployment until the
+        user replaces them — that is the intended post-init state."""
         init_pipeline(name="my-pipeline", base_dir=str(tmp_path))
         dag = _load_dag(str(tmp_path / "my-pipeline" / "dag.py"))
-        is_valid, errors, _warnings = validate_asl_from_dag(dag, verbose=False)
-        assert is_valid, errors
         assert dag.dag_id == "my-pipeline"
+        assert len(dag.tasks) == 3
+        is_valid, errors, _ = validate_asl_from_dag(dag, verbose=False)
+        assert is_valid is False, "placeholder ARNs must block deployment"
+        assert any("placeholder" in e.lower() for e in errors), (
+            "generated pipeline must report placeholder ARN errors so the user "
+            "knows to replace them before deploying"
+        )
+
+    def test_generated_cfn_pipeline_is_structurally_valid_after_arn_substitution(self, tmp_path):
+        """After replacing placeholder sentinels with real AWS values the pipeline
+        must produce structurally valid ASL — guards against template regressions
+        (broken edges, wrong StartAt, malformed states) that would be invisible
+        when the placeholder check forces is_valid=False unconditionally."""
+        init_pipeline(name="my-pipeline", base_dir=str(tmp_path))
+        dag_file = tmp_path / "my-pipeline" / "dag.py"
+        content = dag_file.read_text()
+        real_content = content.replace("REGION", "us-east-1").replace("ACCOUNT_ID", "123456789012")
+        dag_file.write_text(real_content)
+        dag = _load_dag(str(dag_file))
+        is_valid, errors, _ = validate_asl_from_dag(dag, verbose=False)
+        assert is_valid is True, errors
+        assert not any("placeholder" in e.lower() for e in errors)
 
     def test_generated_cfn_pipeline_has_no_leftover_local_wording(self, tmp_path):
         """The cfn-mode scaffold must use its own header, not the --local
@@ -56,6 +77,20 @@ class TestInitPipelineCfnDefault:
         assert "polyris init --local" not in content
         assert "polyris-deploy" in content
 
+    def test_generated_local_pipeline_is_structurally_valid_after_arn_substitution(self, tmp_path):
+        """Mirror of the cfn substitution test for the --local template: after
+        replacing placeholder sentinels the local scaffold must also produce
+        structurally valid ASL."""
+        init_pipeline(name="my-pipeline", base_dir=str(tmp_path), deploy_method="local")
+        dag_file = tmp_path / "my-pipeline" / "dag.py"
+        content = dag_file.read_text()
+        real_content = content.replace("REGION", "us-east-1").replace("ACCOUNT_ID", "123456789012")
+        dag_file.write_text(real_content)
+        dag = _load_dag(str(dag_file))
+        is_valid, errors, _ = validate_asl_from_dag(dag, verbose=False)
+        assert is_valid is True, errors
+        assert not any("placeholder" in e.lower() for e in errors)
+
     def test_local_deploy_method_unaffected(self, tmp_path):
         """Control: the pre-existing --local path must still work exactly
         as before, and must be distinguishable from the cfn template — this
@@ -65,8 +100,11 @@ class TestInitPipelineCfnDefault:
         assert "polyris init --local" in content
         assert "CloudFormation-ready" not in content
         dag = _load_dag(str(tmp_path / "my-pipeline" / "dag.py"))
-        is_valid, errors, _warnings = validate_asl_from_dag(dag, verbose=False)
-        assert is_valid, errors
+        is_valid, errors, _ = validate_asl_from_dag(dag, verbose=False)
+        assert is_valid is False, "placeholder ARNs must block deployment"
+        assert any("placeholder" in e.lower() for e in errors), (
+            "local template also embeds placeholder ARNs that must be flagged"
+        )
 
 
 class TestStarterPipelineRetryDefaults:

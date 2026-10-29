@@ -30,8 +30,12 @@ polyris orchestrates AWS resources that already exist. The @task.sfn ARNs
 below must point at Step Function state machines you deployed separately
 (via SAM/CDK/CloudFormation/hand). polyris does not create them for you.
 
+⚠️  The ARNs below are placeholders — replace REGION, ACCOUNT_ID, and the
+    state machine name before deploying. polyris-validate will catch any
+    that are still unset.
+
 Commands (run from this directory):
-    polyris-validate              # Validate pipeline
+    polyris-validate              # Validate pipeline (catches placeholder ARNs)
     polyris-validate -v           # Verbose validation
     polyris-output --json         # Generate ASL JSON
     polyris-output --mermaid      # Generate Mermaid diagram
@@ -52,21 +56,21 @@ with DAG(
     default_args={{"retries": 0}},
 ) as dag:
 
-    # Replace ARNs with your real Step Function ARNs when ready to deploy.
-    # For now, these placeholder ARNs let you explore the DSL locally.
+    # ⚠️  Replace REGION, ACCOUNT_ID, and the state machine names below
+    #     with your real AWS values before running polyris-deploy.
 
-    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-extract")
+    @task.sfn(arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-extract")
     def extract():
         """Extract data from source."""
         pass
 
-    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-transform")
+    @task.sfn(arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-transform")
     def transform():
         """Transform extracted data."""
         pass
 
     @task.sfn(
-        arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-load",
+        arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-load",
         # trigger_rule evaluates the DIRECT upstream tasks (transform here).
         # "all_success" (the default) means load runs only if transform ended
         # with status success. See docs/features/DSL.md for the other rules.
@@ -90,14 +94,18 @@ polyris orchestrates AWS resources that already exist. The @task.sfn ARNs
 below must point at Step Function state machines you deployed separately
 (via SAM/CDK/CloudFormation/hand). polyris does not create them for you.
 
+⚠️  The ARNs below are placeholders — replace REGION, ACCOUNT_ID, and the
+    state machine name before deploying. polyris-deploy will refuse to
+    deploy a pipeline that still contains placeholder ARNs.
+
 Commands (run from this directory):
-    polyris-validate              # Validate pipeline
+    polyris-validate              # Validate pipeline (catches placeholder ARNs)
     polyris-validate -v           # Verbose validation
     polyris-output --json         # Generate ASL JSON
     polyris-output --mermaid      # Generate Mermaid diagram
     polyris-output --graph        # Show DAG as ASCII graph
 
-Deploy:
+Deploy (after replacing ARNs):
     polyris-deploy --stage dev
 """
 from polyris import DAG, task
@@ -112,20 +120,21 @@ with DAG(
     default_args={{"retries": 0}},
 ) as dag:
 
-    # Replace these placeholder ARNs with your real Step Function ARNs.
+    # ⚠️  Replace REGION, ACCOUNT_ID, and the state machine names below
+    #     with your real AWS values before running polyris-deploy.
 
-    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-extract")
+    @task.sfn(arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-extract")
     def extract():
         """Extract data from source."""
         pass
 
-    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-transform")
+    @task.sfn(arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-transform")
     def transform():
         """Transform extracted data."""
         pass
 
     @task.sfn(
-        arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-load",
+        arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-load",
         # trigger_rule evaluates the DIRECT upstream tasks (transform here).
         # "all_success" (the default) means load runs only if transform ended
         # with status success. See docs/features/DSL.md for the other rules.
@@ -236,14 +245,14 @@ def _ask_choice(prompt, choices):
         print(f"  Invalid choice. Pick {', '.join(choices.keys())}.")
 
 
-def _build_custom_pipeline(name, schedule, tasks, deploy_method, use_remote_state=False):
+def _build_custom_pipeline(name, schedule, tasks, deploy_method):
     """Generate pipeline code from interactive wizard inputs."""
     
     # Build task definitions
     task_defs = []
     task_calls = []
     for t in tasks:
-        params = [f'arn="arn:aws:states:us-east-1:123456789012:stateMachine:{name}-{t["name"]}"']
+        params = [f'arn="arn:aws:states:REGION:ACCOUNT_ID:stateMachine:{name}-{t["name"]}"']
         if t.get("retries"):
             params.append(f'retries={t["retries"]}')
         if t.get("trigger_rule") and t["trigger_rule"] != "all_success":
@@ -281,43 +290,48 @@ def _build_custom_pipeline(name, schedule, tasks, deploy_method, use_remote_stat
 
 Generated by: polyris init -i --local
 
+⚠️  The ARNs below are placeholders — replace REGION, ACCOUNT_ID, and the
+    state machine name before deploying. polyris-validate will catch any
+    that are still unset.
+
 Commands (run from this directory):
-    polyris-validate              # Validate pipeline
+    polyris-validate              # Validate pipeline (catches placeholder ARNs)
     polyris-validate -v           # Verbose validation
     polyris-output --json         # Generate ASL JSON
     polyris-output --mermaid      # Generate Mermaid diagram
     polyris-output --graph        # Show DAG as ASCII graph
 
-When ready to deploy:
+Deploy (after replacing ARNs):
     polyris-deploy --stage dev
 """
 from polyris import DAG, task'''
         footer = '''
 # Deploy: polyris-deploy --stage dev'''
     else:
-        if use_remote_state:
-            header = f'''"""
-{name} pipeline.
+        header = f'''"""
+{name} pipeline. CloudFormation-ready pipeline.
 
 Generated by: polyris init -i
+
+⚠️  The ARNs below are placeholders — replace REGION, ACCOUNT_ID, and the
+    state machine name before deploying. polyris-deploy will refuse to
+    deploy a pipeline that still contains placeholder ARNs.
+
+Commands (run from this directory):
+    polyris-validate              # Validate pipeline (catches placeholder ARNs)
+    polyris-validate -v           # Verbose validation
+    polyris-output --json         # Generate ASL JSON
+    polyris-output --mermaid      # Generate Mermaid diagram
+    polyris-output --graph        # Show DAG as ASCII graph
+
+Deploy (after replacing ARNs):
+    polyris-deploy --stage dev
 """
 import os
 from polyris import DAG, task
 
 STAGE = os.environ.get("POLYRIS_STAGE", "dev")'''
-            footer = '''
-# Deploy: polyris-deploy --stage $STAGE'''
-        else:
-            header = f'''"""
-{name} pipeline.
-
-Generated by: polyris init -i
-"""
-import os
-from polyris import DAG, task
-
-STAGE = os.environ.get("POLYRIS_STAGE", "dev")'''
-            footer = '''
+        footer = '''
 # Deploy: polyris-deploy --stage $STAGE'''
     
     code = f'''{header}
