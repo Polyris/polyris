@@ -61,6 +61,7 @@ polyris-init = "polyris.init:main"
 polyris-output = "polyris.output:main"
 polyris-register = "polyris.register:main"
 polyris-validate = "polyris.validation:main"
+polyris-local = "polyris.local:main"
 polyris-build-lambda = "polyris.build_lambda:main"
 
 [tool.setuptools.package-data]
@@ -134,18 +135,14 @@ omit = [
     # untested. All three are now measured. Before adding a module here, check
     # it actually needs AWS; if it does not, write the test.
     #
-    # KNOWN DEBT (measured 2026-07, not yet closed): the two below are majority
-    # pure logic, so this exemption is wider than it should be.
-    #   local.py     ~20% AWS — only _run_localstack (106 lines) touches boto3;
-    #                validate / dry_run / run / _run_mock / _parse_execution_history
-    #                / run_cli are pure and unmeasured (module at ~21%).
+    # KNOWN DEBT (measured 2026-07, partially closed 2026-10): register.py is
+    # still majority pure logic but the whole module is exempt:
     #   register.py  only get_sfn_client touches boto3; register_pipeline,
     #                find_sfn_arn and main (111 lines) are pure (module at ~22%).
     # The right shape is to split the AWS call out and measure the rest, the way
-    # output.py/init.py were closed — not to keep the whole module exempt.
+    # output.py/init.py/local.py were closed — not to keep the whole module exempt.
     "polyris/deploy.py",
     "polyris/register.py",
-    "polyris/local.py",
     "polyris/codegen/sync_enums.py",
     "polyris/codegen/sync_variables.py",
     # codegen drift-checkers. Their *logic* is unit-tested against tmp_path

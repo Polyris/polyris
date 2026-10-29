@@ -1,37 +1,22 @@
 """
-Local execution for polyris pipelines.
-
-Run pipelines locally for testing without deploying to AWS.
+Local execution and validation for polyris pipelines.
 
 Usage:
-    from polyris import DAG, task
-    from polyris.local import run, dry_run, validate
-    
-    with DAG("my-pipeline", ...) as dag:
-        @task.sfn(arn="...")
-        def extract(): pass
-        extract()
-    
-    # Option 1: Dry run (show what would happen)
-    dry_run(dag)
-    
-    # Option 2: Validate (check DAG structure)
-    validate(dag)
-    
-    # Option 3: Run with mocks (simulate execution)
-    run(dag, mock=True)
-    
-    # Option 4: Run with LocalStack
-    run(dag, localstack=True)
+    from polyris.local import validate, dry_run, run
 
-CLI:
-    polyris local my_dag.py --dry-run
-    polyris local my_dag.py --validate
-    polyris local my_dag.py --mock
-    polyris local my_dag.py --localstack
+CLI (installed as polyris-local):
+    polyris-local                         # Dry run — preview execution plan
+    polyris-local --validate              # Validate structure + exit 0/1
+    polyris-local --mock                  # Simulate execution with mock results
+    polyris-local --dry-run --asl         # Include generated ASL in output
+    polyris-local --file other.py         # Use a different pipeline file
+
+All commands read dag.py in the current directory by default.
 """
 
+import argparse
 import json
+import sys
 import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Callable, cast
@@ -39,7 +24,9 @@ from dataclasses import dataclass, field
 
 from .dag import DAG
 from .task import Task
-from .generators import generate_step_function_json, generate_mermaid, validate_asl
+from .generators import generate_step_function_json, generate_mermaid
+from .validation import validate_asl_from_dag
+from ._ansi import c, BOLD, BOLD_GREEN, CYAN, RED, YELLOW, GREEN
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -55,7 +42,7 @@ class TaskResult:
     end_time: datetime
     output: Any = None
     error: Optional[str] = None
-    
+
     @property
     def duration_ms(self) -> int:
         return int((self.end_time - self.start_time).total_seconds() * 1000)
@@ -69,11 +56,11 @@ class ExecutionResult:
     start_time: datetime
     end_time: datetime
     task_results: List[TaskResult] = field(default_factory=list)
-    
+
     @property
     def duration_ms(self) -> int:
         return int((self.end_time - self.start_time).total_seconds() * 1000)
-    
+
     def summary(self) -> str:
         success = sum(1 for t in self.task_results if t.status == 'success')
         failed = sum(1 for t in self.task_results if t.status == 'failed')
@@ -88,103 +75,79 @@ class ExecutionResult:
 def validate(dag: DAG, verbose: bool = True) -> Dict[str, Any]:
     """
     Validate DAG structure and generated ASL.
-    
-    Checks:
-    - DAG has tasks
-    - No circular dependencies
-    - All task dependencies exist
-    - Generated ASL is valid
-    - Alerts are configured (warning if not)
-    
-    Args:
-        dag: The DAG to validate
-        verbose: Print results to stdout
-    
+
+    Delegates to validate_asl_from_dag for full checks: placeholder ARNs,
+    role errors, trigger_rule errors, and ASL structural validity.
+
     Returns:
-        {
-            'valid': bool,
-            'errors': [...],
-            'warnings': [...],
-            'info': {...}
-        }
+        {'valid': bool, 'errors': [...], 'warnings': [...], 'info': {...}}
     """
-    errors = []
-    warnings = []
-    info = {
-        'dag_id': dag.dag_id,
-        'task_count': len(dag.tasks),
-        'schedule': dag.schedule,
-    }
-    
     if verbose:
-        print(f"🔍 Validating DAG: {dag.dag_id}")
-        print(f"   Schedule: {dag.schedule or 'None (manual)'}")
-        print(f"   Tasks: {len(dag.tasks)}")
-        print()
-    
-    # Check: Has tasks
-    if not dag.tasks:
-        errors.append("DAG has no tasks")
-    
-    # Check: Dependencies exist
-    task_ids = {t.task_id for t in dag.tasks}
-    step_ids = {s.step_id for s in dag.steps} if hasattr(dag, 'steps') else set()
-    all_ids = task_ids | step_ids
-    for task in dag.tasks:
-        for dep in task.dependencies:
-            dep_id = getattr(dep, 'task_id', None) or getattr(dep, 'step_id', None)
-            if dep_id and dep_id not in all_ids:
-                errors.append(f"Task '{task.task_id}' depends on unknown task/step '{dep_id}'")
-    
-    # Check: No circular dependencies
+        print(f"🔍 {c('Validating:', BOLD)} {c(dag.dag_id, CYAN)} ({len(dag.tasks)} tasks, schedule={dag.schedule})")
+    # Detect cycles early — generate_step_function_json (called by validate_asl_from_dag)
+    # never calls topological_sort(), so cyclic DAGs would otherwise pass with valid=True.
     try:
         dag.topological_sort()
     except Exception as e:
-        errors.append(f"Circular dependency detected: {e}")
-    
-    # Check: ASL is valid
-    try:
-        asl_json = generate_step_function_json(dag)
-        asl = json.loads(asl_json)
-        is_valid, asl_errors, asl_warnings = validate_asl(asl)
-        
-        errors.extend(asl_errors)
-        warnings.extend(asl_warnings)
-        
-        info['states_count'] = len(asl.get('States', {}))
-    except Exception as e:
-        errors.append(f"Failed to generate ASL: {e}")
-    
-    # Check: Task ARNs
-    for task in dag.tasks:
-        if not task.arn and task.task_type == 'sfn':
-            warnings.append(f"Task '{task.task_id}' has no ARN")
-    
-    is_valid = len(errors) == 0
-    
-    if verbose:
-        if errors:
-            print("❌ Errors:")
-            for err in errors:
-                print(f"   • {err}")
-            print()
-        
-        if warnings:
-            print("⚠️  Warnings:")
-            for w in warnings:
-                print(f"   • {w}")
-            print()
-        
-        if is_valid:
-            print("✅ Validation passed!")
-        else:
-            print("❌ Validation failed!")
-    
+        return {
+            'valid': False,
+            'errors': [str(e)],
+            'warnings': [],
+            'info': {
+                'dag_id': dag.dag_id,
+                'task_count': len(dag.tasks),
+                'schedule': dag.schedule,
+            },
+        }
+    # Check that all dependency objects are registered in this DAG — a Task wired via >>
+    # but created outside `with DAG():` won't appear in dag.tasks and would silently
+    # generate a broken SFN template.  Use id() so the check works regardless of whether
+    # dependency objects define __hash__ / __eq__.  Include dag.steps so that valid
+    # step-based wires (wait_step >> task) don't trigger a false-positive error.
+    # Check both task deps and step deps so a foreign TaskInstance wired via
+    # `foreign_instance >> step` is also caught.
+    registered_ids = {id(t) for t in dag.tasks} | {id(s) for s in getattr(dag, 'steps', [])}
+    dep_errors = [
+        f"Task '{t.task_id}' depends on '{getattr(dep, 'task_id', None) or getattr(dep, 'node_id', 'unknown')}'"
+        f" which is not registered in this DAG"
+        for t in dag.tasks
+        for dep in t.dependencies
+        if id(dep) not in registered_ids
+    ] + [
+        f"Step '{s.step_id}' depends on '{getattr(dep, 'task_id', None) or getattr(dep, 'node_id', 'unknown')}'"
+        f" which is not registered in this DAG"
+        for s in getattr(dag, 'steps', [])
+        for dep in s.dependencies
+        if id(dep) not in registered_ids
+    ]
+    if dep_errors:
+        return {
+            'valid': False,
+            'errors': dep_errors,
+            'warnings': [],
+            'info': {
+                'dag_id': dag.dag_id,
+                'task_count': len(dag.tasks),
+                'schedule': dag.schedule,
+            },
+        }
+    is_valid, errors, warnings = validate_asl_from_dag(dag, verbose=verbose)
+    # validate_asl_from_dag checks for placeholder tokens (REGION/ACCOUNT_ID) but not
+    # for a completely absent ARN — restore the old validate() warning for that case.
+    blank_arn_warnings = [
+        f"Task '{t.task_id}' has no ARN"
+        for t in dag.tasks
+        if t.task_type == 'sfn' and not t.arn
+    ]
     return {
         'valid': is_valid,
         'errors': errors,
-        'warnings': warnings,
-        'info': info
+        'warnings': warnings + blank_arn_warnings,
+        'info': {
+            'dag_id': dag.dag_id,
+            'task_count': len(dag.tasks),
+            'schedule': dag.schedule,
+        },
     }
 
 
@@ -192,81 +155,80 @@ def validate(dag: DAG, verbose: bool = True) -> Dict[str, Any]:
 # Dry Run
 # ═══════════════════════════════════════════════════════════════
 
-def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> None:
+def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> Dict[str, Any]:
     """
     Show what would happen without actually executing.
-    
-    Displays:
-    - DAG info
-    - Task execution order
-    - Generated ASL (optional)
-    - Mermaid diagram (optional)
-    
-    Args:
-        dag: The DAG to dry-run
-        show_asl: Print generated ASL JSON
-        show_mermaid: Print Mermaid diagram
+
+    Displays DAG info, execution order, optional ASL + Mermaid, and
+    the full validation result so any errors are visible before deploy.
+    Returns the validation result dict so callers can use it for exit-code
+    decisions without calling validate() a second time.
     """
-    print("=" * 60)
-    print(f"🚀 DRY RUN: {dag.dag_id}")
-    print("=" * 60)
+    sep = c("=" * 60, BOLD)
+    print(sep)
+    print(f"🚀 {c('DRY RUN:', BOLD)} {c(dag.dag_id, CYAN)}")
+    print(sep)
     print()
-    
+
     # DAG info
-    print("📋 DAG Configuration:")
-    print(f"   ID: {dag.dag_id}")
-    print(f"   Schedule: {dag.schedule or 'None (manual)'}")
+    print(c("📋 DAG Configuration:", BOLD))
+    print(f"   ID:          {c(dag.dag_id, CYAN)}")
+    print(f"   Schedule:    {dag.schedule or 'None (manual)'}")
     print(f"   Description: {dag.description or 'N/A'}")
-    print(f"   Tags: {dag.tags or []}")
+    print(f"   Tags:        {dag.tags or []}")
     print()
-    
+
     # Task execution order
-    print("📝 Execution Order:")
+    topo_error: Optional[str] = None
+    print(c("📝 Execution Order:", BOLD))
     try:
         ordered_tasks = dag.topological_sort()
         for i, task in enumerate(ordered_tasks, 1):
             deps = [d.node_id for d in task.dependencies]
             deps_str = f" (after: {', '.join(deps)})" if deps else ""
-            print(f"   {i}. {task.task_id}{deps_str}")
-            print(f"      Type: {task.task_type}")
+            print(f"   {c(str(i) + '.', BOLD)} {c(task.task_id, CYAN)}{deps_str}")
+            print(f"      Type:    {task.task_type}")
             if task.arn:
-                print(f"      ARN: {task.arn}")
+                print(f"      ARN:     {task.arn}")
             if task.trigger_rule != 'all_success':
-                print(f"      Trigger: {task.trigger_rule}")
+                print(f"      Trigger: {c(task.trigger_rule, YELLOW)}")
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        topo_error = str(e)
+        print(f"   {c('❌ Error:', RED)} {topo_error}")
     print()
-    
+
     # Mermaid diagram
     if show_mermaid:
-        print("📊 DAG Diagram (Mermaid):")
+        print(c("📊 DAG Diagram (Mermaid):", BOLD))
         print("```mermaid")
         print(generate_mermaid(dag))
         print("```")
         print()
-    
-    # ASL
-    if show_asl:
-        print("📜 Generated ASL (Step Functions JSON):")
+
+    # ASL — skip for cyclic DAGs: generate_step_function_json doesn't call
+    # topological_sort, so it would produce misleading output for a broken DAG.
+    if show_asl and not topo_error:
+        print(c("📜 Generated ASL (Step Functions JSON):", BOLD))
         asl = generate_step_function_json(dag)
         print(json.dumps(json.loads(asl), indent=2))
         print()
-    
-    # Validation
-    print("🔍 Validation:")
+
+    # Validation — cycle was already reported above; skip reprinting those errors.
+    print(c("🔍 Validation:", BOLD))
     result = validate(dag, verbose=False)
     if result['valid']:
-        print("   ✅ All checks passed")
-    else:
+        print(f"   {c('✅ All checks passed', BOLD_GREEN)}")
+    elif not topo_error:
         for err in result['errors']:
-            print(f"   ❌ {err}")
+            print(f"   {c('❌', RED)} {err}")
     for w in result['warnings']:
-        print(f"   ⚠️  {w}")
+        print(f"   {c('⚠️ ', YELLOW)} {w}")
     print()
-    
-    print("=" * 60)
-    print("ℹ️  This is a dry run. No resources were created or modified.")
-    print("=" * 60)
+
+    print(sep)
+    print(c("ℹ️  This is a dry run. No resources were created or modified.", BOLD))
+    print(sep)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -280,43 +242,18 @@ def run(
     localstack_endpoint: str = "http://localhost:4566",
     task_mocks: Optional[Dict[str, Any]] = None,
     on_task_start: Optional[Callable[[str], None]] = None,
-    on_task_complete: Optional[Callable[[TaskResult], None]] = None,
-) -> ExecutionResult:
+    on_task_complete: Optional[Callable[["TaskResult"], None]] = None,
+) -> "ExecutionResult":
     """
     Run DAG locally.
-    
+
     Modes:
-    - mock=True: Simulate execution with mock results
-    - localstack=True: Execute against LocalStack
-    
-    Args:
-        dag: The DAG to run
-        mock: Use mock execution (default: True)
-        localstack: Use LocalStack (requires LocalStack running)
-        localstack_endpoint: LocalStack endpoint URL
-        task_mocks: Dict of task_id -> mock result
-        on_task_start: Callback when task starts
-        on_task_complete: Callback when task completes
-    
-    Returns:
-        ExecutionResult with all task results
-    
-    Example:
-        # Simple mock run
-        result = run(dag)
-        print(result.summary())
-        
-        # With custom mocks
-        result = run(dag, task_mocks={
-            'extract': {'records': 100},
-            'transform': {'records': 95},
-        })
-        
-        # With LocalStack
-        result = run(dag, localstack=True)
+    - mock=True (default): Simulate execution with mock results.
+    - localstack=True: Execute against LocalStack (requires LocalStack running
+      at localhost:4566 — exercised by e2e/smoke, not unit tests).
     """
     if localstack:
-        return _run_localstack(dag, localstack_endpoint, on_task_start, on_task_complete)
+        return _run_localstack(dag, localstack_endpoint, on_task_start, on_task_complete)  # pragma: no cover — requires LocalStack running at localhost:4566
     else:
         return _run_mock(dag, task_mocks or {}, on_task_start, on_task_complete)
 
@@ -328,40 +265,41 @@ def _run_mock(
     on_task_complete: Optional[Callable],
 ) -> ExecutionResult:
     """Run with mock execution."""
-    
-    print("=" * 60)
-    print(f"🧪 MOCK EXECUTION: {dag.dag_id}")
-    print("=" * 60)
+
+    sep = c("=" * 60, BOLD)
+    print(sep)
+    print(f"🧪 {c('MOCK EXECUTION:', BOLD)} {c(dag.dag_id, CYAN)}")
+    print(sep)
     print()
-    
+
     start_time = datetime.now(timezone.utc)
     task_results: List[Any] = []
     task_outputs = {}  # Store outputs for downstream tasks
-    
+
     try:
         ordered_tasks = dag.topological_sort()
     except Exception as e:
-        print(f"❌ Failed to sort tasks: {e}")
+        print(f"{c('❌ Failed to sort tasks:', RED)} {e}")
         return ExecutionResult(
             dag_id=dag.dag_id,
             status='failed',
             start_time=start_time,
             end_time=datetime.now(timezone.utc),
         )
-    
+
     for task in ordered_tasks:
         task_start = datetime.now(timezone.utc)
-        
+
         if on_task_start:
             on_task_start(task.task_id)
-        
-        print(f"▶️  Running: {task.task_id}")
-        
+
+        print(f"▶️  {c('Running:', BOLD)} {c(task.task_id, CYAN)}")
+
         # Check trigger rule
         should_run, reason = _evaluate_trigger_rule(task, task_results)
-        
+
         if not should_run:
-            print(f"   ⏭️  Skipped: {reason}")
+            print(f"   {c('⏭️  Skipped:', YELLOW)} {reason}")
             result = TaskResult(
                 task_id=task.task_id,
                 status='skipped',
@@ -372,24 +310,22 @@ def _run_mock(
             if on_task_complete:
                 on_task_complete(result)
             continue
-        
+
         # Simulate execution
         try:
             # Get mock output or generate default
             if task.task_id in task_mocks:
                 output = task_mocks[task.task_id]
             elif task.python_callable:
-                # Try to call the actual function
                 output = task.python_callable()
-            else:
-                # Default mock output
+            else:  # pragma: no cover — every DSL @task.* decorator sets python_callable to the decorated function (never None)
                 output = {'status': 'completed', 'task_id': task.task_id}
-            
+
             # Simulate delay
             time.sleep(0.1)
-            
+
             task_outputs[task.task_id] = output
-            
+
             result = TaskResult(
                 task_id=task.task_id,
                 status='success',
@@ -397,8 +333,8 @@ def _run_mock(
                 end_time=datetime.now(timezone.utc),
                 output=output,
             )
-            print(f"   ✅ Success ({result.duration_ms}ms)")
-            
+            print(f"   {c('✅ Success', BOLD_GREEN)} ({result.duration_ms}ms)")
+
         except Exception as e:
             result = TaskResult(
                 task_id=task.task_id,
@@ -407,15 +343,15 @@ def _run_mock(
                 end_time=datetime.now(timezone.utc),
                 error=str(e),
             )
-            print(f"   ❌ Failed: {e}")
-        
+            print(f"   {c('❌ Failed:', RED)} {e}")
+
         task_results.append(result)
-        
+
         if on_task_complete:
             on_task_complete(result)
-    
+
     end_time = datetime.now(timezone.utc)
-    
+
     # Determine overall status
     failed_count = sum(1 for r in task_results if r.status == 'failed')
     if failed_count == 0:
@@ -424,7 +360,7 @@ def _run_mock(
         status = 'failed'
     else:
         status = 'partial'
-    
+
     execution_result = ExecutionResult(
         dag_id=dag.dag_id,
         status=status,
@@ -432,30 +368,30 @@ def _run_mock(
         end_time=end_time,
         task_results=task_results,
     )
-    
+
     print()
-    print("=" * 60)
-    print(f"📊 Result: {execution_result.summary()}")
-    print(f"⏱️  Duration: {execution_result.duration_ms}ms")
-    print("=" * 60)
-    
+    print(sep)
+    print(f"📊 {c('Result:', BOLD)} {execution_result.summary()}")
+    print(f"⏱️  {c('Duration:', BOLD)} {execution_result.duration_ms}ms")
+    print(sep)
+
     return execution_result
 
 
-def _run_localstack(
+def _run_localstack(  # pragma: no cover — requires LocalStack running at localhost:4566; exercised by e2e/smoke
     dag: DAG,
     endpoint: str,
     on_task_start: Optional[Callable],
     on_task_complete: Optional[Callable],
 ) -> ExecutionResult:
     """Run with LocalStack."""
-    
+
     print("=" * 60)
     print(f"🐳 LOCALSTACK EXECUTION: {dag.dag_id}")
     print(f"   Endpoint: {endpoint}")
     print("=" * 60)
     print()
-    
+
     try:
         import boto3
         from botocore.exceptions import ClientError, BotoCoreError
@@ -463,9 +399,9 @@ def _run_localstack(
         print("❌ boto3 is required for LocalStack execution")
         print("   pip install boto3")
         raise
-    
+
     start_time = datetime.now(timezone.utc)
-    
+
     # Create LocalStack clients
     sfn = boto3.client(
         'stepfunctions',
@@ -474,14 +410,14 @@ def _run_localstack(
         aws_access_key_id='test',
         aws_secret_access_key='test',
     )
-    
+
     # Generate and deploy state machine
     asl_json = generate_step_function_json(dag)
-    
+
     try:
         # Create or update state machine
         sm_name = f"local-{dag.dag_id}"
-        
+
         # Try to delete existing
         try:
             existing = sfn.list_state_machines()
@@ -492,7 +428,7 @@ def _run_localstack(
         except (ClientError, BotoCoreError) as e:
             # SM might not exist yet, or LocalStack glitch — proceed to create
             print(f"[local] Skipped deleting old state machine: {e}")
-        
+
         # Create new
         response = sfn.create_state_machine(
             name=sm_name,
@@ -501,7 +437,7 @@ def _run_localstack(
         )
         sm_arn = response['stateMachineArn']
         print(f"✓ Created state machine: {sm_name}")
-        
+
         # Start execution with deterministic name
         exec_name = f"{sm_name}-local-{start_time.strftime('%Y%m%d-%H%M%S')}"
         exec_response = sfn.start_execution(
@@ -511,27 +447,27 @@ def _run_localstack(
         )
         exec_arn = exec_response['executionArn']
         print(f"✓ Started execution: {exec_arn}")
-        
+
         # Poll for completion
         while True:
             status_response = sfn.describe_execution(executionArn=exec_arn)
             status = status_response['status']
-            
+
             if status in ('SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED'):
                 break
-            
+
             print(f"   ⏳ Status: {status}")
             time.sleep(1)
-        
+
         end_time = datetime.now(timezone.utc)
-        
+
         # Get execution history for task results
         history = sfn.get_execution_history(executionArn=exec_arn)
         task_results = _parse_execution_history(cast(List[Dict[str, Any]], history['events']))
-        
+
         print()
         print(f"✓ Execution completed: {status}")
-        
+
         return ExecutionResult(
             dag_id=dag.dag_id,
             status='success' if status == 'SUCCEEDED' else 'failed',
@@ -539,7 +475,7 @@ def _run_localstack(
             end_time=end_time,
             task_results=task_results,
         )
-        
+
     except Exception as e:
         print(f"❌ LocalStack execution failed: {e}")
         return ExecutionResult(
@@ -620,7 +556,7 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
     """Parse SFN execution history into TaskResults."""
     results = []
     task_starts = {}
-    
+
     for idx, event in enumerate(events):
         event_type = event['type']
         timestamp = event['timestamp']
@@ -654,7 +590,7 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
                 if 'TaskStateEntered' in e.get('type', ''):
                     task_id = e.get('stateEnteredEventDetails', {}).get('name', 'unknown')
                     break
-            
+
             results.append(TaskResult(
                 task_id=task_id,
                 status='failed',
@@ -662,7 +598,7 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
                 end_time=timestamp,
                 error=f"{error}: {cause}",
             ))
-    
+
     return results
 
 
@@ -670,35 +606,76 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
 # CLI Integration
 # ═══════════════════════════════════════════════════════════════
 
-def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs):
+def _load_dag_from_file(dag_file: str) -> DAG:
+    """Load a DAG from a pipeline file using DAG.__exit__ instrumentation.
+
+    Uses the same discovery pattern as extract_dag_info / _validate_single
+    (CLAUDE.md §): works for `with DAG("name"):` blocks that don't assign
+    `as dag` — unlike vars(mod) which only finds module-level bindings.
+
+    Only DAGs defined in the pipeline file itself are returned — DAGs from
+    imported modules are excluded via a sys.modules locality filter (CLAUDE.md).
+    """
+    import importlib.util
+
+    created_dags: List[DAG] = []
+    original_exit = DAG.__exit__
+
+    def tracking_exit(self: Any, *args: Any) -> Any:
+        created_dags.append(self)
+        return original_exit(self, *args)
+
+    DAG.__exit__ = tracking_exit  # type: ignore[method-assign]
+    try:
+        spec = importlib.util.spec_from_file_location("dag_module", dag_file)
+        if spec is None or spec.loader is None:  # pragma: no cover — defensive: spec_from_file_location returns None only for paths Python cannot load
+            raise ImportError(f"Cannot load module from {dag_file}")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+        except (Exception, SystemExit) as e:
+            if isinstance(e, SystemExit) and e.code in (0, None):
+                pass  # exit(0) or bare sys.exit() (code=None) means ran to completion
+            else:
+                code = e.code if isinstance(e, SystemExit) else None
+                msg = f"sys.exit({code})" if code is not None else str(e)
+                print(f"{c('❌ Error loading', RED)} {dag_file}: {msg}")
+                sys.exit(1)
+    finally:
+        DAG.__exit__ = original_exit  # type: ignore[method-assign]
+
+    # Locality filter (CLAUDE.md): exclude DAGs that appear as named attributes in any
+    # imported module — those were defined elsewhere and merely imported by the pipeline
+    # file. The pipeline file's own module is not in sys.modules (we use module_from_spec
+    # without adding it), so any DAG found in sys.modules came from an import.
+    imported_dag_ids: set[int] = set()
+    for _mod in sys.modules.values():
+        try:
+            for _obj in vars(_mod).values():
+                if isinstance(_obj, DAG):
+                    imported_dag_ids.add(id(_obj))
+        except TypeError:  # pragma: no cover — built-in modules without __dict__
+            pass
+
+    local_dags = [d for d in created_dags if id(d) not in imported_dag_ids]
+
+    if not local_dags:
+        print(f"{c('❌ No DAG found in', RED)} {dag_file}")
+        sys.exit(1)
+
+    return local_dags[-1]
+
+
+def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs: Any) -> None:
     """
     Run from CLI.
-    
+
     Args:
         dag_file: Path to Python file containing DAG
         mode: One of 'dry-run', 'validate', 'mock', 'localstack'
     """
-    import importlib.util
-    
-    # Load DAG from file
-    spec = importlib.util.spec_from_file_location("dag_module", dag_file)
-    if spec is None or spec.loader is None:  # pragma: no cover -- defensive: spec_from_file_location returns a loaded spec for existing .py paths
-        raise ImportError(f"Cannot load module from {dag_file}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    
-    # Find DAG in module
-    dag = None
-    for name in dir(module):
-        obj = getattr(module, name)
-        if isinstance(obj, DAG):
-            dag = obj
-            break
-    
-    if not dag:
-        print(f"❌ No DAG found in {dag_file}")
-        return
-    
+    dag = _load_dag_from_file(dag_file)
+
     if mode == 'dry-run':
         dry_run(dag, **kwargs)
     elif mode == 'validate':
@@ -706,6 +683,84 @@ def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs):
     elif mode == 'mock':
         run(dag, mock=True, **kwargs)
     elif mode == 'localstack':
-        run(dag, localstack=True, **kwargs)
+        run(dag, localstack=True, **kwargs)  # pragma: no cover — requires LocalStack running at localhost:4566
     else:
         print(f"❌ Unknown mode: {mode}")
+
+
+def main() -> None:
+    """CLI entry point for polyris-local.
+
+    Usage:
+        polyris-local                    # Dry run (default)
+        polyris-local --validate         # Validate and exit 0/1
+        polyris-local --mock             # Simulate execution
+        polyris-local --file other.py    # Use a different pipeline file
+        polyris-local --dry-run --asl    # Include ASL JSON in output
+    """
+    parser = argparse.ArgumentParser(
+        prog='polyris-local',
+        description='Validate and preview polyris pipelines without deploying to AWS.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  polyris-local                    # Dry run (shows execution plan)
+  polyris-local --validate         # Validate and exit 0/1
+  polyris-local --mock             # Simulate execution with mock results
+  polyris-local --file other.py    # Use a different pipeline file
+  polyris-local --dry-run --asl    # Include generated ASL JSON""",
+    )
+    parser.add_argument(
+        '--file', '-f',
+        default='dag.py',
+        metavar='DAG_FILE',
+        help='pipeline file to load (default: dag.py)',
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        '--validate',
+        action='store_true',
+        help='validate pipeline structure and exit 0 (valid) or 1 (invalid)',
+    )
+    mode_group.add_argument(
+        '--mock',
+        action='store_true',
+        help='simulate execution with mock results',
+    )
+    mode_group.add_argument(
+        '--localstack',
+        action='store_true',
+        help='execute against LocalStack (requires LocalStack running at localhost:4566)',
+    )
+    mode_group.add_argument(
+        '--dry-run',
+        dest='dry_run',
+        action='store_true',
+        help='show execution plan without running (default when no mode given)',
+    )
+    parser.add_argument(
+        '--asl',
+        action='store_true',
+        help='include generated Step Functions ASL JSON in --dry-run output',
+    )
+
+    args = parser.parse_args()
+
+    dag = _load_dag_from_file(args.file)
+
+    if args.validate:
+        result = validate(dag)
+        sys.exit(0 if result['valid'] else 1)
+    elif args.mock:
+        result = run(dag, mock=True)
+        sys.exit(0 if result.status == 'success' else 1)
+    elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
+        result = run(dag, localstack=True)
+        sys.exit(0 if result.status == 'success' else 1)
+    else:
+        # Default: --dry-run (also reached when --dry-run is passed explicitly)
+        result = dry_run(dag, show_asl=args.asl)
+        sys.exit(0 if result['valid'] else 1)
+
+
+if __name__ == '__main__':  # pragma: no cover — module entrypoint
+    main()
