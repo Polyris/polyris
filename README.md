@@ -76,6 +76,14 @@ polyris-output --mermaid      # Mermaid diagram source
 polyris-output --graph        # ASCII graph
 ```
 
+CLI (run from the pipeline directory):
+
+```bash
+polyris-local             # dry run — execution plan + validation
+polyris-local --validate  # exit 0/1, suitable for CI
+polyris-local --mock      # simulate execution with mock results
+```
+
 Python API for automated tests:
 
 ```python

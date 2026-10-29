@@ -1,5 +1,27 @@
 ## Unreleased
 
+### Added — `polyris-local` CLI
+
+New `polyris-local` command for previewing, validating, and simulating pipelines without deploying to AWS.
+
+```bash
+polyris-local             # dry run — execution plan + validation result
+polyris-local --validate  # validate and exit 0 (valid) / 1 (invalid)
+polyris-local --mock      # simulate execution with mock results
+polyris-local --dry-run --asl   # include generated Step Functions JSON
+polyris-local --file other.py   # use a different pipeline file
+```
+
+Reads `dag.py` in the current directory by default. Output is coloured when
+stdout is a TTY, plain text otherwise (CI-safe).
+
+Validation improvements in the underlying `validate()` function:
+- Cycles detected before `validate_asl_from_dag` (previously cyclic DAGs
+  passed with `valid=True`)
+- Foreign deps — Tasks or Steps created outside `with DAG():` and wired via
+  `>>` — now caught with a clear "not registered in this DAG" error
+- Blank ARN on `@task.sfn` produces a warning
+
 ### Fixed — "Deployed at" in the Console no longer resets on every pipeline run
 
 The pipeline detail page's "Deployed at X" is backed by `registered_at` on the

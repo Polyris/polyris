@@ -52,6 +52,38 @@ polyris-init my-pipeline --dir ./pipelines
 
 ---
 
+## polyris-local
+
+Preview, validate, and simulate a pipeline without deploying to AWS. Run from the pipeline directory.
+
+```bash
+# Dry run — shows DAG config, execution order, and validation result
+polyris-local
+
+# Validate and exit 0 (valid) or 1 (invalid)
+polyris-local --validate
+
+# Simulate execution with mock results
+polyris-local --mock
+
+# Dry run + generated Step Functions ASL JSON
+polyris-local --dry-run --asl
+
+# Use a different pipeline file (default: dag.py)
+polyris-local --file other.py
+```
+
+| Option | Description |
+|--------|-------------|
+| `--validate` | Validate structure and exit 0/1 |
+| `--mock` | Simulate execution with mock results |
+| `--localstack` | Execute against LocalStack at localhost:4566 |
+| `--dry-run` | Show execution plan (default when no mode given) |
+| `--asl` | Include generated Step Functions JSON in dry-run output |
+| `--file`, `-f` | Pipeline file (default: `dag.py`) |
+
+---
+
 ## polyris-validate
 
 Validate pipeline(s) for errors. Run from pipeline directory.

@@ -560,6 +560,24 @@ of that shape.
 When writing tests that build dependency graphs directly (without DAG context), always use
 `task._add_dependency(dep)` — never `task.dependencies.append(dep)`.
 
+## CLI color output goes through `_ansi.c()` — never raw ANSI codes, never third-party libs
+
+All terminal color output in CLI tools (`local.py`, `validation.py`, `output.py`, etc.) must use
+`from ._ansi import c, BOLD, ...` and call `c(text, *codes)`. The helper checks `sys.stdout.isatty()`
+and strips codes automatically when stdout is a pipe or CI environment.
+
+Color conventions:
+- Headers / section titles: `BOLD`
+- Identifiers (DAG name, task name, file path being acted on): `CYAN`
+- Success: `BOLD_GREEN`
+- Errors / failure: `RED`
+- Warnings / non-default config: `YELLOW`
+
+Never import `colorama`, `rich`, `click.style`, or any third-party color library.
+Never write raw `\033[...m` escape codes outside `_ansi.py`.
+
+---
+
 ## `stamp()`-style tools that vendor a module must guard against non-source installs
 
 Any tool that copies a module out of the installed wheel (like `polyris-build-lambda` copying
