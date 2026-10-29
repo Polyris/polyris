@@ -270,7 +270,7 @@ with DAG("blank-arn", schedule=None) as dag:
         from types import SimpleNamespace
         from polyris.steps import Pass
         with DAG("unreg-step-dep", schedule=None) as dag:
-            wait = Pass(step_id="wait")
+            Pass(step_id="wait")
 
             @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
             def load(): pass
