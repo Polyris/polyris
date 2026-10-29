@@ -632,7 +632,7 @@ def _load_dag_from_file(dag_file: str) -> DAG:
             raise ImportError(f"Cannot load module from {dag_file}")
         module = importlib.util.module_from_spec(spec)
         try:
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            spec.loader.exec_module(module)
         except (Exception, SystemExit) as e:
             if isinstance(e, SystemExit) and e.code in (0, None):
                 pass  # exit(0) or bare sys.exit() (code=None) means ran to completion
@@ -748,18 +748,14 @@ def main() -> None:
     dag = _load_dag_from_file(args.file)
 
     if args.validate:
-        result = validate(dag)
-        sys.exit(0 if result['valid'] else 1)
+        sys.exit(0 if validate(dag)['valid'] else 1)
     elif args.mock:
-        result = run(dag, mock=True)
-        sys.exit(0 if result.status == 'success' else 1)
+        sys.exit(0 if run(dag, mock=True).status == 'success' else 1)
     elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
-        result = run(dag, localstack=True)
-        sys.exit(0 if result.status == 'success' else 1)
+        sys.exit(0 if run(dag, localstack=True).status == 'success' else 1)
     else:
         # Default: --dry-run (also reached when --dry-run is passed explicitly)
-        result = dry_run(dag, show_asl=args.asl)
-        sys.exit(0 if result['valid'] else 1)
+        sys.exit(0 if dry_run(dag, show_asl=args.asl)['valid'] else 1)
 
 
 if __name__ == '__main__':  # pragma: no cover — module entrypoint
