@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 
 from polyris.deploy import _watch_stack_events, deploy_pipeline, _colorize_status
+from polyris._ansi import c as _ansi_c, BOLD, CYAN, RESET
 from polyris import DAG, task
 
 
@@ -35,6 +36,24 @@ def _event(event_id, status, resource_type, logical_id, reason=None, ts=None):
     if reason:
         e["ResourceStatusReason"] = reason
     return e
+
+
+class TestAnsiC:
+    """Tests for the shared _ansi.c() helper."""
+
+    def test_returns_plain_text_when_not_a_tty(self, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        assert _ansi_c("hello", BOLD) == "hello"
+
+    def test_wraps_with_codes_and_reset_when_tty(self, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        result = _ansi_c("hello", CYAN)
+        assert result == f"{CYAN}hello{RESET}"
+
+    def test_concatenates_multiple_codes_when_tty(self, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        result = _ansi_c("hello", BOLD, CYAN)
+        assert result == f"{BOLD}{CYAN}hello{RESET}"
 
 
 class TestColorizeStatus:
