@@ -14,6 +14,8 @@ from typing import Any, List
 import sys
 from pathlib import Path
 
+from ._ansi import BOLD as _BOLD, GREEN as _GREEN, CYAN as _CYAN, c as _c
+
 
 # =============================================================================
 # Templates
@@ -510,14 +512,18 @@ def init_project(base_dir: str = ".") -> None:
     config_path.write_text(CONFIG_PY_TEMPLATE.format(namespace=namespace))
 
     print(f"""
-✅ Project config created: {config_path}
+{_c("✅ Project config created:", _GREEN, _BOLD)} {_c(str(config_path), _BOLD)}
 
-Next steps:
-  1. Edit {config_path} — set your namespace, region, AWS profiles
-  2. Create your first pipeline:
-       cd pipelines && polyris-init my-pipeline
-  3. Deploy infrastructure:
-       polyris-deploy --stage dev
+{_c("Next steps:", _BOLD)}
+  {_c("1.", _BOLD)} Edit {_c(str(config_path), _BOLD)} — set your namespace, region, and AWS profiles
+  {_c("2.", _BOLD)} Deploy the Polyris infrastructure {_c("(once per environment)", _CYAN)}:
+       {_c("cd sam && sam build && sam deploy --profile <profile>", _BOLD)}
+     {_c("→ Your console URL will be printed in the CloudFormation outputs.", _CYAN)}
+  {_c("3.", _BOLD)} Create your first pipeline:
+       {_c("polyris-init my-pipeline", _BOLD)}
+  {_c("4.", _BOLD)} Deploy your pipeline and open the console:
+       {_c("polyris-deploy --stage dev", _BOLD)}
+     {_c("→ The console URL is shown again here after a successful deploy.", _CYAN)}
 """)
 
 
