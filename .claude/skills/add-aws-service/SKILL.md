@@ -76,7 +76,7 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
 2. Add the resource (`AWS::SQS::Queue`, etc.) only if Polyris owns it, with sane defaults
    (encryption, retention, DLQ).
 3. Pass ARNs via `!Ref` / `!GetAtt` as env vars or SFN parameters — never hard-coded.
-4. Keep `sam build` working without `--use-container`: pure-Python deps only (ADR #65).
+4. Keep `sam build` working without `--use-container`: pure-Python deps only (ADR #102).
 
 ## Step 4 — Stateful resource safety
 
@@ -96,9 +96,15 @@ orchestration shape.
 
 ## Step 7 — Surfaces that follow
 
-- **Backend** route(s) to expose its data/status — add a self-registering route module under
-  `sam/lambdas/console_api/` (ADR #97).
-- **UI** view/panel under `ui/`.
+Decide the tier first (ADR #97, #98, #99):
+- Authoring + basic read + running → **free** (`routes/<mod>.py`, `ui/src/components/`)
+- Operations / observability / governance → **paid** (private repo, `ee/team/` or `ee/enterprise/`)
+- Unsure → Team tier.
+
+A new service that's purely an execution target (no console data to show) needs no route or UI.
+
+- **Backend** route(s): free → add to `routes/` and register in `main.py`'s `ROUTE_MODULES`; paid → add to EE. Update the route-count guard in `tests/sdk/test_templates.py` (free count) and EE's `tests/test_route_table_ee.py` (full count).
+- **UI** view/panel: free → `ui/src/`; paid → `ui/src/ee/<tier>/`. Follow ADR #99 component patterns.
 
 ## Step 8 — Tests
 
@@ -121,5 +127,8 @@ Run the SDK/codegen suite while iterating: `pip install -e . && pytest tests/sdk
 
 ## Step 9 — Verify
 
-`make check` (lint + sync-constants + check-versions + smoke-pipelines + tests) plus `cfn-lint` on
-the template. Confirm the SFN definition still validates and the Express/Standard split is intact.
+`bash scripts/verify-changed.sh --full` — this is the canonical gate. It runs lint, mypy, pytest+coverage, cfn-lint, sync-constants, codegen drift checks, and the open-core guard. Confirm the SFN definition still validates and the Express/Standard split is intact.
+
+## Done when
+
+Gates green, ADR written, blast radius swept across CE and EE (`../polyris-ee/`). Then stop. Run `/break` in a **new session**, then `/pr-description`.

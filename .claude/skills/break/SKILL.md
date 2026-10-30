@@ -27,8 +27,7 @@ could run yourself. If you believe a bug exists: write the failing test first, w
 fix it, then watch it pass. If you cannot reproduce it, say so — "read the code, did not run it" —
 and label the finding as unconfirmed.
 
-Never report a fix you have not mutation-tested. Re-introduce the bug, confirm the
-new test catches it, restore. A test that cannot fail proves nothing.
+Never report a fix you have not mutation-tested — **this applies only when you write a fix as part of this session**. Re-introduce the bug, confirm the new test catches it, restore. A test that cannot fail proves nothing. When doing a review-only pass (no fixes written), skip this — report the finding and let the author fix it.
 
 ## 1. Read every changed line
 
@@ -40,6 +39,8 @@ Not the diff summary. The actual lines, plus the surrounding function. For each:
 - Is any comment or docstring now false? (A stale comment is a bug — #9.)
 
 ## 2. Sweep the blast radius (Principle #23, both repos)
+
+EE path: `../polyris-ee/` relative to this repo root.
 
 For every symbol touched — function, constant, enum *member*, field, CSS class,
 component, prop, route — `grep -rn` across **CE and EE**, production and tests.
@@ -110,3 +111,7 @@ recommendation, and stop — Principle #6.
 - A clean report on a change you did not run.
 - A fix bundled with a contract change the maintainer did not approve.
 - Silence about what you chose not to check.
+
+## Then
+
+Findings addressed → `/pr-description`.
