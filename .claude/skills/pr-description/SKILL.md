@@ -56,5 +56,6 @@ Use these sections in order. Omit any that don't apply.
 
 ## Project-specific workflow
 
-- Always present to the maintainer for review **before** calling `gh pr create`.
-- Never `gh pr create` on your own initiative — the maintainer decides when.
+- Run `bash scripts/verify-changed.sh` before drafting — the gate numbers go in the Testing section.
+- Present the draft to the maintainer for review **before** calling `gh pr create`. The maintainer runs `gh pr create` — never do it autonomously.
+- `/break` must have been run in a separate session before this step. If it hasn't, say so.

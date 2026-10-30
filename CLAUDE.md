@@ -173,7 +173,7 @@ Any string written in one artifact and read verbatim in another must have a pari
 Examples: `_PUSH_MARKER_FIELD` written by `xcom.push()`, read by SFN template — parity in `test_xcom_coupled_constants_parity.py`. Marker fields `_manually_resolved`/`_resolution`/`_reason`/`_operator` — same test. `SCHEDULE_PRESETS` ↔ `infer_cron_cadence` — `TestSchedulePresetsParity` in `test_granularity.py`. Generated enums covered by `codegen --check`.
 
 **29. adr-index.md count must match its row count**
-`docs/reference/adr-index.md` opens with "_N ADRs indexed (X inline, Y standalone)_". When you add or remove an ADR, update the count in the same commit:
+`docs/reference/adr-index.md` opens with "_N rows indexed (X inline, Y standalone)_". When you add or remove an ADR, update the count in the same commit:
 ```bash
 grep -Ec "^\| [0-9]+ \| " docs/reference/adr-index.md
 grep -Ec "^\| [0-9]+ \| .* \| inline \|" docs/reference/adr-index.md

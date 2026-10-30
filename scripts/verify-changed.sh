@@ -20,7 +20,7 @@ FULL=0
 [ "${1:-}" = "--full" ] && FULL=1
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  CHANGED="$(git status --porcelain | awk '{print $NF}')"
+  CHANGED="$(git status --porcelain | sed 's/ -> /\n/g' | awk '{print $NF}')"
 else
   # Not a checkout (unpacked archive): cannot scope, so verify everything.
   CHANGED=""
@@ -60,7 +60,7 @@ if touched '^(sam/|polyris/constants\.py|polyris/codegen/)'; then
   run "dateVars codegen drift"  make check-generate-variables
   run "SFN status literals"     make check-sfn-templates
   run "backfill parity"         make check-backfill-parity
-  for d in evaluate_deps notify notify_asset_subscribers check_assets; do
+  for d in evaluate_deps notify notify_asset_subscribers check_assets query_subscriptions bucket_cleanup; do
     run "lambda: $d" bash -c "cd sam/lambdas/$d && PYTHONPATH=. python3 -m pytest -q -p no:cacheprovider"
   done
   run "console_api" bash -c "cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -q -p no:cacheprovider"
@@ -84,9 +84,50 @@ fi
 run "open-core guard"   bash scripts/check-no-paid.sh
 run "version consistency" make check-versions
 
+# ── Soft warnings (non-blocking) ────────────────────────────────────────────
+WARNINGS=()
+
+# CHANGELOG: if there are commits ahead of main but CHANGELOG.md hasn't changed
+base_ref=$(git rev-parse --verify origin/main 2>/dev/null || git rev-parse --verify main 2>/dev/null || echo "")
+if [ -n "$base_ref" ]; then
+  commits_ahead=$(git rev-list "${base_ref}..HEAD" --count 2>/dev/null || echo 0)
+  if [ "$commits_ahead" -gt 0 ]; then
+    code_changed=$(git diff "${base_ref}..HEAD" --name-only 2>/dev/null | grep -cE '\.(py|ts|tsx|json|yaml)$' || echo 0)
+    if [ "$code_changed" -gt 0 ]; then
+      if ! git diff "${base_ref}..HEAD" --name-only 2>/dev/null | grep -q "^CHANGELOG\.md$"; then
+        WARNINGS+=("CHANGELOG.md not updated ($commits_ahead commit(s) ahead of origin/main, $code_changed code file(s) changed)")
+      fi
+    fi
+  fi
+fi
+
+# adr-index.md: declared count must match actual row count in the table
+if [ -f docs/reference/adr-index.md ]; then
+  declared=$(grep -oP '_\K[0-9]+(?= rows indexed)' docs/reference/adr-index.md 2>/dev/null || echo "")
+  actual=$(grep -cE "^\| [0-9]+ \| " docs/reference/adr-index.md 2>/dev/null || echo 0)
+  if [ -n "$declared" ] && [ "$declared" != "$actual" ]; then
+    WARNINGS+=("adr-index.md declares $declared ADRs but table has $actual rows (Principle #29)")
+  fi
+fi
+
+if [ ${#WARNINGS[@]} -gt 0 ]; then
+  echo ""
+  echo "⚠️  ${#WARNINGS[@]} warning(s):"
+  printf '   - %s\n' "${WARNINGS[@]}"
+fi
+
 echo "────────────────────────────────────────────────────────────"
 if [ ${#FAILED[@]} -eq 0 ]; then
   echo "✅ green"
+  if [ -z "$(git status --porcelain)" ]; then
+    echo ""
+    echo "── before you ship ─────────────────────────────────────────"
+    echo "  □ /break in a NEW session (independent review)"
+    echo "  □ /pr-description"
+    echo "  □ CHANGELOG updated"
+    echo "  □ docs updated (ADR / CLAUDE.md) if behavior changed"
+    echo "────────────────────────────────────────────────────────────"
+  fi
   exit 0
 fi
 echo "❌ ${#FAILED[@]} gate(s) failed:"

@@ -1,6 +1,6 @@
 ---
 name: shape
-description: Interrogate a fuzzy idea until it is a set of settled decisions. Use at the start of any backlog item or feature, before a spec exists. Produces docs/work/<slug>/DECISIONS.md. Human answers; agent never decides scope.
+description: Interrogate a fuzzy idea until it is a set of settled decisions. Use when you know roughly what to build but need to pin scope, contracts, and vocabulary before coding. Produces docs/work/<slug>/DECISIONS.md — this is the permanent record of what was decided and why. If terminology is unclear before scoping (you don't know what to call the thing), run /grill-with-docs first. Human answers; agent never decides scope.
 ---
 
 # Shape — settle the decisions before any code
@@ -9,7 +9,7 @@ Turn a fuzzy intention into settled decisions. **You do not write code here.** Y
 
 ## Method
 
-**One question at a time.** Ask, wait, record, ask the next. Never dump a questionnaire.
+**One question at a time.** Ask, wait, record, ask the next. Never dump a questionnaire. (This differs from `/grilling` which batches a frontier of questions per round — `shape` is slower and more deliberate because scope decisions have hard sequential dependencies: B only makes sense once A is settled.)
 
 **Answer your own question first.** Before asking anything, check whether the codebase answers it — `grep`, read the ADR index, read the tests. Only ask what the repo genuinely cannot tell you.
 
@@ -45,7 +45,7 @@ Status: shaping | settled
 - <thing> — because <reason>
 ```
 
-For genuinely one-way decisions, draft the ADR now under `docs/reference/` and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 81+; most shaping sessions should add zero.
+For genuinely one-way decisions, draft the ADR now under `docs/reference/` and reference it. **Sparingly** — an ADR is for a decision that is hard to reverse, surprising without context, and the result of a real trade-off. There are already 97+; most shaping sessions should add zero.
 
 ## Done when
 
