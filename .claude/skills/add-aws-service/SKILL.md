@@ -37,6 +37,13 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
    (ADR #109). A **new common parameter** goes into `CommonTaskKwargs` + `_create_task` once —
    never per-decorator. Assets (`outlets`/`inlets`/`wait_for`) are already common — do not
    re-declare them. Add the new decorator to the "base `@task` is not allowed" error list.
+   **Guards (see *Decorator is the sole validation boundary* in `polyris/CLAUDE.md`):**
+   - Required `str` fields: `if not value.strip(): raise ValueError(...)` — never bare `if not value`.
+   - `Optional[str]` fields: `if not (field and field.strip()):` — avoids `AttributeError` on `None`.
+   - Every `ValueError` must name the decorator (`@task.<service>`), the field, and show a working
+     example: `"@task.<service> <field> must not be empty — e.g. <field>='<example>'."`.
+   - Docstring examples must not use `:N` pinned suffixes on `task_definition` / `job_definition`
+     (ADR #35 applies to docstrings too).
 3. **`polyris/generators.py`** — two dispatch sites, keep in sync. The split (dict + `if/elif`) is
    intentional for now — the registry refactor (paid emitters self-register without editing the free
    compiler) is deferred until the first paid AWS service. Until then, edit both sites together.
@@ -104,6 +111,9 @@ orchestration shape.
 - **Decorator / Task** (`tests/sdk/`) — `@task.<service>(…)` produces the right `Task` and rejects
   missing required params. Your new type is automatically swept by
   `test_every_task_decorator_accepts_common_kwargs` and `test_all_task_types_wire_assets`.
+  Add guard cases to `TestRequiredFieldGuards` in `tests/sdk/test_task_core.py` — one test per
+  required field × {empty string, whitespace-only}, one test per enum/type constraint × bad value,
+  and one happy-path test per field that asserts the attribute on the returned task object.
 - **Adapter** (if added) — a `tests/sdk/test_adapters_<service>.py` mirroring `test_adapters_glue.py`.
 - **Integration** (`tests/integration/`) for the real AWS shape.
 

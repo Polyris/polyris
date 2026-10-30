@@ -746,6 +746,11 @@ class TaskDecorator:
             @task.sfn(arn="${scraper_arn}", skip_on_backfill=True)
             def scraper(): pass
         """
+        if not arn.strip():
+            raise ValueError(
+                "@task.sfn arn must not be empty — pass the Step Function ARN, "
+                "e.g. arn='${my_sfn_arn}' (CloudFormation substitution) or a full ARN string."
+            )
         _validate_common_kwargs("sfn", common)
         return self._create_task(
             _func=_func,
@@ -779,8 +784,12 @@ class TaskDecorator:
             @task.lambda_function(arn="arn:aws:lambda:us-east-1:123:function:my-func")
             def my_lambda(): pass
         """
-        if not function_name and not arn:
-            raise ValueError("@task.lambda_function requires 'function_name' or 'arn'")
+        if not function_name.strip() and not (arn and arn.strip()):
+            raise ValueError(
+                "@task.lambda_function requires 'function_name' or 'arn' — "
+                "e.g. function_name='my-func' or "
+                "arn='arn:aws:lambda:us-east-1:123456789012:function:my-func'."
+            )
 
         _validate_common_kwargs("lambda_function", common)
         return self._create_task(
@@ -827,6 +836,11 @@ class TaskDecorator:
             @task.glue_job(job_name="light-job", max_capacity=0.0625)
             def light_job(): pass
         """
+        if not job_name.strip():
+            raise ValueError(
+                "@task.glue_job job_name must not be empty — "
+                "pass the Glue job name, e.g. job_name='my-etl-job'."
+            )
         _GLUE_VALID_COMMAND_NAMES = frozenset({"pythonshell", "glueetl"})
         if command_name is not None and command_name not in _GLUE_VALID_COMMAND_NAMES:
             raise ValueError(
@@ -925,20 +939,39 @@ class TaskDecorator:
 
         Args:
             cluster: ECS cluster name (required)
-            task_definition: Task definition name:revision (required)
+            task_definition: Task definition family name (required).
+                Pass the name without a ``:N`` revision suffix, e.g. ``'my-task-def'``,
+                not ``'my-task-def:3'`` — polyris always calls the latest active revision.
             launch_type: FARGATE or EC2
-            subnets: VPC subnets for Fargate
+            subnets: VPC subnets for Fargate (list of subnet IDs)
             security_groups: Security groups
             container_overrides: Container override config
 
         Example:
             @task.ecs_task(
                 cluster="my-cluster",
-                task_definition="my-task:1",
+                task_definition="my-task-def",
+                subnets=["subnet-0a1b2c3d4e5f"],
                 container_overrides={"containerOverrides": [...]}
             )
             def container_job(): pass
         """
+        if not cluster.strip():
+            raise ValueError(
+                "@task.ecs_task cluster must not be empty — "
+                "pass the ECS cluster name, e.g. cluster='my-cluster'."
+            )
+        if not task_definition.strip():
+            raise ValueError(
+                "@task.ecs_task task_definition must not be empty — "
+                "pass the task definition family name, e.g. task_definition='my-task-def'."
+            )
+        if subnets is not None and not isinstance(subnets, list):
+            raise ValueError(
+                f"@task.ecs_task subnets must be a list of subnet IDs, "
+                f"got {type(subnets).__name__} {subnets!r}. "
+                "Use subnets=['subnet-0a1b2c3d4e5f', ...]."
+            )
         _ECS_VALID_LAUNCH_TYPES = frozenset({"FARGATE", "EC2"})
         if launch_type not in _ECS_VALID_LAUNCH_TYPES:
             raise ValueError(
@@ -989,14 +1022,16 @@ class TaskDecorator:
         Args:
             query_string: SQL query (required)
             database: Athena database (required)
-            output_location: S3 path for results
+            output_location: S3 path for results (e.g. ``s3://my-bucket/athena-results/``).
+                Can be omitted when the workgroup has a default output location configured
+                in AWS. If unsure, always pass ``output_location`` explicitly.
             workgroup: Athena workgroup
 
         Example:
             @task.athena_query(
                 query_string="SELECT * FROM sales WHERE region = 'EU'",
                 database="analytics",
-                output_location="s3://bucket/athena-results/"
+                output_location="s3://my-bucket/athena-results/"
             )
             def run_query(): pass
 
@@ -1010,6 +1045,16 @@ class TaskDecorator:
             at runtime. See ``polyris/CLAUDE.md`` "Task-config string fields
             are passed verbatim".
         """
+        if not query_string.strip():
+            raise ValueError(
+                "@task.athena_query query_string must not be empty — "
+                'pass the SQL query, e.g. query_string="SELECT * FROM sales".'
+            )
+        if not database.strip():
+            raise ValueError(
+                "@task.athena_query database must not be empty — "
+                "pass the Athena database name, e.g. database='analytics'."
+            )
         _validate_common_kwargs("athena_query", common)
         _reject_template_syntax("@task.athena_query(query_string=...)", query_string)
         return self._create_task(
@@ -1041,11 +1086,18 @@ class TaskDecorator:
 
         Example:
             @task.emr_step(
-                emr_cluster_id="j-XXXXX",
-                emr_step={"Name": "Spark Job", "ActionOnFailure": "CONTINUE", ...}
+                emr_cluster_id="j-2A3BC4D5EF6G",
+                emr_step={"Name": "Spark Job", "ActionOnFailure": "CONTINUE",
+                          "HadoopJarStep": {"Jar": "command-runner.jar",
+                                            "Args": ["spark-submit", "s3://my-data-bucket/jobs/spark_job.py"]}}
             )
             def spark_job(): pass
         """
+        if not emr_cluster_id.strip():
+            raise ValueError(
+                "@task.emr_step emr_cluster_id must not be empty — "
+                "pass the EMR cluster ID, e.g. emr_cluster_id='j-2A3BC4D5EF6G'."
+            )
         # emr_step is passed through verbatim as the addStep `Step` argument, so
         # it must be a valid StepConfig. HadoopJarStep.Jar is required by the EMR
         # API — enforce it here (the decorator is the validation boundary) rather
@@ -1090,17 +1142,29 @@ class TaskDecorator:
         to a job queue.
 
         Args:
-            job_definition: Batch job definition (required)
-            job_queue: Batch job queue (required)
+            job_definition: Batch job definition name (required).
+                Pass the name without a ``:N`` revision suffix, e.g. ``'my-etl-job'``,
+                not ``'my-etl-job:3'`` — polyris always calls the latest active revision.
+            job_queue: Batch job queue name (required)
             batch_parameters: Job parameters
 
         Example:
             @task.batch_job(
-                job_definition="my-job-def:1",
+                job_definition="my-etl-job",
                 job_queue="my-queue"
             )
             def batch_job(): pass
         """
+        if not job_definition.strip():
+            raise ValueError(
+                "@task.batch_job job_definition must not be empty — "
+                "pass the Batch job definition name, e.g. job_definition='my-etl-job'."
+            )
+        if not job_queue.strip():
+            raise ValueError(
+                "@task.batch_job job_queue must not be empty — "
+                "pass the Batch job queue name, e.g. job_queue='my-queue'."
+            )
         _validate_common_kwargs("batch_job", common)
         if batch_parameters:
             for _k, _v in batch_parameters.items():

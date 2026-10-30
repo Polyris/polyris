@@ -199,9 +199,9 @@ class TestValidate:
         result = validate(dag, verbose=False)
         assert result['info']['schedule'] == "@daily"
 
-    def test_blank_arn_sfn_task_produces_warning(self, tmp_path):
-        """@task.sfn(arn='') must produce a validation warning — validate_asl_from_dag
-        only checks for placeholder tokens, not for a completely absent ARN."""
+    def test_blank_arn_sfn_task_fails_at_load_time(self, tmp_path):
+        """@task.sfn(arn='') raises ValueError at DAG-definition time — the guard
+        fires before the DAG is even registered, so the file fails to load."""
         f = tmp_path / "dag.py"
         f.write_text('''\
 from polyris import DAG, task
@@ -210,9 +210,9 @@ with DAG("blank-arn", schedule=None) as dag:
     def t(): pass
     t()
 ''')
-        dag = _load_dag_from_file(str(f))
-        result = validate(dag, verbose=False)
-        assert any("no ARN" in w for w in result['warnings'])
+        with pytest.raises(SystemExit) as exc:
+            _load_dag_from_file(str(f))
+        assert exc.value.code == 1
 
     def test_cyclic_dag_returns_valid_false(self, mocker):
         """validate() must detect cycles — generate_step_function_json never
@@ -342,8 +342,9 @@ with DAG("tr-dag", schedule="@daily") as dag:
         out = capsys.readouterr().out
         assert "Trigger: all_done" in out
 
-    def test_warnings_printed_for_blank_arn(self, tmp_path, capsys):
-        """dry_run() must print ⚠️ lines when validate() returns warnings (e.g. blank ARN)."""
+    def test_blank_arn_dry_run_fails_at_load_time(self, tmp_path, capsys):
+        """@task.sfn(arn='') raises ValueError at DAG-definition time — dry_run
+        never gets a DAG to run because the file fails to load first."""
         f = tmp_path / "dag.py"
         f.write_text('''\
 from polyris import DAG, task
@@ -352,10 +353,24 @@ with DAG("blank-arn-dry", schedule=None) as dag:
     def t(): pass
     t()
 ''')
-        dag = _load_dag_from_file(str(f))
+        with pytest.raises(SystemExit) as exc:
+            _load_dag_from_file(str(f))
+        assert exc.value.code == 1
+
+    def test_warnings_are_printed(self, tmp_path, mocker, capsys):
+        """dry_run must print one ⚠️ line per warning — two warnings → two lines."""
+        dag_file = _make_dag_file(tmp_path, arns_real=True)
+        dag = _load_dag_from_file(dag_file)
+        mocker.patch(
+            'polyris.local.validate',
+            return_value={'valid': True, 'errors': [], 'warnings': ['check alpha', 'check beta'],
+                          'info': {'dag_id': 'x', 'task_count': 1, 'schedule': None}},
+        )
         dry_run(dag, show_mermaid=False)
         out = capsys.readouterr().out
-        assert "⚠️" in out
+        assert out.count("⚠️") == 2
+        assert "check alpha" in out
+        assert "check beta" in out
 
     def test_topo_sort_error_is_printed(self, tmp_path, mocker, capsys):
         """dry_run catches topological_sort exceptions and prints the error."""

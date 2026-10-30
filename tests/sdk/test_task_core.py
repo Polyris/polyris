@@ -536,3 +536,224 @@ class TestVerbatimTemplateGuard:
         _reject_template_syntax("x", 42)         # no raise
         _reject_template_syntax("x", None)       # no raise
         _reject_template_syntax("x", {"k": "v"}) # no raise
+
+
+class TestRequiredFieldGuards:
+    """Empty-string and type guards on required decorator fields.
+
+    These fire at DAG-definition time so authors see the error during
+    ``polyris-validate``, not after a live AWS runtime failure.
+    Whitespace-only strings are also rejected (``"  "`` is as useless as
+    ``""`` but would pass a bare ``if not value`` check).
+    """
+
+    # ─── @task.sfn ────────────────────────────────────────────────────────
+    def test_sfn_rejects_empty_arn(self):
+        with pytest.raises(ValueError, match="@task.sfn arn must not be empty"):
+            with DAG("d", schedule=None):
+                @task.sfn(arn="")
+                def t(): pass
+
+    def test_sfn_rejects_whitespace_arn(self):
+        with pytest.raises(ValueError, match="@task.sfn arn must not be empty"):
+            with DAG("d", schedule=None):
+                @task.sfn(arn="   ")
+                def t(): pass
+
+    # ─── @task.glue_job ───────────────────────────────────────────────────
+    def test_glue_job_rejects_empty_job_name(self):
+        with pytest.raises(ValueError, match="@task.glue_job job_name must not be empty"):
+            with DAG("d", schedule=None):
+                @task.glue_job(job_name="")
+                def t(): pass
+
+    def test_glue_job_rejects_whitespace_job_name(self):
+        with pytest.raises(ValueError, match="@task.glue_job job_name must not be empty"):
+            with DAG("d", schedule=None):
+                @task.glue_job(job_name="  ")
+                def t(): pass
+
+    # ─── @task.ecs_task ───────────────────────────────────────────────────
+    def test_ecs_task_rejects_empty_cluster(self):
+        with pytest.raises(ValueError, match="@task.ecs_task cluster must not be empty"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="", task_definition="my-task-def",
+                               subnets=["subnet-0a1b2c3d4e5f"])
+                def t(): pass
+
+    def test_ecs_task_rejects_whitespace_cluster(self):
+        with pytest.raises(ValueError, match="@task.ecs_task cluster must not be empty"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="  ", task_definition="my-task-def",
+                               subnets=["subnet-0a1b2c3d4e5f"])
+                def t(): pass
+
+    def test_ecs_task_rejects_empty_task_definition(self):
+        with pytest.raises(ValueError, match="@task.ecs_task task_definition must not be empty"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="",
+                               subnets=["subnet-0a1b2c3d4e5f"])
+                def t(): pass
+
+    def test_ecs_task_rejects_whitespace_task_definition(self):
+        with pytest.raises(ValueError, match="@task.ecs_task task_definition must not be empty"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="  ",
+                               subnets=["subnet-0a1b2c3d4e5f"])
+                def t(): pass
+
+    def test_ecs_task_rejects_subnets_as_string(self):
+        with pytest.raises(ValueError, match="subnets must be a list of subnet IDs"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                               subnets="subnet-0a1b2c3d4e5f,subnet-1b2c3d4e5f6a")
+                def t(): pass
+
+    def test_ecs_task_rejects_subnets_as_int(self):
+        with pytest.raises(ValueError, match="subnets must be a list of subnet IDs"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                               subnets=42)
+                def t(): pass
+
+    def test_ecs_task_subnets_error_shows_type_and_value(self):
+        bad = "subnet-abc,subnet-def"
+        with pytest.raises(ValueError, match="str") as exc:
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                               subnets=bad)
+                def t(): pass
+        assert bad in str(exc.value)
+
+    # ─── @task.athena_query ───────────────────────────────────────────────
+    def test_athena_query_rejects_empty_query_string(self):
+        with pytest.raises(ValueError, match="@task.athena_query query_string must not be empty"):
+            with DAG("d", schedule=None):
+                @task.athena_query(query_string="", database="analytics")
+                def t(): pass
+
+    def test_athena_query_rejects_whitespace_query_string(self):
+        with pytest.raises(ValueError, match="@task.athena_query query_string must not be empty"):
+            with DAG("d", schedule=None):
+                @task.athena_query(query_string="  ", database="analytics")
+                def t(): pass
+
+    def test_athena_query_rejects_empty_database(self):
+        with pytest.raises(ValueError, match="@task.athena_query database must not be empty"):
+            with DAG("d", schedule=None):
+                @task.athena_query(query_string="SELECT 1", database="")
+                def t(): pass
+
+    def test_athena_query_rejects_whitespace_database(self):
+        with pytest.raises(ValueError, match="@task.athena_query database must not be empty"):
+            with DAG("d", schedule=None):
+                @task.athena_query(query_string="SELECT 1", database="  ")
+                def t(): pass
+
+    # ─── @task.emr_step ───────────────────────────────────────────────────
+    def test_emr_step_rejects_empty_cluster_id(self):
+        with pytest.raises(ValueError, match="@task.emr_step emr_cluster_id must not be empty"):
+            with DAG("d", schedule=None):
+                @task.emr_step(emr_cluster_id="",
+                               emr_step={"Name": "job", "HadoopJarStep": {"Jar": "command-runner.jar"}})
+                def t(): pass
+
+    def test_emr_step_rejects_whitespace_cluster_id(self):
+        with pytest.raises(ValueError, match="@task.emr_step emr_cluster_id must not be empty"):
+            with DAG("d", schedule=None):
+                @task.emr_step(emr_cluster_id="  ",
+                               emr_step={"Name": "job", "HadoopJarStep": {"Jar": "command-runner.jar"}})
+                def t(): pass
+
+    # ─── @task.batch_job ──────────────────────────────────────────────────
+    def test_batch_job_rejects_empty_job_definition(self):
+        with pytest.raises(ValueError, match="@task.batch_job job_definition must not be empty"):
+            with DAG("d", schedule=None):
+                @task.batch_job(job_definition="", job_queue="my-queue")
+                def t(): pass
+
+    def test_batch_job_rejects_whitespace_job_definition(self):
+        with pytest.raises(ValueError, match="@task.batch_job job_definition must not be empty"):
+            with DAG("d", schedule=None):
+                @task.batch_job(job_definition="  ", job_queue="my-queue")
+                def t(): pass
+
+    def test_batch_job_rejects_empty_job_queue(self):
+        with pytest.raises(ValueError, match="@task.batch_job job_queue must not be empty"):
+            with DAG("d", schedule=None):
+                @task.batch_job(job_definition="my-etl-job", job_queue="")
+                def t(): pass
+
+    def test_batch_job_rejects_whitespace_job_queue(self):
+        with pytest.raises(ValueError, match="@task.batch_job job_queue must not be empty"):
+            with DAG("d", schedule=None):
+                @task.batch_job(job_definition="my-etl-job", job_queue="  ")
+                def t(): pass
+
+    # ─── @task.lambda_function ────────────────────────────────────────────
+    def test_lambda_function_rejects_whitespace_function_name(self):
+        with pytest.raises(ValueError, match="requires 'function_name' or 'arn'"):
+            with DAG("d", schedule=None):
+                @task.lambda_function(function_name="  ")
+                def t(): pass
+
+    def test_lambda_function_rejects_whitespace_arn_without_function_name(self):
+        with pytest.raises(ValueError, match="requires 'function_name' or 'arn'"):
+            with DAG("d", schedule=None):
+                @task.lambda_function(arn="   ")
+                def t(): pass
+
+    def test_lambda_function_accepts_valid_function_name_with_whitespace_arn(self):
+        with DAG("d", schedule=None):
+            @task.lambda_function(function_name="process-data", arn="   ")
+            def t(): pass
+        assert t.function_name == "process-data"
+
+    def test_lambda_function_accepts_whitespace_function_name_with_valid_arn(self):
+        with DAG("d", schedule=None):
+            @task.lambda_function(function_name="  ",
+                                  arn="arn:aws:lambda:us-east-1:123456789012:function:my-fn")
+            def t(): pass
+        assert t.arn == "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+
+    def test_lambda_function_accepts_function_name_only(self):
+        with DAG("d", schedule=None):
+            @task.lambda_function(function_name="process-data")
+            def t(): pass
+        assert t.function_name == "process-data"
+
+    def test_lambda_function_accepts_arn_only(self):
+        with DAG("d", schedule=None):
+            @task.lambda_function(arn="arn:aws:lambda:us-east-1:123456789012:function:my-fn")
+            def t(): pass
+        assert t.arn == "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+
+    def test_ecs_task_rejects_invalid_launch_type(self):
+        with pytest.raises(ValueError, match="launch_type must be 'FARGATE' or 'EC2'"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                               launch_type="SERVERLESS", subnets=["subnet-0a1b2c3d4e5f"])
+                def t(): pass
+
+    def test_ecs_task_rejects_invalid_assign_public_ip(self):
+        with pytest.raises(ValueError, match="assign_public_ip must be 'ENABLED' or 'DISABLED'"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                               assign_public_ip="YES", subnets=["subnet-0a1b2c3d4e5f"])
+                def t(): pass
+
+    def test_ecs_task_fargate_requires_subnets(self):
+        with pytest.raises(ValueError, match="requires subnets"):
+            with DAG("d", schedule=None):
+                @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                               launch_type="FARGATE", subnets=None)
+                def t(): pass
+
+    # ─── @task.ecs_task — happy path for EC2 without subnets ─────────────
+    def test_ecs_task_ec2_accepts_empty_subnets_list(self):
+        with DAG("d", schedule=None):
+            @task.ecs_task(cluster="my-cluster", task_definition="my-task-def",
+                           launch_type="EC2", subnets=[])
+            def t(): pass
+        assert t.launch_type == "EC2"
+        assert t.subnets == []
