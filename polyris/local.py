@@ -132,17 +132,10 @@ def validate(dag: DAG, verbose: bool = True) -> Dict[str, Any]:
             },
         }
     is_valid, errors, warnings = validate_asl_from_dag(dag, verbose=verbose)
-    # validate_asl_from_dag checks for placeholder tokens (REGION/ACCOUNT_ID) but not
-    # for a completely absent ARN — restore the old validate() warning for that case.
-    blank_arn_warnings = [
-        f"Task '{t.task_id}' has no ARN"
-        for t in dag.tasks
-        if t.task_type == 'sfn' and not t.arn
-    ]
     return {
         'valid': is_valid,
         'errors': errors,
-        'warnings': warnings + blank_arn_warnings,
+        'warnings': warnings,
         'info': {
             'dag_id': dag.dag_id,
             'task_count': len(dag.tasks),

@@ -115,6 +115,13 @@ Consequences:
 - Enum-like string parameters (`"FARGATE"/"EC2"`, `"ENABLED"/"DISABLED"`) are
   validated against a `frozenset` at the decorator level, not in the generator or
   the SFN template.
+- Required `str` fields must be guarded with `if not value.strip()`, never bare
+  `if not value` — the bare form accepts whitespace-only strings (`"  "`) as valid.
+  For `Optional[str]` fields use `if not (field and field.strip())` to handle both
+  `None` and whitespace without an `AttributeError`.
+- Every `ValueError` raised by a decorator guard must name the decorator
+  (`@task.sfn`, `@task.glue_job`, …), name the field, and show a concrete working
+  example in the message itself.
 
 ## Unknown values in dispatch branches → raise, never silently default
 
