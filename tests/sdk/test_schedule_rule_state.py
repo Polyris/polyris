@@ -199,7 +199,7 @@ class TestPostDeployScheduleStateEnforcement:
         scheduler = mocker.MagicMock()
         scheduler.get_schedule.return_value = _fake_current_schedule(current_schedule_state)
 
-        def _client(name):
+        def _client(name, **_kw):
             return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
@@ -287,7 +287,7 @@ class TestPostDeployScheduleStateEnforcement:
         scheduler = mocker.MagicMock()
         scheduler.get_schedule.side_effect = Exception("ThrottlingException")
 
-        def _client(name):
+        def _client(name, **_kw):
             return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client

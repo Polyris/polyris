@@ -256,7 +256,7 @@ class TestDeployStillWorksExactlyAsBefore:
             "State": "ENABLED",
         }
 
-        def _client(name):
+        def _client(name, **_kw):
             return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client

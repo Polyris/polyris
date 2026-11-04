@@ -1,5 +1,18 @@
 ## Unreleased
 
+### Added — Pre-deploy resource existence check
+
+`polyris-deploy` now verifies all external AWS resources referenced in a DAG
+before generating the CloudFormation template. If a resource is confirmed
+missing, the deploy aborts with a clear error. If the check cannot complete
+(access denied, throttled, transient outage), it warns and proceeds.
+
+Covered: SFN state machines, Lambda functions, Glue jobs, ECS clusters and
+task definitions, Batch job queues and job definitions, Athena workgroups.
+Resources in a different IAM role (`task.role != "same"`) are reported as
+unverified rather than errors. The check runs on `--dry-run`; `--destroy`
+skips it. See ADR #125.
+
 ### Added — `polyris-local` CLI
 
 New `polyris-local` command for previewing, validating, and simulating pipelines without deploying to AWS.
