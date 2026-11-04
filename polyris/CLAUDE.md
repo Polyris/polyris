@@ -605,3 +605,16 @@ if src.suffix != '.py' or not src.exists():  # pragma: no cover
 The copied snapshot is tied to the installed version. Print the stamped version on success so
 users can assert it in CI. There is no mechanical guard against drift — document this in the
 command's help text and docstring (see ADR #124).
+
+## `_CANNOT_VERIFY_CODES` and `_ACCESS_DENIED_CODES` in resource_check.py are distinct sets — never collapse them
+
+`_CANNOT_VERIFY_CODES` means "could not verify — route to warning, do not abort". `_ACCESS_DENIED_CODES`
+is the IAM-only subset where the fix is "add an IAM permission". Throttle codes, transient outages
+(`ServiceUnavailableException`), and expired credentials belong **only** in `_CANNOT_VERIFY_CODES`.
+
+The IAM action hint in `print_resource_check_result` is gated on `result.access_denied`, not
+`result.warnings`. This prevents throttle errors from telling the operator to change their IAM
+policy — which would be wrong guidance.
+
+**Rule:** when adding a new error code to either set, ask: "is the fix to add an IAM permission?"
+If yes → both sets. If no (throttle, KMS state, network, transient) → `_CANNOT_VERIFY_CODES` only.

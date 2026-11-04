@@ -86,7 +86,7 @@ def test_deploy_refuses_when_account_cannot_be_verified(mocker):
     boto.Session.return_value = session
     sts = mocker.MagicMock()
     sts.get_caller_identity.side_effect = BotoCoreError()
-    session.client.side_effect = lambda name: sts if name == "sts" else mocker.MagicMock()
+    session.client.side_effect = lambda name, **_kw: sts if name == "sts" else mocker.MagicMock()
 
     cfg = mocker.patch("polyris.deploy.polyris_config")
     cfg.stage = "prod"
@@ -130,7 +130,7 @@ def test_deploy_proceeds_when_account_matches(mocker):
     cfn = mocker.MagicMock()
     cfn.describe_stacks.return_value = {"Stacks": [{"Outputs": [], "Parameters": []}]}
 
-    def _client(name):
+    def _client(name, **_kw):
         return {"sts": sts, "cloudformation": cfn}.get(name, mocker.MagicMock())
     session.client.side_effect = _client
 

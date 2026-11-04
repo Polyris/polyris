@@ -50,6 +50,7 @@ from .generators import (
 from .dag import DAG
 from .config import config as polyris_config
 from ._ansi import c as _c, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
+from .resource_check import check_resource_references, print_resource_check_result
 
 
 # =============================================================================
@@ -737,6 +738,18 @@ def deploy_pipeline(
         else:
             print(f"[dry-run] Would delete stack: {stack_name}")
         return
+
+    # Check that referenced AWS resources exist before committing to a deploy.
+    # Runs in both normal and --dry-run paths (consistent with STS + CFN calls
+    # already made above). Skipped for --destroy (no resources to verify).
+    try:
+        _rc = check_resource_references(dag, session, region)
+    except ValueError as e:
+        print(f"\n❌ Resource check configuration error: {e}")
+        sys.exit(1)
+    print_resource_check_result(_rc)
+    if _rc.errors:
+        sys.exit(1)
 
     # Generate template
     print(f"\nGenerating CloudFormation template for: {dag.dag_id}")

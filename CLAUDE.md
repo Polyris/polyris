@@ -317,6 +317,16 @@ cd ui && npm ci && npm run build && ./deploy.sh --profile <profile>
 cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 ```
 
+**Pre-deploy resource check:** `polyris-deploy` verifies all external AWS resources referenced in
+the DAG (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job
+definitions, Athena workgroups) before generating the CloudFormation template. The check aborts
+deploy if any resource is missing. Use `--destroy` to skip it. Resources in a different IAM role
+(`task.role != "same"`) are reported as unverified, not errors. The check runs on `--dry-run` too;
+access-denied converts to a warning and deploy proceeds. Full confidence requires
+`states:DescribeStateMachine`, `lambda:GetFunction`, `glue:GetJob`, `ecs:DescribeClusters`,
+`ecs:DescribeTaskDefinition`, `batch:DescribeJobQueues`, `batch:DescribeJobDefinitions`,
+`athena:GetWorkGroup` on the deploy role.
+
 **SFN edit workflow:** edit `sam/sfn_templates/*/sfn.tpl.json` → `sam build && sam deploy`. `sam build` inlines `.tpl.json` into `DefinitionString` automatically.
 
 ### Lambda packaging: `polyris` SDK comes from `requirements.txt` (ADR #102)

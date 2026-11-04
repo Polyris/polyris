@@ -58,7 +58,7 @@ def _make_deploy_mocks(mocker):
         "State": "ENABLED",
     }
 
-    def _client(name):
+    def _client(name, **_kw):
         return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
             name, mocker.MagicMock())
 
