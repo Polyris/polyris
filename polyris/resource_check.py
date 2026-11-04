@@ -334,11 +334,11 @@ def check_resource_references(
         service = _KIND_TO_SERVICE[rr.kind]
         client_key = (service, ref_region)
         if client_key not in clients:
-            # boto3 stubs overload client() with Literal service names; ours are
-            # runtime strings from _KIND_TO_SERVICE, all valid boto3 identifiers.
-            clients[client_key] = session.client(  # type: ignore[call-overload]
-                service, region_name=ref_region
-            )
+            # boto3-stubs overloads Session.client() with Literal service names; assigning
+            # to Any first avoids a spurious call-overload error without a type: ignore
+            # (which triggers unused-ignore in CI where boto3-stubs is absent).
+            _sess: Any = session
+            clients[client_key] = _sess.client(service, region_name=ref_region)
         client = clients[client_key]
 
         checker = _RESOURCE_CHECKERS[rr.kind]
