@@ -11,7 +11,7 @@ Covered: SFN state machines, Lambda functions, Glue jobs, ECS clusters and
 task definitions, Batch job queues and job definitions, Athena workgroups.
 Resources in a different IAM role (`task.role != "same"`) are reported as
 unverified rather than errors. The check runs on `--dry-run`; `--destroy`
-skips it. See ADR #125.
+skips it. See ADR #126.
 
 ### Added — `polyris-local` CLI
 

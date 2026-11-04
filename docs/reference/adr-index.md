@@ -107,3 +107,4 @@ _98 rows indexed (75 inline, 23 standalone). Actual ADR count is higher — ADRs
 | 123 | XCom reliable data passing — separate input record + `xcom.push()` for service tasks | [`adr-123-xcom-reliable-data-passing.md`](adr-123-xcom-reliable-data-passing.md) |
 | 124 | `polyris-build-lambda`: stamp XCom helpers into Lambda handler directories | inline |
 | 125 | In-SFN retry visibility (`retry_attempt` field + `TASK_RETRY_STARTED` event) | [`adr-125-in-sfn-retry-visibility.md`](adr-125-in-sfn-retry-visibility.md) |
+| 126 | Pre-deploy resource existence check in `polyris-deploy` | inline |
