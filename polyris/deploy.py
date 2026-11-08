@@ -29,6 +29,7 @@ import subprocess
 import importlib.util
 import argparse
 import threading
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +51,12 @@ from .generators import (
 from .dag import DAG
 from .config import config as polyris_config
 from ._ansi import c as _c, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
-from .resource_check import check_resource_references, print_resource_check_result
+from .resource_check import (
+    check_resource_references,
+    print_resource_check_result,
+    check_resource_overrides,
+    print_resource_override_result,
+)
 
 
 # =============================================================================
@@ -750,6 +756,16 @@ def deploy_pipeline(
     print_resource_check_result(_rc)
     if _rc.errors:
         sys.exit(1)
+    try:
+        _ro = check_resource_overrides(dag, session, region, failed_refs=_rc.failed_refs, region_warned=_rc.region_warned)
+    except Exception as e:  # noqa: BLE001
+        # Advisory-only: a code bug or unexpected AWS error in the override check
+        # must never abort the deploy. Broad except is intentional — the check is
+        # non-critical and all its AWS calls are already narrowed internally.
+        print(f"\n  ⚠  Override check failed unexpectedly ({type(e).__name__}): {e}")
+        traceback.print_exc()
+    else:
+        print_resource_override_result(_ro)
 
     # Generate template
     print(f"\nGenerating CloudFormation template for: {dag.dag_id}")

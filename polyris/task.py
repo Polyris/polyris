@@ -300,36 +300,36 @@ class Task:
     
     # === Glue-specific fields ===
     job_name: str = ""  # Glue job name
-    glue_arguments: Optional[Dict[str, str]] = None  # --arg=value pairs
-    allocated_capacity: Optional[int] = None  # Integer DPUs (Python Shell, deprecated by AWS; use max_capacity for fractional values)
-    max_capacity: Optional[float] = None  # Float DPUs — supports 1/16 DPU (0.0625) for Python Shell; mutually exclusive with worker_type/number_of_workers
+    glue_arguments: Optional[Dict[str, str]] = None  # --key=value job arguments
+    allocated_capacity: Optional[int] = None  # integer DPUs (deprecated; use max_capacity)
+    max_capacity: Optional[float] = None  # float DPUs; mutually exclusive with worker_type/number_of_workers
     worker_type: Optional[str] = None  # G.1X, G.2X, etc. (PySpark only)
     number_of_workers: Optional[int] = None
     command_name: Optional[str] = None  # "pythonshell" or "glueetl" — enables cross-type validation
-    
+
     # === ECS-specific fields ===
     cluster: str = ""
     task_definition: str = ""
     launch_type: str = "FARGATE"
     subnets: Optional[List[str]] = None
     security_groups: Optional[List[str]] = None
-    container_overrides: Optional[Dict[str, Any]] = None
+    container_overrides: Optional[Dict[str, Any]] = None  # ECS RunTask containerOverrides struct
     assign_public_ip: str = "DISABLED"  # ENABLED for Fargate in a public subnet w/o NAT
-    
+
     # === Athena-specific fields ===
     query_string: str = ""
     database: str = ""
     output_location: str = ""
     workgroup: str = "primary"
-    
+
     # === EMR-specific fields ===
     emr_cluster_id: str = ""
     emr_step: Optional[Dict[str, Any]] = None
-    
+
     # === Batch-specific fields ===
     job_definition: str = ""
     job_queue: str = ""
-    batch_parameters: Optional[Dict[str, str]] = None
+    batch_parameters: Optional[Dict[str, str]] = None  # Batch SubmitJob parameters
     
     # === Asset-based orchestration ===
     # Assets this task produces (emits events when task succeeds)
