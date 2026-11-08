@@ -574,22 +574,6 @@ def _check_glue_override(task: Any, job: Dict[str, Any]) -> Optional[OverrideRep
     silent_ignores: List[str] = []
     matching: List[str] = []
 
-    # Glue capacity models are mutually exclusive: worker_type/number_of_workers vs
-    # max_capacity/allocated_capacity. When a task uses the worker model, AWS computes
-    # MaxCapacity synthetically — comparing it against a declared max_capacity would
-    # produce a false differs. Skip capacity-model fields when the worker model is active,
-    # and vice versa.
-    _using_worker_model = (
-        getattr(task, "worker_type", None) is not None
-        or getattr(task, "number_of_workers", None) is not None
-    )
-    _using_capacity_model = (
-        getattr(task, "max_capacity", None) is not None
-        or getattr(task, "allocated_capacity", None) is not None
-    )
-    _CAPACITY_ATTRS = frozenset({"max_capacity", "allocated_capacity"})
-    _WORKER_ATTRS = frozenset({"worker_type", "number_of_workers"})
-
     for attr, field_name in (
         ("worker_type",        "WorkerType"),
         ("number_of_workers",  "NumberOfWorkers"),
@@ -598,11 +582,10 @@ def _check_glue_override(task: Any, job: Dict[str, Any]) -> Optional[OverrideRep
     ):
         declared = getattr(task, attr, None)
         if declared is None:
+            # Glue capacity models are mutually exclusive (worker model vs DPU model).
+            # Undeclared fields from the other model are always absent on the task, so
+            # `declared is None` already skips them without a separate guard.
             continue
-        if attr in _CAPACITY_ATTRS and _using_worker_model and not _using_capacity_model:
-            continue  # capacity fields are computed by Glue when worker model is active
-        if attr in _WORKER_ATTRS and _using_capacity_model and not _using_worker_model:
-            continue  # worker fields are not used when capacity model is active
         actual = job.get(field_name)
         if actual is None:
             continue

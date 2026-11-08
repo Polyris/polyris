@@ -1521,37 +1521,32 @@ class TestCheckGlueOverride:
         assert report.resource_name == "etl"
 
     def test_worker_model_skips_capacity_fields(self, mocker):
-        """When worker_type is declared, MaxCapacity/AllocatedCapacity are skipped.
-
-        Glue computes MaxCapacity synthetically from worker_type — comparing it
-        against a declared max_capacity would produce a false differs.
-        """
+        """When worker_type is declared (no max_capacity), capacity fields are absent
+        on the task and therefore skipped — they cannot appear in differs."""
         task = self._task(mocker, worker_type="G.2X")
-        # Job returns a MaxCapacity that differs — must NOT appear in differs
         job = {"WorkerType": "G.2X", "MaxCapacity": 8.0, "AllocatedCapacity": 4}
         report = _check_glue_override(task, job)
-        # worker_type matches → matching; capacity fields skipped → not in differs
+        # worker_type matches → matching; capacity fields undeclared → not in differs
         assert report is not None
         assert not any(c.name in ("MaxCapacity", "AllocatedCapacity") for c in report.differs)
 
     def test_capacity_model_skips_worker_fields(self, mocker):
-        """When max_capacity is declared, WorkerType/NumberOfWorkers are skipped."""
+        """When max_capacity is declared (no worker_type), worker fields are absent
+        on the task and therefore skipped — they cannot appear in differs."""
         task = self._task(mocker, max_capacity=4.0)
-        # Job returns a WorkerType that differs — must NOT appear in differs
         job = {"MaxCapacity": 4.0, "WorkerType": "G.1X", "NumberOfWorkers": 2}
         report = _check_glue_override(task, job)
-        # max_capacity matches → matching; worker fields skipped → not in differs
+        # max_capacity matches → matching; worker fields undeclared → not in differs
         assert report is not None
         assert not any(c.name in ("WorkerType", "NumberOfWorkers") for c in report.differs)
 
-    def test_both_models_declared_no_cross_model_differs(self, mocker):
-        """When both worker_type and max_capacity are declared (config error), neither
-        cross-model field produces a spurious differs — the guard prevents false positives."""
+    def test_both_models_declared_compares_both(self, mocker):
+        """When both worker_type and max_capacity are declared, both are compared
+        against the AWS job independently."""
         task = self._task(mocker, worker_type="G.1X", max_capacity=5.0)
         job = {"WorkerType": "G.1X", "MaxCapacity": 8.0}
         report = _check_glue_override(task, job)
-        # Both models active — neither guard fires (each model is used), so both fields
-        # are compared normally. worker_type matches, max_capacity differs.
+        # worker_type matches → not in differs; max_capacity differs → in differs
         assert report is not None
         assert not any(c.name == "WorkerType" for c in report.differs)
         assert any(c.name == "MaxCapacity" for c in report.differs)
