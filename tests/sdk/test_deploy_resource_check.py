@@ -3093,72 +3093,93 @@ class TestOverrideIamHint:
 
 
 # ---------------------------------------------------------------------------
-# ECS task-level cpu/memory scope notes
+# ECS task-level cpu/memory
 # ---------------------------------------------------------------------------
 
-class TestEcsTaskLevelScopeNotes:
-    def test_task_level_cpu_produces_scope_note(self, mocker):
-        """Task-level 'cpu' in container_overrides must produce a scope_note, not a conflict."""
+class TestEcsTaskLevelResources:
+    def test_task_level_cpu_differs(self, mocker):
+        """Task-level cpu in container_overrides differs from task definition → in differs."""
         task = _make_task(mocker, task_type="ecs", task_id="t1",
                           task_definition="my-def",
-                          container_overrides={"cpu": "2048"})
-        task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
+                          container_overrides={"cpu": 2048})
+        task_def = {"cpu": "1024", "containerDefinitions": []}
         report = _check_ecs_override(task, task_def)
         assert report is not None
-        assert any("task-level cpu" in n for n in report.scope_notes)
-        assert report.differs == []
+        assert any(c.name == "task.cpu" and c.declared == 2048 and c.actual == 1024
+                   for c in report.differs)
 
-    def test_task_level_memory_produces_scope_note(self, mocker):
-        """Task-level 'memory' in container_overrides must produce a scope_note."""
+    def test_task_level_cpu_matches(self, mocker):
+        """Task-level cpu matches task definition → in matching, not differs."""
         task = _make_task(mocker, task_type="ecs", task_id="t1",
                           task_definition="my-def",
-                          container_overrides={"memory": "4096"})
-        task_def = {"containerDefinitions": []}
+                          container_overrides={"cpu": 1024})
+        task_def = {"cpu": "1024", "containerDefinitions": []}
         report = _check_ecs_override(task, task_def)
         assert report is not None
-        assert any("task-level memory" in n for n in report.scope_notes)
+        assert report.differs == []
+        assert any("task.cpu=1024" in m for m in report.matching)
+
+    def test_task_level_memory_differs(self, mocker):
+        """Task-level memory in container_overrides differs from task definition → in differs."""
+        task = _make_task(mocker, task_type="ecs", task_id="t1",
+                          task_definition="my-def",
+                          container_overrides={"memory": 4096})
+        task_def = {"memory": "2048", "containerDefinitions": []}
+        report = _check_ecs_override(task, task_def)
+        assert report is not None
+        assert any(c.name == "task.memory" and c.declared == 4096 and c.actual == 2048
+                   for c in report.differs)
+
+    def test_task_level_no_baseline_skipped(self, mocker):
+        """Task-level cpu declared but task def has no top-level cpu (EC2 launch type) → skipped."""
+        task = _make_task(mocker, task_type="ecs", task_id="t1",
+                          task_definition="my-def",
+                          container_overrides={"cpu": 2048})
+        task_def = {"containerDefinitions": []}  # no top-level cpu
+        report = _check_ecs_override(task, task_def)
+        assert report is None  # nothing to compare
 
     def test_task_level_and_container_level_both_handled(self, mocker):
-        """Task-level keys produce scope_notes; container-level keys produce diffs. Both present."""
+        """Task-level and container-level overrides both compared independently."""
         task = _make_task(mocker, task_type="ecs", task_id="t1",
                           task_definition="my-def",
                           container_overrides={
-                              "cpu": "2048",
+                              "cpu": 2048,
                               "containerOverrides": [{"name": "app", "cpu": 1024}],
                           })
-        task_def = {"containerDefinitions": [{"name": "app", "cpu": 512}]}
+        task_def = {"cpu": "1024", "containerDefinitions": [{"name": "app", "cpu": 512}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
-        assert any("task-level cpu" in n for n in report.scope_notes)
-        assert any(c.name == "cpu" for c in report.differs)
+        assert any(c.name == "task.cpu" for c in report.differs)   # task-level differs
+        assert any(c.name == "cpu" for c in report.differs)        # container-level differs
+
+    def test_no_task_level_keys_no_task_level_entries(self, mocker):
+        """container_overrides without task-level cpu/memory produces no task.* entries."""
+        task = _make_task(mocker, task_type="ecs", task_id="t1",
+                          task_definition="my-def",
+                          container_overrides={
+                              "containerOverrides": [{"name": "app", "cpu": 2048}]
+                          })
+        task_def = {"cpu": "1024", "containerDefinitions": [{"name": "app", "cpu": 2048}]}
+        report = _check_ecs_override(task, task_def)
+        assert report is not None
+        assert not any(c.name.startswith("task.") for c in report.differs)
+        assert not any(m.startswith("task.") for m in report.matching)
 
     def test_scope_note_printed_in_output(self, capsys, mocker):
-        """scope_notes must appear in print_resource_override_result output."""
+        """scope_notes (from other services or future use) appear in print output."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
             reports=[OverrideReport(
                 task_id="t1", service="ecs", resource_name="my-def",
-                scope_notes=["task-level cpu — not compared (only per-container fields checked)"],
+                scope_notes=["some future scope note"],
             )],
             _verified=1,
         )
         print_resource_override_result(result)
         out = capsys.readouterr().out
         assert "not checked:" in out
-        assert "task-level cpu" in out
-
-    def test_no_scope_note_when_no_task_level_keys(self, mocker):
-        """container_overrides without task-level cpu/memory must not produce scope_notes."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={
-                              "containerOverrides": [{"name": "app", "cpu": 2048}]
-                          })
-        task_def = {"containerDefinitions": [{"name": "app", "cpu": 2048}]}
-        report = _check_ecs_override(task, task_def)
-        # matching entry exists (cpu matches), scope_notes must be empty
-        assert report is not None
-        assert report.scope_notes == []
+        assert "some future scope note" in out
 
     def test_scope_note_only_report_does_not_trigger_override_warning_header(self, capsys, mocker):
         """scope_notes-only OverrideReport must not cause '⚠  resource parameter overrides:' header."""
@@ -3166,7 +3187,7 @@ class TestEcsTaskLevelScopeNotes:
         result = OverrideCheckResult(
             reports=[OverrideReport(
                 task_id="t1", service="ecs", resource_name="my-def",
-                scope_notes=["task-level cpu — not compared (only per-container fields checked)"],
+                scope_notes=["some future scope note"],
             )],
             _verified=1,
         )
@@ -3175,7 +3196,6 @@ class TestEcsTaskLevelScopeNotes:
         assert "resource parameter overrides" not in out
         assert "✓" in out
         assert "not checked:" in out
-        assert "task-level cpu" in out
 
 
 # ---------------------------------------------------------------------------

@@ -622,16 +622,24 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
     if not declared_overrides:
         return None
 
-    # Task-level cpu/memory sit at the top level of the containerOverrides struct (not inside
-    # containerOverrides[*]). Mapping them against the task definition's cpu/memory string fields
-    # requires the ECS Fargate resource table — out of scope for V1. Surface them as scope_notes
-    # so the operator knows they were declared but not verified, rather than silently ignoring them.
-    scope_notes: List[str] = []
-    for key in ("cpu", "memory"):
-        if key in declared_overrides:
-            scope_notes.append(
-                f"task-level {key} — not compared (only per-container fields checked)"
-            )
+    differs: List[ParamConflict] = []
+    matching: List[str] = []
+
+    # Task-level cpu/memory sit at the top level of container_overrides (not inside
+    # containerOverrides[*]). Both sides use the same units: CPU units (256/512/1024/…)
+    # and memory in MiB — same int normalization as container-level size fields.
+    for size_key in ("cpu", "memory"):
+        if size_key in declared_overrides:
+            base_val = task_def.get(size_key)
+            if _numeric_str(declared_overrides[size_key]) and _numeric_str(base_val):
+                d_val = int(float(declared_overrides[size_key])) if isinstance(declared_overrides[size_key], str) else declared_overrides[size_key]
+                a_val = int(float(base_val)) if isinstance(base_val, str) else base_val
+                if d_val != a_val:
+                    differs.append(ParamConflict(f"task.{size_key}", d_val, a_val))
+                else:
+                    matching.append(f"task.{size_key}={d_val}")
+            # If base_val is None, task def has no task-level cpu/memory (EC2 launch type
+            # without explicit task-level resource limits) — no baseline to compare against.
 
     # Build container lookup; first entry wins on duplicate names.
     containers_by_name: Dict[str, Dict[str, Any]] = {}
@@ -639,9 +647,6 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
         name = c.get("name", "")
         if name and name not in containers_by_name:
             containers_by_name[name] = c
-
-    differs: List[ParamConflict] = []
-    matching: List[str] = []
 
     for co in declared_overrides.get("containerOverrides") or []:
         cname = co.get("name", "")
@@ -694,7 +699,7 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
                 else:
                     matching.append(f"env:{env_name}={env_val}")
 
-    if not (differs or matching or scope_notes):
+    if not (differs or matching):
         return None
     return OverrideReport(
         task_id=task.task_id,
@@ -703,7 +708,6 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
         differs=differs,
         silent_ignores=[],
         matching=matching,
-        scope_notes=scope_notes,
     )
 
 
