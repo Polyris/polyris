@@ -577,6 +577,7 @@ def _fail_no_stack_name(stage: str) -> None:
 
 def deploy_pipeline(
     dag: DAG,
+    *,
     stage: Optional[str] = None,
     region: Optional[str] = None,
     dry_run: bool = False,
