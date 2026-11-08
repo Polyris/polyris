@@ -55,55 +55,61 @@ if TYPE_CHECKING:
 
 # ---- Error codes that mean "cannot verify" (not "resource missing") ----------
 
-_CANNOT_VERIFY_CODES: frozenset[str] = frozenset({
-    "AccessDenied",
-    "AccessDeniedException",
-    "UnauthorizedAccess",
-    "AuthFailure",
-    "KmsAccessDeniedException",     # SFN/Lambda with KMS encryption — missing kms:Decrypt
-    "KmsThrottlingException",       # KMS throttle during describe — not a missing resource
-    "KmsInvalidStateException",     # KMS key disabled/pending deletion — cannot verify
-    "ThrottlingException",
-    "Throttling",
-    "RequestThrottled",
-    "ProvisionedThroughputExceededException",
-    "RequestLimitExceeded",
-    "TooManyRequestsException",
-    "ServiceUnavailableException",  # transient service outage — not a missing resource
-    "ExpiredTokenException",        # temporary credentials expired mid-check
-    "RequestExpired",               # clock-skew SigV4 failure
-})
+_CANNOT_VERIFY_CODES: frozenset[str] = frozenset(
+    {
+        "AccessDenied",
+        "AccessDeniedException",
+        "UnauthorizedAccess",
+        "AuthFailure",
+        "KmsAccessDeniedException",  # SFN/Lambda with KMS encryption — missing kms:Decrypt
+        "KmsThrottlingException",  # KMS throttle during describe — not a missing resource
+        "KmsInvalidStateException",  # KMS key disabled/pending deletion — cannot verify
+        "ThrottlingException",
+        "Throttling",
+        "RequestThrottled",
+        "ProvisionedThroughputExceededException",
+        "RequestLimitExceeded",
+        "TooManyRequestsException",
+        "ServiceUnavailableException",  # transient service outage — not a missing resource
+        "ExpiredTokenException",  # temporary credentials expired mid-check
+        "RequestExpired",  # clock-skew SigV4 failure
+    }
+)
 
 # Subset of _CANNOT_VERIFY_CODES: errors where the fix is "add IAM permission".
 # Used to gate the IAM hint in print_resource_check_result — throttle and
 # transient errors should never prompt the operator to change their IAM policy.
-_ACCESS_DENIED_CODES: frozenset[str] = frozenset({
-    "AccessDenied",
-    "AccessDeniedException",
-    "UnauthorizedAccess",
-    "AuthFailure",
-})
+_ACCESS_DENIED_CODES: frozenset[str] = frozenset(
+    {
+        "AccessDenied",
+        "AccessDeniedException",
+        "UnauthorizedAccess",
+        "AuthFailure",
+    }
+)
 
 
 # ---- Result types ------------------------------------------------------------
 
+
 @dataclass
 class ResourceRef:
     """A single AWS resource reference extracted from a dag task."""
+
     task_id: str
-    kind: str   # 'sfn','lambda','glue','ecs_cluster','ecs_task_definition',
-                # 'batch_job_queue','batch_job_definition','athena_workgroup'
-    ref: str    # the ARN or resource name
+    kind: str  # 'sfn','lambda','glue','ecs_cluster','ecs_task_definition',
+    # 'batch_job_queue','batch_job_definition','athena_workgroup'
+    ref: str  # the ARN or resource name
     role: str = "same"
 
 
 @dataclass
 class ResourceCheckResult:
-    errors: List[ResourceRef] = field(default_factory=list)         # confirmed missing → abort
-    warnings: List[ResourceRef] = field(default_factory=list)       # could not verify
+    errors: List[ResourceRef] = field(default_factory=list)  # confirmed missing → abort
+    warnings: List[ResourceRef] = field(default_factory=list)  # could not verify
     access_denied: List[ResourceRef] = field(default_factory=list)  # IAM-denied subset of warnings
-    skipped: List[ResourceRef] = field(default_factory=list)        # different IAM role
-    _checked: int = field(default=0, repr=False)                    # refs attempted (incl. failures)
+    skipped: List[ResourceRef] = field(default_factory=list)  # different IAM role
+    _checked: int = field(default=0, repr=False)  # refs attempted (incl. failures)
     # (kind, ref) for errors + access_denied — passed to check_resource_overrides to skip
     # resources we know are broken or inaccessible; throttle/BotoCoreError excluded because
     # the resource may still exist (transient) and the override check will surface a fresh
@@ -117,10 +123,12 @@ class ResourceCheckResult:
 # ---- Collection --------------------------------------------------------------
 
 # task_types that are skipped entirely — no refs collected, no warnings.
-_RESOURCE_SKIP_TYPES: frozenset[str] = frozenset({
-    "emr",        # emr_cluster_id is a runtime resource; state can change between check and run
-    "sagemaker",
-})
+_RESOURCE_SKIP_TYPES: frozenset[str] = frozenset(
+    {
+        "emr",  # emr_cluster_id is a runtime resource; state can change between check and run
+        "sagemaker",
+    }
+)
 
 # Maps each non-skip task_type to the check-kinds it produces.
 # When adding a new task type, update ALL SIX of these in the same change:
@@ -128,12 +136,12 @@ _RESOURCE_SKIP_TYPES: frozenset[str] = frozenset({
 #   _KIND_TO_SERVICE  _IAM_ACTION  _KIND_DISPLAY
 # test_every_task_type_has_checker_or_skip enforces completeness at test time.
 _TASK_TYPE_TO_KINDS: Dict[str, List[str]] = {
-    "sfn":    ["sfn"],
+    "sfn": ["sfn"],
     "lambda": ["lambda"],
-    "glue":   ["glue"],
-    "ecs":    ["ecs_cluster", "ecs_task_definition"],
+    "glue": ["glue"],
+    "ecs": ["ecs_cluster", "ecs_task_definition"],
     "athena": ["athena_workgroup"],
-    "batch":  ["batch_job_queue", "batch_job_definition"],
+    "batch": ["batch_job_queue", "batch_job_definition"],
 }
 
 
@@ -149,41 +157,37 @@ def _collect_resource_refs(dag: "DAG") -> List[ResourceRef]:
 
         if task_type == "sfn":
             if task.arn:
-                refs.append(ResourceRef(task_id=task.task_id, kind="sfn",
-                                        ref=task.arn, role=role))
+                refs.append(ResourceRef(task_id=task.task_id, kind="sfn", ref=task.arn, role=role))
 
         elif task_type == "lambda":
             ref = task.arn or task.function_name
             if ref:
-                refs.append(ResourceRef(task_id=task.task_id, kind="lambda",
-                                        ref=ref, role=role))
+                refs.append(ResourceRef(task_id=task.task_id, kind="lambda", ref=ref, role=role))
 
         elif task_type == "glue":
             if task.job_name:
-                refs.append(ResourceRef(task_id=task.task_id, kind="glue",
-                                        ref=task.job_name, role=role))
+                refs.append(ResourceRef(task_id=task.task_id, kind="glue", ref=task.job_name, role=role))
 
         elif task_type == "ecs":
             if task.cluster:
-                refs.append(ResourceRef(task_id=task.task_id, kind="ecs_cluster",
-                                        ref=task.cluster, role=role))
+                refs.append(ResourceRef(task_id=task.task_id, kind="ecs_cluster", ref=task.cluster, role=role))
             if task.task_definition:
-                refs.append(ResourceRef(task_id=task.task_id, kind="ecs_task_definition",
-                                        ref=task.task_definition, role=role))
+                refs.append(
+                    ResourceRef(task_id=task.task_id, kind="ecs_task_definition", ref=task.task_definition, role=role)
+                )
 
         elif task_type == "athena":
             wg = task.workgroup
             if wg and wg != "primary":
-                refs.append(ResourceRef(task_id=task.task_id, kind="athena_workgroup",
-                                        ref=wg, role=role))
+                refs.append(ResourceRef(task_id=task.task_id, kind="athena_workgroup", ref=wg, role=role))
 
         elif task_type == "batch":
             if task.job_queue:
-                refs.append(ResourceRef(task_id=task.task_id, kind="batch_job_queue",
-                                        ref=task.job_queue, role=role))
+                refs.append(ResourceRef(task_id=task.task_id, kind="batch_job_queue", ref=task.job_queue, role=role))
             if task.job_definition:
-                refs.append(ResourceRef(task_id=task.task_id, kind="batch_job_definition",
-                                        ref=task.job_definition, role=role))
+                refs.append(
+                    ResourceRef(task_id=task.task_id, kind="batch_job_definition", ref=task.job_definition, role=role)
+                )
 
         elif task_type in _RESOURCE_SKIP_TYPES:
             pass  # emr_cluster_id is runtime; sagemaker not yet implemented
@@ -198,6 +202,7 @@ def _collect_resource_refs(dag: "DAG") -> List[ResourceRef]:
 
 
 # ---- Per-service check functions -------------------------------------------
+
 
 class _NotFoundError(Exception):
     """Raised by check functions when an API returns an empty list instead of an exception."""
@@ -223,8 +228,7 @@ def _check_ecs_cluster(client: Any, ref: str) -> None:
     resp = client.describe_clusters(clusters=[ref])
     # PROVISIONING clusters are being created and usable as a deploy target —
     # treat them the same as ACTIVE so a just-created cluster doesn't abort deploy.
-    active = [c for c in resp.get("clusters", [])
-              if c.get("status") in {"ACTIVE", "PROVISIONING"}]
+    active = [c for c in resp.get("clusters", []) if c.get("status") in {"ACTIVE", "PROVISIONING"}]
     if not active:
         raise _NotFoundError(ref)
 
@@ -244,8 +248,7 @@ _BATCH_JOB_QUEUE_UNUSABLE: frozenset[str] = frozenset({"DELETING", "DELETED", "I
 
 def _check_batch_job_queue(client: Any, ref: str) -> None:
     resp = client.describe_job_queues(jobQueues=[ref])
-    usable = [q for q in resp.get("jobQueues", [])
-              if q.get("status") not in _BATCH_JOB_QUEUE_UNUSABLE]
+    usable = [q for q in resp.get("jobQueues", []) if q.get("status") not in _BATCH_JOB_QUEUE_UNUSABLE]
     if not usable:
         raise _NotFoundError(ref)
 
@@ -264,60 +267,65 @@ def _check_athena_workgroup(client: Any, ref: str) -> None:
 
 
 _RESOURCE_CHECKERS: Dict[str, Callable[[Any, str], None]] = {
-    "sfn":                  _check_sfn,
-    "lambda":               _check_lambda,
-    "glue":                 _check_glue_job,
-    "ecs_cluster":          _check_ecs_cluster,
-    "ecs_task_definition":  _check_ecs_task_def,
-    "batch_job_queue":      _check_batch_job_queue,
+    "sfn": _check_sfn,
+    "lambda": _check_lambda,
+    "glue": _check_glue_job,
+    "ecs_cluster": _check_ecs_cluster,
+    "ecs_task_definition": _check_ecs_task_def,
+    "batch_job_queue": _check_batch_job_queue,
     "batch_job_definition": _check_batch_job_def,
-    "athena_workgroup":     _check_athena_workgroup,
+    "athena_workgroup": _check_athena_workgroup,
 }
 
 _KIND_TO_SERVICE: Dict[str, str] = {
-    "sfn":                  "stepfunctions",
-    "lambda":               "lambda",
-    "glue":                 "glue",
-    "ecs_cluster":          "ecs",
-    "ecs_task_definition":  "ecs",
-    "batch_job_queue":      "batch",
+    "sfn": "stepfunctions",
+    "lambda": "lambda",
+    "glue": "glue",
+    "ecs_cluster": "ecs",
+    "ecs_task_definition": "ecs",
+    "batch_job_queue": "batch",
     "batch_job_definition": "batch",
-    "athena_workgroup":     "athena",
+    "athena_workgroup": "athena",
 }
 
 _IAM_ACTION: Dict[str, str] = {
-    "sfn":                  "states:DescribeStateMachine",
-    "lambda":               "lambda:GetFunction",
-    "glue":                 "glue:GetJob",
-    "ecs_cluster":          "ecs:DescribeClusters",
-    "ecs_task_definition":  "ecs:DescribeTaskDefinition",
-    "batch_job_queue":      "batch:DescribeJobQueues",
+    "sfn": "states:DescribeStateMachine",
+    "lambda": "lambda:GetFunction",
+    "glue": "glue:GetJob",
+    "ecs_cluster": "ecs:DescribeClusters",
+    "ecs_task_definition": "ecs:DescribeTaskDefinition",
+    "batch_job_queue": "batch:DescribeJobQueues",
     "batch_job_definition": "batch:DescribeJobDefinitions",
-    "athena_workgroup":     "athena:GetWorkGroup",
+    "athena_workgroup": "athena:GetWorkGroup",
 }
 
 _KIND_DISPLAY: Dict[str, str] = {
-    "sfn":                  "sfn",
-    "lambda":               "lambda",
-    "glue":                 "glue",
-    "ecs_cluster":          "ecs",
-    "ecs_task_definition":  "ecs",
-    "batch_job_queue":      "batch",
+    "sfn": "sfn",
+    "lambda": "lambda",
+    "glue": "glue",
+    "ecs_cluster": "ecs",
+    "ecs_task_definition": "ecs",
+    "batch_job_queue": "batch",
     "batch_job_definition": "batch",
-    "athena_workgroup":     "athena",
+    "athena_workgroup": "athena",
 }
 
-_DISPLAY_COL_WIDTH = 9   # pad kind column ("sagemaker" = 9 chars, reserved for future)
+_DISPLAY_COL_WIDTH = 9  # pad kind column ("sagemaker" = 9 chars, reserved for future)
 _CROSS_ACCOUNT_LIMIT = 10
 
 # Kinds where _NotFoundError may mean "deregistered" rather than truly absent.
-_LIFECYCLE_KINDS: frozenset[str] = frozenset({
-    "ecs_cluster", "ecs_task_definition",
-    "batch_job_queue", "batch_job_definition",
-})
+_LIFECYCLE_KINDS: frozenset[str] = frozenset(
+    {
+        "ecs_cluster",
+        "ecs_task_definition",
+        "batch_job_queue",
+        "batch_job_definition",
+    }
+)
 
 
 # ---- Helpers ----------------------------------------------------------------
+
 
 def _region_from_arn(arn: str, fallback: str) -> str:
     """Parse AWS region from an ARN; return fallback for non-ARN strings."""
@@ -326,6 +334,7 @@ def _region_from_arn(arn: str, fallback: str) -> str:
 
 
 # ---- Main check function ----------------------------------------------------
+
 
 def check_resource_references(
     dag: "DAG",
@@ -400,6 +409,7 @@ def check_resource_references(
 
 # ---- Output formatting -------------------------------------------------------
 
+
 def print_resource_check_result(result: ResourceCheckResult) -> None:
     """Print the resource check output.
 
@@ -407,8 +417,7 @@ def print_resource_check_result(result: ResourceCheckResult) -> None:
     function prints the abort message but does not exit. All ref, role, and
     task_id values are passed through _sanitize before output.
     """
-    has_anything = bool(result.errors or result.warnings or result.skipped
-                        or result._checked)
+    has_anything = bool(result.errors or result.warnings or result.skipped or result._checked)
     if not has_anything:
         return
 
@@ -420,23 +429,24 @@ def print_resource_check_result(result: ResourceCheckResult) -> None:
 
     for rr in result.errors:
         kind = _KIND_DISPLAY.get(rr.kind, rr.kind)
-        not_found_msg = ("does not exist or is deregistered"
-                         if rr.kind in _LIFECYCLE_KINDS else "does not exist")
-        print(_c(
-            f"  ✗ {kind:<{_DISPLAY_COL_WIDTH}} (task: {_sanitize(rr.task_id)})"
-            f" — {not_found_msg}: {_sanitize(rr.ref)}",
-            RED,
-        ))
+        not_found_msg = "does not exist or is deregistered" if rr.kind in _LIFECYCLE_KINDS else "does not exist"
+        print(
+            _c(
+                f"  ✗ {kind:<{_DISPLAY_COL_WIDTH}} (task: {_sanitize(rr.task_id)})"
+                f" — {not_found_msg}: {_sanitize(rr.ref)}",
+                RED,
+            )
+        )
 
     if result.warnings:
-        iam_actions = ", ".join(
-            sorted({_IAM_ACTION[r.kind] for r in result.access_denied if r.kind in _IAM_ACTION})
-        )
+        iam_actions = ", ".join(sorted({_IAM_ACTION[r.kind] for r in result.access_denied if r.kind in _IAM_ACTION}))
         print()
-        print(_c(
-            f"  ⚠  {len(result.warnings)} reference(s) could not be verified:",
-            YELLOW,
-        ))
+        print(
+            _c(
+                f"  ⚠  {len(result.warnings)} reference(s) could not be verified:",
+                YELLOW,
+            )
+        )
         if iam_actions:
             print(f"     add {iam_actions} to your deploy role")
         for rr in result.warnings:
@@ -446,17 +456,21 @@ def print_resource_check_result(result: ResourceCheckResult) -> None:
 
     if result.skipped:
         print()
-        print(_c(
-            f"  ⚠  {len(result.skipped)} reference(s) not verified"
-            " — task uses a different IAM role (not assumed during deploy):",
-            YELLOW,
-        ))
+        print(
+            _c(
+                f"  ⚠  {len(result.skipped)} reference(s) not verified"
+                " — task uses a different IAM role (not assumed during deploy):",
+                YELLOW,
+            )
+        )
         shown = result.skipped[:_CROSS_ACCOUNT_LIMIT]
         for rr in shown:
             kind = _KIND_DISPLAY.get(rr.kind, rr.kind)
             padded_ref = f"{_sanitize(rr.ref):<20}"
-            print(f"       {kind:<{_DISPLAY_COL_WIDTH}} {_c(padded_ref, CYAN)}"
-                  f" (task: {_sanitize(rr.task_id)}) → role: {_sanitize(rr.role)}")
+            print(
+                f"       {kind:<{_DISPLAY_COL_WIDTH}} {_c(padded_ref, CYAN)}"
+                f" (task: {_sanitize(rr.task_id)}) → role: {_sanitize(rr.role)}"
+            )
         remaining = len(result.skipped) - _CROSS_ACCOUNT_LIMIT
         if remaining > 0:
             print(f"       ... and {remaining} more")
@@ -469,6 +483,7 @@ def print_resource_check_result(result: ResourceCheckResult) -> None:
 
 
 # ---- Terminal output helpers -------------------------------------------------
+
 
 def _sanitize(s: Any) -> str:
     """Strip CSI ANSI escape codes and replace newlines, carriage returns, and tabs with spaces.
@@ -485,35 +500,44 @@ def _sanitize(s: Any) -> str:
 
 def _warn_no_region() -> None:
     """Print a yellow warning when no AWS region is configured and us-east-1 is used as fallback."""
-    print(_c(
-        "  ⚠  no AWS region configured — checking against us-east-1;"
-        " set --region or AWS_DEFAULT_REGION for accurate resource checks",
-        YELLOW,
-    ))
+    print(
+        _c(
+            "  ⚠  no AWS region configured — checking against us-east-1;"
+            " set --region or AWS_DEFAULT_REGION for accurate resource checks",
+            YELLOW,
+        )
+    )
 
 
 def _numeric_str(v: Any) -> bool:
-    """True if v is a number or a numeric string — used to compare ECS cpu/memory.
+    """True if v is a finite number or a numeric string — used to compare ECS cpu/memory.
 
     Accepts digit strings ("512") and float-formatted strings ("512.0") because
     some AWS API responses may return numeric fields as floats.
+    Rejects NaN and Inf — `float("nan")` passes `float()` but `int(float("nan"))` raises.
     """
     if isinstance(v, (int, float)):
-        return True
+        try:
+            int(float(v))
+            return True
+        except (ValueError, OverflowError):
+            return False
     if isinstance(v, str):
         try:
-            float(v)
+            int(float(v))
             return True
-        except ValueError:
+        except (ValueError, OverflowError):
             return False
     return False
 
 
 # ---- Override result types ---------------------------------------------------
 
+
 @dataclass
 class ParamConflict:
     """A parameter that differs between the declared task config and the AWS resource default."""
+
     name: str
     declared: Any
     actual: Any
@@ -522,13 +546,14 @@ class ParamConflict:
 @dataclass
 class OverrideReport:
     """Override analysis for one task–resource pair."""
+
     task_id: str
-    service: str         # "glue", "ecs", "batch"
+    service: str  # "glue", "ecs", "batch"
     resource_name: str
     differs: List[ParamConflict] = field(default_factory=list)
-    silent_ignores: List[str] = field(default_factory=list)   # Glue NonOverridableArguments
-    matching: List[str] = field(default_factory=list)         # declared params that match defaults
-    scope_notes: List[str] = field(default_factory=list)      # fields declared but not checked (V1 scope limits)
+    silent_ignores: List[str] = field(default_factory=list)  # Glue NonOverridableArguments
+    matching: List[str] = field(default_factory=list)  # declared params that match defaults
+    scope_notes: List[str] = field(default_factory=list)  # fields that could not be compared (no baseline available)
 
 
 @dataclass
@@ -537,11 +562,12 @@ class OverrideCheckResult:
     unverified: List[ResourceRef] = field(default_factory=list)
     access_denied_services: Set[str] = field(default_factory=set)  # services that returned IAM denial
     _verified: int = field(default=0, repr=False)  # unique resources fetched successfully (not attempts)
-    _skipped: int = field(default=0, repr=False)   # unique resources skipped because in failed_refs
-    expired_token: bool = field(default=False)     # True if AWS credentials expired mid-check
+    _skipped: int = field(default=0, repr=False)  # unique resources skipped because in failed_refs
+    expired_token: bool = field(default=False)  # True if AWS credentials expired mid-check
 
 
 # ---- Data fetchers -----------------------------------------------------------
+
 
 def _fetch_glue_data(client: Any, ref: str) -> Dict[str, Any]:
     job = client.get_job(JobName=ref).get("Job", {})
@@ -569,15 +595,16 @@ def _fetch_batch_job_def_data(client: Any, ref: str) -> Dict[str, Any]:
 
 # ---- Per-service override checkers ------------------------------------------
 
+
 def _check_glue_override(task: Any, job: Dict[str, Any]) -> Optional[OverrideReport]:
     differs: List[ParamConflict] = []
     silent_ignores: List[str] = []
     matching: List[str] = []
 
     for attr, field_name in (
-        ("worker_type",        "WorkerType"),
-        ("number_of_workers",  "NumberOfWorkers"),
-        ("max_capacity",       "MaxCapacity"),
+        ("worker_type", "WorkerType"),
+        ("number_of_workers", "NumberOfWorkers"),
+        ("max_capacity", "MaxCapacity"),
         ("allocated_capacity", "AllocatedCapacity"),
     ):
         declared = getattr(task, attr, None)
@@ -624,22 +651,32 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
 
     differs: List[ParamConflict] = []
     matching: List[str] = []
+    scope_notes: List[str] = []
 
     # Task-level cpu/memory sit at the top level of container_overrides (not inside
-    # containerOverrides[*]). Both sides use the same units: CPU units (256/512/1024/…)
-    # and memory in MiB — same int normalization as container-level size fields.
+    # containerOverrides[*]). Both sides use CPU units (256/512/1024/…) and memory in
+    # MiB — same int normalization as container-level size fields.
     for size_key in ("cpu", "memory"):
         if size_key in declared_overrides:
             base_val = task_def.get(size_key)
-            if _numeric_str(declared_overrides[size_key]) and _numeric_str(base_val):
-                d_val = int(float(declared_overrides[size_key])) if isinstance(declared_overrides[size_key], str) else declared_overrides[size_key]
+            if base_val is None:
+                # EC2 launch type without task-level resource limits — no baseline.
+                scope_notes.append(
+                    f"task.{size_key} — EC2 task definition has no task-level {size_key} limit (not compared)"
+                )
+            elif _numeric_str(declared_overrides[size_key]) and _numeric_str(base_val):
+                d_val = (
+                    int(float(declared_overrides[size_key]))
+                    if isinstance(declared_overrides[size_key], str)
+                    else declared_overrides[size_key]
+                )
                 a_val = int(float(base_val)) if isinstance(base_val, str) else base_val
                 if d_val != a_val:
                     differs.append(ParamConflict(f"task.{size_key}", d_val, a_val))
                 else:
                     matching.append(f"task.{size_key}={d_val}")
-            # If base_val is None, task def has no task-level cpu/memory (EC2 launch type
-            # without explicit task-level resource limits) — no baseline to compare against.
+            # If _numeric_str fails on declared or actual, comparison is silently skipped
+            # (non-numeric value — no meaningful comparison is possible).
 
     # Build container lookup; first entry wins on duplicate names.
     containers_by_name: Dict[str, Dict[str, Any]] = {}
@@ -684,9 +721,7 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
                 # container-not-found above: advisory check requires a baseline to be meaningful).
 
         base_env: Dict[str, str] = {
-            e.get("name", ""): e.get("value", "")
-            for e in base.get("environment", [])
-            if e.get("name")
+            e.get("name", ""): e.get("value", "") for e in base.get("environment", []) if e.get("name")
         }
         for env_var in co.get("environment", []):
             env_name = env_var.get("name", "")
@@ -699,7 +734,7 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
                 else:
                     matching.append(f"env:{env_name}={env_val}")
 
-    if not (differs or matching):
+    if not (differs or matching or scope_notes):
         return None
     return OverrideReport(
         task_id=task.task_id,
@@ -708,6 +743,7 @@ def _check_ecs_override(task: Any, task_def: Dict[str, Any]) -> Optional[Overrid
         differs=differs,
         silent_ignores=[],
         matching=matching,
+        scope_notes=scope_notes,
     )
 
 
@@ -742,9 +778,10 @@ def _check_batch_override(task: Any, job_def: Dict[str, Any]) -> Optional[Overri
 
 class _OverrideEntry(NamedTuple):
     """Config for one override-checkable task type."""
-    kind: str       # key for failed_refs; must match the kind string in _TASK_TYPE_TO_KINDS and _RESOURCE_CHECKERS
-    service: str    # boto3 service name (e.g. "glue", "ecs", "batch")
-    ref_attr: str   # attribute name on the Task object (e.g. "job_name")
+
+    kind: str  # key for failed_refs; must match the kind string in _TASK_TYPE_TO_KINDS and _RESOURCE_CHECKERS
+    service: str  # boto3 service name (e.g. "glue", "ecs", "batch")
+    ref_attr: str  # attribute name on the Task object (e.g. "job_name")
     # NOTE: fetcher may raise _NotFoundError (e.g. _fetch_batch_job_def_data when
     # no ACTIVE revision exists). check_resource_overrides catches it.
     fetcher: Callable[[Any, str], Dict[str, Any]]
@@ -762,9 +799,13 @@ class _OverrideEntry(NamedTuple):
 # When adding a new task type WITHOUT override params (e.g. a new SFN variant):
 #   (1) add "new_type": None to _OVERRIDE_CHECKERS below (this step is NOT auto-derived)
 _OVERRIDE_INFO: Dict[str, _OverrideEntry] = {
-    "glue":  _OverrideEntry("glue",                "glue",  "job_name",        _fetch_glue_data,         _check_glue_override),
-    "ecs":   _OverrideEntry("ecs_task_definition", "ecs",   "task_definition", _fetch_ecs_task_def_data, _check_ecs_override),
-    "batch": _OverrideEntry("batch_job_definition", "batch", "job_definition",  _fetch_batch_job_def_data, _check_batch_override),
+    "glue": _OverrideEntry("glue", "glue", "job_name", _fetch_glue_data, _check_glue_override),
+    "ecs": _OverrideEntry(
+        "ecs_task_definition", "ecs", "task_definition", _fetch_ecs_task_def_data, _check_ecs_override
+    ),
+    "batch": _OverrideEntry(
+        "batch_job_definition", "batch", "job_definition", _fetch_batch_job_def_data, _check_batch_override
+    ),
 }
 
 # Completeness gate: every TaskTypeLiteral must appear here — None means the
@@ -773,10 +814,10 @@ _OVERRIDE_INFO: Dict[str, _OverrideEntry] = {
 # edit _OVERRIDE_CHECKERS directly for those types; edit _OVERRIDE_INFO instead.
 _OVERRIDE_CHECKERS: Dict[str, Optional[Callable[..., Optional[OverrideReport]]]] = {
     **{t: info.checker for t, info in _OVERRIDE_INFO.items()},
-    "sfn":       None,  # static ARN reference; no parameterised call to compare
-    "lambda":    None,  # invocation payload is task-specific, not a resource default
-    "athena":    None,  # query_string is fully declared in the DAG
-    "emr":       None,  # emr_step is submitted dynamically per-run; no job-level defaults to compare
+    "sfn": None,  # static ARN reference; no parameterised call to compare
+    "lambda": None,  # invocation payload is task-specific, not a resource default
+    "athena": None,  # query_string is fully declared in the DAG
+    "emr": None,  # emr_step is submitted dynamically per-run; no job-level defaults to compare
     "sagemaker": None,  # not yet implemented
 }
 
@@ -811,7 +852,7 @@ def check_resource_overrides(
     _fr: Set[Tuple[str, str]] = failed_refs if failed_refs is not None else set()
     result = OverrideCheckResult()
     clients: Dict[Tuple[str, str], Any] = {}
-    fetched: Dict[Tuple[str, str], Any] = {}   # (kind, ref) → data; deduplicates API calls
+    fetched: Dict[Tuple[str, str], Any] = {}  # (kind, ref) → data; deduplicates API calls
     unverified_seen: Set[Tuple[str, str]] = set()
     skipped_seen: Set[Tuple[str, str]] = set()  # deduplicates _skipped count across tasks
     expired_token = False
@@ -895,14 +936,14 @@ def check_resource_overrides(
 
 # ---- Override output formatting ----------------------------------------------
 
-_OVERRIDE_COL_WIDTH = 5   # "batch" = 5 chars; "glue" and "ecs" are shorter
-_PARAM_LABEL_WIDTH = 16   # "non-overridable:" = 16 chars; widest label in the block
+_OVERRIDE_COL_WIDTH = 5  # "batch" = 5 chars; "glue" and "ecs" are shorter
+_PARAM_LABEL_WIDTH = 16  # "non-overridable:" = 16 chars; widest label in the block
 
 # IAM actions required by check_resource_overrides, keyed by boto3 service name.
 # Used to produce actionable IAM hints when access-denied is returned.
 _OVERRIDE_IAM_ACTION: Dict[str, str] = {
-    "glue":  "glue:GetJob",
-    "ecs":   "ecs:DescribeTaskDefinition",
+    "glue": "glue:GetJob",
+    "ecs": "ecs:DescribeTaskDefinition",
     "batch": "batch:DescribeJobDefinitions",
 }
 
@@ -918,18 +959,12 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
 
     Reports with actual findings (differs / silent_ignores / matching) are
     printed under "⚠  resource parameter overrides:". Reports that contain
-    only scope_notes (fields not checked due to V1 scope limits) are
-    informational — they appear in the success block rather than under the
-    warning header so the operator is not misled into thinking there is a
-    configuration problem.
+    only scope_notes (fields that could not be compared — e.g. EC2 task
+    definitions with no task-level cpu/memory baseline) are informational —
+    they appear in the success block rather than under the warning header.
     """
-    findings_reports = [
-        r for r in result.reports if r.differs or r.silent_ignores or r.matching
-    ]
-    scope_reports = [
-        r for r in result.reports
-        if not (r.differs or r.silent_ignores or r.matching) and r.scope_notes
-    ]
+    findings_reports = [r for r in result.reports if r.differs or r.silent_ignores or r.matching]
+    scope_reports = [r for r in result.reports if not (r.differs or r.silent_ignores or r.matching) and r.scope_notes]
 
     if not findings_reports and not result.unverified:
         if result._verified > 0:
@@ -938,7 +973,8 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
             noun = "resource" if n == 1 else "resources"
             skip_note = (
                 f" ({result._skipped} skipped — already reported in existence check above)"
-                if result._skipped > 0 else ""
+                if result._skipped > 0
+                else ""
             )
             scope_suffix = ""
             if scope_reports:
@@ -947,8 +983,10 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
                 scope_suffix = f", {n_sc} {sc_noun} not in V1 scope"
             print(f"  {_c('✓', BOLD_GREEN)} {n} override {noun} — no issues{skip_note}{scope_suffix}")
             for report in scope_reports:
-                print(f"       {report.service:<{_OVERRIDE_COL_WIDTH}}  "
-                      f"{_sanitize(report.resource_name)} (task: {_sanitize(report.task_id)}):")
+                print(
+                    f"       {report.service:<{_OVERRIDE_COL_WIDTH}}  "
+                    f"{_sanitize(report.resource_name)} (task: {_sanitize(report.task_id)}):"
+                )
                 for note in report.scope_notes:
                     label = f"{'not checked:':<{_PARAM_LABEL_WIDTH}}"
                     print(f"         {label} {_sanitize(note)}")
@@ -956,11 +994,13 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
             print()
             n = result._skipped
             noun = "resource" if n == 1 else "resources"
-            print(_c(
-                f"  ⚠  override check skipped for {n} {noun}"
-                " — resources already failed existence check (see above)",
-                YELLOW,
-            ))
+            print(
+                _c(
+                    f"  ⚠  override check skipped for {n} {noun}"
+                    " — resources already failed existence check (see above)",
+                    YELLOW,
+                )
+            )
         return
 
     print()
@@ -969,17 +1009,23 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
         for i, report in enumerate(findings_reports):
             if i > 0:
                 print()
-            print(f"       {report.service:<{_OVERRIDE_COL_WIDTH}}  "
-                  f"{_sanitize(report.resource_name)} (task: {_sanitize(report.task_id)}):")
+            print(
+                f"       {report.service:<{_OVERRIDE_COL_WIDTH}}  "
+                f"{_sanitize(report.resource_name)} (task: {_sanitize(report.task_id)}):"
+            )
             for conflict in report.differs:
                 label = f"{'differs:':<{_PARAM_LABEL_WIDTH}}"
-                print(f"         {label} {_sanitize(conflict.name)}"
-                      f" (declared: {_sanitize(str(conflict.declared))},"
-                      f" AWS default: {_sanitize(str(conflict.actual))})")
+                print(
+                    f"         {label} {_sanitize(conflict.name)}"
+                    f" (declared: {_sanitize(str(conflict.declared))},"
+                    f" AWS default: {_sanitize(str(conflict.actual))})"
+                )
             for item in report.silent_ignores:
                 label = f"{'non-overridable:':<{_PARAM_LABEL_WIDTH}}"
-                print(f"         {label} {_sanitize(item)}"
-                      " — Glue will silently ignore this value; remove from glue_arguments")
+                print(
+                    f"         {label} {_sanitize(item)}"
+                    " — Glue will silently ignore this value; remove from glue_arguments"
+                )
             for note in report.scope_notes:
                 label = f"{'not checked:':<{_PARAM_LABEL_WIDTH}}"
                 print(f"         {label} {_sanitize(note)}")
@@ -994,8 +1040,10 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
         if findings_reports:
             print()
         for report in scope_reports:
-            print(f"       {report.service:<{_OVERRIDE_COL_WIDTH}}  "
-                  f"{_sanitize(report.resource_name)} (task: {_sanitize(report.task_id)}):")
+            print(
+                f"       {report.service:<{_OVERRIDE_COL_WIDTH}}  "
+                f"{_sanitize(report.resource_name)} (task: {_sanitize(report.task_id)}):"
+            )
             for note in report.scope_notes:
                 label = f"{'not checked:':<{_PARAM_LABEL_WIDTH}}"
                 print(f"         {label} {_sanitize(note)}")
@@ -1006,22 +1054,24 @@ def print_resource_override_result(result: OverrideCheckResult) -> None:
         n = len(result.unverified)
         noun = "resource" if n == 1 else "resources"
         if result.expired_token:
-            print(_c(
-                f"  ⚠  override check incomplete — AWS credentials expired mid-check;"
-                f" re-authenticate and re-run polyris-deploy to verify {n} {noun}",
-                YELLOW,
-            ))
+            print(
+                _c(
+                    f"  ⚠  override check incomplete — AWS credentials expired mid-check;"
+                    f" re-authenticate and re-run polyris-deploy to verify {n} {noun}",
+                    YELLOW,
+                )
+            )
         else:
-            print(_c(
-                f"  ⚠  override check skipped for {n} {noun}"
-                " — access denied, throttled, or other transient error",
-                YELLOW,
-            ))
+            print(
+                _c(
+                    f"  ⚠  override check skipped for {n} {noun} — access denied, throttled, or other transient error",
+                    YELLOW,
+                )
+            )
         if result.access_denied_services:
-            iam_actions = ", ".join(sorted(
-                _OVERRIDE_IAM_ACTION[s] for s in result.access_denied_services
-                if s in _OVERRIDE_IAM_ACTION
-            ))
+            iam_actions = ", ".join(
+                sorted(_OVERRIDE_IAM_ACTION[s] for s in result.access_denied_services if s in _OVERRIDE_IAM_ACTION)
+            )
             if iam_actions:
                 print(f"     add {iam_actions} to your deploy role")
 

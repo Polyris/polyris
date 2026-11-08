@@ -1,5 +1,31 @@
 ## Unreleased
 
+### Added — Pre-deploy override check: ECS task-level resources
+
+- **ECS task-level `cpu`/`memory` are now actively compared (Fargate).** For Fargate
+  task definitions, `container_overrides` keys `cpu` and `memory` at the top level
+  of the dict (i.e. `overrides.cpu/memory` in the ECS `RunTask` struct, not inside
+  `containerOverrides[*]`) are now compared against the task definition's top-level
+  `cpu`/`memory` fields using the same int normalization as container-level fields
+  (CPU units and MiB). They now produce `differs:` entries or appear in the matching
+  summary instead of a generic `not checked:` scope note.
+- **EC2 launch type with no task-level resource limits produces a `not checked:` note.**
+  When the task definition has no top-level `cpu`/`memory` field (EC2 launch type
+  without explicit task-level resource limits), the check emits a `not checked:`
+  per-parameter line under the resource header in the success block:
+  `task.{key} — EC2 task definition has no task-level {key} limit (not compared)`.
+  This replaces the previous silent skip.
+
+### Changed — `deploy_pipeline` keyword-only arguments (breaking)
+
+- **`deploy_pipeline` now enforces keyword-only optional arguments.** A `*` separator
+  was added between the required `dag` parameter and all optional parameters
+  (`stage`, `region`, `dry_run`, `destroy`, etc.). Positional calls beyond the first
+  argument now raise `TypeError`. All existing internal call sites already used
+  keyword form; external callers that passed optional args positionally must update
+  to keyword style: `deploy_pipeline(dag, stage="prod")` instead of
+  `deploy_pipeline(dag, "prod")`.
+
 ### Fixed — Pre-deploy override check: output wording and de-duplication (round 2)
 
 - **Matching-params trailing note removed:** `(N parameters match defaults)` no
@@ -7,9 +33,6 @@
   default` annotation was removed because "redundant" reads as "broken /
   unnecessary" in US English and could mislead operators into thinking their
   config was wrong.
-- **ECS task-level scope note wording:** `task-level {key} — V1 scope:
-  per-container fields only` changed to `task-level {key} — not compared (only
-  per-container fields checked)` — same meaning, no internal jargon.
 - **All-skipped message reworded:** `N override resources skipped — resources
   could not be verified (see existence check output above)` changed to `override
   check skipped for N resources — resources already failed existence check (see

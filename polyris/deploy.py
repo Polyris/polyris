@@ -63,6 +63,7 @@ from .resource_check import (
 # CFN Template Generation
 # =============================================================================
 
+
 def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: Optional[str]) -> None:
     """Advisory check: compare each Glue-backed asset's declared granularity
     to what its Glue PartitionKeys suggest (ADR #50).
@@ -98,7 +99,8 @@ def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: O
         declared = getattr(asset, "granularity", "daily")
         try:
             keys = fetch_glue_partition_keys(
-                db, tbl,
+                db,
+                tbl,
                 catalog_id=getattr(asset, "glue_catalog", "") or None,
                 region=getattr(asset, "glue_region", "") or region,
             )
@@ -108,8 +110,7 @@ def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: O
 
         inferred = infer_granularity_from_partition_keys(keys)
         if inferred is None:
-            print(f"  • {asset_name}: declared {declared}, Glue keys "
-                  f"{keys or '(none)'} (no inference)")
+            print(f"  • {asset_name}: declared {declared}, Glue keys {keys or '(none)'} (no inference)")
             continue
 
         if inferred == declared:
@@ -155,6 +156,7 @@ def _generate_cfn_template(
     # ValidationException, well after the stack had already deployed).
     if "${" in asl_json:
         import re
+
         leftover = sorted(set(re.findall(r"\$\{([a-zA-Z0-9_]+)\}", asl_json)))
         raise ValueError(
             f"Generated Step Functions definition for '{dag.dag_id}' still contains "
@@ -192,13 +194,7 @@ def _generate_cfn_template(
                 "Level": log_level,
                 "IncludeExecutionData": False,
                 "Destinations": [
-                    {
-                        "CloudWatchLogsLogGroup": {
-                            "LogGroupArn": {
-                                "Fn::GetAtt": ["PipelineLogGroup", "Arn"]
-                            }
-                        }
-                    }
+                    {"CloudWatchLogsLogGroup": {"LogGroupArn": {"Fn::GetAtt": ["PipelineLogGroup", "Arn"]}}}
                 ],
             },
             "Tags": [
@@ -278,10 +274,12 @@ def _generate_cfn_template(
                 "Target": {
                     "Arn": {"Ref": "PipelineStateMachine"},
                     "RoleArn": {"Fn::GetAtt": ["PipelineSchedulerRole", "Arn"]},
-                    "Input": json.dumps({
-                        "triggered_by": "schedule",
-                        "schedule": schedule_expr,
-                    }),
+                    "Input": json.dumps(
+                        {
+                            "triggered_by": "schedule",
+                            "schedule": schedule_expr,
+                        }
+                    ),
                 },
             },
             "DependsOn": ["PipelineStateMachine", "PipelineSchedulerRole"],
@@ -300,11 +298,7 @@ def _generate_cfn_template(
 
     return {
         "AWSTemplateFormatVersion": "2010-09-09",
-        "Description": (
-            f"Polyris pipeline: {dag.dag_id}. "
-            f"{dag.description or ''} "
-            "Managed by polyris-deploy."
-        ).strip(),
+        "Description": (f"Polyris pipeline: {dag.dag_id}. {dag.description or ''} Managed by polyris-deploy.").strip(),
         "Resources": resources,
         "Outputs": outputs,
     }
@@ -313,6 +307,7 @@ def _generate_cfn_template(
 # =============================================================================
 # Registration
 # =============================================================================
+
 
 def _stamp_registered_at(
     session: "boto3.Session",
@@ -478,10 +473,11 @@ def _read_sam_stack(session: "boto3.Session", stack_name: str) -> Tuple[dict, di
         if "does not exist" in str(e):
             print(f"\n❌ SAM stack '{stack_name}' not found in this account/region.")
             print("   Two things to check:")
-            print(f"     1) Did you run `sam deploy` for this stack? "
-                  f"(from sam/samconfig.toml: stack_name = \"{stack_name}\")")
-            print("     2) Does the stack_name in your config.py match "
-                  "the one in sam/samconfig.toml?")
+            print(
+                f"     1) Did you run `sam deploy` for this stack? "
+                f"(from sam/samconfig.toml: stack_name = \"{stack_name}\")"
+            )
+            print("     2) Does the stack_name in your config.py match the one in sam/samconfig.toml?")
             sys.exit(1)
         raise
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
@@ -544,6 +540,7 @@ def _fail_no_stack_name(stage: str) -> None:
     is useless there, so we recommend polyris-init instead.
     """
     from polyris.config import _find_project_config
+
     has_config = _find_project_config() is not None
 
     print(f"\n❌ No SAM stack_name resolved for stage '{stage}'.")
@@ -575,6 +572,7 @@ def _fail_no_stack_name(stage: str) -> None:
 # Main deploy function
 # =============================================================================
 
+
 def deploy_pipeline(
     dag: DAG,
     *,
@@ -587,7 +585,10 @@ def deploy_pipeline(
     profile: Optional[str] = None,
     stack: Optional[str] = None,
 ):
-    """Deploy a single DAG via CloudFormation."""
+    """Deploy a single DAG via CloudFormation.
+
+    All arguments after ``dag`` are keyword-only.
+    """
 
     # Validate the DAG before touching AWS — fail fast on structural errors, the
     # same check polyris-validate runs. Deploying an invalid DAG only fails later
@@ -595,6 +596,7 @@ def deploy_pipeline(
     # need dag_id to construct the stack name, not a valid pipeline definition.
     if not destroy:
         from polyris.validation import validate_asl_from_dag
+
         is_valid, validation_errors, _warnings = validate_asl_from_dag(dag, verbose=False)
         if not is_valid:
             print(f"\n❌ Validation failed for '{dag.dag_id}' — not deploying:")
@@ -698,11 +700,9 @@ def deploy_pipeline(
 
     if not wrapper_arn or not role_arn:
         print(f"❌ SAM stack '{sam_stack_name}' is missing required outputs.")
-        missing = [k for k in ("DependencyWrapperArn", "OrchestrationRoleArn")
-                   if not outputs.get(k)]
+        missing = [k for k in ("DependencyWrapperArn", "OrchestrationRoleArn") if not outputs.get(k)]
         print(f"   Missing outputs: {', '.join(missing)}")
-        print("   The stack may be from an older polyris/SAM version. "
-              "Redeploy sam/ from the current repo.")
+        print("   The stack may be from an older polyris/SAM version. Redeploy sam/ from the current repo.")
         sys.exit(1)
 
     stack_name = pipeline_stack
@@ -758,7 +758,9 @@ def deploy_pipeline(
     if _rc.errors:
         sys.exit(1)
     try:
-        _ro = check_resource_overrides(dag, session, region, failed_refs=_rc.failed_refs, region_warned=_rc.region_warned)
+        _ro = check_resource_overrides(
+            dag, session, region, failed_refs=_rc.failed_refs, region_warned=_rc.region_warned
+        )
     except Exception as e:  # noqa: BLE001
         # Advisory-only: a code bug or unexpected AWS error in the override check
         # must never abort the deploy. Broad except is intentional — the check is
@@ -798,11 +800,17 @@ def deploy_pipeline(
     # Deploy via CloudFormation
     print(f"\nDeploying stack: {stack_name}")
     cmd = [
-        "aws", "cloudformation", "deploy",
-        "--template-file", str(template_path),
-        "--stack-name", stack_name,
-        "--region", region,
-        "--capabilities", "CAPABILITY_NAMED_IAM",
+        "aws",
+        "cloudformation",
+        "deploy",
+        "--template-file",
+        str(template_path),
+        "--stack-name",
+        stack_name,
+        "--region",
+        region,
+        "--capabilities",
+        "CAPABILITY_NAMED_IAM",
         "--no-fail-on-empty-changeset",
     ]
     if profile:
@@ -904,6 +912,7 @@ def deploy_pipeline(
 # CLI entry point
 # =============================================================================
 
+
 def _load_dag_from_file(path: Path) -> list:
     """Load DAG(s) from a dag.py file.
 
@@ -911,7 +920,9 @@ def _load_dag_from_file(path: Path) -> list:
     Pipeline files should not contain AWS calls at module level.
     """
     spec = importlib.util.spec_from_file_location("pipeline", path)
-    if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
+    if (
+        spec is None or spec.loader is None
+    ):  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
         raise ImportError(f"Cannot load module from {path}")
     module = importlib.util.module_from_spec(spec)
 
@@ -1048,8 +1059,8 @@ def _run_bulk(
                 else:
                     results.append((dir_name, dag.dag_id, False, f"exited with code {code}"))
             except Exception as e:  # pragma: no cover -- defensive: deploy_pipeline's own
-                                     # error paths all go through sys.exit, this guards
-                                     # against a future change that raises instead
+                # error paths all go through sys.exit, this guards
+                # against a future change that raises instead
                 results.append((dir_name, dag.dag_id, False, str(e)))
 
     succeeded = [r for r in results if r[2]]
@@ -1085,21 +1096,30 @@ Examples:
         """,
     )
     parser.add_argument("--stage", help="Deployment stage (default: from config.py DEFAULT_STAGE)")
-    parser.add_argument("--stack", help="SAM CloudFormation stack to read outputs from (default: from config.py ENVIRONMENTS[stage].stack_name)")
+    parser.add_argument(
+        "--stack",
+        help="SAM CloudFormation stack to read outputs from (default: from config.py ENVIRONMENTS[stage].stack_name)",
+    )
     parser.add_argument("--region", help="AWS region (default: from config.py ENVIRONMENTS)")
     parser.add_argument("--file", default=None, help="Pipeline file (default: dag.py). Not used with --all/--only.")
     parser.add_argument("--dry-run", action="store_true", help="Preview without deploying")
     parser.add_argument("--destroy", action="store_true", help="Remove pipeline stack")
     parser.add_argument("--log-level", default="ERROR", choices=["ALL", "ERROR", "FATAL", "OFF"])
     parser.add_argument("--log-retention", type=int, default=30, help="Log retention in days")
-    parser.add_argument("--select", help="Select specific DAG by ID (for multi-DAG files); combinable with --all/--only")
+    parser.add_argument(
+        "--select", help="Select specific DAG by ID (for multi-DAG files); combinable with --all/--only"
+    )
     parser.add_argument("--profile", help="AWS profile name (from ~/.aws/credentials)")
 
     bulk_group = parser.add_mutually_exclusive_group()
-    bulk_group.add_argument("--all", action="store_true",
-                             help="Bulk mode: deploy/destroy every immediate subdirectory of the current directory")
-    bulk_group.add_argument("--only", nargs="+", metavar="DIR",
-                             help="Bulk mode: deploy/destroy only the listed subdirectories")
+    bulk_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Bulk mode: deploy/destroy every immediate subdirectory of the current directory",
+    )
+    bulk_group.add_argument(
+        "--only", nargs="+", metavar="DIR", help="Bulk mode: deploy/destroy only the listed subdirectories"
+    )
 
     args = parser.parse_args()
     destroy = args.destroy or force_destroy
@@ -1108,9 +1128,7 @@ Examples:
         if args.file is not None:
             print("❌ --file is not used with --all/--only — each directory's .py files are discovered automatically")
             sys.exit(1)
-        target_dirs = args.only if args.only else [
-            str(p) for p in sorted(Path(".").iterdir()) if p.is_dir()
-        ]
+        target_dirs = args.only if args.only else [str(p) for p in sorted(Path(".").iterdir()) if p.is_dir()]
         _run_bulk(
             target_dirs,
             select=args.select,

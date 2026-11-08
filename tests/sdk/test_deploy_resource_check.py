@@ -24,6 +24,7 @@ Coverage targets:
   - Completeness: every TaskTypeLiteral covered by _RESOURCE_CHECKERS or skip set,
     and by _OVERRIDE_CHECKERS; _ACCESS_DENIED_CODES ⊂ _CANNOT_VERIFY_CODES
 """
+
 import typing
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
@@ -71,6 +72,7 @@ from polyris.resource_check import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _client_error(code: str, message: str = "mock") -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": message}}, "op")
 
@@ -112,6 +114,7 @@ def _make_dag(mocker, tasks: list):
 # _collect_resource_refs
 # ---------------------------------------------------------------------------
 
+
 class TestCollectResourceRefs:
     def test_sfn_with_arn(self, mocker):
         task = _make_task(mocker, task_type="sfn", arn="arn:aws:states:us-east-1:123:stateMachine:my-sfn")
@@ -149,9 +152,9 @@ class TestCollectResourceRefs:
         assert refs[0].ref == "my-func"
 
     def test_lambda_prefers_arn_over_function_name(self, mocker):
-        task = _make_task(mocker, task_type="lambda",
-                          arn="arn:aws:lambda:us-east-1:123:function:my-func",
-                          function_name="my-func")
+        task = _make_task(
+            mocker, task_type="lambda", arn="arn:aws:lambda:us-east-1:123:function:my-func", function_name="my-func"
+        )
         refs = _collect_resource_refs(_make_dag(mocker, [task]))
         assert len(refs) == 1
         assert refs[0].ref == "arn:aws:lambda:us-east-1:123:function:my-func"
@@ -164,8 +167,7 @@ class TestCollectResourceRefs:
         assert refs[0].ref == "etl-job"
 
     def test_ecs_collects_cluster_and_task_def(self, mocker):
-        task = _make_task(mocker, task_type="ecs",
-                          cluster="my-cluster", task_definition="my-task-def")
+        task = _make_task(mocker, task_type="ecs", cluster="my-cluster", task_definition="my-task-def")
         refs = _collect_resource_refs(_make_dag(mocker, [task]))
         assert len(refs) == 2
         kinds = {r.kind for r in refs}
@@ -195,8 +197,7 @@ class TestCollectResourceRefs:
         assert refs == []
 
     def test_batch_collects_queue_and_definition(self, mocker):
-        task = _make_task(mocker, task_type="batch",
-                          job_queue="my-queue", job_definition="my-job-def")
+        task = _make_task(mocker, task_type="batch", job_queue="my-queue", job_definition="my-job-def")
         refs = _collect_resource_refs(_make_dag(mocker, [task]))
         assert len(refs) == 2
         kinds = {r.kind for r in refs}
@@ -213,8 +214,7 @@ class TestCollectResourceRefs:
         assert refs == []
 
     def test_cross_account_task_still_collected(self, mocker):
-        task = _make_task(mocker, task_type="glue", job_name="etl-job",
-                          role="arn:aws:iam::222222222222:role/etl")
+        task = _make_task(mocker, task_type="glue", job_name="etl-job", role="arn:aws:iam::222222222222:role/etl")
         refs = _collect_resource_refs(_make_dag(mocker, [task]))
         assert len(refs) == 1
         assert refs[0].role == "arn:aws:iam::222222222222:role/etl"
@@ -254,6 +254,7 @@ class TestCollectResourceRefs:
 # ---------------------------------------------------------------------------
 # Per-service check functions
 # ---------------------------------------------------------------------------
+
 
 class TestCheckFunctions:
     def test_check_sfn_found(self, mocker):
@@ -332,17 +333,13 @@ class TestCheckFunctions:
     def test_check_ecs_task_def_inactive_raises_not_found(self, mocker):
         """Deregistered task definitions have status=INACTIVE — unusable at runtime."""
         client = mocker.MagicMock()
-        client.describe_task_definition.return_value = {
-            "taskDefinition": {"status": "INACTIVE"}
-        }
+        client.describe_task_definition.return_value = {"taskDefinition": {"status": "INACTIVE"}}
         with pytest.raises(_NotFoundError):
             _check_ecs_task_def(client, "old-task-def")
 
     def test_check_ecs_task_def_delete_in_progress_raises_not_found(self, mocker):
         client = mocker.MagicMock()
-        client.describe_task_definition.return_value = {
-            "taskDefinition": {"status": "DELETE_IN_PROGRESS"}
-        }
+        client.describe_task_definition.return_value = {"taskDefinition": {"status": "DELETE_IN_PROGRESS"}}
         with pytest.raises(_NotFoundError):
             _check_ecs_task_def(client, "deleting-task-def")
 
@@ -385,7 +382,9 @@ class TestCheckFunctions:
 
     def test_check_batch_job_def_found(self, mocker):
         client = mocker.MagicMock()
-        client.describe_job_definitions.return_value = {"jobDefinitions": [{"jobDefinitionName": "jd", "status": "ACTIVE"}]}
+        client.describe_job_definitions.return_value = {
+            "jobDefinitions": [{"jobDefinitionName": "jd", "status": "ACTIVE"}]
+        }
         _check_batch_job_def(client, "jd")  # no raise
         client.describe_job_definitions.assert_called_once_with(jobDefinitions=["jd"], status="ACTIVE")
 
@@ -402,9 +401,7 @@ class TestCheckFunctions:
         client.describe_job_definitions.return_value = {"jobDefinitions": []}
         with pytest.raises(_NotFoundError):
             _check_batch_job_def(client, "inactive-def")
-        client.describe_job_definitions.assert_called_once_with(
-            jobDefinitions=["inactive-def"], status="ACTIVE"
-        )
+        client.describe_job_definitions.assert_called_once_with(jobDefinitions=["inactive-def"], status="ACTIVE")
 
     def test_check_athena_workgroup_found(self, mocker):
         client = mocker.MagicMock()
@@ -421,6 +418,7 @@ class TestCheckFunctions:
 # ---------------------------------------------------------------------------
 # check_resource_references
 # ---------------------------------------------------------------------------
+
 
 class TestCheckResourceReferences:
     def _session(self, mocker, client_mock=None):
@@ -453,8 +451,7 @@ class TestCheckResourceReferences:
         assert result._checked == 0
 
     def test_cross_account_task_goes_to_skipped(self, mocker):
-        task = _make_task(mocker, task_type="glue", job_name="etl",
-                          role="arn:aws:iam::222:role/etl")
+        task = _make_task(mocker, task_type="glue", job_name="etl", role="arn:aws:iam::222:role/etl")
         result = check_resource_references(
             _make_dag(mocker, [task]),
             self._session(mocker),
@@ -532,8 +529,7 @@ class TestCheckResourceReferences:
         """KMS denial on a KMS-encrypted SFN must not abort the deploy (false-positive guard)."""
         client = mocker.MagicMock()
         client.describe_state_machine.side_effect = _client_error("KmsAccessDeniedException")
-        task = _make_task(mocker, task_type="sfn",
-                          arn="arn:aws:states:us-east-1:123:stateMachine:encrypted")
+        task = _make_task(mocker, task_type="sfn", arn="arn:aws:states:us-east-1:123:stateMachine:encrypted")
         result = check_resource_references(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -557,10 +553,7 @@ class TestCheckResourceReferences:
     def test_deduplication_one_api_call_per_unique_ref(self, mocker):
         client = mocker.MagicMock()
         client.get_job.return_value = {}
-        tasks = [
-            _make_task(mocker, task_type="glue", job_name="etl", task_id=f"t{i}")
-            for i in range(5)
-        ]
+        tasks = [_make_task(mocker, task_type="glue", job_name="etl", task_id=f"t{i}") for i in range(5)]
         result = check_resource_references(
             _make_dag(mocker, tasks),
             self._session(mocker, client),
@@ -574,8 +567,7 @@ class TestCheckResourceReferences:
         sfn_client = mocker.MagicMock()
         session.client.return_value = sfn_client
 
-        task = _make_task(mocker, task_type="sfn",
-                          arn="arn:aws:states:us-east-1:123:stateMachine:my-sfn")
+        task = _make_task(mocker, task_type="sfn", arn="arn:aws:states:us-east-1:123:stateMachine:my-sfn")
         # Deploy session is eu-west-1 but the SFN is in us-east-1
         check_resource_references(
             _make_dag(mocker, [task]),
@@ -600,8 +592,7 @@ class TestCheckResourceReferences:
     def test_ecs_cluster_empty_list_goes_to_errors(self, mocker):
         client = mocker.MagicMock()
         client.describe_clusters.return_value = {"clusters": []}
-        task = _make_task(mocker, task_type="ecs",
-                          cluster="ghost-cluster", task_definition="")
+        task = _make_task(mocker, task_type="ecs", cluster="ghost-cluster", task_definition="")
         result = check_resource_references(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -612,8 +603,7 @@ class TestCheckResourceReferences:
     def test_batch_queue_empty_list_goes_to_errors(self, mocker):
         client = mocker.MagicMock()
         client.describe_job_queues.return_value = {"jobQueues": []}
-        task = _make_task(mocker, task_type="batch",
-                          job_queue="ghost-queue", job_definition="")
+        task = _make_task(mocker, task_type="batch", job_queue="ghost-queue", job_definition="")
         result = check_resource_references(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -678,6 +668,7 @@ class TestCheckResourceReferences:
 # print_resource_check_result (output format)
 # ---------------------------------------------------------------------------
 
+
 class TestPrintResourceCheckResult:
     def test_empty_result_prints_nothing(self, capsys):
         print_resource_check_result(ResourceCheckResult())
@@ -694,8 +685,9 @@ class TestPrintResourceCheckResult:
     def test_errors_print_x_lines_and_abort(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            errors=[ResourceRef(task_id="process", kind="sfn",
-                                ref="arn:aws:states:us-east-1:123:stateMachine:missing")],
+            errors=[
+                ResourceRef(task_id="process", kind="sfn", ref="arn:aws:states:us-east-1:123:stateMachine:missing")
+            ],
             _checked=1,
         )
         print_resource_check_result(result)
@@ -802,9 +794,14 @@ class TestPrintResourceCheckResult:
     def test_cross_account_prints_role(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            skipped=[ResourceRef(task_id="cross_task", kind="sfn",
-                                 ref="arn:aws:states:us-east-1:222:stateMachine:cross",
-                                 role="arn:aws:iam::222:role/etl")],
+            skipped=[
+                ResourceRef(
+                    task_id="cross_task",
+                    kind="sfn",
+                    ref="arn:aws:states:us-east-1:222:stateMachine:cross",
+                    role="arn:aws:iam::222:role/etl",
+                )
+            ],
         )
         print_resource_check_result(result)
         out = capsys.readouterr().out
@@ -815,8 +812,7 @@ class TestPrintResourceCheckResult:
     def test_named_role_alias_prints_role_message(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            skipped=[ResourceRef(task_id="my_task", kind="glue",
-                                 ref="etl-job", role="acq")],
+            skipped=[ResourceRef(task_id="my_task", kind="glue", ref="etl-job", role="acq")],
         )
         print_resource_check_result(result)
         out = capsys.readouterr().out
@@ -827,8 +823,7 @@ class TestPrintResourceCheckResult:
     def test_cross_account_truncation(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         skipped = [
-            ResourceRef(task_id=f"t{i}", kind="glue", ref=f"job{i}",
-                        role="arn:aws:iam::222:role/etl")
+            ResourceRef(task_id=f"t{i}", kind="glue", ref=f"job{i}", role="arn:aws:iam::222:role/etl")
             for i in range(12)
         ]
         result = ResourceCheckResult(skipped=skipped)
@@ -841,8 +836,7 @@ class TestPrintResourceCheckResult:
         result = ResourceCheckResult(
             errors=[ResourceRef(task_id="t1", kind="sfn", ref="arn:bad")],
             warnings=[ResourceRef(task_id="t2", kind="glue", ref="my-job")],
-            skipped=[ResourceRef(task_id="t3", kind="lambda", ref="fn",
-                                 role="arn:aws:iam::222:role/etl")],
+            skipped=[ResourceRef(task_id="t3", kind="lambda", ref="fn", role="arn:aws:iam::222:role/etl")],
             _checked=2,
         )
         print_resource_check_result(result)
@@ -855,8 +849,7 @@ class TestPrintResourceCheckResult:
     def test_only_skipped_does_not_print_abort(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            skipped=[ResourceRef(task_id="t1", kind="glue", ref="job",
-                                 role="arn:aws:iam::222:role/etl")],
+            skipped=[ResourceRef(task_id="t1", kind="glue", ref="job", role="arn:aws:iam::222:role/etl")],
         )
         print_resource_check_result(result)
         out = capsys.readouterr().out
@@ -891,8 +884,7 @@ class TestPrintResourceCheckResult:
         """task_id \\n sanitized in the skipped block too."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            skipped=[ResourceRef(task_id="bad\ntask", kind="glue", ref="job",
-                                 role="arn:aws:iam::222:role/etl")],
+            skipped=[ResourceRef(task_id="bad\ntask", kind="glue", ref="job", role="arn:aws:iam::222:role/etl")],
         )
         print_resource_check_result(result)
         out = capsys.readouterr().out
@@ -925,8 +917,7 @@ class TestPrintResourceCheckResult:
         """rr.ref containing \\n must be sanitized in the skipped block."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            skipped=[ResourceRef(task_id="t1", kind="glue", ref="bad\nref",
-                                 role="arn:aws:iam::222:role/etl")],
+            skipped=[ResourceRef(task_id="t1", kind="glue", ref="bad\nref", role="arn:aws:iam::222:role/etl")],
         )
         print_resource_check_result(result)
         out = capsys.readouterr().out
@@ -937,8 +928,7 @@ class TestPrintResourceCheckResult:
         """rr.role containing \\n must be sanitized in the skipped block."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = ResourceCheckResult(
-            skipped=[ResourceRef(task_id="t1", kind="glue", ref="job",
-                                 role="bad\nrole")],
+            skipped=[ResourceRef(task_id="t1", kind="glue", ref="job", role="bad\nrole")],
         )
         print_resource_check_result(result)
         out = capsys.readouterr().out
@@ -961,6 +951,7 @@ class TestPrintResourceCheckResult:
 # ---------------------------------------------------------------------------
 # Integration: deploy_pipeline calls the check; --destroy skips it
 # ---------------------------------------------------------------------------
+
 
 def _make_deploy_mocks(mocker, *, resource_result: ResourceCheckResult):
     """Patch deploy_pipeline up to (and including) the resource check step.
@@ -991,13 +982,18 @@ def _make_deploy_mocks(mocker, *, resource_result: ResourceCheckResult):
     session = mocker.MagicMock()
     session.client.return_value.get_caller_identity.return_value = {"Account": "123"}
     session.client.return_value.describe_stacks.return_value = {
-        "Stacks": [{"Outputs": [
-            {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
-            {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
-            {"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"},
-            {"OutputKey": "PipelineTokensTable", "OutputValue": "tok"},
-            {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset"},
-        ], "Parameters": []}]
+        "Stacks": [
+            {
+                "Outputs": [
+                    {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
+                    {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
+                    {"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"},
+                    {"OutputKey": "PipelineTokensTable", "OutputValue": "tok"},
+                    {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset"},
+                ],
+                "Parameters": [],
+            }
+        ]
     }
     mocker.patch("polyris.deploy.boto3").Session.return_value = session
 
@@ -1025,6 +1021,7 @@ def test_deploy_pipeline_calls_resource_check(mocker):
     dag = _make_deploy_mocks(mocker, resource_result=ResourceCheckResult())
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag)
     # Passed the resource check (no errors), hit the next barrier
     assert exc.value.code == 2
@@ -1040,6 +1037,7 @@ def test_deploy_pipeline_exits_on_resource_errors(mocker):
     dag = _make_deploy_mocks(mocker, resource_result=result)
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag)
     assert exc.value.code == 1
 
@@ -1053,6 +1051,7 @@ def test_deploy_pipeline_warnings_no_errors_still_runs_override_check(mocker):
     dag = _make_deploy_mocks(mocker, resource_result=result)
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag)
     assert exc.value.code == 2  # hit _generate_cfn_template barrier, not a resource failure
     deploy.check_resource_overrides.assert_called_once()
@@ -1067,6 +1066,7 @@ def test_deploy_pipeline_exits_cleanly_on_unknown_task_type(mocker):
     )
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag)
     assert exc.value.code == 1
 
@@ -1091,10 +1091,15 @@ def test_deploy_destroy_skips_resource_check(mocker):
     cfn.describe_stack_events.return_value = {"StackEvents": []}
     cfn.get_waiter.return_value.wait.return_value = None
     cfn.describe_stacks.return_value = {
-        "Stacks": [{"Outputs": [
-            {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
-            {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
-        ], "Parameters": []}]
+        "Stacks": [
+            {
+                "Outputs": [
+                    {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
+                    {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
+                ],
+                "Parameters": [],
+            }
+        ]
     }
 
     def _client(name, **kw):
@@ -1108,6 +1113,7 @@ def test_deploy_destroy_skips_resource_check(mocker):
     ro_patch = mocker.patch("polyris.deploy.check_resource_overrides")
 
     from polyris import deploy
+
     deploy.deploy_pipeline(dag, destroy=True, dry_run=True)
 
     rc_patch.assert_not_called()
@@ -1118,9 +1124,11 @@ def test_deploy_destroy_skips_resource_check(mocker):
 # Completeness: every TaskTypeLiteral covered or explicitly skipped
 # ---------------------------------------------------------------------------
 
+
 def test_every_task_type_has_checker_or_skip():
     """Adding a new TaskTypeLiteral without updating resource_check.py fails here."""
     from polyris.constants import TaskTypeLiteral
+
     all_types = set(typing.get_args(TaskTypeLiteral))
 
     # The two structures must form a clean partition — no type in both.
@@ -1165,6 +1173,7 @@ def test_access_denied_codes_is_strict_subset_of_cannot_verify_codes():
 # _failed_refs: populated correctly by check_resource_references
 # ---------------------------------------------------------------------------
 
+
 class TestFailedRefs:
     def _session(self, mocker, client_mock=None):
         session = mocker.MagicMock()
@@ -1176,18 +1185,14 @@ class TestFailedRefs:
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("EntityNotFoundException")
         task = _make_task(mocker, task_type="glue", job_name="missing-job")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("glue", "missing-job") in result.failed_refs
 
     def test_access_denied_adds_to_failed_refs(self, mocker):
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("AccessDeniedException")
         task = _make_task(mocker, task_type="glue", job_name="my-job")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("glue", "my-job") in result.failed_refs
 
     def test_throttle_does_not_add_to_failed_refs(self, mocker):
@@ -1195,45 +1200,35 @@ class TestFailedRefs:
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("ThrottlingException")
         task = _make_task(mocker, task_type="glue", job_name="my-job")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("glue", "my-job") not in result.failed_refs
 
     def test_botocore_error_does_not_add_to_failed_refs(self, mocker):
         client = mocker.MagicMock()
         client.get_job.side_effect = BotoCoreError()
         task = _make_task(mocker, task_type="glue", job_name="my-job")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("glue", "my-job") not in result.failed_refs
 
     def test_unknown_client_error_adds_to_failed_refs(self, mocker):
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("SomeOtherException")
         task = _make_task(mocker, task_type="glue", job_name="my-job")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("glue", "my-job") in result.failed_refs
 
     def test_found_resource_not_in_failed_refs(self, mocker):
         client = mocker.MagicMock()
         client.get_job.return_value = {"Job": {"Name": "etl"}}
         task = _make_task(mocker, task_type="glue", job_name="etl")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.failed_refs == set()
 
     def test_ecs_cluster_error_uses_cluster_kind(self, mocker):
         client = mocker.MagicMock()
         client.describe_clusters.return_value = {"clusters": []}
         task = _make_task(mocker, task_type="ecs", cluster="bad-cluster", task_definition="")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("ecs_cluster", "bad-cluster") in result.failed_refs
 
     def test_ecs_task_def_error_uses_ecs_task_definition_kind(self, mocker):
@@ -1241,15 +1236,14 @@ class TestFailedRefs:
         client = mocker.MagicMock()
         client.describe_task_definition.return_value = {"taskDefinition": {"status": "INACTIVE"}}
         task = _make_task(mocker, task_type="ecs", cluster="", task_definition="my-task-def")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("ecs_task_definition", "my-task-def") in result.failed_refs
 
 
 # ---------------------------------------------------------------------------
 # _numeric_str helper
 # ---------------------------------------------------------------------------
+
 
 class TestNumericStr:
     def test_numeric_str_int(self):
@@ -1267,10 +1261,25 @@ class TestNumericStr:
     def test_numeric_str_none(self):
         assert _numeric_str(None) is False
 
+    def test_numeric_str_nan_float_rejected(self):
+        """float("nan") passes float() but int(float("nan")) raises — must be rejected."""
+        assert _numeric_str(float("nan")) is False
+
+    def test_numeric_str_inf_float_rejected(self):
+        """float("inf") causes OverflowError in int() — must be rejected."""
+        assert _numeric_str(float("inf")) is False
+
+    def test_numeric_str_nan_string_rejected(self):
+        assert _numeric_str("nan") is False
+
+    def test_numeric_str_inf_string_rejected(self):
+        assert _numeric_str("inf") is False
+
 
 # ---------------------------------------------------------------------------
 # _sanitize helper
 # ---------------------------------------------------------------------------
+
 
 class TestSanitize:
     def test_strips_newlines(self):
@@ -1334,6 +1343,7 @@ class TestSanitize:
 # Data fetcher functions
 # ---------------------------------------------------------------------------
 
+
 class TestFetchers:
     def test_fetch_glue_data_returns_job(self, mocker):
         client = mocker.MagicMock()
@@ -1352,9 +1362,7 @@ class TestFetchers:
 
     def test_fetch_ecs_task_def_data_returns_task_definition(self, mocker):
         client = mocker.MagicMock()
-        client.describe_task_definition.return_value = {
-            "taskDefinition": {"containerDefinitions": [{"name": "app"}]}
-        }
+        client.describe_task_definition.return_value = {"taskDefinition": {"containerDefinitions": [{"name": "app"}]}}
         result = _fetch_ecs_task_def_data(client, "my-def")
         client.describe_task_definition.assert_called_once_with(taskDefinition="my-def")
         assert result["containerDefinitions"][0]["name"] == "app"
@@ -1399,6 +1407,7 @@ class TestFetchers:
 # ---------------------------------------------------------------------------
 # _check_glue_override
 # ---------------------------------------------------------------------------
+
 
 class TestCheckGlueOverride:
     def _task(self, mocker, **kw):
@@ -1497,9 +1506,15 @@ class TestCheckGlueOverride:
         assert "--locked-b" in report.silent_ignores
 
     def test_combined_differs_silent_and_matching(self, mocker):
-        task = self._task(mocker, worker_type="G.2X", glue_arguments={
-            "--locked": "x", "--output": "s3://bucket/out", "--format": "json",
-        })
+        task = self._task(
+            mocker,
+            worker_type="G.2X",
+            glue_arguments={
+                "--locked": "x",
+                "--output": "s3://bucket/out",
+                "--format": "json",
+            },
+        )
         job = {
             "WorkerType": "G.1X",
             "NonOverridableArguments": {"--locked": "fixed"},
@@ -1556,10 +1571,10 @@ class TestCheckGlueOverride:
 # _check_ecs_override
 # ---------------------------------------------------------------------------
 
+
 class TestCheckEcsOverride:
     def _task(self, mocker, **kw):
-        return _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def", **kw)
+        return _make_task(mocker, task_type="ecs", task_id="run_job", task_definition="my-task-def", **kw)
 
     def test_no_container_overrides_returns_none(self, mocker):
         task = self._task(mocker)
@@ -1570,9 +1585,9 @@ class TestCheckEcsOverride:
         assert _check_ecs_override(task, {}) is None
 
     def test_command_differs(self, mocker):
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "command": ["python", "run.py"]}]
-        })
+        task = self._task(
+            mocker, container_overrides={"containerOverrides": [{"name": "app", "command": ["python", "run.py"]}]}
+        )
         task_def = {"containerDefinitions": [{"name": "app", "command": ["python", "old.py"]}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -1580,27 +1595,21 @@ class TestCheckEcsOverride:
 
     def test_command_matches(self, mocker):
         cmd = ["python", "run.py"]
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "command": cmd}]
-        })
+        task = self._task(mocker, container_overrides={"containerOverrides": [{"name": "app", "command": cmd}]})
         task_def = {"containerDefinitions": [{"name": "app", "command": cmd}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
         assert any("command" in m for m in report.matching)
 
     def test_cpu_differs(self, mocker):
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "cpu": 2048}]
-        })
+        task = self._task(mocker, container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]})
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
         assert any(c.name == "cpu" for c in report.differs)
 
     def test_memory_matches(self, mocker):
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "memory": 512}]
-        })
+        task = self._task(mocker, container_overrides={"containerOverrides": [{"name": "app", "memory": 512}]})
         task_def = {"containerDefinitions": [{"name": "app", "memory": 512}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -1608,9 +1617,12 @@ class TestCheckEcsOverride:
 
     def test_cpu_string_input_stored_as_normalized_int(self, mocker):
         """cpu declared as digit-string is normalized to int in ParamConflict.declared."""
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "cpu": "2048"}]  # string from JSON
-        })
+        task = self._task(
+            mocker,
+            container_overrides={
+                "containerOverrides": [{"name": "app", "cpu": "2048"}]  # string from JSON
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -1620,75 +1632,78 @@ class TestCheckEcsOverride:
 
     def test_cpu_non_numeric_skipped(self, mocker):
         """Non-numeric cpu value cannot be compared — no conflict reported."""
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "cpu": "auto"}]
-        })
+        task = self._task(mocker, container_overrides={"containerOverrides": [{"name": "app", "cpu": "auto"}]})
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_env_var_differs(self, mocker):
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "environment": [
-                {"name": "LOG_LEVEL", "value": "DEBUG"}
-            ]}]
-        })
-        task_def = {"containerDefinitions": [{"name": "app", "environment": [
-            {"name": "LOG_LEVEL", "value": "INFO"}
-        ]}]}
+        task = self._task(
+            mocker,
+            container_overrides={
+                "containerOverrides": [{"name": "app", "environment": [{"name": "LOG_LEVEL", "value": "DEBUG"}]}]
+            },
+        )
+        task_def = {"containerDefinitions": [{"name": "app", "environment": [{"name": "LOG_LEVEL", "value": "INFO"}]}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
         assert any(c.name == "env:LOG_LEVEL" for c in report.differs)
 
     def test_env_var_matches(self, mocker):
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "environment": [
-                {"name": "STAGE", "value": "prod"}
-            ]}]
-        })
-        task_def = {"containerDefinitions": [{"name": "app", "environment": [
-            {"name": "STAGE", "value": "prod"}
-        ]}]}
+        task = self._task(
+            mocker,
+            container_overrides={
+                "containerOverrides": [{"name": "app", "environment": [{"name": "STAGE", "value": "prod"}]}]
+            },
+        )
+        task_def = {"containerDefinitions": [{"name": "app", "environment": [{"name": "STAGE", "value": "prod"}]}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
         assert any("env:STAGE" in m for m in report.matching)
 
     def test_env_var_not_in_base_container_not_reported(self, mocker):
         """New env var not set in task def is an addition, not a conflict."""
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "environment": [
-                {"name": "NEW_VAR", "value": "x"}
-            ]}]
-        })
+        task = self._task(
+            mocker,
+            container_overrides={
+                "containerOverrides": [{"name": "app", "environment": [{"name": "NEW_VAR", "value": "x"}]}]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "environment": []}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_env_var_with_no_name_skipped(self, mocker):
         """Environment entry without a 'name' key must not crash or report a conflict."""
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "environment": [
-                {"value": "orphan-value"},   # no "name" key → skip
-            ]}]
-        })
+        task = self._task(
+            mocker,
+            container_overrides={
+                "containerOverrides": [
+                    {
+                        "name": "app",
+                        "environment": [
+                            {"value": "orphan-value"},  # no "name" key → skip
+                        ],
+                    }
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app"}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_duplicate_container_names_first_wins(self, mocker):
         """Duplicate container names in task def: first entry used for comparison."""
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "cpu": 2048}]
-        })
-        task_def = {"containerDefinitions": [
-            {"name": "app", "cpu": 1024},  # first
-            {"name": "app", "cpu": 512},   # duplicate — ignored
-        ]}
+        task = self._task(mocker, container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]})
+        task_def = {
+            "containerDefinitions": [
+                {"name": "app", "cpu": 1024},  # first
+                {"name": "app", "cpu": 512},  # duplicate — ignored
+            ]
+        }
         report = _check_ecs_override(task, task_def)
         assert report is not None
         assert report.differs[0].actual == 1024  # first entry used
 
     def test_report_metadata(self, mocker):
-        task = self._task(mocker, container_overrides={
-            "containerOverrides": [{"name": "app", "cpu": 2048}]
-        })
+        task = self._task(mocker, container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]})
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -1701,10 +1716,10 @@ class TestCheckEcsOverride:
 # _check_batch_override
 # ---------------------------------------------------------------------------
 
+
 class TestCheckBatchOverride:
     def _task(self, mocker, **kw):
-        return _make_task(mocker, task_type="batch", task_id="process",
-                          job_definition="my-job-def", **kw)
+        return _make_task(mocker, task_type="batch", task_id="process", job_definition="my-job-def", **kw)
 
     def test_no_batch_parameters_returns_none(self, mocker):
         task = self._task(mocker)
@@ -1764,6 +1779,7 @@ class TestCheckBatchOverride:
 # check_resource_overrides (orchestrator)
 # ---------------------------------------------------------------------------
 
+
 class TestCheckResourceOverrides:
     def _session(self, mocker, client_mock=None):
         session = mocker.MagicMock()
@@ -1772,9 +1788,7 @@ class TestCheckResourceOverrides:
         return session
 
     def test_empty_dag_returns_empty_result(self, mocker):
-        result = check_resource_overrides(
-            _make_dag(mocker, []), self._session(mocker), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, []), self._session(mocker), "us-east-1")
         assert result.reports == []
         assert result.unverified == []
         assert result._verified == 0
@@ -1783,43 +1797,34 @@ class TestCheckResourceOverrides:
         """sfn, lambda, athena, emr, sagemaker have no override params — skipped."""
         client = mocker.MagicMock()
         tasks = [
-            _make_task(mocker, task_type="sfn", task_id="t1",
-                       arn="arn:aws:states:us-east-1:123:stateMachine:x"),
+            _make_task(mocker, task_type="sfn", task_id="t1", arn="arn:aws:states:us-east-1:123:stateMachine:x"),
             _make_task(mocker, task_type="athena", task_id="t2", workgroup="primary"),
         ]
-        result = check_resource_overrides(
-            _make_dag(mocker, tasks), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, tasks), self._session(mocker, client), "us-east-1")
         assert result.reports == []
         assert result._verified == 0
         client.get_job.assert_not_called()
 
     def test_cross_account_task_skipped(self, mocker):
         client = mocker.MagicMock()
-        task = _make_task(mocker, task_type="glue", job_name="etl",
-                          worker_type="G.2X", role="arn:aws:iam::222:role/etl")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
+        task = _make_task(
+            mocker, task_type="glue", job_name="etl", worker_type="G.2X", role="arn:aws:iam::222:role/etl"
         )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.reports == []
         client.get_job.assert_not_called()
 
     def test_cfn_substitution_ref_skipped(self, mocker):
         client = mocker.MagicMock()
-        task = _make_task(mocker, task_type="glue", job_name="${JobName}",
-                          worker_type="G.2X")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        task = _make_task(mocker, task_type="glue", job_name="${JobName}", worker_type="G.2X")
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.reports == []
         client.get_job.assert_not_called()
 
     def test_empty_ref_skipped(self, mocker):
         client = mocker.MagicMock()
         task = _make_task(mocker, task_type="glue", job_name="")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.reports == []
         client.get_job.assert_not_called()
 
@@ -1841,9 +1846,7 @@ class TestCheckResourceOverrides:
         client = mocker.MagicMock()
         client.get_job.return_value = {"Job": {"WorkerType": "G.1X"}}
         task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert len(result.reports) == 1
         assert result.reports[0].service == "glue"
         assert result._verified == 1
@@ -1853,25 +1856,23 @@ class TestCheckResourceOverrides:
         client = mocker.MagicMock()
         client.get_job.return_value = {"Job": {"WorkerType": "G.2X"}}
         tasks = [
-            _make_task(mocker, task_type="glue", job_name="etl",
-                       worker_type="G.2X", task_id="t1"),  # matches → matching report
-            _make_task(mocker, task_type="glue", job_name="etl",
-                       worker_type="G.1X", task_id="t2"),  # conflicts → differs report
+            _make_task(
+                mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1"
+            ),  # matches → matching report
+            _make_task(
+                mocker, task_type="glue", job_name="etl", worker_type="G.1X", task_id="t2"
+            ),  # conflicts → differs report
         ]
-        result = check_resource_overrides(
-            _make_dag(mocker, tasks), self._session(mocker, client), "us-east-1"
-        )
-        assert client.get_job.call_count == 1   # deduped: one API call for both tasks
-        assert result._verified == 1             # one unique resource fetched
-        assert len(result.reports) == 2         # one report per task (t1 matching, t2 differs)
+        result = check_resource_overrides(_make_dag(mocker, tasks), self._session(mocker, client), "us-east-1")
+        assert client.get_job.call_count == 1  # deduped: one API call for both tasks
+        assert result._verified == 1  # one unique resource fetched
+        assert len(result.reports) == 2  # one report per task (t1 matching, t2 differs)
 
     def test_access_denied_adds_to_unverified(self, mocker):
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("AccessDeniedException")
         task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert len(result.unverified) == 1
         assert result.reports == []
         assert result._verified == 0
@@ -1880,18 +1881,14 @@ class TestCheckResourceOverrides:
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("ThrottlingException")
         task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert len(result.unverified) == 1
 
     def test_botocore_error_adds_to_unverified(self, mocker):
         client = mocker.MagicMock()
         client.get_job.side_effect = BotoCoreError()
         task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert len(result.unverified) == 1
         assert result._verified == 0
 
@@ -1903,15 +1900,11 @@ class TestCheckResourceOverrides:
             {"Job": {"WorkerType": "G.1X"}},  # would succeed but should not be called
         ]
         tasks = [
-            _make_task(mocker, task_type="glue", job_name="etl-a",
-                       worker_type="G.2X", task_id="t1"),
-            _make_task(mocker, task_type="glue", job_name="etl-b",
-                       worker_type="G.2X", task_id="t2"),
+            _make_task(mocker, task_type="glue", job_name="etl-a", worker_type="G.2X", task_id="t1"),
+            _make_task(mocker, task_type="glue", job_name="etl-b", worker_type="G.2X", task_id="t2"),
         ]
-        result = check_resource_overrides(
-            _make_dag(mocker, tasks), self._session(mocker, client), "us-east-1"
-        )
-        assert client.get_job.call_count == 1   # second call not made
+        result = check_resource_overrides(_make_dag(mocker, tasks), self._session(mocker, client), "us-east-1")
+        assert client.get_job.call_count == 1  # second call not made
         assert len(result.unverified) == 2
 
     def test_unverified_deduped_for_same_ref(self, mocker):
@@ -1919,14 +1912,10 @@ class TestCheckResourceOverrides:
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("AccessDeniedException")
         tasks = [
-            _make_task(mocker, task_type="glue", job_name="etl",
-                       worker_type="G.2X", task_id="t1"),
-            _make_task(mocker, task_type="glue", job_name="etl",
-                       worker_type="G.1X", task_id="t2"),
+            _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1"),
+            _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.1X", task_id="t2"),
         ]
-        result = check_resource_overrides(
-            _make_dag(mocker, tasks), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, tasks), self._session(mocker, client), "us-east-1")
         assert len(result.unverified) == 1
 
     def test_no_failed_refs_defaults_to_empty_set(self, mocker):
@@ -1934,9 +1923,7 @@ class TestCheckResourceOverrides:
         client = mocker.MagicMock()
         client.get_job.return_value = {"Job": {"WorkerType": "G.1X"}}
         task = _make_task(mocker, task_type="glue", job_name="etl")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result._verified == 1
 
     def test_arn_ref_uses_arns_region(self, mocker):
@@ -1958,6 +1945,7 @@ class TestCheckResourceOverrides:
 # ---------------------------------------------------------------------------
 # print_resource_override_result (output format)
 # ---------------------------------------------------------------------------
+
 
 class TestPrintResourceOverrideResult:
     def test_empty_result_prints_nothing(self, capsys):
@@ -2007,12 +1995,14 @@ class TestPrintResourceOverrideResult:
     def test_differs_printed(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="ingest",
-                service="glue",
-                resource_name="etl",
-                differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="ingest",
+                    service="glue",
+                    resource_name="etl",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -2028,12 +2018,14 @@ class TestPrintResourceOverrideResult:
     def test_silent_drop_printed(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="ingest",
-                service="glue",
-                resource_name="etl",
-                silent_ignores=["--locked-arg"],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="ingest",
+                    service="glue",
+                    resource_name="etl",
+                    silent_ignores=["--locked-arg"],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -2046,12 +2038,14 @@ class TestPrintResourceOverrideResult:
     def test_matching_params_grouped_on_one_line(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1",
-                service="glue",
-                resource_name="etl",
-                matching=["WorkerType", "MaxCapacity"],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl",
+                    matching=["WorkerType", "MaxCapacity"],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -2063,12 +2057,14 @@ class TestPrintResourceOverrideResult:
     def test_single_matching_param_uses_singular_noun(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1",
-                service="glue",
-                resource_name="etl",
-                matching=["WorkerType"],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl",
+                    matching=["WorkerType"],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -2098,12 +2094,14 @@ class TestPrintResourceOverrideResult:
     def test_report_and_unverified_both_printed(self, capsys, mocker):
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1",
-                service="batch",
-                resource_name="jd",
-                differs=[ParamConflict("format", "json", "parquet")],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="batch",
+                    resource_name="jd",
+                    differs=[ParamConflict("format", "json", "parquet")],
+                )
+            ],
             unverified=[ResourceRef(task_id="t2", kind="glue", ref="etl")],
             _verified=2,
         )
@@ -2117,6 +2115,7 @@ class TestPrintResourceOverrideResult:
 # Integration: deploy_pipeline calls override check; --destroy skips it
 # ---------------------------------------------------------------------------
 
+
 def test_override_check_exception_does_not_abort_deploy(mocker, capsys):
     """An unexpected exception from override check is printed but does not abort deploy."""
     dag = _make_deploy_mocks(mocker, resource_result=ResourceCheckResult())
@@ -2126,6 +2125,7 @@ def test_override_check_exception_does_not_abort_deploy(mocker, capsys):
     )
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag)
     # deploy continued past the failed override check and hit the CFN template barrier
     assert exc.value.code == 2
@@ -2139,6 +2139,7 @@ def test_deploy_pipeline_calls_override_check(mocker):
     dag = _make_deploy_mocks(mocker, resource_result=ResourceCheckResult())
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag)
     assert exc.value.code == 2
     deploy.check_resource_overrides.assert_called_once()
@@ -2170,10 +2171,15 @@ def test_deploy_destroy_skips_override_check(mocker):
     cfn.describe_stack_events.return_value = {"StackEvents": []}
     cfn.get_waiter.return_value.wait.return_value = None
     cfn.describe_stacks.return_value = {
-        "Stacks": [{"Outputs": [
-            {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
-            {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
-        ], "Parameters": []}]
+        "Stacks": [
+            {
+                "Outputs": [
+                    {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
+                    {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
+                ],
+                "Parameters": [],
+            }
+        ]
     }
 
     def _client(name, **kw):
@@ -2187,6 +2193,7 @@ def test_deploy_destroy_skips_override_check(mocker):
     rc_patch = mocker.patch("polyris.deploy.check_resource_references")
 
     from polyris import deploy
+
     deploy.deploy_pipeline(dag, destroy=True, dry_run=True)
 
     ro_patch.assert_not_called()
@@ -2197,9 +2204,11 @@ def test_deploy_destroy_skips_override_check(mocker):
 # Completeness: _OVERRIDE_CHECKERS covers all TaskTypeLiterals
 # ---------------------------------------------------------------------------
 
+
 def test_override_checkers_covers_all_task_types():
     """Adding a TaskTypeLiteral without updating _OVERRIDE_CHECKERS fails here."""
     from polyris.constants import TaskTypeLiteral
+
     all_types = set(typing.get_args(TaskTypeLiteral))
     missing = all_types - set(_OVERRIDE_CHECKERS.keys())
     extra = set(_OVERRIDE_CHECKERS.keys()) - all_types
@@ -2212,9 +2221,7 @@ def test_override_info_entries_have_non_none_checkers():
     that is the same function object (identity check prevents silent divergence)."""
     for task_type in _OVERRIDE_INFO:
         checker = _OVERRIDE_CHECKERS.get(task_type)
-        assert checker is not None, (
-            f"_OVERRIDE_CHECKERS[{task_type!r}] is None but {task_type!r} is in _OVERRIDE_INFO"
-        )
+        assert checker is not None, f"_OVERRIDE_CHECKERS[{task_type!r}] is None but {task_type!r} is in _OVERRIDE_INFO"
         assert checker is _OVERRIDE_INFO[task_type].checker, (
             f"_OVERRIDE_CHECKERS[{task_type!r}] is {checker!r} but "
             f"_OVERRIDE_INFO[{task_type!r}].checker is {_OVERRIDE_INFO[task_type].checker!r}"
@@ -2225,10 +2232,10 @@ def test_override_info_entries_have_non_none_checkers():
 # T1: allocated_capacity match branch
 # ---------------------------------------------------------------------------
 
+
 class TestCheckGlueOverrideAllocatedCapacity:
     def test_allocated_capacity_matches(self, mocker):
-        task = _make_task(mocker, task_type="glue", task_id="ingest",
-                          job_name="etl", allocated_capacity=10)
+        task = _make_task(mocker, task_type="glue", task_id="ingest", job_name="etl", allocated_capacity=10)
         report = _check_glue_override(task, {"AllocatedCapacity": 10})
         assert report is not None
         assert any("AllocatedCapacity" in m for m in report.matching)
@@ -2239,17 +2246,20 @@ class TestCheckGlueOverrideAllocatedCapacity:
 # T2: Sanitization end-to-end through print_resource_override_result
 # ---------------------------------------------------------------------------
 
+
 class TestSanitizationEndToEnd:
     def test_control_chars_in_param_conflict_print_clean(self, capsys, mocker):
         """ParamConflict with \\n in name/values must produce clean printed output."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1",
-                service="glue",
-                resource_name="etl",
-                differs=[ParamConflict("WorkerType\ninjected", "G.2X\nX", "G.1X\nY")],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl",
+                    differs=[ParamConflict("WorkerType\ninjected", "G.2X\nX", "G.1X\nY")],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -2263,6 +2273,7 @@ class TestSanitizationEndToEnd:
 # T3: failed_refs skip for ECS and Batch kinds in both checks
 # ---------------------------------------------------------------------------
 
+
 class TestFailedRefsBatchKinds:
     def _session(self, mocker, client_mock=None):
         session = mocker.MagicMock()
@@ -2275,17 +2286,18 @@ class TestFailedRefsBatchKinds:
         client = mocker.MagicMock()
         client.describe_job_definitions.return_value = {"jobDefinitions": []}
         task = _make_task(mocker, task_type="batch", job_queue="", job_definition="my-job-def")
-        result = check_resource_references(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_references(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert ("batch_job_definition", "my-job-def") in result.failed_refs
 
     def test_failed_refs_skip_ecs_task_def_in_override_check(self, mocker):
         """Override check: (ecs_task_definition, ref) in failed_refs → no API call, no report."""
         client = mocker.MagicMock()
-        task = _make_task(mocker, task_type="ecs",
-                          task_definition="my-task-def",
-                          container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]})
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_definition="my-task-def",
+            container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]},
+        )
         result = check_resource_overrides(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -2298,8 +2310,7 @@ class TestFailedRefsBatchKinds:
     def test_failed_refs_skip_batch_job_def_in_override_check(self, mocker):
         """Override check: (batch_job_definition, ref) in failed_refs → no API call, no report."""
         client = mocker.MagicMock()
-        task = _make_task(mocker, task_type="batch", job_definition="my-job-def",
-                          batch_parameters={"k": "v"})
+        task = _make_task(mocker, task_type="batch", job_definition="my-job-def", batch_parameters={"k": "v"})
         result = check_resource_overrides(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -2314,42 +2325,55 @@ class TestFailedRefsBatchKinds:
 # T5 / NEW-B1: containerOverrides entry without "name" key
 # ---------------------------------------------------------------------------
 
+
 class TestEcsOverrideWithoutContainerName:
     def test_container_override_without_name_key_produces_no_conflict(self, mocker):
         """Entry without 'name' key must be skipped — not matched against an empty container
         base (which would produce a false conflict for any declared command)."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"command": ["python", "run.py"]},  # no "name" key
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"command": ["python", "run.py"]},  # no "name" key
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "command": ["python", "old.py"]}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_container_override_with_empty_string_name_produces_no_conflict(self, mocker):
         """Entry with name='' (explicit empty string) must also be skipped, same as missing key."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "", "command": ["python", "run.py"]},
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "", "command": ["python", "run.py"]},
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "command": ["python", "old.py"]}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_named_and_unnamed_entries_mixed(self, mocker):
         """Unnamed entry skipped; named entry still compared normally."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"command": ["bad"]},            # no "name" — skipped
-                                  {"name": "app", "cpu": 2048},   # named — compared
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"command": ["bad"]},  # no "name" — skipped
+                    {"name": "app", "cpu": 2048},  # named — compared
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -2360,6 +2384,7 @@ class TestEcsOverrideWithoutContainerName:
 # ---------------------------------------------------------------------------
 # T6: expired_token with already-fetched resource
 # ---------------------------------------------------------------------------
+
 
 class TestExpiredTokenWithCachedResource:
     def _session(self, mocker, client_mock=None):
@@ -2373,29 +2398,31 @@ class TestExpiredTokenWithCachedResource:
         resource as task A must still have its overrides checked — not routed to unverified."""
         client = mocker.MagicMock()
         client.get_job.side_effect = [
-            {"Job": {"WorkerType": "G.1X"}},        # t1: etl-a → success, cached
+            {"Job": {"WorkerType": "G.1X"}},  # t1: etl-a → success, cached
             _client_error("ExpiredTokenException"),  # t2: etl-b → expires token
             # t3: etl-a is already in fetched — no API call needed
         ]
         tasks = [
-            _make_task(mocker, task_type="glue", job_name="etl-a",
-                       worker_type="G.2X", task_id="t1"),  # fetches, G.2X != G.1X → differs
-            _make_task(mocker, task_type="glue", job_name="etl-b",
-                       worker_type="G.2X", task_id="t2"),  # triggers expired_token
-            _make_task(mocker, task_type="glue", job_name="etl-a",
-                       worker_type="G.1X", task_id="t3"),  # same as t1, in fetched, G.1X == G.1X → matching
+            _make_task(
+                mocker, task_type="glue", job_name="etl-a", worker_type="G.2X", task_id="t1"
+            ),  # fetches, G.2X != G.1X → differs
+            _make_task(
+                mocker, task_type="glue", job_name="etl-b", worker_type="G.2X", task_id="t2"
+            ),  # triggers expired_token
+            _make_task(
+                mocker, task_type="glue", job_name="etl-a", worker_type="G.1X", task_id="t3"
+            ),  # same as t1, in fetched, G.1X == G.1X → matching
         ]
-        result = check_resource_overrides(
-            _make_dag(mocker, tasks), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, tasks), self._session(mocker, client), "us-east-1")
         assert client.get_job.call_count == 2  # etl-a + etl-b; t3 uses cache
-        assert len(result.unverified) == 1     # only etl-b
-        assert len(result.reports) == 2        # t1 (differs) and t3 (matching)
+        assert len(result.unverified) == 1  # only etl-b
+        assert len(result.reports) == 2  # t1 (differs) and t3 (matching)
 
 
 # ---------------------------------------------------------------------------
 # B2: _fetch_batch_job_def_data raises _NotFoundError → orchestrator routes to unverified
 # ---------------------------------------------------------------------------
+
 
 class TestBatchFetcherNotFound:
     def _session(self, mocker, client_mock=None):
@@ -2408,11 +2435,8 @@ class TestBatchFetcherNotFound:
         """_NotFoundError from fetcher (empty ACTIVE job defs) → resource unverified, no report."""
         client = mocker.MagicMock()
         client.describe_job_definitions.return_value = {"jobDefinitions": []}
-        task = _make_task(mocker, task_type="batch", job_definition="jd",
-                          batch_parameters={"k": "v"})
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        task = _make_task(mocker, task_type="batch", job_definition="jd", batch_parameters={"k": "v"})
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert len(result.unverified) == 1
         assert result.reports == []
         assert result._verified == 0
@@ -2422,14 +2446,14 @@ class TestBatchFetcherNotFound:
 # NEW-B2: ECS cluster PROVISIONING status treated as usable
 # ---------------------------------------------------------------------------
 
+
 class TestEcsClusterProvisioning:
     def test_provisioning_cluster_not_reported_as_missing(self, mocker):
         """A cluster in PROVISIONING state is being created — must not trigger a 'does not exist' error."""
         client = mocker.MagicMock()
-        client.describe_clusters.return_value = {
-            "clusters": [{"clusterName": "new-cluster", "status": "PROVISIONING"}]
-        }
+        client.describe_clusters.return_value = {"clusters": [{"clusterName": "new-cluster", "status": "PROVISIONING"}]}
         from polyris.resource_check import _check_ecs_cluster
+
         _check_ecs_cluster(client, "new-cluster")  # must not raise
 
 
@@ -2437,54 +2461,71 @@ class TestEcsClusterProvisioning:
 # ECS: container name present but not found in containerDefinitions → no conflict
 # ---------------------------------------------------------------------------
 
+
 class TestEcsOverrideUnknownContainerName:
     def test_command_override_for_absent_container_returns_none(self, mocker):
         """command override for a container name absent from containerDefinitions
         must return None — previously produced a spurious ParamConflict(actual=[])."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "ghost-container", "command": ["python", "run.py"]},
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "ghost-container", "command": ["python", "run.py"]},
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "command": ["python", "old.py"]}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_cpu_override_for_absent_container_returns_none(self, mocker):
         """cpu override for absent container → no report."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "ghost", "cpu": 2048},
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "ghost", "cpu": 2048},
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_memory_override_for_absent_container_returns_none(self, mocker):
         """memory override for absent container → no report."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "ghost", "memory": 4096},
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "ghost", "memory": 4096},
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "memory": 2048}]}
         assert _check_ecs_override(task, task_def) is None
 
     def test_absent_container_mixed_with_known_container(self, mocker):
         """Absent container entry is skipped; the known container is still compared."""
-        task = _make_task(mocker, task_type="ecs", task_id="run_job",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "ghost", "cpu": 4096},     # not in task def → skipped
-                                  {"name": "app",   "cpu": 2048},     # differs from 1024
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="run_job",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "ghost", "cpu": 4096},  # not in task def → skipped
+                    {"name": "app", "cpu": 2048},  # differs from 1024
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -2496,17 +2537,22 @@ class TestEcsOverrideUnknownContainerName:
 # ECS: cpu/memory when task def has no container-level cpu (base_val = None)
 # ---------------------------------------------------------------------------
 
+
 class TestEcsOverrideCpuBaseValNone:
     def test_cpu_override_when_task_def_has_no_cpu_at_container_level_skipped(self, mocker):
         """ECS task def with no per-container cpu field: cpu override is silently
         skipped because _numeric_str(None) is False — guard is pinned."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "app", "cpu": 2048},
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "app", "cpu": 2048},
+                ]
+            },
+        )
         # containerDefinitions entry exists but has no "cpu" key
         task_def = {"containerDefinitions": [{"name": "app"}]}
         assert _check_ecs_override(task, task_def) is None
@@ -2514,13 +2560,17 @@ class TestEcsOverrideCpuBaseValNone:
     def test_memory_override_when_task_def_has_no_memory_at_container_level_skipped(self, mocker):
         """ECS task def with no per-container memory field: memory override is silently
         skipped because _numeric_str(None) is False — symmetric to cpu guard."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [
-                                  {"name": "app", "memory": 4096},
-                              ]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-task-def",
+            container_overrides={
+                "containerOverrides": [
+                    {"name": "app", "memory": 4096},
+                ]
+            },
+        )
         task_def = {"containerDefinitions": [{"name": "app"}]}
         assert _check_ecs_override(task, task_def) is None
 
@@ -2528,6 +2578,7 @@ class TestEcsOverrideCpuBaseValNone:
 # ---------------------------------------------------------------------------
 # Dedup: second task for already-failed resource does not retry API
 # ---------------------------------------------------------------------------
+
 
 class TestUnverifiedSeenNoRetry:
     def _session(self, mocker, client_mock):
@@ -2544,22 +2595,19 @@ class TestUnverifiedSeenNoRetry:
             # second task should NOT call get_job again
         ]
         tasks = [
-            _make_task(mocker, task_type="glue", job_name="shared-job",
-                       worker_type="G.2X", task_id="t1"),
-            _make_task(mocker, task_type="glue", job_name="shared-job",
-                       worker_type="G.1X", task_id="t2"),
+            _make_task(mocker, task_type="glue", job_name="shared-job", worker_type="G.2X", task_id="t1"),
+            _make_task(mocker, task_type="glue", job_name="shared-job", worker_type="G.1X", task_id="t2"),
         ]
-        result = check_resource_overrides(
-            _make_dag(mocker, tasks), self._session(mocker, client), "us-east-1"
-        )
+        result = check_resource_overrides(_make_dag(mocker, tasks), self._session(mocker, client), "us-east-1")
         assert client.get_job.call_count == 1  # only one API call
-        assert len(result.unverified) == 1     # only first ResourceRef added
+        assert len(result.unverified) == 1  # only first ResourceRef added
         assert result.reports == []
 
 
 # ---------------------------------------------------------------------------
 # expired_token flag propagated to OverrideCheckResult
 # ---------------------------------------------------------------------------
+
 
 class TestExpiredTokenFlag:
     def _session(self, mocker, client_mock):
@@ -2571,11 +2619,8 @@ class TestExpiredTokenFlag:
         """ExpiredTokenException must set result.expired_token = True."""
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("ExpiredTokenException")
-        task = _make_task(mocker, task_type="glue", job_name="etl",
-                          worker_type="G.2X", task_id="t1")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1")
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.expired_token is True
         assert len(result.unverified) == 1
         assert result.access_denied_services == set()  # expired token ≠ IAM denial
@@ -2584,24 +2629,19 @@ class TestExpiredTokenFlag:
         """AccessDeniedException must not set expired_token."""
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("AccessDeniedException")
-        task = _make_task(mocker, task_type="glue", job_name="etl",
-                          worker_type="G.2X", task_id="t1")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1")
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.expired_token is False
         assert len(result.unverified) == 1
 
     def test_botocore_error_does_not_set_flag(self, mocker):
         """BotoCoreError (network/transport) must not set expired_token."""
         from botocore.exceptions import BotoCoreError
+
         client = mocker.MagicMock()
         client.get_job.side_effect = BotoCoreError()
-        task = _make_task(mocker, task_type="glue", job_name="etl",
-                          worker_type="G.2X", task_id="t1")
-        result = check_resource_overrides(
-            _make_dag(mocker, [task]), self._session(mocker, client), "us-east-1"
-        )
+        task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1")
+        result = check_resource_overrides(_make_dag(mocker, [task]), self._session(mocker, client), "us-east-1")
         assert result.expired_token is False
         assert len(result.unverified) == 1
 
@@ -2609,6 +2649,7 @@ class TestExpiredTokenFlag:
 # ---------------------------------------------------------------------------
 # print_resource_override_result: expired_token message vs generic message
 # ---------------------------------------------------------------------------
+
 
 class TestPrintOverrideResultExpiredTokenMessage:
     def test_expired_token_produces_credentials_message(self, capsys, mocker):
@@ -2646,6 +2687,7 @@ class TestPrintOverrideResultExpiredTokenMessage:
 # print_resource_override_result: blank line separator before output
 # ---------------------------------------------------------------------------
 
+
 class TestPrintOverrideResultBlankLine:
     def test_blank_line_before_success_output(self, capsys, mocker):
         """print_resource_override_result must emit a blank line before the success line."""
@@ -2659,8 +2701,14 @@ class TestPrintOverrideResultBlankLine:
         """print_resource_override_result must emit a blank line before warning output."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(task_id="t1", service="glue", resource_name="etl",
-                                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")])],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -2679,8 +2727,14 @@ class TestPrintOverrideResultBlankLine:
         """A blank line must separate the reports block from the unverified block."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(task_id="t1", service="glue", resource_name="job-a",
-                                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")])],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="job-a",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                )
+            ],
             unverified=[ResourceRef(task_id="t2", kind="batch", ref="jd")],
             _verified=1,
         )
@@ -2696,16 +2750,20 @@ class TestPrintOverrideResultBlankLine:
 # print_resource_override_result: multiple reports all printed
 # ---------------------------------------------------------------------------
 
+
 class TestPrintOverrideResultMultipleReports:
     def test_multiple_reports_all_appear_in_output(self, capsys, mocker):
         """Two reports must both appear in the output — the loop is not short-circuited."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
             reports=[
-                OverrideReport(task_id="t1", service="glue", resource_name="etl-job",
-                               differs=[ParamConflict("WorkerType", "G.2X", "G.1X")]),
-                OverrideReport(task_id="t2", service="batch", resource_name="my-job-def",
-                               matching=["param-a"]),
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl-job",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                ),
+                OverrideReport(task_id="t2", service="batch", resource_name="my-job-def", matching=["param-a"]),
             ],
             _verified=2,
         )
@@ -2721,10 +2779,18 @@ class TestPrintOverrideResultMultipleReports:
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
             reports=[
-                OverrideReport(task_id="t1", service="glue", resource_name="job-a",
-                               differs=[ParamConflict("WorkerType", "G.2X", "G.1X")]),
-                OverrideReport(task_id="t2", service="glue", resource_name="job-b",
-                               differs=[ParamConflict("NumberOfWorkers", "5", "2")]),
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="job-a",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                ),
+                OverrideReport(
+                    task_id="t2",
+                    service="glue",
+                    resource_name="job-b",
+                    differs=[ParamConflict("NumberOfWorkers", "5", "2")],
+                ),
             ],
             _verified=2,
         )
@@ -2741,11 +2807,13 @@ class TestPrintOverrideResultMultipleReports:
 # deploy_pipeline --dry-run without --destroy: both checks still run
 # ---------------------------------------------------------------------------
 
+
 def test_deploy_dry_run_without_destroy_runs_both_checks(mocker):
     """--dry-run without --destroy must still invoke both resource checks."""
     dag = _make_deploy_mocks(mocker, resource_result=ResourceCheckResult())
     with pytest.raises(SystemExit) as exc:
         from polyris import deploy
+
         deploy.deploy_pipeline(dag, dry_run=True)
     assert exc.value.code == 2  # hit _generate_cfn_template barrier — not a check failure
     deploy.check_resource_references.assert_called_once()
@@ -2756,14 +2824,21 @@ def test_deploy_dry_run_without_destroy_runs_both_checks(mocker):
 # Fix #1: _skipped note visible when reports are present
 # ---------------------------------------------------------------------------
 
+
 class TestSkipNoteWithReports:
     def test_skip_note_shown_alongside_reports(self, capsys, mocker):
         """When there are override reports AND skipped resources, the skip count
         must appear in the output — user should not wonder why some tasks are absent."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(task_id="t1", service="glue", resource_name="etl",
-                                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")])],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                )
+            ],
             _verified=1,
             _skipped=2,
         )
@@ -2777,8 +2852,14 @@ class TestSkipNoteWithReports:
         """When _skipped == 0, no skip note must appear."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(task_id="t1", service="glue", resource_name="etl",
-                                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")])],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="etl",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                )
+            ],
             _verified=1,
             _skipped=0,
         )
@@ -2790,6 +2871,7 @@ class TestSkipNoteWithReports:
 # ---------------------------------------------------------------------------
 # Fix #2: message when _verified=0 and _skipped>0 (all tasks failed existence check)
 # ---------------------------------------------------------------------------
+
 
 class TestAllSkippedOutput:
     def test_all_skipped_prints_warning_message(self, capsys, mocker):
@@ -2825,6 +2907,7 @@ class TestAllSkippedOutput:
 # _skipped deduplication: two tasks same failed resource → _skipped == 1
 # ---------------------------------------------------------------------------
 
+
 class TestSkippedCounterDedup:
     def _session(self, mocker, client_mock=None):
         session = mocker.MagicMock()
@@ -2836,10 +2919,8 @@ class TestSkippedCounterDedup:
         """Two tasks referencing the same failed resource → _skipped == 1, not 2."""
         client = mocker.MagicMock()
         tasks = [
-            _make_task(mocker, task_type="glue", job_name="etl",
-                       worker_type="G.2X", task_id="t1"),
-            _make_task(mocker, task_type="glue", job_name="etl",
-                       worker_type="G.1X", task_id="t2"),
+            _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1"),
+            _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.1X", task_id="t2"),
         ]
         result = check_resource_overrides(
             _make_dag(mocker, tasks),
@@ -2856,14 +2937,17 @@ class TestSkippedCounterDedup:
 # ECS cpu string=int equal: "1024" vs 1024 → matching, not conflict
 # ---------------------------------------------------------------------------
 
+
 class TestEcsCpuStringEqualInt:
     def test_cpu_digit_string_equal_to_int_produces_matching(self, mocker):
         """cpu declared as digit-string '1024' matching actual int 1024 → matching entry."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [{"name": "app", "cpu": "1024"}]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-task-def",
+            container_overrides={"containerOverrides": [{"name": "app", "cpu": "1024"}]},
+        )
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -2872,11 +2956,13 @@ class TestEcsCpuStringEqualInt:
 
     def test_cpu_float_string_equal_to_int_produces_matching(self, mocker):
         """cpu declared as '1024.0' (float-as-string) normalizes to int 1024; matches actual 1024."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-task-def",
-                          container_overrides={
-                              "containerOverrides": [{"name": "app", "cpu": "1024.0"}]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-task-def",
+            container_overrides={"containerOverrides": [{"name": "app", "cpu": "1024.0"}]},
+        )
         task_def = {"containerDefinitions": [{"name": "app", "cpu": 1024}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -2887,6 +2973,7 @@ class TestEcsCpuStringEqualInt:
 # ---------------------------------------------------------------------------
 # _numeric_str: float-as-string accepted
 # ---------------------------------------------------------------------------
+
 
 class TestNumericStrFloatString:
     def test_float_string_is_numeric(self):
@@ -2901,11 +2988,13 @@ class TestNumericStrFloatString:
 # Glue: DefaultArguments key entirely absent (not just empty dict)
 # ---------------------------------------------------------------------------
 
+
 class TestGlueArgumentDefaultsKeyAbsent:
     def test_glue_argument_no_default_args_key_at_all_not_reported(self, mocker):
         """When the job dict has no DefaultArguments key (not even empty), new args are silent."""
-        task = _make_task(mocker, task_type="glue", task_id="ingest",
-                          job_name="etl", glue_arguments={"--new-arg": "value"})
+        task = _make_task(
+            mocker, task_type="glue", task_id="ingest", job_name="etl", glue_arguments={"--new-arg": "value"}
+        )
         job = {}  # no DefaultArguments key at all — different from {"DefaultArguments": {}}
         assert _check_glue_override(task, job) is None
 
@@ -2914,14 +3003,13 @@ class TestGlueArgumentDefaultsKeyAbsent:
 # Batch: revision key present but value None — must not crash
 # ---------------------------------------------------------------------------
 
+
 class TestFetchBatchJobDefRevisionNone:
     def test_revision_key_present_value_none_does_not_crash(self, mocker):
         """revision key exists but value is None → 'or 0' treats it as 0; must not raise TypeError."""
         client = mocker.MagicMock()
         client.describe_job_definitions.return_value = {
-            "jobDefinitions": [
-                {"jobDefinitionName": "jd", "revision": None, "parameters": {"k": "v"}}
-            ]
+            "jobDefinitions": [{"jobDefinitionName": "jd", "revision": None, "parameters": {"k": "v"}}]
         }
         result = _fetch_batch_job_def_data(client, "jd")
         assert result["parameters"]["k"] == "v"
@@ -2932,7 +3020,7 @@ class TestFetchBatchJobDefRevisionNone:
         client.describe_job_definitions.return_value = {
             "jobDefinitions": [
                 {"jobDefinitionName": "jd", "revision": None, "parameters": {"k": "old"}},
-                {"jobDefinitionName": "jd", "revision": 5,    "parameters": {"k": "new"}},
+                {"jobDefinitionName": "jd", "revision": 5, "parameters": {"k": "new"}},
             ]
         }
         result = _fetch_batch_job_def_data(client, "jd")
@@ -2943,14 +3031,21 @@ class TestFetchBatchJobDefRevisionNone:
 # print_resource_override_result: skip note when reports + unverified + _skipped
 # ---------------------------------------------------------------------------
 
+
 class TestSkipNoteWithReportsAndUnverified:
     def test_skip_note_at_end_when_reports_and_unverified_and_skipped(self, capsys, mocker):
         """When reports, unverified, AND _skipped > 0 are all present,
         the skip note appears last — after the unverified message."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(task_id="t1", service="glue", resource_name="job-a",
-                                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")])],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="glue",
+                    resource_name="job-a",
+                    differs=[ParamConflict("WorkerType", "G.2X", "G.1X")],
+                )
+            ],
             unverified=[ResourceRef(task_id="t2", kind="batch", ref="jd")],
             _verified=1,
             _skipped=2,
@@ -2965,6 +3060,7 @@ class TestSkipNoteWithReportsAndUnverified:
 # ---------------------------------------------------------------------------
 # Region fallback warning
 # ---------------------------------------------------------------------------
+
 
 class TestRegionFallbackWarning:
     def _session(self, mocker, region=None):
@@ -3010,8 +3106,7 @@ class TestRegionFallbackWarning:
     def test_override_check_warns_when_no_region(self, mocker, capsys):
         """Override check also warns when region falls back to us-east-1."""
         mocker.patch("sys.stdout.isatty", return_value=False)
-        task = _make_task(mocker, task_type="glue", task_id="t1",
-                          job_name="etl", worker_type="G.2X")
+        task = _make_task(mocker, task_type="glue", task_id="t1", job_name="etl", worker_type="G.2X")
         client = mocker.MagicMock()
         client.get_job.return_value = {"Job": {"WorkerType": "G.1X"}}
         session = self._session(mocker, region=None)
@@ -3026,6 +3121,7 @@ class TestRegionFallbackWarning:
 # Override check: IAM hint when access denied
 # ---------------------------------------------------------------------------
 
+
 class TestOverrideIamHint:
     def _session(self, mocker, client):
         session = mocker.MagicMock()
@@ -3038,8 +3134,7 @@ class TestOverrideIamHint:
         mocker.patch("sys.stdout.isatty", return_value=False)
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("AccessDeniedException")
-        task = _make_task(mocker, task_type="glue", task_id="t1",
-                          job_name="etl", worker_type="G.2X")
+        task = _make_task(mocker, task_type="glue", task_id="t1", job_name="etl", worker_type="G.2X")
         result = check_resource_overrides(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -3057,11 +3152,13 @@ class TestOverrideIamHint:
         mocker.patch("sys.stdout.isatty", return_value=False)
         client = mocker.MagicMock()
         client.describe_task_definition.side_effect = _client_error("AccessDenied")
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={"containerOverrides": [
-                              {"name": "app", "cpu": 2048}
-                          ]})
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-def",
+            container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]},
+        )
         result = check_resource_overrides(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -3078,8 +3175,7 @@ class TestOverrideIamHint:
         mocker.patch("sys.stdout.isatty", return_value=False)
         client = mocker.MagicMock()
         client.get_job.side_effect = _client_error("ThrottlingException")
-        task = _make_task(mocker, task_type="glue", task_id="t1",
-                          job_name="etl", worker_type="G.2X")
+        task = _make_task(mocker, task_type="glue", task_id="t1", job_name="etl", worker_type="G.2X")
         result = check_resource_overrides(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -3096,23 +3192,23 @@ class TestOverrideIamHint:
 # ECS task-level cpu/memory
 # ---------------------------------------------------------------------------
 
+
 class TestEcsTaskLevelResources:
     def test_task_level_cpu_differs(self, mocker):
         """Task-level cpu in container_overrides differs from task definition → in differs."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={"cpu": 2048})
+        task = _make_task(
+            mocker, task_type="ecs", task_id="t1", task_definition="my-def", container_overrides={"cpu": 2048}
+        )
         task_def = {"cpu": "1024", "containerDefinitions": []}
         report = _check_ecs_override(task, task_def)
         assert report is not None
-        assert any(c.name == "task.cpu" and c.declared == 2048 and c.actual == 1024
-                   for c in report.differs)
+        assert any(c.name == "task.cpu" and c.declared == 2048 and c.actual == 1024 for c in report.differs)
 
     def test_task_level_cpu_matches(self, mocker):
         """Task-level cpu matches task definition → in matching, not differs."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={"cpu": 1024})
+        task = _make_task(
+            mocker, task_type="ecs", task_id="t1", task_definition="my-def", container_overrides={"cpu": 1024}
+        )
         task_def = {"cpu": "1024", "containerDefinitions": []}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -3121,45 +3217,88 @@ class TestEcsTaskLevelResources:
 
     def test_task_level_memory_differs(self, mocker):
         """Task-level memory in container_overrides differs from task definition → in differs."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={"memory": 4096})
+        task = _make_task(
+            mocker, task_type="ecs", task_id="t1", task_definition="my-def", container_overrides={"memory": 4096}
+        )
         task_def = {"memory": "2048", "containerDefinitions": []}
         report = _check_ecs_override(task, task_def)
         assert report is not None
-        assert any(c.name == "task.memory" and c.declared == 4096 and c.actual == 2048
-                   for c in report.differs)
+        assert any(c.name == "task.memory" and c.declared == 4096 and c.actual == 2048 for c in report.differs)
 
-    def test_task_level_no_baseline_skipped(self, mocker):
-        """Task-level cpu declared but task def has no top-level cpu (EC2 launch type) → skipped."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={"cpu": 2048})
-        task_def = {"containerDefinitions": []}  # no top-level cpu
+    def test_task_level_no_baseline_produces_scope_note(self, mocker):
+        """Task-level cpu declared but task def has no top-level cpu (EC2 launch type)
+        → scope_note in report, not a diff."""
+        task = _make_task(
+            mocker, task_type="ecs", task_id="t1", task_definition="my-def", container_overrides={"cpu": 2048}
+        )
+        task_def = {"containerDefinitions": []}  # no top-level cpu (EC2 launch type)
         report = _check_ecs_override(task, task_def)
-        assert report is None  # nothing to compare
+        assert report is not None
+        assert report.differs == []
+        assert report.matching == []
+        assert any("task.cpu" in n and "EC2" in n for n in report.scope_notes)
+
+    def test_task_level_cpu_as_string(self, mocker):
+        """Task-level cpu declared as string — normalized to int before comparison."""
+        task = _make_task(
+            mocker, task_type="ecs", task_id="t1", task_definition="my-def", container_overrides={"cpu": "2048"}
+        )
+        task_def = {"cpu": "1024", "containerDefinitions": []}
+        report = _check_ecs_override(task, task_def)
+        assert report is not None
+        assert any(c.name == "task.cpu" and c.declared == 2048 and c.actual == 1024 for c in report.differs)
+
+    def test_task_level_non_numeric_silently_skipped(self, mocker):
+        """Task-level cpu declared as non-numeric string — silently skipped, no entry in report."""
+        task = _make_task(
+            mocker, task_type="ecs", task_id="t1", task_definition="my-def", container_overrides={"cpu": "auto"}
+        )
+        task_def = {"cpu": "1024", "containerDefinitions": []}
+        report = _check_ecs_override(task, task_def)
+        assert report is None  # guard rejects "auto", nothing to report
+
+    def test_task_level_both_cpu_and_memory_one_differs_one_matches(self, mocker):
+        """Both cpu and memory at task level — cpu differs, memory matches — independent entries."""
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-def",
+            container_overrides={"cpu": 2048, "memory": 4096},
+        )
+        task_def = {"cpu": "1024", "memory": "4096", "containerDefinitions": []}
+        report = _check_ecs_override(task, task_def)
+        assert report is not None
+        assert any(c.name == "task.cpu" and c.declared == 2048 for c in report.differs)
+        assert any("task.memory=4096" in m for m in report.matching)
 
     def test_task_level_and_container_level_both_handled(self, mocker):
         """Task-level and container-level overrides both compared independently."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={
-                              "cpu": 2048,
-                              "containerOverrides": [{"name": "app", "cpu": 1024}],
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-def",
+            container_overrides={
+                "cpu": 2048,
+                "containerOverrides": [{"name": "app", "cpu": 1024}],
+            },
+        )
         task_def = {"cpu": "1024", "containerDefinitions": [{"name": "app", "cpu": 512}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
-        assert any(c.name == "task.cpu" for c in report.differs)   # task-level differs
-        assert any(c.name == "cpu" for c in report.differs)        # container-level differs
+        assert any(c.name == "task.cpu" for c in report.differs)  # task-level differs
+        assert any(c.name == "cpu" for c in report.differs)  # container-level differs
 
     def test_no_task_level_keys_no_task_level_entries(self, mocker):
         """container_overrides without task-level cpu/memory produces no task.* entries."""
-        task = _make_task(mocker, task_type="ecs", task_id="t1",
-                          task_definition="my-def",
-                          container_overrides={
-                              "containerOverrides": [{"name": "app", "cpu": 2048}]
-                          })
+        task = _make_task(
+            mocker,
+            task_type="ecs",
+            task_id="t1",
+            task_definition="my-def",
+            container_overrides={"containerOverrides": [{"name": "app", "cpu": 2048}]},
+        )
         task_def = {"cpu": "1024", "containerDefinitions": [{"name": "app", "cpu": 2048}]}
         report = _check_ecs_override(task, task_def)
         assert report is not None
@@ -3170,25 +3309,33 @@ class TestEcsTaskLevelResources:
         """scope_notes (from other services or future use) appear in print output."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1", service="ecs", resource_name="my-def",
-                scope_notes=["some future scope note"],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="ecs",
+                    resource_name="my-def",
+                    scope_notes=["task.cpu — EC2 task definition has no task-level cpu limit (not compared)"],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
         out = capsys.readouterr().out
         assert "not checked:" in out
-        assert "some future scope note" in out
+        assert "EC2 task definition" in out
 
     def test_scope_note_only_report_does_not_trigger_override_warning_header(self, capsys, mocker):
         """scope_notes-only OverrideReport must not cause '⚠  resource parameter overrides:' header."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1", service="ecs", resource_name="my-def",
-                scope_notes=["some future scope note"],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="ecs",
+                    resource_name="my-def",
+                    scope_notes=["task.cpu — EC2 task definition has no task-level cpu limit (not compared)"],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -3202,6 +3349,7 @@ class TestEcsTaskLevelResources:
 # _OVERRIDE_IAM_ACTION completeness parity
 # ---------------------------------------------------------------------------
 
+
 class TestOverrideIamActionParity:
     def test_override_iam_action_covers_all_override_info_services(self):
         """_OVERRIDE_IAM_ACTION must have an entry for every service in _OVERRIDE_INFO."""
@@ -3213,6 +3361,7 @@ class TestOverrideIamActionParity:
 # Region warning fires only when API calls will actually be made
 # ---------------------------------------------------------------------------
 
+
 class TestRegionWarningPrecision:
     def _session(self, mocker, region=None):
         session = mocker.MagicMock()
@@ -3222,8 +3371,9 @@ class TestRegionWarningPrecision:
     def test_existence_check_no_warn_for_cross_role_only_dag(self, mocker, capsys):
         """Cross-role tasks are skipped without API calls — no region warning must fire."""
         mocker.patch("sys.stdout.isatty", return_value=False)
-        task = _make_task(mocker, task_type="glue", task_id="t1", job_name="etl",
-                          role="arn:aws:iam::123456789012:role/other-role")
+        task = _make_task(
+            mocker, task_type="glue", task_id="t1", job_name="etl", role="arn:aws:iam::123456789012:role/other-role"
+        )
         session = self._session(mocker, region=None)
 
         check_resource_references(_make_dag(mocker, [task]), session, region=None)
@@ -3233,13 +3383,14 @@ class TestRegionWarningPrecision:
     def test_override_check_no_warn_when_all_tasks_in_failed_refs(self, mocker, capsys):
         """When all override-eligible tasks are in failed_refs, no region warning must fire."""
         mocker.patch("sys.stdout.isatty", return_value=False)
-        task = _make_task(mocker, task_type="glue", task_id="t1",
-                          job_name="etl", worker_type="G.2X")
+        task = _make_task(mocker, task_type="glue", task_id="t1", job_name="etl", worker_type="G.2X")
         session = self._session(mocker, region=None)
         session.client.return_value = mocker.MagicMock()
 
         check_resource_overrides(
-            _make_dag(mocker, [task]), session, region=None,
+            _make_dag(mocker, [task]),
+            session,
+            region=None,
             failed_refs={("glue", "etl")},
         )
         out = capsys.readouterr().out
@@ -3249,6 +3400,7 @@ class TestRegionWarningPrecision:
 # ---------------------------------------------------------------------------
 # batch access-denied → IAM hint path
 # ---------------------------------------------------------------------------
+
 
 class TestOverrideIamHintBatch:
     def _session(self, mocker, client):
@@ -3262,9 +3414,7 @@ class TestOverrideIamHintBatch:
         mocker.patch("sys.stdout.isatty", return_value=False)
         client = mocker.MagicMock()
         client.describe_job_definitions.side_effect = _client_error("AccessDeniedException")
-        task = _make_task(mocker, task_type="batch", task_id="t1",
-                          job_definition="jd",
-                          batch_parameters={"key": "val"})
+        task = _make_task(mocker, task_type="batch", task_id="t1", job_definition="jd", batch_parameters={"key": "val"})
         result = check_resource_overrides(
             _make_dag(mocker, [task]),
             self._session(mocker, client),
@@ -3282,6 +3432,7 @@ class TestOverrideIamHintBatch:
 # Two-phase throttle: existence throttle ⊄ failed_refs → override re-attempts → unverified
 # ---------------------------------------------------------------------------
 
+
 def test_two_phase_throttle_contract(mocker):
     """Throttle in existence check must NOT populate failed_refs; override check therefore
     re-attempts the same resource, and if that also throttles the resource goes to unverified."""
@@ -3291,8 +3442,7 @@ def test_two_phase_throttle_contract(mocker):
 
     # Existence check: glue job throttles
     client.get_job.side_effect = _client_error("ThrottlingException")
-    task = _make_task(mocker, task_type="glue", job_name="etl",
-                      worker_type="G.2X", task_id="t1")
+    task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1")
     dag = _make_dag(mocker, [task])
 
     existence_result = check_resource_references(dag, session, "us-east-1")
@@ -3301,9 +3451,7 @@ def test_two_phase_throttle_contract(mocker):
 
     # Override check: same resource, still throttles
     client.get_job.side_effect = _client_error("ThrottlingException")
-    override_result = check_resource_overrides(
-        dag, session, "us-east-1", failed_refs=existence_result.failed_refs
-    )
+    override_result = check_resource_overrides(dag, session, "us-east-1", failed_refs=existence_result.failed_refs)
     assert len(override_result.unverified) == 1
     assert override_result.unverified[0].ref == "etl"
     # Both phases called get_job: existence check once, override check once
@@ -3314,6 +3462,7 @@ def test_two_phase_throttle_contract(mocker):
 # No duplicate region warning when both checks run without a configured region
 # ---------------------------------------------------------------------------
 
+
 def test_no_duplicate_region_warning_when_both_checks_run(mocker, capsys):
     """When both checks run with no region configured, the 'no AWS region' warning
     must appear exactly once — region_warned is threaded from existence to override."""
@@ -3323,8 +3472,7 @@ def test_no_duplicate_region_warning_when_both_checks_run(mocker, capsys):
     session.client.return_value = client
     mocker.patch("sys.stdout.isatty", return_value=False)
 
-    task = _make_task(mocker, task_type="glue", job_name="etl",
-                      worker_type="G.2X", task_id="t1")
+    task = _make_task(mocker, task_type="glue", job_name="etl", worker_type="G.2X", task_id="t1")
     dag = _make_dag(mocker, [task])
 
     client.get_job.return_value = {
@@ -3339,7 +3487,9 @@ def test_no_duplicate_region_warning_when_both_checks_run(mocker, capsys):
     }
 
     rc_result = check_resource_references(dag, session, None)
-    check_resource_overrides(dag, session, None, failed_refs=rc_result.failed_refs, region_warned=rc_result.region_warned)
+    check_resource_overrides(
+        dag, session, None, failed_refs=rc_result.failed_refs, region_warned=rc_result.region_warned
+    )
 
     out = capsys.readouterr().out
     assert out.count("no AWS region configured") == 1
@@ -3349,17 +3499,22 @@ def test_no_duplicate_region_warning_when_both_checks_run(mocker, capsys):
 # print_resource_override_result: findings printed before scope_reports
 # ---------------------------------------------------------------------------
 
+
 class TestFindingsBeforeScopeReports:
     def test_findings_printed_before_scope_reports(self, capsys, mocker):
         """When a report has both differs and scope_notes, differs must appear before
         scope_notes — a user reading output top-down sees actionable conflicts first."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         result = OverrideCheckResult(
-            reports=[OverrideReport(
-                task_id="t1", service="ecs", resource_name="my-def",
-                differs=[ParamConflict(name="cpu", declared="2048", actual="1024")],
-                scope_notes=["task-level memory — not compared (only per-container fields checked)"],
-            )],
+            reports=[
+                OverrideReport(
+                    task_id="t1",
+                    service="ecs",
+                    resource_name="my-def",
+                    differs=[ParamConflict(name="cpu", declared="2048", actual="1024")],
+                    scope_notes=["task.memory — EC2 task definition has no task-level memory limit (not compared)"],
+                )
+            ],
             _verified=1,
         )
         print_resource_override_result(result)
@@ -3375,12 +3530,16 @@ class TestFindingsBeforeScopeReports:
         result = OverrideCheckResult(
             reports=[
                 OverrideReport(
-                    task_id="t1", service="ecs", resource_name="my-def",
+                    task_id="t1",
+                    service="ecs",
+                    resource_name="my-def",
                     differs=[ParamConflict(name="cpu", declared="2048", actual="1024")],
                 ),
                 OverrideReport(
-                    task_id="t2", service="ecs", resource_name="other-def",
-                    scope_notes=["task-level memory — not compared (only per-container fields checked)"],
+                    task_id="t2",
+                    service="ecs",
+                    resource_name="other-def",
+                    scope_notes=["task.memory — EC2 task definition has no task-level memory limit (not compared)"],
                 ),
             ],
             _verified=2,
