@@ -162,7 +162,13 @@ def _get_asset_subscribers(asset_name: str) -> List[Dict]:
             log.warn("_get_asset_subscribers", "Hit 10000 subscriber pagination cap", asset_name=asset_name)
         return subs
     except Exception as e:
-        log.warn("_get_asset_subscribers", "Query failed", asset_name=asset_name, error=str(e))
+        # Subscriber query is the entire wait_for wake-up path. If it fails,
+        # every pull-waiter for this asset hangs to its own orchestration
+        # timeout — no retry at this layer. ERROR level (not WARN) so DDB
+        # schema or throttling issues are visible in CloudWatch instead of
+        # hiding behind "task just didn't resume."
+        log.error("_get_asset_subscribers", "Query failed — pull-waiters will not be woken for this event",
+                  asset_name=asset_name, error_type=type(e).__name__, error=str(e))
         return []
 
 
@@ -182,13 +188,16 @@ def _check_freshness(asset_name: str, event_time: str, freshness_hours: float) -
         return age_hours <= freshness_hours
     except Exception as e:
         # Preserve "default to fresh" behavior so downstream orchestration isn't
-        # blocked by a single bad timestamp, but make the parse failure visible —
-        # silent True can otherwise mask systematic timestamp issues for hours.
-        log.warn("_check_freshness", "Parse failed; defaulting to fresh",
-                 asset_name=asset_name,
-                 event_time=event_time,
-                 error_type=type(e).__name__,
-                 error=str(e))
+        # blocked by a single bad timestamp. ERROR level (not WARN) because
+        # "default to fresh" is fail-OPEN — a systematic timestamp issue
+        # silently triggers every consumer on stale data until someone notices
+        # the warning sea. Visible as error is the mitigation until the
+        # behavior is revisited (see experimental limitations in ASSETS.md).
+        log.error("_check_freshness", "Parse failed; defaulting to fresh (fail-open)",
+                  asset_name=asset_name,
+                  event_time=event_time,
+                  error_type=type(e).__name__,
+                  error=str(e))
         return True  # Default to fresh if parsing fails
 
 
@@ -287,8 +296,14 @@ def _coordinate_ready_check(execution_name: str) -> bool:
         body = json.loads(response['Payload'].read())
         return bool(body.get('is_ready', False))
     except Exception as e:
-        log.warn("_coordinate_ready_check", "evaluate_deps invoke failed",
-                 execution_name=execution_name, error=str(e))
+        # Fall-back is fail-OPEN: signal the task anyway, under the assumption
+        # that the task's deps probably are satisfied and a fresh evaluate_deps
+        # call on the next invocation will catch any mistakes. ERROR level so a
+        # systematic evaluate_deps outage shows up in CloudWatch instead of
+        # masquerading as "the pipeline has a mind of its own." Known
+        # limitation — see ASSETS.md experimental limitations.
+        log.error("_coordinate_ready_check", "evaluate_deps invoke failed; signaling anyway (fail-open)",
+                  execution_name=execution_name, error_type=type(e).__name__, error=str(e))
         return True  # fall back to signaling on invoke failure
 
 
@@ -319,7 +334,14 @@ def _send_task_success(wait_token: str, asset_name: str, asset_uri: str, event_t
         log.warn("_send_task_success", "Task does not exist", asset_name=asset_name)
         return False
     except Exception as e:
-        log.warn("_send_task_success", "send_task_success failed", asset_name=asset_name, error=str(e))
+        # The three SFN-specific exceptions above are legitimate "token is no
+        # longer valid" cases (timed out, task already consumed, task cleaned
+        # up) — WARN is right for those. This branch catches everything else:
+        # IAM denial, service outage, malformed output. Those fail the wake-
+        # up without a retry at this layer, so pull-waiters stay blocked.
+        # ERROR so a systematic send_task_success issue is visible.
+        log.error("_send_task_success", "send_task_success failed — pull-waiter not woken",
+                  asset_name=asset_name, error_type=type(e).__name__, error=str(e))
         return False
 
 

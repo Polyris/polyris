@@ -1,5 +1,45 @@
 ## Unreleased
 
+### Fixed — `mark_success` wakes `wait_for` subscribers
+
+- Manual `mark_success` on an asset-producing task now invokes
+  `NotifyAssetSubscribersFunction` (same Lambda the `run_task` SFN calls on
+  natural completion) so tasks waiting via `wait_for=[asset]` are woken the
+  same way push consumers (`schedule=[asset]`) already were. Human
+  intervention path and natural event path now go through the same wake-up
+  logic.
+- New env var `NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN` on `ConsoleApiFunction`;
+  IAM `lambda:InvokeFunction` grant on `NotifyAssetSubscribersFunction`.
+  Fire-and-forget invocation — Lambda errors are logged, not surfaced, matching
+  the existing push-consumer SFN pattern.
+
+### Changed — Asset-layer Lambdas: silent `warning` catches upgraded to `error`
+
+- `check_assets._save_subscription`, `check_assets._is_fresh`,
+  `notify_asset_subscribers._get_asset_subscribers`,
+  `notify_asset_subscribers._check_freshness`,
+  `notify_asset_subscribers._coordinate_ready_check`, and
+  `notify_asset_subscribers._send_task_success` now log at ERROR (not WARN)
+  with actionable context messages. Behavior is unchanged — fail-open and
+  fail-closed defaults preserved — but DDB schema issues, timestamp parse
+  failures, and send_task_success IAM problems are now visible in CloudWatch
+  without digging through warnings for every pipeline tick.
+
+### Fixed — `polyris-register --json` no longer mixes progress text with JSON
+
+- `polyris-register --json <arn>` was emitting `📝 Registering pipeline...` and
+  profile/role prints before the JSON body, breaking `json.loads` on the
+  combined output. Progress prints are now suppressed when `--json` is active,
+  matching the `polyris/CLAUDE.md` `--json` rule already enforced in
+  `polyris-validate` and `polyris-output`.
+
+### Changed — `polyris/register.py` moved off the coverage omit list
+
+- `register.py` was fully exempt from coverage with a documented `KNOWN DEBT`
+  comment in `pyproject.toml`. Internal change only: 30 new tests in
+  `tests/sdk/test_register_cli.py` cover `get_sfn_client`, `register_pipeline`,
+  `find_sfn_arn`, and `main`. `fail_under = 100` floor now includes this module.
+
 ### Removed — `"sagemaker"` from `TaskTypeLiteral`
 
 - `"sagemaker"` removed from `TaskTypeLiteral` in `polyris/constants.py`. The type

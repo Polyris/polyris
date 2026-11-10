@@ -184,6 +184,12 @@ RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 # SFN Helpers
 NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
 NOTIFY_ASSET_CONSUMERS_SFN_ARN = os.environ.get('NOTIFY_ASSET_CONSUMERS_SFN_ARN', '')
+# Lambda ARN for waking `wait_for` subscribers on manual mark-success. The
+# run_task SFN invokes this Lambda on natural completion; mark-success must
+# invoke it too so pull-waiters are woken on the same event path.
+NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN = os.environ.get(
+    'NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN', ''
+)
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
 
 # ============================================
