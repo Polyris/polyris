@@ -1,7 +1,7 @@
 """Tests for polyris.resource_check — pre-deploy AWS resource reference check.
 
 Coverage targets:
-  - _collect_resource_refs: per task type, cross-account, ${...}, emr/sagemaker skip
+  - _collect_resource_refs: per task type, cross-account, ${...}, emr skip
   - Per-service check functions: found / not-found / empty-list (ECS/Batch);
     PROVISIONING ECS cluster, CREATING/UPDATING Batch queue treated as usable
   - check_resource_references: cross-account skip, cfn skip, dedup, multi-region,
@@ -205,11 +205,6 @@ class TestCollectResourceRefs:
 
     def test_emr_not_collected(self, mocker):
         task = _make_task(mocker, task_type="emr", emr_cluster_id="j-ABC123")
-        refs = _collect_resource_refs(_make_dag(mocker, [task]))
-        assert refs == []
-
-    def test_sagemaker_not_collected(self, mocker):
-        task = _make_task(mocker, task_type="sagemaker")
         refs = _collect_resource_refs(_make_dag(mocker, [task]))
         assert refs == []
 
@@ -1803,7 +1798,7 @@ class TestCheckResourceOverrides:
         assert result._verified == 0
 
     def test_non_override_task_types_skipped(self, mocker):
-        """sfn, lambda, athena, emr, sagemaker have no override params — skipped."""
+        """sfn, lambda, athena, emr have no override params — skipped."""
         client = mocker.MagicMock()
         tasks = [
             _make_task(mocker, task_type="sfn", task_id="t1", arn="arn:aws:states:us-east-1:123:stateMachine:x"),
