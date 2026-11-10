@@ -38,6 +38,8 @@ import boto3
 from botocore.exceptions import ClientError, ProfileNotFound
 from typing import Optional
 
+from ._ansi import colorize_parser
+
 
 def get_sfn_client(region: str, profile: Optional[str] = None, role_arn: Optional[str] = None):
     """
@@ -265,7 +267,8 @@ Authentication:
         action='store_true',
         help='Output result as JSON'
     )
-    
+
+    colorize_parser(parser)
     args = parser.parse_args()
     
     # Determine ARN

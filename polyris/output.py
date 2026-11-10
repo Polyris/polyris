@@ -12,7 +12,7 @@ import sys
 import importlib.util
 from pathlib import Path
 
-from ._ansi import c, CYAN, RED
+from ._ansi import c, colorize_parser, CYAN, RED
 
 
 def _load_dags(dag_file: str):
@@ -98,6 +98,7 @@ def main():
                         help="Pipeline file (default: dag.py)")
     parser.add_argument("--select", help="Select specific DAG by ID (for multi-DAG files)")
 
+    colorize_parser(parser)
     args = parser.parse_args()
 
     dags, mod = _load_dags(args.file)

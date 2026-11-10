@@ -14,7 +14,7 @@ from typing import Any, List
 import sys
 from pathlib import Path
 
-from ._ansi import BOLD as _BOLD, BOLD_GREEN as _BOLD_GREEN, CYAN as _CYAN, GREEN as _GREEN, RED as _RED, c as _c
+from ._ansi import BOLD as _BOLD, BOLD_GREEN as _BOLD_GREEN, CYAN as _CYAN, GREEN as _GREEN, RED as _RED, c as _c, colorize_parser as _colorize_parser
 
 
 # =============================================================================
@@ -570,6 +570,7 @@ def main():
     parser.add_argument("-i", "--interactive", action="store_true", help="Interactive wizard")
     parser.add_argument("--project", action="store_true", help="Initialize a new polyris project (creates config.py)")
 
+    _colorize_parser(parser)
     args = parser.parse_args()
 
     if args.project:

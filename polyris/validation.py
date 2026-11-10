@@ -21,7 +21,7 @@ import importlib.util
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional, Any
 from dataclasses import dataclass, field
-from polyris._ansi import c as _c, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
+from polyris._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 
 
 @dataclass
@@ -841,6 +841,7 @@ def main():
         help='Output results as JSON'
     )
 
+    colorize_parser(parser)
     args = parser.parse_args()
 
     # --json requires clean stdout. Suppress verbose prints when --json is

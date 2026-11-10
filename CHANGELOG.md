@@ -1,5 +1,22 @@
 ## Unreleased
 
+### Changed — All CLI `--help` output and `polyris` command index: colored
+
+- **argparse `--help` output** (polyris-deploy, polyris-validate, polyris-output,
+  polyris-init, polyris-local, polyris-register, polyris-build-lambda) is now
+  colored: `usage:`, `options:`, `positional arguments:`, `Examples:` section
+  headers in BOLD; option flags (`-h, --help`, `--all, -a`, `--file FILE, -f FILE`,
+  etc.) in CYAN. Implemented via two helpers in `polyris/_ansi.py`:
+  - `colorize_argparse_help(text)` — regex-based post-processor, no-op off TTY.
+  - `colorize_parser(parser)` — wraps `parser.format_help`. One call per parser.
+- **`polyris` (command index) output** rebuilt as `_build_help_text()`: BOLD section
+  headers, CYAN command names. Visible-width alignment via `_col(name, width)`
+  helper — Python's `:<N` format spec counts invisible ANSI bytes toward the
+  column count and breaks alignment, so padding is computed from the uncolored
+  name length instead.
+- **Piped / non-TTY callers** continue to receive plain text — the TTY check in
+  `_c()` governs both helpers.
+
 ### Changed — polyris-validate: positive success feedback instead of silent exit
 
 - **Before:** `polyris-validate` (and `polyris-validate -a`, `--test`) exited with code

@@ -26,7 +26,7 @@ from .dag import DAG
 from .task import Task
 from .generators import generate_step_function_json, generate_mermaid
 from .validation import validate_asl_from_dag
-from ._ansi import c, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
+from ._ansi import c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -736,6 +736,7 @@ def main() -> None:
         help='include generated Step Functions ASL JSON in --dry-run output',
     )
 
+    colorize_parser(parser)
     args = parser.parse_args()
 
     dag = _load_dag_from_file(args.file)

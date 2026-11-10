@@ -50,7 +50,7 @@ from .generators import (
 )
 from .dag import DAG
 from .config import config as polyris_config
-from ._ansi import c as _c, BOLD, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
+from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
 from .resource_check import (
     check_resource_references,
     print_resource_check_result,
@@ -1121,6 +1121,7 @@ Examples:
         "--only", nargs="+", metavar="DIR", help="Bulk mode: deploy/destroy only the listed subdirectories"
     )
 
+    colorize_parser(parser)
     args = parser.parse_args()
     destroy = args.destroy or force_destroy
 
