@@ -33,6 +33,20 @@ class TestInitPipelineCfnDefault:
             "wrote nothing at all"
         )
 
+    def test_colorizes_summary_on_tty(self, tmp_path, capsys, mocker):
+        """Pin polyris-init's post-create coloring: BOLD_GREEN success + CYAN path."""
+        from polyris._ansi import BOLD_GREEN, CYAN
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        init_pipeline(name="my-pipeline", base_dir=str(tmp_path))
+        out = capsys.readouterr().out
+        assert BOLD_GREEN in out
+        assert CYAN in out
+
+    def test_summary_plain_off_tty(self, tmp_path, capsys, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        init_pipeline(name="my-pipeline", base_dir=str(tmp_path))
+        assert "\x1b[" not in capsys.readouterr().out
+
     def test_explicit_cfn_deploy_method_writes_a_file(self, tmp_path):
         init_pipeline(name="my-pipeline", base_dir=str(tmp_path), deploy_method="cfn")
         assert (tmp_path / "my-pipeline" / "dag.py").exists()

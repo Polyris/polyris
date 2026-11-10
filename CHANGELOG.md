@@ -1,5 +1,19 @@
 ## Unreleased
 
+### Changed — All CLI tools: consistent per-line coloring
+
+- **`polyris-run`, `polyris-output`, `polyris-validate`, `polyris-init`** now follow the
+  same color conventions as `polyris-deploy` (ADR docs & polyris/CLAUDE.md): BOLD
+  section headers, CYAN identifiers (DAG id, task id, file paths, state machine
+  names, execution ARNs, directory paths), BOLD_GREEN success markers, RED errors,
+  YELLOW warnings.
+- **Content output stays plain** — `polyris-output --json/--mermaid/--graph/--assets`
+  prints parseable artifacts; those outputs are intentionally never colored.
+- **Regression tests added per CLI**: `test_colorizes_identifiers_on_tty` /
+  `test_no_ansi_codes_off_tty` pattern in `test_local_cli.py`, `test_output_cli.py`,
+  `test_validation_cli.py`, `test_init_pipeline.py` — removing any `_c(...)` call now
+  fails a locked-in contract test, not just visual inspection.
+
 ### Changed — polyris-deploy output: visible per-line coloring
 
 - **Previously only the `✓` success markers in resource checks were colored**,

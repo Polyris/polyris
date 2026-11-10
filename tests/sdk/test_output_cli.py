@@ -109,6 +109,22 @@ class TestLoadDags:
         dags, _ = _load_dags("dag.py")
         assert sorted(d.dag_id for d in dags) == ["first-dag", "second-dag"]
 
+    def test_error_paths_colorize_file_path_on_tty(self, in_dir, capsys, mocker):
+        """Error messages name the bad file in CYAN + RED prefix on TTY."""
+        from polyris._ansi import CYAN, RED
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        with pytest.raises(SystemExit):
+            _load_dags("missing.py")
+        out = capsys.readouterr().out
+        assert RED in out and f"{CYAN}missing.py" in out
+
+    def test_error_paths_stay_plain_off_tty(self, in_dir, capsys, mocker):
+        """CI logs / pipes — no ANSI codes in error output."""
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        with pytest.raises(SystemExit):
+            _load_dags("missing.py")
+        assert "\x1b[" not in capsys.readouterr().out
+
 
 # ── _select_dag ──────────────────────────────────────────────────────────────
 

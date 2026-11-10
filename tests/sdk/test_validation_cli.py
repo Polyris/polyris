@@ -92,6 +92,22 @@ class TestDiscoveryAndRunner:
         _run_test(str(f))
         assert "Testing DAG" in capsys.readouterr().out
 
+    def test_run_test_colorizes_dag_id_on_tty(self, tmp_path, capsys, mocker):
+        """Pin polyris-validate coloring: BOLD header + CYAN dag id."""
+        from polyris._ansi import BOLD, CYAN
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        f = _write(tmp_path, "dag.py", SOLO_DAG)
+        _run_test(str(f))
+        out = capsys.readouterr().out
+        assert BOLD in out
+        assert CYAN in out
+
+    def test_run_test_plain_off_tty(self, tmp_path, capsys, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        f = _write(tmp_path, "dag.py", SOLO_DAG)
+        _run_test(str(f))
+        assert "\x1b[" not in capsys.readouterr().out
+
     def test_run_test_missing_file_exits(self, tmp_path):
         with pytest.raises(SystemExit):
             _run_test(str(tmp_path / "nope.py"))

@@ -296,6 +296,26 @@ class TestDryRun:
         assert "extract" in out
         assert "load" in out
 
+    def test_colorizes_identifiers_on_tty(self, tmp_path, capsys, mocker):
+        """Lock in polyris/CLAUDE.md color conventions for polyris-local."""
+        from polyris._ansi import BOLD, CYAN
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        dag_file = _make_dag_file(tmp_path, arns_real=True)
+        dag = _load_dag_from_file(dag_file)
+        dry_run(dag, show_mermaid=False)
+        out = capsys.readouterr().out
+        # Section header (📋 DAG Configuration:) wrapped in BOLD
+        assert BOLD in out
+        # dag.dag_id wrapped in CYAN — pin at least one site (ID row)
+        assert f"{CYAN}{dag.dag_id}" in out
+
+    def test_no_ansi_codes_off_tty(self, tmp_path, capsys, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        dag_file = _make_dag_file(tmp_path, arns_real=True)
+        dag = _load_dag_from_file(dag_file)
+        dry_run(dag, show_mermaid=False)
+        assert "\x1b[" not in capsys.readouterr().out
+
     def test_show_asl_includes_json(self, tmp_path, capsys):
         dag_file = _make_dag_file(tmp_path, arns_real=True)
         dag = _load_dag_from_file(dag_file)
