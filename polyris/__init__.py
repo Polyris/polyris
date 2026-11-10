@@ -44,7 +44,7 @@ Deploy Options:
     # Then: polyris-deploy
 """
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 # Core classes
 from .config import config
