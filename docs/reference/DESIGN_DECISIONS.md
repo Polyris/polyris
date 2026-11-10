@@ -9,10 +9,9 @@ in the Settings → Alerts UI and stored in the pipeline registry (`alert_config
 not declared in the DAG. The old `alerts=` DAG parameter has been **removed**.
 
 **Rationale:**
-- Secrets (Slack webhook, PagerDuty routing key) must not live in pipeline source —
+- Secrets (webhook URLs, routing keys) must not live in pipeline source —
   they belong in SSM, written via the UI, never committed
 - Alerting is an operational concern that changes without a code redeploy
-- Browser notifications are free and automatic; external channels are Team-tier
 - A single source of truth (the registry) that the notify Lambda reads at 3am,
   with no UI involvement at failure time
 

@@ -186,9 +186,15 @@ def test_namespace_stage_length_guardrail(mocker):
 
     Longest IAM role suffix in template.yaml: '-polyris-notify-asset-subscribers-role'
     (38 chars). With the leading hyphen: 64 - 1 - 38 = 25 chars left for namespace+stage.
+
+    Guards are skipped on --destroy (no IAM roles created); test uses deploy path.
     """
     dag = mocker.MagicMock()
     dag.dag_id = "my-pipeline"
+    mocker.patch(
+        "polyris.validation.validate_asl_from_dag",
+        return_value=(True, [], []),
+    )
     cfg = mocker.patch("polyris.deploy.polyris_config")
     # namespace(17) + stage(9) = 26 > 25
     cfg.stage = "stagingxy"
@@ -200,10 +206,31 @@ def test_namespace_stage_length_guardrail(mocker):
     boto = mocker.patch("polyris.deploy.boto3")
 
     with pytest.raises(SystemExit) as exc:
-        deploy.deploy_pipeline(dag, destroy=True)  # destroy=True skips DAG validation
+        deploy.deploy_pipeline(dag)  # deploy path: guards are active
 
     assert exc.value.code == 1
     boto.Session.assert_not_called()  # guard fires before any AWS work
+
+
+def test_namespace_stage_length_guardrail_skipped_on_destroy(mocker):
+    """Guards are skipped on --destroy so existing over-limit stacks can still be removed."""
+    dag = mocker.MagicMock()
+    dag.dag_id = "my-pipeline"
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    # namespace(17) + stage(9) = 26 > 25 — would fail on deploy, must pass on destroy
+    cfg.stage = "stagingxy"
+    cfg.for_stage.return_value = _stage_cfg(
+        mocker,
+        namespace="this-is-namespace",
+        stack_name="some-stack",
+    )
+    boto = mocker.patch("polyris.deploy.boto3")
+    boto.Session.side_effect = SystemExit(2)  # guard passed → boto reached → arranged exit
+
+    with pytest.raises(SystemExit) as exc:
+        deploy.deploy_pipeline(dag, destroy=True)
+
+    assert exc.value.code == 2  # reached boto, not the IAM guard
 
 
 def test_scheduler_role_dag_id_length_guardrail(mocker):
@@ -214,10 +241,17 @@ def test_scheduler_role_dag_id_length_guardrail(mocker):
     → len(ns)+len(stage)+len(dag_id) ≤ 39.
 
     With ns=5, stage=4 (total 9, well under 25), dag_id must be ≤ 30 chars.
+    Guard only fires for time-triggered DAGs (dag.schedule truthy, not asset-triggered).
     """
     dag = mocker.MagicMock()
     # ns(5) + stage(4) + dag_id(31) = 40 > 39 → scheduler role = 65 chars
     dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars
+    dag.schedule = "@daily"       # time-triggered → scheduler role IS created
+    dag.is_asset_triggered = False
+    mocker.patch(
+        "polyris.validation.validate_asl_from_dag",
+        return_value=(True, [], []),
+    )
     cfg = mocker.patch("polyris.deploy.polyris_config")
     cfg.stage = "prod"
     cfg.for_stage.return_value = _stage_cfg(
@@ -228,7 +262,33 @@ def test_scheduler_role_dag_id_length_guardrail(mocker):
     boto = mocker.patch("polyris.deploy.boto3")
 
     with pytest.raises(SystemExit) as exc:
-        deploy.deploy_pipeline(dag, destroy=True)  # destroy=True skips DAG validation
+        deploy.deploy_pipeline(dag)  # deploy path: guards are active
 
     assert exc.value.code == 1
     boto.Session.assert_not_called()  # guard fires before any AWS work
+
+
+def test_scheduler_role_guard_skipped_for_unscheduled_dag(mocker):
+    """Guard 2 must NOT fire for unscheduled DAGs (no scheduler role is created)."""
+    dag = mocker.MagicMock()
+    dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars — would fail if guard fired
+    dag.schedule = None           # no schedule → no scheduler role
+    dag.is_asset_triggered = False
+    mocker.patch(
+        "polyris.validation.validate_asl_from_dag",
+        return_value=(True, [], []),
+    )
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    cfg.stage = "prod"
+    cfg.for_stage.return_value = _stage_cfg(
+        mocker,
+        namespace="my-ns",
+        stack_name="some-stack",
+    )
+    boto = mocker.patch("polyris.deploy.boto3")
+    boto.Session.side_effect = SystemExit(2)  # guard passed → boto reached → arranged exit
+
+    with pytest.raises(SystemExit) as exc:
+        deploy.deploy_pipeline(dag)
+
+    assert exc.value.code == 2  # reached boto, not the scheduler-role guard

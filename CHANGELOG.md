@@ -1,5 +1,28 @@
 ## Unreleased
 
+### Removed — `"sagemaker"` from `TaskTypeLiteral`
+
+- `"sagemaker"` removed from `TaskTypeLiteral` in `polyris/constants.py`. The type
+  was listed but had no `@task.sagemaker` decorator, no generator branch, and no
+  runtime implementation — it was a phantom. Any type annotation using
+  `task_type: TaskTypeLiteral = "sagemaker"` will now get a mypy error.
+
+### Removed — `Watcher` and `generate_watchers_config` from public API
+
+- `Watcher` and `generate_watchers_config` removed from `polyris/__init__.py`
+  (`from polyris import Watcher` now raises `ImportError`). Both remain in
+  `polyris.assets` as internal implementation; no infrastructure currently consumes
+  the generated config.
+
+### Added — `polyris-deploy` IAM name length guards
+
+- `deploy_pipeline` now validates IAM role name lengths before touching AWS:
+  - `len(namespace) + len(stage) > 25` exits with an actionable message (protects
+    all SAM infrastructure roles; longest suffix is 37 chars).
+  - `len(namespace) + len(stage) + len(dag_id) > 39` exits for time-triggered DAGs
+    (protects the per-pipeline `{ns}-{stage}-polyris-{dag_id}-scheduler-role`).
+  - Both guards are skipped on `--destroy` (stack deletion needs no new IAM roles).
+
 ### Changed — All CLI `--help` output and `polyris` command index: colored
 
 - **argparse `--help` output** (polyris-deploy, polyris-validate, polyris-output,
