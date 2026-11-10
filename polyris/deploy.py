@@ -50,7 +50,7 @@ from .generators import (
 )
 from .dag import DAG
 from .config import config as polyris_config
-from ._ansi import c as _c, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
+from ._ansi import c as _c, BOLD, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
 from .resource_check import (
     check_resource_references,
     print_resource_check_result,
@@ -519,15 +519,15 @@ def _print_deploy_summary(
     → profile → pipeline stack) so tests can pin the exact format.
     """
     print("")
-    print("── Deploy target ──────────────────────────────────────────────────")
-    print(f"   dag:             {dag_id}")
-    print(f"   stage:           {stage}")
-    print(f"   sam stack:       {stack_name}    ← reads CloudFormation outputs from here")
-    print(f"   namespace:       {namespace}")
-    print(f"   region:          {region}")
-    print(f"   profile:         {profile or '(default)'}")
-    print(f"   pipeline stack:  {pipeline_stack}")
-    print("───────────────────────────────────────────────────────────────────")
+    print(_c("── Deploy target ──────────────────────────────────────────────────", BOLD))
+    print(f"   dag:             {_c(dag_id, CYAN)}")
+    print(f"   stage:           {_c(stage, CYAN)}")
+    print(f"   sam stack:       {_c(stack_name, CYAN)}    ← reads CloudFormation outputs from here")
+    print(f"   namespace:       {_c(namespace, CYAN)}")
+    print(f"   region:          {_c(region, CYAN)}")
+    print(f"   profile:         {_c(profile or '(default)', CYAN)}")
+    print(f"   pipeline stack:  {_c(pipeline_stack, CYAN)}")
+    print(_c("───────────────────────────────────────────────────────────────────", BOLD))
 
 
 def _fail_no_stack_name(stage: str) -> None:
@@ -687,7 +687,7 @@ def deploy_pipeline(
     # match the real infra to work. The SAM stack's own Namespace / Stage
     # are cosmetic (they name SAM's own resources); pipeline naming lives
     # in config.py.
-    print(f"\nReading SAM stack outputs from '{sam_stack_name}'...")
+    print(f"\nReading SAM stack outputs from {_c(sam_stack_name, CYAN)}...")
     outputs, _params = _read_sam_stack(session, sam_stack_name)
 
     wrapper_arn = outputs.get("DependencyWrapperArn")
@@ -709,7 +709,7 @@ def deploy_pipeline(
 
     # Destroy
     if destroy:
-        print(f"\nDestroying stack: {stack_name}")
+        print(f"\nDestroying stack: {_c(stack_name, CYAN)}")
         if not dry_run:
             cfn = session.client("cloudformation")
             seen_ids: set = set()
@@ -741,9 +741,9 @@ def deploy_pipeline(
             finally:
                 stop_watching.set()
                 watcher_thread.join(timeout=5)
-            print(f"✅ Stack deleted: {stack_name}")
+            print(_c(f"✅ Stack deleted: {stack_name}", BOLD_GREEN))
         else:
-            print(f"[dry-run] Would delete stack: {stack_name}")
+            print(f"[dry-run] Would delete stack: {_c(stack_name, CYAN)}")
         return
 
     # Check that referenced AWS resources exist before committing to a deploy.
@@ -771,7 +771,7 @@ def deploy_pipeline(
         print_resource_override_result(_ro)
 
     # Generate template
-    print(f"\nGenerating CloudFormation template for: {dag.dag_id}")
+    print(f"\nGenerating CloudFormation template for: {_c(dag.dag_id, CYAN)}")
     template = _generate_cfn_template(
         dag=dag,
         namespace=namespace,
@@ -789,16 +789,16 @@ def deploy_pipeline(
     # Write template to temp file
     template_path = Path(f"/tmp/polyris-{dag.dag_id}-{stage}.json")
     template_path.write_text(json.dumps(template, indent=2))
-    print(f"  Template: {template_path}")
+    print(f"  Template: {_c(str(template_path), CYAN)}")
 
     if dry_run:
-        print(f"\n[dry-run] Would deploy stack: {stack_name}")
+        print(f"\n[dry-run] Would deploy stack: {_c(stack_name, CYAN)}")
         print(f"  Resources: {list(template['Resources'].keys())}")
-        print(f"  DAG hash: {generate_dag_hash(dag)}")
+        print(f"  DAG hash: {_c(generate_dag_hash(dag), CYAN)}")
         return
 
     # Deploy via CloudFormation
-    print(f"\nDeploying stack: {stack_name}")
+    print(f"\nDeploying stack: {_c(stack_name, CYAN)}")
     cmd = [
         "aws",
         "cloudformation",
@@ -1150,7 +1150,7 @@ Examples:
         sys.exit(1)
 
     # Load DAGs
-    print(f"Loading pipeline: {pipeline_file}")
+    print(f"Loading pipeline: {_c(str(pipeline_file), CYAN)}")
     dags = _load_dag_from_file(pipeline_file)
 
     if not dags:

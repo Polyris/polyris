@@ -1,5 +1,20 @@
 ## Unreleased
 
+### Changed — polyris-deploy output: visible per-line coloring
+
+- **Previously only the `✓` success markers in resource checks were colored**,
+  leaving the rest of the deploy output (deploy target summary, loading pipeline,
+  reading SAM outputs, generating template, dry-run summary) entirely plain. On
+  most Konsole/iTerm color schemes the two tiny green `✓` characters were easy
+  to miss, making the whole command look like it had no coloring at all.
+- **Now every identifier and section header is colored per the polyris/CLAUDE.md
+  conventions**: section headers (`── Deploy target ──`, trailing rule) in BOLD;
+  identifiers (dag id, stage, SAM stack name, namespace, region, profile, pipeline
+  stack, pipeline file path, template path, DAG hash) in CYAN; success/failure
+  markers unchanged (BOLD_GREEN / RED).
+- Non-TTY callers (pipes, CI logs) continue to receive plain text — the TTY check
+  in `_ansi.c()` is unchanged.
+
 ### Added — Pre-deploy override check: ECS task-level resources
 
 - **ECS task-level `cpu`/`memory` are now actively compared (Fargate).** For Fargate
