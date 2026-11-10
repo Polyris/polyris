@@ -292,3 +292,29 @@ def test_scheduler_role_guard_skipped_for_unscheduled_dag(mocker):
         deploy.deploy_pipeline(dag)
 
     assert exc.value.code == 2  # reached boto, not the scheduler-role guard
+
+
+def test_scheduler_role_guard_skipped_for_asset_triggered_dag(mocker):
+    """Guard 2 must NOT fire for asset-triggered DAGs (no EventBridge Scheduler role created)."""
+    dag = mocker.MagicMock()
+    dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars — would fail if guard fired
+    dag.schedule = [object()]      # asset schedule object — truthy, but is_asset_triggered=True
+    dag.is_asset_triggered = True  # asset-triggered → no scheduler role
+    mocker.patch(
+        "polyris.validation.validate_asl_from_dag",
+        return_value=(True, [], []),
+    )
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    cfg.stage = "prod"
+    cfg.for_stage.return_value = _stage_cfg(
+        mocker,
+        namespace="my-ns",
+        stack_name="some-stack",
+    )
+    boto = mocker.patch("polyris.deploy.boto3")
+    boto.Session.side_effect = SystemExit(2)  # guard passed → boto reached → arranged exit
+
+    with pytest.raises(SystemExit) as exc:
+        deploy.deploy_pipeline(dag)
+
+    assert exc.value.code == 2  # reached boto, not the scheduler-role guard
