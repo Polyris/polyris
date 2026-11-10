@@ -10,8 +10,12 @@
 - **Now every identifier and section header is colored per the polyris/CLAUDE.md
   conventions**: section headers (`── Deploy target ──`, trailing rule) in BOLD;
   identifiers (dag id, stage, SAM stack name, namespace, region, profile, pipeline
-  stack, pipeline file path, template path, DAG hash) in CYAN; success/failure
-  markers unchanged (BOLD_GREEN / RED).
+  stack, pipeline file path, template path, DAG hash) in CYAN. Success markers in
+  `resource_check.py` remain BOLD_GREEN as before; the `aborting deploy` error line
+  there remains RED. Note: the `❌` failure prints throughout `deploy.py` itself
+  (bad profile, missing stack, validation failed, etc.) are still plain text —
+  colorizing them is a separate follow-up to keep this commit scoped to the
+  deploy-summary output path.
 - Non-TTY callers (pipes, CI logs) continue to receive plain text — the TTY check
   in `_ansi.c()` is unchanged.
 

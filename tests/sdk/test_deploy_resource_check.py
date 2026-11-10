@@ -1275,6 +1275,15 @@ class TestNumericStr:
     def test_numeric_str_inf_string_rejected(self):
         assert _numeric_str("inf") is False
 
+    def test_numeric_str_true_rejected(self):
+        """`isinstance(True, int) is True` in Python — bool must be rejected
+        explicitly, otherwise `container_overrides={"cpu": True}` would coerce
+        to `1` and produce `differs: declared=True, actual=1024`."""
+        assert _numeric_str(True) is False
+
+    def test_numeric_str_false_rejected(self):
+        assert _numeric_str(False) is False
+
 
 # ---------------------------------------------------------------------------
 # _sanitize helper

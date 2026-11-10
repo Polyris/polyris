@@ -515,7 +515,12 @@ def _numeric_str(v: Any) -> bool:
     Accepts digit strings ("512") and float-formatted strings ("512.0") because
     some AWS API responses may return numeric fields as floats.
     Rejects NaN and Inf — `float("nan")` passes `float()` but `int(float("nan"))` raises.
+    Rejects booleans explicitly — `isinstance(True, int) is True` in Python, so a
+    user-set `container_overrides={"cpu": True}` would otherwise be coerced to `1`
+    and produce a confusing `differs: declared=True, actual=1024` line.
     """
+    if isinstance(v, bool):
+        return False
     if isinstance(v, (int, float)):
         try:
             int(float(v))
