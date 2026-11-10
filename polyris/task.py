@@ -50,9 +50,7 @@ def _reject_template_syntax(field_name: str, value: Any) -> None:
                 f"so {marker!r} reaches it as literal characters and breaks "
                 f"the SQL parser / becomes a useless string parameter. "
                 f"Interpolate at DAG-definition time using a Python f-string, "
-                f"or route the runtime value through a Lambda-front task. "
-                f"See polyris/CLAUDE.md 'Task-config string fields are passed "
-                f"verbatim'."
+                f"or route the runtime value through a Lambda-front task."
             )
 
 
@@ -613,10 +611,9 @@ class TaskDecorator:
             resolved_retries = retries if retries is not None else default_args.get('retries', 0)
             if resolved_retries > 9:
                 raise ValueError(
-                    f"retries={resolved_retries} exceeds the maximum of 9. "
-                    "Values ≥ 10 cause the TASK_RETRY_STARTED event sort-key suffix "
-                    "('#15-N') to sort lexicographically wrong in the Console timeline "
-                    "(ADR #125)."
+                    f"retries={resolved_retries}: maximum is 9. "
+                    "Higher values break timeline event ordering in the Console. "
+                    "See docs/features/DSL.md — Common parameters."
                 )
 
             # Create Task with all fields
@@ -1042,8 +1039,7 @@ class TaskDecorator:
             the query. Interpolate at DAG-definition time (Python f-string /
             format) if the value can be resolved before deploy; wrap the query
             in a Lambda-front task if it must be resolved from upstream xcom
-            at runtime. See ``polyris/CLAUDE.md`` "Task-config string fields
-            are passed verbatim".
+            at runtime.
         """
         if not query_string.strip():
             raise ValueError(

@@ -23,7 +23,6 @@ Two checks run before CloudFormation deploy:
 Skipped silently (no output):
   - CloudFormation substitution variables (${...}) — resolved at CFN deploy time
   - emr tasks — emr_cluster_id is a runtime resource ID, not a static name
-  - sagemaker tasks — not yet implemented
 
 Skipped with warning:
   - Tasks using a different IAM role (task.role != "same") — the deploy session
@@ -126,7 +125,6 @@ class ResourceCheckResult:
 _RESOURCE_SKIP_TYPES: frozenset[str] = frozenset(
     {
         "emr",  # emr_cluster_id is a runtime resource; state can change between check and run
-        "sagemaker",
     }
 )
 
@@ -190,7 +188,7 @@ def _collect_resource_refs(dag: "DAG") -> List[ResourceRef]:
                 )
 
         elif task_type in _RESOURCE_SKIP_TYPES:
-            pass  # emr_cluster_id is runtime; sagemaker not yet implemented
+            pass  # emr_cluster_id is a runtime resource ID
 
         else:
             raise ValueError(
@@ -310,7 +308,7 @@ _KIND_DISPLAY: Dict[str, str] = {
     "athena_workgroup": "athena",
 }
 
-_DISPLAY_COL_WIDTH = 9  # pad kind column ("sagemaker" = 9 chars, reserved for future)
+_DISPLAY_COL_WIDTH = 9  # kept at 9 to avoid reformatting output; widest active label is "lambda"/"athena" at 6 chars
 _CROSS_ACCOUNT_LIMIT = 10
 
 # Kinds where _NotFoundError may mean "deregistered" rather than truly absent.
@@ -823,7 +821,6 @@ _OVERRIDE_CHECKERS: Dict[str, Optional[Callable[..., Optional[OverrideReport]]]]
     "lambda": None,  # invocation payload is task-specific, not a resource default
     "athena": None,  # query_string is fully declared in the DAG
     "emr": None,  # emr_step is submitted dynamically per-run; no job-level defaults to compare
-    "sagemaker": None,  # not yet implemented
 }
 
 

@@ -9,10 +9,9 @@ in the Settings → Alerts UI and stored in the pipeline registry (`alert_config
 not declared in the DAG. The old `alerts=` DAG parameter has been **removed**.
 
 **Rationale:**
-- Secrets (Slack webhook, PagerDuty routing key) must not live in pipeline source —
+- Secrets (webhook URLs, routing keys) must not live in pipeline source —
   they belong in SSM, written via the UI, never committed
 - Alerting is an operational concern that changes without a code redeploy
-- Browser notifications are free and automatic; external channels are Team-tier
 - A single source of truth (the registry) that the notify Lambda reads at 3am,
   with no UI involvement at failure time
 
@@ -20,7 +19,7 @@ not declared in the DAG. The old `alerts=` DAG parameter has been **removed**.
 The DSL no longer defines an `alerts=` parameter; passing it raises a `TypeError`.
 Non-secret config (channel, mentions, severity,
 enabled channels) lives in `alert_config`; secrets go to SSM with only the
-parameter name kept in the config. See ADR #103 and `docs/features/alerts.md`.
+parameter name kept in the config. See `docs/features/alerts.md`.
 
 ---
 
@@ -62,8 +61,6 @@ parameter name kept in the config. See ADR #103 and `docs/features/alerts.md`.
 - restart_wrapper — restart wrapper execution **(EXPRESS)**
 - ~~register_on_create~~ — removed, replaced by Pulumi Dynamic Provider (ADR #24)
 - ~~interactive_choice_slack / pagerduty_alerter / pagerduty_resolver~~ — removed
-  in ADR #103; interactive Slack and PagerDuty alerts/resolves are now
-  `lambda:invoke` calls to the notify Lambda, not separate state machines
 
 ---
 

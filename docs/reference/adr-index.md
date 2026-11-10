@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_99 rows indexed (76 inline, 23 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_98 rows indexed (75 inline, 23 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|
@@ -84,7 +84,6 @@ _99 rows indexed (76 inline, 23 standalone). Actual ADR count is higher — ADRs
 | 100 | Tier entitlement (team↔enterprise gated at runtime, not by strip) | [`adr-100-tier-entitlement.md`](adr-100-tier-entitlement.md) |
 | 101 | Multi-tenant readiness (entitlement is tenant-source-agnostic; tenancy deferred) | [`adr-101-multi-tenant-readiness.md`](adr-101-multi-tenant-readiness.md) |
 | 102 | Repo split (Dagster model): public core repo + private paid repo | [`adr-102-repo-split-dagster-model.md`](adr-102-repo-split-dagster-model.md) |
-| 103 | Alerting consolidation: `alerts=` DSL param removed, config moved to `alert_config`; interactive Slack/PagerDuty state machines replaced by `lambda:invoke` calls to the notify Lambda; PagerDuty fires immediately during the decision-wait pause | inline |
 | 104 | Open-core CLI split, backfill nav-tab slot, and contract-drift cleanup | inline |
 | 105 | Asset console gated to Team with an open-core "coming soon" page; engine stays free | inline |
 | 106 | Parameter parity for `@task` decorators (the `task_config` ↔ `Run_Task_<X>` contract) | [`adr-106-task-param-parity.md`](adr-106-task-param-parity.md) |

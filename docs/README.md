@@ -51,7 +51,7 @@ Task-oriented recipes for specific problems. Each answers one question.
 
 | Document | Description |
 |----------|-------------|
-| [API.md](operations/API.md) | REST API reference (27 free endpoints; 63 in the full build) |
+| [API.md](operations/API.md) | REST API reference |
 | [UI.md](operations/UI.md) | Web Console guide |
 | [TROUBLESHOOTING.md](operations/TROUBLESHOOTING.md) | Common issues and solutions |
 

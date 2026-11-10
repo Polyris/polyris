@@ -175,7 +175,6 @@ TaskTypeLiteral = Literal[
     "athena",    # Athena query
     "emr",       # EMR step
     "batch",     # AWS Batch job
-    "sagemaker", # SageMaker processing/training
 ]
 
 

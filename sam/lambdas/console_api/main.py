@@ -2,10 +2,7 @@
 Pipeline Console API - Lambda Handler
 
 Serverless API for pipeline management. Routes requests to appropriate handlers.
-
-NOTE: This is the refactored entry point (main.py).
-All business logic has been moved to route modules in routes/.
-See HANDLERS_REFACTORING_PLAN.md for details.
+All business logic lives in route modules under routes/.
 """
 
 from typing import Dict

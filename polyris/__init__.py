@@ -63,7 +63,7 @@ from .xcom import (
 from . import xcom  # allow `from polyris import xcom` idiom
 
 # Assets
-from .assets import Asset, AssetAll, AssetAny, AssetAlias, Metadata, Watcher, generate_watchers_config, ExperimentalWarning
+from .assets import Asset, AssetAll, AssetAny, AssetAlias, Metadata, ExperimentalWarning
 
 # Schema (typed column system) — `types` module exposes type factories:
 #   from polyris import types as t
@@ -163,8 +163,6 @@ __all__ = [
     'AssetAny',
     'AssetAlias',
     'Metadata',
-    'Watcher',
-    'generate_watchers_config',
 
     # Schema (Column class + types factory module)
     'Column',
