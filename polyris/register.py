@@ -294,14 +294,15 @@ Authentication:
         parser.print_help()
         sys.exit(1)
     
-    # Register
-    print("📝 Registering pipeline...")
-    if args.profile:
-        print(f"   Using profile: {args.profile}")
-    elif os.environ.get('AWS_PROFILE'):
-        print(f"   Using profile: {os.environ.get('AWS_PROFILE')} (from AWS_PROFILE)")
-    if args.role_arn:
-        print(f"   Assuming role: {args.role_arn}")
+    # Register — suppress progress output in --json mode so stdout is clean JSON
+    if not args.json:
+        print("📝 Registering pipeline...")
+        if args.profile:
+            print(f"   Using profile: {args.profile}")
+        elif os.environ.get('AWS_PROFILE'):
+            print(f"   Using profile: {os.environ.get('AWS_PROFILE')} (from AWS_PROFILE)")
+        if args.role_arn:
+            print(f"   Assuming role: {args.role_arn}")
     
     result = register_pipeline(sfn_arn, args.region, args.profile, args.role_arn)
     
@@ -325,5 +326,5 @@ Authentication:
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     main()
