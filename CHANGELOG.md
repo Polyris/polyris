@@ -18,7 +18,7 @@
 
 - `deploy_pipeline` now validates IAM role name lengths before touching AWS:
   - `len(namespace) + len(stage) > 25` exits with an actionable message (protects
-    all SAM infrastructure roles; longest suffix is 37 chars).
+    all SAM infrastructure roles; longest suffix is 38 chars).
   - `len(namespace) + len(stage) + len(dag_id) > 39` exits for time-triggered DAGs
     (protects the per-pipeline `{ns}-{stage}-polyris-{dag_id}-scheduler-role`).
   - Both guards are skipped on `--destroy` (stack deletion needs no new IAM roles).
