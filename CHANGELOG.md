@@ -1,5 +1,19 @@
 ## Unreleased
 
+### Changed — polyris-validate: positive success feedback instead of silent exit
+
+- **Before:** `polyris-validate` (and `polyris-validate -a`, `--test`) exited with code
+  0 on a clean pass and printed nothing — users couldn't tell if the command
+  ran successfully or scrolled past its own output.
+- **After:** on clean success in non-JSON mode, prints:
+  - single file: `✅ Valid: <file>` (BOLD_GREEN + CYAN path)
+  - `--all`: `✅ Validated N pipeline(s) — no issues`
+  - `--test`: `✅ All tasks passed`
+- `--json` output is unchanged (consumers get pure parseable JSON).
+- Verbose mode (`-v`) still prints its own per-DAG `✅ Valid` lines from
+  `validate_asl_from_dag`; the new summary line is suppressed in verbose mode
+  to avoid duplication.
+
 ### Changed — All CLI tools: consistent per-line coloring
 
 - **`polyris-run`, `polyris-output`, `polyris-validate`, `polyris-init`** now follow the

@@ -884,12 +884,20 @@ def main():
             # via validate_all's summary and validate_asl_from_dag's verbose block.
             for e in results['errors']:
                 _print_error(e)
+        elif not args.json and not results['errors']:
+            # Non-json success: surface a positive signal so the user never sees
+            # a silent "command returned, nothing happened" on a clean pass.
+            # Verbose mode already prints per-DAG ✅ Valid via
+            # validate_asl_from_dag, so only emit the summary line when quiet.
+            if not effective_verbose:
+                print(_c(f"✅ Validated {len(results['pipelines'])} pipeline(s) — no issues", BOLD_GREEN))
         sys.exit(0 if not results['errors'] else 1)
 
     elif args.test:
         result = _run_test(args.file)
         if not result:
             sys.exit(1)
+        print(_c("✅ All tasks passed", BOLD_GREEN))
 
     else:
         valid, errors = _validate_single(args.file, verbose=effective_verbose)
@@ -898,6 +906,11 @@ def main():
                 _print_error(e)
         if args.json:
             print(json.dumps({'file': args.file, 'valid': valid, 'errors': errors}, indent=2))
+        elif valid and not effective_verbose:
+            # Silent success was confusing — the user sees the shell prompt
+            # return with no output and can't tell if the command ran or
+            # scrolled past its output. Emit a positive one-liner.
+            print(f"{_c('✅ Valid:', BOLD_GREEN)} {_c(args.file, CYAN)}")
         sys.exit(0 if valid else 1)
 
 
