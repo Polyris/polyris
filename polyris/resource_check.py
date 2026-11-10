@@ -308,7 +308,7 @@ _KIND_DISPLAY: Dict[str, str] = {
     "athena_workgroup": "athena",
 }
 
-_DISPLAY_COL_WIDTH = 9  # pad kind column; longest current display label is 6 chars ("lambda"/"athena")
+_DISPLAY_COL_WIDTH = 9  # pad kind column; longest label is 6 chars ("lambda"/"athena"), +3 for readability
 _CROSS_ACCOUNT_LIMIT = 10
 
 # Kinds where _NotFoundError may mean "deregistered" rather than truly absent.

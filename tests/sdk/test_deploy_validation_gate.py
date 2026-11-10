@@ -179,3 +179,56 @@ def test_generate_cfn_template_rejects_unsubstituted_table_name():
             tokens_table="real-tokens",
             asset_subscriptions_table="",  # simulates a missing SSM parameter
         )
+
+
+def test_namespace_stage_length_guardrail(mocker):
+    """deploy_pipeline exits early when namespace+stage exceeds 25 chars.
+
+    Longest IAM role suffix in template.yaml: '-polyris-notify-asset-subscribers-role'
+    (38 chars). With the leading hyphen: 64 - 1 - 38 = 25 chars left for namespace+stage.
+    """
+    dag = mocker.MagicMock()
+    dag.dag_id = "my-pipeline"
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    # namespace(17) + stage(9) = 26 > 25
+    cfg.stage = "stagingxy"
+    cfg.for_stage.return_value = _stage_cfg(
+        mocker,
+        namespace="this-is-namespace",
+        stack_name="some-stack",
+    )
+    boto = mocker.patch("polyris.deploy.boto3")
+
+    with pytest.raises(SystemExit) as exc:
+        deploy.deploy_pipeline(dag, destroy=True)  # destroy=True skips DAG validation
+
+    assert exc.value.code == 1
+    boto.Session.assert_not_called()  # guard fires before any AWS work
+
+
+def test_scheduler_role_dag_id_length_guardrail(mocker):
+    """deploy_pipeline exits when the scheduler IAM role name would exceed 64 chars.
+
+    Scheduler role: {namespace}-{stage}-polyris-{dag_id}-scheduler-role
+    = len(ns)+1+len(stage)+9+len(dag_id)+15 must be ≤ 64
+    → len(ns)+len(stage)+len(dag_id) ≤ 39.
+
+    With ns=5, stage=4 (total 9, well under 25), dag_id must be ≤ 30 chars.
+    """
+    dag = mocker.MagicMock()
+    # ns(5) + stage(4) + dag_id(31) = 40 > 39 → scheduler role = 65 chars
+    dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars
+    cfg = mocker.patch("polyris.deploy.polyris_config")
+    cfg.stage = "prod"
+    cfg.for_stage.return_value = _stage_cfg(
+        mocker,
+        namespace="my-ns",
+        stack_name="some-stack",
+    )
+    boto = mocker.patch("polyris.deploy.boto3")
+
+    with pytest.raises(SystemExit) as exc:
+        deploy.deploy_pipeline(dag, destroy=True)  # destroy=True skips DAG validation
+
+    assert exc.value.code == 1
+    boto.Session.assert_not_called()  # guard fires before any AWS work

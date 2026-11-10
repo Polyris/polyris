@@ -31,9 +31,6 @@ Example:
     with DAG(dag_id="alerts", schedule=[asset_a | asset_b]) as dag:
         ...
     
-    # Metadata - emitted with asset events (optional pattern for future use)
-    # This is a declarative pattern - actual metadata emission happens in backend
-    # via task output parsing or explicit API calls.
 """
 
 import warnings
@@ -104,30 +101,14 @@ _EXPECTED_PER_30_DAYS: Dict[str, int] = {
 
 @dataclass
 class Metadata:
-    """
-    Metadata to be emitted with an asset materialization event.
-    
-    This is a declarative pattern - metadata can be:
-    1. Declared statically in task definition
-    2. Returned from task output (parsed by backend)
-    3. Sent via API during manual trigger
-    
+    """A data container pairing an Asset with arbitrary key-value metadata.
+
+    Not wired into task decorators or SFN execution. Use to construct structured
+    asset metadata payloads for external integrations.
+
     Args:
-        asset: The Asset this metadata is for
-        data: Key-value pairs of metadata (row_count, schema_version, etc.)
-    
-    Example:
-        # Static metadata in task definition
-        @task.sfn(
-            arn="${inv_arn}", 
-            outlets=[inventory],
-            outlet_metadata={inventory: {"type": "full_refresh"}}
-        )
-        def get_inventory():
-            pass
-        
-        # Or return from task output (backend parses this)
-        # Task output: {"metadata": {"row_count": 1234, "file_size": "1.2GB"}}
+        asset: The Asset this metadata describes.
+        data: Arbitrary key-value pairs (e.g. ``{"row_count": 1234}``).
     """
     asset: 'Asset'
     data: Dict[str, Any] = field(default_factory=dict)

@@ -13,8 +13,13 @@ Common issues and solutions for polyris operations.
 
 ## Pipeline Issues
 
-> **Note:** Table names follow the pattern `{namespace}-{stage}-polyris-{table}`.
-> Replace `${NAMESPACE}` and `${STAGE}` with your actual values (e.g., `mycompany-dev`).
+> **Note:** Shell variables used in this guide — set once before running any commands:
+> ```bash
+> export API_URL=<your-console-api-url>  # e.g. https://abc123.execute-api.us-east-1.amazonaws.com
+> export NAMESPACE=<your-namespace>  # e.g. mycompany
+> export STAGE=<your-stage>  # e.g. dev
+> ```
+> Table names follow the pattern `${NAMESPACE}-${STAGE}-polyris-{table}`.
 
 
 ### Pipeline doesn't start on schedule
@@ -382,11 +387,6 @@ aws cloudformation list-stacks \
 ---
 
 ## Emergency Procedures
-
-> **Note:** Set `API_URL` to your Console API endpoint before running the commands below:
-> ```bash
-> export API_URL=<your-console-api-url>  # e.g. https://abc123.execute-api.us-east-1.amazonaws.com
-> ```
 
 ### Stop runaway execution
 

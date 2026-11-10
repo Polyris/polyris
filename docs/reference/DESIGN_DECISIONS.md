@@ -20,7 +20,7 @@ not declared in the DAG. The old `alerts=` DAG parameter has been **removed**.
 The DSL no longer defines an `alerts=` parameter; passing it raises a `TypeError`.
 Non-secret config (channel, mentions, severity,
 enabled channels) lives in `alert_config`; secrets go to SSM with only the
-parameter name kept in the config. See ADR #103 and `docs/features/alerts.md`.
+parameter name kept in the config. See `docs/features/alerts.md`.
 
 ---
 
@@ -62,8 +62,6 @@ parameter name kept in the config. See ADR #103 and `docs/features/alerts.md`.
 - restart_wrapper — restart wrapper execution **(EXPRESS)**
 - ~~register_on_create~~ — removed, replaced by Pulumi Dynamic Provider (ADR #24)
 - ~~interactive_choice_slack / pagerduty_alerter / pagerduty_resolver~~ — removed
-  in ADR #103; interactive Slack and PagerDuty alerts/resolves are now
-  `lambda:invoke` calls to the notify Lambda, not separate state machines
 
 ---
 

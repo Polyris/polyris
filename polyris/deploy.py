@@ -621,6 +621,32 @@ def deploy_pipeline(
     profile = profile or stage_config.profile
     namespace = stage_config.namespace
 
+    _ns_stage_total = len(namespace) + len(stage)
+    if _ns_stage_total > 25:
+        print(
+            f"\n❌ Namespace+Stage too long — cannot deploy '{dag.dag_id}':\n"
+            f"   namespace={namespace!r} ({len(namespace)} chars) + "
+            f"stage={stage!r} ({len(stage)} chars) = {_ns_stage_total} chars (limit 25).\n"
+            f"   IAM role names would exceed 64 chars with the polyris suffix. "
+            f"Shorten namespace or stage before deploying."
+        )
+        sys.exit(1)
+
+    # Guard: per-pipeline scheduler IAM role must also fit in 64 chars:
+    # {namespace}-{stage}-polyris-{dag_id}-scheduler-role = ns+1+stage+9+dag_id+15
+    _scheduler_role_len = len(namespace) + 1 + len(stage) + 9 + len(dag.dag_id) + 15
+    if _scheduler_role_len > 64:
+        _dag_id_budget = 39 - _ns_stage_total
+        print(
+            f"\n❌ DAG ID too long for this namespace+stage — cannot deploy '{dag.dag_id}':\n"
+            f"   '{namespace}-{stage}-polyris-{dag.dag_id}-scheduler-role' "
+            f"= {_scheduler_role_len} chars (IAM limit 64).\n"
+            f"   With namespace={namespace!r} + stage={stage!r} ({_ns_stage_total} chars), "
+            f"dag_id must be at most {_dag_id_budget} chars (currently {len(dag.dag_id)}).\n"
+            f"   Shorten the dag_id before deploying."
+        )
+        sys.exit(1)
+
     stack_name_from_config = stage_config.stack_name
     sam_stack_name = cli_stack or stack_name_from_config
     if not sam_stack_name:
