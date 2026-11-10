@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from ._ansi import colorize_parser
+
 
 def _xcom_source() -> Path:
     """Resolve the path to the installed ``polyris/xcom.py``."""
@@ -110,6 +112,7 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="Overwrite an existing polyris/ directory",
     )
+    colorize_parser(parser)
     args = parser.parse_args(argv)
 
     dest = Path(args.dir)

@@ -201,6 +201,11 @@ Any significant change is not done until independently break-reviewed AND archit
 4. Spawn architect review — judge coherence, ADR quality, abstraction fit, backwards-compat.
 5. Close every architect-flagged blocker before the claim reaches the maintainer.
 
+**Review "done" criterion — classify before acting:**
+A finding is a **blocker** if it either (a) prevents the user from completing their task, or (b) silently produces an incorrect result. Everything else is **polish** — worth fixing, but does not gate the claim.
+
+Before starting another review round, triage the open list: blockers go first, polish is batched. Additional rounds are warranted only while blockers remain. Accumulating polish across infinite rounds is not "being thorough" — it is scope creep masquerading as quality.
+
 **33. Never change `Description` on `AWS::IAM::ManagedPolicy` — CloudFormation replaces the policy and hits a name collision**
 CFN treats `Description` as update-requires-replacement. Editing it → delete + create with same `ManagedPolicyName` → `EntityAlreadyExists` → rollback. Hit twice in 1.0.0 delivery.
 
@@ -217,6 +222,35 @@ Any template change to `Command`, `Image`, etc. creates a new revision (`:2`, `:
 In `@task.ecs_task(task_definition=...)` and `@task.batch_job(job_definition=...)`: drop the trailing `:N`. Only pin `:N` when deliberately holding a specific version — document why.
 
 This applies to docstring examples too — a docstring that shows `task_definition='my-task-def:3'` misleads users into using the pinned form.
+
+**36. Functions with 5+ parameters enforce keyword-only arguments**
+Any function with five or more parameters must separate positional from optional parameters with `*`, making every optional argument keyword-only at the call site:
+
+```python
+# Wrong — 10 positional params; callers silently break when order changes
+def deploy_pipeline(dag, stage=None, region=None, dry_run=False, destroy=False, ...): ...
+
+# Right
+def deploy_pipeline(dag: DAG, *, stage: Optional[str] = None, region: Optional[str] = None, dry_run: bool = False, ...): ...
+```
+
+Keyword-only call sites are self-documenting (`deploy_pipeline(dag, dry_run=True)`) and immune to silent breakage when the signature is reordered. Exception: internal helpers where positional order is obvious by convention (`checker(client, ref)`).
+
+**37. `typing.cast()` on external data requires a runtime guard**
+`cast()` is a lie to the type checker — it does nothing at runtime. On internal data whose shape is controlled by our own code, `cast()` is acceptable. On data from external sources (AWS API responses, user input, deserialized JSON), an unverified cast silently lets the wrong type propagate until it crashes far from the cast site.
+
+```python
+# Wrong — AWS changes the response shape; crash happens later with no context
+events = cast(List[Dict[str, Any]], history["events"])
+
+# Right — fail immediately with actionable context
+raw = history.get("events")
+if not isinstance(raw, list):
+    raise ValueError(f"Unexpected events shape from AWS: {type(raw)}")
+events: List[Dict[str, Any]] = raw
+```
+
+Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
 
 ---
 
@@ -317,15 +351,13 @@ cd ui && npm ci && npm run build && ./deploy.sh --profile <profile>
 cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 ```
 
-**Pre-deploy resource check:** `polyris-deploy` verifies all external AWS resources referenced in
-the DAG (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job
-definitions, Athena workgroups) before generating the CloudFormation template. The check aborts
-deploy if any resource is missing. Use `--destroy` to skip it. Resources in a different IAM role
-(`task.role != "same"`) are reported as unverified, not errors. The check runs on `--dry-run` too;
-access-denied converts to a warning and deploy proceeds. Full confidence requires
-`states:DescribeStateMachine`, `lambda:GetFunction`, `glue:GetJob`, `ecs:DescribeClusters`,
-`ecs:DescribeTaskDefinition`, `batch:DescribeJobQueues`, `batch:DescribeJobDefinitions`,
-`athena:GetWorkGroup` on the deploy role.
+**Pre-deploy resource check:** `polyris-deploy` runs two advisory checks before generating the CloudFormation template:
+
+1. **Existence check** — verifies all external AWS resources (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job definitions, Athena workgroups) exist. Aborts deploy if any resource is missing.
+
+2. **Override check** — advisory only, never aborts deploy. For Glue, ECS, and Batch tasks, compares declared task parameters (worker_type, container_overrides, batch_parameters, etc.) against the AWS resource's current defaults. Reports when declared values differ (potential silent runtime overrides), when Glue arguments are in `NonOverridableArguments` (silently ignored at runtime), and when declared values match defaults (can be omitted for cleaner DAGs). Receives `ResourceCheckResult.failed_refs` from the existence check to skip resources already confirmed broken or IAM-inaccessible; throttle/transient errors are excluded from `failed_refs` because the resource may still exist.
+
+Both checks: run on `--dry-run` too; skipped on `--destroy` (no pipeline resources to verify); skip resources in a different IAM role (`task.role != "same"`); convert access-denied to a warning and proceed. Full confidence requires `states:DescribeStateMachine`, `lambda:GetFunction`, `glue:GetJob`, `ecs:DescribeClusters`, `ecs:DescribeTaskDefinition`, `batch:DescribeJobQueues`, `batch:DescribeJobDefinitions`, `athena:GetWorkGroup` on the deploy role.
 
 **SFN edit workflow:** edit `sam/sfn_templates/*/sfn.tpl.json` → `sam build && sam deploy`. `sam build` inlines `.tpl.json` into `DefinitionString` automatically.
 

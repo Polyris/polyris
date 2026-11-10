@@ -1,5 +1,226 @@
 ## Unreleased
 
+### Changed — All CLI `--help` output and `polyris` command index: colored
+
+- **argparse `--help` output** (polyris-deploy, polyris-validate, polyris-output,
+  polyris-init, polyris-local, polyris-register, polyris-build-lambda) is now
+  colored: `usage:`, `options:`, `positional arguments:`, `Examples:` section
+  headers in BOLD; option flags (`-h, --help`, `--all, -a`, `--file FILE, -f FILE`,
+  etc.) in CYAN. Implemented via two helpers in `polyris/_ansi.py`:
+  - `colorize_argparse_help(text)` — regex-based post-processor, no-op off TTY.
+  - `colorize_parser(parser)` — wraps `parser.format_help`. One call per parser.
+- **`polyris` (command index) output** rebuilt as `_build_help_text()`: BOLD section
+  headers, CYAN command names. Visible-width alignment via `_col(name, width)`
+  helper — Python's `:<N` format spec counts invisible ANSI bytes toward the
+  column count and breaks alignment, so padding is computed from the uncolored
+  name length instead.
+- **Piped / non-TTY callers** continue to receive plain text — the TTY check in
+  `_c()` governs both helpers.
+
+### Changed — polyris-validate: positive success feedback instead of silent exit
+
+- **Before:** `polyris-validate` (and `polyris-validate -a`, `--test`) exited with code
+  0 on a clean pass and printed nothing — users couldn't tell if the command
+  ran successfully or scrolled past its own output.
+- **After:** on clean success in non-JSON mode, prints:
+  - single file: `✅ Valid: <file>` (BOLD_GREEN + CYAN path)
+  - `--all`: `✅ Validated N pipeline(s) — no issues`
+  - `--test`: `✅ All tasks passed`
+- `--json` output is unchanged (consumers get pure parseable JSON).
+- Verbose mode (`-v`) still prints its own per-DAG `✅ Valid` lines from
+  `validate_asl_from_dag`; the new summary line is suppressed in verbose mode
+  to avoid duplication.
+
+### Changed — All CLI tools: consistent per-line coloring
+
+- **`polyris-run`, `polyris-output`, `polyris-validate`, `polyris-init`** now follow the
+  same color conventions as `polyris-deploy` (ADR docs & polyris/CLAUDE.md): BOLD
+  section headers, CYAN identifiers (DAG id, task id, file paths, state machine
+  names, execution ARNs, directory paths), BOLD_GREEN success markers, RED errors,
+  YELLOW warnings.
+- **Content output stays plain** — `polyris-output --json/--mermaid/--graph/--assets`
+  prints parseable artifacts; those outputs are intentionally never colored.
+- **Regression tests added per CLI**: `test_colorizes_identifiers_on_tty` /
+  `test_no_ansi_codes_off_tty` pattern in `test_local_cli.py`, `test_output_cli.py`,
+  `test_validation_cli.py`, `test_init_pipeline.py` — removing any `_c(...)` call now
+  fails a locked-in contract test, not just visual inspection.
+
+### Changed — polyris-deploy output: visible per-line coloring
+
+- **Previously only the `✓` success markers in resource checks were colored**,
+  leaving the rest of the deploy output (deploy target summary, loading pipeline,
+  reading SAM outputs, generating template, dry-run summary) entirely plain. On
+  most Konsole/iTerm color schemes the two tiny green `✓` characters were easy
+  to miss, making the whole command look like it had no coloring at all.
+- **Now every identifier and section header is colored per the polyris/CLAUDE.md
+  conventions**: section headers (`── Deploy target ──`, trailing rule) in BOLD;
+  identifiers (dag id, stage, SAM stack name, namespace, region, profile, pipeline
+  stack, pipeline file path, template path, DAG hash) in CYAN. Success markers in
+  `resource_check.py` remain BOLD_GREEN as before; the `aborting deploy` error line
+  there remains RED. Note: the `❌` failure prints throughout `deploy.py` itself
+  (bad profile, missing stack, validation failed, etc.) are still plain text —
+  colorizing them is a separate follow-up to keep this commit scoped to the
+  deploy-summary output path.
+- Non-TTY callers (pipes, CI logs) continue to receive plain text — the TTY check
+  in `_ansi.c()` is unchanged.
+
+### Added — Pre-deploy override check: ECS task-level resources
+
+- **ECS task-level `cpu`/`memory` are now actively compared (Fargate).** For Fargate
+  task definitions, `container_overrides` keys `cpu` and `memory` at the top level
+  of the dict (i.e. `overrides.cpu/memory` in the ECS `RunTask` struct, not inside
+  `containerOverrides[*]`) are now compared against the task definition's top-level
+  `cpu`/`memory` fields using the same int normalization as container-level fields
+  (CPU units and MiB). They now produce `differs:` entries or appear in the matching
+  summary instead of a generic `not checked:` scope note.
+- **EC2 launch type with no task-level resource limits produces a `not checked:` note.**
+  When the task definition has no top-level `cpu`/`memory` field (EC2 launch type
+  without explicit task-level resource limits), the check emits a `not checked:`
+  per-parameter line under the resource header in the success block:
+  `task.{key} — EC2 task definition has no task-level {key} limit (not compared)`.
+  This replaces the previous silent skip.
+
+### Changed — `deploy_pipeline` keyword-only arguments (breaking)
+
+- **`deploy_pipeline` now enforces keyword-only optional arguments.** A `*` separator
+  was added between the required `dag` parameter and all optional parameters
+  (`stage`, `region`, `dry_run`, `destroy`, etc.). Positional calls beyond the first
+  argument now raise `TypeError`. All existing internal call sites already used
+  keyword form; external callers that passed optional args positionally must update
+  to keyword style: `deploy_pipeline(dag, stage="prod")` instead of
+  `deploy_pipeline(dag, "prod")`.
+
+### Fixed — Pre-deploy override check: output wording and de-duplication (round 2)
+
+- **Matching-params trailing note removed:** `(N parameters match defaults)` no
+  longer appends any trailing note. The previous `— redundant with resource
+  default` annotation was removed because "redundant" reads as "broken /
+  unnecessary" in US English and could mislead operators into thinking their
+  config was wrong.
+- **All-skipped message reworded:** `N override resources skipped — resources
+  could not be verified (see existence check output above)` changed to `override
+  check skipped for N resources — resources already failed existence check (see
+  above)` — verb-first phrasing matches the skip framing used in the success tick.
+- **No duplicate region warning:** when both existence and override checks run
+  without a configured region, `no AWS region configured — checking against
+  us-east-1` now prints exactly once. `ResourceCheckResult._region_warned` is
+  threaded through to `check_resource_overrides` via a new `region_warned`
+  keyword argument; the override check skips the warning if existence already
+  emitted it.
+- **Two-phase throttle contract confirmed by test:** a new integration test
+  asserts that `get_job` is called exactly twice (once per phase) when the
+  glue job throttles in both the existence check and the override check,
+  confirming the resource is not silently dropped between phases.
+- **New tests:** `TestFindingsBeforeScopeReports` verifies that conflicting
+  parameters appear before `not checked:` scope notes in a single report, and
+  that a blank line separates the findings block from the scope_reports block
+  when they are distinct reports.
+
+### Fixed — Pre-deploy override check: output wording and actionability
+
+- **`non-overridable:` hint now includes actionable guidance:** output for Glue
+  arguments in `NonOverridableArguments` now reads `— Glue will silently ignore
+  this value; remove from glue_arguments` so the operator knows what to do, not
+  just what is happening.
+- **Matching-params note changed:** `(N parameters match defaults — can be
+  omitted)` changed to `(N parameters match defaults — redundant with resource
+  default)` to describe the fact without pushing the operator to delete
+  intentional config. *(Note: "redundant" annotation subsequently removed in the
+  round-2 fix above.)*
+- **Skip-note wording unified:** the `already reported above` note in the success
+  tick now consistently reads `already reported in existence check above`, matching
+  the phrasing in the findings block.
+- **Two-phase throttle contract tested:** added integration test verifying that
+  `ThrottlingException` in the existence check does not populate `failed_refs`,
+  so the override check independently re-attempts the same resource.
+
+### Fixed — Pre-deploy override check: operational safety and output quality
+
+- **Region fallback warning:** when neither `--region` nor `AWS_DEFAULT_REGION` is
+  set and the boto3 session has no default region, both checks now print a yellow
+  warning before running (`no AWS region configured — checking against us-east-1`).
+  Previously the fallback was silent, causing checks to query the wrong region in
+  container/EKS environments with task-role credentials.
+- **IAM action hint in override check:** when the override check receives
+  `AccessDenied` / `AccessDeniedException` from AWS, it now names the missing IAM
+  action (`glue:GetJob`, `ecs:DescribeTaskDefinition`, `batch:DescribeJobDefinitions`)
+  in the output. Previously only the existence check provided this guidance; the
+  override check printed a generic "access denied, throttled, or other transient
+  error" with no indication of which action to add.
+- **ECS task-level cpu/memory surfaced as `not checked`:** when
+  `container_overrides` contains a task-level `cpu` or `memory` key (not inside
+  `containerOverrides[*]`), the check now emits a `not checked (V1 scope)` note
+  instead of silently ignoring it. Previously these keys were dropped with no
+  output, potentially giving a false-clean report.
+- **Output label alignment:** `differs:`, `non-overridable:` (renamed from
+  `blocked by Glue:`), and `not checked:` labels now share a fixed column width
+  (`_PARAM_LABEL_WIDTH = 16`) so the parameter-name column aligns across all
+  per-parameter line types.
+- **Skip note phrasing and indent:** the note for resources skipped due to
+  existence-check failures now reads `N resources not re-checked — already
+  reported in existence check above` and is indented at the `⚠` level (2 spaces)
+  instead of 7 spaces where it looked visually subordinate to the last report entry.
+- **Success message noun:** the green success tick now reads `N override resources
+  — no issues` instead of `N override checks`, aligning the noun with the
+  resource-scoped `_verified` counter.
+
+### Fixed — Pre-deploy override check correctness and UX
+
+- **Fetcher malformed-response guard:** `_fetch_glue_data` and
+  `_fetch_ecs_task_def_data` now raise `_NotFoundError` when the AWS response
+  does not contain the expected top-level key (`"Job"` / `"taskDefinition"`).
+  Previously an empty dict was returned, causing the override check to count
+  the resource as verified while producing no findings — a false-clean result.
+- **Skipped-resources note with reports:** when override reports are printed
+  alongside skipped resources, the skip count now appears at the end of the
+  block. Previously the note only appeared in the success tick.
+- **All-skipped warning:** when every override-checkable resource was skipped
+  because it failed the existence check (`_verified == 0`, `_skipped > 0`), a
+  `⚠` warning is now printed. Previously no output was produced, making it
+  appear as though the override check had not run.
+- **`OverrideCheckResult._checked` renamed to `_verified`** to distinguish it
+  from `ResourceCheckResult._checked`, which counts total attempts including
+  failures. `_verified` counts only successfully fetched resources.
+- **ECS unknown container name:** an override entry naming a container absent
+  from `containerDefinitions` is now silently skipped. Previously, any declared
+  parameter (`command`, `cpu`, `memory`, `environment`) produced a spurious
+  conflict with `actual=[]` or `actual=0` (empty base from the missing container).
+- **Expired-credentials message:** when AWS credentials expire mid-check,
+  `OverrideCheckResult.expired_token` is set and the output reads
+  "credentials expired mid-check; re-authenticate and re-deploy". Other
+  unverified resources (access denied, throttled, clock-skew, transient
+  outage) show "access denied, throttled, or other transient error".
+- **Output spacing:** a blank line now separates the existence check output from
+  the override check output; a second blank line separates the override reports
+  sub-block from the unverified-resources sub-block when both are present.
+- **`_sanitize` now strips CSI ANSI escape codes and tabs** in addition to newlines,
+  preventing terminal injection via adversarial resource names. Truncated
+  strings use ASCII `...` (three dots) instead of the previous Unicode `…`.
+- **`rr.ref` and `rr.role` sanitized in existence check output:** all three
+  printer blocks (errors, warnings, skipped) now apply `_sanitize` to `rr.ref`
+  and `rr.role`, not only to `task_id`.
+- **Exception diagnosis:** the broad `except` in `deploy.py` now includes the
+  exception class name in the unexpected-failure message.
+- **`_OVERRIDE_INFO` structure:** replaced the anonymous 5-tuple with an
+  `_OverrideEntry` NamedTuple so each field is accessible by name.
+
+### Added — Pre-deploy resource override check
+
+`polyris-deploy` now runs an advisory override check after the existence check.
+For Glue, ECS, and Batch tasks, it compares the task's declared parameters
+against the AWS resource's current defaults and reports:
+
+- **Differs** — a declared value that differs from the resource default (silent
+  runtime override). Example: `worker_type="G.2X"` when the Glue job default
+  is `G.1X`.
+- **Silent drop** — a Glue argument listed in the job's `NonOverridableArguments`.
+  Polyris will pass it; Glue will silently ignore it.
+- **Matching** — declared parameters that equal the resource default and can be
+  omitted for a cleaner DAG definition.
+
+The check is advisory only — it never aborts deploy. Resources that could not
+be verified during the existence check are skipped. See ADR #127.
+
 ### Added — Pre-deploy resource existence check
 
 `polyris-deploy` now verifies all external AWS resources referenced in a DAG
@@ -9,9 +230,9 @@ missing, the deploy aborts with a clear error. If the check cannot complete
 
 Covered: SFN state machines, Lambda functions, Glue jobs, ECS clusters and
 task definitions, Batch job queues and job definitions, Athena workgroups.
-Resources in a different IAM role (`task.role != "same"`) are reported as
-unverified rather than errors. The check runs on `--dry-run`; `--destroy`
-skips it. See ADR #126.
+Resources in a different IAM role (`task.role != "same"`) are reported
+separately and not counted as errors or warnings. The check runs on
+`--dry-run`; `--destroy` skips it. See ADR #126.
 
 ### Added — `polyris-local` CLI
 

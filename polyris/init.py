@@ -14,7 +14,7 @@ from typing import Any, List
 import sys
 from pathlib import Path
 
-from ._ansi import BOLD as _BOLD, GREEN as _GREEN, CYAN as _CYAN, c as _c
+from ._ansi import BOLD as _BOLD, BOLD_GREEN as _BOLD_GREEN, CYAN as _CYAN, GREEN as _GREEN, RED as _RED, c as _c, colorize_parser as _colorize_parser
 
 
 # =============================================================================
@@ -166,24 +166,25 @@ def init_pipeline(name: str, schedule: str = "@daily", base_dir: str = ".", depl
     name_under = name.replace("-", "_")
 
     if pipeline_dir.exists():
-        print(f"❌ Directory already exists: {pipeline_dir}")
+        print(f"{_c('❌ Directory already exists:', _RED)} {_c(str(pipeline_dir), _CYAN)}")
         sys.exit(1)
 
     pipeline_dir.mkdir(parents=True)
 
     fmt = dict(name=name, name_under=name_under, schedule=schedule)
+    pdir = _c(str(pipeline_dir), _CYAN)
 
     if deploy_method == "local":
         (pipeline_dir / "dag.py").write_text(LOCAL_PIPELINE.format(**fmt))
 
         print(f"""
-✅ Pipeline created: {pipeline_dir}/
+{_c('✅ Pipeline created:', _BOLD_GREEN)} {pdir}/
 
-Files:
-  {pipeline_dir}/dag.py    — Pipeline definition (no AWS needed!)
+{_c('Files:', _BOLD)}
+  {pdir}/dag.py    — Pipeline definition (no AWS needed!)
 
-Try it now:
-  cd {pipeline_dir}
+{_c('Try it now:', _BOLD)}
+  cd {pdir}
   polyris-local                 # Dry run — preview execution plan
   polyris-local --validate      # Validate pipeline (catches placeholder ARNs)
   polyris-local --mock          # Simulate execution with mock results
@@ -192,7 +193,7 @@ Try it now:
   polyris-output --graph        # Show DAG as ASCII graph
 
 Ready to deploy? Re-run without --local to scaffold a deployable pipeline:
-  polyris-init {name}
+  polyris-init {_c(name, _CYAN)}
 """)
     else:
         # deploy_method == "cfn" (the default per the CLI's own --help/epilog:
@@ -203,13 +204,13 @@ Ready to deploy? Re-run without --local to scaffold a deployable pipeline:
         (pipeline_dir / "dag.py").write_text(CFN_PIPELINE.format(**fmt))
 
         print(f"""
-✅ Pipeline created: {pipeline_dir}/
+{_c('✅ Pipeline created:', _BOLD_GREEN)} {pdir}/
 
-Files:
-  {pipeline_dir}/dag.py    — Pipeline definition
+{_c('Files:', _BOLD)}
+  {pdir}/dag.py    — Pipeline definition
 
-Try it now:
-  cd {pipeline_dir}
+{_c('Try it now:', _BOLD)}
+  cd {pdir}
   polyris-local                 # Dry run — preview execution plan
   polyris-local --validate      # Validate pipeline (catches placeholder ARNs)
   polyris-local --mock          # Simulate execution with mock results
@@ -217,7 +218,7 @@ Try it now:
   polyris-output --mermaid      # Generate Mermaid diagram
   polyris-output --graph        # Show DAG as ASCII graph
 
-Deploy (after replacing REGION / ACCOUNT_ID):
+{_c('Deploy (after replacing REGION / ACCOUNT_ID):', _BOLD)}
   polyris-deploy --stage dev
 """)
 
@@ -569,6 +570,7 @@ def main():
     parser.add_argument("-i", "--interactive", action="store_true", help="Interactive wizard")
     parser.add_argument("--project", action="store_true", help="Initialize a new polyris project (creates config.py)")
 
+    _colorize_parser(parser)
     args = parser.parse_args()
 
     if args.project:

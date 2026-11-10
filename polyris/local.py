@@ -26,7 +26,7 @@ from .dag import DAG
 from .task import Task
 from .generators import generate_step_function_json, generate_mermaid
 from .validation import validate_asl_from_dag
-from ._ansi import c, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
+from ._ansi import c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -166,9 +166,9 @@ def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> Dict
     # DAG info
     print(c("📋 DAG Configuration:", BOLD))
     print(f"   ID:          {c(dag.dag_id, CYAN)}")
-    print(f"   Schedule:    {dag.schedule or 'None (manual)'}")
-    print(f"   Description: {dag.description or 'N/A'}")
-    print(f"   Tags:        {dag.tags or []}")
+    print(f"   Schedule:    {c(dag.schedule, CYAN) if dag.schedule else 'None (manual)'}")
+    print(f"   Description: {c(dag.description, CYAN) if dag.description else 'N/A'}")
+    print(f"   Tags:        {c(str(dag.tags), CYAN) if dag.tags else []}")
     print()
 
     # Task execution order
@@ -180,9 +180,9 @@ def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> Dict
             deps = [d.node_id for d in task.dependencies]
             deps_str = f" (after: {', '.join(deps)})" if deps else ""
             print(f"   {c(str(i) + '.', BOLD)} {c(task.task_id, CYAN)}{deps_str}")
-            print(f"      Type:    {task.task_type}")
+            print(f"      Type:    {c(task.task_type, CYAN)}")
             if task.arn:
-                print(f"      ARN:     {task.arn}")
+                print(f"      ARN:     {c(task.arn, CYAN)}")
             if task.trigger_rule != 'all_success':
                 print(f"      Trigger: {c(task.trigger_rule, YELLOW)}")
     except Exception as e:
@@ -380,8 +380,8 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
     """Run with LocalStack."""
 
     print("=" * 60)
-    print(f"🐳 LOCALSTACK EXECUTION: {dag.dag_id}")
-    print(f"   Endpoint: {endpoint}")
+    print(f"🐳 {c('LOCALSTACK EXECUTION:', BOLD)} {c(dag.dag_id, CYAN)}")
+    print(f"   Endpoint: {c(endpoint, CYAN)}")
     print("=" * 60)
     print()
 
@@ -389,7 +389,7 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
         import boto3
         from botocore.exceptions import ClientError, BotoCoreError
     except ImportError:
-        print("❌ boto3 is required for LocalStack execution")
+        print(c("❌ boto3 is required for LocalStack execution", RED))
         print("   pip install boto3")
         raise
 
@@ -420,7 +420,7 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
                     time.sleep(0.5)
         except (ClientError, BotoCoreError) as e:
             # SM might not exist yet, or LocalStack glitch — proceed to create
-            print(f"[local] Skipped deleting old state machine: {e}")
+            print(f"[local] {c('Skipped deleting old state machine:', YELLOW)} {e}")
 
         # Create new
         response = sfn.create_state_machine(
@@ -429,7 +429,7 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
             roleArn='arn:aws:iam::000000000000:role/test-role',
         )
         sm_arn = response['stateMachineArn']
-        print(f"✓ Created state machine: {sm_name}")
+        print(f"{c('✓ Created state machine:', BOLD_GREEN)} {c(sm_name, CYAN)}")
 
         # Start execution with deterministic name
         exec_name = f"{sm_name}-local-{start_time.strftime('%Y%m%d-%H%M%S')}"
@@ -439,7 +439,7 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
             input=json.dumps({'execution_date': start_time.isoformat()})
         )
         exec_arn = exec_response['executionArn']
-        print(f"✓ Started execution: {exec_arn}")
+        print(f"{c('✓ Started execution:', BOLD_GREEN)} {c(exec_arn, CYAN)}")
 
         # Poll for completion
         while True:
@@ -449,7 +449,7 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
             if status in ('SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED'):
                 break
 
-            print(f"   ⏳ Status: {status}")
+            print(f"   ⏳ Status: {c(status, CYAN)}")
             time.sleep(1)
 
         end_time = datetime.now(timezone.utc)
@@ -736,6 +736,7 @@ def main() -> None:
         help='include generated Step Functions ASL JSON in --dry-run output',
     )
 
+    colorize_parser(parser)
     args = parser.parse_args()
 
     dag = _load_dag_from_file(args.file)

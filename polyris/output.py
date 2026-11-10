@@ -12,12 +12,14 @@ import sys
 import importlib.util
 from pathlib import Path
 
+from ._ansi import c, colorize_parser, CYAN, RED
+
 
 def _load_dags(dag_file: str):
     """Load DAG(s) from file."""
     path = Path(dag_file)
     if not path.exists():
-        print(f"❌ Pipeline file not found: {dag_file}")
+        print(f"{c('❌ Pipeline file not found:', RED)} {c(dag_file, CYAN)}")
         sys.exit(1)
 
     try:
@@ -31,13 +33,13 @@ def _load_dags(dag_file: str):
         dags = [v for v in vars(mod).values() if isinstance(v, PolyrisDAG)]
 
         if not dags:
-            print(f"❌ No DAG found in {dag_file}")
+            print(f"{c('❌ No DAG found in', RED)} {c(dag_file, CYAN)}")
             sys.exit(1)
 
         return dags, mod
 
     except Exception as e:
-        print(f"❌ Failed to load {dag_file}: {e}")
+        print(f"{c('❌ Failed to load', RED)} {c(dag_file, CYAN)}: {e}")
         sys.exit(1)
 
 
@@ -46,7 +48,7 @@ def _select_dag(dags, select_id=None):
     if select_id:
         matching = [d for d in dags if d.dag_id == select_id]
         if not matching:
-            print(f"❌ DAG '{select_id}' not found")
+            print(f"{c('❌ DAG', RED)} {c(select_id, CYAN)} {c('not found', RED)}")
             print(f"   Available: {[d.dag_id for d in dags]}")
             sys.exit(1)
         return matching[0]
@@ -96,6 +98,7 @@ def main():
                         help="Pipeline file (default: dag.py)")
     parser.add_argument("--select", help="Select specific DAG by ID (for multi-DAG files)")
 
+    colorize_parser(parser)
     args = parser.parse_args()
 
     dags, mod = _load_dags(args.file)

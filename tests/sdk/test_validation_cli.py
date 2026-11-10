@@ -92,6 +92,22 @@ class TestDiscoveryAndRunner:
         _run_test(str(f))
         assert "Testing DAG" in capsys.readouterr().out
 
+    def test_run_test_colorizes_dag_id_on_tty(self, tmp_path, capsys, mocker):
+        """Pin polyris-validate coloring: BOLD header + CYAN dag id."""
+        from polyris._ansi import BOLD, CYAN
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        f = _write(tmp_path, "dag.py", SOLO_DAG)
+        _run_test(str(f))
+        out = capsys.readouterr().out
+        assert BOLD in out
+        assert CYAN in out
+
+    def test_run_test_plain_off_tty(self, tmp_path, capsys, mocker):
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        f = _write(tmp_path, "dag.py", SOLO_DAG)
+        _run_test(str(f))
+        assert "\x1b[" not in capsys.readouterr().out
+
     def test_run_test_missing_file_exits(self, tmp_path):
         with pytest.raises(SystemExit):
             _run_test(str(tmp_path / "nope.py"))
@@ -203,6 +219,40 @@ class TestMain:
         with pytest.raises(SystemExit) as e:
             main()
         assert e.value.code == 0
+
+    def test_default_valid_prints_success_line(self, tmp_path, monkeypatch, capsys):
+        """Silent exit-0 was confusing — tool must emit a positive signal
+        on a clean validation so the user never sees "command returned,
+        nothing happened"."""
+        _write(tmp_path, "dag.py", SOLO_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate"])
+        with pytest.raises(SystemExit):
+            main()
+        out = capsys.readouterr().out
+        assert "✅ Valid" in out
+        assert "dag.py" in out
+
+    def test_default_valid_json_suppresses_success_line(self, tmp_path, monkeypatch, capsys):
+        """--json must give clean parseable stdout — no ✅ decoration."""
+        _write(tmp_path, "dag.py", SOLO_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--json"])
+        with pytest.raises(SystemExit):
+            main()
+        out = capsys.readouterr().out
+        assert "✅" not in out
+        data = json.loads(out)
+        assert data["valid"] is True
+
+    def test_all_valid_prints_summary_line(self, tmp_path, monkeypatch, capsys):
+        _write(tmp_path, "proj/dag.py", SOLO_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 0
+        assert "✅ Validated 1 pipeline(s) — no issues" in capsys.readouterr().out
 
     def test_all_with_no_pipelines_exits_one(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # empty project

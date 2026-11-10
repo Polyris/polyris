@@ -21,7 +21,7 @@ import importlib.util
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional, Any
 from dataclasses import dataclass, field
-from polyris._ansi import c as _c, RED, YELLOW, BOLD
+from polyris._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 
 
 @dataclass
@@ -408,17 +408,17 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
     }
     
     if verbose:
-        print(f"Scanning {directory}...")
-    
+        print(f"{_c('Scanning', BOLD)} {_c(str(directory), CYAN)}...")
+
     # Discover pipeline files
     files = discover_pipeline_files(directory)
-    
+
     if not files:
         results['warnings'].append(f"No pipeline files found in {directory}")
         return results
-    
+
     if verbose:
-        print(f"Found {len(files)} pipeline file(s)")
+        print(f"{_c('Found', BOLD)} {len(files)} pipeline file(s)")
     
     # Extract DAG info from each file; surface import failures as errors.
     # SystemExit is a BaseException, not Exception — a pipeline that calls
@@ -436,10 +436,10 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
         results['pipelines'].extend(dags)
 
     if verbose:
-        print(f"Loaded {len(all_dags)} DAG(s):")
+        print(f"{_c('Loaded', BOLD)} {len(all_dags)} DAG(s):")
         for dag in all_dags:
             trigger = dag.schedule if not dag.is_asset_triggered else f"asset:{dag.trigger_operator}"
-            print(f"  • {dag.dag_id} ({trigger})")
+            print(f"  • {_c(dag.dag_id, CYAN)} ({trigger})")
 
     if not all_dags:
         # Surface load errors here — the verbose summary block below is never
@@ -447,22 +447,22 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
         # branch is skipped when effective_verbose=True, so without this print
         # the user would see a silent exit 1 under --all -v with broken imports.
         if verbose and results['errors']:
-            print(f"\n❌ {len(results['errors'])} error(s) loading pipeline files:")
+            print(_c(f"\n❌ {len(results['errors'])} error(s) loading pipeline files:", RED))
             for err in results['errors']:
                 print(f"   {err}")
         results['warnings'].append("No DAGs found in pipeline files")
         return results
-    
+
     # Build asset graph
     if verbose:
-        print("\nBuilding asset graph...")
-    
+        print(_c("\nBuilding asset graph...", BOLD))
+
     graph = build_asset_graph(all_dags)
     results['graph'] = graph
-    
+
     # Detect cycles
     if verbose:
-        print("Checking for asset cycles...")
+        print(_c("Checking for asset cycles...", BOLD))
     
     cycles = detect_asset_cycles(graph)
     
@@ -488,14 +488,14 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
     if verbose:
         print()
         if results['errors']:
-            print(f"❌ {len(results['errors'])} error(s) found:")
+            print(_c(f"❌ {len(results['errors'])} error(s) found:", RED))
             for err in results['errors']:
                 print(f"   {err}")
         else:
-            print("✓ No cycles detected")
-        
+            print(_c("✓ No cycles detected", BOLD_GREEN))
+
         if results['warnings']:
-            print(f"⚠️  {len(results['warnings'])} warning(s):")
+            print(_c(f"⚠️  {len(results['warnings'])} warning(s):", YELLOW))
             for warn in results['warnings']:
                 print(f"   {warn}")
     
@@ -563,7 +563,7 @@ def _validate_single(dag_file: str, verbose: bool) -> Tuple[bool, List[str]]:
         all_errors: List[str] = []
         for dag in dags:
             if verbose:
-                print(f"Validating: {dag.dag_id}")
+                print(f"{_c('Validating:', BOLD)} {_c(dag.dag_id, CYAN)}")
             is_valid, errors, warnings = validate_asl_from_dag(dag, verbose=verbose)
             if not is_valid:
                 all_valid = False
@@ -677,19 +677,19 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
         is_valid = is_valid and not role_errors and not trigger_rule_errors and not placeholder_errors
 
         if verbose:
-            print(f"  Schedule: {dag.schedule or 'manual'}")
+            print(f"  Schedule: {_c(dag.schedule, CYAN) if dag.schedule else 'manual'}")
             print(f"  Tasks: {len(dag.tasks)}")
             print(f"  States: {len(asl.get('States', {}))}")
             if errors:
-                print(f"  ❌ Errors ({len(errors)}):")
+                print(_c(f"  ❌ Errors ({len(errors)}):", RED))
                 for e in errors:
                     print(f"     • {e}")
             if warnings:  # pragma: no cover -- generated ASL for a DSL DAG has no warnings
-                print(f"  ⚠️  Warnings ({len(warnings)}):")
+                print(_c(f"  ⚠️  Warnings ({len(warnings)}):", YELLOW))
                 for w in warnings:
                     print(f"     • {w}")
             if is_valid:
-                print("  ✅ Valid")
+                print(_c("  ✅ Valid", BOLD_GREEN))
 
         return is_valid, errors, warnings
 
@@ -705,7 +705,7 @@ def _run_test(dag_file: str) -> bool:
     """
     path = Path(dag_file)
     if not path.exists():
-        print(f"❌ Pipeline file not found: {dag_file}")
+        print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
         sys.exit(1)
 
     from polyris.dag import DAG as PolyrisDAG
@@ -744,7 +744,7 @@ def _run_test(dag_file: str) -> bool:
         # pipeline that calls sys.exit() at module level produces a clean
         # "Failed to load" message rather than killing the CLI with a traceback.
         msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
-        print(f"❌ Failed to load {dag_file}: {msg}")
+        print(f"{_c('❌ Failed to load', RED)} {_c(dag_file, CYAN)}: {msg}")
         sys.exit(1)
 
     finally:
@@ -756,23 +756,23 @@ def _run_test(dag_file: str) -> bool:
     dags = created_dags
 
     if not dags:
-        print(f"❌ No DAG found in {dag_file}")
+        print(f"{_c('❌ No DAG found in', RED)} {_c(dag_file, CYAN)}")
         sys.exit(1)
 
     failures = []
     for dag in dags:
-        print(f"Testing DAG: {dag.dag_id}")
+        print(f"{_c('Testing DAG:', BOLD)} {_c(dag.dag_id, CYAN)}")
         for task in dag.topological_sort():
-            print(f"  Task: {task.task_id}")
+            print(f"  Task: {_c(task.task_id, CYAN)}")
             if hasattr(task, 'python_callable') and task.python_callable:
                 try:
                     result = task.python_callable()
-                    print(f"    ✅ Result: {result}")
+                    print(f"    {_c('✅ Result:', BOLD_GREEN)} {result}")
                 except Exception as e:
-                    print(f"    ❌ Error: {e}")
+                    print(f"    {_c('❌ Error:', RED)} {e}")
                     failures.append((task.task_id, e))
             else:  # pragma: no cover -- every @task.* carries its decorated python_callable; this guards a task shape the DSL does not produce
-                print(f"    ℹ️  No python_callable (task type: {getattr(task, 'task_type', 'unknown')})")
+                print(f"    ℹ️  No python_callable (task type: {_c(getattr(task, 'task_type', 'unknown'), CYAN)})")
     return not failures
 
 
@@ -841,6 +841,7 @@ def main():
         help='Output results as JSON'
     )
 
+    colorize_parser(parser)
     args = parser.parse_args()
 
     # --json requires clean stdout. Suppress verbose prints when --json is
@@ -884,12 +885,20 @@ def main():
             # via validate_all's summary and validate_asl_from_dag's verbose block.
             for e in results['errors']:
                 _print_error(e)
+        elif not args.json and not results['errors']:
+            # Non-json success: surface a positive signal so the user never sees
+            # a silent "command returned, nothing happened" on a clean pass.
+            # Verbose mode already prints per-DAG ✅ Valid via
+            # validate_asl_from_dag, so only emit the summary line when quiet.
+            if not effective_verbose:
+                print(_c(f"✅ Validated {len(results['pipelines'])} pipeline(s) — no issues", BOLD_GREEN))
         sys.exit(0 if not results['errors'] else 1)
 
     elif args.test:
         result = _run_test(args.file)
         if not result:
             sys.exit(1)
+        print(_c("✅ All tasks passed", BOLD_GREEN))
 
     else:
         valid, errors = _validate_single(args.file, verbose=effective_verbose)
@@ -898,6 +907,11 @@ def main():
                 _print_error(e)
         if args.json:
             print(json.dumps({'file': args.file, 'valid': valid, 'errors': errors}, indent=2))
+        elif valid and not effective_verbose:
+            # Silent success was confusing — the user sees the shell prompt
+            # return with no output and can't tell if the command ran or
+            # scrolled past its output. Emit a positive one-liner.
+            print(f"{_c('✅ Valid:', BOLD_GREEN)} {_c(args.file, CYAN)}")
         sys.exit(0 if valid else 1)
 
 

@@ -183,6 +183,42 @@ class TestPrintDeploySummary:
         )
         assert "(default)" in capsys.readouterr().out
 
+    def test_colors_header_bold_and_identifiers_cyan_when_tty(self, mocker, capsys):
+        """Lock in the visible-coloring contract per polyris/CLAUDE.md.
+
+        Without this test, removing any individual `_c(...)` call would still
+        leave all 2495 other tests green — the user complaint that drove the
+        coloring change ("output not colored") would silently return.
+        """
+        from polyris._ansi import BOLD, CYAN
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        deploy_mod._print_deploy_summary(
+            dag_id="daily_orders",
+            stage="prod",
+            stack_name="acme-prod",
+            namespace="acme",
+            region="us-east-1",
+            profile="my-prod",
+            pipeline_stack="acme-prod-polyris-daily_orders",
+        )
+        out = capsys.readouterr().out
+        assert BOLD in out, "Deploy target header must be BOLD"
+        # Every identifier value must be wrapped in CYAN
+        for identifier in (
+            "daily_orders", "prod", "acme-prod", "acme", "us-east-1",
+            "my-prod", "acme-prod-polyris-daily_orders",
+        ):
+            assert f"{CYAN}{identifier}" in out, f"identifier {identifier!r} must be CYAN"
+
+    def test_no_ansi_codes_when_not_a_tty(self, mocker, capsys):
+        """CI logs, pipes, redirect-to-file must stay plain-text."""
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        deploy_mod._print_deploy_summary(
+            dag_id="x", stage="dev", stack_name="s", namespace="n",
+            region="r", profile="p", pipeline_stack="ps",
+        )
+        assert "\x1b[" not in capsys.readouterr().out
+
 
 # ─────────────────────────────────────────────────────────────────────
 #  _fail_no_stack_name

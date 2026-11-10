@@ -56,6 +56,65 @@ class TestAnsiC:
         assert result == f"{BOLD}{CYAN}hello{RESET}"
 
 
+class TestColorizeArgparseHelp:
+    """The argparse `--help` colorizer — section headers → BOLD, option
+    flags → CYAN. Pure string-in / string-out, independent of any parser."""
+
+    def test_no_op_when_not_a_tty(self, mocker):
+        from polyris._ansi import colorize_argparse_help
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        text = "usage: polyris-x [-h]\noptions:\n  -h, --help  show this"
+        assert colorize_argparse_help(text) == text
+
+    def test_bolds_known_section_headers(self, mocker):
+        from polyris._ansi import colorize_argparse_help, BOLD
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        for header in ("usage", "options", "positional arguments", "Examples", "Commands", "Documentation"):
+            out = colorize_argparse_help(f"{header}:\nbody")
+            assert f"{BOLD}{header}:" in out, f"header {header!r} not BOLD"
+
+    def test_cyans_flag_token_with_short_long_and_upper_arg(self, mocker):
+        """Covers -h / --all, -a / --file FILE, -f FILE forms."""
+        from polyris._ansi import colorize_argparse_help, CYAN
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        text = (
+            "options:\n"
+            "  -h, --help          show help\n"
+            "  --all, -a           do all\n"
+            "  --file FILE, -f FILE  file path\n"
+            "  --test              run test\n"
+        )
+        out = colorize_argparse_help(text)
+        for flag in ("-h, --help", "--all, -a", "--file FILE, -f FILE", "--test"):
+            assert f"{CYAN}{flag}" in out, f"flag {flag!r} not CYAN"
+
+
+class TestColorizeParser:
+    """`colorize_parser` wraps an argparse parser's `format_help` so --help
+    goes through the colorizer. End-to-end integration check."""
+
+    def test_wraps_format_help_and_returns_parser(self, mocker):
+        import argparse
+        from polyris._ansi import colorize_parser
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        parser = argparse.ArgumentParser(prog="test-cli")
+        parser.add_argument("--all", "-a", action="store_true", help="do all")
+        returned = colorize_parser(parser)
+        assert returned is parser  # chaining contract
+        help_text = parser.format_help()
+        assert BOLD in help_text
+        assert CYAN in help_text
+
+    def test_plain_help_off_tty(self, mocker):
+        import argparse
+        from polyris._ansi import colorize_parser
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        parser = argparse.ArgumentParser(prog="test-cli")
+        parser.add_argument("--flag", help="x")
+        colorize_parser(parser)
+        assert "\x1b[" not in parser.format_help()
+
+
 class TestColorizeStatus:
     """The color-coding added to progress output. Plain text (no ANSI
     codes) whenever stdout isn't a real terminal — piping polyris-deploy's
