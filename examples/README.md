@@ -26,6 +26,7 @@ composite end-to-end run).
 | [`14_assets_and_or`](14_assets_and_or/dag.py) | AND vs OR trigger logic with two independent assets *(experimental)* |
 | [`15_assets_every_event`](15_assets_every_event/dag.py) | `AssetAny([x])` for one asset — trigger on every event, no day dedup *(experimental)* |
 | [`16_xcom_showcase`](16_xcom_showcase/dag.py) | Every 1.0.0 XCom path in one pipeline — `xcom.get()`, `xcom.push()`, primitive fix, loud errors, Console per-upstream cards |
+| [`17_all_task_types_xcom`](17_all_task_types_xcom/dag.py) | End-to-end XCom smoke — every task type (Lambda, Glue Spark, Glue pythonshell, Athena, ECS, Batch, SFN) reads upstream and writes output |
 
 ## Run one locally
 

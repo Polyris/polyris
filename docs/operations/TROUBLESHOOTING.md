@@ -69,7 +69,7 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 
 **Fix:** Stop the stuck execution via Console UI or API:
 ```bash
-curl -X POST https://api.example.com/api/execution-stop?id={arn} \
+curl -X POST ${API_URL}/api/execution-stop?id={arn} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -383,13 +383,18 @@ aws cloudformation list-stacks \
 
 ## Emergency Procedures
 
+> **Note:** Set `API_URL` to your Console API endpoint before running the commands below:
+> ```bash
+> export API_URL=<your-console-api-url>  # e.g. https://abc123.execute-api.us-east-1.amazonaws.com
+> ```
+
 ### Stop runaway execution
 
 ```bash
 # Via Console UI: Stop button
 
 # Via API:
-curl -X POST https://api.example.com/api/execution-stop?id={arn} \
+curl -X POST ${API_URL}/api/execution-stop?id={arn} \
   -H "Authorization: Bearer $TOKEN"
 
 # Via AWS CLI:
@@ -406,7 +411,7 @@ aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
 # Via Console UI: Task modal → "Mark Success" button
 
 # Via API:
-curl -X POST https://api.example.com/api/task-success?name={execution_name} \
+curl -X POST ${API_URL}/api/task-success?name={execution_name} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Manually verified completion"}'
@@ -420,7 +425,7 @@ curl -X POST https://api.example.com/api/task-success?name={execution_name} \
 # Via Console UI: Pipeline → Run button → select date
 
 # Via API:
-curl -X POST https://api.example.com/api/pipeline-run?name={name} \
+curl -X POST ${API_URL}/api/pipeline-run?name={name} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"variables": {"current_date": "2026-01-15"}}'
@@ -438,7 +443,7 @@ aws dynamodb scan \
   --expression-attribute-values '{":true": {"BOOL": true}}'
 
 # Resume via API
-curl -X POST https://api.example.com/api/execution-resume?id={id}
+curl -X POST ${API_URL}/api/execution-resume?id={id}
 ```
 
 ---

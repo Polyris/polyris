@@ -80,7 +80,6 @@ The Lambda is defined in `sam/template.yaml` as `ConsoleApiFunction` (`AWS::Serv
 ## History
 
 Refactored from monolithic `handlers.py` (3,836 lines) to modular structure.
-See `HANDLERS_REFACTORING_PLAN.md` for full migration details.
 
 DAL layer added to centralize ~65 scattered `dynamodb.Table()` calls into 8 repository classes.
 All 55 route-level DDB bypasses migrated to repo methods in v69.3 — routes no longer access `boto3.Table` directly.
