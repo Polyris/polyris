@@ -165,7 +165,7 @@ After fixing a bug, ask: *what rule would have prevented this?* Write it in CLAU
 **27. Enums crossing SDK ↔ backend ↔ frontend go through `polyris/constants.py` + `sync_enums`**
 If a value set means the same thing in Python and TypeScript, it belongs in `polyris/constants.py` and is emitted by `python -m polyris.codegen.sync_enums`. Bare string literals across multiple files are how a new member gets added in one place and silently forgotten in others.
 
-When adding a value: (1) add to `polyris/constants.py`, (2) register in `sync_enums.py` if new class, (3) run `python -m polyris.codegen.sync_enums`, (4) import the enum everywhere — never bare strings, (5) add a parity test (#28).
+When adding or removing a value: (1) edit `polyris/constants.py`, (2) register in `sync_enums.py` if new class, (3) run `python -m polyris.codegen.sync_enums` — mandatory even for removals (CI `make check-generate-enums` will fail if skipped), (4) import the enum everywhere — never bare strings, (5) add a parity test (#28).
 
 **28. Constants coupled across languages/artifacts need a parity test**
 Any string written in one artifact and read verbatim in another must have a parity test asserting the same value on both sides. The type system can't enforce string parity across JSON templates or Python↔TypeScript.
