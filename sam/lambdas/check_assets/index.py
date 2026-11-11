@@ -384,12 +384,14 @@ def _is_fresh(event_time: str, freshness_hours: int) -> bool:
         return age_hours <= freshness_hours
     except Exception as e:
         # "Not fresh" on parse failure is the safe default (caller will wait for
-        # the next event rather than proceeding on a bad timestamp). Log so a
-        # systematic timestamp format issue doesn't silently stall pipelines.
-        log.warn("_is_fresh", "Parse failed; defaulting to not fresh",
-                 event_time=event_time,
-                 error_type=type(e).__name__,
-                 error=str(e))
+        # the next event rather than proceeding on a bad timestamp). ERROR
+        # level (not WARN) so a systematic timestamp format issue — which
+        # would stall every pipeline reading this asset — is visible in
+        # CloudWatch without digging.
+        log.error("_is_fresh", "Parse failed; defaulting to not fresh",
+                  event_time=event_time,
+                  error_type=type(e).__name__,
+                  error=str(e))
         return False
 
 
@@ -422,8 +424,20 @@ def _save_asset_subscription(
             reference_date=reference_date,
         )
     except Exception as e:
-        # Log but don't fail - subscription is best-effort
-        log.warn("_save_subscription", "put_item failed", asset_name=asset_name, subscriber=subscriber, error=str(e))
+        # Subscription write is the critical path that makes wait_for work when
+        # the asset has not been materialized yet. If this fails the task will
+        # go into Wait_For_Signal and hang to orchestration_timeout — no
+        # subscriber exists to be woken by the eventual asset event. Logged at
+        # ERROR (not WARN) so this is visible in CloudWatch without digging —
+        # the swallowed warn is what hid the DDB schema mismatch
+        # (ValidationException from writing dependency_key to a table keyed
+        # on asset_name) for months.
+        log.error(
+            "_save_subscription",
+            "put_item failed — task will hang to timeout; no subscription persisted",
+            asset_name=asset_name, subscriber=subscriber,
+            error_type=type(e).__name__, error=str(e),
+        )
 
 
 def _delete_subscription(asset_name: str, subscriber: str) -> None:
@@ -431,4 +445,10 @@ def _delete_subscription(asset_name: str, subscriber: str) -> None:
     try:
         subscriptions_repo.delete(asset_name, subscriber)
     except Exception as e:
+        # WARN (not ERROR) because this is cleanup, not a wake-up path: the
+        # task already proceeded via _mark_assets_ready right above. A stale
+        # subscription row is harmless — TTL will reap it, and
+        # notify_asset_subscribers filters by task state before signaling.
+        # The "catches on wake-up path log at error" rule in polyris/CLAUDE.md
+        # explicitly scopes to wake-up; this is post-wake-up housekeeping.
         log.warn("_delete_subscription", "delete_item failed", asset_name=asset_name, subscriber=subscriber, error=str(e))

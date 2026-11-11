@@ -50,11 +50,16 @@ class AssetEventsRepo:
 
 
 class SubscriptionsRepo:
-    """asset-subscriptions table — composite key dependency_key + subscriber."""
+    """Subscriptions table — composite key dependency_key + subscriber.
+    Writes `wait_for` subscriptions into DependencySubscriptionsTable (same
+    table that holds task-to-task deps, keyed by dependency_key prefix:
+    `asset:<name>` for wait_for, `<upstream>-<pipeline_exec_short>` for task
+    deps). SUBSCRIPTIONS_TABLE env var is wired to that table in
+    sam/template.yaml."""
 
     def __init__(self, table_name: Optional[str] = None):
         self._table_name = table_name or os.environ.get(
-            'SUBSCRIPTIONS_TABLE', 'asset-subscriptions'
+            'SUBSCRIPTIONS_TABLE', 'polyris-dep-subscriptions'
         )
 
     @property

@@ -135,14 +135,7 @@ omit = [
     # untested. All three are now measured. Before adding a module here, check
     # it actually needs AWS; if it does not, write the test.
     #
-    # KNOWN DEBT (measured 2026-07, partially closed 2026-10): register.py is
-    # still majority pure logic but the whole module is exempt:
-    #   register.py  only get_sfn_client touches boto3; register_pipeline,
-    #                find_sfn_arn and main (111 lines) are pure (module at ~22%).
-    # The right shape is to split the AWS call out and measure the rest, the way
-    # output.py/init.py/local.py were closed — not to keep the whole module exempt.
     "polyris/deploy.py",
-    "polyris/register.py",
     "polyris/codegen/sync_enums.py",
     "polyris/codegen/sync_variables.py",
     # codegen drift-checkers. Their *logic* is unit-tested against tmp_path

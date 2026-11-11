@@ -15,7 +15,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Set
 
-from config import sfn, NOTIFY_DEPENDENTS_HELPER_ARN, NOTIFY_ASSET_CONSUMERS_SFN_ARN
+from config import (
+    sfn,
+    lambda_client,
+    NOTIFY_DEPENDENTS_HELPER_ARN,
+    NOTIFY_ASSET_CONSUMERS_SFN_ARN,
+    NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
+)
 from constants import TASK_TERMINAL_STATUSES
 from logger import log
 
@@ -169,8 +175,21 @@ def notify_asset_consumers_for_manual_success(
     """
     if not outlets:
         return
+
+    # Collect missing env vars once up-front so a mis-wired deploy logs a
+    # single actionable warning rather than one per missing ARN interleaved
+    # through the per-outlet loop.
+    missing = []
     if not NOTIFY_ASSET_CONSUMERS_SFN_ARN:
-        log.warn("notify_asset_consumers_for_manual_success", "NOTIFY_ASSET_CONSUMERS_SFN_ARN not configured")
+        missing.append("NOTIFY_ASSET_CONSUMERS_SFN_ARN (push consumers)")
+    if not NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN:
+        missing.append("NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN (wait_for waiters)")
+    if missing:
+        log.warn(
+            "notify_asset_consumers_for_manual_success",
+            "Asset notification targets not configured; some consumers will not be woken",
+            missing=missing,
+        )
 
     now = datetime.now(timezone.utc)
     ttl = int(now.timestamp()) + (asset_event_ttl_days * 24 * 60 * 60)
@@ -216,6 +235,31 @@ def notify_asset_consumers_for_manual_success(
         except Exception as e:
             log.error("notify_asset_consumers_for_manual_success", "Failed to start SFN",
                       asset_name=asset_name, task_name=task_name, error=str(e))
+
+    # Wake pull-waiters (`wait_for=[asset]`). The run_task SFN invokes
+    # NotifyAssetSubscribersFunction on natural completion; mark-success is the
+    # one manual action that claims real work happened, so pull-waiters must be
+    # woken the same way push consumers are above. Single invocation with the
+    # full outlet list — the Lambda handles per-outlet subscription lookup.
+    if NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN:
+        try:
+            lambda_client.invoke(
+                FunctionName=NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
+                InvocationType='Event',  # fire-and-forget; subscriber wake is best-effort
+                Payload=json.dumps({
+                    'outlets': outlets,
+                    'source_task': task_name,
+                    'source_dag': pipeline_name,
+                    'event_time': now.isoformat(),
+                }).encode('utf-8'),
+            )
+            log.info("notify_asset_consumers_for_manual_success", "Invoked wait_for notifier",
+                     task_name=task_name, outlet_count=len(outlets))
+        except Exception as e:
+            log.error("notify_asset_consumers_for_manual_success", "Failed to invoke wait_for notifier",
+                      task_name=task_name, error=str(e))
+    # Missing-ARN path already flagged by the single up-front `missing` warn
+    # above; no per-call repeat here.
 
 
 def extract_pipeline_execution_short(item: Dict, execution_name: str) -> str:

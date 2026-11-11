@@ -1,13 +1,28 @@
 # Asset-Based Orchestration
 
-> **⚠️ Experimental (v0.93.0).** Assets are an experimental feature — the API
-> (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may change
-> in a future release
-> (inspect lineage with `polyris-output --graph`). Not recommended for production
-> pipelines.
-> Silence the runtime warning with
+> **⚠️ Experimental (v0.93.0).** Assets are an experimental feature. The API
+> (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may
+> change, and the coordination layer has known bugs — see
+> [Known limitations](#known-experimental-limitations) below. Not recommended
+> for production pipelines. Silence the runtime warning with
 > `warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)`.
 > <!-- EXPERIMENTAL-ASSETS: remove this banner when assets graduate to stable. -->
+
+
+## Known experimental limitations
+
+These are current gaps in the asset coordination layer. Each is a known
+issue, not undiscovered behavior. Progress is tracked in
+[`CHANGELOG.md`](../../CHANGELOG.md).
+
+| Area | Current behavior |
+|------|------------------|
+| Partition identity | A run's partition is the UTC date of `current_date` (approximately the scheduler fire time). The scheduler does not pass an explicit partition key, so hourly schedules collapse multiple runs onto one partition. |
+| `wait_for=[a, b]` AND semantics | Fires on the first of two events, not when both arrive (currently matches OR). |
+| `wait_for` freshness | Checks the latest event for the asset, not the event for the consumer's partition. A backfill of a past date can pass freshness based on today's producer event. |
+| Subscription key collisions | Subscription key `(asset, task_name)` does not include pipeline or execution. Parallel backfills of the same consumer can overwrite each other's subscription rows. |
+| Push AND trigger loss | If the `Trigger_AND` state fails between counter bump and execution start, subsequent events on the same date are filtered out and the day's trigger is lost. |
+| Restart inconsistency | Re-running an asset-producing task restarts OR consumers (time-based execution name) but not AND consumers (deterministic name). |
 
 
 ## Overview
@@ -533,6 +548,11 @@ individual task until the asset condition holds.
 
 ### `wait_for` patterns
 
+> **⚠️ Multi-asset `wait_for` is currently broken** — the patterns marked AND
+> below are documented as AND but behave as OR (first event wins). See
+> [Known limitations](#known-experimental-limitations) at the top of this
+> doc. Single-asset `wait_for=[a]` works as documented.
+
 | Pattern | Meaning |
 |---------|---------|
 | `wait_for=[asset_x]` | Latest materialization — no freshness check |
@@ -541,10 +561,10 @@ individual task until the asset condition holds.
 | `wait_for=[asset_x.within(weeks=2)]` | ≤ 2 weeks old |
 | `wait_for=[asset_x.within(days=1, hours=12)]` | ≤ 36 hours old (combined units) |
 | `wait_for=[asset_x.consecutive(days=7)]` | 7 consecutive daily events required |
-| `wait_for=[a, b]` | AND — wait for both `a` and `b` |
+| `wait_for=[a, b]` | AND — wait for both `a` and `b` ⚠️ currently fires on first |
 | `wait_for=[a \| b]` | OR — wait for either `a` or `b` |
-| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) |
-| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event |
+| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) ⚠️ currently fires on first |
+| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event ⚠️ currently fires on first |
 | `wait_for=[a.consecutive(days=7) \| manual_override]` | 7-day run OR manual override |
 
 ### Full example — producer + consumer
@@ -605,7 +625,8 @@ Registration helper
             │
             ├── Query asset-events table (latest event per asset)
             ├── Check freshness (if `.within(...)` was specified)
-            └── If not ready → save subscription to asset-subscriptions
+            └── If not ready → save subscription to dep-subscriptions
+                              (key: "asset:<name>" + task identifier)
         │
         ▼
 If ready → signal wrapper → task continues

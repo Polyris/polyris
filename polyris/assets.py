@@ -255,7 +255,9 @@ class Asset:
             _EXPERIMENTAL_WARNED = True
             warnings.warn(
                 "polyris assets are experimental — the asset API (Asset, outlets, "
-                "wait_for, asset-triggered schedules) may change in a future release. "
+                "wait_for, asset-triggered schedules) may change in a future release, "
+                "and the coordination layer has known gaps. "
+                "See docs/features/ASSETS.md for the full limitations list. "
                 "Inspect lineage with `polyris-output --graph`.",
                 ExperimentalWarning,
                 stacklevel=2,

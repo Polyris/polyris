@@ -1,5 +1,82 @@
 ## Unreleased
 
+### Fixed — `wait_for` subscription table routing
+
+- `NotifyAssetSubscribersFunction` and `CheckAssetsFunction` received
+  `SUBSCRIPTIONS_TABLE` pointing at `AssetSubscriptionsTable` (schema
+  `asset_name`/`pipeline_name`), but their DAL writes `dependency_key` +
+  `subscriber` (schema of `DependencySubscriptionsTable`). Every `wait_for`
+  subscription write/query hit `ValidationException` and was silently logged
+  as warning, leaving tasks that depended on not-yet-materialized assets
+  hanging to timeout.
+- Fix: repoint `SUBSCRIPTIONS_TABLE` for both Lambdas to
+  `DependencySubscriptionsTable`; move IAM grants over to the correct table.
+  No DAL change needed — the DAL code already matched this schema.
+- `AssetSubscriptionsTable` stays, used only by `notify_asset_consumers`
+  SFN for push triggers (`schedule=[asset]`).
+- Pinned by `tests/sdk/test_wait_for_subscription_table_parity.py` — the
+  env var's target table's key schema must match the DAL's composite key
+  shape; a future revert fails the test.
+
+### Fixed — `mark_success` wakes `wait_for` subscribers
+
+- Manual `mark_success` on an asset-producing task now invokes
+  `NotifyAssetSubscribersFunction` (same Lambda the `run_task` SFN calls on
+  natural completion) so tasks waiting via `wait_for=[asset]` are woken the
+  same way push consumers (`schedule=[asset]`) already were. Human
+  intervention path and natural event path now go through the same wake-up
+  logic.
+- New env var `NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN` on `ConsoleApiFunction`;
+  IAM `lambda:InvokeFunction` grant on `NotifyAssetSubscribersFunction`.
+  Fire-and-forget invocation — Lambda errors are logged, not surfaced,
+  matching the existing push-consumer SFN pattern.
+- Effective end to end together with the `wait_for` routing fix above.
+  See [ADR #128](docs/reference/adr-128-mark-success-wakes-wait-for.md).
+
+### Changed — `polyris.register.find_sfn_arn` now propagates `ClientError`
+
+- Library-level behavior change: `find_sfn_arn` previously swallowed every
+  `ClientError` and returned `None`, so callers could not tell
+  "pipeline not found" from "AccessDenied". It now propagates — `None`
+  means "paginator succeeded, no match" only.
+- Caller impact: downstream code that relied on `None`-for-everything will
+  see exceptions. `polyris-register` CLI's `main()` is updated to catch
+  `(ClientError, BotoCoreError)` around the call and emit an actionable
+  error ("Search failed (AccessDeniedException): …") instead of the old
+  misleading "Pipeline '…' not found".
+
+### Changed — `polyris-register --json` clean stdout on every exit path
+
+- `polyris-register --json` with a bad `--profile` previously exited with
+  empty stdout (stderr-only diagnostic from `get_sfn_client`'s own
+  `sys.exit`), breaking `json.loads`. `get_sfn_client` no longer exits —
+  `ProfileNotFound` propagates, `main()` routes it to the `--json` output
+  path. `register_pipeline` widens its `except ClientError` to
+  `(ClientError, BotoCoreError)` so the ARN path emits a failure dict too.
+- `--json` without an ARN and without `--name` now emits
+  `{"success": false, "error": "Missing required argument: …"}` on stdout
+  and the help text on stderr (previously `print_help()` wrote help to
+  stdout, also breaking `json.loads`).
+
+### Changed — Asset-layer Lambdas: silent `warning` catches upgraded to `error`
+
+- `check_assets._save_subscription`, `check_assets._is_fresh`,
+  `notify_asset_subscribers._get_asset_subscribers`,
+  `notify_asset_subscribers._check_freshness`,
+  `notify_asset_subscribers._coordinate_ready_check`, and
+  `notify_asset_subscribers._send_task_success` now log at ERROR (not WARN)
+  with actionable context messages. Behavior is unchanged — fail-open and
+  fail-closed defaults preserved — but DDB schema issues, timestamp parse
+  failures, and send_task_success IAM problems are now visible in CloudWatch
+  without digging through warnings for every pipeline tick.
+
+### Changed — `polyris/register.py` moved off the coverage omit list
+
+- `register.py` was fully exempt from coverage with a documented `KNOWN DEBT`
+  comment in `pyproject.toml`. Internal change only: 30 new tests in
+  `tests/sdk/test_register_cli.py` cover `get_sfn_client`, `register_pipeline`,
+  `find_sfn_arn`, and `main`. `fail_under = 100` floor now includes this module.
+
 ### Removed — `"sagemaker"` from `TaskTypeLiteral`
 
 - `"sagemaker"` removed from `TaskTypeLiteral` in `polyris/constants.py`. The type
