@@ -1350,10 +1350,12 @@ Resources:
                   - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
                   - !GetAtt QueuedAssetEventsTable.Arn
               # Case B coordination: mark assets_ready on the subscriber's task
-              # record so evaluate_deps sees a coherent view.
+              # record so evaluate_deps sees a coherent view (UpdateItem), and
+              # write _notify_warn_ records when SendTaskSuccess fails (PutItem).
               - Effect: Allow
                 Action:
                   - dynamodb:UpdateItem
+                  - dynamodb:PutItem
                 Resource:
                   - !GetAtt PipelineTokensTable.Arn
               # Invoke evaluate_deps to check task_deps before signaling.

@@ -104,10 +104,12 @@ signal to retry. For the last-asset path:
   event can retry. Write a `_notify_warn_` record to `pipeline-tokens` so the
   operator sees it in the UI notifications bell.
 
-This ordering ensures that a transient SFN failure never silently drops the
-wake-up path. A subscription kept after `failed` will be retried when the next
-asset event fires for the same subscriber, or when an operator triggers a
-manual re-run.
+This ordering ensures that a transient SFN failure is **visible** (UI bell)
+rather than silent. For daily assets the next natural retry is the following
+day's run, by which point the subscriber's SFN token will typically have
+expired — the practical outcome is "operator sees the alert and re-runs
+manually", not automatic recovery. The subscription is kept as a safety net,
+not a reliable retry mechanism.
 
 ### evaluate_deps changes
 

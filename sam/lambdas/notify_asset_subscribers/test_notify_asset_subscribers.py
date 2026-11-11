@@ -763,7 +763,59 @@ class TestDynamoDBExpressions:
     the UpdateExpression — the Case B path (task deps not yet satisfied when asset
     arrives) requires assets_ready=true in the DDB record so notify_dependents SFN
     can read it later and pass it to evaluate_deps.
+
+    Also covers write_warn (PutItem) — mocking it would not catch a missing IAM
+    PutItem permission; a real DDB write through moto does (Principle #13).
     """
+
+    def test_write_warn_puts_notify_warn_record(self, monkeypatch):
+        """write_warn must issue a real put_item to PipelineTokensTable.
+
+        Principle #13: mocking write_warn in handler-level tests verifies the
+        call signature but not the DDB operation. A missing dynamodb:PutItem
+        in NotifyAssetSubscribersRole would only surface here, not in the
+        handler mock test. The IAM permission is pinned by
+        test_mark_success_wakeup_wiring.py::
+        test_notify_asset_subscribers_role_grants_put_item_on_tokens_table.
+        """
+        from moto import mock_aws
+        import boto3
+        import dal as dal_module
+        from dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            dynamodb.create_table(
+                TableName='pipeline-tokens-warn',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+
+            repo = TokensRepo('pipeline-tokens-warn')
+            repo.write_warn(
+                execution_name='task-2026-01-01-abc1',
+                task_name='my_task',
+                pipeline_execution='pipe-run-2026-01-01-abc1',
+                pipeline_name='my-pipeline',
+                date='2026-01-01',
+                error='send_task_success failed for asset "inventory"; subscription kept',
+            )
+
+            table = dynamodb.Table('pipeline-tokens-warn')
+            item = table.get_item(
+                Key={'execution_name': '_notify_warn_task-2026-01-01-abc1'}
+            ).get('Item')
+
+        assert item is not None, "_notify_warn_ record must be written to DDB"
+        assert item['task_name'] == 'my_task'
+        assert item['status'] == 'failed'
+        assert 'inventory' in item['error']
+        assert 'finished_at' in item
+        assert 'ttl' in item
 
     def test_assets_ready_bool_reaches_evaluate_deps_via_ddb(self, monkeypatch):
         """DAL ADD writes assets_ready=true to DDB; that bool must survive a DDB

@@ -55,9 +55,11 @@
   successful outcome:
   - Signal sent successfully → delete subscription.
   - Token already consumed (timed-out / task gone) → delete subscription.
-  - Transient / IAM failure → **keep subscription** for retry on the next asset
-    event; write a `_notify_warn_` record to `pipeline-tokens` so the UI
-    notifications bell shows the failure.
+  - Transient / IAM failure → **keep subscription** and write a `_notify_warn_`
+    record to `pipeline-tokens` so the UI notifications bell shows the failure.
+    For daily assets the next natural retry is the next day's event (by which
+    point the SFN token is likely expired), so the practical outcome is operator
+    visibility and manual re-run, not automatic recovery.
 - `_coordinate_ready_check` now returns `(should_signal, record)` instead of
   `bool`, so the caller has the DDB record context needed to write `_notify_warn_`
   without a second round-trip.

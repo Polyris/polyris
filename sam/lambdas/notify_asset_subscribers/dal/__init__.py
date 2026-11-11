@@ -11,6 +11,7 @@ created lazily by a shared `_resource()` helper.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone as tz
 import boto3
 from typing import List, Dict, Optional
 
@@ -109,6 +110,7 @@ class TokensRepo:
 
     def write_warn(
         self,
+        *,
         execution_name: str,
         task_name: str,
         pipeline_execution: str,
@@ -117,7 +119,6 @@ class TokensRepo:
         error: str,
     ) -> None:
         """Write a _notify_warn_ record visible in the UI bell. Best-effort."""
-        from datetime import datetime, timezone as tz
         now = datetime.now(tz.utc)
         self.table.put_item(Item={
             'execution_name': f'_notify_warn_{execution_name}',
