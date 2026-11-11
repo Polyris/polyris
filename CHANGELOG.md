@@ -23,6 +23,47 @@
   fixed.
 - See [ADR #129](docs/reference/adr-129-wait-for-and-semantics.md).
 
+### Fixed — tooling: deterministic enum generation, make test-lambdas exit code, set serialization
+
+- **B4 — `sync_enums` docstring indentation:** `inspect.cleandoc` strips common
+  leading indentation from docstrings, which is correct for normalising across
+  Python versions but left multi-line class docstrings in the generated
+  `constants_generated.py` files with continuation lines flush-left instead of
+  indented at four spaces. Fixed by applying `textwrap.indent` to continuation
+  lines inside `_enum_class_py`. Regenerated all three constants files.
+- **B5 — `make test-lambdas` exit code:** the `console_api` test block used
+  `|| echo "..."` on failure, so `make test-lambdas` returned exit code 0 even
+  when console_api tests failed. Changed to `|| { echo "..."; exit 1; }` so CI
+  sees the failure.
+- **B6 — `cors_response` set serialization:** DynamoDB StringSets return as
+  Python `set` objects; the previous `default=str` serialized them as the
+  Python repr `"{'a', 'b'}"` (not valid JSON). Changed to
+  `default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o)`
+  so sets become sorted JSON arrays. Covered by `test_response.py`.
+- **B7 — `evaluate_deps/constants.py` mypy:** the intentional six-name fallback
+  import block (`TERMINAL_STATUSES` → `TASK_TERMINAL_STATUSES`, etc.) now
+  carries `# type: ignore[no-redef]` per name so `mypy` doesn't flag the
+  intentional re-export.
+
+### Fixed — `notify_asset_subscribers`: subscription kept on `SendTaskSuccess` failure
+
+- Previously, `notify_asset_subscribers` deleted the subscription record
+  **before** calling `SendTaskSuccess`. On a transient SFN failure (IAM error,
+  network outage), the subscription was gone and there was no way to retry —
+  the wake-up was silently dropped.
+- Fix: deletion order inverted. Subscription is deleted **only after** a
+  successful outcome:
+  - Signal sent successfully → delete subscription.
+  - Token already consumed (timed-out / task gone) → delete subscription.
+  - Transient / IAM failure → **keep subscription** for retry on the next asset
+    event; write a `_notify_warn_` record to `pipeline-tokens` so the UI
+    notifications bell shows the failure.
+- `_coordinate_ready_check` now returns `(should_signal, record)` instead of
+  `bool`, so the caller has the DDB record context needed to write `_notify_warn_`
+  without a second round-trip.
+- `_send_task_success` now returns `'sent' | 'token_consumed' | 'failed'`
+  instead of `bool`, distinguishing retryable failures from consumed-token cleanup.
+
 ### Fixed — `wait_for` subscription table routing
 
 - `NotifyAssetSubscribersFunction` and `CheckAssetsFunction` received

@@ -107,6 +107,30 @@ class TokensRepo:
     def table(self):
         return _resource().Table(self._table_name)
 
+    def write_warn(
+        self,
+        execution_name: str,
+        task_name: str,
+        pipeline_execution: str,
+        pipeline_name: str,
+        date: str,
+        error: str,
+    ) -> None:
+        """Write a _notify_warn_ record visible in the UI bell. Best-effort."""
+        from datetime import datetime, timezone as tz
+        now = datetime.now(tz.utc)
+        self.table.put_item(Item={
+            'execution_name': f'_notify_warn_{execution_name}',
+            'task_name': task_name,
+            'pipeline_execution': pipeline_execution,
+            'pipeline_name': pipeline_name,
+            'date': date,
+            'status': 'failed',
+            'error': error,
+            'finished_at': now.isoformat(),
+            'ttl': int(now.timestamp()) + 86400,
+        })
+
     def add_to_assets_ready_set_and_get(self, execution_name: str, asset_name: str) -> Optional[Dict]:
         """Atomically ADD asset_name to `assets_ready_set` and SET assets_ready=true
         on the task record, return the full updated record. Setting assets_ready=true

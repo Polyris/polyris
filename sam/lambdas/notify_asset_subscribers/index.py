@@ -25,7 +25,7 @@ Output:
 import os
 import json
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 
 # v0.79.3 (ADR #75) — DAL repository pattern for DynamoDB.
 # Raw boto3 calls moved to dal/__init__.py.
@@ -120,29 +120,35 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             # pending upstreams (xcom.pull → PullError). evaluate_deps is the
             # single gate that checks BOTH task_deps AND assets_ready.
             execution_name = sub.get('execution_name', '')
-            should_signal = _coordinate_ready_check(execution_name, asset_name)
-
-            # Always delete the subscription — the asset has arrived, so this
-            # subscription's job is done. If task_deps aren't ready yet, they'll
-            # signal via notify_dependents later (and evaluate_deps will then
-            # see assets_ready=true on the record).
-            _delete_subscription(asset_name, subscriber_name)
+            should_signal, record = _coordinate_ready_check(execution_name, asset_name)
 
             if not should_signal:
-                # Task_deps not ready — leave the wait_token untouched. When
-                # the last task_dep completes, notify_dependents' evaluate_deps
-                # will see assets_ready=true and signal.
+                # Task_deps not ready, or AND gate not yet satisfied. Asset
+                # has arrived and is tracked in assets_ready_set — delete
+                # the subscription now. When the last remaining dep or asset
+                # arrives, notify_dependents / the last-asset path will signal.
+                _delete_subscription(asset_name, subscriber_name)
                 continue
 
-            # Send signal to waiting task
-            success = _send_task_success(
+            # Send signal first. Only delete the subscription after the signal
+            # reaches SFN — if _send_task_success returns 'failed', the
+            # subscription is kept so the next asset event can retry.
+            signal_result = _send_task_success(
                 wait_token,
                 asset_name=asset_name,
                 asset_uri=asset_uri,
-                event_time=event_time
+                event_time=event_time,
             )
 
-            if success:
+            if signal_result == 'failed':
+                # Transient / IAM failure — keep subscription for retry.
+                # Write a _notify_warn_ record so the operator sees it in the UI.
+                _write_signal_failure_warn(execution_name, subscriber_name, record, asset_name)
+                continue
+
+            # Signal reached SFN (or token already consumed) — subscription done.
+            _delete_subscription(asset_name, subscriber_name)
+            if signal_result == 'sent':
                 notified_count += 1
                 notified_subscribers.append(subscriber_name)
     
@@ -255,25 +261,27 @@ def _check_consecutive_ready(asset_name: str, consecutive_days: int, reference_d
     return len(missing) == 0
 
 
-def _coordinate_ready_check(execution_name: str, asset_name: str) -> bool:
-    """AND-gate + Case B coordination. Returns True iff we should signal wait_token.
+def _coordinate_ready_check(
+    execution_name: str, asset_name: str
+) -> Tuple[bool, Optional[Dict]]:
+    """AND-gate + Case B coordination. Returns (should_signal, record).
 
     1) Atomically ADD asset_name to `assets_ready_set` on the task record.
     2) Check AND completeness: if `wait_for_assets` is set on the record and
-       not all required assets have arrived yet, return False — this asset
-       arrived but others are still pending. The remaining subscriptions will
-       each call this function when their asset arrives.
+       not all required assets have arrived yet, return (False, record) — this
+       asset arrived but others are still pending. The remaining subscriptions
+       will each call this function when their asset arrives.
     3) If all assets satisfied (or no `wait_for_assets` set — legacy path),
        ask evaluate_deps whether task_deps are also done.
-    4) On any DDB/Lambda failure, fail-open: signal anyway rather than hang."""
+    4) On any DDB/Lambda failure, fail-open: return (True, None)."""
     if not execution_name:
-        return True  # legacy path — old subscriptions may lack execution_name
+        return True, None  # legacy path — old subscriptions may lack execution_name
 
     record = tokens_repo.add_to_assets_ready_set_and_get(execution_name, asset_name)
     if not record:
         log.warn("_coordinate_ready_check", "task record not found",
                  execution_name=execution_name)
-        return True  # fall back to legacy behaviour
+        return True, None  # fall back to legacy behaviour
 
     # AND-completeness check: all subscribed assets must arrive before we signal.
     wait_for_assets = record.get('wait_for_assets')  # SS or absent (legacy)
@@ -282,12 +290,12 @@ def _coordinate_ready_check(execution_name: str, asset_name: str) -> bool:
         if not set(wait_for_assets) <= set(assets_ready_set):
             # More assets still pending — don't signal yet. The last arriving
             # asset's call will find the sets equal and proceed.
-            return False
+            return False, record
 
     if not EVALUATE_DEPS_LAMBDA:
         # Coordinated evaluation not wired — a fresh deploy may still be
         # rolling out. Signal anyway.
-        return True
+        return True, record
 
     try:
         dependencies_raw = record.get('dependencies', '[]')
@@ -313,49 +321,78 @@ def _coordinate_ready_check(execution_name: str, asset_name: str) -> bool:
             Payload=json.dumps(payload).encode('utf-8'),
         )
         body = json.loads(response['Payload'].read())
-        return bool(body.get('is_ready', False))
+        return bool(body.get('is_ready', False)), record
     except Exception as e:
         log.error("_coordinate_ready_check", "evaluate_deps invoke failed; signaling anyway (fail-open)",
                   execution_name=execution_name, error_type=type(e).__name__, error=str(e))
-        return True
+        return True, record
 
 
-def _send_task_success(wait_token: str, asset_name: str, asset_uri: str, event_time: str) -> bool:
-    """Send task success signal to waiting task."""
+def _send_task_success(
+    wait_token: str, asset_name: str, asset_uri: str, event_time: str
+) -> str:
+    """Send task success signal. Returns 'sent', 'token_consumed', or 'failed'.
+
+    'sent'           — SFN accepted the signal.
+    'token_consumed' — token already timed-out, consumed, or task gone; subscription
+                       should be deleted but the caller must NOT write _notify_warn_.
+    'failed'         — transient / IAM failure; caller should keep the subscription
+                       for retry and write a _notify_warn_ record.
+    """
     sfn = _get_sfn()
-    
+
     output = json.dumps({
         'signal': 'asset_ready',
         'asset_name': asset_name,
         'asset_uri': asset_uri,
-        'event_time': event_time
+        'event_time': event_time,
     })
-    
+
     try:
-        sfn.send_task_success(
-            taskToken=wait_token,
-            output=output
-        )
-        return True
+        sfn.send_task_success(taskToken=wait_token, output=output)
+        return 'sent'
     except sfn.exceptions.TaskTimedOut:
         log.warn("_send_task_success", "Task token timed out", asset_name=asset_name)
-        return False
+        return 'token_consumed'
     except sfn.exceptions.InvalidToken:
         log.warn("_send_task_success", "Invalid task token", asset_name=asset_name)
-        return False
+        return 'token_consumed'
     except sfn.exceptions.TaskDoesNotExist:
         log.warn("_send_task_success", "Task does not exist", asset_name=asset_name)
-        return False
+        return 'token_consumed'
     except Exception as e:
-        # The three SFN-specific exceptions above are legitimate "token is no
-        # longer valid" cases (timed out, task already consumed, task cleaned
-        # up) — WARN is right for those. This branch catches everything else:
-        # IAM denial, service outage, malformed output. Those fail the wake-
-        # up without a retry at this layer, so pull-waiters stay blocked.
-        # ERROR so a systematic send_task_success issue is visible.
+        # IAM denial, service outage, malformed output — not a "token consumed"
+        # case. Caller keeps the subscription and writes _notify_warn_.
         log.error("_send_task_success", "send_task_success failed — pull-waiter not woken",
                   asset_name=asset_name, error_type=type(e).__name__, error=str(e))
-        return False
+        return 'failed'
+
+
+def _write_signal_failure_warn(
+    execution_name: str,
+    subscriber_name: str,
+    record: Optional[Dict],
+    asset_name: str,
+) -> None:
+    """Write a _notify_warn_ record when send_task_success fails (subscription kept).
+    The UI bell will show the failure so an operator can investigate."""
+    if not record:
+        return  # no record context — ERROR already logged by _send_task_success
+    try:
+        tokens_repo.write_warn(
+            execution_name=execution_name,
+            task_name=subscriber_name,
+            pipeline_execution=record.get('pipeline_execution', ''),
+            pipeline_name=record.get('pipeline_name', ''),
+            date=record.get('date', ''),
+            error=(
+                f'send_task_success failed for asset {asset_name!r}; '
+                'subscription kept — will retry on next asset event'
+            ),
+        )
+    except Exception as e:
+        log.error("_write_signal_failure_warn", "Failed to write warn record",
+                  execution_name=execution_name, error=str(e))
 
 
 def _delete_subscription(asset_name: str, subscriber: str):

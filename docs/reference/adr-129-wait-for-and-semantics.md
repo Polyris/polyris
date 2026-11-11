@@ -92,9 +92,22 @@ When an asset event arrives for a subscriber:
    proceed to the existing evaluate_deps invocation for the Case B task_deps
    check.
 
-The subscription is always deleted after the ADD, regardless of whether the
-gate is satisfied. The last arriving asset both deletes its own subscription
-AND sends the signal; earlier arrivals only delete.
+Deletion order matters for correctness: **the subscription is deleted only
+after a successful outcome**, never before. For the not-last-asset path
+(gate still open), the subscription is deleted immediately — there is no
+signal to retry. For the last-asset path:
+
+- Signal sent successfully (`sent`): delete subscription.
+- Token already consumed (`token_consumed` — timed out / task gone): delete
+  subscription (no retry possible or useful).
+- Transient / IAM failure (`failed`): **keep subscription** so the next asset
+  event can retry. Write a `_notify_warn_` record to `pipeline-tokens` so the
+  operator sees it in the UI notifications bell.
+
+This ordering ensures that a transient SFN failure never silently drops the
+wake-up path. A subscription kept after `failed` will be retried when the next
+asset event fires for the same subscriber, or when an operator triggers a
+manual re-run.
 
 ### evaluate_deps changes
 
