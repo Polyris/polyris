@@ -354,7 +354,7 @@ class TestPartialRecheck:
 
         First two queries return empty (a and b missing).
         Re-check: a is ready, b is still missing.
-        add_to_assets_ready_set_and_get returns credit_return.
+        add_assets_to_ready_set_and_get returns credit_return.
         """
         from check_assets.index import asset_events_repo, subscriptions_repo, tokens_repo
 

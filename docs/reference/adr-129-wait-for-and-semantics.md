@@ -45,7 +45,7 @@ case: if `asset_a` is already there but `asset_b` isn't,
 After saving subscriptions, check_assets re-evaluates to catch assets that
 arrived during the save window. If some (but not all) arrived, they are
 credited to `assets_ready_set` via an atomic `ADD`
-(`tokens_repo.add_to_assets_ready_set_and_get`, `ReturnValues=ALL_NEW`).
+(`tokens_repo.add_assets_to_ready_set_and_get`, `ReturnValues=ALL_NEW`).
 The returned record is checked for gate completeness
 (`assets_ready_set ⊇ wait_for_assets`): if complete, check_assets returns
 `ready=True` immediately (all remaining subscriptions cleaned up). If not

@@ -6,8 +6,8 @@
   arrive immediately sent `SendTaskSuccess`, waking the task before the second
   asset existed. `wait_for` was silently acting as OR.
 - Fix: `check_assets` now writes `wait_for_assets` (a DynamoDB StringSet of
-  subscribed asset names) to the task's `pipeline-tokens` record after saving
-  subscriptions. As each asset arrives, `notify_asset_subscribers` atomically
+  subscribed asset names) to the task's `pipeline-tokens` record **before**
+  saving subscriptions. As each asset arrives, `notify_asset_subscribers` atomically
   ADDs its name to `assets_ready_set` and signals only when
   `assets_ready_set ⊇ wait_for_assets`. Partial arrivals return early without
   signaling; the last arriving asset sends `SendTaskSuccess`.

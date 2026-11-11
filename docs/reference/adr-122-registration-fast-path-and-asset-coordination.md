@@ -143,4 +143,7 @@ notify_dependents path (`is_ready`) on the same statuses.
   the plumbing "explicit payload" instead. The read is trivially cheap for
   the caller (`notify_dependents` already fetches the record; the new call
   from `notify_asset_subscribers` fetches it once via
-  `mark_assets_ready_and_get`'s `ALL_NEW`).
+  `mark_assets_ready_and_get`'s `ALL_NEW`). Note: `mark_assets_ready_and_get`
+  was removed in v1.1.4 — the AND-gate redesign replaced it with
+  `add_assets_to_ready_set_and_get` (check_assets) and
+  `add_to_assets_ready_set_and_get` (notify); see ADR #129.
