@@ -492,12 +492,20 @@ async function testTemplateExpressionsCompile() {
 async function testNotifyDependentsWaitForFields() {
   console.log("\n📋 notify_dependents: wait_for_assets / assets_ready_set DDB→payload expressions");
 
-  // These are the two JSONata expressions from notify_dependents/sfn.tpl.json
-  // that extract DynamoDB SS (StringSet) attributes and pass them to evaluate_deps.
-  const exprWaitForAssets =
-    "$exists($states.input.record.wait_for_assets.SS) ? $states.input.record.wait_for_assets.SS : null";
-  const exprAssetsReadySet =
-    "$exists($states.input.record.assets_ready_set.SS) ? $states.input.record.assets_ready_set.SS : []";
+  // Load the ACTUAL expressions from notify_dependents/sfn.tpl.json so the test
+  // fails if the template changes. The template loader at loadTemplate() already
+  // handles the file read; we just need to navigate to the right state.
+  const tpl = loadTemplate("notify_dependents");
+  const evalDepsPayload =
+    tpl.States.Process_Subscribers.ItemProcessor.States.Evaluate_Dependencies.Arguments.Payload;
+
+  function stripJSONata(expr) {
+    // Strip {% ... %} wrappers from SFN JSONata string values
+    return expr.replace(/^\{%\s*/, "").replace(/\s*%\}$/, "");
+  }
+
+  const exprWaitForAssets = stripJSONata(evalDepsPayload.wait_for_assets);
+  const exprAssetsReadySet = stripJSONata(evalDepsPayload.assets_ready_set);
 
   // wait_for_assets: SS present → return the array
   await test(

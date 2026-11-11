@@ -89,8 +89,9 @@ class ManualResolution:
 
 class PipelineStatus:
     """A pipeline card's status: its LAST run's canonical status, or 'idle' when the
-pipeline has no runs in the recent window (ADR #112, option c). The value set is
-ExecutionStatus plus 'idle' — kept in sync with ExecutionStatus."""
+    pipeline has no runs in the recent window (ADR #112, option c). The value set is
+    ExecutionStatus plus 'idle' — kept in sync with ExecutionStatus.
+    """
     RUNNING = 'running'
     SUCCESS = 'success'
     FAILED = 'failed'
@@ -102,11 +103,12 @@ ExecutionStatus plus 'idle' — kept in sync with ExecutionStatus."""
 class ExecutionStatus:
     """Pipeline-execution status. Canonical lowercase form.
 
-AWS Step Functions returns these statuses in UPPERCASE; normalize at
-the boundary using `normalize_execution_status` before use. Canonical
-"success" (not "succeeded") system-wide per ADR #112 — supersedes ADR #71's
-value choice. `stopped` is a task-only status (restartable UI-stop) and is
-intentionally absent here: a stopped execution derives/reconciles to `aborted`."""
+    AWS Step Functions returns these statuses in UPPERCASE; normalize at
+    the boundary using `normalize_execution_status` before use. Canonical
+    "success" (not "succeeded") system-wide per ADR #112 — supersedes ADR #71's
+    value choice. `stopped` is a task-only status (restartable UI-stop) and is
+    intentionally absent here: a stopped execution derives/reconciles to `aborted`.
+    """
     RUNNING = 'running'
     SUCCESS = 'success'
     FAILED = 'failed'
@@ -132,10 +134,11 @@ class BackfillCascade:
 class BackfillUpstream:
     """Asset backfill upstream lineage build mode (ADR #92).
 
-Mirrors BackfillCascade on the upstream side. Codegen-generated into
-constants_generated.py (backend) and ui/src/generated/enums.ts (UI) so the
-backend validator and the TS type derive from this one definition rather
-than hand-maintained copies (ADR #94)."""
+    Mirrors BackfillCascade on the upstream side. Codegen-generated into
+    constants_generated.py (backend) and ui/src/generated/enums.ts (UI) so the
+    backend validator and the TS type derive from this one definition rather
+    than hand-maintained copies (ADR #94).
+    """
     OFF = 'off'
     SMART = 'smart'
     FORCE = 'force'

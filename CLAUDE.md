@@ -252,7 +252,12 @@ events: List[Dict[str, Any]] = raw
 
 Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
 
-**38. AND gate records must be written before their subscription records**
+**38. Error visibility: every infrastructure failure must surface in the UI bell and in CloudWatch**
+See the [Error Visibility section](#error-visibility-adr-38) below for the full rule and the `_notify_warn_` pattern.
+
+**Why this is Principle #38:** existing production code and tests cite "Principle #38" to mean error visibility (`tasks.py:647`, `tasks.py:749`, `test_session_fixes_e2e.py:728`, CHANGELOG entries). Never renumber this entry.
+
+**39. AND gate records must be written before their subscription records**
 When a completeness gate (e.g. `wait_for_assets` StringSet on a task row) guards subscriptions, write the gate first. An event arriving after a subscription is saved but before the gate is written sees no gate field and falls back to first-arrival (OR) semantics — silently breaking AND guarantees.
 
 Correct order: write gate → write subscriptions → re-evaluate.
@@ -260,13 +265,22 @@ Anti-pattern: write subscriptions → write gate (race window between the two wr
 
 Applies wherever a gate record and subscription records are written in the same code path; the gate is the invariant that makes the subscription safe to exist.
 
-**39. When a new field replaces an old one in a multi-reader contract, keep writing the old field until every reader is migrated**
+**40. When a new field replaces an old one in a multi-reader contract, keep writing the old field until every reader is migrated**
 If code A introduces a new field that supersedes an old field, but code B still falls back to the old field, A must write both. Stopping the old write silently breaks B's fallback path — often only in a specific timing window (e.g. Case B: asset arrives before task deps satisfy, so notify_dependents SFN reads the record later and uses the legacy field).
 
 Correct: write both old and new fields until every reader is updated and deployed.
 Anti-pattern: write only the new field because "the old one is deprecated" — B still reads it.
 
 Applies whenever a DDB field is replaced rather than added. Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
+
+**41. Delete a wake-up subscription only after a successful signal — never before**
+When `notify_asset_subscribers` (or any similar signal-then-cleanup path) sends `SendTaskSuccess`, the subscription record must survive until the signal is confirmed. If the subscription is deleted first and `SendTaskSuccess` then fails (IAM error, transient SFN outage), there is no record to retry on — the wake-up is silently lost.
+
+Correct order: (1) send signal → (2) on `'sent'` or `'token_consumed'`: delete subscription; on transient failure: **keep subscription**, write `_notify_warn_` record so the operator sees the failure, and return early (the next asset event will retry).
+
+Anti-pattern: delete subscription → send signal. A transient failure after the delete leaves the task hanging to orchestration timeout with no visible trace.
+
+Exception: when the AND gate is **not yet satisfied** (more assets still pending), the subscription IS deleted without a signal — the asset has arrived and been credited to `assets_ready_set`, so the subscription's purpose is fulfilled; the last arriving asset will send the signal.
 
 ---
 

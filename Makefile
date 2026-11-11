@@ -74,7 +74,7 @@ test-lambdas:
 	@if [ -d sam/lambdas/console_api/tests ]; then \
 		echo "  Running console_api tests (requires boto3, pytest-mock)..."; \
 		cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -v || \
-			echo "  ⚠️  console_api tests failed or skipped (run: pip install -e '.[dev]')"; \
+			{ echo "  ❌ console_api tests failed (run: pip install -e '.[dev]')"; exit 1; }; \
 	fi
 
 # SFN JSONata expression tests (requires Node.js)
