@@ -135,7 +135,7 @@ def _render_python_body() -> str:
         members = [(n, getattr(cls, n))
                    for n in vars(cls) if not n.startswith("_")]
         parts.append(_enum_class_py(cls.__name__,
-                                    cls.__doc__ or cls.__name__,
+                                    inspect.cleandoc(cls.__doc__) if cls.__doc__ else cls.__name__,
                                     members))
         parts.append("\n")
 

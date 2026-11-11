@@ -57,7 +57,7 @@ except ImportError:
     # Single source of truth: when the generated file is absent (e.g. a direct
     # unit test run against the repo), fall back to the SDK canonical sets rather
     # than re-listing values here. No hand-maintained duplicates.
-    from polyris.constants import (
+    from polyris.constants import (  # type: ignore[no-redef]  # intentional fallback
         TERMINAL_STATUSES as TASK_TERMINAL_STATUSES,
         SUCCESS_STATUSES as TASK_SUCCESS_STATUSES,
         FAILURE_STATUSES as TASK_FAILURE_STATUSES,
