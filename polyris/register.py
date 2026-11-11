@@ -35,7 +35,7 @@ import json
 import os
 import sys
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound
+from botocore.exceptions import BotoCoreError, ClientError
 from typing import Optional
 
 from ._ansi import colorize_parser
