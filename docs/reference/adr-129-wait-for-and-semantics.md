@@ -52,8 +52,9 @@ The returned record is checked for gate completeness
 complete, only the newly-credited subscriptions are deleted and the rest stay
 active for the still-missing assets. Subscriptions are deleted only after a
 successful write — if the ADD fails the subscriptions remain as a safeguard
-(no subscription + no credit = guaranteed hang). The `ADD` is atomic, so at most one side — `notify_asset_subscribers` or this
-partial-recheck path — observes the gate flip first; a concurrent double-signal
+(no subscription + no credit = guaranteed hang). The write is atomic, so at
+most one side — `notify_asset_subscribers` or this partial-recheck path —
+observes the gate flip first; a concurrent double-signal
 is safe because the registration SFN `Catch` handles an already-consumed token.
 
 **OR-group limitation:** `wait_for_assets` is not written (and the AND gate
@@ -72,10 +73,17 @@ it's invoked by `notify_dependents` (task_deps gate) or directly.
 
 When an asset event arrives for a subscriber:
 
-1. Atomically `ADD asset_name` to `assets_ready_set` on the task record
-   (`tokens_repo.add_to_assets_ready_set_and_get`). DDB `ADD` is safe under
-   concurrent asset arrivals — two Lambdas writing different asset names
-   commute; no last-writer-wins risk.
+1. Atomically `SET assets_ready = :true ADD assets_ready_set :name_set` on the
+   task record (`tokens_repo.add_to_assets_ready_set_and_get`). Both writes are
+   required: `ADD` grows the StringSet for AND-gate completeness; `SET
+   assets_ready = :true` preserves the legacy bool for the Case B path — when
+   task deps are not yet satisfied at asset arrival time, `notify_dependents`
+   SFN later reads the DDB record and passes `assets_ready` to `evaluate_deps`,
+   which falls back to the bool when `wait_for_assets` is absent (OR-group specs
+   or legacy rows). Dropping the `SET` causes OR-group tasks to hang
+   permanently when an asset arrives before task deps complete. DDB `ADD` is
+   safe under concurrent asset arrivals — two Lambdas writing different asset
+   names commute; no last-writer-wins risk.
 2. Read `wait_for_assets` from the returned record. If present and
    `assets_ready_set ⊄ wait_for_assets`, return False — this is not the last
    arriving asset. Delete the subscription (the asset has arrived; there's
@@ -166,6 +174,7 @@ found) falls back to signaling immediately — same as the legacy path.
 - Two new DDB fields (`wait_for_assets`, `assets_ready_set`) written per
   `wait_for` task execution. Both are StringSets; both expire with the row's
   TTL.
-- One additional DDB `update_item` per asset arrival (`ADD` to
-  `assets_ready_set`). Previously this was a `SET assets_ready = true` —
-  same number of DDB writes, different semantics.
+- One `update_item` per asset arrival: `SET assets_ready = :true ADD
+  assets_ready_set :name_set`. Same write count as before; both the legacy bool
+  and the new StringSet are maintained so evaluate_deps works on old and new
+  rows.

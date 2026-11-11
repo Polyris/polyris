@@ -260,6 +260,14 @@ Anti-pattern: write subscriptions → write gate (race window between the two wr
 
 Applies wherever a gate record and subscription records are written in the same code path; the gate is the invariant that makes the subscription safe to exist.
 
+**40. When a new field replaces an old one in a multi-reader contract, keep writing the old field until every reader is migrated**
+If code A introduces a new field that supersedes an old field, but code B still falls back to the old field, A must write both. Stopping the old write silently breaks B's fallback path — often only in a specific timing window (e.g. Case B: asset arrives before task deps satisfy, so notify_dependents SFN reads the record later and uses the legacy field).
+
+Correct: write both old and new fields until every reader is updated and deployed.
+Anti-pattern: write only the new field because "the old one is deprecated" — B still reads it.
+
+Applies whenever a DDB field is replaced rather than added. Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)
