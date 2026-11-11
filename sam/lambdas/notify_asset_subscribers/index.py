@@ -301,7 +301,9 @@ def _coordinate_ready_check(execution_name: str, asset_name: str) -> bool:
             'wait_for': json.loads(wait_for_raw) if isinstance(wait_for_raw, str) else wait_for_raw,
             # Pass set-based fields for evaluate_deps' AND check; also keep
             # legacy bool for older evaluate_deps deployments still in rollout.
-            'wait_for_assets': list(record.get('wait_for_assets') or []),
+            # wait_for_assets must be None (not []) when absent so evaluate_deps
+            # can distinguish "no gate" (OR-group / legacy row) from "empty gate".
+            'wait_for_assets': (list(record['wait_for_assets']) if 'wait_for_assets' in record else None),
             'assets_ready_set': list(record.get('assets_ready_set') or []),
             'assets_ready': True,
         }

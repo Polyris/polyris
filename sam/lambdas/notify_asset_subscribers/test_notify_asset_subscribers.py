@@ -622,10 +622,10 @@ class TestOrGroupSignaling:
         # First asset arrives → no AND gate → evaluate_deps called → signal
         assert _coordinate_ready_check('exec-1', 'manual_override') is True
 
-    def test_or_group_evaluate_deps_receives_empty_wait_for_assets(self, mocker):
-        """evaluate_deps payload has wait_for_assets=[] when record lacks the
-        field.  set([]) is a subset of any set → assets_satisfied=True regardless
-        of what arrived."""
+    def test_or_group_evaluate_deps_receives_null_wait_for_assets(self, mocker):
+        """evaluate_deps payload has wait_for_assets=None when record lacks the
+        field. None signals "no AND gate" so evaluate_deps uses the legacy
+        assets_ready bool — OR-group and legacy rows wake immediately."""
         import index
         import json
         from index import _coordinate_ready_check, tokens_repo
@@ -654,7 +654,10 @@ class TestOrGroupSignaling:
 
         _coordinate_ready_check('exec-1', 'manual_override')
 
-        assert captured['payload']['wait_for_assets'] == []
+        assert captured['payload']['wait_for_assets'] is None, (
+            "wait_for_assets must be None (not []) when absent so evaluate_deps "
+            "treats it as 'no gate' rather than 'empty gate'"
+        )
         assert captured['payload']['assets_ready'] is True
 
 
@@ -667,6 +670,84 @@ class TestDynamoDBExpressions:
     arrives) requires assets_ready=true in the DDB record so notify_dependents SFN
     can read it later and pass it to evaluate_deps.
     """
+
+    def test_or_group_chain_dal_to_evaluate_deps(self, monkeypatch):
+        """Full chain: notify DAL writes assets_ready=true + assets_ready_set to DDB
+        (moto), then the returned record — as notify_dependents SFN would read it —
+        is fed to the real evaluate_deps handler. With no wait_for and no deps the
+        task must come back is_ready=True.
+
+        This pins the Case B regression: if assets_ready=true is dropped from the
+        DAL UpdateExpression, evaluate_deps sees assets_ready=False and returns
+        is_ready=False, hanging the task forever when notify_dependents fires later.
+        """
+        import sys
+        import os
+        import json
+        from moto import mock_aws
+        import boto3
+        import dal as dal_module
+        from dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
+
+        # Add evaluate_deps to sys.path so we can import the real handler
+        eval_deps_path = os.path.join(os.path.dirname(__file__), '..', 'evaluate_deps')
+        sys.path.insert(0, os.path.abspath(eval_deps_path))
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            tokens_tbl = dynamodb.create_table(
+                TableName='pipeline-tokens-chain',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+            exec_name = 'task-2026-01-01-chain01'
+            tokens_tbl.put_item(Item={
+                'execution_name': exec_name,
+                'dependencies': '[]',
+                'trigger_rule': 'all_success',
+                'wait_for': '["some_asset"]',
+                'date': '2026-01-01',
+                'pipeline_execution_short': 'run-abc',
+                'pipeline_execution': 'pipeline-run-abc',
+            })
+
+            repo = TokensRepo('pipeline-tokens-chain')
+            record = repo.add_to_assets_ready_set_and_get(exec_name, 'some_asset')
+            assert record is not None
+
+        # Build the payload exactly as notify_dependents SFN + _coordinate_ready_check do:
+        # wait_for_assets absent in record → None; assets_ready=true from DAL write
+        payload = {
+            'dependencies': [],
+            'trigger_rule': 'all_success',
+            'date': '2026-01-01',
+            'pipeline_execution_short': 'run-abc',
+            'pipeline_execution': 'pipeline-run-abc',
+            'wait_for': json.loads(record.get('wait_for', '["some_asset"]')),
+            'wait_for_assets': (list(record['wait_for_assets']) if 'wait_for_assets' in record else None),
+            'assets_ready_set': list(record.get('assets_ready_set') or []),
+            'assets_ready': bool(record.get('assets_ready', False)),
+        }
+
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'evaluate_deps_index',
+            os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'evaluate_deps', 'index.py')),
+        )
+        eval_deps = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(eval_deps)
+        result = eval_deps.handler(payload, None)
+
+        assert result.get('is_ready') is True, (
+            f"evaluate_deps returned is_ready=False with payload {payload}; "
+            "assets_ready=true must reach evaluate_deps via the DDB record"
+        )
+
+        sys.path.pop(0)
 
     def test_add_to_assets_ready_set_stores_bool_and_set(self, monkeypatch):
         """add_to_assets_ready_set_and_get must write both assets_ready=true (for
