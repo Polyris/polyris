@@ -658,5 +658,50 @@ class TestOrGroupSignaling:
         assert captured['payload']['assets_ready'] is True
 
 
+class TestDynamoDBExpressions:
+    """Verify DAL DDB expressions with moto — actual expression semantics.
+
+    Principle #14: mock at the external boundary (boto3 via moto), never at
+    internal logic. Catches regressions where assets_ready=true is dropped from
+    the UpdateExpression — the Case B path (task deps not yet satisfied when asset
+    arrives) requires assets_ready=true in the DDB record so notify_dependents SFN
+    can read it later and pass it to evaluate_deps.
+    """
+
+    def test_add_to_assets_ready_set_stores_bool_and_set(self, monkeypatch):
+        """add_to_assets_ready_set_and_get must write both assets_ready=true (for
+        the notify_dependents SFN / Case B path) and assets_ready_set (for AND gate
+        completeness check). If only ADD is used without SET assets_ready, OR-group
+        tasks hang when assets arrive before task deps are satisfied."""
+        from moto import mock_aws
+        import boto3
+        import dal as dal_module
+        from dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            table = dynamodb.create_table(
+                TableName='pipeline-tokens-moto',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+            exec_name = 'task-2026-01-01-abc12345678'
+            table.put_item(Item={'execution_name': exec_name})
+
+            repo = TokensRepo('pipeline-tokens-moto')
+            result = repo.add_to_assets_ready_set_and_get(exec_name, 'asset_a')
+
+            assert result is not None
+            assert result.get('assets_ready') is True, (
+                "assets_ready=true must be stored so notify_dependents SFN can read it "
+                "in the Case B path (asset arrives before task deps are satisfied)"
+            )
+            assert result.get('assets_ready_set') == {'asset_a'}
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

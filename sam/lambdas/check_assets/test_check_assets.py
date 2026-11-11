@@ -914,27 +914,16 @@ class TestDynamoDBExpressions:
     wrong set type) that mocker-based tests cannot see.
     """
 
-    @pytest.fixture()
-    def tokens_table(self):
-        from moto import mock_aws
-        import boto3
-
-        with mock_aws():
-            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
-            table = dynamodb.create_table(
-                TableName='pipeline-tokens',
-                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
-                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
-                BillingMode='PAY_PER_REQUEST',
-            )
-            yield table
-
-    def test_add_accumulates_across_calls(self, tokens_table):
+    def test_add_accumulates_across_calls(self, monkeypatch):
         """Two ADD calls on the same row build up the set incrementally,
         matching the notify(b) + credit(a) sequence from the race scenario."""
         from moto import mock_aws
         import boto3
+        import check_assets.dal as dal_module
         from check_assets.dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
 
         with mock_aws():
             dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
