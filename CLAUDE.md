@@ -188,7 +188,7 @@ Rule: every consumer of a date-scoped canonical row must gate on `task.status �
 `attribute_not_exists(#field)` alone conflates two concerns: (1) never clobber genuine user data, (2) always refresh stale metadata written by the same writer. A second same-date manual resolution must supersede the first.
 
 Correct shape:
-- **GetItem-then-Update:** read current row; if field is absent or is your own synthetic marker, do unconditional Update; if it's real user data, skip and emit `_notify_warn_*` (Principle #38).
+- **GetItem-then-Update:** read current row; if field is absent or is your own synthetic marker, do unconditional Update; if it's real user data, skip and emit `_notify_warn_*` (see Error Visibility section / ADR #38).
 - **Structured sentinel** (advanced, fragile): `attribute_not_exists(#field) OR contains(#field, :marker_sentinel)`.
 
 Apply when touching shared DDB keys (date-scoped rows, cache rows, aggregation snapshots). Exclusively-owned rows (per-run task record, single-writer configs) don't need this.
@@ -251,6 +251,47 @@ events: List[Dict[str, Any]] = raw
 ```
 
 Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
+
+**38. Error visibility: every infrastructure failure must surface in the UI bell and in CloudWatch**
+See the [Error Visibility section](#error-visibility-adr-38) below for the full rule and the `_notify_warn_` pattern.
+
+**Why this is Principle #38:** existing production code and tests cite "Principle #38" to mean error visibility (`tasks.py:647`, `tasks.py:749`, `test_session_fixes_e2e.py:728`, CHANGELOG entries). Never renumber this entry.
+
+**39. AND gate records must be written before their subscription records**
+When a completeness gate (e.g. `wait_for_assets` StringSet on a task row) guards subscriptions, write the gate first. An event arriving after a subscription is saved but before the gate is written sees no gate field and falls back to first-arrival (OR) semantics — silently breaking AND guarantees.
+
+Correct order: write gate → write subscriptions → re-evaluate.
+Anti-pattern: write subscriptions → write gate (race window between the two writes).
+
+Applies wherever a gate record and subscription records are written in the same code path; the gate is the invariant that makes the subscription safe to exist.
+
+**40. When a new field replaces an old one in a multi-reader contract, keep writing the old field until every reader is migrated**
+If code A introduces a new field that supersedes an old field, but code B still falls back to the old field, A must write both. Stopping the old write silently breaks B's fallback path — often only in a specific timing window (e.g. Case B: asset arrives before task deps satisfy, so notify_dependents SFN reads the record later and uses the legacy field).
+
+Correct: write both old and new fields until every reader is updated and deployed.
+Anti-pattern: write only the new field because "the old one is deprecated" — B still reads it.
+
+Applies whenever a DDB field is replaced rather than added. Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
+
+**41. Delete a wake-up subscription only after a successful signal — never before**
+When `notify_asset_subscribers` (or any similar signal-then-cleanup path) sends `SendTaskSuccess`, the subscription record must survive until the signal is confirmed. If the subscription is deleted first and `SendTaskSuccess` then fails (IAM error, transient SFN outage), there is no record to retry on — the wake-up is silently lost.
+
+Correct order: (1) send signal → (2) on `'sent'` or `'token_consumed'`: delete subscription; on transient failure: **keep subscription**, write `_notify_warn_` record so the operator sees the failure, and return early. For daily assets the next natural retry is the next day's event (by which point the SFN token is typically expired), so the practical outcome is operator visibility and manual re-run, not automatic recovery.
+
+Anti-pattern: delete subscription → send signal. A transient failure after the delete leaves the task hanging to orchestration timeout with no visible trace.
+
+Exception: when the AND gate is **not yet satisfied** (more assets still pending), the subscription IS deleted without a signal — the asset has arrived and been credited to `assets_ready_set`, so the subscription's purpose is fulfilled; the last arriving asset will send the signal.
+
+**42. A side-effect call that a task's wake-up depends on may not be fire-and-forget without a failure-visibility channel**
+When an action's side effect is to wake downstream tasks (e.g. `mark_success` invoking `NotifyAssetSubscribersFunction`), a fire-and-forget invocation (`InvocationType='Event'`) means every failure mode — IAM denial, throttle, `FunctionError`, timeout — is invisible to the operator. The primary action appears to succeed; the downstream task hangs silently.
+
+Correct pattern: use a bounded synchronous call (`InvocationType='RequestResponse'`, `read_timeout` ≤ gateway timeout, `max_attempts=1`). Classify the response:
+- `ok` → no action needed.
+- `failed` or `unknown` → write a `_notify_warn_wakeup_{execution_name}` record (Principle #38) so the bell shows the failure.
+
+The API response stays 200 — the primary action succeeded; the wake-up is a side effect. Operator learns of the failure from the bell and can re-run manually.
+
+Anti-pattern: `InvocationType='Event'` on any path whose failure would leave a task hanging with no visible trace.
 
 ---
 
@@ -409,6 +450,8 @@ The two tables exist because push-trigger subscriptions are per-(asset, pipeline
 - `task_execution_arn` — ARN of run_task SFN execution
 - `orchestration_token` — `.waitForTaskToken` for signaling deps ready
 - `wait_token` — token for notify_dependents to signal ready
+- `wait_for_assets` — StringSet of asset names the task must wait for (AND gate); written by `check_assets` before subscriptions
+- `assets_ready_set` — StringSet of asset names that have arrived; grown atomically via DDB `ADD` by `notify_asset_subscribers` and the `check_assets` partial re-check path
 
 **dependency_key format:** `{upstream_task_name}-{pipeline_execution_short}` — must match exactly between writer (registration) and reader (query_subscriptions).
 

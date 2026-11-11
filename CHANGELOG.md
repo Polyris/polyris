@@ -1,5 +1,123 @@
 ## Unreleased
 
+### Fixed — `wait_for=[a, b]` AND semantics: signal only after all assets arrive
+
+- When a task declared `wait_for=[asset_a, asset_b]`, the first asset to
+  arrive immediately sent `SendTaskSuccess`, waking the task before the second
+  asset existed. `wait_for` was silently acting as OR.
+- Fix: `check_assets` now writes `wait_for_assets` (a DynamoDB StringSet of
+  subscribed asset names) to the task's `pipeline-tokens` record **before**
+  saving subscriptions. As each asset arrives, `notify_asset_subscribers` atomically
+  ADDs its name to `assets_ready_set` and signals only when
+  `assets_ready_set ⊇ wait_for_assets`. Partial arrivals return early without
+  signaling; the last arriving asset sends `SendTaskSuccess`.
+- `evaluate_deps` updated to prefer the new StringSet fields over the legacy
+  `assets_ready: bool` when both are present, so the correctness fix and
+  rollout stability don't conflict.
+- Backward compatible: old `pipeline-tokens` rows that have only
+  `assets_ready: bool` (written before this deploy) continue to work via the
+  legacy path in `evaluate_deps`; new rows get the stronger AND guarantee.
+- **Limitation:** specs that mix AND and OR groups (`wait_for=[a, b | c]`)
+  still use first-arrival semantics — the AND gate is disabled when any OR
+  group is present in `wait_for`. Pure-AND lists (`wait_for=[a, b]`) are fully
+  fixed.
+- See [ADR #129](docs/reference/adr-129-wait-for-and-semantics.md).
+
+### Fixed — AND-gate end-to-end test, AccessDenied propagation, stale OR-group docstring
+
+- **AND-gate moto test (`test_wait_for_and_semantics.py`):** Added an end-to-end
+  integration test using moto DynamoDB that covers the full `wait_for=[a, b]` flow:
+  asset_a arrives → no signal, subscription for a deleted, `assets_ready_set={'a'}`;
+  asset_b arrives → signal sent, subscription for b deleted, `assets_ready_set={'a','b'}`.
+  This was the acceptance criterion for TASKS.md task 1.20.
+- **`_write_signal_failure_warn` AccessDenied propagation:** The function caught
+  `Exception` broadly, which silently swallowed `AccessDeniedException` from
+  `write_warn`. Violation of ADR #38 ("Never swallow AccessDeniedException").
+  Fixed: `ClientError` with error code `AccessDeniedException` is now re-raised
+  so the caller sees the IAM denial and it surfaces in CloudWatch rather than
+  being silently dropped.
+- **Stale docstring in `TestOrGroupSignaling`:** The class docstring described the
+  OR-group behavior as passing `wait_for_assets=[]` to evaluate_deps. After the
+  A4 fix, `wait_for_assets` is `None` (not `[]`) when the field is absent, so
+  evaluate_deps falls back to the legacy `assets_ready` bool rather than applying
+  an empty-set containment check. Updated the docstring to match.
+
+### Fixed — tooling: deterministic enum generation, make test-lambdas exit code, set serialization
+
+- **B4 — `sync_enums` docstring indentation:** `inspect.cleandoc` strips common
+  leading indentation from docstrings, which is correct for normalising across
+  Python versions but left multi-line class docstrings in the generated
+  `constants_generated.py` files with continuation lines flush-left instead of
+  indented at four spaces. Fixed by applying `textwrap.indent` to continuation
+  lines inside `_enum_class_py`. Regenerated all three constants files.
+- **B5 — `make test-lambdas` exit code:** the `console_api` test block used
+  `|| echo "..."` on failure, so `make test-lambdas` returned exit code 0 even
+  when console_api tests failed. Changed to `|| { echo "..."; exit 1; }` so CI
+  sees the failure.
+- **B6 — `cors_response` set serialization:** DynamoDB StringSets return as
+  Python `set` objects; the previous `default=str` serialized them as the
+  Python repr `"{'a', 'b'}"` (not valid JSON). Changed to
+  `default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o)`
+  so sets become sorted JSON arrays. Covered by `test_response.py`.
+- **B7 — `evaluate_deps/constants.py` mypy:** the intentional six-name fallback
+  import block (`TERMINAL_STATUSES` → `TASK_TERMINAL_STATUSES`, etc.) now
+  carries `# type: ignore[no-redef]` per name so `mypy` doesn't flag the
+  intentional re-export.
+
+### Fixed — `mark_success` wake-up failure now visible in UI bell (B2)
+
+- Previously, `mark_success` invoked `NotifyAssetSubscribersFunction` with
+  `InvocationType='Event'` (fire-and-forget). Every failure mode — IAM denial,
+  throttle, `FunctionError`, timeout — was invisible; the operator saw a 200,
+  and the downstream `wait_for` task hung silently.
+- Fix: switched to a bounded synchronous call (`RequestResponse`,
+  `read_timeout=10s`, `max_attempts=1`). On `FunctionError` or `ClientError`,
+  writes a `_notify_warn_wakeup_{execution_name}` record to `pipeline-tokens`
+  so the UI bell shows the failure. `ReadTimeoutError` writes an "outcome
+  unknown — verify downstream tasks manually" record. The `mark_success` HTTP
+  response stays 200 — the primary action succeeded.
+- `_write_notify_warning` in `routes/tasks.py` gains keyword-only `key_suffix`
+  and `message` parameters (defaults unchanged, all existing callers unaffected).
+- See CLAUDE.md Principle #42 and
+  [ADR #128 (amended)](docs/reference/adr-128-mark-success-wakes-wait-for.md).
+
+### Fixed — OR-group sibling subscriptions cleaned up after wake-up (B3)
+
+- After an OR-group asset (`wait_for=[a | b]`) woke a task via `asset_a`,
+  the subscription for `asset_b` remained in `DependencySubscriptionsTable`.
+  On the next `asset_b` event, `notify_asset_subscribers` would re-evaluate
+  an already-finished task — sending a `SendTaskSuccess` to a consumed or
+  timed-out token, and invoking `evaluate_deps` unnecessarily.
+- Fix: after a successful signal on a row without a gate (`wait_for_assets`
+  absent), `_cleanup_or_siblings` deletes subscriptions for all other assets
+  in `wait_for` using `delete_if_owned` — a conditional delete on
+  `execution_name` that is a safe no-op when the row belongs to a different
+  parallel run.
+- `_flatten_asset_names` added to `notify_asset_subscribers/index.py`:
+  traverses the metadata-format `wait_for` JSON and returns the flat set of
+  asset names. Parity test: `tests/backend/test_flatten_asset_names_parity.py`.
+
+### Fixed — `notify_asset_subscribers`: subscription kept on `SendTaskSuccess` failure
+
+- Previously, `notify_asset_subscribers` deleted the subscription record
+  **before** calling `SendTaskSuccess`. On a transient SFN failure (IAM error,
+  network outage), the subscription was gone and there was no way to retry —
+  the wake-up was silently dropped.
+- Fix: deletion order inverted. Subscription is deleted **only after** a
+  successful outcome:
+  - Signal sent successfully → delete subscription.
+  - Token already consumed (timed-out / task gone) → delete subscription.
+  - Transient / IAM failure → **keep subscription** and write a `_notify_warn_`
+    record to `pipeline-tokens` so the UI notifications bell shows the failure.
+    For daily assets the next natural retry is the next day's event (by which
+    point the SFN token is likely expired), so the practical outcome is operator
+    visibility and manual re-run, not automatic recovery.
+- `_coordinate_ready_check` now returns `(should_signal, record)` instead of
+  `bool`, so the caller has the DDB record context needed to write `_notify_warn_`
+  without a second round-trip.
+- `_send_task_success` now returns `'sent' | 'token_consumed' | 'failed'`
+  instead of `bool`, distinguishing retryable failures from consumed-token cleanup.
+
 ### Fixed — `wait_for` subscription table routing
 
 - `NotifyAssetSubscribersFunction` and `CheckAssetsFunction` received
@@ -28,8 +146,8 @@
   logic.
 - New env var `NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN` on `ConsoleApiFunction`;
   IAM `lambda:InvokeFunction` grant on `NotifyAssetSubscribersFunction`.
-  Fire-and-forget invocation — Lambda errors are logged, not surfaced,
-  matching the existing push-consumer SFN pattern.
+  Initial invocation was fire-and-forget; amended to bounded synchronous with
+  failure visibility in the same release (see B2 entry above).
 - Effective end to end together with the `wait_for` routing fix above.
   See [ADR #128](docs/reference/adr-128-mark-success-wakes-wait-for.md).
 

@@ -18,8 +18,9 @@ issue, not undiscovered behavior. Progress is tracked in
 | Area | Current behavior |
 |------|------------------|
 | Partition identity | A run's partition is the UTC date of `current_date` (approximately the scheduler fire time). The scheduler does not pass an explicit partition key, so hourly schedules collapse multiple runs onto one partition. |
-| `wait_for=[a, b]` AND semantics | Fires on the first of two events, not when both arrive (currently matches OR). |
+| `wait_for=[a, b \| c]` mixed AND/OR | The AND gate is disabled when any OR group is present in `wait_for`. The first arriving asset (whether `a` or one from `b \| c`) wakes the task. Pure-AND lists (`wait_for=[a, b]`) work correctly. |
 | `wait_for` freshness | Checks the latest event for the asset, not the event for the consumer's partition. A backfill of a past date can pass freshness based on today's producer event. |
+| AND-gate freshness | For `wait_for=[a, b]`, each asset's freshness is checked once — when that asset arrives and triggers `notify_asset_subscribers`. If `a` passes freshness when it arrives but becomes stale before `b` arrives and closes the gate, the task still wakes. Early-arriving members are not re-checked when the gate closes. |
 | Subscription key collisions | Subscription key `(asset, task_name)` does not include pipeline or execution. Parallel backfills of the same consumer can overwrite each other's subscription rows. |
 | Push AND trigger loss | If the `Trigger_AND` state fails between counter bump and execution start, subsequent events on the same date are filtered out and the day's trigger is lost. |
 | Restart inconsistency | Re-running an asset-producing task restarts OR consumers (time-based execution name) but not AND consumers (deterministic name). |
@@ -548,10 +549,11 @@ individual task until the asset condition holds.
 
 ### `wait_for` patterns
 
-> **⚠️ Multi-asset `wait_for` is currently broken** — the patterns marked AND
-> below are documented as AND but behave as OR (first event wins). See
-> [Known limitations](#known-experimental-limitations) at the top of this
-> doc. Single-asset `wait_for=[a]` works as documented.
+> **Note:** Pure-AND lists (`wait_for=[a, b]`, `wait_for=[a & b]`) wait for
+> all named assets before waking the task. Mixed specs that contain an OR group
+> (`wait_for=[a, b | c]`) currently use first-arrival semantics — the AND gate
+> is disabled when any OR group is present. See
+> [Known limitations](#known-experimental-limitations).
 
 | Pattern | Meaning |
 |---------|---------|
@@ -561,11 +563,12 @@ individual task until the asset condition holds.
 | `wait_for=[asset_x.within(weeks=2)]` | ≤ 2 weeks old |
 | `wait_for=[asset_x.within(days=1, hours=12)]` | ≤ 36 hours old (combined units) |
 | `wait_for=[asset_x.consecutive(days=7)]` | 7 consecutive daily events required |
-| `wait_for=[a, b]` | AND — wait for both `a` and `b` ⚠️ currently fires on first |
+| `wait_for=[a, b]` | AND — wait for both `a` and `b` |
 | `wait_for=[a \| b]` | OR — wait for either `a` or `b` |
-| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) ⚠️ currently fires on first |
-| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event ⚠️ currently fires on first |
+| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) |
+| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | AND across a 7-day run and a fresh event |
 | `wait_for=[a.consecutive(days=7) \| manual_override]` | 7-day run OR manual override |
+| `wait_for=[a, b \| c]` | Mixed AND/OR ⚠️ currently fires on first arrival — see [Known limitations](#known-experimental-limitations) |
 
 ### Full example — producer + consumer
 

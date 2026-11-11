@@ -464,31 +464,34 @@ class TestCoordinateReadyCheck:
         'always signal' behaviour — worst case they trigger the original
         Case B early-run, which is a strict improvement over hanging."""
         from index import _coordinate_ready_check
-        assert _coordinate_ready_check('') is True
+        should_signal, record = _coordinate_ready_check('', 'inventory')
+        assert should_signal is True
 
     def test_coordinate_returns_true_when_record_not_found(self, mocker):
         """Task record missing (TTL'd, cross-account leak, whatever) → fall
         back to signal. Better a stale signal than a permanent hang."""
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get', return_value=None)
-        assert _coordinate_ready_check('missing-execution-name') is True
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get', return_value=None)
+        should_signal, record = _coordinate_ready_check('missing-execution-name', 'inventory')
+        assert should_signal is True
 
     def test_coordinate_returns_true_when_evaluate_deps_not_configured(self, mocker):
         """A fresh deploy might roll out the code before EVALUATE_DEPS_LAMBDA
         is wired. Signal anyway rather than block."""
         import index
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={'dependencies': '[]', 'wait_for': '[]'})
         mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', '')
-        assert _coordinate_ready_check('some-execution') is True
+        should_signal, record = _coordinate_ready_check('some-execution', 'inventory')
+        assert should_signal is True
 
     def test_coordinate_signals_when_evaluate_deps_says_ready(self, mocker):
         """The happy path: both task_deps and assets are now ready → signal."""
         import index
         import json
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={
                                 'dependencies': '["upstream_a"]',
                                 'trigger_rule': 'all_success',
@@ -503,7 +506,8 @@ class TestCoordinateReadyCheck:
             'Payload': mocker.MagicMock(read=lambda: json.dumps({'is_ready': True}).encode())
         }
         mocker.patch('index._get_lambda', return_value=fake_lambda)
-        assert _coordinate_ready_check('exec-1') is True
+        should_signal, record = _coordinate_ready_check('exec-1', 'inventory')
+        assert should_signal is True
 
     def test_coordinate_does_not_signal_when_task_deps_still_pending(self, mocker):
         """The core Case B fix: asset arrives but task_deps haven't finished.
@@ -512,7 +516,7 @@ class TestCoordinateReadyCheck:
         import index
         import json
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={
                                 'dependencies': '["still_pending_upstream"]',
                                 'trigger_rule': 'all_success',
@@ -525,7 +529,8 @@ class TestCoordinateReadyCheck:
                 read=lambda: json.dumps({'is_ready': False, 'verdict': 'wait'}).encode())
         }
         mocker.patch('index._get_lambda', return_value=fake_lambda)
-        assert _coordinate_ready_check('exec-1') is False
+        should_signal, record = _coordinate_ready_check('exec-1', 'inventory')
+        assert should_signal is False
 
     def test_coordinate_falls_back_to_true_on_invoke_failure(self, mocker):
         """Lambda invoke error → fall back to signaling. Case B is a
@@ -533,13 +538,403 @@ class TestCoordinateReadyCheck:
         failure must not hang the task."""
         import index
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={'dependencies': '[]', 'wait_for': '[]'})
         mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
         fake_lambda = mocker.MagicMock()
         fake_lambda.invoke.side_effect = Exception('Lambda unavailable')
         mocker.patch('index._get_lambda', return_value=fake_lambda)
-        assert _coordinate_ready_check('exec-1') is True
+        should_signal, record = _coordinate_ready_check('exec-1', 'inventory')
+        assert should_signal is True
+
+    def test_coordinate_returns_false_when_waiting_for_another_asset(self, mocker):
+        """AND-gate: asset 'a' arrives, but 'b' still pending. The set
+        check wait_for_assets ⊄ assets_ready_set → don't signal yet. The
+        second asset's notify call will find both sets equal and proceed."""
+        import index
+        from index import _coordinate_ready_check, tokens_repo
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'wait_for_assets': {'a', 'b'},
+                                'assets_ready_set': {'a'},
+                                'dependencies': '[]',
+                                'wait_for': '[]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        should_signal, record = _coordinate_ready_check('exec-1', 'a')
+        assert should_signal is False
+
+    def test_coordinate_proceeds_when_all_assets_satisfied(self, mocker):
+        """AND-gate: all required assets in assets_ready_set → pass through
+        to evaluate_deps which checks task_deps and returns the final verdict."""
+        import index
+        import json
+        from index import _coordinate_ready_check, tokens_repo
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'wait_for_assets': {'a', 'b'},
+                                'assets_ready_set': {'a', 'b'},
+                                'dependencies': '[]',
+                                'trigger_rule': 'all_success',
+                                'date': '2026-07-27',
+                                'pipeline_execution_short': 'run-abc',
+                                'pipeline_execution': 'pipe-run-abc',
+                                'wait_for': '[]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        fake_lambda = mocker.MagicMock()
+        fake_lambda.invoke.return_value = {
+            'Payload': mocker.MagicMock(read=lambda: json.dumps({'is_ready': True}).encode())
+        }
+        mocker.patch('index._get_lambda', return_value=fake_lambda)
+        should_signal, record = _coordinate_ready_check('exec-1', 'b')
+        assert should_signal is True
+
+
+class TestOrGroupSignaling:
+    """AND-gate must be bypassed when wait_for_assets is absent on the record
+    (the case for OR-group subscriptions, where check_assets intentionally
+    skips _write_pending_assets).
+
+    Regression guard: before this guard, _coordinate_ready_check would call
+    add_to_assets_ready_set_and_get, find wait_for_assets absent → no AND gate
+    → pass through to evaluate_deps with wait_for_assets=None.  evaluate_deps:
+    falls back to legacy assets_ready bool → assets_satisfied=True → signal.
+    This is the correct first-arrival (OR) behaviour."""
+
+    def test_or_group_first_asset_bypasses_and_gate_and_signals(self, mocker):
+        """Record has no wait_for_assets (OR group subscription) — AND gate is
+        skipped and evaluate_deps sees assets_satisfied=True on first arrival."""
+        import index
+        import json
+        from index import _coordinate_ready_check, tokens_repo
+        # Record after ADD: assets_ready_set={'manual_override'}, no wait_for_assets
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'assets_ready_set': {'manual_override'},
+                                # wait_for_assets absent — OR group, check_assets skipped write
+                                'dependencies': '[]',
+                                'trigger_rule': 'all_success',
+                                'date': '2026-07-27',
+                                'pipeline_execution_short': 'run-abc',
+                                'pipeline_execution': 'pipe-run-abc',
+                                'wait_for': '[{"operator":"OR","assets":[{"asset_name":"daily"},{"asset_name":"manual_override"}]}]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        fake_lambda = mocker.MagicMock()
+        fake_lambda.invoke.return_value = {
+            'Payload': mocker.MagicMock(
+                read=lambda: json.dumps({'is_ready': True}).encode())
+        }
+        mocker.patch('index._get_lambda', return_value=fake_lambda)
+        # First asset arrives → no AND gate → evaluate_deps called → signal
+        should_signal, record = _coordinate_ready_check('exec-1', 'manual_override')
+        assert should_signal is True
+
+    def test_or_group_evaluate_deps_receives_null_wait_for_assets(self, mocker):
+        """evaluate_deps payload has wait_for_assets=None when record lacks the
+        field. None signals "no AND gate" so evaluate_deps uses the legacy
+        assets_ready bool — OR-group and legacy rows wake immediately."""
+        import index
+        import json
+        from index import _coordinate_ready_check, tokens_repo
+
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'assets_ready_set': {'manual_override'},
+                                'dependencies': '[]',
+                                'trigger_rule': 'all_success',
+                                'date': '2026-07-27',
+                                'pipeline_execution_short': 'run-abc',
+                                'pipeline_execution': 'pipe-run-abc',
+                                'wait_for': '[]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        fake_lambda = mocker.MagicMock()
+        captured = {}
+
+        def fake_invoke(**kwargs):
+            captured['payload'] = json.loads(kwargs['Payload'])
+            return {'Payload': mocker.MagicMock(
+                read=lambda: json.dumps({'is_ready': True}).encode())}
+
+        fake_lambda.invoke.side_effect = fake_invoke
+        mocker.patch('index._get_lambda', return_value=fake_lambda)
+
+        _coordinate_ready_check('exec-1', 'manual_override')
+
+        assert captured['payload']['wait_for_assets'] is None, (
+            "wait_for_assets must be None (not []) when absent so evaluate_deps "
+            "treats it as 'no gate' rather than 'empty gate'"
+        )
+        assert captured['payload']['assets_ready'] is True
+
+
+class TestSignalFailureWarn:
+    """B1: when send_task_success fails (transient / IAM), subscription is kept
+    for retry and a _notify_warn_ record is written so the operator sees it.
+
+    Subscription must NOT be deleted on 'failed' — only on 'sent' or
+    'token_consumed'. This is the inverse of the pre-B1 bug where the
+    subscription was deleted first, leaving no retry path on signal failure."""
+
+    def test_signal_failure_keeps_subscription_and_writes_warn(self, mocker):
+        """IAM / transient failure from SFN: subscription kept, _notify_warn_ written,
+        subscriber not counted in notified_count."""
+        from index import handler, subscriptions_repo, tokens_repo
+
+        record = {
+            'execution_name': 'task-2026-01-01-abc',
+            'pipeline_execution': 'pipe-run-2026-01-01-abc',
+            'pipeline_name': 'my-pipeline',
+            'date': '2026-01-01',
+        }
+        mocker.patch.object(subscriptions_repo, 'list_for_asset', return_value=[{
+            'subscriber': 'task_a',
+            'wait_token': 'token_a',
+            'execution_name': 'task-2026-01-01-abc',
+        }])
+        mocker.patch('index._coordinate_ready_check', return_value=(True, record))
+
+        mock_sfn = mocker.MagicMock()
+        mock_sfn.exceptions.TaskTimedOut = type('TaskTimedOut', (Exception,), {})
+        mock_sfn.exceptions.InvalidToken = type('InvalidToken', (Exception,), {})
+        mock_sfn.exceptions.TaskDoesNotExist = type('TaskDoesNotExist', (Exception,), {})
+        mock_sfn.send_task_success.side_effect = Exception('AccessDeniedException')
+        mocker.patch('index._get_sfn', return_value=mock_sfn)
+
+        warn_written = {}
+        def capture_write_warn(**kwargs):
+            warn_written.update(kwargs)
+        mocker.patch.object(tokens_repo, 'write_warn', side_effect=capture_write_warn)
+
+        delete_mock = mocker.patch.object(subscriptions_repo, 'delete')
+
+        result = handler({
+            'outlets': [{'name': 'inventory', 'uri': 's3://bucket/inv'}],
+            'event_time': '2026-01-01T00:00:00Z',
+        }, None)
+
+        assert result['notified'] == 0, "failed signal must not increment notified_count"
+        delete_mock.assert_not_called(), "subscription must be kept for retry on signal failure"
+        assert warn_written, "_notify_warn_ must be written so operator sees the failure"
+        assert warn_written.get('execution_name') == 'task-2026-01-01-abc'
+        assert 'inventory' in warn_written.get('error', '')
+
+    def test_token_consumed_deletes_subscription_without_warn(self, mocker):
+        """Token already consumed (timeout/task gone): subscription deleted silently,
+        no _notify_warn_ (operator cannot act on a gone token)."""
+        from index import handler, subscriptions_repo, tokens_repo
+
+        record = {'execution_name': 'task-2026-01-01-abc', 'pipeline_execution': 'p',
+                  'pipeline_name': 'p', 'date': '2026-01-01'}
+        mocker.patch.object(subscriptions_repo, 'list_for_asset', return_value=[{
+            'subscriber': 'task_a',
+            'wait_token': 'old_token',
+            'execution_name': 'task-2026-01-01-abc',
+        }])
+        mocker.patch('index._coordinate_ready_check', return_value=(True, record))
+
+        mock_sfn = mocker.MagicMock()
+        mock_sfn.exceptions.TaskTimedOut = type('TaskTimedOut', (Exception,), {})
+        mock_sfn.exceptions.InvalidToken = type('InvalidToken', (Exception,), {})
+        mock_sfn.exceptions.TaskDoesNotExist = type('TaskDoesNotExist', (Exception,), {})
+        mock_sfn.send_task_success.side_effect = mock_sfn.exceptions.TaskTimedOut()
+        mocker.patch('index._get_sfn', return_value=mock_sfn)
+
+        warn_mock = mocker.patch.object(tokens_repo, 'write_warn')
+        delete_mock = mocker.patch.object(subscriptions_repo, 'delete')
+
+        result = handler({
+            'outlets': [{'name': 'inventory', 'uri': 's3://bucket/inv'}],
+            'event_time': '2026-01-01T00:00:00Z',
+        }, None)
+
+        assert result['notified'] == 0
+        delete_mock.assert_called_once(), "token_consumed must still delete subscription"
+        warn_mock.assert_not_called(), "no _notify_warn_ for consumed tokens"
+
+
+class TestDynamoDBExpressions:
+    """Verify DAL DDB expressions with moto — actual expression semantics.
+
+    Principle #14: mock at the external boundary (boto3 via moto), never at
+    internal logic. Catches regressions where assets_ready=true is dropped from
+    the UpdateExpression — the Case B path (task deps not yet satisfied when asset
+    arrives) requires assets_ready=true in the DDB record so notify_dependents SFN
+    can read it later and pass it to evaluate_deps.
+
+    Also covers write_warn (PutItem) — mocking it would not catch a missing IAM
+    PutItem permission. The moto test verifies the DDB expression is correct;
+    the IAM permission itself is pinned by the template wiring test in
+    tests/sdk/test_mark_success_wakeup_wiring.py (moto does not enforce IAM).
+    """
+
+    def test_write_warn_puts_notify_warn_record(self, monkeypatch):
+        """write_warn must issue a real put_item to PipelineTokensTable.
+
+        Principle #13: mocking write_warn in handler-level tests verifies the
+        call signature but not the DDB operation. A missing dynamodb:PutItem
+        in NotifyAssetSubscribersRole would only surface here, not in the
+        handler mock test. The IAM permission is pinned by
+        test_mark_success_wakeup_wiring.py::
+        test_notify_asset_subscribers_role_grants_put_item_on_tokens_table.
+        """
+        from moto import mock_aws
+        import boto3
+        import dal as dal_module
+        from dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            dynamodb.create_table(
+                TableName='pipeline-tokens-warn',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+
+            repo = TokensRepo('pipeline-tokens-warn')
+            repo.write_warn(
+                execution_name='task-2026-01-01-abc1',
+                task_name='my_task',
+                pipeline_execution='pipe-run-2026-01-01-abc1',
+                pipeline_name='my-pipeline',
+                date='2026-01-01',
+                error='send_task_success failed for asset "inventory"; subscription kept',
+            )
+
+            table = dynamodb.Table('pipeline-tokens-warn')
+            item = table.get_item(
+                Key={'execution_name': '_notify_warn_task-2026-01-01-abc1'}
+            ).get('Item')
+
+        assert item is not None, "_notify_warn_ record must be written to DDB"
+        assert item['task_name'] == 'my_task'
+        assert item['status'] == 'failed'
+        assert 'inventory' in item['error']
+        assert 'finished_at' in item
+        assert 'ttl' in item
+
+    def test_assets_ready_bool_reaches_evaluate_deps_via_ddb(self, monkeypatch):
+        """DAL ADD writes assets_ready=true to DDB; that bool must survive a DDB
+        read-back and reach evaluate_deps so the Case B path works.
+
+        Case B: asset arrives while task deps are still pending. notify_asset_subscribers
+        credits the asset via ADD (assets_ready=true, assets_ready_set). Later,
+        notify_dependents SFN reads the record and passes assets_ready to evaluate_deps.
+        If assets_ready=true is absent, evaluate_deps sees assets_ready=False and
+        returns is_ready=False — the task hangs to orchestration timeout.
+
+        The test omits task deps (dependencies=[]) to isolate the asset-ready
+        field propagation path. Testing evaluate_deps with a pending upstream dep
+        would require mocking the dep's status in DDB — out of scope here. The
+        upstream-dep gate is covered by evaluate_deps' own test suite.
+        """
+        import os
+        import json
+        import importlib.util
+        from moto import mock_aws
+        import boto3
+        import dal as dal_module
+        from dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
+
+        # monkeypatch.syspath_prepend restores sys.path on teardown even if the test fails.
+        eval_deps_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'evaluate_deps')
+        )
+        monkeypatch.syspath_prepend(eval_deps_path)
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            tokens_tbl = dynamodb.create_table(
+                TableName='pipeline-tokens-chain',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+            exec_name = 'task-2026-01-01-chain01'
+            tokens_tbl.put_item(Item={
+                'execution_name': exec_name,
+                'dependencies': '[]',
+                'trigger_rule': 'all_success',
+                'wait_for': '["some_asset"]',
+                'date': '2026-01-01',
+                'pipeline_execution_short': 'run-abc',
+                'pipeline_execution': 'pipeline-run-abc',
+            })
+
+            repo = TokensRepo('pipeline-tokens-chain')
+            record = repo.add_to_assets_ready_set_and_get(exec_name, 'some_asset')
+            assert record is not None
+
+        # Build the payload exactly as notify_dependents SFN + _coordinate_ready_check do:
+        # wait_for_assets absent in record → None; assets_ready=true from DAL write
+        payload = {
+            'dependencies': [],
+            'trigger_rule': 'all_success',
+            'date': '2026-01-01',
+            'pipeline_execution_short': 'run-abc',
+            'pipeline_execution': 'pipeline-run-abc',
+            'wait_for': json.loads(record.get('wait_for', '["some_asset"]')),
+            'wait_for_assets': (list(record['wait_for_assets']) if 'wait_for_assets' in record else None),
+            'assets_ready_set': list(record.get('assets_ready_set') or []),
+            'assets_ready': bool(record.get('assets_ready', False)),
+        }
+
+        # Load evaluate_deps via spec to avoid sys.modules collision with notify's index.
+        spec = importlib.util.spec_from_file_location(
+            'evaluate_deps_index',
+            os.path.join(eval_deps_path, 'index.py'),
+        )
+        eval_deps = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(eval_deps)
+        result = eval_deps.handler(payload, None)
+
+        assert result.get('is_ready') is True, (
+            f"evaluate_deps returned is_ready=False with payload {payload}; "
+            "assets_ready=true must reach evaluate_deps via the DDB record"
+        )
+
+    def test_add_to_assets_ready_set_stores_bool_and_set(self, monkeypatch):
+        """add_to_assets_ready_set_and_get must write both assets_ready=true (for
+        the notify_dependents SFN / Case B path) and assets_ready_set (for AND gate
+        completeness check). If only ADD is used without SET assets_ready, OR-group
+        tasks hang when assets arrive before task deps are satisfied."""
+        from moto import mock_aws
+        import boto3
+        import dal as dal_module
+        from dal import TokensRepo
+
+        monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+        monkeypatch.setattr(dal_module, '_dynamodb', None)
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            table = dynamodb.create_table(
+                TableName='pipeline-tokens-moto',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+            exec_name = 'task-2026-01-01-abc12345678'
+            table.put_item(Item={'execution_name': exec_name})
+
+            repo = TokensRepo('pipeline-tokens-moto')
+            result = repo.add_to_assets_ready_set_and_get(exec_name, 'asset_a')
+
+            assert result is not None
+            assert result.get('assets_ready') is True, (
+                "assets_ready=true must be stored so notify_dependents SFN can read it "
+                "in the Case B path (asset arrives before task deps are satisfied)"
+            )
+            assert result.get('assets_ready_set') == {'asset_a'}
 
 
 if __name__ == '__main__':

@@ -27,6 +27,10 @@ NOTIFY_SUBS = REPO_ROOT / "sam" / "lambdas" / "notify_asset_subscribers" / "inde
 # generic `except Exception` block — WARN at any of them silently masks the
 # coordination bugs this branch flags as experimental limitations.
 _WAKE_UP_CATCHES = [
+    (CHECK_ASSETS, "_mark_assets_ready",
+     "mark_assets_ready failure — evaluate_deps won't see assets as ready; task hangs if task_deps also complete"),
+    (CHECK_ASSETS, "_credit_arrived_assets",
+     "partial re-check ADD failure — assets_ready_set stays incomplete; AND gate never closes; task hangs to timeout"),
     (CHECK_ASSETS, "_save_subscription",
      "wait_for subscription write; failure means task hangs to timeout"),
     (CHECK_ASSETS, "_is_fresh",

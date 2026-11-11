@@ -485,6 +485,93 @@ async function testTemplateExpressionsCompile() {
 }
 
 // ============================================================
+// Test Suite: notify_dependents wait_for_assets / assets_ready_set expressions
+// (ADR #129 — AND-gate fields added in v1.1.4)
+// ============================================================
+
+async function testNotifyDependentsWaitForFields() {
+  console.log("\n📋 notify_dependents: wait_for_assets / assets_ready_set DDB→payload expressions");
+
+  // Load the ACTUAL expressions from notify_dependents/sfn.tpl.json so the test
+  // fails if the template changes. The template loader at loadTemplate() already
+  // handles the file read; we just need to navigate to the right state.
+  const tpl = loadTemplate("notify_dependents");
+  const evalDepsPayload =
+    tpl.States.Process_Subscribers.ItemProcessor.States.Evaluate_Dependencies.Arguments.Payload;
+
+  function stripJSONata(expr) {
+    // Strip {% ... %} wrappers from SFN JSONata string values
+    return expr.replace(/^\{%\s*/, "").replace(/\s*%\}$/, "");
+  }
+
+  const exprWaitForAssets = stripJSONata(evalDepsPayload.wait_for_assets);
+  const exprAssetsReadySet = stripJSONata(evalDepsPayload.assets_ready_set);
+
+  // wait_for_assets: SS present → return the array
+  await test(
+    "wait_for_assets: SS present → returns array",
+    exprWaitForAssets,
+    { record: { wait_for_assets: { SS: ["asset_a", "asset_b"] } } },
+    ["asset_a", "asset_b"]
+  );
+
+  // wait_for_assets: field absent → null (not [] — null signals "no gate" to evaluate_deps)
+  await test(
+    "wait_for_assets: field absent → null",
+    exprWaitForAssets,
+    { record: {} },
+    null
+  );
+
+  // wait_for_assets: field present but no SS (unexpected shape) → null
+  await test(
+    "wait_for_assets: field present without SS → null",
+    exprWaitForAssets,
+    { record: { wait_for_assets: {} } },
+    null
+  );
+
+  // assets_ready_set: SS present → return the array
+  await test(
+    "assets_ready_set: SS present → returns array",
+    exprAssetsReadySet,
+    { record: { assets_ready_set: { SS: ["asset_a"] } } },
+    ["asset_a"]
+  );
+
+  // assets_ready_set: field absent → [] (empty list, not null — set arithmetic works on empty set)
+  await test(
+    "assets_ready_set: field absent → []",
+    exprAssetsReadySet,
+    { record: {} },
+    []
+  );
+
+  // assets_ready_set: both fields present → AND gate closed check: set(ready) >= set(gate)
+  await test(
+    "AND gate closed: assets_ready_set ⊇ wait_for_assets",
+    `(
+      $gate := $exists($states.input.record.wait_for_assets.SS) ? $states.input.record.wait_for_assets.SS : null;
+      $ready := $exists($states.input.record.assets_ready_set.SS) ? $states.input.record.assets_ready_set.SS : [];
+      $gate = null ? true : $gate ~> $map(function($g) { $g in $ready }) ~> $reduce(function($a, $b) { $a and $b }, true)
+    )`,
+    { record: { wait_for_assets: { SS: ["a", "b"] }, assets_ready_set: { SS: ["a", "b"] } } },
+    true
+  );
+
+  await test(
+    "AND gate open: assets_ready_set ⊄ wait_for_assets (b missing)",
+    `(
+      $gate := $exists($states.input.record.wait_for_assets.SS) ? $states.input.record.wait_for_assets.SS : null;
+      $ready := $exists($states.input.record.assets_ready_set.SS) ? $states.input.record.assets_ready_set.SS : [];
+      $gate = null ? true : $gate ~> $map(function($g) { $g in $ready }) ~> $reduce(function($a, $b) { $a and $b }, true)
+    )`,
+    { record: { wait_for_assets: { SS: ["a", "b"] }, assets_ready_set: { SS: ["a"] } } },
+    false
+  );
+}
+
+// ============================================================
 // Runner
 // ============================================================
 
@@ -498,8 +585,9 @@ async function main() {
   await testErrorHandling();
   await testTransforms();
   await testTemplateExpressionsCompile();
+  await testNotifyDependentsWaitForFields();
 
-  
+
 // Save_Input_Record (new in 0.100.0) — task_input stored in a separate
 // input# DDB record without the old 25KB truncation. The record's own 400KB
 // item budget lets it hold ~380KB.

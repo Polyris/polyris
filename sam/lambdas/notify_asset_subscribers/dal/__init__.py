@@ -11,6 +11,7 @@ created lazily by a shared `_resource()` helper.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone as tz
 import boto3
 from typing import List, Dict, Optional
 
@@ -70,6 +71,29 @@ class SubscriptionsRepo:
             'subscriber': subscriber,
         })
 
+    def delete_if_owned(self, asset_name: str, subscriber: str, execution_name: str) -> bool:
+        """Delete a sibling OR-group subscription only if it belongs to this run.
+
+        The subscription key (asset_name, subscriber) has no execution component,
+        so a parallel backfill of the same task may have overwritten the row.
+        A conditional delete on execution_name ensures we only clean up our own row.
+
+        Returns True if deleted, False if the row belongs to another execution or
+        does not exist (both are safe no-ops).
+        """
+        from boto3.dynamodb.conditions import Attr
+        try:
+            self.table.delete_item(
+                Key={
+                    'dependency_key': f'asset:{asset_name}',
+                    'subscriber': subscriber,
+                },
+                ConditionExpression=Attr('execution_name').eq(execution_name),
+            )
+            return True
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
 
 class AssetEventsRepo:
     """asset-events table: keyed by asset_name (PK)."""
@@ -107,15 +131,41 @@ class TokensRepo:
     def table(self):
         return _resource().Table(self._table_name)
 
-    def mark_assets_ready_and_get(self, execution_name: str) -> Optional[Dict]:
-        """Atomic SET assets_ready=true + return the full updated record. Used
-        by notify_asset_subscribers so it can immediately hand the record's
-        fields to evaluate_deps for a coordinated ready/wait decision."""
+    def write_warn(
+        self,
+        *,
+        execution_name: str,
+        task_name: str,
+        pipeline_execution: str,
+        pipeline_name: str,
+        date: str,
+        error: str,
+    ) -> None:
+        """Write a _notify_warn_ record visible in the UI bell. Best-effort."""
+        now = datetime.now(tz.utc)
+        self.table.put_item(Item={
+            'execution_name': f'_notify_warn_{execution_name}',
+            'task_name': task_name,
+            'pipeline_execution': pipeline_execution,
+            'pipeline_name': pipeline_name,
+            'date': date,
+            'status': 'failed',
+            'error': error,
+            'finished_at': now.isoformat(),
+            'ttl': int(now.timestamp()) + 86400,
+        })
+
+    def add_to_assets_ready_set_and_get(self, execution_name: str, asset_name: str) -> Optional[Dict]:
+        """Atomically ADD asset_name to `assets_ready_set` and SET assets_ready=true
+        on the task record, return the full updated record. Setting assets_ready=true
+        is required for the Case B path: when task deps are not yet satisfied,
+        notify_dependents SFN later reads the DDB record and passes assets_ready to
+        evaluate_deps — if the bool is absent, OR-group tasks hang permanently."""
         try:
             response = self.table.update_item(
                 Key={'execution_name': execution_name},
-                UpdateExpression='SET assets_ready = :true',
-                ExpressionAttributeValues={':true': True},
+                UpdateExpression='SET assets_ready = :true ADD assets_ready_set :name_set',
+                ExpressionAttributeValues={':name_set': {asset_name}, ':true': True},
                 ConditionExpression='attribute_exists(execution_name)',
                 ReturnValues='ALL_NEW',
             )

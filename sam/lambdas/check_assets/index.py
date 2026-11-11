@@ -65,6 +65,20 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     # If not ready, save subscriptions for missing assets
     if not is_ready:
         missing_assets = _get_missing_assets(asset_results)
+        missing_names = [spec['name'] for spec in missing_assets]
+
+        # Computed once: OR-group spec disables the AND gate entirely.
+        is_pure_and = not _has_or_group(wait_for)
+
+        # Gate written before subscriptions: an event arriving between a
+        # subscription write and the gate write sees no wait_for_assets field
+        # and falls back to first-arrival (OR) semantics. With the gate present
+        # first, every arriving asset encounters a complete AND gate immediately.
+        # Skipped for specs that contain an OR group — first-arrival semantics
+        # apply there; the gate is not needed.
+        if is_pure_and:
+            _write_pending_assets(execution_name, missing_names)
+
         for asset_spec in missing_assets:
             _save_asset_subscription(
                 asset_name=asset_spec['name'],
@@ -82,15 +96,21 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         is_ready_recheck, asset_results_recheck = _evaluate_wait_for(wait_for, current_date)
 
         if is_ready_recheck:
-            # Asset appeared while we were subscribing - clean up subscriptions
+            # All assets arrived — clean up all subscriptions, mark ready, return
             for asset_spec in missing_assets:
                 _delete_subscription(asset_spec['name'], task_name)
-            _mark_assets_ready(execution_name)
+            _mark_assets_ready(execution_name, missing_names)
             return {
                 'type': 'asset_deps',
                 'ready': True,
                 'assets': asset_results_recheck
             }
+        elif is_pure_and:
+            partial = _handle_partial_recheck(
+                execution_name, task_name, missing_assets, asset_results_recheck
+            )
+            if partial is not None:
+                return partial
 
     if is_ready:
         # Assets were already ready at registration time — mark the task record
@@ -99,7 +119,8 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         # would hang: evaluate_deps would see wait_for + assets_ready=false and
         # return verdict='wait', but no async asset arrival will ever trigger
         # notify_asset_subscribers to flip the flag (there's no subscription).
-        _mark_assets_ready(execution_name)
+        all_names = [r['name'] for r in asset_results]
+        _mark_assets_ready(execution_name, all_names)
 
     return {
         'type': 'asset_deps',
@@ -108,18 +129,108 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     }
 
 
-def _mark_assets_ready(execution_name: str) -> None:
-    """Best-effort: mark assets_ready=true on the task record. Failure here
-    doesn't block registration — the task's wait_for path still functions via
-    the immediate registration signal — but a downstream restart or a
-    concurrent task_deps completion would then not see the flag."""
+def _mark_assets_ready(execution_name: str, asset_names: List[str]) -> None:
+    """Best-effort: mark all wait_for assets as satisfied on the task record.
+    Failure here doesn't block registration — the task's wait_for path still
+    functions via the immediate registration signal — but a downstream restart
+    or a concurrent task_deps completion would then not see the flag."""
     if not execution_name:
         return
     try:
-        tokens_repo.mark_assets_ready(execution_name)
+        tokens_repo.mark_assets_ready(execution_name, asset_names)
     except Exception as e:
-        log.warn("_mark_assets_ready", "mark_assets_ready failed",
-                 execution_name=execution_name, error=str(e))
+        log.error("_mark_assets_ready", "mark_assets_ready failed — evaluate_deps may not see assets as ready",
+                  execution_name=execution_name, error=str(e))
+
+
+def _write_pending_assets(execution_name: str, asset_names: List[str]) -> None:
+    """Best-effort: write `wait_for_assets` = subscribed names on the task
+    record so notify_asset_subscribers can gate the wake-up signal on ALL
+    assets arriving (AND semantics). A failure here degrades to the legacy
+    behaviour where the first arriving asset wakes the task."""
+    if not execution_name or not asset_names:
+        return
+    try:
+        tokens_repo.write_pending_assets(execution_name, asset_names)
+    except Exception as e:
+        log.error("_write_pending_assets", "write failed — AND semantics degraded to OR",
+                  execution_name=execution_name, error_type=type(e).__name__, error=str(e))
+
+
+def _handle_partial_recheck(
+    execution_name: str,
+    task_name: str,
+    missing_assets: List[Dict],
+    asset_results_recheck: List[Dict],
+) -> Optional[Dict]:
+    """Credit assets that arrived during the subscription-save window and check
+    if the AND gate is now complete. Returns a ready=True response dict when the
+    gate closes, None when still waiting (subscriptions stay active for the rest).
+
+    Write order: ADD first, delete subscriptions after. If the ADD fails,
+    subscriptions remain — a known-incomplete set is better than no recovery path.
+    """
+    missing_names_set = {spec['name'] for spec in missing_assets}
+    newly_ready_names = [
+        r['name'] for r in asset_results_recheck
+        if r.get('ready') and r['name'] in missing_names_set
+    ]
+    if not newly_ready_names:
+        return None
+
+    updated = _credit_arrived_assets(execution_name, newly_ready_names)
+    if updated is None:
+        return None
+
+    for name in newly_ready_names:
+        _delete_subscription(name, task_name)
+
+    ready_set = updated.get('assets_ready_set') or set()
+    gate_set = updated.get('wait_for_assets') or set()
+    if not (gate_set and ready_set >= gate_set):
+        return None
+
+    # Gate complete — clean up remaining subscriptions and wake task.
+    # The ADD is atomic: at most one side (notify or this path) observes
+    # the gate flip and acts on it; a concurrent double-signal is safe
+    # (the registration SFN Catch handles an already-consumed token).
+    newly_ready_set = set(newly_ready_names)
+    for spec in missing_assets:
+        if spec['name'] not in newly_ready_set:
+            _delete_subscription(spec['name'], task_name)
+    return {
+        'type': 'asset_deps',
+        'ready': True,
+        'assets': asset_results_recheck
+    }
+
+
+def _credit_arrived_assets(execution_name: str, asset_names: List[str]) -> Optional[Dict]:
+    """Atomically ADD already-arrived asset names to assets_ready_set, return
+    the updated record. The caller checks whether the gate is now complete.
+    Returns None on failure (caller keeps subscriptions active as a safeguard)."""
+    if not execution_name or not asset_names:
+        return None
+    try:
+        return tokens_repo.add_assets_to_ready_set_and_get(execution_name, asset_names)
+    except Exception as e:
+        log.error("_credit_arrived_assets", "ADD to assets_ready_set failed — AND gate may not close",
+                  execution_name=execution_name, error_type=type(e).__name__, error=str(e))
+        return None
+
+
+def _has_or_group(wait_for: List[Dict]) -> bool:
+    """Return True if any item in wait_for (recursively) uses OR semantics.
+
+    Used to decide whether the AND-completeness gate applies: OR groups need
+    first-arrival semantics (any one qualifying asset wakes the task), not
+    all-must-arrive semantics. See ADR #129."""
+    for item in wait_for:
+        if item.get('operator') == 'OR':
+            return True
+        if 'assets' in item and _has_or_group(item['assets']):
+            return True
+    return False
 
 
 def _evaluate_wait_for(wait_for: List[Dict], current_date: str = '') -> tuple:

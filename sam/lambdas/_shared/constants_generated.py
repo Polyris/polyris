@@ -90,7 +90,8 @@ class ManualResolution:
 class PipelineStatus:
     """A pipeline card's status: its LAST run's canonical status, or 'idle' when the
     pipeline has no runs in the recent window (ADR #112, option c). The value set is
-    ExecutionStatus plus 'idle' — kept in sync with ExecutionStatus."""
+    ExecutionStatus plus 'idle' — kept in sync with ExecutionStatus.
+    """
     RUNNING = 'running'
     SUCCESS = 'success'
     FAILED = 'failed'
@@ -136,7 +137,8 @@ class BackfillUpstream:
     Mirrors BackfillCascade on the upstream side. Codegen-generated into
     constants_generated.py (backend) and ui/src/generated/enums.ts (UI) so the
     backend validator and the TS type derive from this one definition rather
-    than hand-maintained copies (ADR #94)."""
+    than hand-maintained copies (ADR #94).
+    """
     OFF = 'off'
     SMART = 'smart'
     FORCE = 'force'

@@ -1,16 +1,18 @@
-"""Template contract: mark_success wakes wait_for subscribers.
+"""Template contract: mark_success wakes wait_for subscribers, and
+_notify_warn_ records can be written when SendTaskSuccess fails.
 
-Pins the two wiring artefacts without which `mark_success` silently stops
-notifying pull-waiters:
+Pins three wiring artefacts:
 
 1. `ConsoleApiFunction.Environment.Variables.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN`
    must reference `NotifyAssetSubscribersFunction`.
 2. `ConsoleApiRolePolicy` must grant `lambda:InvokeFunction` on that same
    Lambda.
+3. `NotifyAssetSubscribersRole` must grant both `dynamodb:UpdateItem` (Case B
+   asset-ready coordination) AND `dynamodb:PutItem` (write_warn _notify_warn_
+   records) on `PipelineTokensTable`.
 
-Either can be removed with no unit-test breakage inside the Python code — the
-mocked `lambda_client.invoke` still passes — so CloudFormation is where the
-guarantee lives.
+Any of these can be removed with no Python unit-test breakage — the mocked
+calls still pass — so CloudFormation is where the guarantee lives.
 """
 
 import re
@@ -78,4 +80,54 @@ def test_console_api_role_grants_invoke_on_notify_asset_subscribers(template):
         "ConsoleApiRole no longer grants lambda:InvokeFunction on "
         "NotifyAssetSubscribersFunction — mark_success invoke will fail with "
         "AccessDenied (silently, since the call is InvocationType=Event)"
+    )
+
+
+def test_notify_asset_subscribers_role_grants_put_item_on_tokens_table(template):
+    """NotifyAssetSubscribersRole must grant both UpdateItem (Case B
+    assets_ready coordination) and PutItem (_notify_warn_ write_warn path)
+    on PipelineTokensTable.
+
+    Without PutItem the write_warn call in _write_signal_failure_warn gets
+    AccessDeniedException in production — the UI bell stays empty even though
+    the CHANGELOG / ADR #129 / Principle #41 promise the operator will see it.
+    Principle #13: mocking write_warn in unit tests cannot catch this IAM gap.
+    """
+    statements = (
+        template["Resources"]["NotifyAssetSubscribersRole"]
+        ["Properties"]["Policies"][0]
+        ["PolicyDocument"]["Statement"]
+    )
+
+    # Find the statement whose Resource list includes PipelineTokensTable
+    tokens_stmt = None
+    for stmt in statements:
+        resources = stmt.get("Resource", [])
+        if isinstance(resources, dict):
+            resources = [resources]
+        for r in resources:
+            val = r.get("value", "") if isinstance(r, dict) else ""
+            if "PipelineTokensTable" in val:
+                tokens_stmt = stmt
+                break
+
+    assert tokens_stmt is not None, (
+        "No IAM statement covering PipelineTokensTable found in "
+        "NotifyAssetSubscribersRole — write_warn and add_to_assets_ready_set_and_get "
+        "will fail with AccessDenied in production"
+    )
+
+    actions = tokens_stmt.get("Action", [])
+    if isinstance(actions, str):
+        actions = [actions]
+
+    assert "dynamodb:PutItem" in actions, (
+        "NotifyAssetSubscribersRole PipelineTokensTable statement is missing "
+        "dynamodb:PutItem — write_warn (_notify_warn_ records) will get "
+        "AccessDeniedException in production; operator will not see SendTaskSuccess "
+        "failures in the UI notifications bell (ADR #129 / Principle #41)"
+    )
+    assert "dynamodb:UpdateItem" in actions, (
+        "NotifyAssetSubscribersRole PipelineTokensTable statement is missing "
+        "dynamodb:UpdateItem — add_to_assets_ready_set_and_get will fail"
     )
