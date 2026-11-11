@@ -94,8 +94,10 @@ def get_sfn_client(region: str, profile: Optional[str] = None, role_arn: Optiona
             return boto3.client('stepfunctions', region_name=region)
     
     except ProfileNotFound:
-        print(f"❌ Profile not found: {profile}")
-        print("   Check ~/.aws/credentials or ~/.aws/config")
+        # stderr, not stdout: this exits mid-run, and `--json` callers parse
+        # stdout — a diagnostic there would break json.loads.
+        print(f"❌ Profile not found: {profile}", file=sys.stderr)
+        print("   Check ~/.aws/credentials or ~/.aws/config", file=sys.stderr)
         sys.exit(1)
 
 
@@ -274,8 +276,11 @@ Authentication:
     # Determine ARN
     sfn_arn = args.arn
     
+    # --json: stdout carries exactly one JSON document — no progress text,
+    # and failures are reported as {"success": false, "error": ...}.
     if not sfn_arn and args.name:
-        print(f"🔍 Looking for pipeline '{args.name}' in {args.region}...")
+        if not args.json:
+            print(f"🔍 Looking for pipeline '{args.name}' in {args.region}...")
         sfn_arn = find_sfn_arn(
             args.name, 
             args.region, 
@@ -285,16 +290,20 @@ Authentication:
         )
         
         if not sfn_arn:
-            print(f"❌ Pipeline '{args.name}' not found in {args.region}")
+            error = f"Pipeline '{args.name}' not found in {args.region}"
+            if args.json:
+                print(json.dumps({'success': False, 'error': error}, indent=2))
+            else:
+                print(f"❌ {error}")
             sys.exit(1)
-        
-        print(f"   Found: {sfn_arn}")
+
+        if not args.json:
+            print(f"   Found: {sfn_arn}")
     
     if not sfn_arn:
         parser.print_help()
         sys.exit(1)
     
-    # Register — suppress progress output in --json mode so stdout is clean JSON
     if not args.json:
         print("📝 Registering pipeline...")
         if args.profile:

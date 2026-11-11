@@ -107,7 +107,10 @@ class TestGetSfnClient:
         with pytest.raises(SystemExit) as exc:
             register.get_sfn_client("us-east-1", profile="bad-profile")
         assert exc.value.code == 1
-        assert "bad-profile" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        # Diagnostic goes to stderr so `--json` stdout stays parseable.
+        assert "bad-profile" in captured.err
+        assert captured.out == ""
 
 
 # ─── register_pipeline ─────────────────────────────────────────────────────────
@@ -293,6 +296,34 @@ class TestMain:
         assert exc.value.code == 1
         data = json.loads(capsys.readouterr().out)
         assert data["success"] is False
+
+    def test_json_by_name_stdout_is_pure_json(self, mocker, capsys, monkeypatch):
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        sfn = mocker.MagicMock()
+        sfn.get_paginator.return_value.paginate.return_value = [
+            {"stateMachines": [{"name": "my-pipeline", "stateMachineArn": _ARN}]}
+        ]
+        mocker.patch("polyris.register.boto3").client.return_value = sfn
+        self._success(mocker)
+        mocker.patch("sys.argv", ["polyris-register", "--json", "--name",
+                                   "my-pipeline", "--region", "us-east-1"])
+        register.main()
+        data = json.loads(capsys.readouterr().out)
+        assert data["success"] is True
+
+    def test_json_name_not_found_emits_json_error(self, mocker, capsys, monkeypatch):
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        sfn = mocker.MagicMock()
+        sfn.get_paginator.return_value.paginate.return_value = [{"stateMachines": []}]
+        mocker.patch("polyris.register.boto3").client.return_value = sfn
+        mocker.patch("sys.argv", ["polyris-register", "--json", "--name",
+                                   "missing", "--region", "us-east-1"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["success"] is False
+        assert "missing" in data["error"]
 
     def test_profile_flag_printed(self, mocker, capsys):
         self._success(mocker)

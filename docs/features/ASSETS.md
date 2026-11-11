@@ -18,13 +18,12 @@ issue, not undiscovered behavior. Progress is tracked in
 | Area | Current behavior |
 |------|------------------|
 | Partition identity | A run's partition is the UTC date of `current_date` (approximately the scheduler fire time). The scheduler does not pass an explicit partition key, so hourly schedules collapse multiple runs onto one partition. |
-| `wait_for` on a missing asset | When the asset has not been materialized at consumer task start, the subscription write fails silently and the task hangs to its timeout. |
+| `wait_for` on a missing asset | When the asset has not been materialized at consumer task start, the subscription write fails (logged as an error) and the task hangs to its timeout. This also means a later event — natural completion or manual `mark_success` — cannot wake the task. |
 | `wait_for=[a, b]` AND semantics | Fires on the first of two events, not when both arrive (currently matches OR). |
 | `wait_for` freshness | Checks the latest event for the asset, not the event for the consumer's partition. A backfill of a past date can pass freshness based on today's producer event. |
 | Subscription key collisions | Subscription key `(asset, task_name)` does not include pipeline or execution. Parallel backfills of the same consumer can overwrite each other's subscription rows. |
 | Push AND trigger loss | If the `Trigger_AND` state fails between counter bump and execution start, subsequent events on the same date are filtered out and the day's trigger is lost. |
 | Restart inconsistency | Re-running an asset-producing task restarts OR consumers (time-based execution name) but not AND consumers (deterministic name). |
-| `mark_success` and `wait_for` | Manual `mark_success` on an asset-producing task emits the asset event but does not notify `wait_for` subscribers of that asset. |
 
 
 ## Overview

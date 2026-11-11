@@ -12,6 +12,11 @@
   IAM `lambda:InvokeFunction` grant on `NotifyAssetSubscribersFunction`.
   Fire-and-forget invocation — Lambda errors are logged, not surfaced, matching
   the existing push-consumer SFN pattern.
+- **Not yet effective end to end:** the invoked Lambda still reads
+  subscriptions from a table with the wrong key schema (see "`wait_for` on a
+  missing asset" in `docs/features/ASSETS.md`), so waiters are not actually
+  woken until that routing bug is fixed. This change makes `mark_success` and
+  natural completion take the same path, so both start working with that fix.
 
 ### Changed — Asset-layer Lambdas: silent `warning` catches upgraded to `error`
 
@@ -31,7 +36,9 @@
   profile/role prints before the JSON body, breaking `json.loads` on the
   combined output. Progress prints are now suppressed when `--json` is active,
   matching the `polyris/CLAUDE.md` `--json` rule already enforced in
-  `polyris-validate` and `polyris-output`.
+  `polyris-validate` and `polyris-output`. Covers the `--name` lookup path too:
+  "Looking for… / Found…" are suppressed, and "pipeline not found" is emitted
+  as `{"success": false, "error": ...}`. "Profile not found" now goes to stderr.
 
 ### Changed — `polyris/register.py` moved off the coverage omit list
 
