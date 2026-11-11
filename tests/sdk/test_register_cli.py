@@ -101,16 +101,14 @@ class TestGetSfnClient:
         boto.Session.assert_called_once_with(profile_name="myprofile", region_name="us-east-1")
         boto.client.assert_called_once()  # the final stepfunctions client
 
-    def test_profile_not_found_exits(self, mocker, capsys):
+    def test_profile_not_found_propagates(self, mocker):
+        """get_sfn_client must NOT sys.exit — the caller needs to route the
+        error to --json or text output, and sys.exit mid-helper would leave
+        stdout empty and break json.loads for --json callers."""
         boto = mocker.patch("polyris.register.boto3")
         boto.Session.side_effect = ProfileNotFound(profile="bad-profile")
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(ProfileNotFound):
             register.get_sfn_client("us-east-1", profile="bad-profile")
-        assert exc.value.code == 1
-        captured = capsys.readouterr()
-        # Diagnostic goes to stderr so `--json` stdout stays parseable.
-        assert "bad-profile" in captured.err
-        assert captured.out == ""
 
 
 # ─── register_pipeline ─────────────────────────────────────────────────────────
@@ -284,6 +282,38 @@ class TestMain:
         data = json.loads(capsys.readouterr().out)
         assert data["success"] is False
         assert "AccessDeniedException" in data["error"]
+
+    def test_profile_not_found_json_mode_name_path(self, mocker, capsys):
+        """`--json --name X --profile <bad>` must emit parseable JSON failure,
+        not empty stdout + stderr. ProfileNotFound bubbles up from
+        get_sfn_client and is caught at the main() --name try/except."""
+        mocker.patch(
+            "polyris.register.find_sfn_arn",
+            side_effect=ProfileNotFound(profile="bad-profile"),
+        )
+        mocker.patch("sys.argv", ["polyris-register", "--json", "--name", "p",
+                                   "--region", "us-east-1", "--profile", "bad-profile"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["success"] is False
+        assert "bad-profile" in data["error"]
+
+    def test_profile_not_found_json_mode_arn_path(self, mocker, capsys):
+        """`--json <arn> --profile <bad>` must emit parseable JSON failure.
+        ProfileNotFound bubbles from get_sfn_client inside register_pipeline,
+        which converts it to the {success:false, error} dict."""
+        boto = mocker.patch("polyris.register.boto3")
+        boto.Session.side_effect = ProfileNotFound(profile="bad-profile")
+        mocker.patch("sys.argv", ["polyris-register", "--json", _ARN,
+                                   "--profile", "bad-profile"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["success"] is False
+        assert "bad-profile" in data["error"]
 
     def test_no_arn_no_name_exits(self, mocker):
         mocker.patch("sys.argv", ["polyris-register"])

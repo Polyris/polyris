@@ -67,21 +67,12 @@ def test_console_api_has_notify_asset_subscribers_env_var(template):
 
 
 def test_console_api_role_grants_invoke_on_notify_asset_subscribers(template):
-    """Grep the raw YAML for the two sibling lines — the only way to tell
+    """Check the raw YAML for the two sibling lines — the only way to tell
     which Resource a given Action targets without walking the full IAM
     policy structure (which varies: inline vs managed, single vs list)."""
     raw = TEMPLATE_PATH.read_text()
-    # Policy statement shape in this template:
-    #   - Effect: Allow
-    #     Action:
-    #       - lambda:InvokeFunction
-    #     Resource: !GetAtt NotifyAssetSubscribersFunction.Arn
-    pattern = re.compile(
-        r"lambda:InvokeFunction\s+Resource:\s+!GetAtt\s+"
-        r"NotifyAssetSubscribersFunction\.Arn",
-        re.DOTALL,
-    )
-    # Collapse whitespace so indentation variations do not matter.
+    # Collapse whitespace so indentation variations do not matter, then look
+    # for the Action/Resource pair as adjacent tokens.
     normalized = re.sub(r"\s+", " ", raw)
     assert "lambda:InvokeFunction Resource: !GetAtt NotifyAssetSubscribersFunction.Arn" in normalized, (
         "ConsoleApiRole no longer grants lambda:InvokeFunction on "

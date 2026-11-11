@@ -235,7 +235,12 @@ def _check_consecutive_ready(asset_name: str, consecutive_days: int, reference_d
             asset_name, limit=max(consecutive_days * 5, 30)
         )
     except Exception as e:
-        log.warn("_check_consecutive", "Failed to query asset events", asset_name=asset_name, error=str(e))
+        # Wake-up-path catch: a `consecutive()` requirement that can't query
+        # asset events fails-closed below (returns False → skips signal → task
+        # keeps waiting). ERROR level so a systematic query issue is visible
+        # in CloudWatch instead of being lost in warn-noise.
+        log.error("_check_consecutive", "Failed to query asset events",
+                  asset_name=asset_name, error_type=type(e).__name__, error=str(e))
         return False
 
     # Extract distinct execution_dates

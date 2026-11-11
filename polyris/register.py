@@ -35,7 +35,7 @@ import json
 import os
 import sys
 import boto3
-from botocore.exceptions import ClientError, ProfileNotFound
+from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound
 from typing import Optional
 
 from ._ansi import colorize_parser
@@ -44,61 +44,65 @@ from ._ansi import colorize_parser
 def get_sfn_client(region: str, profile: Optional[str] = None, role_arn: Optional[str] = None):
     """
     Get Step Functions client with optional profile or assumed role.
-    
+
     Uses standard AWS credential chain (same as AWS CLI):
     - Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
     - ~/.aws/credentials
     - ~/.aws/config (for profiles with role_arn, sso, etc.)
     - Instance profile (EC2, ECS, Lambda)
-    
+
     Args:
         region: AWS region
         profile: AWS profile name (from ~/.aws/credentials or ~/.aws/config)
         role_arn: IAM role ARN to assume
-    
+
     Returns:
         boto3 Step Functions client
+
+    Raises:
+        ProfileNotFound: the named profile is absent from ~/.aws/credentials
+            and ~/.aws/config. Propagates so --json callers see a parseable
+            failure instead of stdout emptied by a mid-helper sys.exit.
+        BotoCoreError: credential chain failure, endpoint resolution error,
+            or other botocore-level issue.
+        ClientError: AWS API call failure (e.g. assume_role AccessDenied).
     """
     # Use AWS_PROFILE env var if no explicit profile
     if not profile:
         profile = os.environ.get('AWS_PROFILE')
     
-    try:
-        if role_arn:
-            # Assume role
-            if profile:
-                session = boto3.Session(profile_name=profile, region_name=region)
-                sts = session.client('sts')
-            else:
-                sts = boto3.client('sts', region_name=region)
-            
-            response = sts.assume_role(
-                RoleArn=role_arn,
-                RoleSessionName='polyris-register'
-            )
-            
-            credentials = response['Credentials']
-            return boto3.client(
-                'stepfunctions',
-                region_name=region,
-                aws_access_key_id=credentials['AccessKeyId'],
-                aws_secret_access_key=credentials['SecretAccessKey'],
-                aws_session_token=credentials['SessionToken']
-            )
-        elif profile:
-            # Use profile (works with ~/.aws/credentials and ~/.aws/config)
+    # ProfileNotFound (and any other BotoCoreError) propagates to the caller
+    # so main() can route it to --json or text output — exiting here with
+    # stderr-only would leave stdout empty and break json.loads for --json
+    # callers.
+    if role_arn:
+        # Assume role
+        if profile:
             session = boto3.Session(profile_name=profile, region_name=region)
-            return session.client('stepfunctions')
+            sts = session.client('sts')
         else:
-            # Default credentials chain
-            return boto3.client('stepfunctions', region_name=region)
-    
-    except ProfileNotFound:
-        # stderr, not stdout: this exits mid-run, and `--json` callers parse
-        # stdout — a diagnostic there would break json.loads.
-        print(f"❌ Profile not found: {profile}", file=sys.stderr)
-        print("   Check ~/.aws/credentials or ~/.aws/config", file=sys.stderr)
-        sys.exit(1)
+            sts = boto3.client('sts', region_name=region)
+
+        response = sts.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName='polyris-register'
+        )
+
+        credentials = response['Credentials']
+        return boto3.client(
+            'stepfunctions',
+            region_name=region,
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['SessionToken']
+        )
+    elif profile:
+        # Use profile (works with ~/.aws/credentials and ~/.aws/config)
+        session = boto3.Session(profile_name=profile, region_name=region)
+        return session.client('stepfunctions')
+    else:
+        # Default credentials chain
+        return boto3.client('stepfunctions', region_name=region)
 
 
 def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optional[str] = None, role_arn: Optional[str] = None) -> dict:
@@ -123,8 +127,19 @@ def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optio
         else:
             region = 'us-east-1'
     
-    sfn = get_sfn_client(region, profile, role_arn)
-    
+    # Client creation is its own try — if get_sfn_client raises
+    # ProfileNotFound (or any BotoCoreError), we can't fall through to the
+    # sfn.exceptions.* catches below because `sfn` would be undefined and
+    # resolving `sfn.exceptions.StateMachineDoesNotExist` on the except line
+    # would NameError past our (ClientError, BotoCoreError) handler.
+    try:
+        sfn = get_sfn_client(region, profile, role_arn)
+    except (ClientError, BotoCoreError) as e:
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
     try:
         # Start execution with deterministic name for idempotency
         import uuid
@@ -158,7 +173,10 @@ def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optio
             'execution_arn': '',
             'started_at': '',
         }
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        # BotoCoreError covers ProfileNotFound, EndpointConnectionError,
+        # credential chain failures — any of those must surface as a failure
+        # dict so --json callers get parseable output instead of a traceback.
         return {
             'success': False,
             'error': str(e)
@@ -168,16 +186,25 @@ def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optio
 def find_sfn_arn(name: str, region: str, namespace: Optional[str] = None, profile: Optional[str] = None, role_arn: Optional[str] = None) -> Optional[str]:
     """
     Find Step Function ARN by name.
-    
+
     Args:
         name: Pipeline name (dag_id)
         region: AWS region
         namespace: Optional namespace prefix
         profile: AWS profile name
         role_arn: IAM role ARN to assume
-    
+
     Returns:
-        Full ARN or None
+        Full ARN if the paginator finds an exact or namespace-prefixed match;
+        None if the paginator succeeds with no match (true "not found").
+
+    Raises:
+        ClientError: paginator call failed — AccessDenied, throttling, service
+            outage. Callers must distinguish this from None; a bare
+            `except ClientError: return None` here turned every IAM denial
+            into a misleading "pipeline not found" message.
+        ProfileNotFound / BotoCoreError: credential or profile resolution
+            failed inside `get_sfn_client`. Propagates for the same reason.
     """
     sfn = get_sfn_client(region, profile, role_arn)
 
@@ -291,12 +318,17 @@ Authentication:
                 args.profile,
                 args.role_arn,
             )
-        except ClientError as e:
+        except (ClientError, BotoCoreError) as e:
             # Surface the real AWS error instead of "not found" — AccessDenied
             # here means the search never ran, not that the pipeline is absent.
-            code = e.response.get('Error', {}).get('Code', 'ClientError')
-            msg = e.response.get('Error', {}).get('Message', str(e))
-            error = f"Search failed ({code}): {msg}"
+            # BotoCoreError covers ProfileNotFound and credential-chain failures,
+            # which otherwise crash with a traceback on stdout.
+            if isinstance(e, ClientError):
+                code = e.response.get('Error', {}).get('Code', 'ClientError')
+                msg = e.response.get('Error', {}).get('Message', str(e))
+                error = f"Search failed ({code}): {msg}"
+            else:
+                error = f"Search failed ({type(e).__name__}): {e}"
             if args.json:
                 print(json.dumps({'success': False, 'error': error}, indent=2))
             else:

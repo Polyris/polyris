@@ -18,7 +18,6 @@ issue, not undiscovered behavior. Progress is tracked in
 | Area | Current behavior |
 |------|------------------|
 | Partition identity | A run's partition is the UTC date of `current_date` (approximately the scheduler fire time). The scheduler does not pass an explicit partition key, so hourly schedules collapse multiple runs onto one partition. |
-| `wait_for` on a missing asset | When the asset has not been materialized at consumer task start, the subscription write fails (logged as an error) and the task hangs to its timeout. This also means a later event — natural completion or manual `mark_success` — cannot wake the task. |
 | `wait_for=[a, b]` AND semantics | Fires on the first of two events, not when both arrive (currently matches OR). |
 | `wait_for` freshness | Checks the latest event for the asset, not the event for the consumer's partition. A backfill of a past date can pass freshness based on today's producer event. |
 | Subscription key collisions | Subscription key `(asset, task_name)` does not include pipeline or execution. Parallel backfills of the same consumer can overwrite each other's subscription rows. |
@@ -626,7 +625,8 @@ Registration helper
             │
             ├── Query asset-events table (latest event per asset)
             ├── Check freshness (if `.within(...)` was specified)
-            └── If not ready → save subscription to asset-subscriptions
+            └── If not ready → save subscription to dep-subscriptions
+                              (key: "asset:<name>" + task identifier)
         │
         ▼
 If ready → signal wrapper → task continues

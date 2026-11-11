@@ -1,19 +1,18 @@
 """Parity test: `wait_for` subscription writes must target a table whose
 key schema matches the DAL code.
 
-Currently `NotifyAssetSubscribersFunction` and `CheckAssetsFunction` receive
-`SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable` (schema PK=`asset_name`,
-SK=`pipeline_name`), but their DAL writes and queries use
-`dependency_key`/`subscriber` (schema of `DependencySubscriptionsTable`).
-Every call hits `ValidationException` and is silently logged as a warning,
-so tasks waiting on a not-yet-materialized asset hang to timeout.
+Regression gate for the historical bug where `NotifyAssetSubscribersFunction`
+and `CheckAssetsFunction` received `SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable`
+(schema `asset_name`/`pipeline_name`), while their DAL writes and queries
+`dependency_key`/`subscriber`. Every call hit `ValidationException` and was
+silently logged as a warning, so tasks waiting on a not-yet-materialized asset
+hung to timeout.
 
-Marked xfail until task 1.19 lands (narrow fix: repoint env var, or Option B:
-rewrite DAL to match `AssetSubscriptionsTable` schema). On fix, drop the
-xfail marker and this becomes a regression gate.
+The fix is a two-line env var repoint in `sam/template.yaml` — the DAL already
+matches `DependencySubscriptionsTable`. These tests fail if a future edit swings
+either env var back to the wrong table.
 """
 
-import re
 from pathlib import Path
 
 import pytest
@@ -63,12 +62,6 @@ def _table_key_schema(template: dict, logical_id: str) -> tuple[str, str | None]
     return hash_key, range_key
 
 
-@pytest.mark.xfail(
-    reason="task 1.19: SUBSCRIPTIONS_TABLE env var points at a table whose schema "
-           "does not match the DAL's dependency_key/subscriber composite key",
-    strict=True,
-    raises=AssertionError,
-)
 def test_notify_asset_subscribers_env_matches_dal_schema(template):
     env = _lambda_env(template, "NotifyAssetSubscribersFunction")
     tag = env["SUBSCRIPTIONS_TABLE"]
@@ -83,12 +76,6 @@ def test_notify_asset_subscribers_env_matches_dal_schema(template):
     )
 
 
-@pytest.mark.xfail(
-    reason="task 1.19: SUBSCRIPTIONS_TABLE env var points at a table whose schema "
-           "does not match the DAL's dependency_key/subscriber composite key",
-    strict=True,
-    raises=AssertionError,
-)
 def test_check_assets_env_matches_dal_schema(template):
     env = _lambda_env(template, "CheckAssetsFunction")
     tag = env["SUBSCRIPTIONS_TABLE"]

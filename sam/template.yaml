@@ -1052,7 +1052,11 @@ Resources:
       Environment:
         Variables:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
-          SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          # wait_for subscriptions share schema with task-to-task deps
+          # (dependency_key = "asset:{name}" + subscriber = "{task}") — both live
+          # in DependencySubscriptionsTable. AssetSubscriptionsTable is for push
+          # triggers (schedule=[asset]) only, used by notify_asset_consumers SFN.
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           # Case B (Option J): when assets are already ready at registration,
           # check_assets flips assets_ready=true on the subscriber's task
           # record so evaluate_deps (called later when task_deps complete)
@@ -1078,7 +1082,9 @@ Resources:
         LogGroup: !Ref NotifyAssetSubscribersLogGroup
       Environment:
         Variables:
-          SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          # See CheckAssetsFunction note above — wait_for subscription DAL writes
+          # dependency_key/subscriber; that schema lives in DependencySubscriptionsTable.
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           QUEUED_ASSET_EVENTS_TABLE: !Ref QueuedAssetEventsTable
           QUEUED_EVENT_TTL_DAYS: "7"
@@ -1292,14 +1298,16 @@ Resources:
                   - !Sub "${AssetEventsTable.Arn}/index/*"
               # Subscriptions writes: check_assets calls _save_asset_subscription
               # via subscriptions_repo when assets aren't ready yet, and _delete_
-              # subscription when a recheck finds them ready. Without this
-              # statement those writes silently fail (best-effort catch).
+              # subscription when a recheck finds them ready. The DAL writes
+              # `dependency_key = "asset:{name}"` + `subscriber`, which matches
+              # DependencySubscriptionsTable's composite key — NOT
+              # AssetSubscriptionsTable's `asset_name`/`pipeline_name`.
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                 Resource:
-                  - !GetAtt AssetSubscriptionsTable.Arn
+                  - !GetAtt DependencySubscriptionsTable.Arn
               # Case B: flip assets_ready=true on the subscriber's task record
               # when assets are already ready at registration time.
               - Effect: Allow
@@ -1326,6 +1334,10 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # Subscription read/delete: DAL uses dependency_key/subscriber
+              # composite key, which is DependencySubscriptionsTable's schema.
+              # Query needs the subscriber-index GSI too (for by-execution
+              # unsubscribe queries).
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -1334,7 +1346,8 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                 Resource:
-                  - !GetAtt AssetSubscriptionsTable.Arn
+                  - !GetAtt DependencySubscriptionsTable.Arn
+                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
                   - !GetAtt QueuedAssetEventsTable.Arn
               # Case B coordination: mark assets_ready on the subscriber's task
               # record so evaluate_deps sees a coherent view.

@@ -394,13 +394,11 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | `asset_subscriptions_repo` | `asset-subscriptions` | `asset_name` | `pipeline_name` | — |
 | `api_tokens_repo` | `api-tokens` | `token_id` | — | `hash-index`, `owner-index` |
 
-**CRITICAL — two separate subscription tables:**
-- `dep_subscriptions_repo` / `DependencySubscriptionsTable` — task-to-task deps within pipeline
-- `asset_subscriptions_repo` / `AssetSubscriptionsTable` — cross-pipeline asset triggers
+**Two separate subscription tables, split by semantics (not by consumer):**
+- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Holds BOTH task-to-task deps within a pipeline (`dependency_key = "{upstream}-{pipeline_exec_short}"`) AND `wait_for=[asset]` subscriptions (`dependency_key = "asset:{name}"`, `subscriber = "{task}"`). One schema, one semantic shape ("X is waiting on Y"). Readers: `query_subscriptions`, `notify_asset_subscribers`, `check_assets`. Writers: `registration` SFN + `check_assets` Lambda.
+- `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Holds push-trigger subscriptions only (`schedule=[asset]`). One subscription per (asset, consumer pipeline). Reader: `notify_asset_consumers` SFN's `Query_Subscriptions` state. Writer: `polyris-deploy` (deploy-time registration).
 
-Never mix these up. `query_subscriptions` Lambda reads `DependencySubscriptionsTable`. `registration` SFN writes to `DependencySubscriptionsTable`.
-
-**Known bug (task 1.19, not yet fixed):** `check_assets` and `notify_asset_subscribers` receive `SUBSCRIPTIONS_TABLE` → `AssetSubscriptionsTable` (key `asset_name`/`pipeline_name`), but their DAL writes and queries `dependency_key`/`subscriber`. Every `wait_for` subscription write/query fails with `ValidationException`. This wiring is the bug, not the intended design — do not copy it, and do not "restore" it after the fix. Pinned by the strict-xfail tests in `tests/sdk/test_wait_for_subscription_table_parity.py`.
+The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while dep/wait_for subscriptions are per-(upstream, subscriber-task-execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
 
 **Key fields in `pipeline-tokens` (executions_repo):**
 - `execution_name` — `{task_name}-{date}-{pipeline_execution_short}`
@@ -489,8 +487,8 @@ In `template.yaml`, always verify:
 | `console-api` | All REST API endpoints | `TOKENS_TABLE`, `REGISTRY_TABLE`, etc. |
 | `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `evaluate-deps` | Evaluate trigger rules | `TOKENS_TABLE` |
-| `check-assets` | Asset freshness checks | `SUBSCRIPTIONS_TABLE` → `AssetSubscriptionsTable` ⚠️ wrong schema for its DAL — task 1.19 |
-| `notify-asset-subscribers` | Trigger asset pipelines | `SUBSCRIPTIONS_TABLE` → `AssetSubscriptionsTable` ⚠️ wrong schema for its DAL — task 1.19 |
+| `check-assets` | Asset freshness checks + `wait_for` subscription writes | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
+| `notify-asset-subscribers` | Wake `wait_for` tasks on asset events | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `ui-bootstrap` | Copy UI to S3 on deploy | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `evaluate_deps`, `notify_asset_subscribers`, `check_assets`, `query_subscriptions`, `ui_bootstrap` still use bare `print()` — migrate opportunistically.
@@ -569,7 +567,7 @@ except (ClientError, BotoCoreError) as e:
 - Never swallow `AccessDeniedException` — always `raise`
 - Every `except Exception` must log `error=str(e)` with function context
 - If an error blocks downstream tasks → write `_notify_warn_` record to `pipeline-tokens`
-- A catch on a wake-up path (subscription write/query, `send_task_success`, a fail-open fallback) logs at `log.error`, never `log.warn` — a swallowed WARN is what hid the `wait_for` table mismatch (task 1.19) for months
+- A catch on a wake-up path (subscription write/query, `send_task_success`, a fail-open fallback) logs at `log.error`, never `log.warn` — a swallowed WARN is what hid the historical `wait_for` subscription-table schema mismatch for months (DAL wrote `dependency_key`/`subscriber`, env var pointed at `AssetSubscriptionsTable` which keyed on `asset_name`/`pipeline_name`); the ValidationException was caught and logged as warning
 
 **`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI):
 ```python
