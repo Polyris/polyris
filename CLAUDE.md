@@ -417,6 +417,8 @@ The two tables exist because push-trigger subscriptions are per-(asset, pipeline
 - `task_execution_arn` — ARN of run_task SFN execution
 - `orchestration_token` — `.waitForTaskToken` for signaling deps ready
 - `wait_token` — token for notify_dependents to signal ready
+- `wait_for_assets` — StringSet of asset names the task must wait for (AND gate); written by `check_assets` before subscriptions
+- `assets_ready_set` — StringSet of asset names that have arrived; grown atomically via DDB `ADD` by `notify_asset_subscribers` and the `check_assets` partial re-check path
 
 **dependency_key format:** `{upstream_task_name}-{pipeline_execution_short}` — must match exactly between writer (registration) and reader (query_subscriptions).
 

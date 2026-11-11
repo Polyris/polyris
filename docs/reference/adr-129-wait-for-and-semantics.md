@@ -52,9 +52,9 @@ The returned record is checked for gate completeness
 complete, only the newly-credited subscriptions are deleted and the rest stay
 active for the still-missing assets. Subscriptions are deleted only after a
 successful write — if the ADD fails the subscriptions remain as a safeguard
-(no subscription + no credit = guaranteed hang). The `ADD` is atomic, so
-exactly one side — `notify_asset_subscribers` or this partial-recheck path —
-observes the gate flip from incomplete to complete and acts on it.
+(no subscription + no credit = guaranteed hang). The `ADD` is atomic, so at most one side — `notify_asset_subscribers` or this
+partial-recheck path — observes the gate flip first; a concurrent double-signal
+is safe because the registration SFN `Catch` handles an already-consumed token.
 
 **OR-group limitation:** `wait_for_assets` is not written (and the AND gate
 does not apply) when any item in `wait_for` uses OR semantics — first-arrival

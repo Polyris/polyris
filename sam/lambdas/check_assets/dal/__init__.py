@@ -150,11 +150,10 @@ class TokensRepo:
             ConditionExpression='attribute_exists(execution_name)',
         )
 
-    def add_to_assets_ready_set_and_get(self, execution_name: str, asset_names: List[str]) -> Optional[Dict]:
-        """Atomically ADD asset_names to assets_ready_set, return updated record.
-        Used by the partial re-check path in check_assets to credit assets that
-        arrived before their subscription was saved. Does not swallow exceptions —
-        caller (_credit_arrived_assets) handles errors."""
+    def add_assets_to_ready_set_and_get(self, execution_name: str, asset_names: List[str]) -> Optional[Dict]:
+        """Atomically ADD a list of asset names to assets_ready_set, return the
+        updated record. Takes a list (unlike notify_asset_subscribers' single-name
+        variant). Does not swallow exceptions — caller handles errors."""
         response = self.table.update_item(
             Key={'execution_name': execution_name},
             UpdateExpression='ADD assets_ready_set :names',

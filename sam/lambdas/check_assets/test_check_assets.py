@@ -376,7 +376,7 @@ class TestPartialRecheck:
                             new_callable=mocker.PropertyMock,
                             return_value=mock_events_table)
 
-        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+        mocker.patch.object(tokens_repo, 'add_assets_to_ready_set_and_get',
                             return_value=credit_return)
         deleted = []
         mocker.patch.object(subscriptions_repo, 'delete',
@@ -904,6 +904,67 @@ class TestOrGroupAndGate:
         }, None)
 
         write_mock.assert_called_once_with('consumer-2026-07-27-abc', ['a', 'b'])
+
+
+class TestDynamoDBExpressions:
+    """Verify DDB expressions with moto — actual ADD semantics, not mocked methods.
+
+    Principle #14: mock at the external boundary (boto3 via moto), never at
+    internal logic. These tests catch expression bugs (wrong attribute names,
+    wrong set type) that mocker-based tests cannot see.
+    """
+
+    @pytest.fixture()
+    def tokens_table(self):
+        from moto import mock_aws
+        import boto3
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            table = dynamodb.create_table(
+                TableName='pipeline-tokens',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+            yield table
+
+    def test_add_accumulates_across_calls(self, tokens_table):
+        """Two ADD calls on the same row build up the set incrementally,
+        matching the notify(b) + credit(a) sequence from the race scenario."""
+        from moto import mock_aws
+        import boto3
+        from check_assets.dal import TokensRepo
+
+        with mock_aws():
+            dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+            table = dynamodb.create_table(
+                TableName='pipeline-tokens-moto',
+                KeySchema=[{'AttributeName': 'execution_name', 'KeyType': 'HASH'}],
+                AttributeDefinitions=[{'AttributeName': 'execution_name', 'AttributeType': 'S'}],
+                BillingMode='PAY_PER_REQUEST',
+            )
+            exec_name = 'task-2026-01-01-abc12345678'
+            table.put_item(Item={
+                'execution_name': exec_name,
+                'wait_for_assets': {'a', 'b'},
+            })
+
+            repo = TokensRepo('pipeline-tokens-moto')
+
+            # Simulate notify_asset_subscribers adding b first
+            result_b = repo.add_assets_to_ready_set_and_get(exec_name, ['b'])
+            assert result_b is not None
+            assert result_b['assets_ready_set'] == {'b'}
+            gate = result_b.get('wait_for_assets', set())
+            assert not (result_b['assets_ready_set'] >= gate), "gate must not be complete with only b"
+
+            # Simulate check_assets crediting a — gate completes
+            result_a = repo.add_assets_to_ready_set_and_get(exec_name, ['a'])
+            assert result_a is not None
+            assert result_a['assets_ready_set'] == {'a', 'b'}
+            gate2 = result_a.get('wait_for_assets', set())
+            assert result_a['assets_ready_set'] >= gate2, "gate must be complete after both assets credited"
 
 
 if __name__ == '__main__':
