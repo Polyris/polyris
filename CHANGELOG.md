@@ -23,6 +23,25 @@
   fixed.
 - See [ADR #129](docs/reference/adr-129-wait-for-and-semantics.md).
 
+### Fixed — AND-gate end-to-end test, AccessDenied propagation, stale OR-group docstring
+
+- **AND-gate moto test (`test_wait_for_and_semantics.py`):** Added an end-to-end
+  integration test using moto DynamoDB that covers the full `wait_for=[a, b]` flow:
+  asset_a arrives → no signal, subscription for a deleted, `assets_ready_set={'a'}`;
+  asset_b arrives → signal sent, subscription for b deleted, `assets_ready_set={'a','b'}`.
+  This was the acceptance criterion for TASKS.md task 1.20.
+- **`_write_signal_failure_warn` AccessDenied propagation:** The function caught
+  `Exception` broadly, which silently swallowed `AccessDeniedException` from
+  `write_warn`. Violation of ADR #38 ("Never swallow AccessDeniedException").
+  Fixed: `ClientError` with error code `AccessDeniedException` is now re-raised
+  so the caller sees the IAM denial and it surfaces in CloudWatch rather than
+  being silently dropped.
+- **Stale docstring in `TestOrGroupSignaling`:** The class docstring described the
+  OR-group behavior as passing `wait_for_assets=[]` to evaluate_deps. After the
+  A4 fix, `wait_for_assets` is `None` (not `[]`) when the field is absent, so
+  evaluate_deps falls back to the legacy `assets_ready` bool rather than applying
+  an empty-set containment check. Updated the docstring to match.
+
 ### Fixed — tooling: deterministic enum generation, make test-lambdas exit code, set serialization
 
 - **B4 — `sync_enums` docstring indentation:** `inspect.cleandoc` strips common

@@ -27,6 +27,8 @@ import json
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
+from botocore.exceptions import ClientError
+
 # v0.79.3 (ADR #75) — DAL repository pattern for DynamoDB.
 # Raw boto3 calls moved to dal/__init__.py.
 from dal import subscriptions_repo, asset_events_repo, tokens_repo
@@ -390,6 +392,11 @@ def _write_signal_failure_warn(
                 'subscription kept for visibility — operator should re-run manually'
             ),
         )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'AccessDeniedException':
+            raise
+        log.error("_write_signal_failure_warn", "Failed to write warn record",
+                  execution_name=execution_name, error=str(e))
     except Exception as e:
         log.error("_write_signal_failure_warn", "Failed to write warn record",
                   execution_name=execution_name, error=str(e))

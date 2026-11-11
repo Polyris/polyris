@@ -598,8 +598,8 @@ class TestOrGroupSignaling:
 
     Regression guard: before this guard, _coordinate_ready_check would call
     add_to_assets_ready_set_and_get, find wait_for_assets absent → no AND gate
-    → pass through to evaluate_deps with wait_for_assets=[].  evaluate_deps:
-    set([]) <= set(anything) = True → assets_satisfied=True → signal.
+    → pass through to evaluate_deps with wait_for_assets=None.  evaluate_deps:
+    falls back to legacy assets_ready bool → assets_satisfied=True → signal.
     This is the correct first-arrival (OR) behaviour."""
 
     def test_or_group_first_asset_bypasses_and_gate_and_signals(self, mocker):
