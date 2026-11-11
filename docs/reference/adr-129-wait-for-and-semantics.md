@@ -44,9 +44,17 @@ case: if `asset_a` is already there but `asset_b` isn't,
 
 After saving subscriptions, check_assets re-evaluates to catch assets that
 arrived during the save window. If some (but not all) arrived, they are
-credited to `assets_ready_set` via `tokens_repo.add_to_assets_ready_set_and_get`
-and their subscriptions are deleted. This prevents the hung-task scenario where
-assets_ready_set can never reach the gate threshold.
+credited to `assets_ready_set` via an atomic `ADD`
+(`tokens_repo.add_to_assets_ready_set_and_get`, `ReturnValues=ALL_NEW`).
+The returned record is checked for gate completeness
+(`assets_ready_set ⊇ wait_for_assets`): if complete, check_assets returns
+`ready=True` immediately (all remaining subscriptions cleaned up). If not
+complete, only the newly-credited subscriptions are deleted and the rest stay
+active for the still-missing assets. Subscriptions are deleted only after a
+successful write — if the ADD fails the subscriptions remain as a safeguard
+(no subscription + no credit = guaranteed hang). The `ADD` is atomic, so
+exactly one side — `notify_asset_subscribers` or this partial-recheck path —
+observes the gate flip from incomplete to complete and acts on it.
 
 **OR-group limitation:** `wait_for_assets` is not written (and the AND gate
 does not apply) when any item in `wait_for` uses OR semantics — first-arrival

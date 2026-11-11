@@ -338,15 +338,25 @@ class TestRaceCondition:
 
 
 class TestPartialRecheck:
-    """Asset a arrives before its subscription is saved; b arrives later.
-    Without partial-recheck credit, assets_ready_set stays {b} forever and the
-    AND gate {a, b} never closes — task hangs to timeout."""
+    """Asset a arrives before its subscription is saved; b may arrive later.
 
-    def test_partial_recheck_credits_arrived_asset(self, mocker):
-        """Asset a arrives in the subscription-save window; b is still missing.
-        Partial re-check must ADD a to assets_ready_set and delete a's subscription.
-        Result must be ready=False (still waiting for b)."""
-        from check_assets.index import handler, asset_events_repo, subscriptions_repo, tokens_repo
+    Two sub-scenarios:
+    - Gate incomplete after credit (b still missing) → ready=False, b's sub stays
+    - Gate complete after credit (b also arrived concurrently) → ready=True, all subs deleted
+
+    The second scenario is the one the previous review missed: notify(b) adds b
+    and sees {b} ⊄ {a, b}, doesn't wake; check_assets credits a, sees {a, b} ⊇
+    {a, b} — the completeness check here is what prevents the hung task.
+    """
+
+    def _make_partial_handler_mocks(self, mocker, credit_return: dict):
+        """Set up handler mocks for partial-recheck tests.
+
+        First two queries return empty (a and b missing).
+        Re-check: a is ready, b is still missing.
+        add_to_assets_ready_set_and_get returns credit_return.
+        """
+        from check_assets.index import asset_events_repo, subscriptions_repo, tokens_repo
 
         call_count = [0]
 
@@ -354,11 +364,11 @@ class TestPartialRecheck:
             call_count[0] += 1
             asset = kwargs.get('ExpressionAttributeValues', {}).get(':name', '')
             if call_count[0] <= 2:
-                return {'Items': []}  # initial check: a missing, b missing
+                return {'Items': []}
             elif asset == 'a':
-                return {'Items': [make_asset_event('a', hours_ago=0)]}  # re-check: a arrived
+                return {'Items': [make_asset_event('a', hours_ago=0)]}
             else:
-                return {'Items': []}  # re-check: b still missing
+                return {'Items': []}
 
         mock_events_table = mocker.MagicMock()
         mock_events_table.query.side_effect = mock_query
@@ -366,29 +376,53 @@ class TestPartialRecheck:
                             new_callable=mocker.PropertyMock,
                             return_value=mock_events_table)
 
-        credited = []
         mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
-                            side_effect=lambda exec_name, names: credited.extend(names))
+                            return_value=credit_return)
         deleted = []
         mocker.patch.object(subscriptions_repo, 'delete',
                             side_effect=lambda asset, sub: deleted.append(asset))
         mocker.patch.object(tokens_repo, 'write_pending_assets')
+        return deleted
 
+    def test_partial_recheck_incomplete_gate(self, mocker):
+        """a credited; gate still incomplete ({a} ⊄ {a, b}) → ready=False, b sub stays."""
+        from check_assets.index import handler
+        deleted = self._make_partial_handler_mocks(
+            mocker,
+            credit_return={'assets_ready_set': {'a'}, 'wait_for_assets': {'a', 'b'}},
+        )
         result = handler({
             'wait_for': [
                 {'asset_name': 'a', 'freshness_hours': None},
                 {'asset_name': 'b', 'freshness_hours': None},
             ],
-            'task_name': 'consumer',
-            'wait_token': 'tok',
-            'execution_name': 'consumer-2026-01-01-abc12345678',
-            'ttl': 9999999,
+            'task_name': 'consumer', 'wait_token': 'tok',
+            'execution_name': 'consumer-2026-01-01-abc12345678', 'ttl': 9999999,
         }, None)
-
         assert result['ready'] is False
-        assert 'a' in credited, "a must be credited to assets_ready_set"
-        assert 'a' in deleted, "a's subscription must be deleted (asset already present)"
+        assert 'a' in deleted, "a's subscription must be deleted after successful credit"
         assert 'b' not in deleted, "b's subscription must stay (still waiting)"
+
+    def test_partial_recheck_complete_gate(self, mocker):
+        """a credited; notify added b concurrently → gate complete ({a,b} ⊇ {a,b})
+        → ready=True, all subscriptions deleted. Without this check the task hangs:
+        notify saw incomplete set and didn't wake; nobody else will."""
+        from check_assets.index import handler
+        deleted = self._make_partial_handler_mocks(
+            mocker,
+            credit_return={'assets_ready_set': {'a', 'b'}, 'wait_for_assets': {'a', 'b'}},
+        )
+        result = handler({
+            'wait_for': [
+                {'asset_name': 'a', 'freshness_hours': None},
+                {'asset_name': 'b', 'freshness_hours': None},
+            ],
+            'task_name': 'consumer', 'wait_token': 'tok',
+            'execution_name': 'consumer-2026-01-01-abc12345678', 'ttl': 9999999,
+        }, None)
+        assert result['ready'] is True
+        assert 'a' in deleted, "a's subscription must be deleted"
+        assert 'b' in deleted, "b's subscription must be deleted (gate complete)"
 
 
 class TestGateWriteOrdering:

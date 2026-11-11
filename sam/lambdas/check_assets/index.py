@@ -115,9 +115,30 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 if r.get('ready') and r['name'] in missing_names_set
             ]
             if newly_ready_names:
-                for name in newly_ready_names:
-                    _delete_subscription(name, task_name)
-                _credit_arrived_assets(execution_name, newly_ready_names)
+                # Write first, delete subscriptions after: if the ADD fails and
+                # subscriptions are already gone, nobody can ever credit these
+                # assets again — task would hang guaranteed. Keeping subscriptions
+                # on failure is the safer fallback.
+                updated = _credit_arrived_assets(execution_name, newly_ready_names)
+                if updated is not None:
+                    for name in newly_ready_names:
+                        _delete_subscription(name, task_name)
+                    # ADD is atomic: exactly one side (notify or here) will see
+                    # the gate flip from incomplete to complete.
+                    ready_set = updated.get('assets_ready_set') or set()
+                    gate_set = updated.get('wait_for_assets') or set()
+                    if gate_set and ready_set >= gate_set:
+                        still_waiting = [
+                            spec['name'] for spec in missing_assets
+                            if spec['name'] not in set(newly_ready_names)
+                        ]
+                        for name in still_waiting:
+                            _delete_subscription(name, task_name)
+                        return {
+                            'type': 'asset_deps',
+                            'ready': True,
+                            'assets': asset_results_recheck
+                        }
 
     if is_ready:
         # Assets were already ready at registration time — mark the task record
@@ -164,18 +185,18 @@ def _write_pending_assets(execution_name: str, asset_names: List[str]) -> None:
                   execution_name=execution_name, error_type=type(e).__name__, error=str(e))
 
 
-def _credit_arrived_assets(execution_name: str, asset_names: List[str]) -> None:
-    """Best-effort: atomically ADD already-arrived asset names to assets_ready_set.
-    Assets that arrive before their subscription is saved are missed by
-    notify_asset_subscribers; without this credit the AND gate never closes and
-    the task hangs to orchestration_timeout."""
+def _credit_arrived_assets(execution_name: str, asset_names: List[str]) -> Optional[Dict]:
+    """Atomically ADD already-arrived asset names to assets_ready_set, return
+    the updated record. The caller checks whether the gate is now complete.
+    Returns None on failure (caller keeps subscriptions active as a safeguard)."""
     if not execution_name or not asset_names:
-        return
+        return None
     try:
-        tokens_repo.add_to_assets_ready_set_and_get(execution_name, asset_names)
+        return tokens_repo.add_to_assets_ready_set_and_get(execution_name, asset_names)
     except Exception as e:
         log.error("_credit_arrived_assets", "ADD to assets_ready_set failed — AND gate may not close",
                   execution_name=execution_name, error_type=type(e).__name__, error=str(e))
+        return None
 
 
 def _has_or_group(wait_for: List[Dict]) -> bool:
