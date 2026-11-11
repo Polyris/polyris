@@ -18,6 +18,7 @@ from typing import Dict
 _dynamodb = None
 _sfn = None
 _lambda = None
+_lambda_bounded = None
 _logs = None
 _cloudwatch = None
 _s3 = None
@@ -50,6 +51,26 @@ def _get_lambda():
         import boto3
         _lambda = boto3.client('lambda')
     return _lambda
+
+
+def _get_lambda_bounded():
+    """Lazy init Lambda client with tight timeouts for synchronous side-effect
+    calls where the HTTP API Gateway 30 s limit is the binding constraint.
+
+    read_timeout=10 s leaves 20 s of headroom before the gateway cuts the
+    connection; the default 60 s would cause a 503 even though the primary
+    action already succeeded.
+    max_attempts=1 prevents duplicate invocations on a transient network hiccup.
+    """
+    global _lambda_bounded
+    if _lambda_bounded is None:
+        import boto3
+        from botocore.config import Config
+        _lambda_bounded = boto3.client(
+            'lambda',
+            config=Config(read_timeout=10, connect_timeout=3, retries={'max_attempts': 1}),
+        )
+    return _lambda_bounded
 
 
 def _get_logs():
@@ -136,6 +157,11 @@ class _LazyLambda:
         return getattr(_get_lambda(), name)
 
 
+class _LazyLambdaBounded:
+    def __getattr__(self, name):
+        return getattr(_get_lambda_bounded(), name)
+
+
 class _LazyLogs:
     def __getattr__(self, name):
         return getattr(_get_logs(), name)
@@ -160,6 +186,7 @@ class _LazyGlue:
 dynamodb = _LazyDynamoDB()
 sfn = _LazySFN()
 lambda_client = _LazyLambda()
+lambda_client_bounded = _LazyLambdaBounded()
 logs = _LazyLogs()
 cloudwatch = _LazyCloudWatch()
 s3 = _LazyS3()

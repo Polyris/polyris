@@ -282,6 +282,17 @@ Anti-pattern: delete subscription → send signal. A transient failure after the
 
 Exception: when the AND gate is **not yet satisfied** (more assets still pending), the subscription IS deleted without a signal — the asset has arrived and been credited to `assets_ready_set`, so the subscription's purpose is fulfilled; the last arriving asset will send the signal.
 
+**42. A side-effect call that a task's wake-up depends on may not be fire-and-forget without a failure-visibility channel**
+When an action's side effect is to wake downstream tasks (e.g. `mark_success` invoking `NotifyAssetSubscribersFunction`), a fire-and-forget invocation (`InvocationType='Event'`) means every failure mode — IAM denial, throttle, `FunctionError`, timeout — is invisible to the operator. The primary action appears to succeed; the downstream task hangs silently.
+
+Correct pattern: use a bounded synchronous call (`InvocationType='RequestResponse'`, `read_timeout` ≤ gateway timeout, `max_attempts=1`). Classify the response:
+- `ok` → no action needed.
+- `failed` or `unknown` → write a `_notify_warn_wakeup_{execution_name}` record (Principle #38) so the bell shows the failure.
+
+The API response stays 200 — the primary action succeeded; the wake-up is a side effect. Operator learns of the failure from the bell and can re-run manually.
+
+Anti-pattern: `InvocationType='Event'` on any path whose failure would leave a task hanging with no visible trace.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)

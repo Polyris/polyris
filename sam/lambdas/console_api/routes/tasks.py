@@ -577,15 +577,19 @@ def get_task_events(execution_name: str, event: Dict) -> Dict:
 
 
 def _write_notify_warning(
-    execution_name: str, task_name: str, pipeline_execution: str, pipeline_name: str, date: str, error: str
+    execution_name: str, task_name: str, pipeline_execution: str, pipeline_name: str, date: str, error: str,
+    *, key_suffix: str = '', message: str = '',
 ) -> None:
-    """Write a warning record to pipeline-tokens when notify_dependents fails.
+    """Write a warning record to pipeline-tokens (Notifications bell in UI).
 
-    This makes the failure visible in the Notifications bell in UI,
-    which polls pipeline-tokens for status=failed records.
+    key_suffix: appended between '_notify_warn_' and execution_name so that
+        different failure paths for the same task don't overwrite each other
+        (e.g. 'wakeup_' → '_notify_warn_wakeup_{execution_name}').
+    message: override the error prefix; defaults to 'Downstream notification failed'.
     """
     try:
-        warn_key = f"_notify_warn_{execution_name}"
+        warn_key = f"_notify_warn_{key_suffix}{execution_name}"
+        prefix = message or 'Downstream notification failed'
         executions_repo.put(
             {
                 'execution_name': warn_key,
@@ -594,7 +598,7 @@ def _write_notify_warning(
                 'pipeline_name': pipeline_name,
                 'date': date,
                 'status': 'failed',
-                'error': f'Downstream notification failed: {error}. Downstream tasks may be stuck waiting.',
+                'error': f'{prefix}: {error}. Downstream tasks may be stuck waiting.',
                 'finished_at': datetime.now(timezone.utc).isoformat(),
                 'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400,  # 24h TTL
             }
@@ -811,9 +815,10 @@ def _emit_asset_events_for_manual_success(item: Dict, task_name: str, date: str)
     registry's dag_metadata.nodes, per ADR #119's unified node builder) and
     notify push-triggered consumers the same way a normal completion would.
 
-    Best-effort: any failure here (registry read, missing/malformed dag)
-    is logged and does not affect the manual action's own success response —
-    matching every other side-effect in this function's caller.
+    Best-effort: registry read and push-consumer SFN failures are logged and
+    do not affect the manual action's own 200 response. Wake-up invoke
+    failures write a _notify_warn_wakeup_ record so the operator sees them
+    in the bell (Principle #38, ADR #128 §amended).
     """
     pipeline_name = item.get('pipeline_name', '')
     node = _lookup_dag_node(pipeline_name, task_name)
@@ -821,9 +826,22 @@ def _emit_asset_events_for_manual_success(item: Dict, task_name: str, date: str)
     if not outlets:
         return
 
-    notify_asset_consumers_for_manual_success(
+    wake_result, wake_error = notify_asset_consumers_for_manual_success(
         outlets, task_name, pipeline_name, date, asset_events_repo,
     )
+
+    if wake_result in ('failed', 'unknown') and wake_error:
+        execution_name = item.get('execution_name', task_name)
+        pipeline_execution = item.get('pipeline_execution', '')
+        prefix = (
+            'wait_for wake-up outcome unknown — verify downstream tasks manually'
+            if wake_result == 'unknown'
+            else 'wait_for wake-up failed'
+        )
+        _write_notify_warning(
+            execution_name, task_name, pipeline_execution, pipeline_name, date, wake_error,
+            key_suffix='wakeup_', message=prefix,
+        )
 
 
 def _execute_task_action(

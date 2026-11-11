@@ -71,6 +71,29 @@ class SubscriptionsRepo:
             'subscriber': subscriber,
         })
 
+    def delete_if_owned(self, asset_name: str, subscriber: str, execution_name: str) -> bool:
+        """Delete a sibling OR-group subscription only if it belongs to this run.
+
+        The subscription key (asset_name, subscriber) has no execution component,
+        so a parallel backfill of the same task may have overwritten the row.
+        A conditional delete on execution_name ensures we only clean up our own row.
+
+        Returns True if deleted, False if the row belongs to another execution or
+        does not exist (both are safe no-ops).
+        """
+        from boto3.dynamodb.conditions import Attr
+        try:
+            self.table.delete_item(
+                Key={
+                    'dependency_key': f'asset:{asset_name}',
+                    'subscriber': subscriber,
+                },
+                ConditionExpression=Attr('execution_name').eq(execution_name),
+            )
+            return True
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
 
 class AssetEventsRepo:
     """asset-events table: keyed by asset_name (PK)."""

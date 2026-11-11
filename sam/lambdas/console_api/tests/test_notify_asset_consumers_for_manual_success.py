@@ -30,7 +30,10 @@ def mock_sfn(mocker):
 
 @pytest.fixture
 def mock_lambda(mocker):
-    return mocker.patch("task_actions.lambda_client")
+    # B2: the wake-up invoke now goes through lambda_client_bounded (bounded
+    # synchronous RequestResponse call). Tests that check invoke behaviour
+    # must patch this client, not lambda_client.
+    return mocker.patch("task_actions.lambda_client_bounded")
 
 
 def test_wakes_wait_for_subscribers_via_lambda_invoke(
@@ -38,7 +41,8 @@ def test_wakes_wait_for_subscribers_via_lambda_invoke(
 ):
     """Mark Successful must invoke NotifyAssetSubscribersFunction so pull-
     waiters (`wait_for=[asset]`) are woken the same way natural completion
-    wakes them. Fire-and-forget (InvocationType=Event)."""
+    wakes them. Bounded synchronous call (RequestResponse, ADR #128 §amended)
+    so failures are detectable and can surface in the bell."""
     mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
     mocker.patch(
         "task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN",
@@ -55,7 +59,7 @@ def test_wakes_wait_for_subscribers_via_lambda_invoke(
 
     mock_lambda.invoke.assert_called_once()
     call = mock_lambda.invoke.call_args
-    assert call.kwargs["InvocationType"] == "Event"
+    assert call.kwargs["InvocationType"] == "RequestResponse"
     assert call.kwargs["FunctionName"] == "arn:aws:lambda:...:function:notify-asset-subscribers"
     payload = json.loads(call.kwargs["Payload"].decode("utf-8"))
     assert payload["outlets"] == _OUTLETS
@@ -216,17 +220,16 @@ def test_single_warn_when_both_arns_unconfigured(
     assert "NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN" in str(kwargs.get("missing", []))
 
 
-def test_lambda_invoke_error_logged_but_does_not_raise(
+def test_lambda_invoke_error_returns_failed(
     mocker, events_repo, mock_sfn, mock_lambda,
 ):
-    """Pull-waiter wake is best-effort — matches the push SFN start pattern
-    above it. An InvokeFunction error must not fail the manual action."""
+    """An InvokeFunction exception returns ('failed', error_str) — the caller
+    is responsible for writing the bell warn. Must not raise."""
     mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
     mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "arn:fn:notify")
     mock_lambda.invoke.side_effect = RuntimeError("Lambda unreachable")
 
-    # Must not raise
-    notify_asset_consumers_for_manual_success(
+    result, err = notify_asset_consumers_for_manual_success(
         outlets=_OUTLETS,
         task_name="t",
         pipeline_name="p",
@@ -234,13 +237,15 @@ def test_lambda_invoke_error_logged_but_does_not_raise(
         events_repo=events_repo,
     )
 
+    assert result == "failed"
+    assert "Lambda unreachable" in (err or "")
     mock_lambda.invoke.assert_called_once()
 
 
 def test_empty_outlets_skips_everything(
     mocker, events_repo, mock_sfn, mock_lambda,
 ):
-    notify_asset_consumers_for_manual_success(
+    result, err = notify_asset_consumers_for_manual_success(
         outlets=[],
         task_name="t",
         pipeline_name="p",
@@ -248,6 +253,83 @@ def test_empty_outlets_skips_everything(
         events_repo=events_repo,
     )
 
+    assert result == "ok"
+    assert err is None
     events_repo.put.assert_not_called()
     mock_sfn.start_execution.assert_not_called()
     mock_lambda.invoke.assert_not_called()
+
+
+# B2 tests — wake-up failure visibility (ADR #128 §amended)
+
+def test_function_error_in_response_returns_failed(
+    mocker, events_repo, mock_sfn, mock_lambda,
+):
+    """FunctionError in the Lambda response payload → ('failed', message).
+    The caller (_emit_asset_events_for_manual_success) must write the bell warn."""
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
+    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "arn:fn:notify")
+    import io
+    mock_lambda.invoke.return_value = {
+        "FunctionError": "Unhandled",
+        "Payload": io.BytesIO(json.dumps({
+            "errorMessage": "out of memory",
+            "errorType": "MemoryError",
+        }).encode()),
+    }
+
+    result, err = notify_asset_consumers_for_manual_success(
+        outlets=_OUTLETS,
+        task_name="t",
+        pipeline_name="p",
+        date="2026-01-01",
+        events_repo=events_repo,
+    )
+
+    assert result == "failed"
+    assert "out of memory" in (err or "")
+
+
+def test_read_timeout_returns_unknown(
+    mocker, events_repo, mock_sfn, mock_lambda,
+):
+    """ReadTimeoutError → ('unknown', message) — outcome unclear, operator must verify."""
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
+    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "arn:fn:notify")
+    from botocore.exceptions import ReadTimeoutError
+    mock_lambda.invoke.side_effect = ReadTimeoutError(endpoint_url="https://lambda.amazonaws.com")
+
+    result, err = notify_asset_consumers_for_manual_success(
+        outlets=_OUTLETS,
+        task_name="t",
+        pipeline_name="p",
+        date="2026-01-01",
+        events_repo=events_repo,
+    )
+
+    assert result == "unknown"
+    assert "outcome unknown" in (err or "")
+
+
+def test_successful_invoke_returns_ok(
+    mocker, events_repo, mock_sfn, mock_lambda,
+):
+    """Clean invoke with no FunctionError → ('ok', None)."""
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
+    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "arn:fn:notify")
+    import io
+    mock_lambda.invoke.return_value = {
+        "StatusCode": 200,
+        "Payload": io.BytesIO(json.dumps({"notified": 1}).encode()),
+    }
+
+    result, err = notify_asset_consumers_for_manual_success(
+        outlets=_OUTLETS,
+        task_name="t",
+        pipeline_name="p",
+        date="2026-01-01",
+        events_repo=events_repo,
+    )
+
+    assert result == "ok"
+    assert err is None

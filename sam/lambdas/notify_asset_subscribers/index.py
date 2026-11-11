@@ -150,6 +150,15 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
             # Signal reached SFN (or token already consumed) — subscription done.
             _delete_subscription(asset_name, subscriber_name)
+
+            # B3: for OR/mixed specs (no gate), clean up sibling subscriptions
+            # so later events on those assets don't re-evaluate an already-done task.
+            # Pure-AND rows always have wait_for_assets; skip them (each asset's
+            # subscription is deleted when it arrives, not here).
+            if record and 'wait_for_assets' not in record and execution_name:
+                wait_for_json = record.get('wait_for', '[]')
+                _cleanup_or_siblings(wait_for_json, asset_name, subscriber_name, execution_name)
+
             if signal_result == 'sent':
                 notified_count += 1
                 notified_subscribers.append(subscriber_name)
@@ -409,3 +418,53 @@ def _delete_subscription(asset_name: str, subscriber: str):
         subscriptions_repo.delete(asset_name, subscriber)
     except Exception as e:
         log.warn("_delete_subscription", "Delete failed", asset_name=asset_name, subscriber=subscriber, error=str(e))
+
+
+def _flatten_asset_names(wait_for) -> set:
+    """Return the flat set of all asset names in a wait_for spec (any nesting depth).
+
+    Duplicated from check_assets for Lambda isolation (the two packages share
+    the name 'index'/'dal' so cannot import each other). Parity test:
+    tests/backend/test_flatten_asset_names_parity.py.
+    """
+    if not wait_for:
+        return set()
+    names: set = set()
+    for item in wait_for:
+        if isinstance(item, str):
+            names.add(item)
+        elif isinstance(item, dict):
+            if 'name' in item:
+                names.add(item['name'])
+            elif 'assets' in item:
+                names |= _flatten_asset_names(item['assets'])
+    return names
+
+
+def _cleanup_or_siblings(
+    wait_for_json: str,
+    waking_asset: str,
+    subscriber: str,
+    execution_name: str,
+) -> None:
+    """After a successful OR-group signal, delete subscriptions for the other
+    members so they don't trigger spurious evaluate_deps calls on future events.
+
+    Only deletes rows whose execution_name matches this run (ownership guard).
+    ConditionalCheckFailed means the row belongs to a different run — safe no-op.
+    """
+    try:
+        import json as _json
+        wait_for = _json.loads(wait_for_json) if isinstance(wait_for_json, str) else wait_for_json
+    except Exception:
+        return
+
+    sibling_names = _flatten_asset_names(wait_for) - {waking_asset}
+    for asset_name in sibling_names:
+        try:
+            deleted = subscriptions_repo.delete_if_owned(asset_name, subscriber, execution_name)
+            if not deleted:
+                log.debug("_cleanup_or_siblings", "Sibling belongs to another execution; skipped",
+                          asset_name=asset_name, subscriber=subscriber)
+        except Exception as e:
+            log.warn("_cleanup_or_siblings", "Delete failed", asset_name=asset_name, error=str(e))

@@ -13,11 +13,11 @@ Functions:
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from config import (
     sfn,
-    lambda_client,
+    lambda_client_bounded,
     NOTIFY_DEPENDENTS_HELPER_ARN,
     NOTIFY_ASSET_CONSUMERS_SFN_ARN,
     NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
@@ -143,7 +143,7 @@ def notify_asset_consumers_for_manual_success(
     date: str,
     events_repo,
     asset_event_ttl_days: int = 30,
-) -> None:
+) -> Tuple[str, Optional[str]]:
     """Record asset events and notify push-triggered consumer pipelines —
     the same two steps the wrapper's own Record_Asset_Event +
     Notify_Asset_Consumers_SFN states perform on a normal successful
@@ -172,9 +172,15 @@ def notify_asset_consumers_for_manual_success(
             the table handle, so no caller needs a raw resource.
         asset_event_ttl_days: TTL for the asset event record, matching the
             wrapper template's own ${asset_event_ttl_days} default.
+
+    Returns:
+        ('ok', None) — wake-up invocation succeeded.
+        ('failed', error_str) — invocation failed (IAM deny, FunctionError, etc.).
+        ('unknown', error_str) — ReadTimeoutError; outcome unclear.
+        ('skipped', None) — no NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN configured.
     """
     if not outlets:
-        return
+        return 'ok', None
 
     # Collect missing env vars once up-front so a mis-wired deploy logs a
     # single actionable warning rather than one per missing ARN interleaved
@@ -239,27 +245,54 @@ def notify_asset_consumers_for_manual_success(
     # Wake pull-waiters (`wait_for=[asset]`). The run_task SFN invokes
     # NotifyAssetSubscribersFunction on natural completion; mark-success is the
     # one manual action that claims real work happened, so pull-waiters must be
-    # woken the same way push consumers are above. Single invocation with the
-    # full outlet list — the Lambda handles per-outlet subscription lookup.
-    if NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN:
+    # woken the same way. Single invocation with the full outlet list.
+    #
+    # Bounded synchronous call (not fire-and-forget) so any failure is
+    # detectable: the caller writes _notify_warn_wakeup_ so the operator sees
+    # it in the bell. read_timeout=10 s keeps us well inside the 30 s API
+    # Gateway limit. max_attempts=1 prevents duplicate wake-ups. (ADR #128 §amended)
+    if not NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN:
+        # Missing-ARN path already flagged by the single up-front `missing` warn.
+        return 'skipped', None
+
+    payload = json.dumps({
+        'outlets': outlets,
+        'source_task': task_name,
+        'source_dag': pipeline_name,
+        'event_time': now.isoformat(),
+    }).encode('utf-8')
+
+    try:
+        from botocore.exceptions import ReadTimeoutError
+        response = lambda_client_bounded.invoke(
+            FunctionName=NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
+            InvocationType='RequestResponse',
+            Payload=payload,
+        )
+    except ReadTimeoutError:
+        msg = 'invoke timed out — outcome unknown, verify downstream tasks manually'
+        log.error("notify_asset_consumers_for_manual_success", "wait_for notifier timed out",
+                  task_name=task_name, error=msg)
+        return 'unknown', msg
+    except Exception as e:
+        msg = str(e)
+        log.error("notify_asset_consumers_for_manual_success", "Failed to invoke wait_for notifier",
+                  task_name=task_name, error=msg)
+        return 'failed', msg
+
+    if response.get('FunctionError'):
         try:
-            lambda_client.invoke(
-                FunctionName=NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
-                InvocationType='Event',  # fire-and-forget; subscriber wake is best-effort
-                Payload=json.dumps({
-                    'outlets': outlets,
-                    'source_task': task_name,
-                    'source_dag': pipeline_name,
-                    'event_time': now.isoformat(),
-                }).encode('utf-8'),
-            )
-            log.info("notify_asset_consumers_for_manual_success", "Invoked wait_for notifier",
-                     task_name=task_name, outlet_count=len(outlets))
-        except Exception as e:
-            log.error("notify_asset_consumers_for_manual_success", "Failed to invoke wait_for notifier",
-                      task_name=task_name, error=str(e))
-    # Missing-ARN path already flagged by the single up-front `missing` warn
-    # above; no per-call repeat here.
+            body = json.loads(response['Payload'].read())
+            msg = body.get('errorMessage', response['FunctionError'])
+        except Exception:
+            msg = response['FunctionError']
+        log.error("notify_asset_consumers_for_manual_success", "wait_for notifier returned FunctionError",
+                  task_name=task_name, error=msg)
+        return 'failed', msg
+
+    log.info("notify_asset_consumers_for_manual_success", "Invoked wait_for notifier",
+             task_name=task_name, outlet_count=len(outlets))
+    return 'ok', None
 
 
 def extract_pipeline_execution_short(item: Dict, execution_name: str) -> str:

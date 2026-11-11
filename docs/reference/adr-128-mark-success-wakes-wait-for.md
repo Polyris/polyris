@@ -1,7 +1,12 @@
 # ADR #128 — `mark_success` wakes `wait_for` subscribers via direct Lambda invoke
 
-> **Status:** ACCEPTED — extends the natural-completion wake-up path to cover
-> the manual-intervention path, so human `mark_success` and automatic task
+> **Status:** AMENDED (v1.1.4) — the original fire-and-forget invoke
+> (`InvocationType='Event'`) was replaced with a bounded synchronous call
+> (`RequestResponse`, `read_timeout=10s`, `max_attempts=1`). See the
+> [Amendment](#amendment-v114--fire-and-forget--bounded-synchronous) section.
+>
+> Original decision: ACCEPTED — extends the natural-completion wake-up path to
+> cover the manual-intervention path, so human `mark_success` and automatic task
 > success behave identically for downstream pull-waiters.
 
 ## Context
@@ -76,3 +81,45 @@ A deploy that has either `NOTIFY_ASSET_CONSUMERS_SFN_ARN` or `NOTIFY_ASSET_SUBSC
 1. **Route `mark_success` through a new unified "task-succeeded" SFN that does both push and pull notification.** Larger change, requires rewriting the natural-completion path too, and gains nothing because the push and pull paths are intentionally separate (SFN for push's AND-coordination, Lambda for pull's simple DDB query + SendTaskSuccess).
 2. **Have `mark_success` emit an EventBridge event that both paths subscribe to.** Adds a new event schema + IAM; delays notification; no benefit over direct invoke.
 3. **Keep the asymmetry; document it as a known limitation.** The documented asset behavior is "a task that produces asset X wakes consumers of X." Having that promise silently not apply to the human-intervention path is exactly the class of "docs lie, reality differs" bug this release train is closing.
+
+---
+
+## Amendment (v1.1.4) — fire-and-forget → bounded synchronous
+
+### Problem with the original decision
+
+The original decision used `InvocationType='Event'` (fire-and-forget) with the rationale that `mark_success` failures should not block the HTTP response. However, this conflated two separate concerns:
+
+1. **The primary action** (`status → succeeded`, DDB update) — legitimately fire-and-succeed.
+2. **The wake-up side effect** (invoking `NotifyAssetSubscribersFunction`) — the downstream task hangs if this fails.
+
+With fire-and-forget, every failure mode — IAM denial, throttle, `FunctionError`, Lambda timeout — was invisible. The operator received a 200 response; the downstream `wait_for` task hung silently with no trace in the UI or CloudWatch at a user-visible level.
+
+The rationale "matching the existing push-consumer SFN pattern" was also misleading: the push-consumer SFN (`NotifyAssetConsumersSfn`) is a fire-and-forget `startExecution`, but SFN executions are durable and observable in the console. A Lambda fire-and-forget provides no such observability.
+
+### Amendment
+
+Switch to `RequestResponse` with a dedicated bounded client in `config.py`:
+
+```python
+lambda_client_bounded = boto3.client(
+    'lambda',
+    config=Config(read_timeout=10, connect_timeout=3, retries={'max_attempts': 1})
+)
+```
+
+- `read_timeout=10s` — the HTTP API Gateway limit is 30 s; the default boto3 read timeout is 60 s. Without a bound the operator request could time out at the API Gateway while `mark_success` is still waiting for the invoke response.
+- `max_attempts=1` — no duplicate wake-up invocations; `notify_asset_subscribers` is not idempotent when multiple events race.
+
+**Result classification:**
+
+| Outcome | Return value | Action |
+|---------|-------------|--------|
+| Successful invoke, no `FunctionError` | `'ok'` | No warn record |
+| `FunctionError` in response | `'failed'` | Write `_notify_warn_wakeup_{execution_name}` |
+| Exception on invoke | `'failed'` | Write warn record |
+| `ReadTimeoutError` | `'unknown'` | Write warn "outcome unknown — verify downstream tasks manually" |
+
+The API response stays 200 — the primary action succeeded; the wake-up is a side effect. The operator learns of the failure from the bell (Principle #38) and can re-run manually.
+
+**Rule added:** CLAUDE.md Principle #42 — a side-effect call that a task's wake-up depends on may not be fire-and-forget without a failure-visibility channel.

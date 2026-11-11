@@ -9,9 +9,6 @@ run against real DynamoDB semantics (moto); only _send_task_success is replaced 
 isolate AND-gate routing from the SFN boto3 call.
 """
 
-import pytest
-
-
 class TestWaitForAndSemantics:
     """Full AND-gate integration with moto DynamoDB.
 

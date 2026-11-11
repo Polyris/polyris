@@ -64,6 +64,39 @@
   carries `# type: ignore[no-redef]` per name so `mypy` doesn't flag the
   intentional re-export.
 
+### Fixed — `mark_success` wake-up failure now visible in UI bell (B2)
+
+- Previously, `mark_success` invoked `NotifyAssetSubscribersFunction` with
+  `InvocationType='Event'` (fire-and-forget). Every failure mode — IAM denial,
+  throttle, `FunctionError`, timeout — was invisible; the operator saw a 200,
+  and the downstream `wait_for` task hung silently.
+- Fix: switched to a bounded synchronous call (`RequestResponse`,
+  `read_timeout=10s`, `max_attempts=1`). On `FunctionError` or `ClientError`,
+  writes a `_notify_warn_wakeup_{execution_name}` record to `pipeline-tokens`
+  so the UI bell shows the failure. `ReadTimeoutError` writes an "outcome
+  unknown — verify downstream tasks manually" record. The `mark_success` HTTP
+  response stays 200 — the primary action succeeded.
+- `_write_notify_warning` in `routes/tasks.py` gains keyword-only `key_suffix`
+  and `message` parameters (defaults unchanged, all existing callers unaffected).
+- See CLAUDE.md Principle #42 and
+  [ADR #128 (amended)](docs/reference/adr-128-mark-success-wakes-wait-for.md).
+
+### Fixed — OR-group sibling subscriptions cleaned up after wake-up (B3)
+
+- After an OR-group asset (`wait_for=[a | b]`) woke a task via `asset_a`,
+  the subscription for `asset_b` remained in `DependencySubscriptionsTable`.
+  On the next `asset_b` event, `notify_asset_subscribers` would re-evaluate
+  an already-finished task — sending a `SendTaskSuccess` to a consumed or
+  timed-out token, and invoking `evaluate_deps` unnecessarily.
+- Fix: after a successful signal on a row without a gate (`wait_for_assets`
+  absent), `_cleanup_or_siblings` deletes subscriptions for all other assets
+  in `wait_for` using `delete_if_owned` — a conditional delete on
+  `execution_name` that is a safe no-op when the row belongs to a different
+  parallel run.
+- `_flatten_asset_names` added to `notify_asset_subscribers/index.py`:
+  traverses the metadata-format `wait_for` JSON and returns the flat set of
+  asset names. Parity test: `tests/backend/test_flatten_asset_names_parity.py`.
+
 ### Fixed — `notify_asset_subscribers`: subscription kept on `SendTaskSuccess` failure
 
 - Previously, `notify_asset_subscribers` deleted the subscription record
@@ -113,8 +146,8 @@
   logic.
 - New env var `NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN` on `ConsoleApiFunction`;
   IAM `lambda:InvokeFunction` grant on `NotifyAssetSubscribersFunction`.
-  Fire-and-forget invocation — Lambda errors are logged, not surfaced,
-  matching the existing push-consumer SFN pattern.
+  Initial invocation was fire-and-forget; amended to bounded synchronous with
+  failure visibility in the same release (see B2 entry above).
 - Effective end to end together with the `wait_for` routing fix above.
   See [ADR #128](docs/reference/adr-128-mark-success-wakes-wait-for.md).
 
