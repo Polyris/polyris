@@ -252,6 +252,14 @@ events: List[Dict[str, Any]] = raw
 
 Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
 
+**38. AND gate records must be written before their subscription records**
+When a completeness gate (e.g. `wait_for_assets` StringSet on a task row) guards subscriptions, write the gate first. An event arriving after a subscription is saved but before the gate is written sees no gate field and falls back to first-arrival (OR) semantics — silently breaking AND guarantees.
+
+Correct order: write gate → write subscriptions → re-evaluate.
+Anti-pattern: write subscriptions → write gate (race window between the two writes).
+
+Applies wherever a gate record and subscription records are written in the same code path; the gate is the invariant that makes the subscription safe to exist.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)

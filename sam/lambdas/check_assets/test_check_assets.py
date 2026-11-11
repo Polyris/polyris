@@ -337,9 +337,48 @@ class TestRaceCondition:
         mock_table.delete_item.assert_called()
 
 
+class TestGateWriteOrdering:
+    """Gate record must be written before subscriptions (AND-gate race prevention)."""
+
+    def test_gate_written_before_first_subscription(self, mocker):
+        """write_pending_assets must precede every put_asset_subscription call.
+
+        If a subscription is saved first and an asset arrives before the gate is
+        written, notify_asset_subscribers sees no wait_for_assets field and wakes
+        the task immediately (AND degrades to OR).
+        """
+        from check_assets.index import handler, asset_events_repo, subscriptions_repo, tokens_repo
+
+        mock_events_table = mocker.MagicMock()
+        mock_events_table.query.return_value = {'Items': []}  # both assets missing
+        mocker.patch.object(type(asset_events_repo), 'table',
+                            new_callable=mocker.PropertyMock,
+                            return_value=mock_events_table)
+
+        call_order = []
+        mocker.patch.object(tokens_repo, 'write_pending_assets',
+                            side_effect=lambda *a, **kw: call_order.append('gate'))
+        mocker.patch.object(subscriptions_repo, 'put_asset_subscription',
+                            side_effect=lambda *a, **kw: call_order.append('subscription'))
+
+        handler({
+            'wait_for': [
+                {'asset_name': 'a', 'freshness_hours': None},
+                {'asset_name': 'b', 'freshness_hours': None},
+            ],
+            'task_name': 'consumer',
+            'wait_token': 'tok',
+            'execution_name': 'consumer-2026-01-01-abc12345678',
+            'ttl': 9999999,
+        }, None)
+
+        assert call_order[0] == 'gate', f"gate must precede subscriptions; got order: {call_order}"
+        assert call_order.count('subscription') == 2
+
+
 class TestHelperFunctions:
     """Test helper functions."""
-    
+
     def test_is_fresh_within_limit(self, mocker):
         """Asset within freshness limit should return True."""
         from check_assets.index import _is_fresh

@@ -65,6 +65,17 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     # If not ready, save subscriptions for missing assets
     if not is_ready:
         missing_assets = _get_missing_assets(asset_results)
+        missing_names = [spec['name'] for spec in missing_assets]
+
+        # Gate written before subscriptions: an event arriving between a
+        # subscription write and the gate write sees no wait_for_assets field
+        # and falls back to first-arrival (OR) semantics. With the gate present
+        # first, every arriving asset encounters a complete AND gate immediately.
+        # Skipped for specs that contain an OR group — first-arrival semantics
+        # apply there; the gate is not needed.
+        if not _has_or_group(wait_for):
+            _write_pending_assets(execution_name, missing_names)
+
         for asset_spec in missing_assets:
             _save_asset_subscription(
                 asset_name=asset_spec['name'],
@@ -76,15 +87,6 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 reference_date=current_date,
                 ttl=ttl
             )
-
-        # Write the set of subscribed assets so notify_asset_subscribers can
-        # check AND-completeness: signal only after ALL of these have arrived.
-        # Skip for OR-group specs — the first qualifying asset should wake the
-        # task; writing wait_for_assets would require ALL subscribed names and
-        # break wait_for=[a | b] semantics.
-        missing_names = [spec['name'] for spec in missing_assets]
-        if not _has_or_group(wait_for):
-            _write_pending_assets(execution_name, missing_names)
 
         # Double-check: Re-evaluate after saving subscriptions to handle race condition
         # Producer might have notified between initial check and subscription save
@@ -128,8 +130,8 @@ def _mark_assets_ready(execution_name: str, asset_names: List[str]) -> None:
     try:
         tokens_repo.mark_assets_ready(execution_name, asset_names)
     except Exception as e:
-        log.warn("_mark_assets_ready", "mark_assets_ready failed",
-                 execution_name=execution_name, error=str(e))
+        log.error("_mark_assets_ready", "mark_assets_ready failed — evaluate_deps may not see assets as ready",
+                  execution_name=execution_name, error=str(e))
 
 
 def _write_pending_assets(execution_name: str, asset_names: List[str]) -> None:

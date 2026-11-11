@@ -17,6 +17,10 @@
 - Backward compatible: old `pipeline-tokens` rows that have only
   `assets_ready: bool` (written before this deploy) continue to work via the
   legacy path in `evaluate_deps`; new rows get the stronger AND guarantee.
+- **Limitation:** specs that mix AND and OR groups (`wait_for=[a, b | c]`)
+  still use first-arrival semantics — the AND gate is disabled when any OR
+  group is present in `wait_for`. Pure-AND lists (`wait_for=[a, b]`) are fully
+  fixed.
 - See [ADR #129](docs/reference/adr-129-wait-for-and-semantics.md).
 
 ### Fixed — `wait_for` subscription table routing
