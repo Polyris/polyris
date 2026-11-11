@@ -120,7 +120,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             # pending upstreams (xcom.pull → PullError). evaluate_deps is the
             # single gate that checks BOTH task_deps AND assets_ready.
             execution_name = sub.get('execution_name', '')
-            should_signal = _coordinate_ready_check(execution_name)
+            should_signal = _coordinate_ready_check(execution_name, asset_name)
 
             # Always delete the subscription — the asset has arrived, so this
             # subscription's job is done. If task_deps aren't ready yet, they'll
@@ -255,26 +255,34 @@ def _check_consecutive_ready(asset_name: str, consecutive_days: int, reference_d
     return len(missing) == 0
 
 
-def _coordinate_ready_check(execution_name: str) -> bool:
-    """Case B coordination gate. Returns True iff we should signal wait_token.
+def _coordinate_ready_check(execution_name: str, asset_name: str) -> bool:
+    """AND-gate + Case B coordination. Returns True iff we should signal wait_token.
 
-    1) Atomically SET assets_ready=true on the subscriber's task record and
-       return the updated record.
-    2) If EVALUATE_DEPS_LAMBDA is configured, ask evaluate_deps (the single
-       source of truth) whether both task_deps and assets are now satisfied.
-    3) On any failure to look up the record or invoke evaluate_deps, fall
-       back to True — preserves the legacy "always signal on asset arrival"
-       behaviour rather than silently dropping the signal. Case B is a
-       correctness improvement, not a hard invariant; a fallback that
-       occasionally signals early is better than one that hangs the task."""
+    1) Atomically ADD asset_name to `assets_ready_set` on the task record.
+    2) Check AND completeness: if `wait_for_assets` is set on the record and
+       not all required assets have arrived yet, return False — this asset
+       arrived but others are still pending. The remaining subscriptions will
+       each call this function when their asset arrives.
+    3) If all assets satisfied (or no `wait_for_assets` set — legacy path),
+       ask evaluate_deps whether task_deps are also done.
+    4) On any DDB/Lambda failure, fail-open: signal anyway rather than hang."""
     if not execution_name:
         return True  # legacy path — old subscriptions may lack execution_name
 
-    record = tokens_repo.mark_assets_ready_and_get(execution_name)
+    record = tokens_repo.add_to_assets_ready_set_and_get(execution_name, asset_name)
     if not record:
         log.warn("_coordinate_ready_check", "task record not found",
                  execution_name=execution_name)
         return True  # fall back to legacy behaviour
+
+    # AND-completeness check: all subscribed assets must arrive before we signal.
+    wait_for_assets = record.get('wait_for_assets')  # SS or absent (legacy)
+    if wait_for_assets:
+        assets_ready_set = record.get('assets_ready_set') or set()
+        if not set(wait_for_assets) <= set(assets_ready_set):
+            # More assets still pending — don't signal yet. The last arriving
+            # asset's call will find the sets equal and proceed.
+            return False
 
     if not EVALUATE_DEPS_LAMBDA:
         # Coordinated evaluation not wired — a fresh deploy may still be
@@ -291,7 +299,11 @@ def _coordinate_ready_check(execution_name: str) -> bool:
             'pipeline_execution_short': record.get('pipeline_execution_short', ''),
             'pipeline_execution': record.get('pipeline_execution', ''),
             'wait_for': json.loads(wait_for_raw) if isinstance(wait_for_raw, str) else wait_for_raw,
-            'assets_ready': True,  # we just wrote it — evaluate_deps sees a coherent view
+            # Pass set-based fields for evaluate_deps' AND check; also keep
+            # legacy bool for older evaluate_deps deployments still in rollout.
+            'wait_for_assets': list(record.get('wait_for_assets') or []),
+            'assets_ready_set': list(record.get('assets_ready_set') or []),
+            'assets_ready': True,
         }
         response = _get_lambda().invoke(
             FunctionName=EVALUATE_DEPS_LAMBDA,
@@ -301,15 +313,9 @@ def _coordinate_ready_check(execution_name: str) -> bool:
         body = json.loads(response['Payload'].read())
         return bool(body.get('is_ready', False))
     except Exception as e:
-        # Fall-back is fail-OPEN: signal the task anyway, under the assumption
-        # that the task's deps probably are satisfied and a fresh evaluate_deps
-        # call on the next invocation will catch any mistakes. ERROR level so a
-        # systematic evaluate_deps outage shows up in CloudWatch instead of
-        # masquerading as "the pipeline has a mind of its own." Known
-        # limitation — see ASSETS.md experimental limitations.
         log.error("_coordinate_ready_check", "evaluate_deps invoke failed; signaling anyway (fail-open)",
                   execution_name=execution_name, error_type=type(e).__name__, error=str(e))
-        return True  # fall back to signaling on invoke failure
+        return True
 
 
 def _send_task_success(wait_token: str, asset_name: str, asset_uri: str, event_time: str) -> bool:

@@ -591,6 +591,39 @@ class TestAssetsReadyCoordination:
         }, None)
         assert result["verdict"] == "skip"
 
+    def test_wait_for_assets_set_all_satisfied_returns_ready(self, mocker):
+        """New path (v1.1.4): wait_for_assets + assets_ready_set both present.
+        When assets_ready_set ⊇ wait_for_assets the gate passes, allowing
+        evaluate_deps to check task_deps and return the final verdict."""
+        mocker.patch("evaluate_deps.index._batch_get_dep_statuses",
+                     return_value=["success", "success"])
+        mocker.patch("evaluate_deps.index._is_pipeline_paused", return_value=False)
+        result = handler({
+            "dependencies": ["a", "b"],
+            "trigger_rule": "all_success",
+            "wait_for": [{"asset_name": "inv"}, {"asset_name": "cat"}],
+            "wait_for_assets": ["inv", "cat"],
+            "assets_ready_set": ["inv", "cat"],
+        }, None)
+        assert result["is_ready"] is True
+        assert result["assets_satisfied"] is True
+
+    def test_wait_for_assets_set_partial_returns_wait(self, mocker):
+        """AND-gate via StringSet: only 'inv' has arrived, 'cat' is still
+        pending → assets_satisfied=False even though task_deps are done."""
+        mocker.patch("evaluate_deps.index._batch_get_dep_statuses",
+                     return_value=["success", "success"])
+        mocker.patch("evaluate_deps.index._is_pipeline_paused", return_value=False)
+        result = handler({
+            "dependencies": ["a", "b"],
+            "trigger_rule": "all_success",
+            "wait_for": [{"asset_name": "inv"}, {"asset_name": "cat"}],
+            "wait_for_assets": ["inv", "cat"],
+            "assets_ready_set": ["inv"],
+        }, None)
+        assert result["is_ready"] is False
+        assert result["assets_satisfied"] is False
+
 
 def test_removed_rule_aliases_map_to_canonical_equivalents():
     """ADR #117 removed 6 redundant trigger rules. Pipelines deployed before the

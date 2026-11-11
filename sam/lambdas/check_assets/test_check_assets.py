@@ -604,7 +604,7 @@ class TestAssetsReadyFlag:
         }, None)
 
         assert result['ready'] is True
-        mark_mock.assert_called_once_with('consumer-2026-07-27-abc')
+        mark_mock.assert_called_once_with('consumer-2026-07-27-abc', ['inventory'])
 
     def test_does_not_write_flag_when_not_ready(self, mocker):
         """Assets not ready → no flag write (notify_asset_subscribers will
@@ -624,6 +624,7 @@ class TestAssetsReadyFlag:
                             return_value=mock_sub_table)
 
         mark_mock = mocker.patch.object(tokens_repo, 'mark_assets_ready')
+        write_mock = mocker.patch.object(tokens_repo, 'write_pending_assets')
 
         result = handler({
             'wait_for': [{'asset_name': 'inventory'}],
@@ -636,6 +637,7 @@ class TestAssetsReadyFlag:
 
         assert result['ready'] is False
         mark_mock.assert_not_called()
+        write_mock.assert_called_once_with('consumer-2026-07-27-abc', ['inventory'])
 
     def test_flag_write_failure_does_not_break_handler(self, mocker):
         """A DDB failure on mark_assets_ready must not crash check_assets —

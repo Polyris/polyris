@@ -107,7 +107,9 @@
                 "pipeline_execution_short": "{% $states.input.completed_task.pipeline_execution_short %}",
                 "pipeline_execution": "{% $exists($states.input.record.pipeline_execution.S) ? $states.input.record.pipeline_execution.S : ($exists($states.input.completed_task.pipeline_execution) ? $states.input.completed_task.pipeline_execution : '') %}",
                 "wait_for": "{% $exists($states.input.record.wait_for.S) ? $parse($states.input.record.wait_for.S) : [] %}",
-                "assets_ready": "{% $exists($states.input.record.assets_ready.BOOL) and $states.input.record.assets_ready.BOOL = true %}"
+                "assets_ready": "{% $exists($states.input.record.assets_ready.BOOL) and $states.input.record.assets_ready.BOOL = true %}",
+                "wait_for_assets": "{% $exists($states.input.record.wait_for_assets.SS) ? $states.input.record.wait_for_assets.SS : null %}",
+                "assets_ready_set": "{% $exists($states.input.record.assets_ready_set.SS) ? $states.input.record.assets_ready_set.SS : [] %}"
               }
             },
             "Output": "{% $states.input ~> |$| { 'eval_result': $states.result.Payload } | %}",

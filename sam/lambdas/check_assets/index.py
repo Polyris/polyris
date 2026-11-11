@@ -77,6 +77,11 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 ttl=ttl
             )
 
+        # Write the set of subscribed assets so notify_asset_subscribers can
+        # check AND-completeness: signal only after ALL of these have arrived.
+        missing_names = [spec['name'] for spec in missing_assets]
+        _write_pending_assets(execution_name, missing_names)
+
         # Double-check: Re-evaluate after saving subscriptions to handle race condition
         # Producer might have notified between initial check and subscription save
         is_ready_recheck, asset_results_recheck = _evaluate_wait_for(wait_for, current_date)
@@ -85,7 +90,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             # Asset appeared while we were subscribing - clean up subscriptions
             for asset_spec in missing_assets:
                 _delete_subscription(asset_spec['name'], task_name)
-            _mark_assets_ready(execution_name)
+            _mark_assets_ready(execution_name, missing_names)
             return {
                 'type': 'asset_deps',
                 'ready': True,
@@ -99,7 +104,8 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         # would hang: evaluate_deps would see wait_for + assets_ready=false and
         # return verdict='wait', but no async asset arrival will ever trigger
         # notify_asset_subscribers to flip the flag (there's no subscription).
-        _mark_assets_ready(execution_name)
+        all_names = [r['name'] for r in asset_results]
+        _mark_assets_ready(execution_name, all_names)
 
     return {
         'type': 'asset_deps',
@@ -108,18 +114,32 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     }
 
 
-def _mark_assets_ready(execution_name: str) -> None:
-    """Best-effort: mark assets_ready=true on the task record. Failure here
-    doesn't block registration — the task's wait_for path still functions via
-    the immediate registration signal — but a downstream restart or a
-    concurrent task_deps completion would then not see the flag."""
+def _mark_assets_ready(execution_name: str, asset_names: List[str]) -> None:
+    """Best-effort: mark all wait_for assets as satisfied on the task record.
+    Failure here doesn't block registration — the task's wait_for path still
+    functions via the immediate registration signal — but a downstream restart
+    or a concurrent task_deps completion would then not see the flag."""
     if not execution_name:
         return
     try:
-        tokens_repo.mark_assets_ready(execution_name)
+        tokens_repo.mark_assets_ready(execution_name, asset_names)
     except Exception as e:
         log.warn("_mark_assets_ready", "mark_assets_ready failed",
                  execution_name=execution_name, error=str(e))
+
+
+def _write_pending_assets(execution_name: str, asset_names: List[str]) -> None:
+    """Best-effort: write `wait_for_assets` = subscribed names on the task
+    record so notify_asset_subscribers can gate the wake-up signal on ALL
+    assets arriving (AND semantics). A failure here degrades to the legacy
+    behaviour where the first arriving asset wakes the task."""
+    if not execution_name or not asset_names:
+        return
+    try:
+        tokens_repo.write_pending_assets(execution_name, asset_names)
+    except Exception as e:
+        log.error("_write_pending_assets", "write failed — AND semantics degraded to OR",
+                  execution_name=execution_name, error_type=type(e).__name__, error=str(e))
 
 
 def _evaluate_wait_for(wait_for: List[Dict], current_date: str = '') -> tuple:

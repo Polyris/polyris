@@ -107,15 +107,16 @@ class TokensRepo:
     def table(self):
         return _resource().Table(self._table_name)
 
-    def mark_assets_ready_and_get(self, execution_name: str) -> Optional[Dict]:
-        """Atomic SET assets_ready=true + return the full updated record. Used
-        by notify_asset_subscribers so it can immediately hand the record's
-        fields to evaluate_deps for a coordinated ready/wait decision."""
+    def add_to_assets_ready_set_and_get(self, execution_name: str, asset_name: str) -> Optional[Dict]:
+        """Atomically ADD asset_name to `assets_ready_set` on the task record
+        and return the full updated record. The caller checks whether
+        `wait_for_assets ⊆ assets_ready_set` to decide if all AND-required
+        assets have arrived before sending SendTaskSuccess."""
         try:
             response = self.table.update_item(
                 Key={'execution_name': execution_name},
-                UpdateExpression='SET assets_ready = :true',
-                ExpressionAttributeValues={':true': True},
+                UpdateExpression='ADD assets_ready_set :name_set',
+                ExpressionAttributeValues={':name_set': {asset_name}},
                 ConditionExpression='attribute_exists(execution_name)',
                 ReturnValues='ALL_NEW',
             )

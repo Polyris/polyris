@@ -464,31 +464,31 @@ class TestCoordinateReadyCheck:
         'always signal' behaviour — worst case they trigger the original
         Case B early-run, which is a strict improvement over hanging."""
         from index import _coordinate_ready_check
-        assert _coordinate_ready_check('') is True
+        assert _coordinate_ready_check('', 'inventory') is True
 
     def test_coordinate_returns_true_when_record_not_found(self, mocker):
         """Task record missing (TTL'd, cross-account leak, whatever) → fall
         back to signal. Better a stale signal than a permanent hang."""
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get', return_value=None)
-        assert _coordinate_ready_check('missing-execution-name') is True
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get', return_value=None)
+        assert _coordinate_ready_check('missing-execution-name', 'inventory') is True
 
     def test_coordinate_returns_true_when_evaluate_deps_not_configured(self, mocker):
         """A fresh deploy might roll out the code before EVALUATE_DEPS_LAMBDA
         is wired. Signal anyway rather than block."""
         import index
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={'dependencies': '[]', 'wait_for': '[]'})
         mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', '')
-        assert _coordinate_ready_check('some-execution') is True
+        assert _coordinate_ready_check('some-execution', 'inventory') is True
 
     def test_coordinate_signals_when_evaluate_deps_says_ready(self, mocker):
         """The happy path: both task_deps and assets are now ready → signal."""
         import index
         import json
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={
                                 'dependencies': '["upstream_a"]',
                                 'trigger_rule': 'all_success',
@@ -503,7 +503,7 @@ class TestCoordinateReadyCheck:
             'Payload': mocker.MagicMock(read=lambda: json.dumps({'is_ready': True}).encode())
         }
         mocker.patch('index._get_lambda', return_value=fake_lambda)
-        assert _coordinate_ready_check('exec-1') is True
+        assert _coordinate_ready_check('exec-1', 'inventory') is True
 
     def test_coordinate_does_not_signal_when_task_deps_still_pending(self, mocker):
         """The core Case B fix: asset arrives but task_deps haven't finished.
@@ -512,7 +512,7 @@ class TestCoordinateReadyCheck:
         import index
         import json
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={
                                 'dependencies': '["still_pending_upstream"]',
                                 'trigger_rule': 'all_success',
@@ -525,7 +525,7 @@ class TestCoordinateReadyCheck:
                 read=lambda: json.dumps({'is_ready': False, 'verdict': 'wait'}).encode())
         }
         mocker.patch('index._get_lambda', return_value=fake_lambda)
-        assert _coordinate_ready_check('exec-1') is False
+        assert _coordinate_ready_check('exec-1', 'inventory') is False
 
     def test_coordinate_falls_back_to_true_on_invoke_failure(self, mocker):
         """Lambda invoke error → fall back to signaling. Case B is a
@@ -533,13 +533,54 @@ class TestCoordinateReadyCheck:
         failure must not hang the task."""
         import index
         from index import _coordinate_ready_check, tokens_repo
-        mocker.patch.object(tokens_repo, 'mark_assets_ready_and_get',
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
                             return_value={'dependencies': '[]', 'wait_for': '[]'})
         mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
         fake_lambda = mocker.MagicMock()
         fake_lambda.invoke.side_effect = Exception('Lambda unavailable')
         mocker.patch('index._get_lambda', return_value=fake_lambda)
-        assert _coordinate_ready_check('exec-1') is True
+        assert _coordinate_ready_check('exec-1', 'inventory') is True
+
+    def test_coordinate_returns_false_when_waiting_for_another_asset(self, mocker):
+        """AND-gate: asset 'a' arrives, but 'b' still pending. The set
+        check wait_for_assets ⊄ assets_ready_set → don't signal yet. The
+        second asset's notify call will find both sets equal and proceed."""
+        import index
+        from index import _coordinate_ready_check, tokens_repo
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'wait_for_assets': {'a', 'b'},
+                                'assets_ready_set': {'a'},
+                                'dependencies': '[]',
+                                'wait_for': '[]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        assert _coordinate_ready_check('exec-1', 'a') is False
+
+    def test_coordinate_proceeds_when_all_assets_satisfied(self, mocker):
+        """AND-gate: all required assets in assets_ready_set → pass through
+        to evaluate_deps which checks task_deps and returns the final verdict."""
+        import index
+        import json
+        from index import _coordinate_ready_check, tokens_repo
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'wait_for_assets': {'a', 'b'},
+                                'assets_ready_set': {'a', 'b'},
+                                'dependencies': '[]',
+                                'trigger_rule': 'all_success',
+                                'date': '2026-07-27',
+                                'pipeline_execution_short': 'run-abc',
+                                'pipeline_execution': 'pipe-run-abc',
+                                'wait_for': '[]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        fake_lambda = mocker.MagicMock()
+        fake_lambda.invoke.return_value = {
+            'Payload': mocker.MagicMock(read=lambda: json.dumps({'is_ready': True}).encode())
+        }
+        mocker.patch('index._get_lambda', return_value=fake_lambda)
+        assert _coordinate_ready_check('exec-1', 'b') is True
 
 
 if __name__ == '__main__':

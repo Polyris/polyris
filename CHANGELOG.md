@@ -1,5 +1,24 @@
 ## Unreleased
 
+### Fixed — `wait_for=[a, b]` AND semantics: signal only after all assets arrive
+
+- When a task declared `wait_for=[asset_a, asset_b]`, the first asset to
+  arrive immediately sent `SendTaskSuccess`, waking the task before the second
+  asset existed. `wait_for` was silently acting as OR.
+- Fix: `check_assets` now writes `wait_for_assets` (a DynamoDB StringSet of
+  subscribed asset names) to the task's `pipeline-tokens` record after saving
+  subscriptions. As each asset arrives, `notify_asset_subscribers` atomically
+  ADDs its name to `assets_ready_set` and signals only when
+  `assets_ready_set ⊇ wait_for_assets`. Partial arrivals return early without
+  signaling; the last arriving asset sends `SendTaskSuccess`.
+- `evaluate_deps` updated to prefer the new StringSet fields over the legacy
+  `assets_ready: bool` when both are present, so the correctness fix and
+  rollout stability don't conflict.
+- Backward compatible: old `pipeline-tokens` rows that have only
+  `assets_ready: bool` (written before this deploy) continue to work via the
+  legacy path in `evaluate_deps`; new rows get the stronger AND guarantee.
+- See [ADR #129](docs/reference/adr-129-wait-for-and-semantics.md).
+
 ### Fixed — `wait_for` subscription table routing
 
 - `NotifyAssetSubscribersFunction` and `CheckAssetsFunction` received

@@ -104,9 +104,20 @@ def _handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     # record and assets_ready from the same record (set by
     # notify_asset_subscribers before the call).
     wait_for = event.get('wait_for', []) or []
-    assets_ready = bool(event.get('assets_ready', False))
     has_wait_for = len(wait_for) > 0
-    assets_satisfied = (not has_wait_for) or assets_ready
+
+    # AND-semantics check (v1.1.4+): wait_for_assets = subscribed names,
+    # assets_ready_set = arrived names. Signal only when the set is complete.
+    # Falls back to legacy assets_ready bool when wait_for_assets is absent
+    # (old rows, immediately-ready path that skips subscriptions, or deploys
+    # still rolling out).
+    wait_for_assets = event.get('wait_for_assets')
+    if wait_for_assets is not None and has_wait_for:
+        assets_ready_set = set(event.get('assets_ready_set') or [])
+        assets_satisfied = set(wait_for_assets) <= assets_ready_set
+    else:
+        assets_ready = bool(event.get('assets_ready', False))
+        assets_satisfied = (not has_wait_for) or assets_ready
 
     # Handle empty dependencies
     if not dependencies:
