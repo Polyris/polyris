@@ -206,12 +206,14 @@ class TestFindSfnArn:
         result = register.find_sfn_arn("my-pipeline", "us-east-1")
         assert result is None
 
-    def test_client_error_returns_none(self, mocker):
+    def test_client_error_propagates(self, mocker):
+        """AccessDenied / throttling / service outage is NOT the same as
+        "pipeline not found". Caller must be able to distinguish."""
         sfn = mocker.MagicMock()
-        sfn.get_paginator.side_effect = _client_error()
+        sfn.get_paginator.side_effect = _client_error("AccessDeniedException")
         mocker.patch("polyris.register.get_sfn_client", return_value=sfn)
-        result = register.find_sfn_arn("my-pipeline", "us-east-1")
-        assert result is None
+        with pytest.raises(ClientError):
+            register.find_sfn_arn("my-pipeline", "us-east-1")
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
@@ -252,11 +254,56 @@ class TestMain:
         assert exc.value.code == 1
         assert "missing" in capsys.readouterr().out
 
+    def test_name_search_access_denied_shows_real_error(self, mocker, capsys):
+        """AccessDenied on the paginator must not masquerade as "pipeline not
+        found" — operator needs to know they are missing an IAM permission,
+        not chasing a non-existent pipeline."""
+        mocker.patch(
+            "polyris.register.find_sfn_arn",
+            side_effect=_client_error("AccessDeniedException"),
+        )
+        mocker.patch("sys.argv", ["polyris-register", "--name", "my-pipeline",
+                                   "--region", "us-east-1"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "AccessDeniedException" in out
+        assert "not found" not in out.lower()
+
+    def test_name_search_access_denied_json_mode(self, mocker, capsys):
+        mocker.patch(
+            "polyris.register.find_sfn_arn",
+            side_effect=_client_error("AccessDeniedException"),
+        )
+        mocker.patch("sys.argv", ["polyris-register", "--json", "--name", "p",
+                                   "--region", "us-east-1"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["success"] is False
+        assert "AccessDeniedException" in data["error"]
+
     def test_no_arn_no_name_exits(self, mocker):
         mocker.patch("sys.argv", ["polyris-register"])
         with pytest.raises(SystemExit) as exc:
             register.main()
         assert exc.value.code == 1
+
+    def test_no_arn_no_name_json_mode_emits_clean_json(self, mocker, capsys):
+        """--json must keep stdout parseable even when no ARN/--name provided.
+        Help goes to stderr; stdout gets {success:false, error:...}."""
+        mocker.patch("sys.argv", ["polyris-register", "--json"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["success"] is False
+        assert "error" in data
+        # Help text is useful for interactive callers; stderr keeps stdout clean.
+        assert "usage" in captured.err.lower()
 
     def test_already_registered_prints_no_op(self, mocker, capsys):
         mocker.patch(

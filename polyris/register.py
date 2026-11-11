@@ -180,32 +180,34 @@ def find_sfn_arn(name: str, region: str, namespace: Optional[str] = None, profil
         Full ARN or None
     """
     sfn = get_sfn_client(region, profile, role_arn)
-    
-    try:
-        paginator = sfn.get_paginator('list_state_machines')
-        
-        for page in paginator.paginate():
-            for sm in page['stateMachines']:
-                sm_name = sm['name']
-                # Match exact name or namespace-prefixed name. When a
-                # namespace is given, it must actually match (as the prefix
-                # segment deploy_pipeline uses: f"{namespace}-{stage}-
-                # polyris-{dag_id}") — previously `namespace` was accepted
-                # and documented (--namespace CLI help, this docstring) but
-                # never actually checked, so two different namespaces
-                # sharing a dag_id (e.g. "orders" registered under both
-                # "team-a" and "team-b") silently resolved to whichever one
-                # the AWS API happened to list first, regardless of which
-                # namespace was explicitly requested.
-                if namespace and not sm_name.startswith(f"{namespace}-"):
-                    continue
-                if sm_name == name or sm_name.endswith(f'-{name}'):
-                    return sm['stateMachineArn']
-        
-        return None
-        
-    except ClientError:
-        return None
+
+    paginator = sfn.get_paginator('list_state_machines')
+
+    # None means "paginator succeeded, no match" — a genuine "not found".
+    # ClientError propagates so the caller can distinguish AccessDenied,
+    # throttling, and service outages from "pipeline does not exist"; a
+    # bare `except ClientError: return None` here turned every IAM denial
+    # into a misleading "pipeline not found" message and sent operators
+    # hunting for the wrong problem.
+    for page in paginator.paginate():
+        for sm in page['stateMachines']:
+            sm_name = sm['name']
+            # Match exact name or namespace-prefixed name. When a
+            # namespace is given, it must actually match (as the prefix
+            # segment deploy_pipeline uses: f"{namespace}-{stage}-
+            # polyris-{dag_id}") — previously `namespace` was accepted
+            # and documented (--namespace CLI help, this docstring) but
+            # never actually checked, so two different namespaces
+            # sharing a dag_id (e.g. "orders" registered under both
+            # "team-a" and "team-b") silently resolved to whichever one
+            # the AWS API happened to list first, regardless of which
+            # namespace was explicitly requested.
+            if namespace and not sm_name.startswith(f"{namespace}-"):
+                continue
+            if sm_name == name or sm_name.endswith(f'-{name}'):
+                return sm['stateMachineArn']
+
+    return None
 
 
 def main():
@@ -281,14 +283,26 @@ Authentication:
     if not sfn_arn and args.name:
         if not args.json:
             print(f"🔍 Looking for pipeline '{args.name}' in {args.region}...")
-        sfn_arn = find_sfn_arn(
-            args.name, 
-            args.region, 
-            args.namespace,
-            args.profile,
-            args.role_arn
-        )
-        
+        try:
+            sfn_arn = find_sfn_arn(
+                args.name,
+                args.region,
+                args.namespace,
+                args.profile,
+                args.role_arn,
+            )
+        except ClientError as e:
+            # Surface the real AWS error instead of "not found" — AccessDenied
+            # here means the search never ran, not that the pipeline is absent.
+            code = e.response.get('Error', {}).get('Code', 'ClientError')
+            msg = e.response.get('Error', {}).get('Message', str(e))
+            error = f"Search failed ({code}): {msg}"
+            if args.json:
+                print(json.dumps({'success': False, 'error': error}, indent=2))
+            else:
+                print(f"❌ {error}")
+            sys.exit(1)
+
         if not sfn_arn:
             error = f"Pipeline '{args.name}' not found in {args.region}"
             if args.json:
@@ -301,7 +315,17 @@ Authentication:
             print(f"   Found: {sfn_arn}")
     
     if not sfn_arn:
-        parser.print_help()
+        # `--json` reserves stdout for a single parseable document. Help text
+        # there would break `json.loads`; emit the error as JSON and route the
+        # usage hint to stderr so interactive and scripted callers both work.
+        if args.json:
+            print(json.dumps({
+                'success': False,
+                'error': 'Missing required argument: provide an SFN ARN positional or --name',
+            }, indent=2))
+            parser.print_help(sys.stderr)
+        else:
+            parser.print_help()
         sys.exit(1)
     
     if not args.json:

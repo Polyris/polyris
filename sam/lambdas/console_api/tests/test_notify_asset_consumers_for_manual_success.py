@@ -106,6 +106,30 @@ def test_skips_lambda_invoke_when_env_unconfigured(
     mock_lambda.invoke.assert_not_called()
 
 
+def test_single_warn_when_both_arns_unconfigured(
+    mocker, events_repo, mock_sfn, mock_lambda,
+):
+    """When both notification targets are unset, one aggregated warn beats two
+    separate ones — avoids doubling log volume on misconfigured deploys."""
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "")
+    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "")
+    log_warn = mocker.patch("task_actions.log.warn")
+
+    notify_asset_consumers_for_manual_success(
+        outlets=_OUTLETS,
+        task_name="t",
+        pipeline_name="p",
+        date="2026-01-01",
+        events_repo=events_repo,
+    )
+
+    # Exactly one aggregated warn, listing both missing targets.
+    assert log_warn.call_count == 1
+    kwargs = log_warn.call_args.kwargs
+    assert "NOTIFY_ASSET_CONSUMERS_SFN_ARN" in str(kwargs.get("missing", []))
+    assert "NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN" in str(kwargs.get("missing", []))
+
+
 def test_lambda_invoke_error_logged_but_does_not_raise(
     mocker, events_repo, mock_sfn, mock_lambda,
 ):

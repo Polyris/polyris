@@ -549,6 +549,11 @@ individual task until the asset condition holds.
 
 ### `wait_for` patterns
 
+> **⚠️ Multi-asset `wait_for` is currently broken** — the patterns marked AND
+> below are documented as AND but behave as OR (first event wins). See
+> [Known limitations](#known-experimental-limitations) at the top of this
+> doc. Single-asset `wait_for=[a]` works as documented.
+
 | Pattern | Meaning |
 |---------|---------|
 | `wait_for=[asset_x]` | Latest materialization — no freshness check |
@@ -557,10 +562,10 @@ individual task until the asset condition holds.
 | `wait_for=[asset_x.within(weeks=2)]` | ≤ 2 weeks old |
 | `wait_for=[asset_x.within(days=1, hours=12)]` | ≤ 36 hours old (combined units) |
 | `wait_for=[asset_x.consecutive(days=7)]` | 7 consecutive daily events required |
-| `wait_for=[a, b]` | AND — wait for both `a` and `b` |
+| `wait_for=[a, b]` | AND — wait for both `a` and `b` ⚠️ currently fires on first |
 | `wait_for=[a \| b]` | OR — wait for either `a` or `b` |
-| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) |
-| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event |
+| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) ⚠️ currently fires on first |
+| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event ⚠️ currently fires on first |
 | `wait_for=[a.consecutive(days=7) \| manual_override]` | 7-day run OR manual override |
 
 ### Full example — producer + consumer

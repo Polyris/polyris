@@ -67,6 +67,7 @@ def _table_key_schema(template: dict, logical_id: str) -> tuple[str, str | None]
     reason="task 1.19: SUBSCRIPTIONS_TABLE env var points at a table whose schema "
            "does not match the DAL's dependency_key/subscriber composite key",
     strict=True,
+    raises=AssertionError,
 )
 def test_notify_asset_subscribers_env_matches_dal_schema(template):
     env = _lambda_env(template, "NotifyAssetSubscribersFunction")
@@ -86,6 +87,7 @@ def test_notify_asset_subscribers_env_matches_dal_schema(template):
     reason="task 1.19: SUBSCRIPTIONS_TABLE env var points at a table whose schema "
            "does not match the DAL's dependency_key/subscriber composite key",
     strict=True,
+    raises=AssertionError,
 )
 def test_check_assets_env_matches_dal_schema(template):
     env = _lambda_env(template, "CheckAssetsFunction")
