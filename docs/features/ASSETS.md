@@ -18,7 +18,7 @@ issue, not undiscovered behavior. Progress is tracked in
 | Area | Current behavior |
 |------|------------------|
 | Partition identity | A run's partition is the UTC date of `current_date` (approximately the scheduler fire time). The scheduler does not pass an explicit partition key, so hourly schedules collapse multiple runs onto one partition. |
-| `wait_for=[a, b | c]` mixed AND/OR | The AND gate is disabled when any OR group is present in `wait_for`. The first arriving asset (whether `a` or one from `b | c`) wakes the task. Pure-AND lists (`wait_for=[a, b]`) work correctly. |
+| `wait_for=[a, b \| c]` mixed AND/OR | The AND gate is disabled when any OR group is present in `wait_for`. The first arriving asset (whether `a` or one from `b \| c`) wakes the task. Pure-AND lists (`wait_for=[a, b]`) work correctly. |
 | `wait_for` freshness | Checks the latest event for the asset, not the event for the consumer's partition. A backfill of a past date can pass freshness based on today's producer event. |
 | Subscription key collisions | Subscription key `(asset, task_name)` does not include pipeline or execution. Parallel backfills of the same consumer can overwrite each other's subscription rows. |
 | Push AND trigger loss | If the `Trigger_AND` state fails between counter bump and execution start, subsequent events on the same date are filtered out and the day's trigger is lost. |

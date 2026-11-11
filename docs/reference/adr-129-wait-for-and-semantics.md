@@ -32,13 +32,27 @@ Signal condition: `assets_ready_set ⊇ wait_for_assets`.
 
 ### check_assets changes
 
-After saving subscriptions for not-yet-present assets, write
-`wait_for_assets = set(missing_names)` to the task record via
-`tokens_repo.write_pending_assets`. This write is scoped to the missing assets
-only — assets already present at registration time are not subscribed and
-therefore not included. This correctly handles the partial-ready case: if
-`asset_a` is already there but `asset_b` isn't, `wait_for_assets = {'b'}` and
-only `asset_b`'s arrival needs to close the gate.
+Write `wait_for_assets = set(missing_names)` to the task record via
+`tokens_repo.write_pending_assets` **before** saving subscriptions. Writing the
+gate first ensures that any event arriving during the subscription-save window
+encounters a complete gate immediately; a subscription saved before the gate
+would fall back to first-arrival (OR) semantics. This write is scoped to the
+missing assets only — assets already present at registration time are not
+subscribed and therefore not included. This correctly handles the partial-ready
+case: if `asset_a` is already there but `asset_b` isn't,
+`wait_for_assets = {'b'}` and only `asset_b`'s arrival needs to close the gate.
+
+After saving subscriptions, check_assets re-evaluates to catch assets that
+arrived during the save window. If some (but not all) arrived, they are
+credited to `assets_ready_set` via `tokens_repo.add_to_assets_ready_set_and_get`
+and their subscriptions are deleted. This prevents the hung-task scenario where
+assets_ready_set can never reach the gate threshold.
+
+**OR-group limitation:** `wait_for_assets` is not written (and the AND gate
+does not apply) when any item in `wait_for` uses OR semantics — first-arrival
+semantics apply there, and the gate would incorrectly require all OR members.
+Mixed specs (`wait_for=[a, b | c]`) are therefore a known limitation; pure-AND
+lists (`wait_for=[a, b]`) are fully gated.
 
 For the immediately-ready path (all assets present at registration), call
 `tokens_repo.mark_assets_ready(execution_name, all_names)` which writes the

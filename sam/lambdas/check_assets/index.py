@@ -93,7 +93,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         is_ready_recheck, asset_results_recheck = _evaluate_wait_for(wait_for, current_date)
 
         if is_ready_recheck:
-            # Asset appeared while we were subscribing - clean up subscriptions
+            # All assets arrived — clean up all subscriptions, mark ready, return
             for asset_spec in missing_assets:
                 _delete_subscription(asset_spec['name'], task_name)
             _mark_assets_ready(execution_name, missing_names)
@@ -102,6 +102,22 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 'ready': True,
                 'assets': asset_results_recheck
             }
+        elif not _has_or_group(wait_for):
+            # Partial: some (but not all) assets arrived during the subscription-save
+            # window and were missed by notify_asset_subscribers (no subscription
+            # existed yet when the event came in). Credit them to assets_ready_set
+            # now; the last missing asset will close the gate when it arrives later.
+            # Without this credit, assets_ready_set never reaches the gate threshold
+            # and the task hangs to orchestration_timeout.
+            missing_names_set = set(missing_names)
+            newly_ready_names = [
+                r['name'] for r in asset_results_recheck
+                if r.get('ready') and r['name'] in missing_names_set
+            ]
+            if newly_ready_names:
+                for name in newly_ready_names:
+                    _delete_subscription(name, task_name)
+                _credit_arrived_assets(execution_name, newly_ready_names)
 
     if is_ready:
         # Assets were already ready at registration time — mark the task record
@@ -145,6 +161,20 @@ def _write_pending_assets(execution_name: str, asset_names: List[str]) -> None:
         tokens_repo.write_pending_assets(execution_name, asset_names)
     except Exception as e:
         log.error("_write_pending_assets", "write failed — AND semantics degraded to OR",
+                  execution_name=execution_name, error_type=type(e).__name__, error=str(e))
+
+
+def _credit_arrived_assets(execution_name: str, asset_names: List[str]) -> None:
+    """Best-effort: atomically ADD already-arrived asset names to assets_ready_set.
+    Assets that arrive before their subscription is saved are missed by
+    notify_asset_subscribers; without this credit the AND gate never closes and
+    the task hangs to orchestration_timeout."""
+    if not execution_name or not asset_names:
+        return
+    try:
+        tokens_repo.add_to_assets_ready_set_and_get(execution_name, asset_names)
+    except Exception as e:
+        log.error("_credit_arrived_assets", "ADD to assets_ready_set failed — AND gate may not close",
                   execution_name=execution_name, error_type=type(e).__name__, error=str(e))
 
 

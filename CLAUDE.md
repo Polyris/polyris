@@ -188,7 +188,7 @@ Rule: every consumer of a date-scoped canonical row must gate on `task.status �
 `attribute_not_exists(#field)` alone conflates two concerns: (1) never clobber genuine user data, (2) always refresh stale metadata written by the same writer. A second same-date manual resolution must supersede the first.
 
 Correct shape:
-- **GetItem-then-Update:** read current row; if field is absent or is your own synthetic marker, do unconditional Update; if it's real user data, skip and emit `_notify_warn_*` (Principle #38).
+- **GetItem-then-Update:** read current row; if field is absent or is your own synthetic marker, do unconditional Update; if it's real user data, skip and emit `_notify_warn_*` (see Error Visibility section / ADR #38).
 - **Structured sentinel** (advanced, fragile): `attribute_not_exists(#field) OR contains(#field, :marker_sentinel)`.
 
 Apply when touching shared DDB keys (date-scoped rows, cache rows, aggregation snapshots). Exclusively-owned rows (per-run task record, single-writer configs) don't need this.
@@ -252,7 +252,7 @@ events: List[Dict[str, Any]] = raw
 
 Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
 
-**38. AND gate records must be written before their subscription records**
+**39. AND gate records must be written before their subscription records**
 When a completeness gate (e.g. `wait_for_assets` StringSet on a task row) guards subscriptions, write the gate first. An event arriving after a subscription is saved but before the gate is written sees no gate field and falls back to first-arrival (OR) semantics — silently breaking AND guarantees.
 
 Correct order: write gate → write subscriptions → re-evaluate.

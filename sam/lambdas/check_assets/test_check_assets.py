@@ -337,6 +337,60 @@ class TestRaceCondition:
         mock_table.delete_item.assert_called()
 
 
+class TestPartialRecheck:
+    """Asset a arrives before its subscription is saved; b arrives later.
+    Without partial-recheck credit, assets_ready_set stays {b} forever and the
+    AND gate {a, b} never closes — task hangs to timeout."""
+
+    def test_partial_recheck_credits_arrived_asset(self, mocker):
+        """Asset a arrives in the subscription-save window; b is still missing.
+        Partial re-check must ADD a to assets_ready_set and delete a's subscription.
+        Result must be ready=False (still waiting for b)."""
+        from check_assets.index import handler, asset_events_repo, subscriptions_repo, tokens_repo
+
+        call_count = [0]
+
+        def mock_query(**kwargs):
+            call_count[0] += 1
+            asset = kwargs.get('ExpressionAttributeValues', {}).get(':name', '')
+            if call_count[0] <= 2:
+                return {'Items': []}  # initial check: a missing, b missing
+            elif asset == 'a':
+                return {'Items': [make_asset_event('a', hours_ago=0)]}  # re-check: a arrived
+            else:
+                return {'Items': []}  # re-check: b still missing
+
+        mock_events_table = mocker.MagicMock()
+        mock_events_table.query.side_effect = mock_query
+        mocker.patch.object(type(asset_events_repo), 'table',
+                            new_callable=mocker.PropertyMock,
+                            return_value=mock_events_table)
+
+        credited = []
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            side_effect=lambda exec_name, names: credited.extend(names))
+        deleted = []
+        mocker.patch.object(subscriptions_repo, 'delete',
+                            side_effect=lambda asset, sub: deleted.append(asset))
+        mocker.patch.object(tokens_repo, 'write_pending_assets')
+
+        result = handler({
+            'wait_for': [
+                {'asset_name': 'a', 'freshness_hours': None},
+                {'asset_name': 'b', 'freshness_hours': None},
+            ],
+            'task_name': 'consumer',
+            'wait_token': 'tok',
+            'execution_name': 'consumer-2026-01-01-abc12345678',
+            'ttl': 9999999,
+        }, None)
+
+        assert result['ready'] is False
+        assert 'a' in credited, "a must be credited to assets_ready_set"
+        assert 'a' in deleted, "a's subscription must be deleted (asset already present)"
+        assert 'b' not in deleted, "b's subscription must stay (still waiting)"
+
+
 class TestGateWriteOrdering:
     """Gate record must be written before subscriptions (AND-gate race prevention)."""
 
