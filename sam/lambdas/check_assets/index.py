@@ -79,8 +79,12 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
         # Write the set of subscribed assets so notify_asset_subscribers can
         # check AND-completeness: signal only after ALL of these have arrived.
+        # Skip for OR-group specs — the first qualifying asset should wake the
+        # task; writing wait_for_assets would require ALL subscribed names and
+        # break wait_for=[a | b] semantics.
         missing_names = [spec['name'] for spec in missing_assets]
-        _write_pending_assets(execution_name, missing_names)
+        if not _has_or_group(wait_for):
+            _write_pending_assets(execution_name, missing_names)
 
         # Double-check: Re-evaluate after saving subscriptions to handle race condition
         # Producer might have notified between initial check and subscription save
@@ -140,6 +144,20 @@ def _write_pending_assets(execution_name: str, asset_names: List[str]) -> None:
     except Exception as e:
         log.error("_write_pending_assets", "write failed — AND semantics degraded to OR",
                   execution_name=execution_name, error_type=type(e).__name__, error=str(e))
+
+
+def _has_or_group(wait_for: List[Dict]) -> bool:
+    """Return True if any item in wait_for (recursively) uses OR semantics.
+
+    Used to decide whether the AND-completeness gate applies: OR groups need
+    first-arrival semantics (any one qualifying asset wakes the task), not
+    all-must-arrive semantics. See ADR #129."""
+    for item in wait_for:
+        if item.get('operator') == 'OR':
+            return True
+        if 'assets' in item and _has_or_group(item['assets']):
+            return True
+    return False
 
 
 def _evaluate_wait_for(wait_for: List[Dict], current_date: str = '') -> tuple:

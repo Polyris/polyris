@@ -671,5 +671,113 @@ class TestAssetsReadyFlag:
         assert result['ready'] is True  # ready reflects asset availability, not flag write
 
 
+class TestHasOrGroup:
+    """_has_or_group must detect OR semantics at any nesting depth."""
+
+    def test_flat_and_list_returns_false(self):
+        from index import _has_or_group
+        assert _has_or_group([{'asset_name': 'a'}, {'asset_name': 'b'}]) is False
+
+    def test_top_level_or_group_returns_true(self):
+        from index import _has_or_group
+        assert _has_or_group([
+            {'operator': 'OR', 'assets': [{'asset_name': 'a'}, {'asset_name': 'b'}]}
+        ]) is True
+
+    def test_top_level_and_group_returns_false(self):
+        from index import _has_or_group
+        assert _has_or_group([
+            {'operator': 'AND', 'assets': [{'asset_name': 'a'}, {'asset_name': 'b'}]}
+        ]) is False
+
+    def test_nested_or_inside_and_returns_true(self):
+        from index import _has_or_group
+        assert _has_or_group([
+            {'operator': 'AND', 'assets': [
+                {'asset_name': 'a'},
+                {'operator': 'OR', 'assets': [{'asset_name': 'b'}, {'asset_name': 'c'}]}
+            ]}
+        ]) is True
+
+    def test_empty_list_returns_false(self):
+        from index import _has_or_group
+        assert _has_or_group([]) is False
+
+
+class TestOrGroupAndGate:
+    """AND-gate must be skipped for OR-group wait_for specs.
+
+    wait_for=[a | b] should fire when ANY one arrives — the AND gate would
+    incorrectly require both.  Regression guard for the bug found in
+    break-review: notify_asset_subscribers' AND check
+    (wait_for_assets ⊆ assets_ready_set) used all subscribed names as
+    wait_for_assets regardless of operator."""
+
+    def test_write_pending_not_called_for_or_group(self, mocker):
+        """OR group → _write_pending_assets skipped → no wait_for_assets on record
+        → notify_asset_subscribers falls back to legacy first-arrival behavior."""
+        from index import handler
+
+        mock_events_table = mocker.MagicMock()
+        mock_events_table.query.return_value = {'Items': []}  # neither asset ready
+        mock_sub_table = mocker.MagicMock()
+        from index import asset_events_repo, subscriptions_repo, tokens_repo
+        mocker.patch.object(type(asset_events_repo), 'table',
+                            new_callable=mocker.PropertyMock,
+                            return_value=mock_events_table)
+        mocker.patch.object(type(subscriptions_repo), 'table',
+                            new_callable=mocker.PropertyMock,
+                            return_value=mock_sub_table)
+
+        mark_mock = mocker.patch.object(tokens_repo, 'mark_assets_ready')
+        write_mock = mocker.patch.object(tokens_repo, 'write_pending_assets')
+
+        result = handler({
+            'wait_for': [{'operator': 'OR', 'assets': [
+                {'asset_name': 'daily'},
+                {'asset_name': 'manual_override'},
+            ]}],
+            'task_name': 'consumer',
+            'wait_token': 'AQC...',
+            'execution_name': 'consumer-2026-07-27-abc',
+            'ttl': 0,
+            'current_date': '2026-07-27',
+        }, None)
+
+        assert result['ready'] is False
+        mark_mock.assert_not_called()
+        # AND gate must NOT be armed for OR groups
+        write_mock.assert_not_called()
+
+    def test_write_pending_called_for_and_list(self, mocker):
+        """Plain AND list → _write_pending_assets IS called (AND gate armed)."""
+        from index import handler
+
+        mock_events_table = mocker.MagicMock()
+        mock_events_table.query.return_value = {'Items': []}
+        mock_sub_table = mocker.MagicMock()
+        from index import asset_events_repo, subscriptions_repo, tokens_repo
+        mocker.patch.object(type(asset_events_repo), 'table',
+                            new_callable=mocker.PropertyMock,
+                            return_value=mock_events_table)
+        mocker.patch.object(type(subscriptions_repo), 'table',
+                            new_callable=mocker.PropertyMock,
+                            return_value=mock_sub_table)
+
+        mocker.patch.object(tokens_repo, 'mark_assets_ready')
+        write_mock = mocker.patch.object(tokens_repo, 'write_pending_assets')
+
+        handler({
+            'wait_for': [{'asset_name': 'a'}, {'asset_name': 'b'}],
+            'task_name': 'consumer',
+            'wait_token': 'AQC...',
+            'execution_name': 'consumer-2026-07-27-abc',
+            'ttl': 0,
+            'current_date': '2026-07-27',
+        }, None)
+
+        write_mock.assert_called_once_with('consumer-2026-07-27-abc', ['a', 'b'])
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -583,5 +583,80 @@ class TestCoordinateReadyCheck:
         assert _coordinate_ready_check('exec-1', 'b') is True
 
 
+class TestOrGroupSignaling:
+    """AND-gate must be bypassed when wait_for_assets is absent on the record
+    (the case for OR-group subscriptions, where check_assets intentionally
+    skips _write_pending_assets).
+
+    Regression guard: before this guard, _coordinate_ready_check would call
+    add_to_assets_ready_set_and_get, find wait_for_assets absent → no AND gate
+    → pass through to evaluate_deps with wait_for_assets=[].  evaluate_deps:
+    set([]) <= set(anything) = True → assets_satisfied=True → signal.
+    This is the correct first-arrival (OR) behaviour."""
+
+    def test_or_group_first_asset_bypasses_and_gate_and_signals(self, mocker):
+        """Record has no wait_for_assets (OR group subscription) — AND gate is
+        skipped and evaluate_deps sees assets_satisfied=True on first arrival."""
+        import index
+        import json
+        from index import _coordinate_ready_check, tokens_repo
+        # Record after ADD: assets_ready_set={'manual_override'}, no wait_for_assets
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'assets_ready_set': {'manual_override'},
+                                # wait_for_assets absent — OR group, check_assets skipped write
+                                'dependencies': '[]',
+                                'trigger_rule': 'all_success',
+                                'date': '2026-07-27',
+                                'pipeline_execution_short': 'run-abc',
+                                'pipeline_execution': 'pipe-run-abc',
+                                'wait_for': '[{"operator":"OR","assets":[{"asset_name":"daily"},{"asset_name":"manual_override"}]}]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        fake_lambda = mocker.MagicMock()
+        fake_lambda.invoke.return_value = {
+            'Payload': mocker.MagicMock(
+                read=lambda: json.dumps({'is_ready': True}).encode())
+        }
+        mocker.patch('index._get_lambda', return_value=fake_lambda)
+        # First asset arrives → no AND gate → evaluate_deps called → signal
+        assert _coordinate_ready_check('exec-1', 'manual_override') is True
+
+    def test_or_group_evaluate_deps_receives_empty_wait_for_assets(self, mocker):
+        """evaluate_deps payload has wait_for_assets=[] when record lacks the
+        field.  set([]) is a subset of any set → assets_satisfied=True regardless
+        of what arrived."""
+        import index
+        import json
+        from index import _coordinate_ready_check, tokens_repo
+
+        mocker.patch.object(tokens_repo, 'add_to_assets_ready_set_and_get',
+                            return_value={
+                                'assets_ready_set': {'manual_override'},
+                                'dependencies': '[]',
+                                'trigger_rule': 'all_success',
+                                'date': '2026-07-27',
+                                'pipeline_execution_short': 'run-abc',
+                                'pipeline_execution': 'pipe-run-abc',
+                                'wait_for': '[]',
+                            })
+        mocker.patch.object(index, 'EVALUATE_DEPS_LAMBDA', 'arn:evaluate-deps')
+        fake_lambda = mocker.MagicMock()
+        captured = {}
+
+        def fake_invoke(**kwargs):
+            captured['payload'] = json.loads(kwargs['Payload'])
+            return {'Payload': mocker.MagicMock(
+                read=lambda: json.dumps({'is_ready': True}).encode())}
+
+        fake_lambda.invoke.side_effect = fake_invoke
+        mocker.patch('index._get_lambda', return_value=fake_lambda)
+
+        _coordinate_ready_check('exec-1', 'manual_override')
+
+        assert captured['payload']['wait_for_assets'] == []
+        assert captured['payload']['assets_ready'] is True
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
