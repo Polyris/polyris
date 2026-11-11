@@ -387,7 +387,7 @@ def _write_signal_failure_warn(
             date=record.get('date', ''),
             error=(
                 f'send_task_success failed for asset {asset_name!r}; '
-                'subscription kept — will retry on next asset event'
+                'subscription kept for visibility — operator should re-run manually'
             ),
         )
     except Exception as e:

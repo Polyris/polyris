@@ -276,7 +276,7 @@ Applies whenever a DDB field is replaced rather than added. Before removing the 
 **41. Delete a wake-up subscription only after a successful signal — never before**
 When `notify_asset_subscribers` (or any similar signal-then-cleanup path) sends `SendTaskSuccess`, the subscription record must survive until the signal is confirmed. If the subscription is deleted first and `SendTaskSuccess` then fails (IAM error, transient SFN outage), there is no record to retry on — the wake-up is silently lost.
 
-Correct order: (1) send signal → (2) on `'sent'` or `'token_consumed'`: delete subscription; on transient failure: **keep subscription**, write `_notify_warn_` record so the operator sees the failure, and return early (the next asset event will retry).
+Correct order: (1) send signal → (2) on `'sent'` or `'token_consumed'`: delete subscription; on transient failure: **keep subscription**, write `_notify_warn_` record so the operator sees the failure, and return early. For daily assets the next natural retry is the next day's event (by which point the SFN token is typically expired), so the practical outcome is operator visibility and manual re-run, not automatic recovery.
 
 Anti-pattern: delete subscription → send signal. A transient failure after the delete leaves the task hanging to orchestration timeout with no visible trace.
 

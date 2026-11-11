@@ -765,7 +765,9 @@ class TestDynamoDBExpressions:
     can read it later and pass it to evaluate_deps.
 
     Also covers write_warn (PutItem) — mocking it would not catch a missing IAM
-    PutItem permission; a real DDB write through moto does (Principle #13).
+    PutItem permission. The moto test verifies the DDB expression is correct;
+    the IAM permission itself is pinned by the template wiring test in
+    tests/sdk/test_mark_success_wakeup_wiring.py (moto does not enforce IAM).
     """
 
     def test_write_warn_puts_notify_warn_record(self, monkeypatch):
@@ -827,8 +829,10 @@ class TestDynamoDBExpressions:
         If assets_ready=true is absent, evaluate_deps sees assets_ready=False and
         returns is_ready=False — the task hangs to orchestration timeout.
 
-        The test omits task deps (dependencies=[]) to isolate the asset-ready path;
-        wait_for_assets is absent (no AND gate) so evaluate_deps uses the legacy bool.
+        The test omits task deps (dependencies=[]) to isolate the asset-ready
+        field propagation path. Testing evaluate_deps with a pending upstream dep
+        would require mocking the dep's status in DDB — out of scope here. The
+        upstream-dep gate is covered by evaluate_deps' own test suite.
         """
         import os
         import json
