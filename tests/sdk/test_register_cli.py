@@ -269,6 +269,22 @@ class TestMain:
         assert "AccessDeniedException" in out
         assert "not found" not in out.lower()
 
+    def test_name_search_access_denied_names_iam_action(self, mocker, capsys):
+        """AccessDenied on the paginator must name the IAM action to add
+        (states:ListStateMachines) — matches the resource_check.py style,
+        prevents operators from chasing a non-existent pipeline."""
+        mocker.patch(
+            "polyris.register.find_sfn_arn",
+            side_effect=_client_error("AccessDeniedException"),
+        )
+        mocker.patch("sys.argv", ["polyris-register", "--name", "p",
+                                   "--region", "us-east-1"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "states:ListStateMachines" in out
+
     def test_name_search_access_denied_json_mode(self, mocker, capsys):
         mocker.patch(
             "polyris.register.find_sfn_arn",
@@ -299,6 +315,24 @@ class TestMain:
         data = json.loads(capsys.readouterr().out)
         assert data["success"] is False
         assert "bad-profile" in data["error"]
+
+    def test_profile_not_found_text_mode_name_path(self, mocker, capsys):
+        """Mirrors the JSON case for text mode. Covers the BotoCoreError
+        (non-ClientError) branch of _format_aws_error on the --name path."""
+        mocker.patch(
+            "polyris.register.find_sfn_arn",
+            side_effect=ProfileNotFound(profile="bad-profile"),
+        )
+        mocker.patch("sys.argv", ["polyris-register", "--name", "p",
+                                   "--region", "us-east-1", "--profile", "bad-profile"])
+        with pytest.raises(SystemExit) as exc:
+            register.main()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "ProfileNotFound" in out
+        assert "bad-profile" in out
+        # No "pipeline not found" misdirection on this error path.
+        assert "not found" not in out.lower() or "pipeline" not in out.lower()
 
     def test_profile_not_found_json_mode_arn_path(self, mocker, capsys):
         """`--json <arn> --profile <bad>` must emit parseable JSON failure.

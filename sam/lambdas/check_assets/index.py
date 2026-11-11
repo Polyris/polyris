@@ -445,4 +445,10 @@ def _delete_subscription(asset_name: str, subscriber: str) -> None:
     try:
         subscriptions_repo.delete(asset_name, subscriber)
     except Exception as e:
+        # WARN (not ERROR) because this is cleanup, not a wake-up path: the
+        # task already proceeded via _mark_assets_ready right above. A stale
+        # subscription row is harmless — TTL will reap it, and
+        # notify_asset_subscribers filters by task state before signaling.
+        # The "catches on wake-up path log at error" rule in polyris/CLAUDE.md
+        # explicitly scopes to wake-up; this is post-wake-up housekeeping.
         log.warn("_delete_subscription", "delete_item failed", asset_name=asset_name, subscriber=subscriber, error=str(e))

@@ -41,6 +41,20 @@ from typing import Optional
 from ._ansi import colorize_parser
 
 
+def _format_aws_error(e) -> str:
+    """Render ClientError / BotoCoreError into a single actionable line.
+
+    For ClientError, extracts the AWS error Code (e.g. AccessDeniedException)
+    so operators can grep for it in docs / runbooks. For BotoCoreError, falls
+    back to the exception class name — those don't carry an AWS code.
+    """
+    if isinstance(e, ClientError):
+        code = e.response.get('Error', {}).get('Code', 'ClientError')
+        msg = e.response.get('Error', {}).get('Message', str(e))
+        return f"{code}: {msg}"
+    return f"{type(e).__name__}: {e}"
+
+
 def get_sfn_client(region: str, profile: Optional[str] = None, role_arn: Optional[str] = None):
     """
     Get Step Functions client with optional profile or assumed role.
@@ -137,7 +151,7 @@ def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optio
     except (ClientError, BotoCoreError) as e:
         return {
             'success': False,
-            'error': str(e)
+            'error': _format_aws_error(e),
         }
 
     try:
@@ -179,7 +193,7 @@ def register_pipeline(sfn_arn: str, region: Optional[str] = None, profile: Optio
         # dict so --json callers get parseable output instead of a traceback.
         return {
             'success': False,
-            'error': str(e)
+            'error': _format_aws_error(e),
         }
 
 
@@ -323,12 +337,13 @@ Authentication:
             # here means the search never ran, not that the pipeline is absent.
             # BotoCoreError covers ProfileNotFound and credential-chain failures,
             # which otherwise crash with a traceback on stdout.
-            if isinstance(e, ClientError):
-                code = e.response.get('Error', {}).get('Code', 'ClientError')
-                msg = e.response.get('Error', {}).get('Message', str(e))
-                error = f"Search failed ({code}): {msg}"
-            else:
-                error = f"Search failed ({type(e).__name__}): {e}"
+            error = f"Search failed — {_format_aws_error(e)}"
+            # On AccessDenied specifically, point the operator at the IAM
+            # action they're missing so they don't chase a non-existent
+            # pipeline. Matches the resource_check.py style ("add X to your
+            # deploy role").
+            if isinstance(e, ClientError) and e.response.get('Error', {}).get('Code', '') == 'AccessDeniedException':
+                error += " — ensure your role has states:ListStateMachines"
             if args.json:
                 print(json.dumps({'success': False, 'error': error}, indent=2))
             else:

@@ -50,11 +50,11 @@ Pull-waiter wake-up matches the "best-effort" semantics of the push-SFN start di
 
 Rationale: the alternative — synchronous invoke with error surfacing — would require `mark_success` to roll back the DDB status update when the wake-up fails. That's architecturally wrong because `mark_success`'s primary effect (the status change) IS successful; only the downstream notification side-effect failed. Users retry the wake-up by re-invoking Lambda from the console or deploying a fix.
 
-### Symmetry with `run_task` — but only after task 1.19 lands
+### Symmetry with `run_task` — only after the `SUBSCRIPTIONS_TABLE` routing fix
 
-The invoked Lambda's DAL writes `dependency_key`/`subscriber` composite keys. Before task 1.19 was fixed in this same release, the Lambda's `SUBSCRIPTIONS_TABLE` env var pointed at `AssetSubscriptionsTable` (schema `asset_name`/`pipeline_name`) — every DDB call hit `ValidationException` caught and logged as warn. The mark_success invoke was therefore technically correct at this level but had no end-to-end effect.
+The invoked Lambda's DAL writes `dependency_key`/`subscriber` composite keys. Before the `SUBSCRIPTIONS_TABLE` routing fix in this same release, the Lambda's env var pointed at `AssetSubscriptionsTable` (schema `asset_name`/`pipeline_name`) — every DDB call hit `ValidationException` caught and logged as warn. The mark_success invoke was therefore technically correct at this level but had no end-to-end effect.
 
-Task 1.19 (env var repoint to `DependencySubscriptionsTable`) ships in the same PR as this ADR. The two together make the wake-up actually work.
+The routing fix (env var repoint to `DependencySubscriptionsTable`) ships in the same PR as this ADR. See the "Fixed — `wait_for` subscription table routing" entry in `CHANGELOG.md` and the regression gate in `tests/sdk/test_wait_for_subscription_table_parity.py`. The two together make the wake-up actually work.
 
 ### Log-level discipline
 

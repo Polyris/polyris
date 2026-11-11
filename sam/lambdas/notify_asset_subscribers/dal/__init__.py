@@ -26,11 +26,15 @@ def _resource():
 
 
 class SubscriptionsRepo:
-    """asset-subscriptions table: dependency_key + subscriber composite."""
+    """Subscriptions table: dependency_key + subscriber composite.
+    Reads `wait_for` subscriptions from DependencySubscriptionsTable (same
+    table that holds task-to-task deps, keyed by dependency_key prefix
+    `asset:<name>` here). SUBSCRIPTIONS_TABLE env var is wired to that table
+    in sam/template.yaml."""
 
     def __init__(self, table_name: Optional[str] = None):
         self._table_name = table_name or os.environ.get(
-            'SUBSCRIPTIONS_TABLE', 'asset-subscriptions'
+            'SUBSCRIPTIONS_TABLE', 'polyris-dep-subscriptions'
         )
 
     @property
