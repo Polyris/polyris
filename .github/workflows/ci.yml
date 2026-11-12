@@ -128,27 +128,12 @@ jobs:
           done
           echo "✅ All Lambda handlers valid"
 
-      - name: Verify constants sync
-        run: make sync-constants
-
       - name: Verify Lambda loggers sync
         run: make sync-loggers
-
-      - name: Run evaluate_deps tests
-        run: |
-          cd sam/lambdas/evaluate_deps && PYTHONPATH=. python -m pytest test_evaluate_deps.py -v
 
       - name: Run notify tests
         run: |
           cd sam/lambdas/notify && PYTHONPATH=. python -m pytest test_notify.py -v
-
-      - name: Run notify_asset_subscribers tests
-        run: |
-          cd sam/lambdas/notify_asset_subscribers && PYTHONPATH=. python -m pytest test_notify_asset_subscribers.py -v
-
-      - name: Run check_assets tests
-        run: |
-          cd sam/lambdas/check_assets && PYTHONPATH=. python -m pytest test_check_assets.py -v
 
       - name: Run console_api tests
         run: |

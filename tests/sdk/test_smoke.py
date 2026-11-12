@@ -232,30 +232,6 @@ def test_lambda_syntax():
     
     print("✅ All Lambda handlers valid Python")
 
-def test_notify_dependents_deps_blocked():
-    """Test that evaluate_deps handles upstream_failed propagation."""
-    base_path = os.path.join(REPO_ROOT, 
-                             'sam/lambdas/evaluate_deps')
-    
-    # Check constants.py has upstream_failed status defined
-    with open(os.path.join(base_path, 'constants.py')) as f:
-        constants_content = f.read()
-    
-    assert "UPSTREAM_FAILED" in constants_content, "UPSTREAM_FAILED not defined in constants.py"
-    # v0.79.5 (ADR #77) — sets are now module-level (TASK_FAILURE_STATUSES),
-    # not class-level (FAILURE_STATES).
-    assert "TASK_FAILURE_STATUSES" in constants_content, \
-        "TASK_FAILURE_STATUSES not defined in constants.py"
-
-    # Check index.py imports and uses the failure states
-    with open(os.path.join(base_path, 'index.py')) as f:
-        index_content = f.read()
-
-    assert "from constants import" in index_content, "constants not imported in index.py"
-    assert "TASK_FAILURE_STATUSES" in index_content, "TASK_FAILURE_STATUSES not imported"
-    assert "TERMINAL_FAILURE" in index_content, "TERMINAL_FAILURE not used in index.py"
-    print("✅ evaluate_deps upstream_failed handling implemented")
-
 def test_dependency_wrapper_check_deps_signal():
     """Test that dependency_wrapper has Check_Deps_Signal state."""
     template_path = os.path.join(REPO_ROOT, 
@@ -363,15 +339,6 @@ def test_no_dead_code():
     
     assert 'def store_large_result' not in utils_content, "Dead code store_large_result in utils"
     assert 'def retrieve_result' in utils_content, "retrieve_result should exist in utils"
-    
-    # evaluate_deps should be minimal (no claim check functions)
-    evaluate_deps_path = os.path.join(REPO_ROOT, 
-                              'sam/lambdas/evaluate_deps/index.py')
-    with open(evaluate_deps_path) as f:
-        evaluate_content = f.read()
-    
-    assert 'def store_large_result' not in evaluate_content, "Dead code store_large_result in evaluate_deps"
-    assert 'def retrieve_result' not in evaluate_content, "retrieve_result not needed in evaluate_deps"
     
     print("✅ No dead code (claim check functions cleaned up)")
 
@@ -617,7 +584,6 @@ def run_all_tests():
         test_sfn_templates_valid_json,
         test_sfn_templates_valid_asl,
         test_lambda_syntax,
-        test_notify_dependents_deps_blocked,
         test_dependency_wrapper_check_deps_signal,
         test_run_task_helper_saves_arn,
         test_task_events_table,

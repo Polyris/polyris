@@ -2,8 +2,7 @@
 # Do not edit: change the source and regenerate.
 """Trigger-rule evaluation over dependency statuses (ADR #115, #117).
 
-The single implementation the reconciler uses (ADR #130 §3). It replaces the
-copies in ``evaluate_deps`` and in the registration SFN's JSONata.
+The single implementation the reconciler uses (ADR #130 §3).
 """
 
 from __future__ import annotations

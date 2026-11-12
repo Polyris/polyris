@@ -17,7 +17,8 @@ def handler(event, context):
     Query subscriptions table for tasks waiting on the completed task.
 
     Input: {task_name, pipeline_execution_short}
-    Output: {subscribers: [{subscriber, wait_token, ...}]}
+    Output: {subscribers: [{dependency_key, subscriber, ttl}]} — subscriber is
+    the waiting task's execution_name (ADR #130 §5: pointers carry no token).
     """
     try:
         task_name = event.get('task_name')

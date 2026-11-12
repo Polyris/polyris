@@ -136,7 +136,7 @@ class Reconciler:
                 self.reconcile(name, source=source)
                 handled += 1
             except CoordinationTransient as exc:
-                log.warn("reconcile_run", "transient failure; the sweeper retries", execution_name=name, error=str(exc))
+                log.error("reconcile_run", "transient failure; the sweeper retries", execution_name=name, error=str(exc))
                 self._defer(row)
                 deferred += 1
         result = {"pipeline_execution": pipeline_execution, "source": source, "handled": handled, "deferred": deferred}
@@ -303,7 +303,7 @@ class Reconciler:
             self.tasks.mark_due(str(row["execution_name"]), str(row.get("started_at")), self.clock())
         except (ClientError, BotoCoreError) as exc:
             # The sweeper still finds the row at its existing due time.
-            log.warn("reconcile_run", "could not make the row due now",
+            log.error("reconcile_run", "could not make the row due now",
                      execution_name=row["execution_name"], error=str(exc))
 
     def _warn(self, row: Dict[str, Any], kind: str, error: str) -> None:

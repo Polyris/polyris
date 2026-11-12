@@ -21,7 +21,7 @@ TRIGGER_RULES = [
 def test_removed_rules_are_rejected_by_validation():
     """ADR #117: a task built with one of the 6 removed rule names must fail
     validate_asl_from_dag with a specific, helpful message — not silently pass
-    through and fall back to all_success at runtime (evaluate_deps' own
+    through and fall back to all_success at runtime (the reconciler's own
     fallback, which exists for a genuinely unrecognized string, not a
     deliberately-removed one the user should be told about)."""
     from polyris import DAG, task

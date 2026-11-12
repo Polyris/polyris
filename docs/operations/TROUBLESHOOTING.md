@@ -358,21 +358,6 @@ aws cloudformation list-stacks \
 
 ## Lambda Issues
 
-### evaluate_deps timeout
-
-**Symptoms:** Dependency evaluation takes too long.
-
-**Check:**
-1. Number of dependencies — large fan-in can be slow
-2. DynamoDB throttling — check CloudWatch metrics
-
-**Fix:** 
-- Increase Lambda timeout (default 30s)
-- Enable DynamoDB auto-scaling
-- Reduce dependency fan-in if possible
-
----
-
 ### console_api 502 errors
 
 **Symptoms:** API returns 502 Bad Gateway.

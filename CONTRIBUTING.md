@@ -49,7 +49,7 @@ make test
 
 # Or by area:
 make test-sdk           # pytest tests/sdk/
-make test-lambdas       # evaluate_deps, check_assets, notify_asset_subscribers, console_api
+make test-lambdas       # every Lambda suite: console_api, coordination, query_subscriptions, …
 make test-sfn-jsonata   # JSONata expression tests (requires Node.js)
 make test-ui            # vitest (requires npm install in ui/)
 ```
@@ -57,11 +57,7 @@ make test-ui            # vitest (requires npm install in ui/)
 ### 3. Before Committing
 
 ```bash
-make check   # Runs: lint, sync-constants, test
-
-# Or manually:
-make sync-constants
-make lint
+make check   # lint, generated-code drift, typecheck, tests
 ```
 
 ---
@@ -102,11 +98,9 @@ polyris/
 ├── sam/     # AWS Infrastructure
 │   ├── lambdas/          # Lambda function code
 │   │   ├── console_api/  # REST API (27 free endpoints)
-│   │   ├── evaluate_deps/# Dependency evaluation
-│   │   ├── check_assets/ # Asset freshness checks
-│   │   ├── notify_asset_subscribers/ # Asset event notification
+│   │   ├── coordination/ # Reconciler and asset fan-out (ADR #130)
 │   │   ├── query_subscriptions/     # Downstream subscriber lookup
-│   │   └── _shared/      # Shared constants (SOURCE OF TRUTH)
+│   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
 │   ├── sfn_templates/    # Step Functions ASL templates
 │   └── template.yaml    # SAM template
 │
@@ -125,19 +119,14 @@ polyris/
 
 ## Key Concepts
 
-### Lambda Constants Sync
+### Generated Lambda code
 
-Lambdas can't share code, so `TaskStatus` is duplicated. Keep in sync manually:
+Some Lambda code is generated from the SDK, so every platform release carries the same logic. Never edit the copies:
 
-```bash
-# Check if in sync
-make sync-constants
+- `python -m polyris.codegen.sync_enums` writes `console_api/constants_generated.py` and `ui/src/generated/enums.ts` from `polyris/constants.py`.
+- `python -m polyris.codegen.sync_coordination` copies `polyris/coordination/` into `sam/lambdas/coordination/coordination_core/` and `sam/lambdas/console_api/coordination_core/`.
 
-# Fix by copying source of truth
-cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
-```
-
-**Source of truth:** `sam/lambdas/_shared/constants.py`
+CI fails on drift (`make check-generate-enums`, `make check-generate-coordination`).
 
 ### Testing Strategy
 
@@ -147,12 +136,11 @@ cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
 | ASL snapshots | `tests/sdk/test_asl_snapshots.py` | `pytest tests/sdk/` | Golden file comparison of generated Step Functions JSON |
 | Template features | `tests/sdk/test_templates.py` | `pytest tests/sdk/` | orchestration_timeout, route table, run_task resilience |
 | API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 27 free console_api routes registered and callable |
-| Trigger rules | `tests/sdk/test_trigger_rules.py` | `pytest tests/sdk/` | 5 trigger rules: Python ↔ JSONata logic sync |
+| Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The 5 trigger rules, their aliases and the unknown-rule fallback |
 | SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for all 13 templates |
 | JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, 550 expressions compile |
-| evaluate_deps Lambda | `sam/lambdas/evaluate_deps/` | `PYTHONPATH=. pytest` | BatchGetItem, trigger_rule evaluation, paused check |
-| check_assets Lambda | `sam/lambdas/check_assets/` | `PYTHONPATH=. pytest` | Asset freshness, wait_for logic |
-| notify_asset_subscribers | `sam/lambdas/notify_asset_subscribers/` | `PYTHONPATH=. pytest` | Asset event publishing, subscriber notification |
+| coordination Lambdas | `sam/lambdas/coordination/tests/` | `PYTHONPATH=. pytest tests/` | reconcile, asset-fanout, IAM grants against recorded calls |
+| Coordination scenarios | `tests/backend/coordination/` | `pytest tests/backend/coordination/` | Whole runs through the real SFN templates and Lambdas on moto |
 | console_api Lambda | `sam/lambdas/console_api/tests/` | `PYTHONPATH=. pytest` | API routes, query/scan pagination, validation |
 | UI hooks | `ui/src/hooks/*.test.{js,jsx}` | `npm test` | React hooks, state management |
 
@@ -161,13 +149,13 @@ cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
 ### Local Lambda Development
 
 ```bash
-cd sam/lambdas/evaluate_deps
+cd sam/lambdas/coordination
 
-# Run tests with mocked DynamoDB
-PYTHONPATH=. pytest test_evaluate_deps.py -v
+# Run tests against moto tables built from sam/template.yaml
+PYTHONPATH=. pytest tests/ -v
 
-# Test specific function
-PYTHONPATH=. pytest test_evaluate_deps.py::TestCheckTriggerRule -v
+# One file
+PYTHONPATH=. pytest tests/test_coordination_reconcile.py -v
 ```
 
 ---
@@ -190,11 +178,9 @@ PYTHONPATH=. pytest test_evaluate_deps.py::TestCheckTriggerRule -v
 
 ### Adding a New Task Status
 
-1. Add to `_shared/constants.py`
-2. Copy to `evaluate_deps/constants.py`
-3. Update `console_api/constants.py` manually if needed
-4. Update UI constants in `ui/src/utils/constants.js`
-5. Run `make sync-constants` to verify
+1. Add the member to `TaskStatus` in `polyris/constants.py`, and to every status set it belongs to
+2. Run `python -m polyris.codegen.sync_enums` and `python -m polyris.codegen.sync_coordination`
+3. Add a parity test if another artifact (an SFN template, the UI) reads the value (CLAUDE.md Principle #28)
 
 ### Adding a New API Endpoint
 
@@ -248,7 +234,7 @@ To find your key ID: `gpg --list-secret-keys --keyid-format=long`
 
 - [ ] Commits GPG-signed — see [GPG signing](#sign-your-commits-gpg)
 - [ ] Tests pass locally (`make test`)
-- [ ] Constants synced (`make sync-constants`)
+- [ ] Generated code in sync (`make check-generate-enums check-generate-coordination`)
 - [ ] No lint errors (`make lint`)
 - [ ] CHANGELOG.md updated
 - [ ] Documentation updated (if API changed)

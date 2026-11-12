@@ -29,7 +29,7 @@ decision, not a wiring task.
 Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in order:
 
 1. **`polyris/constants.py`** — add the value to `TaskTypeLiteral`. Task types are Python-only —
-   not part of enum-sync codegen, so no `make sync-constants`.
+   not part of enum-sync codegen, so no regeneration step.
 2. **`polyris/task.py`** — add service config fields to the `Task` dataclass; add a
    `@task.<service>(...)` classmethod to `TaskDecorator` (mirror `TaskDecorator.glue` / `.ecs`):
    declare only service-specific params explicitly; take shared params via
@@ -127,7 +127,7 @@ Run the SDK/codegen suite while iterating: `pip install -e . && pytest tests/sdk
 
 ## Step 9 — Verify
 
-`bash scripts/verify-changed.sh --full` — this is the canonical gate. It runs lint, mypy, pytest+coverage, cfn-lint, sync-constants, codegen drift checks, and the open-core guard. Confirm the SFN definition still validates and the Express/Standard split is intact.
+`bash scripts/verify-changed.sh --full` — this is the canonical gate. It runs lint, mypy, pytest+coverage, cfn-lint, logger sync, codegen drift checks, and the open-core guard. Confirm the SFN definition still validates and the Express/Standard split is intact.
 
 ## Done when
 

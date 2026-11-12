@@ -66,7 +66,7 @@ class TestAliasesAndUnknownRules:
 
     def test_none_failed_min_one_success_blocked_by_failure_is_upstream_failed(self):
         # The alias behaves as one_success (ADR #117), a failure-averse rule.
-        # evaluate_deps used to keep the alias name and classify this as skip.
+        # The removed evaluate_deps Lambda kept the alias name and classified this as skip.
         assert tr.evaluate("none_failed_min_one_success", [F, F]).verdict == tr.UPSTREAM_FAILED
 
     def test_unknown_rule_is_evaluated_as_all_success_and_flagged(self):

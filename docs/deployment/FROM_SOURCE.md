@@ -21,7 +21,7 @@ npm ci && npm run build
 
 `ui/deploy.sh` reads the stack outputs and writes `config.js`. A stack deployed this way isn't tagged as a `polyris-up` platform, so set `stack_name` in `pipelines/config.py` (or pass `--stack`) when you deploy pipelines to it ([CONFIGURATION.md](../reference/CONFIGURATION.md)).
 
-Namespace + Stage may be at most 25 characters (IAM role names are capped at 64).
+Namespace + Stage may be at most 30 characters (IAM role names are capped at 64).
 
 ## Test the release path
 

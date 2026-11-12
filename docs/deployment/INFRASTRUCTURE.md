@@ -9,13 +9,13 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 - [The one distinction that matters: wrappers vs workloads](#the-one-distinction-that-matters-wrappers-vs-workloads)
 - [Inventory by service](#inventory-by-service)
   - [Step Functions state machines (14)](#step-functions-state-machines-14)
-  - [Lambda functions (8)](#lambda-functions-8)
+  - [Lambda functions (7)](#lambda-functions-7)
   - [DynamoDB tables (8)](#dynamodb-tables-8)
   - [S3 buckets (2)](#s3-buckets-2)
   - [Cognito (1 user pool + 1 client)](#cognito-1-user-pool--1-client)
   - [CloudFront + API Gateway (Console UI)](#cloudfront--api-gateway-console-ui)
-  - [CloudWatch log groups (18)](#cloudwatch-log-groups-18)
-  - [IAM (10 roles + 2 managed policies)](#iam-10-roles--2-managed-policies)
+  - [CloudWatch log groups (17)](#cloudwatch-log-groups-17)
+  - [IAM (9 roles + 3 managed policies)](#iam-9-roles--3-managed-policies)
 - [Where does each pipeline run's state live?](#where-does-each-pipeline-runs-state-live)
 - [Stack outputs to read after deploy](#stack-outputs-to-read-after-deploy)
 - [Step Functions definition sources](#step-functions-definition-sources)
@@ -25,7 +25,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 
 Two categories of AWS resources end up in your account.
 
-**A. Polyris wrappers.** The fixed set the SAM stack creates. Every install has exactly these — 14 state machines, 8 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. They wait for dependencies, decide when to run something, call an AWS service, record what happened, and notify downstream. They do not do your ETL work.
+**A. Polyris wrappers.** The fixed set the SAM stack creates. Every install has exactly these — 14 state machines, 7 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. They wait for dependencies, decide when to run something, call an AWS service, record what happened, and notify downstream. They do not do your ETL work.
 
 **B. Your workloads.** Whatever your pipelines invoke. Every `@task.lambda_function(function_name="my-etl")` points at a Lambda in your account that YOU created outside polyris. Same for `@task.glue_job`, `@task.ecs_task`, `@task.batch_job`, `@task.athena_query`, `@task.sfn`, `@task.emr_step`. Polyris does not deploy or manage these — see [DSL.md](../features/DSL.md#how-polyris-relates-to-aws).
 
@@ -34,7 +34,7 @@ At runtime the flow is: polyris wrapper (A) → assumes the polyris task role �
 Practical consequences:
 
 - **Cost:** polyris wrappers are lean (SFN transitions ≈ $25/million, Lambda ≈ ms billing). Your workload cost dominates.
-- **Logs:** wrapper logs are in `/aws/vendedlogs/states/polyris-*` and `/aws/lambda/polyris-*`. Your workload logs are in whatever log group your Lambda / Glue / ECS emits to.
+- **Logs:** wrapper logs are in `/aws/states/polyris-*` and `/aws/lambda/polyris-*`. Your workload logs are in whatever log group your Lambda / Glue / ECS emits to.
 - **Failures:** a wrapper failure is a polyris bug; a workload failure is your task code.
 - **Permissions:** wrappers execute under IAM roles polyris creates. Workloads execute under IAM roles YOU created for them (though polyris publishes `PolyrisTaskReadPolicy` + `PolyrisTaskWritePolicy` you can attach for xcom access — see [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam)).
 
@@ -73,15 +73,14 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-test-failure` | Fails immediately |
 | `polyris-test-quick` | Waits 1s then succeeds |
 
-### Lambda functions (8)
+### Lambda functions (7)
 
 | Logical name | Invoked by | Purpose |
 |--------------|-----------|---------|
 | `polyris-console-api` | API Gateway | Serves the REST endpoints behind the Console UI (list pipelines, describe run, trigger execution, manual action, etc.) |
-| `polyris-evaluate-deps` | `dependency-wrapper` SFN | Evaluates a task's `trigger_rule` (all_success / all_done / one_success / …) against upstream statuses |
 | `polyris-query-subscriptions` | `notify-dependents` SFN | Reads `dep-subscriptions` to find who to notify when an upstream completes |
-| `polyris-check-assets` | Asset ingest path | Validates incoming asset events against `asset-subscriptions` |
-| `polyris-notify-asset-subscribers` | Asset publish path | Starts downstream asset-triggered pipelines when an asset event lands |
+| `polyris-reconcile` | `registration` and `notify-dependents` SFNs, asset-fanout | Decides whether a waiting task is ready (trigger rule, `wait_for` assets, pause) and signals its wrapper (ADR #130) |
+| `polyris-asset-fanout` | `asset-events` stream | Wakes the tasks waiting on a new asset fact and starts the pipelines scheduled on that asset |
 | `polyris-notify` | `failure-handler` SFN | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Copies the prebuilt Console UI from the artifacts bucket into `ConsoleUiBucket`, deletes files of the previous build, writes `config.js` from the stack's values, invalidates CloudFront. Absent on a from-source `sam deploy` (there `ui/deploy.sh` uploads the UI) |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
@@ -92,7 +91,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 |--------------|----------|
 | `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output. Hottest table |
 | `polyris-pipeline-registry` | One row per deployed pipeline. Holds the DAG snapshot the Console renders |
-| `polyris-dep-subscriptions` | One row per (upstream_task, downstream_task) edge. Read by `query-subscriptions` on every task completion |
+| `polyris-dep-subscriptions` | One pointer per waiting task and per thing it waits on (an upstream task of its run, or a `wait_for` asset). Read by `query-subscriptions` and asset-fanout; deleted once the task is signalled |
 | `polyris-task-events` | Append-only audit trail of task lifecycle events (queued, started, succeeded, failed, restarted, manually-resolved). Feeds the Console's per-task History tab |
 | `polyris-asset-events` | Append-only asset publish events. Feeds the asset-triggered downstream chain |
 | `polyris-asset-subscriptions` | (asset, downstream_pipeline) edges — the asset-DAG's dependency graph |
@@ -133,26 +132,26 @@ MFA is available but off by default; enable per your org's policy via `aws cogni
 | `polyris-console-ui-url-rewrite` | CloudFront Function | Client-side routing — rewrites SPA paths to `/index.html` |
 | `polyris-console-api` | Serverless HttpApi (API Gateway v2) | Public HTTPS endpoint the Console UI + PAT clients call |
 
-### CloudWatch log groups (18)
+### CloudWatch log groups (17)
 
-One per Lambda + one per SFN + one per major workflow. Retention: 30 days by default (change via the `LogRetentionDays` CFN parameter at install).
+One per state machine (the test machines share one) and one per Lambda, except bucket-cleanup. Retention: 30 days by default (change via the `LogRetentionDays` CFN parameter at install).
 
 | Category | Log group name pattern |
 |----------|------------------------|
-| Wrapper SFNs (7) | `/aws/vendedlogs/states/polyris-dependency-wrapper`, `-run-task-helper`, `-failure-handler`, `-notify-dependents`, `-pause-waiter`, `-restart-wrapper`, `-restart-task-helper` |
-| Support SFNs (3) | `/aws/vendedlogs/states/polyris-registration-helper`, `-notify-asset-consumers`, `-bulk-backfill` |
-| Demo SFNs (1) | `/aws/vendedlogs/states/polyris-test-*` (shared) |
+| Wrapper SFNs (7) | `/aws/states/polyris-dependency-wrapper`, `-run-task-helper`, `-failure-handler`, `-notify-dependents`, `-pause-waiter`, `-restart-wrapper`, `-restart-task-helper` |
+| Support SFNs (3) | `/aws/states/polyris-registration-helper`, `-notify-asset-consumers`, `-bulk-backfill` |
+| Demo SFNs (1) | `/aws/states/polyris-test` (shared) |
 | Console API (1) | `/aws/lambda/polyris-console-api` |
-| Ops Lambdas (5) | `/aws/lambda/polyris-evaluate-deps`, `-notify`, `-query-subscriptions`, `-check-assets`, `-notify-asset-subscribers` |
+| Ops Lambdas (4) | `/aws/lambda/polyris-notify`, `-query-subscriptions`, `-reconcile`, `-asset-fanout` |
 | UI bootstrap (1, stacks installed by `polyris-up`) | `/aws/lambda/polyris-ui-bootstrap` |
 
 Your workload logs (Lambdas / Glue jobs / ECS tasks that your pipelines invoke) are NOT in this list — they go to wherever YOU configured them.
 
-### IAM (10 roles + 2 managed policies)
+### IAM (9 roles + 3 managed policies)
 
 Roles the stack creates during install, all named `${Namespace}-${Stage}-polyris-*-role`. Full inventory + purpose per role in [IAM_PERMISSIONS.md#iam-roles-polyris-creates](IAM_PERMISSIONS.md#iam-roles-polyris-creates).
 
-Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam).
+Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam). The third, `polyris-reconcile`, holds the reconciler's own grants; the stack attaches it to its reconcile and asset-fanout roles.
 
 ## Where does each pipeline run's state live?
 
@@ -161,7 +160,7 @@ A common admin/developer question during an incident. Table maps concepts to con
 | Question | Look here |
 |----------|-----------|
 | "Which task is stuck?" | Console UI → pipeline → run, or `polyris-pipeline-tokens` DDB table (partition key = execution name) |
-| "Why did the wrapper fail?" | `/aws/vendedlogs/states/polyris-dependency-wrapper` log group, filter by execution ARN |
+| "Why did the wrapper fail?" | `/aws/states/polyris-dependency-wrapper` log group, filter by execution ARN |
 | "What's the current DAG for this pipeline?" | `polyris-pipeline-registry` DDB (partition key = pipeline name) |
 | "What did the upstream task return?" | `polyris-pipeline-tokens` DDB, key = `output#{pipeline}#{task}#{date}`, field `result` — or the Console UI's Task Detail → Output tab |
 | "Where's the large XCom payload the task pushed?" | `polyris-results` S3 bucket, at the `_s3_ref` path the DDB `result` field points to |

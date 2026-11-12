@@ -4,43 +4,6 @@ Utility commands for maintaining and validating the polyris codebase.
 
 ---
 
-## Lambda Constants Sync
-
-Lambda functions cannot share code directly, so constants must be duplicated across Lambdas.
-
-### Source of Truth
-
-```
-sam/lambdas/_shared/constants.py
-```
-
-### Keeping in Sync
-
-When you modify `_shared/constants.py`, copy it to the Lambda directories:
-
-```bash
-cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
-```
-
-### Validation
-
-```bash
-# Check if files are in sync
-make sync-constants
-
-# Or manually:
-diff sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
-```
-
-### Adding New Statuses
-
-1. Add to `_shared/constants.py` (source of truth)
-2. Copy to `evaluate_deps/constants.py`
-3. Update `console_api/constants.py` if needed (has extended fields)
-4. Run `make sync-constants` to verify
-
----
-
 ## API Input Validation
 
 The Console API includes validation helpers in `utils.py`:
@@ -76,7 +39,7 @@ if not valid:
 
 ```bash
 make test              # Runs: test-sdk + test-lambdas + test-sfn-jsonata + test-ui
-make check             # Runs: lint + sync-constants + smoke-pipelines + test
+make check             # Runs: lint + generated-code drift + typecheck + smoke-pipelines + test
 ```
 
 ### Python SDK Tests
@@ -91,7 +54,7 @@ pytest tests/sdk/test_asl_snapshots.py -v      # Golden file comparison of gener
 pytest tests/sdk/test_sfn_flow.py -v           # SFN template graph validation (11 orchestration templates)
 pytest tests/sdk/test_templates.py -v          # orchestration_timeout, route table, resilience
 pytest tests/backend/test_api_routes.py -v         # All 27 free API routes registered
-pytest tests/sdk/test_trigger_rules.py -v      # 5 trigger rules Python ↔ JSONata sync
+pytest tests/sdk/test_coordination_trigger_rules.py -v  # The 5 trigger rules (polyris/coordination)
 
 # Update ASL snapshots after intentional changes
 SNAPSHOT_UPDATE=1 pytest tests/sdk/test_asl_snapshots.py
@@ -111,14 +74,8 @@ npm test       # 34 tests + 550 expression compilation smoke test
 ### Lambda Unit Tests
 
 ```bash
-# evaluate_deps (trigger rule evaluation, BatchGetItem)
-cd sam/lambdas/evaluate_deps && PYTHONPATH=. pytest test_evaluate_deps.py -v
-
-# check_assets (asset freshness, wait_for logic)
-cd sam/lambdas/check_assets && PYTHONPATH=. pytest test_check_assets.py -v
-
-# notify_asset_subscribers (event publishing, subscriber notification)
-cd sam/lambdas/notify_asset_subscribers && PYTHONPATH=. pytest test_notify_asset_subscribers.py -v
+# coordination (reconcile, asset-fanout; moto tables built from sam/template.yaml)
+cd sam/lambdas/coordination && PYTHONPATH=. pytest tests/ -v
 
 # console_api (API routes, pagination, validation)
 cd sam/lambdas/console_api && PYTHONPATH=. pytest tests/ -v
@@ -141,7 +98,7 @@ All tests run automatically on push/PR to main via GitHub Actions (`.github/work
 | Job | What runs |
 |-----|-----------|
 | **Python 3.11/3.12** | ruff lint, mypy, smoke tests, `pytest tests/`, trigger rules, pipeline imports |
-| **Lambda Tests** | Syntax check, constants sync, evaluate_deps, check_assets, notify_asset_subscribers, console_api |
+| **Lambda Tests** | Syntax check, logger sync, every Lambda suite (console_api, coordination, query_subscriptions, …) |
 | **SFN Templates** | ASL JSON validation, `test_sfn_flow.py` (graph integrity), JSONata expression tests |
 | **SAM** | `cfn-lint sam/template.yaml` |
 | **UI** | npm lint, typecheck, `vitest run`, `next build` |

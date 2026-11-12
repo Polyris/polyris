@@ -1008,12 +1008,6 @@ Resources:
   # Lambda Log Groups
   # ---------------------------------------------------------------------------
 
-  EvaluateDepsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-evaluate-deps"
-      RetentionInDays: !Ref LogRetentionDays
-
   NotifyLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1024,18 +1018,6 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-query-subscriptions"
-      RetentionInDays: !Ref LogRetentionDays
-
-  CheckAssetsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-check-assets"
-      RetentionInDays: !Ref LogRetentionDays
-
-  NotifyAssetSubscribersLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-notify-asset-subscribers"
       RetentionInDays: !Ref LogRetentionDays
 
   ConsoleApiLogGroup:
@@ -1059,26 +1041,6 @@ Resources:
   # ---------------------------------------------------------------------------
   # Lambda Functions
   # ---------------------------------------------------------------------------
-
-  EvaluateDepsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${Namespace}-${Stage}-polyris-evaluate-deps"
-      CodeUri: lambdas/evaluate_deps/
-      Handler: index.handler
-      Timeout: 30
-      MemorySize: 128
-      Role: !GetAtt EvaluateDepsRole.Arn
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref EvaluateDepsLogGroup
-      Environment:
-        Variables:
-          TOKENS_TABLE: !Ref PipelineTokensTable
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   NotifyFunction:
     Type: AWS::Serverless::Function
@@ -1120,71 +1082,6 @@ Resources:
         Stage: !Ref Stage
         Namespace: !Ref Namespace
 
-  CheckAssetsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${Namespace}-${Stage}-polyris-check-assets"
-      CodeUri: lambdas/check_assets/
-      Handler: index.handler
-      Timeout: 30
-      MemorySize: 128
-      Role: !GetAtt CheckAssetsRole.Arn
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref CheckAssetsLogGroup
-      Environment:
-        Variables:
-          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
-          # wait_for subscriptions share schema with task-to-task deps
-          # (dependency_key = "asset:{name}" + subscriber = "{task}") — both live
-          # in DependencySubscriptionsTable. AssetSubscriptionsTable is for push
-          # triggers (schedule=[asset]) only, used by notify_asset_consumers SFN.
-          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
-          # Case B (Option J): when assets are already ready at registration,
-          # check_assets flips assets_ready=true on the subscriber's task
-          # record so evaluate_deps (called later when task_deps complete)
-          # sees a coherent view. Without this, a task with wait_for + pending
-          # task_deps hangs after task_deps complete.
-          TOKENS_TABLE: !Ref PipelineTokensTable
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-
-  NotifyAssetSubscribersFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${Namespace}-${Stage}-polyris-notify-asset-subscribers"
-      CodeUri: lambdas/notify_asset_subscribers/
-      Handler: index.handler
-      Timeout: 30
-      MemorySize: 128
-      Role: !GetAtt NotifyAssetSubscribersRole.Arn
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref NotifyAssetSubscribersLogGroup
-      Environment:
-        Variables:
-          # See CheckAssetsFunction note above — wait_for subscription DAL writes
-          # dependency_key/subscriber; that schema lives in DependencySubscriptionsTable.
-          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
-          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
-          QUEUED_ASSET_EVENTS_TABLE: !Ref QueuedAssetEventsTable
-          QUEUED_EVENT_TTL_DAYS: "7"
-          # Case B (task_deps + wait_for coordination): notify_asset_subscribers
-          # asks evaluate_deps whether task_deps are also satisfied before
-          # signaling wait_token. Without this, an asset arriving before the
-          # last task_dep completes wakes dep_wrapper too early.
-          TOKENS_TABLE: !Ref PipelineTokensTable
-          EVALUATE_DEPS_LAMBDA: !GetAtt EvaluateDepsFunction.Arn
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
-
-  # ADR #130 §3: the only code that decides whether a waiting task is ready
-  # and the only code that signals it. One CodeUri holds every coordination
-  # function; each gets its own least-privilege role.
   ReconcileFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1334,33 +1231,6 @@ Resources:
   # Lambda IAM Roles
   # ---------------------------------------------------------------------------
 
-  EvaluateDepsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${Namespace}-${Stage}-polyris-evaluate-deps-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: EvaluateDepsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:BatchGetItem
-                Resource:
-                  - !GetAtt PipelineTokensTable.Arn
-                  - !Sub "${PipelineTokensTable.Arn}/index/*"
-
   NotifyRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1424,108 +1294,6 @@ Resources:
                   - !GetAtt DependencySubscriptionsTable.Arn
                   - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
 
-  CheckAssetsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${Namespace}-${Stage}-polyris-check-assets-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: CheckAssetsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                Resource:
-                  - !GetAtt AssetEventsTable.Arn
-                  - !Sub "${AssetEventsTable.Arn}/index/*"
-              # Subscriptions writes: check_assets calls _save_asset_subscription
-              # via subscriptions_repo when assets aren't ready yet, and _delete_
-              # subscription when a recheck finds them ready. The DAL writes
-              # `dependency_key = "asset:{name}"` + `subscriber`, which matches
-              # DependencySubscriptionsTable's composite key — NOT
-              # AssetSubscriptionsTable's `asset_name`/`pipeline_name`.
-              - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                Resource:
-                  - !GetAtt DependencySubscriptionsTable.Arn
-              # Case B: flip assets_ready=true on the subscriber's task record
-              # when assets are already ready at registration time.
-              - Effect: Allow
-                Action:
-                  - dynamodb:UpdateItem
-                Resource:
-                  - !GetAtt PipelineTokensTable.Arn
-
-  NotifyAssetSubscribersRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${Namespace}-${Stage}-polyris-notify-asset-subscribers-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: NotifyAssetSubscribersPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              # Subscription read/delete: DAL uses dependency_key/subscriber
-              # composite key, which is DependencySubscriptionsTable's schema.
-              # Query needs the subscriber-index GSI too (for by-execution
-              # unsubscribe queries).
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:Query
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                Resource:
-                  - !GetAtt DependencySubscriptionsTable.Arn
-                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
-                  - !GetAtt QueuedAssetEventsTable.Arn
-              # Case B coordination: mark assets_ready on the subscriber's task
-              # record so evaluate_deps sees a coherent view.
-              - Effect: Allow
-                Action:
-                  - dynamodb:UpdateItem
-                Resource:
-                  - !GetAtt PipelineTokensTable.Arn
-              # Invoke evaluate_deps to check task_deps before signaling.
-              - Effect: Allow
-                Action:
-                  - lambda:InvokeFunction
-                Resource:
-                  - !GetAtt EvaluateDepsFunction.Arn
-              - Effect: Allow
-                Action:
-                  - states:SendTaskSuccess
-                Resource: "*"
-
-  # What the reconciler needs (ADR #130 §3), shared by every coordination
-  # function that runs it in-process. Exactly the calls the code makes:
-  # pinned both ways by test_coordination_template.py. No Description: it
-  # would make every future wording change a replacement (Principle #33).
   CoordinationReconcilePolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -1957,34 +1725,10 @@ Resources:
               LogGroupArn: !GetAtt RestartWrapperLogGroup.Arn
       DefinitionUri: sfn_templates/helpers/restart_wrapper/sfn.tpl.json
 
-  EvaluateDepsPermissionFromSfn:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt EvaluateDepsFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: states.amazonaws.com
-      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-
   QuerySubscriptionsPermissionFromSfn:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !GetAtt QuerySubscriptionsFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: states.amazonaws.com
-      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-
-  CheckAssetsPermissionFromSfn:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt CheckAssetsFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: states.amazonaws.com
-      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-
-  NotifyAssetSubscribersPermissionFromSfn:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt NotifyAssetSubscribersFunction.Arn
       Action: lambda:InvokeFunction
       Principal: states.amazonaws.com
       SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"

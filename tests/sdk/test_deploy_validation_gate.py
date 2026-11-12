@@ -182,10 +182,8 @@ def test_generate_cfn_template_rejects_unsubstituted_table_name():
 
 
 def test_namespace_stage_length_guardrail(mocker):
-    """deploy_pipeline exits early when namespace+stage exceeds 25 chars.
-
-    Longest IAM role suffix in template.yaml: '-polyris-notify-asset-subscribers-role'
-    (38 chars). With the leading hyphen: 64 - 1 - 38 = 25 chars left for namespace+stage.
+    """deploy_pipeline exits early when namespace+stage exceeds NAMESPACE_STAGE_MAX_LEN,
+    which test_platform.py derives from the longest IAM role name in template.yaml.
 
     Guards are skipped on --destroy (no IAM roles created); test uses deploy path.
     """
@@ -200,11 +198,11 @@ def test_namespace_stage_length_guardrail(mocker):
         return_value=(True, [], []),
     )
     cfg = mocker.patch("polyris.deploy.polyris_config")
-    # namespace(17) + stage(9) = 26 > 25
+    # namespace(24) + stage(9) = 33 > 30
     cfg.stage = "stagingxy"
     cfg.for_stage.return_value = _stage_cfg(
         mocker,
-        namespace="this-is-namespace",
+        namespace="this-is-a-long-namespace",
         stack_name="some-stack",
     )
     boto = mocker.patch("polyris.deploy.boto3")
@@ -221,11 +219,11 @@ def test_namespace_stage_length_guardrail_skipped_on_destroy(mocker):
     dag = mocker.MagicMock()
     dag.dag_id = "my-pipeline"
     cfg = mocker.patch("polyris.deploy.polyris_config")
-    # namespace(17) + stage(9) = 26 > 25 — would fail on deploy, must pass on destroy
+    # namespace(24) + stage(9) = 33 > 30 — would fail on deploy, must pass on destroy
     cfg.stage = "stagingxy"
     cfg.for_stage.return_value = _stage_cfg(
         mocker,
-        namespace="this-is-namespace",
+        namespace="this-is-a-long-namespace",
         stack_name="some-stack",
     )
     boto = mocker.patch("polyris.deploy.boto3")

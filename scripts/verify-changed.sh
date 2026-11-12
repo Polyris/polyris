@@ -55,15 +55,16 @@ fi
 # ── Lambdas / SAM ───────────────────────────────────────────────────────────
 if touched '^(sam/|polyris/constants\.py|polyris/codegen/)'; then
   run "cfn-lint"                cfn-lint sam/template.yaml
-  run "constants + loggers"     make sync-constants
+  run "loggers"                 make sync-loggers
   run "enum codegen drift"      make check-generate-enums
   run "dateVars codegen drift"  make check-generate-variables
   run "SFN status literals"     make check-sfn-templates
   run "backfill parity"         make check-backfill-parity
-  for d in evaluate_deps notify notify_asset_subscribers check_assets query_subscriptions bucket_cleanup; do
+  for d in notify query_subscriptions bucket_cleanup; do
     run "lambda: $d" bash -c "cd sam/lambdas/$d && PYTHONPATH=. python3 -m pytest -q -p no:cacheprovider"
   done
   run "console_api" bash -c "cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -q -p no:cacheprovider"
+  run "coordination" bash -c "cd sam/lambdas/coordination && PYTHONPATH=. python3 -m pytest tests/ -q -p no:cacheprovider"
 fi
 
 # ── UI ──────────────────────────────────────────────────────────────────────

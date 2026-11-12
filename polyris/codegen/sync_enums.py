@@ -5,10 +5,11 @@ Canonical source: polyris/constants.py defines 8 enum families. This
 script reads them via Python imports (NOT regex; safer + handles
 inheritance) and writes:
 
-  1. sam/lambdas/_shared/constants.py        (Lambda shared)
-  2. sam/lambdas/console_api/constants.py    (Lambda console_api)
-  3. sam/lambdas/evaluate_deps/constants.py  (Lambda evaluate_deps; copied from _shared)
-  4. ui/src/generated/enums.ts                (Frontend TypeScript)
+  1. sam/lambdas/console_api/constants_generated.py  (Lambda console_api)
+  2. ui/src/generated/enums.ts                        (Frontend TypeScript)
+
+The coordination Lambdas get their constants from polyris/coordination
+through sync_coordination instead.
 
 Why Python-import the source rather than regex-parse: it lets us
 inherit existing logic (TaskStatus is an Enum subclass; PipelineStatus
@@ -347,12 +348,7 @@ def _render_ts_body() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 PY_TARGETS = [
-    REPO_ROOT / "sam" / "lambdas" / "_shared" / "constants_generated.py",
     REPO_ROOT / "sam" / "lambdas" / "console_api" / "constants_generated.py",
-    # v0.79.5 (ADR #77) — evaluate_deps imports the generated module-level
-    # status sets (TASK_TERMINAL_STATUSES etc.) from its constants.py copy.
-    # The Lambda needs constants_generated.py in its deploy artifact.
-    REPO_ROOT / "sam" / "lambdas" / "evaluate_deps" / "constants_generated.py",
 ]
 
 TS_TARGET = REPO_ROOT / "ui" / "src" / "generated" / "enums.ts"

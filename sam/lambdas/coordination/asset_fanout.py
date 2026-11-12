@@ -205,7 +205,7 @@ class AssetFanout:
             self._warn(f"push:{name}", f"push consumer {consumer} could not be started ({error}) "
                                        f"and its retry row could not be written: {type(exc).__name__}: {exc}")
             return
-        log.warn("asset_fanout", "push start failed transiently; the sweeper retries", run_name=name, error=error)
+        log.error("asset_fanout", "push start failed transiently; the sweeper retries", run_name=name, error=error)
 
     def _consumers(self, asset: str) -> List[Dict[str, Any]]:
         """Pipelines scheduled on `asset` (consistent, all pages)."""

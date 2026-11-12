@@ -29,7 +29,7 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | Option | Description |
 |--------|-------------|
 | `--namespace` | Resource prefix for a new install. Bucket names are global, so it must be unique to you |
-| `--stage` | Stage of a new install (default: `dev`). Namespace + Stage ≤ 25 characters |
+| `--stage` | Stage of a new install (default: `dev`). Namespace + Stage ≤ 30 characters |
 | `--admin-email` | First console admin; Cognito emails a temporary password |
 | `--param KEY=VALUE` | Set a template parameter (repeatable). Unset parameters keep their current value. `Namespace`, `Stage`, `ArtifactsBucket`, `UiArtifactsPrefix` are refused |
 | `--stack` | Platform stack name (default: the one stack tagged as a Polyris platform, or `<namespace>-<stage>` when those flags are given). Naming a platform stack created with `sam deploy` switches it to `polyris-up` (asks to confirm); a stack that isn't a Polyris platform is refused |

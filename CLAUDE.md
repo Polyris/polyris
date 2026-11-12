@@ -378,10 +378,8 @@ sam/
       notify_asset_consumers/sfn.tpl.json
   lambdas/
     console_api/      # REST API (63 routes full build, 27 free), DAL repos, route handlers
-    evaluate_deps/    # Evaluates trigger rules (all_success, all_done, etc.)
+    coordination/     # reconcile + asset-fanout (ADR #130): decide readiness, signal wrappers, start push consumers
     query_subscriptions/  # Finds downstream subscribers for a completed task
-    check_assets/     # Validates asset freshness for wait_for
-    notify_asset_subscribers/  # Triggers asset-based pipelines
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
 tests/
   sdk/                # ASL snapshot tests, template tests, SFN flow tests
@@ -548,28 +546,26 @@ In `template.yaml`, always verify:
 |----------|---------|-------------|
 | `console-api` | All REST API endpoints | `TOKENS_TABLE`, `REGISTRY_TABLE`, etc. |
 | `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
-| `evaluate-deps` | Evaluate trigger rules | `TOKENS_TABLE` |
-| `check-assets` | Asset freshness checks + `wait_for` subscription writes | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
-| `notify-asset-subscribers` | Wake `wait_for` tasks on asset events | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
 | `asset-fanout` | Read the `asset-events` stream (INSERT only) and reconcile every task waiting on the new fact's asset (ADR #130 §6.1) | the same as `reconcile` |
 | `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
-**Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `evaluate_deps`, `notify_asset_subscribers`, `check_assets`, `query_subscriptions`, `ui_bootstrap` still use bare `print()` — migrate opportunistically.
+**Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `ui_bootstrap` still uses bare `print()` — migrate opportunistically.
 
 ---
 
-## Task Status Constants (`_shared/constants.py`)
+## Task Status Constants (`polyris/constants.py`)
 
 ```python
-TaskStatus.TERMINAL = {SUCCESS, FAILED, SKIPPED, UPSTREAM_FAILED, ABORTED}
+TERMINAL_STATUSES = {SUCCESS, SUCCEEDED, FAILED, SKIPPED, ABORTED, UPSTREAM_FAILED}
 # NOTE: STOPPED is NOT terminal — task can be restarted
-TaskStatus.SUCCESS_STATES = {SUCCESS, SKIPPED}
-TaskStatus.FAILURE_STATES = {FAILED, UPSTREAM_FAILED, ABORTED}
-TaskStatus.WAITING_STATES = {WAITING, WAITING_PAUSED, WAITING_DELAY, DEPS_READY, WAITING_DECISION}
+SUCCESS_STATUSES = {SUCCESS, SUCCEEDED, SKIPPED}
+FAILURE_STATUSES = {FAILED, UPSTREAM_FAILED, ABORTED}
+WAITING_STATUSES = {WAITING, DEPS_READY, WAITING_DELAY, WAITING_PAUSED, WAITING_DECISION}
+RECONCILABLE_STATUSES = {WAITING, WAITING_PAUSED}  # the only rows the reconciler acts on (ADR #130)
 ```
 
-After changing `_shared/constants.py`: run `make sync-constants` to copy to evaluate_deps.
+After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums` and `python -m polyris.codegen.sync_coordination` (Principle #27).
 
 ---
 
@@ -764,6 +760,7 @@ After significant changes:
 - `CHANGELOG.md` — new version entry
 - `docs/reference/DESIGN_DECISIONS.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
+- A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/sdk/test_doc_resource_counts.py` derives every number and name from `sam/template.yaml` and fails until the docs agree.
 
 ---
 

@@ -1,5 +1,13 @@
 ## Unreleased
 
+### Removed — the old coordination Lambdas (ADR #130)
+
+- The `evaluate-deps`, `check-assets` and `notify-asset-subscribers` functions are gone, with their roles, log groups and invoke permissions. The `reconcile` and `asset-fanout` functions do their work.
+- `sam/lambdas/_shared/constants.py` and `make sync-constants` are gone. The console gets its enums from `sync_enums`, the coordination functions get theirs from `sync_coordination`.
+- Namespace + Stage may now be up to 30 characters (was 25), because the longest IAM role name is now shorter.
+- A failure on a coordination wake-up path now always logs at ERROR; three places logged it at WARN.
+- The docs name the real state-machine log groups (`/aws/states/...`).
+
 ### Changed — asset-scheduled pipelines start from facts (ADR #130 §6.1)
 
 - `asset-fanout` now also starts the pipelines scheduled on an asset (`schedule=[...]`). For each new fact it evaluates the consumer's whole schedule for the fact's partition, with the same rule as `wait_for`; `.within(...)` is judged as of the fact's time, so a late or repeated event gives the same answer.

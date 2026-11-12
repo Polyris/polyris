@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-constants sync-loggers check-generate-enums check-generate-variables check-generate-coordination generate-coordination check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-loggers check-generate-enums check-generate-variables check-generate-coordination generate-coordination check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -16,7 +16,6 @@ help:
 	@echo "  make check             - Run every gate CI runs (lint, drift, guards, versions, smoke, test)"
 	@echo "  make check-no-paid     - Open-core guard: no paid ee/ code tracked here"
 	@echo "  make lint              - Check Python + JSON syntax"
-	@echo "  make sync-constants    - Verify Lambda constants in sync"
 	@echo "  make generate-coordination - Copy polyris/coordination into Lambdas (ADR #130)"
 	@echo "  make check-versions    - Verify version consistency across files"
 	@echo "  make smoke-pipelines   - Verify all pipelines import cleanly"
@@ -60,17 +59,9 @@ test-cov:
 # Lambda tests
 test-lambdas:
 	@echo "🧪 Running Lambda tests..."
-	cd sam/lambdas/evaluate_deps && PYTHONPATH=. python3 -m pytest test_evaluate_deps.py -v
 	@if [ -f sam/lambdas/notify/test_notify.py ]; then \
 		echo "  Running notify tests..."; \
 		cd sam/lambdas/notify && PYTHONPATH=. python3 -m pytest test_notify.py -v; \
-	fi
-	@if [ -d sam/lambdas/notify_asset_subscribers ] && [ -f sam/lambdas/notify_asset_subscribers/test_notify_asset_subscribers.py ]; then \
-		cd sam/lambdas/notify_asset_subscribers && PYTHONPATH=. python3 -m pytest test_notify_asset_subscribers.py -v; \
-	fi
-	@if [ -f sam/lambdas/check_assets/test_check_assets.py ]; then \
-		echo "  Running check_assets tests..."; \
-		cd sam/lambdas/check_assets && PYTHONPATH=. python3 -m pytest test_check_assets.py -v; \
 	fi
 	@if [ -d sam/lambdas/console_api/tests ]; then \
 		echo "  Running console_api tests (requires boto3, pytest-mock)..."; \
@@ -122,7 +113,7 @@ e2e-smoke:
 	python3 -m pytest tests/e2e/ -v -m smoke
 
 # All checks before commit
-check: lint sync-constants sync-loggers check-generate-enums check-generate-variables check-generate-coordination \
+check: lint sync-loggers check-generate-enums check-generate-variables check-generate-coordination \
        check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck \
        check-versions smoke-pipelines test
 	@echo "✅ All checks passed!"
@@ -163,7 +154,6 @@ json.loads(src)" 2>&1 || (echo "❌ Invalid JSON: $$f" && exit 1); \
 
 # Generate enum mirrors from polyris/constants.py (ADR #72, v0.79.0)
 # Writes:
-#   - sam/lambdas/_shared/constants_generated.py
 #   - sam/lambdas/console_api/constants_generated.py
 #   - ui/src/generated/enums.ts
 generate-enums:
@@ -209,7 +199,7 @@ check-backfill-parity:
 # Sync logger.py from _shared/ to each Lambda (v0.79.4, ADR #76)
 sync-loggers:
 	@echo "🔄 Syncing Lambda loggers..."
-	@for lambda in evaluate_deps notify_asset_subscribers check_assets query_subscriptions console_api coordination; do \
+	@for lambda in query_subscriptions console_api coordination; do \
 		if ! diff -q sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py > /dev/null 2>&1; then \
 			echo "❌ $$lambda/logger.py out of sync!"; \
 			echo "   Run: cp sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py"; \
@@ -219,19 +209,6 @@ sync-loggers:
 	@echo "✅ All Lambda loggers in sync"
 
 # Validate Lambda constants are in sync
-sync-constants:
-	@echo "🔄 Checking Lambda constants..."
-	@diff -q sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py > /dev/null 2>&1 || \
-		(echo "❌ evaluate_deps/constants.py out of sync!" && \
-		 echo "   Run: cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py" && exit 1)
-	@python3 -m polyris.codegen.check_shared_constants
-	@for d in console_api check_assets evaluate_deps notify_asset_subscribers query_subscriptions; do \
-		diff -q sam/lambdas/_shared/logger.py sam/lambdas/$$d/logger.py > /dev/null 2>&1 || \
-		(echo "❌ sam/lambdas/$$d/logger.py drifted from _shared/logger.py!" && \
-		 echo "   Run: cp sam/lambdas/_shared/logger.py sam/lambdas/$$d/logger.py" && exit 1); \
-	done
-	@echo "✅ Constants + logger in sync"
-
 # Type check the shipped library. The wheel ships py.typed, so annotations are
 # a public contract — this is blocking, matching CI.
 typecheck:
