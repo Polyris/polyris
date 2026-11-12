@@ -122,6 +122,15 @@ WAITING_STATUSES: Set[str] = {
     TaskStatus.WAITING_DECISION.value,
 }
 
+# Statuses the coordination reconciler may act on (ADR #130 §2): the task is
+# still waiting for its dependencies. Deliberately narrower than
+# WAITING_STATUSES — deps_ready, waiting_delay and waiting_decision are past
+# the dependency wait and belong to the wrapper / run_task.
+RECONCILABLE_STATUSES: Set[str] = {
+    TaskStatus.WAITING.value,
+    TaskStatus.WAITING_PAUSED.value,
+}
+
 # Statuses that show countdown in UI
 COUNTDOWN_STATUSES: Set[str] = {
     TaskStatus.DEPS_READY.value,

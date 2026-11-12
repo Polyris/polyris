@@ -76,6 +76,46 @@ def validate_partition_key(key: str, granularity: Granularity) -> None:
         ) from exc
 
 
+def detect_granularity(key: str) -> Granularity:
+    """Return the granularity whose canonical format ``key`` uses.
+
+    The four formats are disjoint, so the format alone decides:
+    ``YYYY-MM-DDTHH`` hourly, ``YYYY-MM-DD`` daily, ``YYYY-Www`` weekly,
+    ``YYYY-MM`` monthly. Raises ``ValueError`` for anything else, including
+    calendar-invalid keys such as ``2024-02-31``.
+    """
+    if "T" in key:
+        granularity: Granularity = "hourly"
+    elif _FORMAT_PATTERNS["weekly"].match(key):
+        granularity = "weekly"
+    elif _FORMAT_PATTERNS["monthly"].match(key):
+        granularity = "monthly"
+    elif _FORMAT_PATTERNS["daily"].match(key):
+        granularity = "daily"
+    else:
+        raise ValueError(
+            f"{key!r} is not a partition key "
+            f"(daily=YYYY-MM-DD, weekly=YYYY-Www, monthly=YYYY-MM, hourly=YYYY-MM-DDTHH)"
+        )
+    validate_partition_key(key, granularity)
+    return granularity
+
+
+def partition_start(key: str) -> datetime:
+    """Return the UTC start of the partition ``key`` names, whatever its format.
+
+    ``2024-01-15T14`` → 14:00 that day; ``2024-01-15`` → that midnight;
+    ``2024-W03`` → Monday of ISO week 3; ``2024-01`` → the 1st of the month.
+    Used by coordination (ADR #130 §1) to put run dates and asset facts of
+    every granularity on one date line.
+    """
+    granularity = detect_granularity(key)
+    if granularity == "hourly":
+        # validate_partition_key accepts an optional suffix after the hour.
+        key = key[:13]
+    return _floor_to_bucket(_parse_to_datetime(key, granularity), granularity)
+
+
 # Hard limit per ADR #51 Q8 — must match BackfillLimits.PARTITION_HARD_LIMIT
 # in sam/lambdas/console_api/constants.py. Lowered from 5000 to 1000 because
 # the bulk-backfill Inline Map's history-event budget (~20 events/partition,
