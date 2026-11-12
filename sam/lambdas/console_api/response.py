@@ -33,7 +33,7 @@ def cors_response(status_code: int, body: Any) -> Dict:
             'Pragma': 'no-cache',
             'Expires': '0'
         },
-        'body': json.dumps(body, default=str)
+        'body': json.dumps(body, default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o))
     }
 
 

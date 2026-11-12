@@ -28,6 +28,22 @@ class TestCorsResponse:
         resp = cors_response(200, {'ts': datetime(2026, 1, 1, tzinfo=timezone.utc)})
         assert '2026-01-01' in resp['body']
 
+    def test_set_serialized_as_sorted_list_not_repr(self):
+        """DynamoDB StringSets come back as Python sets; they must serialise as a
+        sorted JSON array, not as the Python repr "{'a', 'b'}" which is not valid
+        JSON and breaks every caller that does json.loads(resp['body'])."""
+        resp = cors_response(200, {'assets': {'b', 'a', 'c'}})
+        body = json.loads(resp['body'])  # would raise if set was str()'d
+        assert body['assets'] == ['a', 'b', 'c'], (
+            "sets must be sorted lists in JSON output, not repr strings"
+        )
+
+    def test_frozenset_serialized_as_sorted_list(self):
+        """frozenset has the same repr-is-not-JSON problem as set."""
+        resp = cors_response(200, {'tags': frozenset(['z', 'x', 'y'])})
+        body = json.loads(resp['body'])
+        assert body['tags'] == ['x', 'y', 'z']
+
 
 class TestErrorResponse:
     def test_minimal_error_has_only_error_key(self):

@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import inspect
 import sys
+import textwrap
 from pathlib import Path
 from typing import Iterable
 
@@ -76,7 +77,14 @@ def _ts_header() -> str:
 
 def _enum_class_py(name: str, doc: str, members: Iterable[tuple[str, str]]) -> str:
     """Plain Python class (NOT enum.Enum — Lambda code expects bare strings)."""
-    lines = [f"class {name}:", f'    """{doc}"""']
+    if '\n' in doc:
+        # Multi-line: indent continuation lines so the generated class body is
+        # properly formatted. textwrap.indent skips blank lines by default.
+        indented = textwrap.indent(doc, '    ').lstrip()
+        docstring = f'    """{indented}\n    """'
+    else:
+        docstring = f'    """{doc}"""'
+    lines = [f"class {name}:", docstring]
     for attr, val in members:
         lines.append(f'    {attr} = {val!r}')
     return "\n".join(lines) + "\n"
@@ -135,7 +143,7 @@ def _render_python_body() -> str:
         members = [(n, getattr(cls, n))
                    for n in vars(cls) if not n.startswith("_")]
         parts.append(_enum_class_py(cls.__name__,
-                                    cls.__doc__ or cls.__name__,
+                                    inspect.cleandoc(cls.__doc__) if cls.__doc__ else cls.__name__,
                                     members))
         parts.append("\n")
 
