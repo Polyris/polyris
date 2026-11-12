@@ -17,6 +17,8 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 
+from coordination_core.wake import DEAD_TOKEN_CODES
+
 TRANSIENT_CODES = frozenset({
     "ThrottlingException",
     "Throttling",
@@ -31,7 +33,6 @@ TRANSIENT_CODES = frozenset({
     "RequestTimeout",
     "RequestTimeoutException",
 })
-DEAD_TOKEN_CODES = frozenset({"TaskTimedOut", "InvalidToken", "TaskDoesNotExist"})
 CONDITION_FAILED = "ConditionalCheckFailedException"
 
 _TRANSIENT_NETWORK = (EndpointConnectionError, ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError)

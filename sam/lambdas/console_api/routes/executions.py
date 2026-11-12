@@ -18,6 +18,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import RECONCILE_FUNCTION_ARN, lambda_client, sfn
+from coordination_core.wake import DEAD_TOKEN_CODES
 from dal import executions_repo, pipelines_repo, backfills_repo
 from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
 from constants import Limits, TASK_SETTLED_STATUSES, derive_execution_status
@@ -675,6 +676,10 @@ def resume_execution(pipeline_execution: str, event: Dict) -> Dict:
                 released.append(task_name)
             except (ClientError, BotoCoreError) as e:
                 code = e.response.get('Error', {}).get('Code', '') if isinstance(e, ClientError) else ''
+                if code in DEAD_TOKEN_CODES:
+                    # Its wait already ended: the sweeper released it, or its pause heartbeat ran out.
+                    released.append(task_name)
+                    continue
                 log.error("resume_execution", "Could not release a paused task", task_name=task_name,
                           pipeline_execution=pipeline_execution, error=str(e))
                 failed.append(f"{task_name} ({code or str(e)[:50]})")

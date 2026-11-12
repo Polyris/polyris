@@ -126,6 +126,20 @@ PROBES: Tuple[Probe, ...] = (
              "                                      output=json.dumps({'signal': 'deps_ready', 'reason': 'resume'}))\n"),
     ), f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
     # The old warning rows were found by partition date, not by write time: older ones never reached the bell.
+    # The old pause waiter saved the token without an attention entry, so only resume could release it.
+    Probe("B-P3", (
+        Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
+             "paused_at = :paused_at, attention = :attention, attention_at = :due, attempts = :zero",
+             "paused_at = :paused_at, attempts = :zero"),
+        Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
+             "          \":attention\": {\n"
+             "            \"S\": \"{% 'paused#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}\"\n"
+             "          },\n"
+             "          \":due\": {\n"
+             "            \"S\": \"{% $fromMillis($toMillis($now()) + 600000) %}\"\n"
+             "          },\n",
+             ""),
+    ), f"{SCENARIOS}::test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper"),
     Probe("B-N1", (Edit("sam/lambdas/coordination/coordination_core/records.py",
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),

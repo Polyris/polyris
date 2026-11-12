@@ -53,6 +53,7 @@ Every hang and wrong wake in this layer since ADR #122 traces to five causes.
 |---|---|
 | B-P1 | Asset arrives during a pause → subscription deleted, status stays `waiting` → resume ignores it → hang |
 | B-P2 | Task deps finish during a pause, assets missing → resume runs the task without its assets |
+| B-P3 | A task saves its pause token while resume runs (resume finds the run's rows through an index), or its release fails → resume misses it → it waits for its 12-hour pause heartbeat |
 | B-R1 | `restart_task` passes neither `wait_for` nor the other starter fields → the restarted task is not gated on assets |
 | B-N1 | Warning rows are dated by partition and grouped per run → warnings for older dates never reach the bell; one warning hides another |
 | B-S1 | `Auto_Skip_Register` swallows a failed status write and still notifies dependants |
@@ -281,7 +282,7 @@ The failure handler also maps `error.Error = 'UpstreamFailed'` to `upstream_fail
 
 #### 6.5 Resume, restart, auto-skip
 
-- **Resume:** clear the pause flag and send the `pause_token` callbacks as today, but drop the unconditional `deps_ready` write that followed them (`run_task` continues and writes `running` itself). Then call `reconcile({pipeline_execution, source: resume})`. That call finds the run's rows through `pipeline-execution-index` (candidates only), with bounded parallelism and a 20 s budget. The response reports how many rows were handled and how many were deferred. Deferred rows keep their attention entry with `attention_at = now`, so the next sweeper tick handles them; they do not count as primary-path misses.
+- **Resume:** clear the pause flag and send the `pause_token` callbacks as today, but drop the unconditional `deps_ready` write that followed them (`run_task` continues and writes `running` itself). Then call `reconcile({pipeline_execution, source: resume})`. That call finds the run's rows through `pipeline-execution-index` (candidates only), with bounded parallelism and a 20 s budget. The response reports how many rows were handled and how many were deferred. Deferred rows keep their attention entry with `attention_at = now`, so the next sweeper tick handles them; they do not count as primary-path misses. A task that saves its pause token while resume runs, or whose release fails, is released by the sweeper (§8 step 2, B-P3); a release whose token is already dead counts as done.
 - **Restart** replays the row's `starter_input`. A contract test checks that every starter of the wrapper (pipeline SFN, restart, backfill) passes every field the wrapper and `Save_Task_Record` read (B-R1).
 - **`Auto_Skip_Register`** retries its write. If the write cannot be made, it fails the wrapper visibly and does not notify dependants (B-S1).
 
@@ -307,6 +308,7 @@ The derived wrapper name `{task_id}-{date}-{suffix}` must keep its suffix. When 
 | `attention` | Rows | Leaves the index |
 |---|---|---|
 | `waiting#{0-f}` | task rows that may need a wake | wrapper post-wait write; reconciler `noop`/zombie path; re-registration replaces the row |
+| `paused#{0-f}` | task rows held in `run_task`'s pause wait, written by `pause_waiter` with the `pause_token` | `run_task` when it continues; the sweeper when the token is dead or the row no longer holds one |
 | `retry#{0-f}` | **push** retry rows `_retry_push_{h(consumer, date or event)}` (pull needs none: the waiting row is already indexed) | deleted on success; exhausted after 24 h → warning; TTL 7 days |
 | `warn#{0-f}` | coordination warnings (§9) | TTL 8 days |
 
@@ -326,17 +328,21 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
    - If it is still waiting, set `attention_at` to the next due time (backoff 10 → 20 → 30 min, then every 30 min) and increment `attempts`. The write is conditional on `started_at`.
 
    Due-time ordering means nothing starves. The backoff caps the work at 48 checks per waiting task per day.
-2. **Push retries.** For `retry#0..f` rows that are due, retry with backoff (5 min → 1 h).
-3. **Push catch-up,** hourly. For every subscribed asset, read the facts written in the last 48 hours (consistent base-table query) and replay AssetFanout's push branch for each of them: same date, same rule, same `cascade` handling, same deterministic names. Only facts with `fact_version = 2`, written by the new code, are replayed. Facts written by the old code were already handled by the old push path, so they are never replayed and nothing starts twice. No time cutover or per-subscription timestamp is needed.
-4. **Engine self-check:**
+2. **Pause releases.** Query `paused#0..f` for `attention_at ≤ now`. For each row, read the row and its run's pause flag (consistent):
+   - the row no longer holds a `pause_token`, or its token is dead → drop its entry;
+   - the run is still paused → due again, with the same backoff;
+   - otherwise send the pause callback as resume does, and write a `sweeper` warning: resume missed the task.
+3. **Push retries.** For `retry#0..f` rows that are due, retry with backoff (5 min → 1 h).
+4. **Push catch-up,** hourly. For every subscribed asset, read the facts written in the last 48 hours (consistent base-table query) and replay AssetFanout's push branch for each of them: same date, same rule, same `cascade` handling, same deterministic names. Only facts with `fact_version = 2`, written by the new code, are replayed. Facts written by the old code were already handled by the old push path, so they are never replayed and nothing starts twice. No time cutover or per-subscription timestamp is needed.
+5. **Engine self-check:**
    - event source mapping `Enabled`;
    - stream enabled;
-   - the oldest overdue `waiting` row;
+   - the oldest overdue `waiting` or `paused` row;
    - push retry backlog.
 
    The results go to the `_engine_health` row (§9).
-5. **Adoption.** After a new platform version is first seen, each run continues two resumable scans until both finish. The task-row scan then repeats for one more hour. The version marker and the cursors are kept in `_engine_health`. Adopted rows that have no `orchestration_timeout` use the platform default for the liveness deadline. Adopted rows that have no `starter_input` restart the way they do today, with a warning.
-   - **Task rows.** Every reconcilable row without an `attention` key gets one. Rows registered before or during the deploy are then reconciled from their facts, whatever pointer shape they were written with. The extra hour of repeats covers registrations that the old definitions wrote while the stack update was still running.
+6. **Adoption.** After a new platform version is first seen, each run continues two resumable scans until both finish. The task-row scan then repeats for one more hour. The version marker and the cursors are kept in `_engine_health`. Adopted rows that have no `orchestration_timeout` use the platform default for the liveness deadline. Adopted rows that have no `starter_input` restart the way they do today, with a warning.
+   - **Task rows.** Every reconcilable row without an `attention` key gets one: `paused#` if it holds a `pause_token`, `waiting#` otherwise. Rows registered before or during the deploy are then reconciled from their facts, whatever pointer shape they were written with. The extra hour of repeats covers registrations that the old definitions wrote while the stack update was still running.
    - **Asset facts.** Every row without `partition_date` gets `partition_key`, `partition_date` and `granularity`, derived from `execution_date` and the producer's registry entry. It does **not** get `fact_version`. These writes are `MODIFY` records, which the INSERT-only stream filter ignores, so they trigger nothing.
 
 **Logging a primary-path miss.** When the sweeper wakes a task whose enabling fact is older than that task's previous due time, it writes a `sweeper` warning: the primary path missed it.
@@ -389,7 +395,7 @@ Each has a test (`tests/backend/coordination/README.md`).
 2. **No success signal without consistent reads of the task facts in the same invocation.** Asset facts come from the partition index plus `known_events`; their bounded staleness is covered by the sweeper.
 3. **Status never moves backwards.** Each transition has one owner (§2). Every reconciler write is conditional on the token, the status and the `started_at` it read.
 4. **Pointers are deleted only after an accepted signal.** Leftovers are `noop`s.
-5. **Every reconcilable row without `pause_token` is in the attention index.** A row that leaves a reconcilable status leaves the index within one sweeper run. After a deploy, adoption completes.
+5. **Every reconcilable row without `pause_token` is in the attention index, and every row held in its pause wait is in `paused#`.** A row that leaves a reconcilable status leaves the index within one sweeper run. After a deploy, adoption completes.
 6. **Facts are never overwritten.**
 7. **Every asset-event INSERT is processed by AssetFanout.** Pull waiters are also covered by the sweeper, and push consumers by retry rows and the catch-up pass.
 8. **Push runs at most once** per (consumer, date) for AND and per (consumer, event) for OR, and **at least once** within the catch-up window.
@@ -442,7 +448,7 @@ Forward-fix only (D13):
 2. **Window.**
    - Pause pipeline schedules.
    - Wait until no `run_task` execution is running (a checkable list). A producer started on the old definition that finishes after the deploy calls deleted targets and fails loudly; the drain avoids that.
-   - Waiting wrappers do **not** need to finish: the sweeper adopts their rows (§8 step 5) and reconciles them from facts. A pre-upgrade wrapper that receives a skip is handled by the zombie rule (§3 step 3).
+   - Waiting wrappers do **not** need to finish: the sweeper adopts their rows (§8 step 6) and reconciles them from facts. A pre-upgrade wrapper that receives a skip is handled by the zombie rule (§3 step 3).
    - Existing asset facts get their partition fields during adoption, so the partition index sees them.
 3. **Main deploy.**
    - `sam deploy --disable-rollback`, after a change-set check: no unexpected replacements.

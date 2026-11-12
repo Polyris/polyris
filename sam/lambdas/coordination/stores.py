@@ -165,6 +165,45 @@ class TaskStore:
             ExpressionAttributeValues=values,
         ))
 
+    def mark_pause_due(self, execution_name: str, token: str, due: datetime, attempts: int) -> bool:
+        """Set the next sweeper check of a task still held in its pause wait by ``token``."""
+        return _conditional(lambda: self.table.update_item(
+            Key={"execution_name": execution_name},
+            UpdateExpression="SET #due = :due, attempts = :n",
+            ConditionExpression="pause_token = :t AND #s = :paused",
+            ExpressionAttributeNames={"#due": att.DUE, "#s": "status"},
+            ExpressionAttributeValues={":due": format_utc(due), ":n": attempts, ":t": token,
+                                       ":paused": WAITING_PAUSED},
+        ))
+
+    def drop_pause_check(self, execution_name: str, partition: str, token: Optional[str] = None) -> bool:
+        """Take a row out of ``paused#`` (ADR #130 §8 step 2).
+
+        With ``token``: that pause token is dead, so nothing can release it any
+        more; whoever ended the wait moves the row on. Without: the row no
+        longer holds a pause token. Either way the row must still sit in
+        ``partition``, so a new registration of the same task, which writes a
+        ``waiting#`` entry, is never touched. In the hour of adoption after an
+        upgrade, a row with a dead token may get its entry back; the next
+        check drops it again.
+        """
+        names = {"#att": att.KEY, "#due": att.DUE}
+        values: Dict[str, Any] = {":p": partition}
+        if token is None:
+            condition = "#att = :p AND (attribute_not_exists(pause_token) OR #s <> :paused)"
+            names["#s"] = "status"
+            values[":paused"] = WAITING_PAUSED
+        else:
+            condition = "#att = :p AND pause_token = :t"
+            values[":t"] = token
+        return _conditional(lambda: self.table.update_item(
+            Key={"execution_name": execution_name},
+            UpdateExpression="REMOVE #att, #due",
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        ))
+
     def put(self, item: Dict[str, Any]) -> None:
         self.table.put_item(Item=item)
 

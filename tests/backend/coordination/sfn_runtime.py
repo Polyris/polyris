@@ -160,6 +160,8 @@ class Runtime:
         self.machines: Dict[str, Machine] = {}
         self.executions: Dict[str, Execution] = {}
         self.runnable: List[Frame] = []
+        #: Machines whose new executions wait to take their first step: {arn: their frames}.
+        self.held: Dict[str, List[Frame]] = {}
         self.tokens: Dict[str, Frame] = {}
         self.jobs: Dict[str, ExternalJob] = {}
         self.side_effects: List[Dict[str, Any]] = []
@@ -222,6 +224,13 @@ class Runtime:
                 self._step(frame)
         raise RuntimeError("state machines did not settle; is there a loop?")
 
+    def hold(self, machine_arn: str) -> None:
+        """New executions of `machine_arn` start but take no step until `release` (to order a race)."""
+        self.held.setdefault(machine_arn, [])
+
+    def release(self, machine_arn: str) -> None:
+        self.runnable.extend(self.held.pop(machine_arn, []))
+
     def time_out(self, token: str) -> None:
         """The task waiting on `token` reaches its TimeoutSeconds."""
         frame = self._take_token(token, "Timeout")
@@ -248,8 +257,11 @@ class Runtime:
             raise client_error("ExecutionAlreadyExists", "StartExecution", arn)
         execution = Execution(arn, name, machine, payload, self.now())
         self.executions[arn] = execution
-        self.runnable.append(Frame(execution, machine.definition["States"], machine.definition["StartAt"],
-                                   payload, {}))
+        frame = Frame(execution, machine.definition["States"], machine.definition["StartAt"], payload, {})
+        if machine_arn in self.held:
+            self.held[machine_arn].append(frame)
+        else:
+            self.runnable.append(frame)
         return execution
 
     def _run_only(self, execution: Execution, max_steps: int = 10_000) -> None:

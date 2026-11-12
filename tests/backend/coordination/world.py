@@ -330,6 +330,14 @@ class World:
 
         runtime.start_execution = start_execution
 
+    def hold(self, machine: str) -> None:
+        """New executions of a platform state machine (logical id) wait to take a step until `release`."""
+        self.runtime.hold(self.stack.machine_arn(machine))
+
+    def release(self, machine: str) -> None:
+        self.runtime.release(self.stack.machine_arn(machine))
+        self.settle()
+
     # ── observations ───────────────────────────────────────────────────
 
     def signals(self, run: Run, task: str) -> List[Dict[str, Any]]:

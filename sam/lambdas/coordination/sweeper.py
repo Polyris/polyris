@@ -11,9 +11,11 @@ reconciler about each, in-process:
     * past its liveness deadline, the reconciler also checks the task's wrapper
       and aborts a task nothing can wake any more (ADR #130 §3).
 A hint lost by any primary path therefore delays a task; it never loses it
-(Principle #41). The same run then retries the push starts that failed
-transiently, and once an hour replays the push branch for the facts of the
-last 48 hours, so a lost stream record cannot lose a push start either.
+(Principle #41). The same run releases the tasks held in their pause wait
+whose run is no longer paused, which a resume can miss; retries the push
+starts that failed transiently; and once an hour replays the push branch for
+the facts of the last 48 hours, so a lost stream record cannot lose a push
+start either.
 """
 
 import heapq
@@ -31,13 +33,14 @@ from coordination_core import decide as dc
 from coordination_core import sweep
 from coordination_core.partition import partition_date
 from coordination_core.records import FACT_VERSION, fact_from_item, warning_item
-from coordination_core.statuses import RECONCILABLE
+from coordination_core.statuses import RECONCILABLE, WAITING_PAUSED
 from coordination_core.times import format_utc, parse_utc
 import env
 from asset_fanout import AssetFanout
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient
 from logger import log
 from reconcile import Reconciler, _reconciler
+from signals import DEAD
 from stores import Registry
 
 #: The reconciler's actions after which a row is still waiting and due again.
@@ -68,6 +71,7 @@ class Sweeper:
         deadline = self.monotonic() + sweep.BUDGET.total_seconds()
         try:
             result = self.due_rows(deadline=deadline)
+            result.update(self.paused_rows(deadline=deadline))
             result.update(self.push_retries(deadline=deadline))
             result.update(self.catch_up(deadline=deadline))
             result.update(self.adopt(deadline=deadline))
@@ -163,18 +167,70 @@ class Sweeper:
         if enabled_at is None or not sweep.primary_path_missed(enabled_at, due):
             return False
         full = self.tasks.get(str(row["execution_name"])) or row      # the index does not project `date`
-        item = warning_item(
+        self._sweeper_warning(full, f"The sweeper woke this task at its check due {format_utc(due)}, but it could "
+                                    f"run from {format_utc(enabled_at)}: the wake-up hint was lost on the way.")
+        return True
+
+    def _sweeper_warning(self, row: Dict[str, Any], error: str) -> None:
+        self._put_warning(warning_item(
             kind="sweeper", execution_name=str(row["execution_name"]),
-            task_name=str(full.get("task_name", "")), pipeline_name=str(full.get("pipeline_name", "")),
-            pipeline_execution=str(full.get("pipeline_execution", "")), task_date=str(full.get("date", "")),
-            error=(f"The sweeper woke this task at its check due {format_utc(due)}, but it could run from "
-                   f"{format_utc(enabled_at)}: the wake-up hint was lost on the way."),
-            now=self.reconciler.clock(),
-        )
+            task_name=str(row.get("task_name", "")), pipeline_name=str(row.get("pipeline_name", "")),
+            pipeline_execution=str(row.get("pipeline_execution", "")), task_date=str(row.get("date", "")),
+            error=error, now=self.reconciler.clock(),
+        ))
+
+    def _put_warning(self, item: Dict[str, Any]) -> None:
         try:
             self.tasks.put(item)
         except (ClientError, BotoCoreError) as exc:
             log.error("sweeper", "could not write the warning row", warning=item["execution_name"], error=str(exc))
+
+    # ── paused rows ─────────────────────────────────────────────────────
+
+    def paused_rows(self, *, deadline: float) -> Dict[str, Any]:
+        """Release the tasks held in their pause wait whose run is no longer paused (ADR #130 §8 step 2).
+
+        Resume releases them itself. It misses a pause token written while it
+        ran (it reads the run's rows through an index) and one whose release
+        failed; without this step such a task waits for its 12-hour pause
+        heartbeat. A task of a run that is still paused is due again later.
+        """
+        now = self.reconciler.clock()
+        counts: Dict[str, Any] = {"pause_checked": 0, "pause_released": 0}
+        paused: Dict[str, bool] = {}
+        for row in self._due(now, att.PAUSED):
+            if self.monotonic() >= deadline:
+                break                               # the rest stay due: the next run starts with them
+            counts["pause_checked"] += 1
+            try:
+                if self._release_if_resumed(row, now, paused):
+                    counts["pause_released"] += 1
+            except (ClientError, BotoCoreError, CoordinationTransient) as exc:
+                # The row stays due; the next run checks it again.
+                log.error("sweeper", "could not check a paused task", execution_name=str(row["execution_name"]),
+                          error=str(exc))
+        return counts
+
+    def _release_if_resumed(self, listed: Dict[str, Any], now: datetime, paused: Dict[str, bool]) -> bool:
+        name, partition = str(listed["execution_name"]), str(listed[att.KEY])
+        # The index only finds candidates; the row itself is read from the table (ADR #130 §3).
+        row = self.tasks.get(name)
+        token = str(row.get("pause_token", "")) if row else ""
+        if row is None or not token or row.get("status") != WAITING_PAUSED:
+            self.tasks.drop_pause_check(name, partition)       # it moved on; run_task normally drops the entry
+            return False
+        run = str(row.get("pipeline_execution", ""))
+        if run not in paused:
+            paused[run] = self.tasks.paused(run)
+        if paused[run]:
+            attempts = int(row.get("attempts", 0))
+            self.tasks.mark_pause_due(name, token, att.next_due(now, attempts), attempts + 1)
+            return False
+        if self.reconciler.signals.succeed(token, {"resumed": True}) == DEAD:
+            self.tasks.drop_pause_check(name, partition, token)  # nothing can release it any more
+            return False
+        self._sweeper_warning(row, "The run is no longer paused, but this task was still held in its pause wait: "
+                                   "the resume did not reach it. The sweeper released it.")
         return True
 
 
@@ -238,13 +294,9 @@ class Sweeper:
             log.error("sweeper", "could not delete the push retry row", run_name=row["run_name"], error=str(exc))
 
     def _push_warning(self, row: Dict[str, Any], error: str) -> None:
-        item = warning_item(kind="push", execution_name=f"push:{row['run_name']}", task_name="",
-                            pipeline_name=str(row.get("consumer", "")), pipeline_execution="", task_date="",
-                            error=error, now=self.reconciler.clock())
-        try:
-            self.tasks.put(item)
-        except (ClientError, BotoCoreError) as exc:
-            log.error("sweeper", "could not write the warning row", warning=item["execution_name"], error=str(exc))
+        self._put_warning(warning_item(kind="push", execution_name=f"push:{row['run_name']}", task_name="",
+                                       pipeline_name=str(row.get("consumer", "")), pipeline_execution="",
+                                       task_date="", error=error, now=self.reconciler.clock()))
 
     # ── catch-up ────────────────────────────────────────────────────────
 
@@ -316,7 +368,7 @@ class Sweeper:
     # ── adoption ────────────────────────────────────────────────────────
 
     def adopt(self, *, deadline: float) -> Dict[str, Any]:
-        """Bring rows an older platform version wrote into the new model (ADR #130 §8 step 5).
+        """Bring rows an older platform version wrote into the new model (ADR #130 §8 step 6).
 
         Two resumable scans, kept in `_engine_health` with the adoption
         generation they serve: waiting task rows get an attention entry, due
@@ -374,18 +426,29 @@ class Sweeper:
         return json.dumps(kwargs.get("ExclusiveStartKey", {}), default=str) if "ExclusiveStartKey" in kwargs else "", False
 
     def _adopt_task(self, item: Dict[str, Any]) -> bool:
+        """Give a row the attention entry the new code would have written; due now.
+
+        A row held in run_task's pause wait goes to ``paused#``, which the
+        sweeper releases once its run is no longer paused; any other to
+        ``waiting#``, which it reconciles (ADR #130 invariant 5).
+        """
         name = str(item["execution_name"])
-        statuses = sorted(RECONCILABLE)
+        if item.get("pause_token"):
+            kind, values = att.PAUSED, {":paused": WAITING_PAUSED}
+            condition = "#s = :paused AND attribute_exists(pause_token)"
+        else:
+            statuses = sorted(RECONCILABLE)
+            kind, values = att.WAITING, {f":s{i}": s for i, s in enumerate(statuses)}
+            condition = (f"#s IN ({', '.join(f':s{i}' for i in range(len(statuses)))}) "
+                         "AND attribute_not_exists(pause_token)")
         try:
             self.tasks.table.update_item(
                 Key={"execution_name": name},
                 UpdateExpression="SET #att = :att, #due = :due",
-                ConditionExpression=f"#s IN ({', '.join(f':s{i}' for i in range(len(statuses)))}) "
-                                    "AND attribute_not_exists(#att)",
+                ConditionExpression=condition + " AND attribute_not_exists(#att)",
                 ExpressionAttributeNames={"#s": "status", "#att": att.KEY, "#due": att.DUE},
-                ExpressionAttributeValues={":att": att.attention(att.WAITING, name),
-                                           ":due": format_utc(self.reconciler.clock()),
-                                           **{f":s{i}": s for i, s in enumerate(statuses)}},
+                ExpressionAttributeValues={":att": att.attention(kind, name),
+                                           ":due": format_utc(self.reconciler.clock()), **values},
             )
         except ClientError as exc:
             if is_condition_failed(exc):
@@ -452,8 +515,9 @@ class Sweeper:
         return sweep.STREAM_ENABLED if table.get("StreamSpecification", {}).get("StreamEnabled") else "DISABLED"
 
     def _oldest_due(self, now: datetime) -> str:
+        """The earliest due time among the waiting and paused rows still due after this run."""
         oldest = ""
-        for partition in att.partitions(att.WAITING):
+        for partition in att.partitions(att.WAITING) + att.partitions(att.PAUSED):
             items = self.tasks.table.query(
                 IndexName=att.INDEX, Limit=1,
                 KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).lte(format_utc(now)),

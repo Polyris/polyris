@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import pytest
-from coordination_testkit import NOW, execution_name, fact, task_row
+from coordination_testkit import NOW, RUN, execution_name, fact, task_row
 
 import sweeper
 from coordination_core import attention as att
@@ -174,6 +174,107 @@ def test_a_failed_backoff_write_leaves_the_row_due(make, tokens, clock, mocker):
 
     assert run.run()["checked"] == 1
     assert _row(tokens, load)[att.DUE] == format_utc(clock.now - timedelta(minutes=5))
+
+
+# ── tasks held in their pause wait ──────────────────────────────────────
+
+
+def _held(tokens, task: str, *, due: datetime, attempts: int = 0, **extra: Any) -> str:
+    """A row as pause_waiter leaves it: waiting_paused, its pause token, a paused# entry."""
+    name = execution_name(task)
+    tokens.put_item(Item=task_row(task, status="waiting_paused", pause_token=f"pause-{task}",
+                                  attention=att.attention(att.PAUSED, name), attention_at=format_utc(due),
+                                  attempts=attempts, **extra))
+    return name
+
+
+def _pause_flag(tokens, paused: bool) -> None:
+    tokens.put_item(Item={"execution_name": f"_pause_{RUN}", "paused": paused})
+
+
+def _adoption_done(tokens, clock) -> None:
+    """The engine row of a stack whose adoption finished long ago."""
+    tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "adoption_generation": sweep.ADOPTION_GENERATION,
+                          "adopt_tasks_cursor": "", "adopt_tasks_until": format_utc(clock.now - timedelta(days=1)),
+                          "adopt_facts_cursor": "", "adopt_facts_done": True})
+
+
+@pytest.mark.parametrize("flag", [False, None])          # resumed, or never paused at all
+def test_a_held_task_of_a_run_no_longer_paused_is_released_with_a_warning(make, tokens, sfn, clock, flag):
+    if flag is not None:
+        _pause_flag(tokens, flag)
+    load = _held(tokens, "load", due=clock.now - timedelta(minutes=1))
+
+    result = make().run()
+
+    assert (result["pause_checked"], result["pause_released"]) == (1, 1)
+    assert sfn.succeeded == [{"token": "pause-load", "output": {"resumed": True}}]
+    [warning] = _warnings(tokens, "sweeper")
+    assert (warning["task_name"], warning["task_date"]) == ("load", "2026-11-12")
+    assert "the resume did not reach it" in warning["error"]
+    assert _row(tokens, load)[att.KEY] == att.attention(att.PAUSED, load)    # run_task drops it when it starts
+
+
+def test_a_held_task_of_a_paused_run_stays_held_and_is_due_again(make, tokens, sfn, clock):
+    _pause_flag(tokens, True)
+    load = _held(tokens, "load", due=clock.now - timedelta(minutes=1), attempts=1)
+
+    assert make().run()["pause_released"] == 0
+
+    row = _row(tokens, load)
+    assert (row[att.DUE], row["attempts"]) == (format_utc(clock.now + timedelta(minutes=20)), 2)
+    assert sfn.succeeded == [] and _warnings(tokens, "sweeper") == []
+
+
+def test_a_dead_pause_token_takes_the_row_out_of_the_paused_entries(make, tokens, sfn, clock):
+    _adoption_done(tokens, clock)
+    load = _held(tokens, "load", due=clock.now - timedelta(minutes=1))
+    sfn.dead_tokens.add("pause-load")                   # released meanwhile, or its heartbeat ran out
+
+    assert make().run()["pause_released"] == 0
+
+    row = _row(tokens, load)
+    assert att.KEY not in row and att.DUE not in row
+    assert row["pause_token"] == "pause-load"           # run_task owns it
+    assert _warnings(tokens, "sweeper") == []
+
+
+def test_a_row_that_holds_no_pause_token_any_more_leaves_the_paused_entries(make, tokens, clock):
+    _adoption_done(tokens, clock)
+    load = _held(tokens, "load", due=clock.now - timedelta(minutes=1))
+    tokens.update_item(Key={"execution_name": load}, UpdateExpression="SET #s = :r REMOVE pause_token",
+                       ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":r": "running"})
+
+    make().run()
+
+    assert att.KEY not in _row(tokens, load)
+
+
+def test_only_the_paused_entry_itself_is_ever_dropped(make, tokens, clock):
+    load = _waiting(tokens, "load", due=clock.now + timedelta(minutes=5))      # registered again meanwhile
+
+    assert make().tasks.drop_pause_check(load, att.attention(att.PAUSED, load)) is False
+    assert make().tasks.drop_pause_check(load, att.attention(att.PAUSED, load), "pause-load") is False
+    assert _row(tokens, load)[att.KEY] == att.attention(att.WAITING, load)
+
+
+def test_a_failed_release_leaves_the_row_due(make, tokens, sfn, clock):
+    from coordination_testkit import client_error
+
+    load = _held(tokens, "load", due=clock.now - timedelta(minutes=1))
+    sfn.errors["send_task_success"] = client_error("ThrottlingException", "SendTaskSuccess")
+
+    assert make().run()["pause_released"] == 0
+    assert _row(tokens, load)[att.DUE] == format_utc(clock.now - timedelta(minutes=1))
+    assert _warnings(tokens, "sweeper") == []
+
+
+def test_the_budget_stops_the_pause_checks_too(make, tokens, sfn, clock):
+    _held(tokens, "load", due=clock.now - timedelta(minutes=1))
+    ticks = iter([0.0, 10_000.0])                       # due_rows finds nothing, then the budget is gone
+
+    assert make(monotonic=lambda: next(ticks, 10_000.0)).run()["pause_checked"] == 0
+    assert sfn.succeeded == []
 
 
 # ── woken by the sweeper ────────────────────────────────────────────────
@@ -486,6 +587,16 @@ def test_a_waiting_row_from_an_older_version_is_adopted_due_now(make, tokens, cl
     assert health["adopt_tasks_until"] == format_utc(clock.now + sweep.ADOPTION_REPEAT)
 
 
+def test_a_held_row_from_an_older_version_is_adopted_into_the_paused_entries(make, tokens, clock):
+    held = execution_name("load")
+    tokens.put_item(Item=task_row("load", status="waiting_paused", pause_token="pause-load"))   # no attention entry
+
+    assert make().run()["tasks_adopted"] == 1
+
+    row = _row(tokens, held)
+    assert (row[att.KEY], row[att.DUE]) == (att.attention(att.PAUSED, held), format_utc(clock.now))
+
+
 def test_the_task_scan_repeats_for_an_hour_then_stops(make, tokens, clock):
     make().run()
     clock.now += timedelta(minutes=30)
@@ -599,10 +710,12 @@ def test_the_self_check_reports_what_the_console_reads(make, tokens, clock):
     assert sweep.engine_problems(health, clock.now) == []
 
 
-def test_an_overdue_row_is_reported(make, tokens, clock, mocker):
+@pytest.mark.parametrize("kind", [att.WAITING, att.PAUSED])
+def test_an_overdue_row_is_reported(make, tokens, clock, mocker, kind):
     run = make()
     mocker.patch.object(run, "due_rows", return_value={})            # a run that never got to them
-    _waiting(tokens, "load", due=clock.now - timedelta(minutes=50))
+    mocker.patch.object(run, "paused_rows", return_value={})
+    (_waiting if kind == att.WAITING else _held)(tokens, "load", due=clock.now - timedelta(minutes=50))
 
     assert run.run()["healthy"] is False
     assert _row(tokens, sweep.HEALTH_KEY)["oldest_overdue"] == format_utc(clock.now - timedelta(minutes=50))

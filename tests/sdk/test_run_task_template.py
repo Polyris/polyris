@@ -121,6 +121,14 @@ def test_update_status_running_has_attempt_guard(template):
     )
 
 
+def test_update_status_running_drops_the_pause_entry(template):
+    """A task released from its pause wait leaves the attention index as it starts:
+    run_task, the receiver of the release, owns that write (Principle #43)."""
+    expression = template["States"]["Update_Status_Running"]["Arguments"]["UpdateExpression"]
+    removed = {name.strip() for name in expression.split("REMOVE", 1)[1].split(",")}
+    assert {"pause_token", "attention", "attention_at"} <= removed
+
+
 def test_no_orphan_states(template):
     """All declared states must be reachable from StartAt. Catches typos
     in Next/Default that would create unreachable code."""

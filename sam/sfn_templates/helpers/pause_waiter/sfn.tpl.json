@@ -5,7 +5,7 @@
   "States": {
     "Save_Pause_Token": {
       "Type": "Task",
-      "Comment": "Save task token and mark as waiting_paused",
+      "Comment": "Save the task token, mark the row waiting_paused and put it in the attention index (paused#, due in 10 minutes). The sweeper releases the task if its run is no longer paused: a resume can miss a token written while it ran (ADR #130 §8). run_task removes the entry when it continues.",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -14,7 +14,7 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status, pause_token = :token, paused_at = :paused_at",
+        "UpdateExpression": "SET #s = :status, pause_token = :token, paused_at = :paused_at, attention = :attention, attention_at = :due, attempts = :zero",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
@@ -27,6 +27,15 @@
           },
           ":paused_at": {
             "S": "{% $now() %}"
+          },
+          ":attention": {
+            "S": "{% 'paused#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+          },
+          ":due": {
+            "S": "{% $fromMillis($toMillis($now()) + 600000) %}"
+          },
+          ":zero": {
+            "N": "0"
           }
         }
       },

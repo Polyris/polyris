@@ -14,3 +14,7 @@ SIGNALS = frozenset({DEPS_READY, DEPS_SKIP, DEPS_BLOCKED})
 
 COORDINATION_ERROR = "CoordinationError"
 TRANSIENT_ERROR = "CoordinationTransient"
+
+#: Step Functions error codes for a task token that can no longer be signalled:
+#: its wait already ended (another signal, a timeout) or its execution is gone.
+DEAD_TOKEN_CODES = frozenset({"TaskTimedOut", "InvalidToken", "TaskDoesNotExist"})

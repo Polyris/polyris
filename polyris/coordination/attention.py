@@ -5,6 +5,10 @@ and ``attention_at`` (sort). The partition value is ``{kind}#{h}``, where
 ``h`` is the first hex digit of the SHA-256 of the row's key, so writes
 spread over 16 partitions. The registration SFN computes the same digit with
 JSONata ``$hash(execution_name, 'SHA-256')``; a parity test pins both.
+
+Kinds: ``waiting`` (a reconcilable row the sweeper re-checks), ``paused`` (a
+task held in run_task's pause wait, released by the sweeper once its run is
+no longer paused), ``retry`` (a push start to retry), ``warn`` (a warning).
 """
 
 from __future__ import annotations
@@ -22,12 +26,13 @@ PROJECTION = ("status", "task_name", "pipeline_name", "pipeline_execution", "tas
               "kind", "error", "finished_at", "started_at", "attempts")
 
 WAITING = "waiting"
+PAUSED = "paused"
 RETRY = "retry"
 WARN = "warn"
-KINDS = frozenset({WAITING, RETRY, WARN})
+KINDS = frozenset({WAITING, PAUSED, RETRY, WARN})
 SHARDS = "0123456789abcdef"
 
-#: A newly registered task is first due for a sweeper check after this long.
+#: A newly registered task, or a task entering its pause wait, is first due for a sweeper check after this long.
 FIRST_DUE = timedelta(minutes=10)
 #: Later checks back off up to every 30 minutes (≤ 48 checks per task per day).
 BACKOFF = (timedelta(minutes=10), timedelta(minutes=20), timedelta(minutes=30))

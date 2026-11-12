@@ -131,11 +131,12 @@ Start
   │     - status: waiting_paused
   │     - pause_token: task token from parent
   │     - paused_at: timestamp
+  │     - attention: paused#{h}, due in 10 minutes
   │
   └─▶ Complete (parent waits for SendTaskSuccess)
 ```
 
-Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback.
+Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback. Resume sends it; if resume misses the task, because the token was saved while resume ran or the release failed, the sweeper sends it once the run is no longer paused (ADR #130 §8).
 
 ### polyris-failure-handler
 

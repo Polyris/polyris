@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Fixed — a task held in its pause wait after resume (ADR #130 §8, B-P3)
+
+- A task that saved its pause token while resume ran, or whose release failed, stayed paused until its 12-hour pause heartbeat: resume reads the run's rows through an index and saw no token. `pause_waiter` now also puts the row under `paused#` in the attention index, and the sweeper releases it once its run is no longer paused, with a `sweeper` warning. `run_task` drops the entry when it continues.
+- Resume counts a release whose token is already dead as done, not as a failed task.
+- Adoption puts a row held in its pause wait under `paused#`, not `waiting#`, where the reconciler could not move it and it counted as overdue on every run.
+
 ### Added — engine health and warnings in the console (ADR #130 §9)
 
 - `GET /api/health` has a `coordination` section: the problems with task coordination, judged from the sweeper's last self-check. A sweeper that has not reported for 15 minutes, a disabled asset-events stream or mapping, and waiting tasks more than 40 minutes behind their checks are each a problem. The API then answers `degraded` with 200, not 503.

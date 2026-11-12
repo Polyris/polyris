@@ -271,6 +271,23 @@ def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@defect("B-P3")
+def test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.hold("RunTaskHelperSfn")
+    world.complete(run, "extract")          # load is signalled; its run_task waits to start
+    world.pause(run)
+    world.hold("PauseWaiterSfn")
+    world.release("RunTaskHelperSfn")       # it reads the pause and enters its pause wait
+    world.resume(run)                       # before its token is saved, so resume cannot release it
+    world.release("PauseWaiterSfn")
+    assert world.running_tasks(run) == []  # held until its 12-hour pause heartbeat
+    world.clock.advance(minutes=11)
+    world.sweep()
+    assert world.running_tasks(run) == ["load"]
+    assert any(w["kind"] == "sweeper" and w["task_name"] == "load" for w in world.warnings())
+
+
 @defect("B-R1")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)

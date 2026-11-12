@@ -27,12 +27,14 @@ RECONCILE_ARN = "arn:aws:lambda:us-east-1:123456789012:function:reconcile"
 
 
 class FakeSfn:
-    def __init__(self, dead=()):
-        self.released, self.dead = [], set(dead)
+    def __init__(self, dead=(), throttled=()):
+        self.released, self.dead, self.throttled = [], set(dead), set(throttled)
 
     def send_task_success(self, *, taskToken, output):
         if taskToken in self.dead:
             raise ClientError({"Error": {"Code": "TaskTimedOut", "Message": "expired"}}, "SendTaskSuccess")
+        if taskToken in self.throttled:
+            raise ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "SendTaskSuccess")
         self.released.append((taskToken, json.loads(output)))
 
 
@@ -93,7 +95,8 @@ def test_resume_clears_the_pause_releases_pause_tokens_and_reconciles_the_run(to
     assert tokens.get_item(Key={"execution_name": "load-1"})["Item"]["status"] == "waiting_paused"
 
 
-def test_a_dead_pause_token_is_reported_and_the_rest_still_resume(tokens, mocker):
+def test_a_pause_wait_that_already_ended_counts_as_resumed(tokens, mocker):
+    """Its token is dead: the sweeper released it a moment earlier, or its pause heartbeat ran out."""
     _task(tokens, "load-1", status="waiting_paused", pause_token="pause-1")
     _task(tokens, "load2-1", status="waiting_paused", pause_token="pause-2")
     sfn = FakeSfn(dead={"pause-1"})
@@ -101,7 +104,20 @@ def test_a_dead_pause_token_is_reported_and_the_rest_still_resume(tokens, mocker
     status, body = _resume(mocker, sfn, FakeLambda())
 
     assert status == 200
-    assert body["failed_tasks"] == ["load (TaskTimedOut)"]
+    assert "failed_tasks" not in body
+    assert sorted(body["resumed_tasks"]) == ["load", "load2"]
+
+
+def test_a_release_that_fails_is_reported_and_the_rest_still_resume(tokens, mocker):
+    """The task stays held with its paused# entry, so the sweeper releases it later (ADR #130 §8)."""
+    _task(tokens, "load-1", status="waiting_paused", pause_token="pause-1")
+    _task(tokens, "load2-1", status="waiting_paused", pause_token="pause-2")
+    sfn = FakeSfn(throttled={"pause-1"})
+
+    status, body = _resume(mocker, sfn, FakeLambda())
+
+    assert status == 200
+    assert body["failed_tasks"] == ["load (ThrottlingException)"]
     assert body["resumed_tasks"] == ["load2"]
 
 
