@@ -59,14 +59,14 @@ Every hang and wrong wake in this layer since ADR #122 traces to five causes.
 | B-G1 | A failed registration SFN never signals the wrapper → silent hang until `orchestration_timeout` |
 | B-X1 | Run-name collisions: a run's tasks inherit the last 8 characters of its execution name. Asset-AND runs end in the constant `-asset-and`, and backfill runs share `-bf-{id8}` across tiers. Two consumers with the same task id on the same date then collide (`ExecutionAlreadyExists`) |
 | B-M1 | `mark_success` dates its asset fact from the request (or today), not from the partition of the run being marked |
-| — | `wait_for=[a, b]` wakes on the first event |
-| — | Push AND loses the day when `Trigger_AND` fails after the counter completes |
-| — | Subscription keys collide across runs and pipelines |
-| — | A second signal overwrites `running` |
-| — | Mixed `[a, b \| c]` fires on first arrival |
-| — | Early AND members are not re-checked for freshness |
-| — | A backfill passes on today's event (C1) |
-| — | A consumer-notification failure fails the producer task |
+| B-A1 | `wait_for=[a, b]` wakes on the first event |
+| B-U1 | Push AND loses the day when `Trigger_AND` fails after the counter completes |
+| B-K1 | Subscription keys collide across runs and pipelines |
+| B-T1 | A second signal overwrites `running` |
+| B-A2 | Mixed `[a, b \| c]` fires on first arrival |
+| B-A3 | Early AND members are not re-checked for freshness |
+| B-C1 | A backfill passes on today's event |
+| B-F1 | A consumer-notification failure fails the producer task |
 
 ## Decision
 
@@ -481,4 +481,4 @@ Each can be added later without rework.
 
 The test strategy, scenario matrix, invariant harness, live smoke and game-day are described in `tests/backend/coordination/README.md`. Two requirements are normative:
 - every invariant has a test;
-- every defect in *Context* has a scenario that is green after the change, and a mutation probe that re-introduces the defect in the new code and makes that scenario fail. Defects that live only in code this ADR deletes are reproduced once on the pre-change system (live smoke), not through a test binding to code that is about to be removed.
+- every defect in *Context* has a scenario that is green after the change, and a mutation probe that re-introduces the defect in the new code and makes that scenario fail. The ids in the defects table are the ones the scenarios carry (`tests/backend/coordination/defects.py`). Defects that live only in code this ADR deletes are reproduced once on the pre-change system (live smoke), not through a test binding to code that is about to be removed.

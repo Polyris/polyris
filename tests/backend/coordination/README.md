@@ -36,3 +36,30 @@ python -m pytest tests/backend/coordination
 - `deploy_pipeline(dag)` generates a pipeline's ASL with the real generator and loads it.
 
 `test_platform_stack.py` runs a one-task pipeline end to end: pipeline execution → `dependency_wrapper` → registration helper → `run_task` → the user's task → success.
+
+## Scenarios (`test_scenarios.py`)
+
+Scenarios speak only the `World` API in `world.py` and build pipelines only through `dags.py`, which uses the real SDK. A scenario therefore keeps its text while the templates and Lambdas under it change. Each one checks both sides of a wake: the task starts once its conditions hold, and never before.
+
+| World verb | What it does |
+|---|---|
+| `deploy(dag)`, `start_run(pipeline, date, **inputs)` | generate the pipeline's ASL and start a run |
+| `complete(run, task, status=)` | finish the user's work for a task |
+| `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact; deliver its stream record separately, so tests choose the interleaving |
+| `pause`, `resume`, `restart`, `skip`, `mark_success` | operator actions through the console routes |
+| `time_out_registration`, `stop_wrapper_externally`, `inject_failure` | faults from outside |
+| `sweep()`, `clock.advance(...)` | the safety net and the passing of time |
+| `status`, `row`, `running_tasks`, `signals`, `warnings`, `pipeline_status`, `push_runs` | what a scenario asserts on |
+
+A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
+
+## Defects and mutation probes
+
+`defects.py` lists the defects of ADR #130 by the ids in the ADR's defects table, and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file.
+
+`test_meta.py` keeps these consistent:
+- every defect has a scenario, and every scenario names a known defect;
+- a defect whose scenarios run has a probe on one of them;
+- a `needs_binding` marker never names a bound stage;
+- skipped scenarios call only verbs the World has;
+- scenarios never write to a table directly.

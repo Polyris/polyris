@@ -157,6 +157,8 @@ class Runtime:
         self.tokens: Dict[str, Frame] = {}
         self.jobs: Dict[str, ExternalJob] = {}
         self.side_effects: List[Dict[str, Any]] = []
+        #: Every accepted token callback: {"execution", "state", "outcome"}.
+        self.callbacks: List[Dict[str, Any]] = []
         self._ids = itertools.count(1)
 
     # ── registry ────────────────────────────────────────────────────────
@@ -181,12 +183,12 @@ class Runtime:
 
     def send_task_success(self, *, taskToken: str, output: str) -> Dict[str, Any]:
         frame = self._take_token(taskToken, "SendTaskSuccess")
-        self._wake(frame, {"result": json.loads(output)})
+        self._callback(frame, {"result": json.loads(output)})
         return {}
 
     def send_task_failure(self, *, taskToken: str, error: str = "", cause: str = "") -> Dict[str, Any]:
         frame = self._take_token(taskToken, "SendTaskFailure")
-        self._wake(frame, {"error": error or "States.TaskFailed", "cause": cause})
+        self._callback(frame, {"error": error or "States.TaskFailed", "cause": cause})
         return {}
 
     def describe_execution(self, *, executionArn: str) -> Dict[str, Any]:
@@ -288,6 +290,10 @@ class Runtime:
         if frame is None:
             raise client_error("TaskTimedOut", operation, "the task token is no longer valid")
         return frame
+
+    def _callback(self, frame: Frame, outcome: Dict[str, Any]) -> None:
+        self.callbacks.append({"execution": frame.execution.arn, "state": frame.state, "outcome": outcome})
+        self._wake(frame, outcome)
 
     def _wake(self, frame: Frame, outcome: Dict[str, Any]) -> None:
         frame.waiting = None
