@@ -9,7 +9,7 @@ Read this fully before writing any code. When in doubt, `grep` first.
 
 - **Never add proprietary/paid code here.** Paid code lives only in `polyris-ee`. `polyris._ee*` is excluded from the wheel; no `ee/` directory in this checkout.
 - **The seam is enforced.** Free UI reaches paid surface only through the generated `@/ee-active.generated` stub (empty in OSS). `ui/scripts/check-oss-build.sh` CI gate strips `src/ee/` and asserts the build still typechecks.
-- **Self-contained build/test:** `pip install -e ".[dev]"` then `python -m pytest tests/sdk tests/backend tests/integration`; for the UI, `cd ui && npm ci && npm run typecheck && npm test -- --run && npm run build`.
+- **Self-contained build/test:** `pip install -e ".[dev]"` then `python -m pytest tests/sdk tests/backend tests/integration` and `make test-docs` (its own session: in one session with `tests/backend`, `tests` resolves to console_api's test package); for the UI, `cd ui && npm ci && npm run typecheck && npm test -- --run && npm run build`.
 
 Adding a feature? Decide the tier first: authoring + basic read → free (here); operations / observability / governance → paid (private repo).
 
@@ -375,9 +375,8 @@ sam/
       restart_task/sfn.tpl.json
       restart_wrapper/sfn.tpl.json
       pause_waiter/sfn.tpl.json
-      notify_asset_consumers/sfn.tpl.json
   lambdas/
-    console_api/      # REST API (63 routes full build, 27 free), DAL repos, route handlers
+    console_api/      # REST API (28 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
     coordination/     # reconcile + asset-fanout (ADR #130): decide readiness, signal wrappers, start push consumers
     query_subscriptions/  # Finds downstream subscribers for a completed task
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
@@ -449,7 +448,6 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | `dep_subscriptions_repo` | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
 | `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index`, `asset-partition-index` (sparse, ADR #130) |
-| `queued_events_repo` | `queued-asset-events` | `dag_date` | `asset_name` | — |
 | `task_events_repo` | `task-events` | `task_run_id` | `event_time` | `run-index`, `execution-name-index` |
 | `asset_subscriptions_repo` | `asset-subscriptions` | `asset_name` | `pipeline_name` | — |
 | `api_tokens_repo` | `api-tokens` | `token_id` | — | `hash-index`, `owner-index` |
@@ -503,7 +501,7 @@ Symptom: "click X → ends up at default state Y", URL flickers to correct param
 
 ## Step Functions
 
-### 14 State Machines (11 orchestration + 3 test)
+### 13 State Machines (10 orchestration + 3 test)
 
 | Name | Type | Purpose |
 |------|------|---------|
@@ -516,7 +514,6 @@ Symptom: "click X → ends up at default state Y", URL flickers to correct param
 | `polyris-notify-dependents` | EXPRESS | Finds and signals downstream tasks when upstream completes |
 | `polyris-restart-task-helper` | EXPRESS | Stops wrapper + restarts task |
 | `polyris-restart-wrapper` | EXPRESS | Starts new dependency_wrapper for restart |
-| `polyris-notify-asset-consumers` | EXPRESS | Triggers asset-based pipelines |
 | `polyris-register-pipeline` | EXPRESS | Deployed but orphaned — not called by any current code path; superseded by the inline `Register_Pipeline` state in each generated pipeline SFN |
 | `polyris-test-quick` | STANDARD | Demo/test task (fast) |
 | `polyris-test-success` | STANDARD | Demo/test task (always succeeds) |
@@ -573,7 +570,7 @@ After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums
 
 Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `register(router)`; `main.py` exposes the assembled `ROUTES` table `(METHOD, '/api/path') → (handler_fn, 'param_key')`.
 
-**Surface (ADR #98, #110):** 27 free routes in OSS build, 63 in full. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
+**Surface (ADR #98, #110):** 28 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
@@ -584,7 +581,7 @@ When adding an endpoint:
 2. Add handler to module, register in `register(router)`.
 3. New module? Add to `main.py`'s `ROUTE_MODULES` (free) or `ee/__init__.py`'s `MODULES` (Team). Existing module needs no `main.py` change.
 4. Free handlers also go in `routes/__init__.py` barrel; Team handlers don't.
-5. Tests follow tier. Update route-count guards: free-subset in `tests/sdk/test_templates.py`, full-63 in `ee/team/tests/test_route_table_ee.py`.
+5. Tests follow tier. `tests/sdk/test_templates.py` asserts the free subset; `tests/docs/test_resource_inventory.py` checks the free-route count these docs state; the tier split in `ee/team/tests/test_route_table_ee.py` is derived.
 
 ---
 
@@ -716,12 +713,12 @@ python -m pytest tests/sdk/test_asl_snapshots.py  # verify
 
 ```bash
 # Before every delivery — must all pass
-python3 -m pytest tests/sdk/ tests/backend/ -q    # ~1310 tests
+python3 -m pytest tests/sdk/ tests/backend/ tests/integration/ -q
+make test-docs                                     # own session (see Repository context)
 cfn-lint sam/template.yaml                         # 0 errors
 
-# Full suite
-python3 -m pytest tests/ -q
-cd ui && npx vitest run
+# Full suite: every pytest dir, the Lambda suites, JSONata and the UI
+make test
 
 # Core coverage floor
 make test-cov
@@ -738,7 +735,7 @@ make test-cov
 - pytest-mock (`mocker` fixture) everywhere — no `unittest.mock` import at all, including `MagicMock` as a bare object factory (use `mocker.MagicMock`)
 - SDK tests are hermetic: `tests/sdk/conftest.py` clears `AWS_*` / `POLYRIS_*` variables and points the AWS config files at an empty place before every test. A test that needs a profile, region or stage sets it with `monkeypatch`. Never rely on the developer's shell or `~/.aws` — the v1.1.4 release gate failed on a leftover `AWS_PROFILE`.
 - Backend tests in `tests/backend/`, SDK tests in `tests/sdk/`
-- **Every Lambda test suite runs in CI.** The `lambdas` job in `ci.yml` lists each suite as its own step, and `make test-lambdas` runs the same suites locally. A Lambda with `tests/` or `test_*.py` needs both, or its tests silently never run; `tests/sdk/test_ci_runs_every_lambda_suite.py` fails until it has them.
+- **Every Lambda test suite runs in CI.** The `lambdas` job in `ci.yml` lists each suite as its own step, and `make test-lambdas` runs the same suites locally. A Lambda with `tests/` or `test_*.py` needs both, or its tests silently never run; `tests/sdk/test_ci_runs_every_suite.py` fails until it has them, and also until every `testpaths` directory in `pyproject.toml` runs from a make target that `ci.yml` calls and `make test` includes.
 - Coverage floor is a ratchet — raise the floor when you raise coverage (#22)
 - **`dal/__init__.py` submodule shadowing:** `from dal.executions_repo import executions_repo` replaces the submodule attribute on the `dal` package with the singleton instance. Tests patching module-level globals on a `dal` submodule must use `importlib.import_module('dal.executions_repo')` to get the actual module object.
 
@@ -760,7 +757,7 @@ After significant changes:
 - `CHANGELOG.md` — new version entry
 - `docs/reference/DESIGN_DECISIONS.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
-- A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/sdk/test_doc_resource_counts.py` derives every number and name from `sam/template.yaml` and fails until the docs agree.
+- A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/docs/test_resource_counts.py` and `tests/docs/test_resource_inventory.py` derive every number and name from `sam/template.yaml` (and the free route count from the console) and fail until the docs agree. Run `make test-docs`.
 
 ---
 

@@ -3,9 +3,9 @@
 ## Overview
 
 The backend consists of:
-- **Step Function state machines** (14 total) — 11 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-14](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-14)
+- **Step Function state machines** (13 total) — 10 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13)
 - **Lambda functions** (7) — console API, reconcile, asset fan-out, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
-- **DynamoDB tables** (8) — state, metadata, event history
+- **DynamoDB tables** (7) — state, metadata, event history
 - **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 
 **Generated constants & enums.** Status/trigger/backfill enum families and the
@@ -301,11 +301,9 @@ Dependency callbacks:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| dependency_key | PK | "task-execution-short" |
-| subscriber | S | Subscriber task name |
-| wait_token | S | Step Functions task token |
-| subscriber_execution | S | Full execution name |
-| trigger_rule | S | Subscriber's trigger rule |
+| dependency_key | PK | `{upstream task}-{pipeline_execution_short}`, or `asset:{name}` for a `wait_for` asset |
+| subscriber | SK | The waiting task's execution_name |
+| ttl | N | Auto-delete timestamp |
 
 ### task_events
 
@@ -333,25 +331,19 @@ Pipeline metadata:
 
 ### asset_events
 
-Asset history:
+Asset facts — one row per materialisation (ADR #130 §1):
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | asset_name | PK | Asset identifier |
-| event_time | SK | ISO timestamp |
-| date | S | Materialization date |
-| source_pipeline | S | Producer pipeline |
+| event_time | SK | ISO timestamp of the write |
+| partition_key | S | The producing run's partition (its date, week, month or hour) |
+| partition_date | S | First day of that partition; `asset-partition-index` sorts on it |
+| granularity | S | `hourly`, `daily`, `weekly` or `monthly` |
+| cascade | S | `auto`, `none` or `all` |
+| execution_date | S | Same as `partition_key`, kept for older readers |
+| source_dag | S | Producer pipeline |
 | source_task | S | Producer task |
-
-### queued_asset_events
-
-AND trigger queue:
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| dag_date_key | PK | "dag_id#date" |
-| asset_name | SK | Asset identifier |
-| received_at | S | Event timestamp |
 | ttl | N | Auto-delete timestamp |
 
 ### asset_subscriptions
@@ -389,28 +381,6 @@ Previously emitted when task failed. Now used only for legacy monitoring/alertin
     "pipeline_name": "acme-daily",
     "error": "Connection timeout",
     "date": "2026-01-12"
-  }
-}
-```
-
-### Asset.Materialized
-
-**Note:** As of v55, internal asset triggers no longer use EventBridge. 
-The `notify_asset_consumers` SFN helper handles pipeline-to-pipeline asset triggers directly.
-External systems can trigger assets via `POST /api/asset/{name}/trigger`.
-
-Event format reference (used internally by notify_asset_consumers):
-
-```json
-{
-  "source": "pipeline.assets",
-  "detail-type": "Asset.Materialized",
-  "detail": {
-    "asset_name": "processed/acme",
-    "asset_uri": "s3://bucket/processed/acme/",
-    "date": "2026-01-12",
-    "source_pipeline": "acme-daily",
-    "source_task": "process"
   }
 }
 ```

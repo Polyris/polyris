@@ -424,7 +424,6 @@ class BackfillUpstream:
 # generated map.
 BACKFILL_ERROR_CODES: FrozenSet[str] = frozenset({
     "already_terminal",
-    "child_name_too_long",
     "concurrent_backfill_active",
     "granularity_override_not_allowed",
     "id_space_exhausted",

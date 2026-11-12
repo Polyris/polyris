@@ -1,22 +1,22 @@
 """
 Data Access Layer: Asset Tables.
 
-Encapsulates all DynamoDB operations for asset-related tables:
-- asset-events (ASSET_EVENTS_TABLE)
-- queued-asset-events (QUEUED_EVENTS_TABLE)
+Encapsulates all DynamoDB operations on the asset-events table
+(ASSET_EVENTS_TABLE).
 
 Used by routes: assets, backfill.
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, Iterator, Optional
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from config import dynamodb, ASSET_EVENTS_TABLE, QUEUED_EVENTS_TABLE
+from config import dynamodb, ASSET_EVENTS_TABLE
 from constants import Limits
+from coordination_core.asset_conditions import Fact
 from coordination_core.partitions import detect_granularity
-from coordination_core.records import asset_fact_item
+from coordination_core.records import PARTITION_INDEX, asset_fact_item, fact_from_item
 from utils import scan_all, query_all
 
 #: A fact is keyed by (asset_name, event_time): retry a collision with a later millisecond.
@@ -41,7 +41,7 @@ class AssetEventsRepo:
 
     def write_fact(self, *, asset_name: str, partition_key: str, granularity: Optional[str], cascade: str,
                    source_dag: str, source_task: str, uri: str, ttl_days: int,
-                   now: Optional[datetime] = None) -> dict:
+                   metadata: Optional[Dict[str, Any]] = None, now: Optional[datetime] = None) -> dict:
         """Record one asset fact (ADR #130 §1); returns the written item.
 
         Every fact writer outside run_task goes through here, so each fact has
@@ -49,6 +49,7 @@ class AssetEventsRepo:
         partition is the partition of the run that produced it.
         ``granularity`` is the outlet's declared one; an outlet deployed
         before it was recorded has none, and the key's own format decides.
+        ``metadata`` is what a person attached to a manual fact, stored as given.
         """
         moment = now or datetime.now(timezone.utc)
         for _ in range(_FACT_WRITE_ATTEMPTS):
@@ -63,6 +64,8 @@ class AssetEventsRepo:
                 now=moment,
                 ttl_days=ttl_days,
             )
+            if metadata:
+                item['metadata'] = metadata
             try:
                 # Never overwrite another fact of this asset written in the same millisecond.
                 self.table.put_item(Item=item, ConditionExpression='attribute_not_exists(event_time)')
@@ -72,6 +75,32 @@ class AssetEventsRepo:
                     raise
                 moment += timedelta(milliseconds=1)
         raise RuntimeError(f"no free event_time for a fact of {asset_name} after {_FACT_WRITE_ATTEMPTS} tries")
+
+    def facts(self, asset_name: str, *, last: date, first: Optional[date]) -> Iterator[Fact]:
+        """Facts of ``asset_name`` with ``first <= partition_date <= last``, newest first.
+
+        A ``FactReader`` for asset conditions (ADR #130 §4), over the partition
+        index. The index is eventually consistent: a fact written a moment ago
+        can be missing, which a page that only displays readiness tolerates.
+        Rows written before ADR #130 carry no partition fields and are not in
+        the index.
+        """
+        condition = Key('asset_name').eq(asset_name) & (
+            Key('partition_date').between(first.isoformat(), last.isoformat())
+            if first is not None else Key('partition_date').lte(last.isoformat())
+        )
+        kwargs: Dict[str, Any] = {
+            'IndexName': PARTITION_INDEX,
+            'KeyConditionExpression': condition,
+            'ScanIndexForward': False,
+        }
+        while True:
+            response = self.table.query(**kwargs)
+            for item in response.get('Items', []):
+                yield fact_from_item(item)
+            if 'LastEvaluatedKey' not in response:
+                return
+            kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
 
     def query_by_asset(self, asset_name: str, limit: int = 50,
                        descending: bool = True) -> list:
@@ -136,35 +165,5 @@ class AssetEventsRepo:
         return list(names)
 
 
-class QueuedEventsRepo:
-    """Repository for queued-asset-events table.
-    
-    Table schema: PK: dag_date, SK: asset_name.
-    """
-
-    def __init__(self):
-        self._table_name = QUEUED_EVENTS_TABLE
-
-    @property
-    def table(self):
-        return dynamodb.Table(self._table_name)
-
-    def put(self, item: dict) -> None:
-        self.table.put_item(Item=item)
-
-    def query_by_dag_date(self, dag_date: str) -> list:
-        response = self.table.query(
-            KeyConditionExpression=Key('dag_date').eq(dag_date)
-        )
-        return response.get('Items', [])
-
-    def delete(self, dag_date: str, asset_name: str) -> None:
-        self.table.delete_item(Key={
-            'dag_date': dag_date,
-            'asset_name': asset_name
-        })
-
-
 # Singleton instances
 asset_events_repo = AssetEventsRepo()
-queued_events_repo = QueuedEventsRepo()

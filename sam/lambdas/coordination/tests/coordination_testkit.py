@@ -52,6 +52,31 @@ def template() -> Dict[str, Any]:
     return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=Loader)
 
 
+def create_tables(resource: Any, tables: Dict[str, str]) -> None:
+    """Create ``{logical id: table name}`` in moto exactly as sam/template.yaml declares them.
+
+    Key schemas, indexes, projections and streams are the deployed ones
+    (Principle #13). Shared with the console tests, which read the same tables.
+    """
+    resources = template()["Resources"]
+    for logical, name in tables.items():
+        props = resources[logical]["Properties"]
+        kwargs: Dict[str, Any] = {
+            "TableName": name,
+            "KeySchema": props["KeySchema"],
+            "AttributeDefinitions": props["AttributeDefinitions"],
+            "BillingMode": "PAY_PER_REQUEST",
+        }
+        if props.get("GlobalSecondaryIndexes"):
+            kwargs["GlobalSecondaryIndexes"] = [
+                {k: gsi[k] for k in ("IndexName", "KeySchema", "Projection")}
+                for gsi in props["GlobalSecondaryIndexes"]
+            ]
+        if props.get("StreamSpecification"):
+            kwargs["StreamSpecification"] = {"StreamEnabled": True, **props["StreamSpecification"]}
+        resource.create_table(**kwargs)
+
+
 def client_error(code: str, operation: str = "Operation") -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": f"{code} (test)"}}, operation)
 

@@ -1150,9 +1150,9 @@ class AssetAny:
     Single-item AssetAny (deliberate pattern, not a typo): `schedule=AssetAny([x])`
     triggers on EVERY materialization of `x`, with no day-scoped deduplication —
     unlike `schedule=x` or `schedule=[x]`, which are AND-of-one (same net effect
-    of "one required asset", but the notify_asset_consumers path dedupes by
-    calendar day, so a producer that materializes `x` more than once on the same
-    day only triggers this consumer once). Use `AssetAny([x])` when the consumer
+    of "one required asset", but an AND schedule starts one run per date, so a
+    producer that materializes `x` more than once for the same date only
+    triggers this consumer once). Use `AssetAny([x])` when the consumer
     should react to every update, e.g. an hourly producer, or a deliberate
     re-run whose downstream should recompute too. See
     docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md for the full analysis.

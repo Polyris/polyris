@@ -339,8 +339,8 @@ class TestNormalizeAssetSchedule:
         consumer-side dedup is still day-scoped — see
         SPIKE_ASSET_TRIGGER_GRANULARITY.md). schedule=AssetAny([Asset('x')])
         is the deliberate escape hatch: same single required asset, but
-        OR semantics, which routes through notify_asset_consumers' Trigger_OR
-        path — no day-scoped dedup, fires on every materialization. This
+        OR semantics, which asset-fanout starts once per event — no per-date
+        dedup, fires on every materialization. This
         must keep working; it's the documented way to get "trigger on every
         event" for a single asset without inventing new DSL surface."""
         result = normalize_asset_schedule(AssetAny([Asset("ns/a")]))

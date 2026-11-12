@@ -18,7 +18,7 @@ Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-
 
 | Phase | Who runs it | Frequency | AWS-level permissions needed |
 |-------|-------------|-----------|------------------------------|
-| **Install** | Platform admin or CI role | Once per account | Broad — 79 resources across 10 services |
+| **Install** | Platform admin or CI role | Once per account | Broad — 76 resources across 10 services |
 | **Deploy** | Developer or CI role | Per pipeline, per change | Narrow — CloudFormation + Step Functions + PassRole |
 | **Operate** | Console user (Cognito) / on-call engineer | Continuous | None (Console user) or read-only (on-call) |
 | **Remove** | Platform admin | Rare | Same as Install + S3 bucket empty rights |
@@ -27,14 +27,14 @@ Approval question for each phase: *what happens if this role is compromised?* In
 
 ## Install — `polyris-up` (or a from-source `sam deploy`)
 
-The polyris platform stack creates 79 resources across 10 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
+The polyris platform stack creates 76 resources across 10 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
 
 ### Recommended approach: AWS-managed policies
 
 Attach both:
 
 - `arn:aws:iam::aws:policy/PowerUserAccess` — everything except IAM
-- `arn:aws:iam::aws:policy/IAMFullAccess` — for the 12 IAM roles + 3 managed policies polyris creates
+- `arn:aws:iam::aws:policy/IAMFullAccess` — for the 9 IAM roles + 3 managed policies polyris creates
 
 These two together cover install with reasonable blast radius (no root, no billing, no organization changes). Suitable for a dedicated `polyris-installer` IAM user or CI role.
 
@@ -47,10 +47,10 @@ If your org requires enumerated permissions, the installer role needs these serv
 | `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources` | `polyris-up` / SAM build the change set and execute it |
 | `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
 | `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 9 roles + 3 managed policies |
-| `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 8 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
+| `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 7 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
 | `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion` | 7 Lambda functions (console-api, reconcile, asset-fanout, query-subscriptions, notify, etc.) |
-| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource` | 14 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
-| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 17 log groups |
+| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource` | 13 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
+| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 16 log groups |
 | `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutEncryptionConfiguration`, `PutBucketTagging`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket`, `ListBucketVersions`, `DeleteObjectVersion` | Console UI bucket, results bucket, and the artifacts bucket `polyris-up` uploads release code to |
 | `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig`, `AdminCreateUser`, `AdminDeleteUser`, `AdminGetUser` | Console API auth; the first console admin when `AdminEmail` is set |
 | `cloudfront` | `CreateDistribution`, `UpdateDistribution`, `DeleteDistribution`, `GetDistribution`, `CreateOriginAccessControl`, `DeleteOriginAccessControl`, `CreateResponseHeadersPolicy`, `DeleteResponseHeadersPolicy`, `CreateFunction`, `DeleteFunction`, `PublishFunction`, `UpdateFunction` | Console UI hosting |

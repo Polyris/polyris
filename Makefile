@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-loggers check-generate-enums check-generate-variables check-generate-coordination generate-coordination check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-loggers check-generate-enums check-generate-variables check-generate-coordination generate-coordination check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -22,7 +22,7 @@ help:
 	@echo ""
 
 # Run all tests
-test: test-sdk test-backend test-integration test-lambdas test-sfn-jsonata test-ui
+test: test-sdk test-backend test-integration test-docs test-lambdas test-sfn-jsonata test-ui
 
 # SDK tests (smoke + trigger rules + SFN flow + ASL snapshots)
 test-sdk:
@@ -47,6 +47,11 @@ test-backend:
 test-integration:
 	@echo "🧪 Running Integration tests..."
 	python3 -m pytest tests/integration/ -v
+
+# Docs drift tests (resource counts and inventories, CLI flags, ADR refs, entry points)
+test-docs:
+	@echo "🧪 Running docs drift tests..."
+	python3 -m pytest tests/docs/ -v
 
 # Pure-logic core coverage with floor enforcement (Principle #22).
 # fail_under + the AWS/CLI omit list live in pyproject.toml [tool.coverage].

@@ -14,7 +14,7 @@ console_api/
 │   ├── __init__.py      # Exports 8 singleton repo instances
 │   ├── executions_repo.py   # pipeline-executions table
 │   ├── pipelines_repo.py    # pipeline-registry table
-│   ├── assets_repo.py       # asset-registry, asset-events, queued-asset-events
+│   ├── assets_repo.py       # asset-events (facts)
 │   ├── subscriptions_repo.py # dep-subscriptions, asset-subscriptions
 │   └── task_events_repo.py  # task-events table
 ├── routes/              # Domain-specific route handlers

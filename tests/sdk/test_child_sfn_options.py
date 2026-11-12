@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 RUN_TASK = Path(__file__).parent.parent.parent / "sam" / "sfn_templates" / "helpers" / "run_task" / "sfn.tpl.json"
-NOTIFY_CONSUMERS = Path(__file__).parent.parent.parent / "sam" / "sfn_templates" / "helpers" / "notify_asset_consumers" / "sfn.tpl.json"
 
 
 @pytest.fixture(scope="module")
@@ -35,15 +34,6 @@ def run_task_template() -> dict:
     # Numeric-context placeholders (not inside quotes) → 0
     text = re.sub(r'(?<!")\$\{[a-zA-Z_][a-zA-Z_0-9]*\}(?!")', '0', text)
     # String-context placeholders (inside quotes) → __placeholder__ text
-    text = re.sub(r'\$\{[a-zA-Z_][a-zA-Z_0-9]*\}', '__placeholder__', text)
-    return json.loads(text)
-
-
-@pytest.fixture(scope="module")
-def notify_consumers_template() -> dict:
-    assert NOTIFY_CONSUMERS.exists(), f"Missing: {NOTIFY_CONSUMERS}"
-    text = NOTIFY_CONSUMERS.read_text()
-    text = re.sub(r'(?<!")\$\{[a-zA-Z_][a-zA-Z_0-9]*\}(?!")', '0', text)
     text = re.sub(r'\$\{[a-zA-Z_][a-zA-Z_0-9]*\}', '__placeholder__', text)
     return json.loads(text)
 
@@ -136,58 +126,6 @@ def test_cascade_all_is_recorded_on_the_fact(run_task_template):
     evaluated in test_run_task_facts.py; here, that run_task reads the flag."""
     emit = run_task_template["States"]["Emit_Asset_Events"]
     assert "cascade_all" in emit["Items"] and "'all'" in emit["Items"]
-
-
-def test_cascade_all_choice_state_in_notify_consumers(notify_consumers_template):
-    """notify_asset_consumers helper must have a Check_Cascade_All state
-    that bypasses the operator gate (OR/AND) when cascade_all=true."""
-    # The states live inside Map ItemProcessor → walk into it
-    # Find the Map state at top level
-    states = notify_consumers_template["States"]
-    map_state = None
-    for s in states.values():
-        if s.get("Type") == "Map":
-            map_state = s
-            break
-    assert map_state is not None, "Expected a Map state in notify_asset_consumers"
-    item_states = map_state["ItemProcessor"]["States"]
-    assert "Check_Cascade_All" in item_states, (
-        f"Missing Check_Cascade_All state; got: {list(item_states.keys())}"
-    )
-
-
-def test_cascade_all_bypasses_to_trigger_or(notify_consumers_template):
-    """When cascade_all=true, jump directly to Trigger_OR (immediate
-    trigger), bypassing the operator/required-assets logic."""
-    states = notify_consumers_template["States"]
-    map_state = next(s for s in states.values() if s.get("Type") == "Map")
-    cascade_state = map_state["ItemProcessor"]["States"]["Check_Cascade_All"]
-    assert cascade_state["Choices"][0]["Next"] == "Trigger_OR", (
-        f"cascade_all=true must route to Trigger_OR: {cascade_state['Choices']}"
-    )
-
-
-def test_cascade_all_safe_default(notify_consumers_template):
-    """If cascade_all is missing/false, default branch preserves
-    existing operator-based gating. Backwards-compat for scheduled
-    runs and cascade='auto'."""
-    states = notify_consumers_template["States"]
-    map_state = next(s for s in states.values() if s.get("Type") == "Map")
-    cascade_state = map_state["ItemProcessor"]["States"]["Check_Cascade_All"]
-    assert cascade_state["Default"] == "Check_Operator"
-
-
-def test_check_self_trigger_routes_to_cascade_all(notify_consumers_template):
-    """Check_Cascade_All must be inserted between Check_Self_Trigger
-    (cycle prevention) and Check_Operator. Cycle prevention must still
-    run first — cascade_all must not bypass it."""
-    states = notify_consumers_template["States"]
-    map_state = next(s for s in states.values() if s.get("Type") == "Map")
-    self_trigger = map_state["ItemProcessor"]["States"]["Check_Self_Trigger"]
-    assert self_trigger["Default"] == "Check_Cascade_All", (
-        f"Check_Self_Trigger default should now be Check_Cascade_All: "
-        f"{self_trigger['Default']!r}"
-    )
 
 
 # ───────────────────────────────────────────────────────────────────────────

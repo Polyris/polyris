@@ -339,7 +339,7 @@ CloudFormation delete_stack
 | Task never becomes `deps_ready` | notify_dependents execution | `pipeline_tokens` — check dep statuses |
 | Task `deps_ready` but not running | run_task helper execution | `pipeline_registry` — is pipeline paused? |
 | `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
-| Asset trigger didn't fire | notify_asset_consumers execution | `asset_events` + `asset_subscriptions` |
+| Asset trigger didn't fire | `/aws/lambda/polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
@@ -392,7 +392,6 @@ Quick reference — for full attribute definitions and access patterns see
 | pipeline_registry | Pipeline metadata | pipeline_name | - |
 | asset_events | Asset history | asset_name | event_time |
 | asset_subscriptions | Asset→DAG subscriptions | asset_name | dag_id |
-| queued_asset_events | AND trigger queue | dag_id#date | asset_name |
 | task_events | Task history | task_run_id | event_time |
 
 ---
@@ -460,7 +459,6 @@ One-line inventory — for the detailed per-helper flow diagrams see
 | `polyris-failure-handler` | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
 | `polyris-pause-waiter` | Save pause token, wait for resume callback |
 | `polyris-notify-dependents` _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
-| `polyris-notify-asset-consumers` _(EXPRESS)_ | Cross-pipeline asset triggers (PUSH/AND/OR) |
 | `polyris-restart-task-helper` _(EXPRESS)_ | Restart failed task |
 | `polyris-restart-wrapper` _(EXPRESS)_ | Restart wrapper execution |
 

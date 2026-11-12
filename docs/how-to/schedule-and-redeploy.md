@@ -18,7 +18,7 @@ When you set `schedule="cron(...)"` or `schedule="rate(...)"` or `schedule="@dai
 
 `schedule=None` deploys no scheduler resources — the state machine is manual-only (trigger via Console or `states:StartExecution`).
 
-`schedule=[some_asset]` deploys no scheduler either — the pipeline is triggered by asset publish events via the shared polyris `notify_asset_consumers` state machine, not EventBridge. See [ASSETS.md](../features/ASSETS.md).
+`schedule=[some_asset]` deploys no scheduler either — the platform's asset-fanout function starts the pipeline when the facts of its assets satisfy its schedule, not EventBridge. See [ASSETS.md](../features/ASSETS.md).
 
 ## When does the first run fire?
 
@@ -60,7 +60,7 @@ Switching between schedule *types* (cron → asset, or asset → cron) recreates
 
 - Removing a cron schedule (setting `schedule=None` or `schedule=[some_asset]`) deletes the `AWS::Scheduler::Schedule` in the next deploy.
 - Adding a cron schedule to a previously manual-or-asset DAG creates it.
-- Asset-triggered DAGs never have an `AWS::Scheduler::Schedule` — they get their triggers from `asset-subscriptions` DDB writes handled by the polyris `notify_asset_consumers` state machine.
+- Asset-triggered DAGs never have an `AWS::Scheduler::Schedule` — asset-fanout starts them from their `asset-subscriptions` rows.
 
 ## What happens to in-flight runs when you redeploy
 

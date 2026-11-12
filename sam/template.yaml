@@ -439,34 +439,6 @@ Resources:
         - Key: Namespace
           Value: !Ref Namespace
 
-  QueuedAssetEventsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Sub "${Namespace}-${Stage}-polyris-queued-asset-events"
-      BillingMode: PAY_PER_REQUEST
-      KeySchema:
-        - AttributeName: dag_date
-          KeyType: HASH
-        - AttributeName: asset_name
-          KeyType: RANGE
-      AttributeDefinitions:
-        - AttributeName: dag_date
-          AttributeType: S
-        - AttributeName: asset_name
-          AttributeType: S
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-      Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
-          Value: !Ref Namespace
-
   TaskEventsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -836,8 +808,6 @@ Resources:
               - !Sub "${PipelineRegistryTable.Arn}/index/*"
               - !GetAtt AssetEventsTable.Arn
               - !Sub "${AssetEventsTable.Arn}/index/*"
-              - !GetAtt QueuedAssetEventsTable.Arn
-              - !Sub "${QueuedAssetEventsTable.Arn}/index/*"
               - !GetAtt TaskEventsTable.Arn
               - !Sub "${TaskEventsTable.Arn}/index/*"
               - !GetAtt AssetSubscriptionsTable.Arn
@@ -984,12 +954,6 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-task-helper"
-      RetentionInDays: !Ref LogRetentionDays
-
-  NotifyAssetConsumersLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-notify-asset-consumers"
       RetentionInDays: !Ref LogRetentionDays
 
   BulkBackfillLogGroup:
@@ -1178,7 +1142,6 @@ Resources:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
-          QUEUED_EVENTS_TABLE: !Ref QueuedAssetEventsTable
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           API_TOKENS_TABLE: !Ref ApiTokensTable
@@ -1206,7 +1169,6 @@ Resources:
           ASSET_EVENT_TTL_DAYS: "365"
           RESTART_HELPER_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
           NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
-          NOTIFY_ASSET_CONSUMERS_SFN_ARN: !Ref NotifyAssetConsumersSfn
           NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
@@ -1446,7 +1408,6 @@ Resources:
                   - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
                   - !GetAtt AssetEventsTable.Arn
                   - !Sub "${AssetEventsTable.Arn}/index/*"
-                  - !GetAtt QueuedAssetEventsTable.Arn
                   - !GetAtt TaskEventsTable.Arn
                   - !Sub "${TaskEventsTable.Arn}/index/*"
                   - !GetAtt AssetSubscriptionsTable.Arn
@@ -1758,24 +1719,6 @@ Resources:
         query_subscriptions_lambda: !GetAtt QuerySubscriptionsFunction.Arn
         reconcile_function_arn: !GetAtt ReconcileFunction.Arn
       DefinitionUri: sfn_templates/helpers/notify_dependents/sfn.tpl.json
-  NotifyAssetConsumersSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-notify-asset-consumers"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt NotifyAssetConsumersLogGroup.Arn
-      DefinitionSubstitutions:
-        asset_subscriptions_table: !Ref AssetSubscriptionsTable
-        queued_asset_events_table: !Ref QueuedAssetEventsTable
-        queued_event_ttl_days: "7"
-      DefinitionUri: sfn_templates/helpers/notify_asset_consumers/sfn.tpl.json
   RegistrationHelperSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy

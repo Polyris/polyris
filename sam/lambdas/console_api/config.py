@@ -174,7 +174,6 @@ SUBSCRIPTIONS_TABLE = os.environ.get('SUBSCRIPTIONS_TABLE', 'dep-subscriptions')
 ASSET_EVENTS_TABLE = os.environ.get('ASSET_EVENTS_TABLE', 'asset-events')
 # How long an asset fact lives; the same value run_task's fact writes use.
 ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))
-QUEUED_EVENTS_TABLE = os.environ.get('QUEUED_EVENTS_TABLE', 'queued-asset-events')
 TASK_EVENTS_TABLE = os.environ.get('TASK_EVENTS_TABLE', 'task-events')
 # Personal Access Token store (ADR #65). Dedicated table, not pipeline-tokens.
 API_TOKENS_TABLE = os.environ.get('API_TOKENS_TABLE', 'api-tokens')

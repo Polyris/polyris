@@ -241,18 +241,16 @@ Check *why* the upstream was skipped:
      --limit 5
    ```
 
-3. **For AND triggers** — check queued events:
+3. **The fan-out handled the event** — asset-fanout logs every fact it reads and every pipeline it starts:
    ```bash
-   aws dynamodb query \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-queued-asset-events \
-     --key-condition-expression "dag_id_date = :key" \
-     --expression-attribute-values '{":key": {"S": "your-dag#2026-01-15"}}'
+   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-asset-fanout --since 1h \
+     --filter-pattern '"your-asset"'
    ```
 
 **Fix:**
 - If subscription missing: re-deploy consumer pipeline
-- If event missing: manually trigger asset or re-run producer
-- If AND queue incomplete: trigger missing assets or skip in queue
+- If event missing: re-run the producer
+- If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
 
 ---
 
@@ -262,7 +260,7 @@ Check *why* the upstream was skipped:
 
 **Check:** Asset events table has the latest event.
 
-**Fix:** Asset events are eventually consistent. Wait 30s or refresh. If persists, check `notify_asset_consumers` SFN execution history and `asset-events` DynamoDB table.
+**Fix:** Asset events are eventually consistent. Wait 30s or refresh. If it persists, check the newest fact of the asset in the `asset-events` DynamoDB table.
 
 ---
 

@@ -57,6 +57,9 @@ jobs:
       - name: Run integration tests
         run: make test-integration
 
+      - name: Run docs drift tests
+        run: make test-docs
+
       - name: Core coverage floor (Principle #22)
         run: make test-cov
 

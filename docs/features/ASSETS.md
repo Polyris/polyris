@@ -43,7 +43,7 @@ Inspect lineage from the CLI with `polyris-output --graph`.
 - [Producer Tasks (`outlets`)](#producer-tasks-outlets)
 - [Consumer DAGs (`schedule`)](#consumer-dags-schedule) — AND / OR / mixed logic
 - [Inlets](#inlets-documentation), [pull-based dependencies (`wait_for`)](#pull-based-dependencies-wait_for)
-- [Asset events](#asset-events), [queue management](#queue-management), [lineage graph](#asset-lineage-graph)
+- [Asset events](#asset-events), [lineage graph](#asset-lineage-graph)
 - [Complete example](#complete-example), [best practices](#best-practices)
 
 ---

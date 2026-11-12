@@ -1,8 +1,9 @@
 ## Unreleased
 
-### Removed — the old coordination Lambdas (ADR #130)
+### Removed — the old coordination Lambdas, state machine and queue table (ADR #130)
 
 - The `evaluate-deps`, `check-assets` and `notify-asset-subscribers` functions are gone, with their roles, log groups and invoke permissions. The `reconcile` and `asset-fanout` functions do their work.
+- The `notify-asset-consumers` state machine and the `queued-asset-events` table are gone too: asset-fanout starts asset-scheduled pipelines from facts.
 - `sam/lambdas/_shared/constants.py` and `make sync-constants` are gone. The console gets its enums from `sync_enums`, the coordination functions get theirs from `sync_coordination`.
 - Namespace + Stage may now be up to 30 characters (was 25), because the longest IAM role name is now shorter.
 - A failure on a coordination wake-up path now always logs at ERROR; three places logged it at WARN.

@@ -804,9 +804,10 @@ def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
         return None
 
 
-def _emit_asset_events_for_manual_success(item: Dict, task_name: str) -> None:
-    """§7c: for Mark Successful specifically, record the facts of this task's
-    outlets, as a normal completion would.
+def record_manual_success_facts(item: Dict, task_name: str) -> None:
+    """For Mark Successful specifically, record the facts of this task's
+    outlets, as a normal completion would (ADR #130 §1). Every Mark Successful
+    path calls it: this route and the Slack action.
 
     Outlets are a deploy-time DAG property, read from the pipeline registry's
     dag_metadata.nodes (ADR #119). The facts belong to the partition of the
@@ -822,7 +823,7 @@ def _emit_asset_events_for_manual_success(item: Dict, task_name: str) -> None:
         return
     partition_key = item.get('date')
     if not partition_key:
-        log.error("_emit_asset_events_for_manual_success", "The task row has no date; no fact recorded",
+        log.error("record_manual_success_facts", "The task row has no date; no fact recorded",
                   task_name=task_name, execution_name=item.get('execution_name', ''))
         return
 
@@ -981,7 +982,7 @@ def _execute_task_action(
     record_manual_decision(execution_name, action_name, stop_cause, item)
     _write_synthetic_output_marker(item, action_name, stop_cause, item.get('date', date), operator=operator_display(event))
     if emit_asset_events:
-        _emit_asset_events_for_manual_success(item, actual_task_name)
+        record_manual_success_facts(item, actual_task_name)
 
     log.info(action_name, "Successfully completed", execution_name=execution_name, actual_task_name=actual_task_name)
 

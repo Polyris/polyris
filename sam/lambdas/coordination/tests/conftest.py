@@ -8,14 +8,12 @@ Functions is a fake client at the boto3 boundary (Principle #14).
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
-
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from coordination_testkit import NOW, TABLES, FakeSfn, template  # noqa: E402 — the paths above come first
+from coordination_testkit import NOW, TABLES, FakeSfn, create_tables  # noqa: E402 — the paths above come first
 
 for _var, (_logical, _name) in TABLES.items():
     os.environ[_var] = _name   # read by env.py at import, so before any test module imports it
@@ -29,25 +27,9 @@ def ddb():
     from moto import mock_aws
     import boto3
 
-    resources = template()["Resources"]
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
-        for logical, name in TABLES.values():
-            props = resources[logical]["Properties"]
-            kwargs: Dict[str, Any] = {
-                "TableName": name,
-                "KeySchema": props["KeySchema"],
-                "AttributeDefinitions": props["AttributeDefinitions"],
-                "BillingMode": "PAY_PER_REQUEST",
-            }
-            if props.get("GlobalSecondaryIndexes"):
-                kwargs["GlobalSecondaryIndexes"] = [
-                    {k: gsi[k] for k in ("IndexName", "KeySchema", "Projection")}
-                    for gsi in props["GlobalSecondaryIndexes"]
-                ]
-            if props.get("StreamSpecification"):
-                kwargs["StreamSpecification"] = {"StreamEnabled": True, **props["StreamSpecification"]}
-            resource.create_table(**kwargs)
+        create_tables(resource, dict(TABLES.values()))
         yield resource
 
 

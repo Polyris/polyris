@@ -1279,10 +1279,10 @@ def _build_registration_chain(
         registry_table: DynamoDB table name for pipeline registry
         tokens_table: DynamoDB table name for tokens/snapshots
         asset_subscriptions_table: DynamoDB table name for asset subscriptions
-            (consumed by the platform's notify_asset_consumers SFN — must match
-            its own ${asset_subscriptions_table} substitution, both ultimately
-            sourced from the SAM stack's AssetSubscriptionsTable output that
-            polyris-deploy reads via describe_stacks)
+            (read by the platform's asset-fanout function — must be the table
+            in its ASSET_SUBSCRIPTIONS_TABLE, both sourced from the SAM stack's
+            AssetSubscriptionsTable output that polyris-deploy reads via
+            describe_stacks)
     
     Returns:
         Tuple of (states_dict, start_at_state_name)

@@ -52,6 +52,11 @@ if touched '^(polyris/|tests/|pyproject\.toml)'; then
   run "pytest + coverage floor" make test-cov
 fi
 
+# ── Docs drift (docs, and the code and template they describe) ──────────────
+if touched '^(docs/|README\.md|CLAUDE\.md|CONTRIBUTING\.md|sam/template\.yaml|sam/lambdas/console_api/|polyris/|tests/docs/)'; then
+  run "docs drift tests"        make test-docs
+fi
+
 # ── Lambdas / SAM ───────────────────────────────────────────────────────────
 if touched '^(sam/|polyris/constants\.py|polyris/codegen/)'; then
   run "cfn-lint"                cfn-lint sam/template.yaml

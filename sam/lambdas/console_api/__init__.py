@@ -20,7 +20,7 @@ from .config import (
     dynamodb, sfn, logs, cloudwatch, s3,
     TABLE_NAME, PIPELINES_TABLE, SUBSCRIPTIONS_TABLE,
     ASSET_EVENTS_TABLE, 
-    QUEUED_EVENTS_TABLE, TASK_EVENTS_TABLE, RESULTS_BUCKET,
+    TASK_EVENTS_TABLE, RESULTS_BUCKET,
     EXECUTION_NAME_PATTERN
 )
 
@@ -40,7 +40,7 @@ __all__ = [
     'dynamodb', 'sfn', 'logs', 'cloudwatch', 's3',
     'TABLE_NAME', 'PIPELINES_TABLE', 'SUBSCRIPTIONS_TABLE',
     'ASSET_EVENTS_TABLE',
-    'QUEUED_EVENTS_TABLE', 'TASK_EVENTS_TABLE', 'RESULTS_BUCKET',
+    'TASK_EVENTS_TABLE', 'RESULTS_BUCKET',
     'EXECUTION_NAME_PATTERN',
     # Utils
     'is_execution_name', 'retrieve_result', 'record_manual_decision',
