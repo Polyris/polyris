@@ -8,7 +8,7 @@ its pure rules; the Lambda in sam/lambdas/coordination applies them.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, List, Mapping, Optional
 
 #: What a task row's ``source`` says when the sweeper asks the reconciler.
 SOURCE = "sweeper"
@@ -29,6 +29,19 @@ PUSH_RETRY_WINDOW = timedelta(hours=24)
 #: How often the catch-up replays the push branch for recent facts, and how far back it reads.
 CATCH_UP_EVERY = timedelta(hours=1)
 CATCH_UP_WINDOW = timedelta(hours=48)
+#: The row shapes the adoption scans bring older rows to (ADR #130 §8). Raise it when
+#: a release changes what a task row or a fact must carry; the scans then run again.
+ADOPTION_GENERATION = 1
+#: After the task-row scan first finishes, it repeats for this long: rows the old
+#: definitions wrote while the stack update was still running get adopted too.
+ADOPTION_REPEAT = timedelta(hours=1)
+#: The console calls the engine unhealthy when the sweeper has not reported for this long,
+STALE_AFTER = timedelta(minutes=15)
+#: or when a waiting task has been due for longer than the sweeper's 40-minute target.
+BEHIND_AFTER = timedelta(minutes=40)
+#: The event source mapping and stream states that deliver facts.
+MAPPING_ENABLED = "Enabled"
+STREAM_ENABLED = "ENABLED"
 
 
 def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optional[float]) -> datetime:
@@ -50,6 +63,34 @@ def next_push_retry(now: datetime, attempts: int) -> datetime:
 def catch_up_due(now: datetime, last: Optional[datetime]) -> bool:
     """Whether the hourly catch-up should run (it always may when it never ran)."""
     return last is None or now - last >= CATCH_UP_EVERY
+
+
+def engine_problems(health: Optional[Mapping[str, Any]], now: datetime) -> List[str]:
+    """Why the coordination engine is unhealthy, from the sweeper's `_engine_health` row (ADR #130 §9).
+
+    Empty means healthy. The console shows these as a banner. Time fields are
+    UTC timestamps as `times.format_utc` writes them.
+    """
+    from .times import parse_utc
+
+    if not health or not health.get("checked_at"):
+        return ["The sweeper has never reported: waiting tasks are not re-checked."]
+    problems = []
+    silent = now - parse_utc(str(health["checked_at"]))
+    if silent > STALE_AFTER:
+        problems.append(f"The sweeper last reported {int(silent.total_seconds() // 60)} minutes ago: "
+                        "waiting tasks are not re-checked.")
+    mapping = str(health.get("fanout_mapping", ""))
+    if mapping != MAPPING_ENABLED:
+        problems.append(f"Asset events are not delivered: the stream mapping is {mapping or 'missing'}.")
+    stream = str(health.get("stream", ""))
+    if stream != STREAM_ENABLED:
+        problems.append(f"Asset events are not recorded for delivery: the table stream is {stream or 'missing'}.")
+    overdue = health.get("oldest_overdue")
+    if overdue and now - parse_utc(str(overdue)) > BEHIND_AFTER:
+        behind = int((now - parse_utc(str(overdue))).total_seconds() // 60)
+        problems.append(f"Waiting tasks are {behind} minutes behind their checks.")
+    return problems
 
 
 def primary_path_missed(enabled_at: Optional[datetime], due: datetime) -> bool:

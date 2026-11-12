@@ -1148,6 +1148,7 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          ASSET_FANOUT_FUNCTION: !Ref AssetFanoutFunction
       Tags:
         Environment: polyris
         Stage: !Ref Stage
@@ -1465,6 +1466,25 @@ Resources:
                   - states:StartExecution
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+              # Adoption: scans for rows an older version wrote; old facts get their partition fields.
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+                  - !GetAtt AssetEventsTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:DescribeTable
+                Resource:
+                  - !GetAtt AssetEventsTable.Arn
+              # Self-check: is the asset-events stream mapping enabled (ADR #130 §9)?
+              # ListEventSourceMappings does not support resource-level permissions.
+              - Effect: Allow
+                Action:
+                  - lambda:ListEventSourceMappings
+                Resource: "*"
 
   SweeperScheduleRole:
     Type: AWS::IAM::Role

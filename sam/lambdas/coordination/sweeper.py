@@ -17,6 +17,7 @@ last 48 hours, so a lost stream record cannot lose a push start either.
 """
 
 import heapq
+import json
 import time
 import uuid
 from datetime import datetime
@@ -28,13 +29,16 @@ from botocore.exceptions import BotoCoreError, ClientError
 from coordination_core import attention as att
 from coordination_core import decide as dc
 from coordination_core import sweep
-from coordination_core.records import FACT_VERSION, warning_item
+from coordination_core.partition import partition_date
+from coordination_core.records import FACT_VERSION, fact_from_item, warning_item
+from coordination_core.statuses import RECONCILABLE
 from coordination_core.times import format_utc, parse_utc
 import env
 from asset_fanout import AssetFanout
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient
 from logger import log
 from reconcile import Reconciler, _reconciler
+from stores import Registry
 
 #: The reconciler's actions after which a row is still waiting and due again.
 _STILL_WAITING = {"none", "parked", "alive", "superseded"}
@@ -44,8 +48,11 @@ class Sweeper:
     def __init__(self, reconciler: Reconciler, *, owner: Optional[str] = None,
                  monotonic: Callable[[], float] = time.monotonic,
                  subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
-                 consumers_table: str = env.ASSET_SUBSCRIPTIONS_TABLE):
+                 consumers_table: str = env.ASSET_SUBSCRIPTIONS_TABLE,
+                 lambda_client: Any = None, fanout_function: str = env.ASSET_FANOUT_FUNCTION):
         self.reconciler = reconciler
+        self.lambda_client = lambda_client
+        self.fanout_function = fanout_function
         self.tasks = reconciler.tasks
         self.owner = owner or uuid.uuid4().hex
         self.monotonic = monotonic
@@ -63,6 +70,8 @@ class Sweeper:
             result = self.due_rows(deadline=deadline)
             result.update(self.push_retries(deadline=deadline))
             result.update(self.catch_up(deadline=deadline))
+            result.update(self.adopt(deadline=deadline))
+            result.update(self.self_check())
         finally:
             self._release_lease()
         log.info("sweeper", "done", **result)
@@ -302,6 +311,182 @@ class Sweeper:
         except (ClientError, BotoCoreError) as exc:
             # The next run starts the catch-up over: replaying is idempotent.
             log.error("sweeper", "could not save the catch-up progress", error=str(exc))
+
+
+    # ── adoption ────────────────────────────────────────────────────────
+
+    def adopt(self, *, deadline: float) -> Dict[str, Any]:
+        """Bring rows an older platform version wrote into the new model (ADR #130 §8 step 5).
+
+        Two resumable scans, kept in `_engine_health` with the adoption
+        generation they serve: waiting task rows get an attention entry, due
+        now, so the sweeper reconciles them from their facts; facts get their
+        partition fields (a MODIFY, which the INSERT-only stream ignores). The
+        task scan repeats for an hour after it first finishes.
+        """
+        now = self.reconciler.clock()
+        health = self.tasks.get(sweep.HEALTH_KEY) or {}
+        if int(health.get("adoption_generation", 0)) != sweep.ADOPTION_GENERATION:
+            health = {"adopt_tasks_cursor": "", "adopt_tasks_until": "", "adopt_facts_cursor": "", "adopt_facts_done": False}
+        state = {k: health.get(k, "" if k != "adopt_facts_done" else False) for k in
+                 ("adopt_tasks_cursor", "adopt_tasks_until", "adopt_facts_cursor", "adopt_facts_done")}
+        counts = {"tasks_adopted": 0, "facts_adopted": 0}
+        until = str(state["adopt_tasks_until"])
+        if state["adopt_tasks_cursor"] or not until or now < parse_utc(until):
+            cursor, finished = self._scan(self.tasks.table, self._task_filter(), str(state["adopt_tasks_cursor"]),
+                                          self._adopt_task, counts, "tasks_adopted", deadline)
+            state["adopt_tasks_cursor"] = cursor
+            if finished and not until:
+                state["adopt_tasks_until"] = format_utc(now + sweep.ADOPTION_REPEAT)
+        if not state["adopt_facts_done"] and self.monotonic() < deadline:
+            registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
+            cursor, finished = self._scan(self.facts, {"FilterExpression": "attribute_not_exists(partition_date)"},
+                                          str(state["adopt_facts_cursor"]),
+                                          lambda item: self._adopt_fact(item, registry), counts, "facts_adopted",
+                                          deadline)
+            state["adopt_facts_cursor"], state["adopt_facts_done"] = cursor, finished
+        self._save_health({"adoption_generation": sweep.ADOPTION_GENERATION, **state})
+        return counts
+
+    @staticmethod
+    def _task_filter() -> Dict[str, Any]:
+        statuses = sorted(RECONCILABLE)
+        return {
+            "FilterExpression": f"#s IN ({', '.join(f':s{i}' for i in range(len(statuses)))}) "
+                                "AND attribute_not_exists(#att)",
+            "ExpressionAttributeNames": {"#s": "status", "#att": att.KEY},
+            "ExpressionAttributeValues": {f":s{i}": s for i, s in enumerate(statuses)},
+        }
+
+    def _scan(self, table: Any, query: Dict[str, Any], cursor: str, adopt: Callable[[Dict[str, Any]], bool],
+              counts: Dict[str, int], counter: str, deadline: float) -> tuple:
+        """Scan from `cursor` until done or out of budget; returns (cursor, finished)."""
+        kwargs = dict(query)
+        if cursor:
+            kwargs["ExclusiveStartKey"] = json.loads(cursor)
+        while self.monotonic() < deadline:
+            response = table.scan(**kwargs)
+            for item in response.get("Items", []):
+                counts[counter] += adopt(item)
+            if "LastEvaluatedKey" not in response:
+                return "", True
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        return json.dumps(kwargs.get("ExclusiveStartKey", {}), default=str) if "ExclusiveStartKey" in kwargs else "", False
+
+    def _adopt_task(self, item: Dict[str, Any]) -> bool:
+        name = str(item["execution_name"])
+        statuses = sorted(RECONCILABLE)
+        try:
+            self.tasks.table.update_item(
+                Key={"execution_name": name},
+                UpdateExpression="SET #att = :att, #due = :due",
+                ConditionExpression=f"#s IN ({', '.join(f':s{i}' for i in range(len(statuses)))}) "
+                                    "AND attribute_not_exists(#att)",
+                ExpressionAttributeNames={"#s": "status", "#att": att.KEY, "#due": att.DUE},
+                ExpressionAttributeValues={":att": att.attention(att.WAITING, name),
+                                           ":due": format_utc(self.reconciler.clock()),
+                                           **{f":s{i}": s for i, s in enumerate(statuses)}},
+            )
+        except ClientError as exc:
+            if is_condition_failed(exc):
+                return False                    # it moved on meanwhile
+            raise
+        return True
+
+    def _adopt_fact(self, item: Dict[str, Any], registry: Registry) -> bool:
+        key = str(item.get("execution_date") or "")
+        try:
+            declared = registry.declared_granularity(str(item.get("source_dag", "")), str(item["asset_name"]))
+            fact = fact_from_item(item, declared_granularity=declared)
+            start = partition_date(key)
+        except ValueError as exc:
+            # A row nobody could read is not adopted; asset conditions skip it the same way.
+            log.error("sweeper", "an old fact cannot be adopted", asset_name=item.get("asset_name"),
+                      event_time=item.get("event_time"), error=str(exc))
+            return False
+        try:
+            self.facts.update_item(
+                Key={"asset_name": item["asset_name"], "event_time": item["event_time"]},
+                UpdateExpression="SET partition_key = :k, partition_date = :d, granularity = :g",
+                ConditionExpression="attribute_not_exists(partition_date)",
+                ExpressionAttributeValues={":k": key, ":d": start.isoformat(), ":g": fact.granularity},
+            )
+        except ClientError as exc:
+            if is_condition_failed(exc):
+                return False
+            raise
+        return True
+
+    # ── self-check ──────────────────────────────────────────────────────
+
+    def self_check(self) -> Dict[str, Any]:
+        """Write what the console's health check reads into `_engine_health` (ADR #130 §9)."""
+        now = self.reconciler.clock()
+        report = {
+            "checked_at": format_utc(now),
+            "fanout_mapping": self._mapping_state(),
+            "stream": self._stream_state(),
+            "oldest_overdue": self._oldest_due(now),
+            "push_retry_backlog": self._backlog(),
+        }
+        self._save_health(report)
+        problems = sweep.engine_problems(report, now)
+        if problems:
+            log.error("sweeper", "the coordination engine is unhealthy", problems=problems)
+        return {"healthy": not problems}
+
+    def _mapping_state(self) -> str:
+        client = self.lambda_client or env.lambda_()
+        try:
+            mappings = client.list_event_source_mappings(FunctionName=self.fanout_function)["EventSourceMappings"]
+        except (ClientError, BotoCoreError) as exc:
+            return f"unknown ({error_code(exc) or type(exc).__name__})"
+        return str(mappings[0].get("State", "unknown")) if mappings else "missing"
+
+    def _stream_state(self) -> str:
+        try:
+            table = self.reconciler.resource.meta.client.describe_table(
+                TableName=self.reconciler.asset_events_table)["Table"]
+        except (ClientError, BotoCoreError) as exc:
+            return f"unknown ({error_code(exc) or type(exc).__name__})"
+        return sweep.STREAM_ENABLED if table.get("StreamSpecification", {}).get("StreamEnabled") else "DISABLED"
+
+    def _oldest_due(self, now: datetime) -> str:
+        oldest = ""
+        for partition in att.partitions(att.WAITING):
+            items = self.tasks.table.query(
+                IndexName=att.INDEX, Limit=1,
+                KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).lte(format_utc(now)),
+            ).get("Items", [])
+            if items and (not oldest or str(items[0][att.DUE]) < oldest):
+                oldest = str(items[0][att.DUE])
+        return oldest
+
+    def _backlog(self) -> int:
+        total = 0
+        for partition in att.partitions(att.RETRY):
+            kwargs: Dict[str, Any] = {"IndexName": att.INDEX, "Select": "COUNT",
+                                      "KeyConditionExpression": Key(att.KEY).eq(partition)}
+            while True:
+                response = self.tasks.table.query(**kwargs)
+                total += int(response.get("Count", 0))
+                if "LastEvaluatedKey" not in response:
+                    break
+                kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        return total
+
+    def _save_health(self, fields: Dict[str, Any]) -> None:
+        names = {f"#f{i}": k for i, k in enumerate(fields)}
+        values = {f":v{i}": v for i, v in enumerate(fields.values())}
+        try:
+            self.tasks.table.update_item(
+                Key={"execution_name": sweep.HEALTH_KEY},
+                UpdateExpression="SET " + ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))),
+                ExpressionAttributeNames=names, ExpressionAttributeValues=values,
+            )
+        except (ClientError, BotoCoreError) as exc:
+            # The console then sees a stale report and shows the engine as unhealthy.
+            log.error("sweeper", "could not write the engine health row", error=str(exc))
 
 
 _SWEEPER: Optional[Sweeper] = None

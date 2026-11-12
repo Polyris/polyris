@@ -18,6 +18,7 @@ from coordination_testkit import (
     RUN,
     SHORT,
     TABLES,
+    FUNCTION_ENV,
     FUNCTION_TABLES,
     FakeSfn,
     execution_name,
@@ -163,6 +164,8 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
         tokens.put_item(Item=task_row(task, wait_for=wait_for, attention=att.attention(att.WAITING, name),
                                       attention_at=format_utc(clock - timedelta(minutes=5))))
     sfn.executions[f"arn:aws:states:us-east-1:123456789012:execution:wrapper:{execution_name('load')}"] = "RUNNING"
+    from coordination_testkit import legacy_fact
+    asset_events.put_item(Item=legacy_fact("ns/old", "2026-11-12", event_time="2026-11-12T04:00:00.000Z"))
     with recording(ddb) as used:
         sweeper.Sweeper(reconciler, owner="me").run()            # the lease, a re-check, a zombie
     asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:10:00.000Z"))
@@ -267,8 +270,10 @@ def test_function_wiring(resources, function, module_name, role):
     assert props["Role"] == {"!GetAtt": f"{role}.Arn"}
     variables = props["Environment"]["Variables"]
     expected = {var: TABLES[var] for var in FUNCTION_TABLES[function]}
-    assert variables == {var: {"!Ref": logical} for var, (logical, _) in expected.items()}
-    assert {var: getattr(env, var) for var in variables} == {var: name for var, (_, name) in expected.items()}
+    extra = FUNCTION_ENV.get(function, {})
+    assert variables == {**{var: {"!Ref": logical} for var, (logical, _) in expected.items()}, **extra}
+    assert {var: getattr(env, var) for var in expected} == {var: name for var, (_, name) in expected.items()}
+    assert all(hasattr(env, var) for var in extra), "the code must read every variable the template sets"
 
 
 def test_time_budgets_fit_their_timeouts(resources):

@@ -273,6 +273,8 @@ An EventBridge schedule runs it every 5 minutes (ADR #130 §8). One run at a tim
 - Past a task's liveness deadline (`started_at` + 3 × `orchestration_timeout` + 1 h), it checks the wrapper and aborts a task nothing can wake
 - Retries the push starts that failed transiently (`retry#` rows), from 5 minutes up to every hour; gives up after 24 h with a `push` warning
 - Hourly, replays the push branch for every fact of the last 48 h (a lost stream record); `_engine_health` keeps its progress
+- Adopts rows an older version wrote (waiting tasks without an attention entry, facts without partition fields), resumably, once per adoption generation
+- Ends with a self-check in `_engine_health`: stream and mapping state, the oldest overdue waiting task, the push retry backlog
 
 ---
 

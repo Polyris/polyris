@@ -33,9 +33,23 @@ def clock() -> Clock:
     return Clock(NOW + timedelta(minutes=30))
 
 
+class FakeLambda:
+    """The Lambda call of the self-check: the asset-fanout function's event source mappings."""
+
+    def __init__(self, state: str = "Enabled"):
+        self.state = state
+
+    def list_event_source_mappings(self, *, FunctionName: str) -> Dict[str, Any]:
+        if self.state == "error":
+            from coordination_testkit import client_error
+            raise client_error("AccessDeniedException", "ListEventSourceMappings")
+        return {"EventSourceMappings": [] if self.state == "missing" else [{"State": self.state}]}
+
+
 @pytest.fixture
 def make(ddb, sfn, clock):
     def build(**kwargs: Any) -> sweeper.Sweeper:
+        kwargs.setdefault("lambda_client", FakeLambda())
         return sweeper.Sweeper(Reconciler(ddb, sfn, clock=clock), owner="me", **kwargs)
     return build
 
@@ -125,7 +139,7 @@ def test_every_page_of_due_rows_is_read(make, tokens, clock, mocker):
                            ExpressionAttributeNames={"#a": att.KEY}, ExpressionAttributeValues={":p": "waiting#0"})
     run = make()
     real = run.tasks.table.query
-    mocker.patch.object(run.tasks.table, "query", side_effect=lambda **kw: real(**kw, Limit=1))
+    mocker.patch.object(run.tasks.table, "query", side_effect=lambda **kw: real(**{"Limit": 1, **kw}))
 
     assert run.run()["checked"] == 3
     assert all(_row(tokens, n)["attempts"] == 1 for n in names)
@@ -454,7 +468,205 @@ def test_every_page_of_subscriptions_and_facts_is_read(make, consumers, asset_ev
     assert run.run()["facts_replayed"] == 2
 
 
+# ── adoption ────────────────────────────────────────────────────────────
+
+
+def test_a_waiting_row_from_an_older_version_is_adopted_due_now(make, tokens, clock):
+    old = execution_name("load")
+    tokens.put_item(Item=task_row("load", wait_for=ASSET))            # no attention entry
+    tokens.put_item(Item=task_row("done", status="success"))
+
+    assert make().run()["tasks_adopted"] == 1
+
+    row = _row(tokens, old)
+    assert (row[att.KEY], row[att.DUE]) == (att.attention(att.WAITING, old), format_utc(clock.now))
+    assert att.KEY not in _row(tokens, execution_name("done"))
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert health["adoption_generation"] == sweep.ADOPTION_GENERATION
+    assert health["adopt_tasks_until"] == format_utc(clock.now + sweep.ADOPTION_REPEAT)
+
+
+def test_the_task_scan_repeats_for_an_hour_then_stops(make, tokens, clock):
+    make().run()
+    clock.now += timedelta(minutes=30)
+    tokens.put_item(Item=task_row("late", wait_for=ASSET))           # written during the stack update
+    assert make().run()["tasks_adopted"] == 1
+    clock.now += timedelta(minutes=31)
+    tokens.put_item(Item=task_row("later", wait_for=ASSET))
+    assert make().run()["tasks_adopted"] == 0
+
+
+def test_a_new_adoption_generation_scans_again(make, tokens, clock, monkeypatch):
+    make().run()
+    clock.now += timedelta(hours=2)
+    tokens.put_item(Item=task_row("load", wait_for=ASSET))
+    assert make().run()["tasks_adopted"] == 0
+    monkeypatch.setattr(sweep, "ADOPTION_GENERATION", sweep.ADOPTION_GENERATION + 1)
+    assert make().run()["tasks_adopted"] == 1
+
+
+def test_an_old_fact_gets_its_partition_fields(make, asset_events, registry, clock):
+    import json
+
+    from coordination_testkit import legacy_fact
+
+    registry.put_item(Item={"pipeline_name": "producer", "dag": json.dumps(
+        {"nodes": [{"outlets": [{"name": "ns/orders", "granularity": "weekly"}]}]})})
+    asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+
+    assert make().run()["facts_adopted"] == 1
+
+    item = asset_events.get_item(Key={"asset_name": "ns/orders", "event_time": "2026-11-12T05:00:00.000Z"})["Item"]
+    assert (item["partition_key"], item["partition_date"], item["granularity"]) == ("2026-11-12", "2026-11-12", "weekly")
+    assert "fact_version" not in item                    # a MODIFY: the stream mapping ignores it
+    assert make().run()["facts_adopted"] == 0             # the fact scan runs once per generation
+
+
+def test_an_old_fact_nobody_can_read_is_left_alone(make, asset_events):
+    from coordination_testkit import legacy_fact
+
+    asset_events.put_item(Item=legacy_fact("ns/orders", "yesterday", event_time="2026-11-12T05:00:00.000Z"))
+
+    assert make().run()["facts_adopted"] == 0
+
+
+def test_adoption_resumes_from_its_cursors(make, tokens, asset_events, clock, mocker):
+    from coordination_testkit import legacy_fact
+
+    for i in range(3):
+        tokens.put_item(Item=task_row(f"t{i}", wait_for=ASSET))
+        asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time=f"2026-11-12T05:0{i}:00.000Z"))
+    run = make()
+    tokens_scan, facts_scan = run.tasks.table.scan, run.facts.scan
+    mocker.patch.object(run.tasks.table, "scan", side_effect=lambda **kw: tokens_scan(**kw, Limit=1))
+    mocker.patch.object(run.facts, "scan", side_effect=lambda **kw: facts_scan(**kw, Limit=1))
+    # One page of each scan, then the budget is gone: (tasks loop, tasks loop, facts gate, facts loop, facts loop).
+    ticks = iter([0.0, 10_000.0, 0.0, 0.0, 10_000.0])
+    run.monotonic = lambda: next(ticks, 0.0)
+
+    run.adopt(deadline=1.0)
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert health["adopt_tasks_cursor"] and health["adopt_facts_cursor"] and not health["adopt_facts_done"]
+
+    run.adopt(deadline=1.0)                              # the budget lasts now: both scans finish
+    assert len([i for i in tokens.scan()["Items"] if i["execution_name"].startswith("t") and att.KEY in i]) == 3
+    assert all("partition_date" in i for i in asset_events.scan()["Items"])
+    assert _row(tokens, sweep.HEALTH_KEY)["adopt_facts_done"] is True
+
+
+def test_an_adoption_that_lost_a_race_counts_nothing(make, tokens, asset_events, mocker):
+    from coordination_testkit import client_error, legacy_fact
+
+    tokens.put_item(Item=task_row("load", wait_for=ASSET))
+    asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+    run = make()
+    race = client_error("ConditionalCheckFailedException", "UpdateItem")
+    mocker.patch.object(run.tasks.table, "update_item", side_effect=race)
+    mocker.patch.object(run.facts, "update_item", side_effect=race)
+
+    assert run.adopt(deadline=float("inf")) == {"tasks_adopted": 0, "facts_adopted": 0}
+
+
+def test_other_adoption_write_errors_fail_the_run(make, tokens, asset_events, mocker):
+    from coordination_testkit import client_error, legacy_fact
+
+    asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+    run = make()
+    mocker.patch.object(run.facts, "update_item", side_effect=client_error("AccessDeniedException", "UpdateItem"))
+    with pytest.raises(Exception, match="AccessDeniedException"):
+        run.adopt(deadline=float("inf"))
+    tokens.put_item(Item=task_row("load", wait_for=ASSET))
+    mocker.patch.object(run.tasks.table, "update_item", side_effect=client_error("AccessDeniedException", "UpdateItem"))
+    with pytest.raises(Exception, match="AccessDeniedException"):
+        run.adopt(deadline=float("inf"))
+
+
+# ── the self-check ──────────────────────────────────────────────────────
+
+
+def test_the_self_check_reports_what_the_console_reads(make, tokens, clock):
+    from coordination_core.records import push_retry_item
+
+    _waiting(tokens, "load", due=clock.now + timedelta(minutes=5))
+    tokens.put_item(Item=push_retry_item(run_name="r", consumer="c", sfn_arn="arn", run_input="{}",
+                                         error="x", now=clock.now))
+
+    assert make().run()["healthy"] is True
+
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert (health["checked_at"], health["fanout_mapping"], health["stream"]) == (format_utc(clock.now), "Enabled", "ENABLED")
+    assert (health["oldest_overdue"], health["push_retry_backlog"]) == ("", 1)
+    assert sweep.engine_problems(health, clock.now) == []
+
+
+def test_an_overdue_row_is_reported(make, tokens, clock, mocker):
+    run = make()
+    mocker.patch.object(run, "due_rows", return_value={})            # a run that never got to them
+    _waiting(tokens, "load", due=clock.now - timedelta(minutes=50))
+
+    assert run.run()["healthy"] is False
+    assert _row(tokens, sweep.HEALTH_KEY)["oldest_overdue"] == format_utc(clock.now - timedelta(minutes=50))
+
+
+@pytest.mark.parametrize("state,shown", [("Disabled", "Disabled"), ("missing", "missing"),
+                                         ("error", "unknown (AccessDeniedException)")])
+def test_a_mapping_that_does_not_deliver_is_reported(make, tokens, state, shown):
+    assert make(lambda_client=FakeLambda(state)).run()["healthy"] is False
+    assert _row(tokens, sweep.HEALTH_KEY)["fanout_mapping"] == shown
+
+
+def test_a_stream_that_cannot_be_read_is_reported(make, tokens, mocker):
+    from coordination_testkit import client_error
+
+    run = make()
+    mocker.patch.object(run.reconciler.resource.meta.client, "describe_table",
+                        side_effect=client_error("AccessDeniedException", "DescribeTable"))
+    assert run.run()["healthy"] is False
+    assert _row(tokens, sweep.HEALTH_KEY)["stream"] == "unknown (AccessDeniedException)"
+
+
+def test_a_disabled_stream_is_reported(make, tokens, mocker):
+    run = make()
+    mocker.patch.object(run.reconciler.resource.meta.client, "describe_table",
+                        return_value={"Table": {"StreamSpecification": {"StreamEnabled": False}}})
+    run.run()
+    assert _row(tokens, sweep.HEALTH_KEY)["stream"] == "DISABLED"
+
+
+def test_a_health_row_that_cannot_be_written_does_not_fail_the_run(make, tokens, mocker):
+    from coordination_testkit import client_error
+
+    run = make()
+    real = run.tasks.table.update_item
+    mocker.patch.object(run.tasks.table, "update_item", side_effect=lambda **kw: (
+        (_ for _ in ()).throw(client_error("InternalServerError", "UpdateItem"))
+        if kw["Key"]["execution_name"] == sweep.HEALTH_KEY else real(**kw)))
+
+    assert "healthy" in run.run()
+
+
+def test_every_page_of_the_retry_backlog_is_counted(make, tokens, clock, mocker):
+    from coordination_core.records import push_retry_item
+
+    for i in range(3):
+        item = push_retry_item(run_name=f"r{i}", consumer="c", sfn_arn="arn", run_input="{}", error="x", now=clock.now)
+        item[att.KEY] = "retry#0"
+        tokens.put_item(Item=item)
+    run = make()
+    real = run.tasks.table.query
+    mocker.patch.object(run.tasks.table, "query", side_effect=lambda **kw: real(**kw, Limit=1)
+                        if kw.get("Select") == "COUNT" else real(**kw))
+    assert run._backlog() == 3
+
+
 # ── the handler ─────────────────────────────────────────────────────────
+
+
+def test_the_lambda_client_is_created_once(monkeypatch):
+    import env
+
+    monkeypatch.setattr(env, "_lambda", None)
+    assert env.lambda_() is env.lambda_()
 
 
 def test_the_handler_runs_a_sweeper_with_the_request_as_owner(make, mocker):

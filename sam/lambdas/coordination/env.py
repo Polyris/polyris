@@ -14,6 +14,8 @@ ASSET_EVENTS_TABLE = os.environ.get("ASSET_EVENTS_TABLE", "asset-events")
 PIPELINES_TABLE = os.environ.get("PIPELINES_TABLE", "pipeline-registry")
 #: Push consumers: pipelines with `schedule=[assets]` (AssetFanout only).
 ASSET_SUBSCRIPTIONS_TABLE = os.environ.get("ASSET_SUBSCRIPTIONS_TABLE", "asset-subscriptions")
+#: The function the asset-events stream feeds; the sweeper checks its event source mapping.
+ASSET_FANOUT_FUNCTION = os.environ.get("ASSET_FANOUT_FUNCTION", "asset-fanout")
 
 PIPELINE_EXECUTION_INDEX = "pipeline-execution-index"
 
@@ -23,6 +25,7 @@ RECENT_WRITES = timedelta(minutes=15)
 
 _dynamodb = None
 _stepfunctions = None
+_lambda = None
 
 
 def dynamodb():
@@ -33,6 +36,16 @@ def dynamodb():
 
         _dynamodb = boto3.resource("dynamodb")
     return _dynamodb
+
+
+def lambda_():
+    """Lazily created Lambda client (the sweeper's self-check)."""
+    global _lambda
+    if _lambda is None:
+        import boto3
+
+        _lambda = boto3.client("lambda")
+    return _lambda
 
 
 def stepfunctions():

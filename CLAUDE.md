@@ -545,7 +545,7 @@ In `template.yaml`, always verify:
 | `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
 | `asset-fanout` | Read the `asset-events` stream (INSERT only) and reconcile every task waiting on the new fact's asset (ADR #130 §6.1) | the same as `reconcile` |
-| `sweeper` | Every 5 minutes (EventBridge Scheduler): re-check the waiting tasks that are due, warn about lost hints, abort zombies past their liveness deadline, retry failed push starts, hourly push catch-up (ADR #130 §8) | the same as `asset-fanout` |
+| `sweeper` | Every 5 minutes (EventBridge Scheduler): re-check the waiting tasks that are due, warn about lost hints, abort zombies past their liveness deadline, retry failed push starts, hourly push catch-up, adopt rows an older version wrote, write the engine self-check to `_engine_health` (ADR #130 §8) | the same as `asset-fanout`, plus `ASSET_FANOUT_FUNCTION` |
 | `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `ui_bootstrap` still uses bare `print()` — migrate opportunistically.

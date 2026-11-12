@@ -8,6 +8,8 @@
 - One run at a time holds a lease row; a run that dies frees it within 270 seconds.
 - A push start that failed transiently is retried by the sweeper, from 5 minutes up to every hour; after 24 hours it gives up with a `push` warning. A permanent failure is a `push` warning at once.
 - Once an hour the sweeper replays the push of every fact written in the last 48 hours, so a lost stream record cannot lose a push start either. Run names are deterministic, so nothing starts twice.
+- Each run ends with a self-check written to the `_engine_health` row: whether the asset-events stream and its mapping are enabled, the oldest overdue waiting task, and the push retry backlog. The console reads it (next change).
+- After an upgrade, the sweeper adopts what the old version wrote: waiting tasks get an attention entry, due at once, and are reconciled from their facts; old facts get their partition fields. The task scan repeats for an hour, to catch tasks registered during the stack update.
 
 ### Fixed — pause, resume and restart (ADR #130 §6.5)
 

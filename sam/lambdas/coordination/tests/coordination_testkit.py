@@ -30,6 +30,10 @@ FUNCTION_TABLES = {
     "SweeperFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
                         "ASSET_SUBSCRIPTIONS_TABLE"),
 }
+#: Environment a function reads beyond its tables.
+FUNCTION_ENV = {
+    "SweeperFunction": {"ASSET_FANOUT_FUNCTION": {"!Ref": "AssetFanoutFunction"}},
+}
 
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
 RUN = "orders-run-2026-11-12-abcdef12"

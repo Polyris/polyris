@@ -39,6 +39,10 @@ class _LambdaClient:
     def __init__(self, stack: Stack):
         self.stack = stack
 
+    def list_event_source_mappings(self, *, FunctionName: str) -> Dict[str, Any]:
+        """The stack's mappings are always enabled: StreamAdapter delivers their records."""
+        return {"EventSourceMappings": [{"FunctionName": FunctionName, "State": "Enabled"}]}
+
     def invoke(self, *, FunctionName: str, Payload: Any = b"{}", InvocationType: str = "RequestResponse") -> Dict[str, Any]:
         handler = self.stack.runtime.lambdas[FunctionName.rsplit(":", 1)[-1]]
         try:
@@ -140,7 +144,9 @@ class Bindings:
         self._set(sweeper, "_SWEEPER", sweeper.Sweeper(
             reconcile._RECONCILER, owner="harness",
             subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
-            consumers_table=self.stack.tables["AssetSubscriptionsTable"]))
+            consumers_table=self.stack.tables["AssetSubscriptionsTable"],
+            lambda_client=_LambdaClient(self.stack),
+            fanout_function=self.stack.functions["AssetFanoutFunction"]))
         return sweeper.handler
 
     def query_subscriptions(self) -> Callable[[Any, Any], Any]:

@@ -438,7 +438,7 @@ Each has a test (`tests/backend/coordination/README.md`).
 
 Forward-fix only (D13):
 
-1. **Index deploy.** Add both GSIs (one per table), then wait until both are `ACTIVE`. This is additive.
+1. **No separate index deploy** (decided 2026-11-12). Both GSIs (one per table) ship in the main deploy, inside the window. CloudFormation keeps the table update in progress until a new index is `ACTIVE`, and every resource that reads an index refers to its table, so it is updated only after that. The cost is a window that lasts as long as the indexes take to build, which depends on table size; a separate release or a two-phase template parameter would have shortened it at the price of an extra upgrade step.
 2. **Window.**
    - Pause pipeline schedules.
    - Wait until no `run_task` execution is running (a checkable list). A producer started on the old definition that finishes after the deploy calls deleted targets and fails loudly; the drain avoids that.
