@@ -4,7 +4,7 @@
 
 | Document | Purpose | Reader |
 |----------|---------|--------|
-| [QUICKSTART.md](getting-started/QUICKSTART.md) | **How-to** — deploy polyris to a blank AWS account in ~10-15 min | I know what polyris does; show me how to install it |
+| [QUICKSTART.md](getting-started/QUICKSTART.md) | **How-to** — install polyris and run a first pipeline in ~15 min | I know what polyris does; show me how to install it |
 | [PROJECT_STRUCTURE.md](getting-started/PROJECT_STRUCTURE.md) | **Reference** — monorepo vs split-repo layouts, CI/CD patterns | I'm setting up a real project; show me the shape |
 
 To explore the DSL locally without AWS, follow the "Try It Now" section in
@@ -19,6 +19,7 @@ Task-oriented recipes for specific problems. Each answers one question.
 |----------|---------------------|
 | [configure-retries.md](how-to/configure-retries.md) | How do I set retries + backoff + jitter for a task, and when do I use each? |
 | [schedule-and-redeploy.md](how-to/schedule-and-redeploy.md) | When does the first run fire? How do I pause a schedule? What happens to in-flight runs when I redeploy? |
+| [manage-the-platform.md](how-to/manage-the-platform.md) | How do I upgrade polyris, change a setting, add users or a stage, switch a `sam deploy` stack, or remove it? |
 | [LOCAL_TESTING.md](tools/LOCAL_TESTING.md) | How do I test a pipeline without deploying to AWS? |
 | [REGISTRATION.md](features/REGISTRATION.md) | How do I manually register a pipeline (or diagnose why it's missing from the Console)? |
 
@@ -42,6 +43,7 @@ Task-oriented recipes for specific problems. Each answers one question.
 | Document | Description |
 |----------|-------------|
 | [DEPLOY.md](deployment/DEPLOY.md) | Pipeline deployment (polyris-deploy) |
+| [FROM_SOURCE.md](deployment/FROM_SOURCE.md) | Deploy polyris from a checkout (contributors), test the release archive |
 | [INFRASTRUCTURE.md](deployment/INFRASTRUCTURE.md) | What the polyris SAM stack deploys (resource inventory, stack outputs, SFN template sources) |
 | [IAM_PERMISSIONS.md](deployment/IAM_PERMISSIONS.md) | Minimum permissions for install / deploy / operate / remove |
 | [RELEASE.md](deployment/RELEASE.md) | Release process and the platform archive `polyris-up` installs |

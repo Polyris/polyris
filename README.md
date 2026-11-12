@@ -56,7 +56,7 @@ polyris-init hello-world --hello    # a first pipeline that runs right away
 cd hello-world && polyris-deploy
 ```
 
-`polyris-up` deploys the prebuilt release of your polyris version; run it again to upgrade, and `polyris-down` to remove it. Full walkthrough (CloudShell, several stages, deploying from source): [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
+`polyris-up` deploys the prebuilt release of your polyris version. Step by step: [QUICKSTART.md](docs/getting-started/QUICKSTART.md); upgrading, stages, users and removal: [manage-the-platform.md](docs/how-to/manage-the-platform.md).
 
 ## Try it locally (no AWS)
 
