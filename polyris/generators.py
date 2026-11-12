@@ -25,6 +25,8 @@ from .steps import (
 )
 from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
+from .coordination.run_name import MAX_NAME, fit_task_id
+from .partitions import MAX_PARTITION_KEY_LENGTH
 
 
 # =============================================================================
@@ -111,17 +113,45 @@ _STANDARD_DYNAMODB_RETRY: Dict[str, Any] = {
 }
 
 
+# A wrapper execution is named "{task id}-{date}-{run suffix}". The date is a
+# partition key and the run suffix the run name's last 8 characters; the task
+# id gets what is left of the 80 characters, so the date and the suffix are
+# never cut (ADR #130 §6.6).
+_WRAPPER_NAME_TAIL = 1 + MAX_PARTITION_KEY_LENGTH + 1 + 8
+_TASK_ID_BUDGET = MAX_NAME - _WRAPPER_NAME_TAIL
+
+
+def _wrapper_name_part(node_id: str) -> str:
+    """The task-id part of a wrapper execution name: the id, or a prefix and a hash of it."""
+    return fit_task_id(node_id, _TASK_ID_BUDGET)
+
+
 def _make_execution_name_expr(task_id: str) -> str:
-    """Build JSONata expression for deterministic SFN child execution Name.
-    
-    Format: {task_id}-{date}-{exec_suffix} truncated to 80 chars.
-    Used for wrapper/step SFN startExecution.waitForTaskToken calls.
+    """JSONata for a wrapper execution's Name: {task id part}-{date}-{run suffix}.
+
+    Used for wrapper/step SFN startExecution.waitForTaskToken calls. Two runs
+    of a task never share a name, whatever the length of its id. The final
+    $substring only guards a date longer than any partition key.
     """
     return (
-        f"{{% $substring('{task_id}-' "
+        f"{{% $substring('{_wrapper_name_part(task_id)}-' "
         f"& ({_DATE_FALLBACK}) "
-        f"& '-' & {_EXEC_NAME_SUFFIX}, 0, 80) %}}"
+        f"& '-' & {_EXEC_NAME_SUFFIX}, 0, {MAX_NAME}) %}}"
     )
+
+
+def _check_wrapper_names(dag: DAG) -> None:
+    """Fail when two nodes of ``dag`` would start wrappers under the same name."""
+    seen: Dict[str, str] = {}
+    nodes = [t.task_id for t in dag.tasks] + [s.step_id for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES]
+    for node_id in nodes:
+        part = _wrapper_name_part(node_id)
+        first = seen.setdefault(part, node_id)
+        if first != node_id:
+            raise ValueError(
+                f"DAG '{dag.dag_id}': tasks '{first}' and '{node_id}' would start their wrappers under "
+                f"the same name ('{part}-<date>-<run>'). Rename one of them."
+            )
 
 
 def _serialize_wait_for(wait_for: List[Any]) -> List[Dict[str, Any]]:
@@ -1587,6 +1617,7 @@ def generate_step_function_json(
     _asset_subscriptions_table = asset_subscriptions_table or "${asset_subscriptions_table}"
     
     # 1. Build parallel branches (one per task/step)
+    _check_wrapper_names(dag)
     branches = []
     for item in list(dag.tasks) + list(dag.steps):
         if isinstance(item, Task):

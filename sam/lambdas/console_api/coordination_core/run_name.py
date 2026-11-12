@@ -6,7 +6,8 @@ A run's task executions are named ``{task_id}-{date}-{last 8 characters of the
 run's name}``, and the run's ``pipeline_execution_short`` is its last 20
 characters. Those suffixes must therefore be unique per run, or tasks of
 different runs collide (ADR #130, defect B-X1). Every name built here ends with
-an 8-character hash of everything that identifies the run.
+an 8-character hash of everything that identifies the run. A task id too long
+to leave room for the date and the suffix is shortened by ``fit_task_id``.
 """
 
 from __future__ import annotations

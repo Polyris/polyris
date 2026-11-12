@@ -207,6 +207,10 @@ def _format_key(dt: datetime, granularity: Granularity) -> str:
     raise ValueError(f"Unknown granularity: {granularity!r}")
 
 
+#: The longest key any granularity renders (hourly, "YYYY-MM-DDTHH").
+MAX_PARTITION_KEY_LENGTH = max(len(_format_key(datetime(2000, 12, 31, 23), g)) for g in GRANULARITIES)
+
+
 # -----------------------------------------------------------------------
 # Cross-granularity partition mapping (ADR #87 — intersecting-window default)
 # -----------------------------------------------------------------------

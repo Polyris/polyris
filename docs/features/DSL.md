@@ -376,7 +376,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `task_id` | str | (inferred from function name) | Override the auto-inferred task id |
+| `task_id` | str | (inferred from function name) | Override the auto-inferred task id. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
 | `execution_timeout` | timedelta | 24 hours | Max task execution time |
 | `orchestration_timeout` | timedelta | same as `execution_timeout` | Max time waiting for dependencies |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |

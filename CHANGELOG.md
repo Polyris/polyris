@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Fixed — long task ids no longer collide across runs (ADR #130 §6.6)
+
+- A task's wrapper execution is named `{task id}-{date}-{run suffix}`, at most 80 characters. A task id over 57 characters used to have the date and the run suffix cut off, so its runs on different dates collided (`ExecutionAlreadyExists`), and so did two long ids that differ only at the end. Now a long id keeps a prefix plus a hash of the whole id, and the date and the suffix are always kept. Generation fails if two task ids of one pipeline would still share a name. Redeploy a pipeline to apply it.
+
 ### Removed — the old coordination Lambdas, state machine and queue table (ADR #130)
 
 - The `evaluate-deps`, `check-assets` and `notify-asset-subscribers` functions are gone, with their roles, log groups and invoke permissions. The `reconcile` and `asset-fanout` functions do their work.
