@@ -17,10 +17,9 @@ from typing import Dict, List
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
-from config import sfn
+from config import RECONCILE_FUNCTION_ARN, lambda_client, sfn
 from dal import executions_repo, pipelines_repo, backfills_repo
 from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
-from dal.subscriptions_repo import dep_subscriptions_repo
 from constants import Limits, TASK_SETTLED_STATUSES, derive_execution_status
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
 from response import cors_response
@@ -432,31 +431,6 @@ def get_execution_parent(execution_name: str, event: Dict) -> Dict:
 
 
 
-def _cleanup_dependency_subscriptions(subscriber_name: str, dependency_keys: List[str]) -> None:
-    """
-    Clean up dependency subscriptions after resume.
-
-    When a task was waiting for deps and got paused (with wait_token),
-    we stored pending_dependency_keys. After resume, we should clean
-    these subscriptions to prevent stale data.
-    """
-    if not dependency_keys:
-        return
-
-    for dep_key in dependency_keys:
-        try:
-            dep_subscriptions_repo.delete(dep_key, subscriber_name)
-        except Exception as e:
-            # Non-critical - log and continue
-            log.error(
-                "_cleanup_dependency_subscriptions",
-                "Failed to delete subscription",
-                error=str(e),
-                dep_key=dep_key,
-                subscriber_name=subscriber_name,
-            )
-
-
 def _sfn_stop(arn: str, context: str = '') -> None:
     """Stop a single SFN execution, ignoring not-found / already-stopped errors."""
     if not arn or not arn.startswith('arn:aws:states:'):
@@ -635,110 +609,85 @@ def get_paused_tasks_with_token(pipeline_execution: str) -> List[Dict]:
     ]
 
 
-def resume_execution(pipeline_execution: str, event: Dict) -> Dict:
+def _held_by_pause(pipeline_execution: str) -> List[Dict]:
+    """Rows run_task holds in its pause wait: status waiting_paused with a pause_token."""
+    return [
+        item
+        for item in executions_repo.query_by_pipeline_execution(pipeline_execution)
+        if item.get('status') == 'waiting_paused' and item.get('pause_token')
+    ]
+
+
+def _reconcile_run(pipeline_execution: str) -> Dict:
+    """Have the reconciler check every waiting row of the run from its facts (ADR #130 §6.5).
+
+    Returns how many rows it handled and how many it left due for the sweeper.
+    A failure here only delays the run's waiting tasks: they keep their place
+    in the attention index, and the sweeper checks them at their due time.
     """
-    Resume a paused pipeline execution. Tasks in 'waiting_paused' will continue via callback.
+    if not RECONCILE_FUNCTION_ARN:
+        log.error("resume_execution", "RECONCILE_FUNCTION_ARN is not set; the sweeper checks the run's waiting tasks",
+                  pipeline_execution=pipeline_execution)
+        return {'error': 'RECONCILE_FUNCTION_ARN is not set'}
+    try:
+        response = lambda_client.invoke(
+            FunctionName=RECONCILE_FUNCTION_ARN,
+            InvocationType='RequestResponse',
+            Payload=json.dumps({'pipeline_execution': pipeline_execution, 'source': 'resume'}),
+        )
+        body = json.loads(response['Payload'].read() or b'{}')
+    except (ClientError, BotoCoreError, ValueError) as e:
+        log.error("resume_execution", "The reconcile call failed; the sweeper checks the run's waiting tasks",
+                  pipeline_execution=pipeline_execution, error=str(e))
+        return {'error': str(e)}
+    if response.get('FunctionError'):
+        error = str(body.get('errorMessage') or response['FunctionError'])
+        log.error("resume_execution", "The reconciler failed; the sweeper checks the run's waiting tasks",
+                  pipeline_execution=pipeline_execution, error=error)
+        return {'error': error}
+    return {'handled': int(body.get('handled', 0)), 'deferred': int(body.get('deferred', 0))}
 
-    CRITICAL: Order of operations to avoid race condition:
-    1. Get paused tasks WHILE pause flag is still True (atomic snapshot)
-    2. Send callbacks to all waiting_paused tasks
-    3. THEN update pause flag to False
 
-    This prevents new tasks from seeing paused=False and starting without proper
-    state recovery during the resume operation.
+def resume_execution(pipeline_execution: str, event: Dict) -> Dict:
+    """Resume a paused run (ADR #130 §6.5).
 
-    IMPORTANT: There are TWO types of paused tasks:
-    1. pause_token: Task was ready to run but pipeline was paused (pause_waiter)
-    2. wait_token: Dependencies became ready but pipeline was paused (notify_dependents)
-
-    Both need different handling!
+    1. Clear the pause flag first, so no task parks or enters the pause wait any more.
+    2. Release the tasks run_task holds in its pause wait. run_task writes
+       `running` and drops the pause_token itself (Principle #43).
+    3. Have the reconciler check the run's waiting rows from their facts: it
+       signals the ready ones and leaves the others waiting. Nothing is
+       signalled without that check (B-P1, B-P2).
     """
     pause_key = f"_pause_{pipeline_execution}"
 
     try:
-        # 1. Get paused tasks BEFORE updating flag (while flag is still True)
-        # This ensures we capture all tasks that were paused at this moment
-        paused_tasks = get_paused_tasks_with_token(pipeline_execution)
-        resumed_tasks = []
-        failed_tasks = []
-
-        # 2. Send callbacks FIRST - wake up all paused tasks
-        for item in paused_tasks:
-            task_name = item.get('task_name', '')
-            execution_name = item.get('execution_name', '')
-            pause_token = item.get('pause_token')
-            wait_token = item.get('wait_token')
-            pending_dep_keys = item.get('pending_dependency_keys', [])
-
-            # Determine which token to use and appropriate output
-            if pause_token:
-                # Type 1: Task was ready to run but pipeline was paused
-                token = pause_token
-                output = {'resumed': True}
-                token_type = 'pause_token'
-            elif wait_token:
-                # Type 2: Dependencies became ready but pipeline was paused
-                token = wait_token
-                output = {'signal': 'deps_ready', 'reason': 'resume'}
-                token_type = 'wait_token'
-            else:
-                continue
-
-            try:
-                sfn.send_task_success(taskToken=token, output=json.dumps(output))
-
-                # Clear token(s) and update status
-                if token_type == 'pause_token':
-                    executions_repo.update(
-                        execution_name,
-                        'REMOVE pause_token SET #s = :status',
-                        expr_names={'#s': 'status'},
-                        expr_values={':status': 'deps_ready'},
-                    )
-                else:
-                    # For wait_token, also clear pending_dependency_keys
-                    executions_repo.update(
-                        execution_name,
-                        'REMOVE wait_token, pending_dependency_keys SET #s = :status',
-                        expr_names={'#s': 'status'},
-                        expr_values={':status': 'deps_ready'},
-                    )
-
-                    # Cleanup dependency subscriptions (optional but recommended)
-                    # This prevents stale subscriptions from accumulating
-                    # NOTE: subscriber in subscriptions table = task_name (not execution_name)
-                    if pending_dep_keys:
-                        _cleanup_dependency_subscriptions(task_name, pending_dep_keys)
-
-                resumed_tasks.append(f"{task_name} ({token_type})")
-
-            except sfn.exceptions.TaskTimedOut:
-                log.warn("resume_execution", "Token timed out", token_type=token_type, task_name=task_name)
-                failed_tasks.append(f"{task_name} ({token_type} timeout)")
-            except sfn.exceptions.InvalidToken:
-                log.warn("resume_execution", "Invalid token", token_type=token_type, task_name=task_name)
-                failed_tasks.append(f"{task_name} (invalid {token_type})")
-            except Exception as e:
-                log.error("resume_execution", "Failed to resume", error=str(e), task_name=task_name)
-                failed_tasks.append(f"{task_name} ({str(e)[:50]})")
-
-        # 3. NOW update pause flag to False (after all callbacks sent)
         executions_repo.update(
             pause_key,
             'SET paused = :p, resumed_at = :r',
             expr_values={':p': False, ':r': datetime.now(timezone.utc).isoformat()},
         )
 
+        released, failed = [], []
+        for item in _held_by_pause(pipeline_execution):
+            task_name = item.get('task_name', '')
+            try:
+                sfn.send_task_success(taskToken=item['pause_token'], output=json.dumps({'resumed': True}))
+                released.append(task_name)
+            except (ClientError, BotoCoreError) as e:
+                code = e.response.get('Error', {}).get('Code', '') if isinstance(e, ClientError) else ''
+                log.error("resume_execution", "Could not release a paused task", task_name=task_name,
+                          pipeline_execution=pipeline_execution, error=str(e))
+                failed.append(f"{task_name} ({code or str(e)[:50]})")
+
         response_data = {
             'message': 'Pipeline execution resumed',
             'pipeline_execution': pipeline_execution,
             'paused': False,
-            'resumed_tasks': resumed_tasks,
+            'resumed_tasks': released,
+            'reconcile': _reconcile_run(pipeline_execution),
         }
-
-        if failed_tasks:
-            response_data['failed_tasks'] = failed_tasks
-
+        if failed:
+            response_data['failed_tasks'] = failed
         return cors_response(200, response_data)
 
     except Exception as e:

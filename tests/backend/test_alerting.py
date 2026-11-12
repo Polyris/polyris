@@ -1148,12 +1148,14 @@ class TestRestartTaskConfigAndOutletsThreading:
         """Must read $states.input.task_config / $states.input.outlets
         directly (as threaded through by Get_Task_Config above) — NOT
         $states.input.item.task_config.S / item.outlets.S, which was the
-        bug (those fields never existed on the stored item)."""
-        inp = self.rt['States']['Start_New_Wrapper']['Arguments']['Input']
-        assert inp['task_config'] == "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}"
-        assert inp['outlets'] == "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}"
-        assert 'item.task_config' not in inp['task_config']
-        assert 'item.outlets' not in inp['outlets']
+        bug (those fields never existed on the stored item). Since restart
+        replays starter_input (ADR #130 §6.5), the input is one expression;
+        tests/sdk/test_restart_task_template.py evaluates it."""
+        expr = self.rt['States']['Start_New_Wrapper']['Arguments']['Input']
+        assert '$states.input.task_config' in expr
+        assert '$states.input.outlets' in expr
+        assert 'item.task_config' not in expr
+        assert 'item.outlets' not in expr
 
 
 class TestRestartNamePrefix:

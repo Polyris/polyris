@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Fixed — pause, resume and restart (ADR #130 §6.5)
+
+- Resume no longer starts a task whose assets are still missing (B-P2), and it wakes a task whose asset arrived during the pause (B-P1). It clears the pause, releases the tasks held at their start, and has the reconciler check every waiting task of the run from its facts; it signals nothing blindly. The response reports how many tasks the reconciler handled and how many it left for the sweeper.
+- Restart starts the task with the input it was first started with, so the new attempt still waits for its `wait_for` assets and keeps its trigger rule and variables (B-R1). `task_config` and outlets come from the current deploy when the console finds them. A task registered before this release restarts from its saved fields, with a warning in the bell.
+- A task released from a pause drops its pause token when it starts running.
+
 ### Changed — tooling: a lighter Stop hook
 
 - The Stop hook runs `scripts/verify-changed.sh --hook`. It does nothing when the checkout is unchanged since the last green run, from any session, so a second session no longer re-runs the whole gate on the first one's work at every stop. It skips the coverage floor and the UI build; a run without flags, `--full` and CI keep both. Every mode waits for a run already going on the checkout instead of starting a second one.

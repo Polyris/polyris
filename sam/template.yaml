@@ -1170,6 +1170,7 @@ Resources:
           RESTART_HELPER_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
           NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
           NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
+          RECONCILE_FUNCTION_ARN: !GetAtt ReconcileFunction.Arn
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
         ApiProxy:
@@ -1454,11 +1455,14 @@ Resources:
                 Action:
                   - glue:GetTable
                 Resource: "*"
-              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C).
+              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C), and the
+              # reconciler, which resume asks to check a run's waiting tasks (ADR #130 §6.5).
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
-                Resource: !GetAtt NotifyFunction.Arn
+                Resource:
+                  - !GetAtt NotifyFunction.Arn
+                  - !GetAtt ReconcileFunction.Arn
 
   # ---------------------------------------------------------------------------
   # API Gateway (HTTP API)

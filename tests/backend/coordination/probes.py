@@ -15,6 +15,8 @@ from typing import NamedTuple, Tuple
 SCENARIOS = "tests/backend/coordination/test_scenarios.py"
 CORE = "sam/lambdas/coordination/coordination_core/asset_conditions.py"
 REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
+TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
+EXECUTIONS_ROUTE = "sam/lambdas/console_api/routes/executions.py"
 
 
 class Edit(NamedTuple):
@@ -100,4 +102,32 @@ PROBES: Tuple[Probe, ...] = (
              '                    "Output": "{% $states.input %}",\n                    "Next": "Warn_Notify_Dependents_Failed"',
              '                    "Output": "{% $states.input %}",\n                    "Next": "Notify_Dependents_Failed"'),
     ), f"{SCENARIOS}::test_a_failed_fan_out_does_not_fail_the_producer"),
+    Probe("B-M1", (Edit(TASKS_ROUTE, "    partition_key = item.get('date')\n",
+                        "    partition_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')\n"),),
+          f"{SCENARIOS}::test_mark_success_writes_the_fact_for_the_marked_runs_partition"),
+    # The old resume never asked the reconciler: tasks parked during the pause stayed parked.
+    Probe("B-P1", (Edit(EXECUTIONS_ROUTE, "            'reconcile': _reconcile_run(pipeline_execution),\n",
+                        "            'reconcile': {},\n"),),
+          f"{SCENARIOS}::test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume"),
+    # Two guards: the reconciler parks only a task that is otherwise ready, and resume signals
+    # nothing without asking it. The old code parked any task whose deps finished during the
+    # pause and signalled every parked task deps_ready through its wait_token; the probe does both.
+    Probe("B-P2", (
+        Edit("sam/lambdas/coordination/coordination_core/decide.py",
+             "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"
+             "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n",
+             "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n"
+             "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"),
+        Edit(EXECUTIONS_ROUTE, "        if item.get('status') == 'waiting_paused' and item.get('pause_token')\n",
+             "        if item.get('status') == 'waiting_paused' and (item.get('pause_token') or item.get('wait_token'))\n"),
+        Edit(EXECUTIONS_ROUTE,
+             "                sfn.send_task_success(taskToken=item['pause_token'], output=json.dumps({'resumed': True}))\n",
+             "                sfn.send_task_success(taskToken=item.get('pause_token') or item['wait_token'],\n"
+             "                                      output=json.dumps({'signal': 'deps_ready', 'reason': 'resume'}))\n"),
+    ), f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
+    # The old restart rebuilt the wrapper's input from a few saved fields, without wait_for.
+    Probe("B-R1", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
+                        "$start := $exists($item.starter_input.S) ? $parse($item.starter_input.S) :",
+                        "$start := false ? $parse($item.starter_input.S) :"),),
+          f"{SCENARIOS}::test_a_restarted_task_is_still_gated_on_its_assets"),
 )

@@ -218,7 +218,7 @@ notify_dependents SFN
               ├─ upstream_failed ► SendTaskSuccess({signal: 'deps_blocked'})
               │    └─ wrapper writes 'upstream_failed', then the failure path
               │
-              ├─ paused ─────────► status waiting_paused (resume wakes it)
+              ├─ paused ─────────► status waiting_paused (resume re-checks it from facts)
               │
               └─ wait ───────────► nothing (still waiting for other conditions)
 ```

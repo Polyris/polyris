@@ -110,7 +110,7 @@
         },
         "Update_Status_Running": {
             "Type": "Task",
-            "Comment": "Update DynamoDB: status = running, record running_at timestamp and run_task_helper_arn. ConditionExpression guards against a ghost (prior-attempt) execution overwriting run_task_helper_arn or resetting the attempt counter for the current attempt. Uses <= (not strict <) for idempotency: same-attempt retries on DDB throttle can safely re-write the same values.",
+            "Comment": "Update DynamoDB: status = running, record running_at timestamp and run_task_helper_arn, and drop a pause_token a resume released (the receiver of that signal writes the status after it, Principle #43). ConditionExpression guards against a ghost (prior-attempt) execution overwriting run_task_helper_arn or resetting the attempt counter for the current attempt. Uses <= (not strict <) for idempotency: same-attempt retries on DDB throttle can safely re-write the same values.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -119,7 +119,7 @@
                         "S": "{% $states.input.execution_name %}"
                     }
                 },
-                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, retry_attempt = :ra0, task_arn = :task_arn, task_type = :task_type REMOVE wait_delay_until_ms, wait_delay_started_ms",
+                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, retry_attempt = :ra0, task_arn = :task_arn, task_type = :task_type REMOVE wait_delay_until_ms, wait_delay_started_ms, pause_token",
                 "ConditionExpression": "attribute_not_exists(attempt) OR attempt <= :expectedAttempt",
                 "ExpressionAttributeNames": {
                     "#s": "status"

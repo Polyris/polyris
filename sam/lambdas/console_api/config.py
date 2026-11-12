@@ -183,6 +183,8 @@ CIRCUIT_BREAKER_TABLE = os.environ.get('CIRCUIT_BREAKER_TABLE', '')
 RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 
 # SFN Helpers
+# The coordination reconciler; resume asks it to check a run's waiting tasks (ADR #130 §6.5).
+RECONCILE_FUNCTION_ARN = os.environ.get('RECONCILE_FUNCTION_ARN', '')
 NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
 

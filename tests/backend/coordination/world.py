@@ -147,6 +147,7 @@ class World:
         self.bindings.reconcile()
         self.bindings.query_subscriptions()
         self._fanout = self.bindings.asset_fanout()
+        self._console = self.bindings.console()
         self._producers: Dict[str, Pipeline] = {}
         self._stream = StreamAdapter(self.stack)
 
@@ -243,23 +244,38 @@ class World:
         self._stream.deliver(self._fanout, asset=None if asset is None else asset.name)
         self.settle()
 
-    def pause(self, run: Run) -> None:
-        raise NeedsBinding("operations", "pause through the console route")
+    def _call_console(self, path: str, *, query: Dict[str, str], body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """POST to the console API through its real handler, as the UI does."""
+        event = {
+            "rawPath": path, "headers": {}, "queryStringParameters": query, "body": json.dumps(body or {}),
+            "requestContext": {"http": {"method": "POST"}, "requestId": "harness", "stage": "$default"},
+        }
+        response = self._console.handler(event, None)
+        if response["statusCode"] >= 300:
+            raise AssertionError(f"POST {path} → {response['statusCode']}: {response.get('body')}")
+        self.settle()
+        return json.loads(response["body"])
 
-    def resume(self, run: Run) -> None:
-        raise NeedsBinding("operations", "resume → reconcile_run")
+    def _task_action(self, path: str, run: Run, task: str) -> Dict[str, Any]:
+        return self._call_console(path, query={"name": task}, body={"date": run.date, "pipeline_execution": run.name})
+
+    def pause(self, run: Run) -> None:
+        self._call_console("/api/execution-pause", query={"id": run.name})
+
+    def resume(self, run: Run) -> Dict[str, Any]:
+        return self._call_console("/api/execution-resume", query={"id": run.name})
 
     def restart(self, run: Run, task: str) -> None:
-        raise NeedsBinding("operations", "restart replays starter_input")
+        self._task_action("/api/task-restart", run, task)
 
     def sweep(self) -> None:
         raise NeedsBinding("sweeper", "the sweeper")
 
     def mark_success(self, run: Run, task: str) -> None:
-        raise NeedsBinding("assets", "the console's mark_success writes the fact for the run's partition")
+        self._task_action("/api/task-success", run, task)
 
     def skip(self, run: Run, task: str) -> None:
-        raise NeedsBinding("operations", "the console's skip while the wrapper waits")
+        self._task_action("/api/task-skip", run, task)
 
     def push_runs(self, pipeline: Pipeline) -> List[Run]:
         """Runs of `pipeline` that a fact started (AssetFanout's push), oldest first."""

@@ -168,7 +168,6 @@ def test_a_re_registered_task_is_woken_exactly_once(world):
 
 
 @defect("B-M1")
-@needs_binding("operations")
 def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
     produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), "2026-11-01")
     world.mark_success(produced, "build")            # done on 2026-11-12
@@ -250,7 +249,6 @@ def test_a_failed_auto_skip_write_does_not_wake_dependants(world):
 
 
 @defect("B-P1")
-@needs_binding("operations")
 def test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.pause(run)
@@ -262,7 +260,6 @@ def test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume(world):
 
 
 @defect("B-P2")
-@needs_binding("operations")
 def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
     run = world.start_run(world.deploy(waits_for("p", [A], deps=["extract"])), DATE)
     world.pause(run)
@@ -275,7 +272,6 @@ def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
 
 
 @defect("B-R1")
-@needs_binding("operations")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)
     world.write_event(A, DATE)
