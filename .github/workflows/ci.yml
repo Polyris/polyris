@@ -67,6 +67,9 @@ jobs:
       - name: Check generated enums in sync
         run: make check-generate-enums
 
+      - name: Check generated coordination copies in sync
+        run: make check-generate-coordination
+
       - name: Check generated run_task $dateVars in sync
         run: make check-generate-variables
 

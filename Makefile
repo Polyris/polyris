@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-constants sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-constants sync-loggers check-generate-enums check-generate-variables check-generate-coordination generate-coordination check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -17,6 +17,7 @@ help:
 	@echo "  make check-no-paid     - Open-core guard: no paid ee/ code tracked here"
 	@echo "  make lint              - Check Python + JSON syntax"
 	@echo "  make sync-constants    - Verify Lambda constants in sync"
+	@echo "  make generate-coordination - Copy polyris/coordination into Lambdas (ADR #130)"
 	@echo "  make check-versions    - Verify version consistency across files"
 	@echo "  make smoke-pipelines   - Verify all pipelines import cleanly"
 	@echo ""
@@ -117,7 +118,7 @@ e2e-smoke:
 	python3 -m pytest tests/e2e/ -v -m smoke
 
 # All checks before commit
-check: lint sync-constants sync-loggers check-generate-enums check-generate-variables \
+check: lint sync-constants sync-loggers check-generate-enums check-generate-variables check-generate-coordination \
        check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck \
        check-versions smoke-pipelines test
 	@echo "✅ All checks passed!"
@@ -168,6 +169,16 @@ generate-enums:
 # Check generated enum files are in sync (CI gate)
 check-generate-enums:
 	@python3 -m polyris.codegen.sync_enums --check
+
+# Copy polyris/coordination into the coordination Lambda and console_api as
+# coordination_core (ADR #130 §10)
+generate-coordination:
+	@echo "🔄 Generating coordination_core copies from polyris/coordination..."
+	@python3 -m polyris.codegen.sync_coordination
+
+# Check the coordination_core copies are in sync (CI gate)
+check-generate-coordination:
+	@python3 -m polyris.codegen.sync_coordination --check
 
 # Generate the run_task $dateVars block from the variable registry (SSoT)
 generate-variables:
