@@ -18,7 +18,7 @@ strings) and the same parser (`type_from_string`).
 
 from __future__ import annotations
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 import boto3
 
@@ -63,7 +63,7 @@ def glue_table_to_columns(
     """
     client = boto3.client("glue", region_name=region) if region else boto3.client("glue")
 
-    kwargs = {"DatabaseName": database, "Name": table}
+    kwargs: Dict[str, Any] = {"DatabaseName": database, "Name": table}
     if catalog_id:
         kwargs["CatalogId"] = catalog_id
 
@@ -82,7 +82,7 @@ def glue_table_to_columns(
     return out
 
 
-def _glue_column_to_polyris(glue_col: dict, *, partition_key: bool) -> Column:
+def _glue_column_to_polyris(glue_col: Mapping[str, Any], *, partition_key: bool) -> Column:
     """Convert a single Glue column dict into a Column.
 
     Glue API shape: {"Name": "x", "Type": "decimal(10,2)", "Comment": "..."}.
@@ -188,7 +188,7 @@ def fetch_glue_partition_keys(
     client = (
         boto3.client("glue", region_name=region) if region else boto3.client("glue")
     )
-    kwargs = {"DatabaseName": database, "Name": table}
+    kwargs: Dict[str, Any] = {"DatabaseName": database, "Name": table}
     if catalog_id:
         kwargs["CatalogId"] = catalog_id
     response = client.get_table(**kwargs)
