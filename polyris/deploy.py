@@ -56,6 +56,7 @@ from .cfn_changeset import (
     _watch_stack_events,
     all_stacks,
     create_change_set,
+    describe_stack,
     execute_change_set,
     start_event_watcher,
 )
@@ -542,7 +543,7 @@ def _discover_platform_stack(session: "boto3.Session", region: str) -> Tuple[Opt
     stacks: list = []
     try:
         stacks = all_stacks(session.client("cloudformation"))
-        name = select_platform_stack(stacks)
+        name = select_platform_stack(stacks, include_review=False)  # no outputs yet
     except AmbiguousPlatformStack as e:
         print(f"\n❌ Several Polyris platform stacks in {region}: {', '.join(e.names)}.")
         print("   Pick one with --stack <name>, or set stack_name in config.py.")
@@ -662,7 +663,9 @@ def deploy_pipeline(
     # account can't produce colliding pipeline stack names.
     from polyris.config import _find_project_config
 
-    adopt_platform_naming = not sam_stack_name and _find_project_config() is None
+    # Whether the stack came from discovery or --stack, a project without
+    # config.py has no naming of its own: it takes the platform's.
+    adopt_platform_naming = _find_project_config() is None
 
     # IAM name guards — skipped on destroy (stack deletion needs only dag_id for
     # the stack name; no IAM roles are created, so length checks are irrelevant).
@@ -707,19 +710,25 @@ def deploy_pipeline(
         print(f"❌ AWS error: {e}")
         sys.exit(1)
 
+    platform = None
     if not sam_stack_name:
         sam_stack_name, platform = _discover_platform_stack(session, region)
         if not sam_stack_name:
             _fail_no_stack_name(stage)
-        if adopt_platform_naming and platform:
-            platform_stage = parameters_of(platform).get(PARAM_STAGE)
-            if cli_stage and platform_stage and cli_stage != platform_stage:
-                print(f"\n❌ --stage {cli_stage}, but the only platform in {region} is "
-                      f"{sam_stack_name} (stage {platform_stage}).")
-                print("   Install that stage first (polyris-up --stage ...), or name the platform with --stack.")
-                sys.exit(1)
-            namespace, stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
-            pipeline_stack = f"{namespace}-{stage}-polyris-{dag.dag_id}"
+    elif adopt_platform_naming:
+        try:
+            platform = describe_stack(session.client("cloudformation"), sam_stack_name)
+        except (ClientError, BotoCoreError) as e:
+            print(f"\n❌ Could not read platform stack {sam_stack_name}: {e}")
+            sys.exit(1)
+    if adopt_platform_naming and platform:
+        platform_stage = parameters_of(platform).get(PARAM_STAGE)
+        if cli_stage and platform_stage and cli_stage != platform_stage:
+            print(f"\n❌ --stage {cli_stage}, but platform {sam_stack_name} is stage {platform_stage}.")
+            print("   Install that stage first (polyris-up --stage ...), or name its platform with --stack.")
+            sys.exit(1)
+        namespace, stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
+        pipeline_stack = f"{namespace}-{stage}-polyris-{dag.dag_id}"
     assert sam_stack_name  # narrow Optional for mypy after the exit above
     if not destroy and adopt_platform_naming:
         _check_name_lengths(dag, namespace, stage)

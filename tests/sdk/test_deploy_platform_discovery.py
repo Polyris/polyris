@@ -164,3 +164,45 @@ def test_stage_flag_must_match_the_discovered_platform(mocker, tmp_path, monkeyp
         deploy_mod.deploy_pipeline(dag, stage="prod", region=REGION)
     assert e.value.code == 1
     assert "--stage prod" in capsys.readouterr().out
+
+
+def test_explicit_stack_without_config_takes_that_platforms_naming(mocker, tmp_path, monkeypatch, capsys):
+    """Review finding: with two platforms the user is told to pass --stack; the pipeline
+    stack must then be named after THAT platform, or dev and prod pipelines collide."""
+    from polyris import DAG, task
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("POLYRIS_NAMESPACE", raising=False)
+    monkeypatch.delenv("POLYRIS_STAGE", raising=False)
+    mocker.patch("polyris.config._find_project_config", return_value=None)
+    mocker.patch("polyris.validation.validate_asl_from_dag", return_value=(True, [], []))
+    session = _Session()
+    for name, stage in (("acme-dev", "dev"), ("acme-prod", "prod")):
+        _stack(session, name, platform=True)
+        session.stacks[-1]["Parameters"] = [{"ParameterKey": "Namespace", "ParameterValue": "acme"},
+                                            {"ParameterKey": "Stage", "ParameterValue": stage}]
+
+    class _Sts:
+        def get_caller_identity(self):
+            return {"Account": "123456789012"}
+
+    stacks = session.stacks
+
+    class _Cfn:
+        def describe_stacks(self, StackName):
+            return {"Stacks": [s for s in stacks if s["StackName"] == StackName]}
+
+    session.client = lambda name: _Sts() if name == "sts" else _Cfn()
+    session.region_name = REGION
+    mocker.patch("polyris.deploy.boto3").Session.return_value = session
+
+    with DAG("orders", schedule=None) as dag:
+        @task.sfn(arn="arn:aws:states:eu-central-1:123456789012:stateMachine:x")
+        def t():
+            pass
+        t()
+
+    with pytest.raises(SystemExit):  # the fake platform has no outputs; the summary is printed first
+        deploy_mod.deploy_pipeline(dag, stack="acme-prod", region=REGION)
+    out = capsys.readouterr().out
+    assert "acme-prod-polyris-orders" in out and "polyris-dev-polyris-orders" not in out

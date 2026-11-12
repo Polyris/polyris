@@ -71,6 +71,8 @@ NAMESPACE_STAGE_MAX_LEN = 25
 # S3 bucket names allow lowercase letters, digits and hyphens here; both parts
 # end up inside "{Namespace}-{Stage}-polyris-*" bucket names.
 _NAME_PART_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+# The stack name "{Namespace}-{Stage}" must start with a letter (CloudFormation).
+_NAMESPACE_START_RE = re.compile(r"^[a-z]")
 
 
 def default_stack_name(namespace: str, stage: str) -> str:
@@ -106,6 +108,8 @@ def validate_namespace_stage(namespace: str, stage: str) -> List[str]:
                 f"{label} {value!r} must use only lowercase letters, digits and hyphens, "
                 f"and start and end with a letter or digit (it becomes part of S3 bucket names)."
             )
+    if namespace and _NAME_PART_RE.match(namespace) and not _NAMESPACE_START_RE.match(namespace):
+        errors.append(f"Namespace {namespace!r} must start with a letter (it starts the stack name).")
     total = len(namespace or "") + len(stage or "")
     if total > NAMESPACE_STAGE_MAX_LEN:
         errors.append(
@@ -144,13 +148,34 @@ def is_platform_shaped(stack: Mapping[str, Any]) -> bool:
     return {PARAM_NAMESPACE, PARAM_STAGE, PARAM_ENABLE_COGNITO} <= params
 
 
-def select_platform_stack(stacks: Iterable[Mapping[str, Any]]) -> Optional[str]:
+# Stacks that exist but are no usable platform: a failed first create, or a
+# delete that is running or failed. Discovery skips them unless asked.
+DEAD_STACK_STATUSES = frozenset({
+    "ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "ROLLBACK_IN_PROGRESS",
+    "DELETE_IN_PROGRESS", "DELETE_FAILED", "DELETE_COMPLETE", "CREATE_FAILED",
+})
+# A stack whose first change set never ran: it has no resources or outputs yet.
+REVIEW_STATUS = "REVIEW_IN_PROGRESS"
+
+
+def select_platform_stack(
+    stacks: Iterable[Mapping[str, Any]], *, include_dead: bool = False, include_review: bool = True,
+) -> Optional[str]:
     """Pick the single platform stack from describe_stacks entries.
 
     Returns None when there is none. Never guesses: two or more raise
     AmbiguousPlatformStack, and the caller asks for an explicit name.
+    Dead stacks (failed create, deleting) are skipped unless ``include_dead``
+    — so a failed `acme-prod` doesn't make every command for `acme-dev`
+    ambiguous; ``include_review=False`` also skips stacks with no resources yet.
     """
-    names = sorted(s["StackName"] for s in stacks if is_platform_stack(s))
+    def wanted(stack: Mapping[str, Any]) -> bool:
+        status = stack.get("StackStatus", "")
+        if status in DEAD_STACK_STATUSES and not include_dead:
+            return False
+        return include_review or status != REVIEW_STATUS
+
+    names = sorted(s["StackName"] for s in stacks if is_platform_stack(s) and wanted(s))
     if len(names) > 1:
         raise AmbiguousPlatformStack(names)
     return names[0] if names else None
@@ -238,6 +263,10 @@ def ui_prefix(version: str, digest: str) -> str:
 # ── Template rewrite ─────────────────────────────────────────────────────────
 
 
+# SAM properties that may point at a local file or directory.
+LOCAL_PATH_PROPERTIES = ("CodeUri", "ContentUri", "DefinitionUri")
+
+
 def rewrite_template(
     template: Mapping[str, Any],
     *,
@@ -264,12 +293,19 @@ def rewrite_template(
             if not resource or resource.get("Type") != resource_type:
                 raise ValueError(f"Template has no {resource_type} named {logical_id!r}")
             resource.setdefault("Properties", {})[prop] = {"Bucket": bucket, "Key": key}
-        unmapped = sorted(
-            lid for lid, res in resources.items()
-            if res.get("Type") == resource_type and isinstance(res.get("Properties", {}).get(prop), str)
+    unmapped = sorted(
+        f"{lid}.{prop}" for lid, res in resources.items()
+        if str(res.get("Type", "")).startswith("AWS::Serverless::")
+        for prop in LOCAL_PATH_PROPERTIES
+        if isinstance((res.get("Properties") or {}).get(prop), str)
+        and not res["Properties"][prop].startswith("s3://")
+    )
+    if unmapped:
+        raise ValueError(
+            f"No artifact for local path(s): {', '.join(unmapped)}. The release archive packages only "
+            f"AWS::Serverless::Function code and AWS::Serverless::StateMachine definitions; "
+            f"extend scripts/build_platform_release.py and this function for a new kind."
         )
-        if unmapped:
-            raise ValueError(f"No artifact for {prop} of: {', '.join(unmapped)}")
     out["Description"] = f"{DESCRIPTION_PREFIX}{version}"
     return out
 
@@ -357,4 +393,17 @@ def platform_tags(existing: Optional[Mapping[str, Any]]) -> List[Dict[str, str]]
 def parameters_of(stack: Mapping[str, Any]) -> Dict[str, str]:
     """A describe_stacks entry's parameters as {key: value}."""
     return {p["ParameterKey"]: p.get("ParameterValue", "") for p in stack.get("Parameters") or []}
+
+
+def parse_version(version: Optional[str]) -> Optional[Tuple[int, ...]]:
+    """'1.2.0' → (1, 2, 0). None for anything that isn't dotted integers (e.g. '0.0.0-dev')."""
+    if not version or not re.fullmatch(r"\d+(\.\d+)*", version):
+        return None
+    return tuple(int(part) for part in version.split("."))
+
+
+def is_downgrade(deployed: Optional[str], installing: str) -> bool:
+    """True when ``installing`` is an older release than ``deployed``. Unknown versions never block."""
+    old, new = parse_version(deployed), parse_version(installing)
+    return old is not None and new is not None and new < old
 

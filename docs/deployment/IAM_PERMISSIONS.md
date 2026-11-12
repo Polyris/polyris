@@ -195,7 +195,7 @@ Default coverage (as of 1.0.1): Athena queries + Glue Data Catalog CRUD + basic 
 
 Same permission surface as Install — the CFN operations that created every resource must be able to delete every resource. Plus one extra concern: S3 buckets must be empty before CFN can delete them.
 
-`polyris-down` empties the console UI bucket itself, the results bucket only with `--delete-data`, and the artifacts bucket when it deletes it (`s3:ListBucketVersions`, `s3:DeleteObject`, `s3:DeleteObjectVersion`). For a from-source `sam delete`, the stack can ship a `BucketCleanupFunction` Custom Resource (`AutoEmptyBucketsOnDelete=true`) that empties both buckets on stack deletion; the role running `sam delete` needs `lambda:InvokeFunction` on it (already covered by `PowerUserAccess`).
+Before deleting, `polyris-down` reads the pipeline registry (`dynamodb:Scan`) and checks each pipeline's state machine (`states:DescribeStateMachine`). It empties the console UI bucket itself, the results bucket only with `--delete-data`, and the artifacts bucket when it deletes it (`s3:ListBucketVersions`, `s3:DeleteObject`, `s3:DeleteObjectVersion`). For a from-source `sam delete`, the stack can ship a `BucketCleanupFunction` Custom Resource (`AutoEmptyBucketsOnDelete=true`) that empties both buckets on stack deletion; the role running `sam delete` needs `lambda:InvokeFunction` on it (already covered by `PowerUserAccess`).
 
 If the cleanup Lambda fails (permission issue, timeout on a very full bucket), you can empty buckets manually before retrying:
 

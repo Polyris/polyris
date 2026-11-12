@@ -107,6 +107,14 @@ def create_change_set(
         cs = cfn.describe_change_set(StackName=stack_name, ChangeSetName=name)
         state = cs.get("Status")
         if state == "CREATE_COMPLETE":
+            # Changes are paginated; callers inspect all of them (the data-loss
+            # guard must see a table replacement even on a later page).
+            next_token = cs.get("NextToken")
+            while next_token:
+                page = cfn.describe_change_set(StackName=stack_name, ChangeSetName=name, NextToken=next_token)
+                cs.setdefault("Changes", []).extend(page.get("Changes", []))
+                next_token = page.get("NextToken")
+            cs.pop("NextToken", None)
             cs.setdefault("ChangeSetName", name)
             cs["ChangeSetType"] = change_set_type
             return cs

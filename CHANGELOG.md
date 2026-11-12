@@ -14,6 +14,9 @@
   results unless `--delete-data` is passed.
 - A change that replaces or removes a table, bucket, user pool or the admin
   user needs confirmation or `--accept-data-loss`; `--yes` never covers it.
+  An older polyris won't roll back a newer platform without `--allow-downgrade`.
+- Every S3 request to the artifacts bucket names the expected owner, so a
+  bucket with the same (predictable) name in another account is refused.
 - Stacks created with `sam deploy` switch over with `polyris-up --stack <name>`
   (parameters kept); `polyris-up` points at that command when it meets one.
 - New `polyris-init <name> --hello` scaffolds a pipeline on the platform's

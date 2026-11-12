@@ -254,3 +254,17 @@ def test_final_poll_tolerates_a_deleted_stack(mocker, capsys):
     mocker.patch.object(C, "_watch_stack_events", side_effect=lambda cfn, n, seen, stop, **kw: stop.wait())
     C.start_event_watcher(_Gone(), "s")()
     assert capsys.readouterr().out == ""
+
+
+def test_change_set_changes_are_read_across_pages():
+    """The data-loss guard must see a replacement listed on a later page."""
+    class _Paged(FakeCfn):
+        def describe_change_set(self, StackName, ChangeSetName, NextToken=None):
+            if NextToken is None:
+                return {"Status": "CREATE_COMPLETE", "Changes": [{"n": 1}], "NextToken": "p2"}
+            if NextToken == "p2":
+                return {"Changes": [{"n": 2}], "NextToken": "p3"}
+            return {"Changes": [{"n": 3}]}
+
+    cs = _create(_Paged())
+    assert cs["Changes"] == [{"n": 1}, {"n": 2}, {"n": 3}] and "NextToken" not in cs

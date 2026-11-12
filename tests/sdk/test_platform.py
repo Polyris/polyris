@@ -234,7 +234,7 @@ def test_rewrite_template_rejects_wrong_type():
 
 
 def test_rewrite_template_rejects_unmapped_local_path():
-    with pytest.raises(ValueError, match="No artifact for DefinitionUri of: Sm"):
+    with pytest.raises(ValueError, match="No artifact for local path\\(s\\): Sm.DefinitionUri"):
         P.rewrite_template(_tpl(), bucket="b", function_keys={"Fn": "k"}, state_machine_keys={}, version="1")
 
 
@@ -309,6 +309,56 @@ def test_change_set_guards():
         {"ResourceChange": {"LogicalResourceId": "U", "ResourceType": "AWS::Cognito::UserPoolUser",
                             "Action": "Remove"}}]}) == ["U (AWS::Cognito::UserPoolUser, Remove)"]
     assert P.parameters_of({"Parameters": [{"ParameterKey": "A", "ParameterValue": "1"}]}) == {"A": "1"}
+
+
+
+# ── Code-review findings (PR #51) ────────────────────────────────────────────
+
+
+def test_namespace_must_start_with_a_letter():
+    assert P.validate_namespace_stage("3m", "dev") == [
+        "Namespace '3m' must start with a letter (it starts the stack name)."]
+    assert P.validate_namespace_stage("acme", "1") == []  # stage may start with a digit
+
+
+def test_discovery_skips_dead_and_optionally_pending_stacks():
+    def st(name, status):
+        return {"StackName": name, "StackStatus": status,
+                "Tags": [{"Key": P.PLATFORM_TAG_KEY, "Value": P.PLATFORM_TAG_VALUE}]}
+    stacks = [st("acme-dev", "UPDATE_COMPLETE"), st("acme-prod", "ROLLBACK_COMPLETE"), st("acme-qa", "REVIEW_IN_PROGRESS")]
+    with pytest.raises(P.AmbiguousPlatformStack):  # dev + pending qa
+        P.select_platform_stack(stacks)
+    assert P.select_platform_stack(stacks, include_review=False) == "acme-dev"
+    with pytest.raises(P.AmbiguousPlatformStack) as e:
+        P.select_platform_stack(stacks, include_dead=True, include_review=False)
+    assert e.value.names == ["acme-dev", "acme-prod"]
+
+
+def test_rewrite_template_rejects_any_unpackaged_local_path():
+    """A new kind of local path (e.g. a layer) fails loudly instead of at deploy time."""
+    tpl = _tpl()
+    tpl["Resources"]["Layer"] = {"Type": "AWS::Serverless::LayerVersion", "Properties": {"ContentUri": "layers/x/"}}
+    tpl["Resources"]["Remote"] = {"Type": "AWS::Serverless::LayerVersion",
+                                  "Properties": {"ContentUri": "s3://bucket/key.zip"}}
+    with pytest.raises(ValueError, match="Layer.ContentUri"):
+        P.rewrite_template(tpl, bucket="b", function_keys={"Fn": "k"}, state_machine_keys={"Sm": "k"}, version="1")
+
+
+@pytest.mark.parametrize("deployed,installing,expected", [
+    ("1.2.0", "1.1.3", True),
+    ("1.2.0", "1.2.0", False),
+    ("1.2.0", "1.10.0", False),
+    (None, "1.0.0", False),
+    ("1.2.0", "0.0.0-dev", False),  # unknown versions never block
+])
+def test_is_downgrade(deployed, installing, expected):
+    assert P.is_downgrade(deployed, installing) is expected
+
+
+def test_parse_version():
+    assert P.parse_version("1.10.2") == (1, 10, 2)
+    assert P.parse_version("v1.0") is None and P.parse_version(None) is None
+
 
 
 def test_cognito_has_no_self_sign_up(template):

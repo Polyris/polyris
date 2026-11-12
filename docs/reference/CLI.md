@@ -33,10 +33,11 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--admin-email` | First console admin; Cognito emails a temporary password |
 | `--param KEY=VALUE` | Set a template parameter (repeatable). Unset parameters keep their current value. `Namespace`, `Stage`, `ArtifactsBucket`, `UiArtifactsPrefix` are refused |
 | `--stack` | Platform stack name (default: the one stack tagged as a Polyris platform, or `<namespace>-<stage>` when those flags are given). Naming a platform stack created with `sam deploy` switches it to `polyris-up` (asks to confirm); a stack that isn't a Polyris platform is refused |
-| `--profile`, `--region` | AWS profile / region (default: the standard credential chain; no region anywhere is an error) |
+| `--profile`, `--region` | AWS profile / region (default: `AWS_REGION`, then the standard credential chain; no region anywhere is an error) |
 | `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
 | `--yes` | Don't ask for confirmation |
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
+| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses |
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`).
 
@@ -57,7 +58,7 @@ polyris-down --delete-data      # also delete task results
 | `--stack`, `--profile`, `--region` | As for `polyris-up` |
 | `--yes` | Don't ask for confirmation |
 
-It refuses a stack that isn't a Polyris platform, a stack that is mid-update, and — unless `--yes` — a platform that still has pipeline stacks (`<namespace>-<stage>-polyris-*`); remove those first with `polyris-destroy`. The artifacts bucket is deleted when no other platform stack is left in the region.
+It refuses a stack that isn't a Polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. The artifacts bucket is deleted when no other platform stack is left in the region.
 
 ---
 

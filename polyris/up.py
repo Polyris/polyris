@@ -49,6 +49,7 @@ from .platform import (
     artifact_key,
     artifacts_bucket_name,
     default_stack_name,
+    is_downgrade,
     is_platform_shaped,
     is_platform_stack,
     parameters_of,
@@ -131,7 +132,9 @@ def _header(text: str) -> None:
 def _session(profile: Optional[str], region: Optional[str]) -> Tuple[boto3.Session, str, str]:
     """Return (session, region, account_id). No region anywhere is an error, never a default."""
     try:
-        session = boto3.Session(profile_name=profile, region_name=region)
+        # boto3 reads AWS_DEFAULT_REGION but not AWS_REGION; the AWS CLI reads
+        # both (AWS_REGION first), and so does polyris-deploy. Match them.
+        session = boto3.Session(profile_name=profile, region_name=region or os.environ.get("AWS_REGION") or None)
     except ProfileNotFound as e:
         raise UpError(str(e), f"List profiles with {_c('aws configure list-profiles', CYAN)}.")
     resolved_region = session.region_name
@@ -165,16 +168,19 @@ def stack_using_namespace(cfn, namespace: str, stage: str) -> Optional[str]:
     return None
 
 
-def find_platform_stack(cfn, explicit: Optional[str]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+def find_platform_stack(
+    cfn, explicit: Optional[str], *, include_dead: bool = False, include_review: bool = True,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Resolve the target stack: (name, existing stack or None).
 
     With ``--stack`` the name is used as given. Otherwise the single stack
-    tagged as a platform is taken; several raise, none returns (None, None).
+    tagged as a platform is taken (see select_platform_stack for which states
+    count); several raise, none returns (None, None).
     """
     if explicit:
         return explicit, describe_stack(cfn, explicit)
     try:
-        name = select_platform_stack(all_stacks(cfn))
+        name = select_platform_stack(all_stacks(cfn), include_dead=include_dead, include_review=include_review)
     except AmbiguousPlatformStack as e:
         raise UpError(
             f"Several Polyris platform stacks in this region: {', '.join(e.names)}.",
@@ -185,10 +191,18 @@ def find_platform_stack(cfn, explicit: Optional[str]) -> Tuple[Optional[str], Op
     return name, describe_stack(cfn, name)
 
 
+def _has_polyris_change_set(cfn, stack_name: str) -> bool:
+    """True when the stack holds a change set created by polyris (named ``polyris-<ms>``)."""
+    for page in cfn.get_paginator("list_change_sets").paginate(StackName=stack_name):
+        if any(cs.get("ChangeSetName", "").startswith("polyris-") for cs in page.get("Summaries", [])):
+            return True
+    return False
+
+
 def hello_task_arn(*, profile: Optional[str], region: Optional[str], stack: Optional[str]) -> Tuple[str, str]:
     """(platform stack name, ARN of its built-in test Step Function) for `polyris-init --hello`."""
     session, _region, _account = _session(profile, region)
-    name, existing = find_platform_stack(session.client("cloudformation"), stack)
+    name, existing = find_platform_stack(session.client("cloudformation"), stack, include_review=False)
     if not existing or not name:
         raise UpError(
             f"No Polyris platform stack found in {_region}.",
@@ -278,12 +292,19 @@ def extract_archive(archive: Path) -> Tuple[Path, Manifest]:
 
 
 # ── S3 ───────────────────────────────────────────────────────────────────────
+#
+# Every request names the expected owner (ExpectedBucketOwner = this account).
+# Bucket names are global and the artifacts bucket name is predictable, so
+# without it another account could pre-create `polyris-artifacts-<you>-<region>`
+# with a public policy, pre-plant "artifacts" at the content-addressed keys,
+# and have CloudFormation deploy its code into your account. S3 itself rejects
+# any request whose bucket belongs to someone else (403).
 
 
-def bucket_owner_status(s3, bucket: str) -> str:
-    """'missing', 'ours' or 'taken' (owned by another account)."""
+def bucket_owner_status(s3, bucket: str, *, owner: str) -> str:
+    """'missing', 'ours' (owned by ``owner``) or 'taken' (exists, owned by another account)."""
     try:
-        s3.head_bucket(Bucket=bucket)
+        s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=owner)
         return "ours"
     except ClientError as e:
         code = str(e.response.get("Error", {}).get("Code", ""))
@@ -294,25 +315,30 @@ def bucket_owner_status(s3, bucket: str) -> str:
         raise
 
 
-def ensure_artifacts_bucket(s3, bucket: str, region: str) -> None:
+def ensure_artifacts_bucket(s3, bucket: str, *, region: str, owner: str) -> None:
     """Create the private, encrypted artifacts bucket if it doesn't exist (idempotent)."""
-    status = bucket_owner_status(s3, bucket)
+    status = bucket_owner_status(s3, bucket, owner=owner)
     if status == "ours":
         return
     if status == "taken":
-        raise UpError(f"Bucket {bucket} exists but belongs to another account.")
+        raise UpError(
+            f"The artifacts bucket name {bucket} is taken by another AWS account.",
+            "polyris-up will not use a bucket it doesn't own. The name includes your account id, so this "
+            "is deliberate; report it to AWS and your security team.",
+        )
     kwargs: Dict[str, Any] = {"Bucket": bucket}
     if region != "us-east-1":
         kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
     s3.create_bucket(**kwargs)
-    s3.put_public_access_block(Bucket=bucket, PublicAccessBlockConfiguration={
+    s3.put_public_access_block(Bucket=bucket, ExpectedBucketOwner=owner, PublicAccessBlockConfiguration={
         "BlockPublicAcls": True, "IgnorePublicAcls": True,
         "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
     })
-    s3.put_bucket_encryption(Bucket=bucket, ServerSideEncryptionConfiguration={
+    s3.put_bucket_encryption(Bucket=bucket, ExpectedBucketOwner=owner, ServerSideEncryptionConfiguration={
         "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}],
     })
-    s3.put_bucket_tagging(Bucket=bucket, Tagging={"TagSet": [{"Key": PLATFORM_TAG_KEY, "Value": "artifacts"}]})
+    s3.put_bucket_tagging(Bucket=bucket, ExpectedBucketOwner=owner,
+                          Tagging={"TagSet": [{"Key": PLATFORM_TAG_KEY, "Value": "artifacts"}]})
     print(f"   created {_c(bucket, CYAN)}")
 
 
@@ -320,9 +346,9 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _object_exists(s3, bucket: str, key: str) -> bool:
+def _object_exists(s3, bucket: str, key: str, *, owner: str) -> bool:
     try:
-        s3.head_object(Bucket=bucket, Key=key)
+        s3.head_object(Bucket=bucket, Key=key, ExpectedBucketOwner=owner)
         return True
     except ClientError as e:
         if str(e.response.get("Error", {}).get("Code", "")) in ("404", "NoSuchKey", "NotFound"):
@@ -330,11 +356,15 @@ def _object_exists(s3, bucket: str, key: str) -> bool:
         raise
 
 
-def _upload_once(s3, bucket: str, key: str, path: Path) -> bool:
+def _upload(s3, bucket: str, key: str, path: Path, *, owner: str) -> None:
+    s3.upload_file(str(path), bucket, key, ExtraArgs={"ExpectedBucketOwner": owner})
+
+
+def _upload_once(s3, bucket: str, key: str, path: Path, *, owner: str) -> bool:
     """Upload unless the key already exists. Keys carry a content digest, so existing = identical."""
-    if _object_exists(s3, bucket, key):
+    if _object_exists(s3, bucket, key, owner=owner):
         return False
-    s3.upload_file(str(path), bucket, key)
+    _upload(s3, bucket, key, path, owner=owner)
     return True
 
 
@@ -347,49 +377,54 @@ def tree_digest(root: Path) -> str:
     return h.hexdigest()
 
 
-def upload_artifacts(s3, bucket: str, root: Path, manifest: Manifest) -> Tuple[Dict[str, str], Dict[str, str], str]:
+def upload_artifacts(
+    s3, bucket: str, root: Path, manifest: Manifest, *, owner: str,
+) -> Tuple[Dict[str, str], Dict[str, str], str]:
     """Upload code, definitions and the UI. Returns (function keys, state machine keys, UI prefix)."""
     uploaded = total = 0
     function_keys: Dict[str, str] = {}
     for logical_id, rel in manifest.functions.items():
         path = root / rel
         key = artifact_key(manifest.version, "lambdas", _sha256_file(path), path.name)
-        uploaded += _upload_once(s3, bucket, key, path)
+        uploaded += _upload_once(s3, bucket, key, path, owner=owner)
         total += 1
         function_keys[logical_id] = key
     state_machine_keys: Dict[str, str] = {}
     for logical_id, rel in manifest.state_machines.items():
         path = root / rel
         key = artifact_key(manifest.version, "sfn", _sha256_file(path), path.name)
-        uploaded += _upload_once(s3, bucket, key, path)
+        uploaded += _upload_once(s3, bucket, key, path, owner=owner)
         total += 1
         state_machine_keys[logical_id] = key
     ui_root = root / manifest.ui
     prefix = ui_prefix(manifest.version, tree_digest(ui_root))
-    # index.html last: its presence marks a complete upload for the check below.
-    files = sorted((p for p in ui_root.rglob("*") if p.is_file()), key=lambda p: p.name == "index.html")
+    # The ROOT index.html goes last: its presence marks a complete upload for
+    # the check below. (Route pages are index.html files too — pipelines/index.html
+    # and so on — and must be uploaded before it.)
+    files = sorted((p for p in ui_root.rglob("*") if p.is_file()),
+                   key=lambda p: p.relative_to(ui_root).as_posix() == "index.html")
     total += len(files)
-    if not _object_exists(s3, bucket, f"{prefix}/index.html"):
+    if not _object_exists(s3, bucket, f"{prefix}/index.html", owner=owner):
         for path in files:
-            s3.upload_file(str(path), bucket, f"{prefix}/{path.relative_to(ui_root).as_posix()}")
+            _upload(s3, bucket, f"{prefix}/{path.relative_to(ui_root).as_posix()}", path, owner=owner)
         uploaded += len(files)
     reused = total - uploaded
     print(f"   artifacts: {uploaded} uploaded" + (f", {reused} already in the bucket" if reused else ""))
     return function_keys, state_machine_keys, prefix
 
 
-def _upload_template(s3, *, bucket: str, region: str, version: str, template: Dict[str, Any]) -> str:
+def _upload_template(s3, *, bucket: str, region: str, version: str, template: Dict[str, Any], owner: str) -> str:
     body = json.dumps(template, sort_keys=True).encode()
     key = artifact_key(version, "template", hashlib.sha256(body).hexdigest(), "template.json")
-    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json", ExpectedBucketOwner=owner)
     return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
 
 
-def count_objects(s3, bucket: str) -> int:
+def count_objects(s3, bucket: str, *, owner: str) -> int:
     """Objects (including old versions and delete markers) in a bucket; 0 if it's gone."""
     total = 0
     try:
-        for page in s3.get_paginator("list_object_versions").paginate(Bucket=bucket):
+        for page in s3.get_paginator("list_object_versions").paginate(Bucket=bucket, ExpectedBucketOwner=owner):
             total += len(page.get("Versions", [])) + len(page.get("DeleteMarkers", []))
     except ClientError as e:
         if "NoSuchBucket" in str(e):
@@ -398,15 +433,16 @@ def count_objects(s3, bucket: str) -> int:
     return total
 
 
-def empty_bucket(s3, bucket: str) -> int:
+def empty_bucket(s3, bucket: str, *, owner: str) -> int:
     """Delete every object version and delete marker. Returns the number deleted."""
     deleted = 0
     try:
-        for page in s3.get_paginator("list_object_versions").paginate(Bucket=bucket):
+        for page in s3.get_paginator("list_object_versions").paginate(Bucket=bucket, ExpectedBucketOwner=owner):
             objects = [{"Key": v["Key"], "VersionId": v["VersionId"]}
                        for v in page.get("Versions", []) + page.get("DeleteMarkers", [])]
             for i in range(0, len(objects), 1000):
-                s3.delete_objects(Bucket=bucket, Delete={"Objects": objects[i:i + 1000], "Quiet": True})
+                s3.delete_objects(Bucket=bucket, ExpectedBucketOwner=owner,
+                                  Delete={"Objects": objects[i:i + 1000], "Quiet": True})
             deleted += len(objects)
     except ClientError as e:
         if "NoSuchBucket" in str(e):
@@ -458,7 +494,13 @@ def run_up(args: argparse.Namespace) -> None:
     status = (existing or {}).get("StackStatus", "")
     if status == "REVIEW_IN_PROGRESS":
         # An install that stopped before its change set ran: the stack exists
-        # but has no resources and no parameters. Finish it as a new install.
+        # but has no resources and no parameters. Finish it as a new install —
+        # but only if it is ours (tagged, or holding a polyris change set), never
+        # another tool's pending stack that happens to be named here.
+        assert stack_name and existing is not None
+        if not (is_platform_stack(existing) or _has_polyris_change_set(cfn, stack_name)):
+            raise UpError(f"Stack {stack_name} is not a Polyris platform stack — refusing to change it.",
+                          "Pick another --namespace / --stage, or name the right stack with --stack.")
         print(f"   {stack_name} is left from an interrupted install — finishing it as a new install.")
         existing = None
     elif status == "ROLLBACK_COMPLETE":
@@ -468,6 +510,7 @@ def run_up(args: argparse.Namespace) -> None:
             "then run polyris-up again.",
         )
 
+    deployed: Optional[str] = None
     if existing:
         deployed = version_from_description(existing.get("Description"))
         print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {__version__})")
@@ -490,7 +533,7 @@ def run_up(args: argparse.Namespace) -> None:
             raise UpError(errors[0], *errors[1:])
         stack_name = stack_name or default_stack_name(namespace, stage)
         for bucket in platform_bucket_names(namespace, stage):
-            owner = bucket_owner_status(s3, bucket)
+            owner = bucket_owner_status(s3, bucket, owner=account)
             if owner == "taken":
                 raise UpError(f"Bucket {bucket} already exists in another AWS account.",
                               "Bucket names are global — choose a different --namespace.")
@@ -525,14 +568,20 @@ def run_up(args: argparse.Namespace) -> None:
     root, manifest = extract_archive(archive)
     if manifest.version != __version__ and not args.archive:
         raise UpError(f"Release archive is v{manifest.version}, installed polyris is v{__version__}.")
+    if is_downgrade(deployed, manifest.version) and not args.allow_downgrade:
+        raise UpError(
+            f"{stack_name} runs v{deployed}; this would roll it back to v{manifest.version}.",
+            "Install the newer polyris (re-run install.sh) — or pass --allow-downgrade if the rollback is intended.",
+        )
     bucket = artifacts_bucket_name(account, region)
-    ensure_artifacts_bucket(s3, bucket, region)
-    function_keys, sfn_keys, prefix = upload_artifacts(s3, bucket, root, manifest)
+    ensure_artifacts_bucket(s3, bucket, region=region, owner=account)
+    function_keys, sfn_keys, prefix = upload_artifacts(s3, bucket, root, manifest, owner=account)
 
     template = json.loads((root / manifest.template).read_text())
     template = rewrite_template(template, bucket=bucket, function_keys=function_keys,
                                 state_machine_keys=sfn_keys, version=manifest.version)
-    template_url = _upload_template(s3, bucket=bucket, region=region, version=manifest.version, template=template)
+    template_url = _upload_template(s3, bucket=bucket, region=region, version=manifest.version,
+                                    template=template, owner=account)
     values.update({PARAM_ARTIFACTS_BUCKET: bucket, PARAM_UI_PREFIX: prefix})
     values.update(overrides)
     try:
@@ -580,9 +629,22 @@ def run_up(args: argparse.Namespace) -> None:
     _print_outputs(stack)
     if PARAM_ADMIN_EMAIL in values and values[PARAM_ADMIN_EMAIL] and existing is None:
         print(f"   Login:    {values[PARAM_ADMIN_EMAIL]} — Cognito has emailed a temporary password.")
+    flags = next_step_flags(args, stack_name)
     print("\n   Next — a first pipeline that runs right away:")
-    print(f"     {_c('polyris-init hello-world --hello', CYAN)}")
-    print(f"     {_c('cd hello-world && polyris-deploy', CYAN)}   then press Run in the console")
+    print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
+    print(f"     {_c(f'cd hello-world && polyris-deploy{flags}', CYAN)}   then press Run in the console")
+
+
+def next_step_flags(args: argparse.Namespace, stack_name: str) -> str:
+    """The target flags the user gave polyris-up, repeated for the next commands (leading space)."""
+    parts = []
+    if args.stack or args.namespace or args.stage:
+        parts.append(f"--stack {stack_name}")
+    if args.profile:
+        parts.append(f"--profile {args.profile}")
+    if args.region:
+        parts.append(f"--region {args.region}")
+    return "".join(f" {p}" for p in parts)
 
 
 def _print_outputs(stack: Dict[str, Any]) -> None:
@@ -594,6 +656,47 @@ def _print_outputs(stack: Dict[str, Any]) -> None:
 # ── polyris-down ─────────────────────────────────────────────────────────────
 
 
+def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) -> List[str]:
+    """Pipelines still deployed on this platform.
+
+    The platform's pipeline registry is the source of truth (ADR #39): every
+    pipeline polyris-deploy registered there, whose state machine still exists,
+    is live — whatever namespace its config.py gave it. Stacks named
+    ``<Namespace>-<Stage>-polyris-*`` are added for pipelines that never
+    registered. A row whose state machine can't be checked counts as live.
+    """
+    params = parameters_of(stack)
+    prefix = f"{params.get(PARAM_NAMESPACE, '')}-{params.get(PARAM_STAGE, '')}-polyris-"
+    found = {s["StackName"] for s in all_stacks(cfn)
+             if s["StackName"].startswith(prefix) and s["StackName"] != stack_name}
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
+    table = outputs.get("PipelineRegistryTable")
+    if not table:
+        return sorted(found)
+    sfn = session.client("stepfunctions")
+    try:
+        pages = session.client("dynamodb").get_paginator("scan").paginate(
+            TableName=table, ProjectionExpression="pipeline_name, sfn_arn")
+        rows = [item for page in pages for item in page.get("Items", [])]
+    except ClientError as e:
+        if "ResourceNotFoundException" in str(e):
+            return sorted(found)
+        raise
+    for row in rows:
+        name = row.get("pipeline_name", {}).get("S", "")
+        arn = row.get("sfn_arn", {}).get("S", "")
+        if not name or name.startswith("_") or not arn:
+            continue
+        try:
+            sfn.describe_state_machine(stateMachineArn=arn)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "StateMachineDoesNotExist":
+                continue  # destroyed pipeline: its registry row outlives it
+        found.add(name)
+    return sorted(found)
+
+
+
 def run_down(args: argparse.Namespace) -> None:
     _header("Remove Polyris platform")
     session, region, account = _session(args.profile, args.region)
@@ -601,7 +704,7 @@ def run_down(args: argparse.Namespace) -> None:
     cfn = session.client("cloudformation")
     s3 = session.client("s3")
 
-    stack_name, stack = find_platform_stack(cfn, args.stack)
+    stack_name, stack = find_platform_stack(cfn, args.stack, include_dead=True)
     if not stack or not stack_name:
         print(f"\n   No platform stack{f' named {stack_name}' if stack_name else ''} in {region} — nothing to remove.")
         return
@@ -614,25 +717,25 @@ def run_down(args: argparse.Namespace) -> None:
     tables, buckets = [], {}
     for page in resources:
         for r in page["StackResourceSummaries"]:
+            physical = r.get("PhysicalResourceId")  # absent when the resource never got created
+            if not physical:
+                continue
             if r["ResourceType"] == "AWS::DynamoDB::Table":
-                tables.append(r["PhysicalResourceId"])
+                tables.append(physical)
             elif r["ResourceType"] == "AWS::S3::Bucket":
-                buckets[r["LogicalResourceId"]] = r["PhysicalResourceId"]
+                buckets[r["LogicalResourceId"]] = physical
 
-    params = parameters_of(stack)
-    prefix = f"{params.get(PARAM_NAMESPACE, '')}-{params.get(PARAM_STAGE, '')}-polyris-"
-    pipelines = sorted(s["StackName"] for s in all_stacks(cfn)
-                       if s["StackName"].startswith(prefix) and s["StackName"] != stack_name)
+    pipelines = pipelines_on_platform(session, cfn, stack, stack_name)
     if pipelines and not args.yes:
         raise UpError(
-            f"{len(pipelines)} pipeline stack(s) still run on this platform: {', '.join(pipelines)}.",
+            f"{len(pipelines)} pipeline(s) still deployed on this platform: {', '.join(pipelines)}.",
             f"Remove them first with {_c('polyris-destroy', CYAN)} in each pipeline's directory "
             "(their schedules would keep firing), or pass --yes to delete the platform anyway.",
         )
 
     print(f"\n   Deleting {_c(stack_name, CYAN)} removes:")
     print(_c(f"     - {len(tables)} DynamoDB tables (run history, pipeline registry) — always deleted", YELLOW))
-    counts = {logical: count_objects(s3, b) for logical, b in buckets.items()}
+    counts = {logical: count_objects(s3, b, owner=account) for logical, b in buckets.items()}
     for logical, bucket in sorted(buckets.items()):
         print(f"     - bucket {bucket}: {counts[logical]} objects")
     results = buckets.get("ResultsBucket")
@@ -646,7 +749,7 @@ def run_down(args: argparse.Namespace) -> None:
 
     for logical, bucket in buckets.items():
         if logical != "ResultsBucket" or args.delete_data:
-            empty_bucket(s3, bucket)
+            empty_bucket(s3, bucket, owner=account)
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
         cfn.delete_stack(StackName=stack_name)
@@ -662,9 +765,9 @@ def run_down(args: argparse.Namespace) -> None:
     remaining = [s["StackName"] for s in all_stacks(cfn) if is_platform_stack(s)]
     if remaining:
         print(f"   Kept {artifacts}: still used by {', '.join(sorted(remaining))}.")
-    elif bucket_owner_status(s3, artifacts) == "ours":
-        empty_bucket(s3, artifacts)
-        s3.delete_bucket(Bucket=artifacts)
+    elif bucket_owner_status(s3, artifacts, owner=account) == "ours":
+        empty_bucket(s3, artifacts, owner=account)
+        s3.delete_bucket(Bucket=artifacts, ExpectedBucketOwner=account)
         print(f"   Deleted {artifacts} (no platform stacks left in {region}).")
 
 
@@ -713,6 +816,8 @@ def build_up_parser() -> argparse.ArgumentParser:
     parser.add_argument("--param", action="append", metavar="KEY=VALUE",
                         help="Set a template parameter (repeatable). Unset parameters keep their current value.")
     parser.add_argument("--archive", help="Deploy a local release archive instead of downloading one (for testing builds)")
+    parser.add_argument("--allow-downgrade", action="store_true",
+                        help="Allow installing an older release than the stack runs (a rollback)")
     parser.add_argument("--accept-data-loss", action="store_true",
                         help="Allow a change that replaces or removes a table, bucket, user pool or admin user "
                              "(--yes alone never does)")

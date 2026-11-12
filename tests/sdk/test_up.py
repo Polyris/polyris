@@ -61,6 +61,12 @@ def no_tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_cache(monkeypatch, tmp_path):
+    """Archive extraction goes to XDG_CACHE_HOME — never the developer's real ~/.cache."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+
+
 def _template() -> Dict[str, Any]:
     return {
         "Transform": "AWS::Serverless-2016-10-31",
@@ -123,6 +129,8 @@ class FakeCfn:
             def paginate(self, **kw):
                 if name == "describe_stacks":
                     return [fake.describe_stacks()]
+                if name == "list_change_sets":
+                    return [{"Summaries": fake.stacks[kw["StackName"]].get("_change_sets", [])}]
                 return [{"StackResourceSummaries": fake.stacks[kw["StackName"]].get("_resources", [])}]
         return _P()
 
@@ -234,8 +242,8 @@ def test_find_platform_stack_refuses_to_guess():
 
 
 def test_ensure_artifacts_bucket_creates_private_encrypted_bucket(s3):
-    up.ensure_artifacts_bucket(s3, "polyris-artifacts-1-eu", REGION)
-    up.ensure_artifacts_bucket(s3, "polyris-artifacts-1-eu", REGION)  # idempotent
+    up.ensure_artifacts_bucket(s3, "polyris-artifacts-1-eu", region=REGION, owner=ACCOUNT)
+    up.ensure_artifacts_bucket(s3, "polyris-artifacts-1-eu", region=REGION, owner=ACCOUNT)  # idempotent
     block = s3.get_public_access_block(Bucket="polyris-artifacts-1-eu")["PublicAccessBlockConfiguration"]
     assert all(block.values())
     enc = s3.get_bucket_encryption(Bucket="polyris-artifacts-1-eu")
@@ -244,13 +252,13 @@ def test_ensure_artifacts_bucket_creates_private_encrypted_bucket(s3):
 
 
 def test_bucket_owner_status(s3, mocker):
-    assert up.bucket_owner_status(s3, "nobody-has-this") == "missing"
+    assert up.bucket_owner_status(s3, "nobody-has-this", owner=ACCOUNT) == "missing"
     s3.create_bucket(Bucket="mine", CreateBucketConfiguration={"LocationConstraint": REGION})
-    assert up.bucket_owner_status(s3, "mine") == "ours"
+    assert up.bucket_owner_status(s3, "mine", owner=ACCOUNT) == "ours"
     mocker.patch.object(s3, "head_bucket", side_effect=ClientError({"Error": {"Code": "403"}}, "HeadBucket"))
-    assert up.bucket_owner_status(s3, "theirs") == "taken"
-    with pytest.raises(up.UpError, match="belongs to another account"):
-        up.ensure_artifacts_bucket(s3, "theirs", REGION)
+    assert up.bucket_owner_status(s3, "theirs", owner=ACCOUNT) == "taken"
+    with pytest.raises(up.UpError, match="taken by another AWS account"):
+        up.ensure_artifacts_bucket(s3, "theirs", region=REGION, owner=ACCOUNT)
 
 
 def test_upload_artifacts_is_content_addressed_and_idempotent(s3, tmp_path, capsys):
@@ -258,9 +266,9 @@ def test_upload_artifacts_is_content_addressed_and_idempotent(s3, tmp_path, caps
     bucket = "polyris-artifacts"
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
 
-    fkeys, skeys, prefix = up.upload_artifacts(s3, bucket, root, manifest)
+    fkeys, skeys, prefix = up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
     first = capsys.readouterr().out.strip()
-    again = up.upload_artifacts(s3, bucket, root, manifest)
+    again = up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
     second = capsys.readouterr().out.strip()
 
     assert again == (fkeys, skeys, prefix)
@@ -279,11 +287,11 @@ def test_empty_and_count_versioned_bucket(s3):
     s3.put_object(Bucket="versioned-bkt", Key="k", Body=b"1")
     s3.put_object(Bucket="versioned-bkt", Key="k", Body=b"2")
     s3.delete_object(Bucket="versioned-bkt", Key="k")
-    assert up.count_objects(s3, "versioned-bkt") == 3
-    assert up.empty_bucket(s3, "versioned-bkt") == 3
-    assert up.count_objects(s3, "versioned-bkt") == 0
-    assert up.count_objects(s3, "gone") == 0
-    assert up.empty_bucket(s3, "gone") == 0
+    assert up.count_objects(s3, "versioned-bkt", owner=ACCOUNT) == 3
+    assert up.empty_bucket(s3, "versioned-bkt", owner=ACCOUNT) == 3
+    assert up.count_objects(s3, "versioned-bkt", owner=ACCOUNT) == 0
+    assert up.count_objects(s3, "gone", owner=ACCOUNT) == 0
+    assert up.empty_bucket(s3, "gone", owner=ACCOUNT) == 0
 
 
 # ── Release archive ──────────────────────────────────────────────────────────
@@ -487,28 +495,28 @@ def test_down_refuses_when_results_hold_data(fake_cfn, s3, capsys):
     assert up._run(up.run_down, _down_args(yes=True)) == 1
     assert "holds 2 task results" in capsys.readouterr().err
     assert "delete_stack" not in fake_cfn["cfn"].names()
-    assert up.count_objects(s3, "acme-dev-polyris-console-ui") == 1, "nothing emptied"
+    assert up.count_objects(s3, "acme-dev-polyris-console-ui", owner=ACCOUNT) == 1, "nothing emptied"
 
 
 def test_down_with_delete_data_empties_and_deletes(fake_cfn, s3, capsys):
     fake_cfn["cfn"] = FakeCfn([_stack_with_buckets(s3, results_objects=2)])
-    up.ensure_artifacts_bucket(s3, artifacts_bucket_name(ACCOUNT, REGION), REGION)
+    up.ensure_artifacts_bucket(s3, artifacts_bucket_name(ACCOUNT, REGION), region=REGION, owner=ACCOUNT)
 
     assert up._run(up.run_down, _down_args(yes=True, delete_data=True)) == 0
 
     assert "delete_stack" in fake_cfn["cfn"].names()
-    assert up.count_objects(s3, "acme-dev-polyris-results") == 0
-    assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION)) == "missing"
+    assert up.count_objects(s3, "acme-dev-polyris-results", owner=ACCOUNT) == 0
+    assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION), owner=ACCOUNT) == "missing"
     assert "1 DynamoDB tables" in capsys.readouterr().out
 
 
 def test_down_keeps_artifacts_bucket_while_other_platforms_exist(fake_cfn, s3, capsys):
     fake_cfn["cfn"] = FakeCfn([_stack_with_buckets(s3, results_objects=0), _platform("acme-prod")])
-    up.ensure_artifacts_bucket(s3, artifacts_bucket_name(ACCOUNT, REGION), REGION)
+    up.ensure_artifacts_bucket(s3, artifacts_bucket_name(ACCOUNT, REGION), region=REGION, owner=ACCOUNT)
 
     assert up._run(up.run_down, _down_args(yes=True, stack="acme-dev")) == 0
 
-    assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION)) == "ours"
+    assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION), owner=ACCOUNT) == "ours"
     assert "still used by acme-prod" in capsys.readouterr().out
 
 
@@ -551,7 +559,7 @@ def test_up_finishes_an_interrupted_install(fake_cfn, s3, tmp_path):
 
 def test_up_failed_first_create_points_at_polyris_down(fake_cfn, capsys):
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="ROLLBACK_COMPLETE")])
-    assert up._run(up.run_up, _up_args()) == 1
+    assert up._run(up.run_up, _up_args(stack="acme-dev")) == 1
     assert "polyris-down --stack acme-dev" in capsys.readouterr().err
 
 
@@ -647,7 +655,7 @@ def test_down_never_deletes_a_non_polyris_stack(fake_cfn, s3, capsys):
     assert up._run(up.run_down, _down_args(stack="my-app", yes=True)) == 1
 
     assert "refusing to delete" in capsys.readouterr().err
-    assert up.count_objects(s3, "unrelated-datalake") == 1
+    assert up.count_objects(s3, "unrelated-datalake", owner=ACCOUNT) == 1
     assert "delete_stack" not in fake_cfn["cfn"].names()
 
 
@@ -690,3 +698,148 @@ def test_interrupted_extraction_is_not_trusted(tmp_path, monkeypatch, mocker):
     assert (root / "ui" / "index.html").is_file() and manifest.version == __version__
     leftovers = [p.name for p in root.parent.iterdir() if p.name.startswith(".extracting-")]
     assert leftovers == []
+
+
+
+# ── Code-review findings (PR #51) ────────────────────────────────────────────
+
+
+def test_every_artifact_request_names_the_expected_owner(s3, tmp_path, mocker):
+    """A bucket with our predictable name in ANOTHER account must never be read or written."""
+    root, manifest = up.extract_archive(_write_archive(tmp_path / "a.zip"))
+    bucket = "polyris-artifacts-owner-check"
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    head_object = mocker.spy(s3, "head_object")
+    upload_file = mocker.spy(s3, "upload_file")
+
+    up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
+
+    assert head_object.call_count and all(c.kwargs["ExpectedBucketOwner"] == ACCOUNT
+                                          for c in head_object.call_args_list)
+    assert upload_file.call_count and all(c.kwargs["ExtraArgs"] == {"ExpectedBucketOwner": ACCOUNT}
+                                          for c in upload_file.call_args_list)
+
+
+def test_up_stops_when_the_artifacts_bucket_belongs_to_someone_else(fake_cfn, s3, tmp_path, mocker, capsys):
+    real_head = s3.head_bucket
+
+    def head_bucket(**kw):
+        if kw["Bucket"] == artifacts_bucket_name(ACCOUNT, REGION):
+            raise ClientError({"Error": {"Code": "403"}}, "HeadBucket")
+        return real_head(**kw)
+
+    session_s3 = boto3.Session.client  # patched by fake_cfn; wrap the S3 client it returns
+    mocker.patch.object(boto3.Session, "client",
+                        lambda self, svc, *a, **k: fake_cfn["cfn"] if svc == "cloudformation"
+                        else _with_head_bucket(session_s3(self, svc, *a, **k), head_bucket, svc))
+    args = _up_args(namespace="acme", stage="dev", admin_email="", archive=str(_write_archive(tmp_path / "a.zip")))
+
+    assert up._run(up.run_up, args) == 1
+
+    assert "taken by another AWS account" in capsys.readouterr().err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
+def _with_head_bucket(client, head_bucket, service):
+    if service == "s3":
+        client.head_bucket = head_bucket
+    return client
+
+
+def test_root_index_html_is_uploaded_last(s3, tmp_path, mocker):
+    """Route pages are index.html files too; only the ROOT one marks a complete upload."""
+    archive = _write_archive(tmp_path / "a.zip", extra={"ui/pipelines/index.html": b"p", "ui/runs/index.html": b"r"})
+    root, manifest = up.extract_archive(archive)
+    bucket = "polyris-artifacts-order"
+    s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    upload_file = mocker.spy(s3, "upload_file")
+
+    _, _, prefix = up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
+
+    ui_keys = [c.args[2] for c in upload_file.call_args_list if c.args[2].startswith(prefix)]
+    assert ui_keys[-1] == f"{prefix}/index.html"
+    assert f"{prefix}/pipelines/index.html" in ui_keys[:-1]
+
+
+def test_session_reads_aws_region(aws, monkeypatch):
+    monkeypatch.delenv("AWS_DEFAULT_REGION")
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    assert up._session(None, None)[1] == "ap-south-1"
+    assert up._session(None, "eu-west-1")[1] == "eu-west-1", "--region still wins"
+
+
+def test_up_refuses_to_roll_back_a_newer_platform(fake_cfn, s3, tmp_path, capsys):
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
+                                         Description="Polyris platform v999.0.0")])
+    archive = str(_write_archive(tmp_path / "a.zip"))
+
+    assert up._run(up.run_up, _up_args(archive=archive)) == 1
+    assert "roll it back" in capsys.readouterr().err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+    assert up._run(up.run_up, _up_args(archive=archive, allow_downgrade=True)) == 0
+
+
+def test_up_never_finishes_someone_elses_pending_stack(fake_cfn, tmp_path, capsys):
+    other = {"StackName": "other-app", "StackStatus": "REVIEW_IN_PROGRESS", "Tags": [],
+             "_change_sets": [{"ChangeSetName": "their-tool-123"}]}
+    fake_cfn["cfn"] = FakeCfn([other])
+    assert up._run(up.run_up, _up_args(stack="other-app", archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+    assert "not a Polyris platform stack" in capsys.readouterr().err
+
+
+def test_up_finishes_its_own_untagged_pending_stack(fake_cfn, s3, tmp_path):
+    ours = {"StackName": "acme-dev", "StackStatus": "REVIEW_IN_PROGRESS", "Tags": [],
+            "_change_sets": [{"ChangeSetName": "polyris-1731400000000"}]}
+    fake_cfn["cfn"] = FakeCfn([ours])
+    args = _up_args(namespace="acme", stage="dev", admin_email="", archive=str(_write_archive(tmp_path / "a.zip")))
+    assert up._run(up.run_up, args) == 0
+    assert fake_cfn["cfn"].last_change_set["ChangeSetType"] == "CREATE"
+
+
+def test_dead_platform_stack_does_not_block_a_new_install(fake_cfn, capsys):
+    """A failed acme-prod (ROLLBACK_COMPLETE, still tagged) is skipped by discovery."""
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-prod", StackStatus="ROLLBACK_COMPLETE")])
+    assert up._run(up.run_up, _up_args()) == 1
+    assert "new install" in capsys.readouterr().out  # then stops: no namespace without a terminal
+
+
+def test_next_step_flags_repeat_the_target():
+    args = _up_args(stack="acme-prod", profile="sandbox")
+    args.region = "eu-west-1"
+    assert up.next_step_flags(args, "acme-prod") == " --stack acme-prod --profile sandbox --region eu-west-1"
+    plain = _up_args()
+    plain.region = None
+    assert up.next_step_flags(plain, "acme-dev") == ""
+
+
+def test_down_survives_resources_without_physical_id(fake_cfn, s3, capsys):
+    stack = _stack_with_buckets(s3, results_objects=0)
+    stack["_resources"].append({"LogicalResourceId": "Broken", "ResourceType": "AWS::DynamoDB::Table"})
+    fake_cfn["cfn"] = FakeCfn([stack])
+    assert up._run(up.run_down, _down_args(yes=True)) == 0
+    assert "1 DynamoDB tables" in capsys.readouterr().out
+
+
+def test_down_finds_pipelines_through_the_registry(fake_cfn, s3, capsys):
+    """Pipelines named by config.py (namespace ≠ platform's) are found via the registry,
+    and destroyed pipelines (state machine gone) are not."""
+    ddb = boto3.client("dynamodb", region_name=REGION)
+    ddb.create_table(TableName="acme-dev-polyris-pipeline-registry", BillingMode="PAY_PER_REQUEST",
+                     KeySchema=[{"AttributeName": "pipeline_name", "KeyType": "HASH"}],
+                     AttributeDefinitions=[{"AttributeName": "pipeline_name", "AttributeType": "S"}])
+    sfn = boto3.client("stepfunctions", region_name=REGION)
+    live = sfn.create_state_machine(name="other-ns-dev-polyris-orders", definition="{}",
+                                    roleArn=f"arn:aws:iam::{ACCOUNT}:role/r")["stateMachineArn"]
+    gone = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:other-ns-dev-polyris-old"
+    for name, arn in (("orders", live), ("old", gone)):
+        ddb.put_item(TableName="acme-dev-polyris-pipeline-registry",
+                     Item={"pipeline_name": {"S": name}, "sfn_arn": {"S": arn}})
+    stack = _stack_with_buckets(s3, results_objects=0)
+    stack["Outputs"] = [{"OutputKey": "PipelineRegistryTable", "OutputValue": "acme-dev-polyris-pipeline-registry"}]
+    fake_cfn["cfn"] = FakeCfn([stack])
+
+    assert up._run(up.run_down, _down_args()) == 1
+
+    err = capsys.readouterr().err
+    assert "1 pipeline(s) still deployed on this platform: orders" in err

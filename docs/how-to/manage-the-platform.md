@@ -11,7 +11,7 @@ curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.s
 polyris-up
 ```
 
-It updates the stack in place and keeps its settings. With nothing new it reports "already up to date".
+It updates the stack in place and keeps its settings. With nothing new it reports "already up to date". An older polyris won't roll back a newer platform unless you pass `--allow-downgrade`.
 
 If a change would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user, `polyris-up` lists it and asks before continuing. Without a terminal (CI) it stops unless you pass `--accept-data-loss`; `--yes` never covers data loss.
 
@@ -81,6 +81,6 @@ cd hello-world && polyris-destroy      # each pipeline first, from its directory
 polyris-down                           # then the platform
 ```
 
-`polyris-down` refuses while pipeline stacks still run on the platform, lists what it deletes, and asks you to type the stack name. The DynamoDB tables (run history, pipeline registry) are always deleted. If `ResultsBucket` still holds task results it stops; re-run with `--delete-data` once you have what you need. It also deletes the artifacts bucket when no other platform is left in the region.
+`polyris-down` refuses while pipelines are still deployed on the platform, lists what it deletes, and asks you to type the stack name. The DynamoDB tables (run history, pipeline registry) are always deleted. If `ResultsBucket` still holds task results it stops; re-run with `--delete-data` once you have what you need. It also deletes the artifacts bucket when no other platform is left in the region.
 
 > **Warning:** deletion is permanent.
