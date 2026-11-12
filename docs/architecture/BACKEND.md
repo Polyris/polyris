@@ -4,7 +4,7 @@
 
 The backend consists of:
 - **Step Function state machines** (13 total) — 10 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13)
-- **Lambda functions** (7) — console API, reconcile, asset fan-out, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
+- **Lambda functions** (8) — console API, reconcile, asset fan-out, sweeper, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
 - **DynamoDB tables** (7) — state, metadata, event history
 - **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 
@@ -262,6 +262,15 @@ Reads the `asset_events` stream, new facts only (ADR #130 §6.1).
 - Reconciles every task whose `wait_for` names the fact's asset
 - Starts every push consumer (`schedule=[asset]`) whose schedule the fact completes; the run name makes the start idempotent
 - A transient failure redelivers the record; any other failure becomes a console warning, so one bad record never blocks the stream
+
+### 5. sweeper
+
+An EventBridge schedule runs it every 5 minutes (ADR #130 §8). One run at a time holds the `_sweeper_lease` row.
+
+- Takes the waiting rows whose due time has come from `attention-index`, earliest first, and reconciles each in-process
+- A task that still waits is due again later: 10, 20, then every 30 minutes
+- A task it wakes although it could run before its due time had its hint lost: it writes a `sweeper` warning
+- Past a task's liveness deadline (`started_at` + 3 × `orchestration_timeout` + 1 h), it checks the wrapper and aborts a task nothing can wake
 
 ---
 

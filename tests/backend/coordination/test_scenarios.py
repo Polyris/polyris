@@ -288,7 +288,6 @@ def test_a_restarted_task_is_still_gated_on_its_assets(world):
 # ── the sweeper and the bell ────────────────────────────────────────────
 
 
-@needs_binding("sweeper")
 def test_a_lost_hint_is_recovered_by_the_sweeper_with_a_warning(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.write_event(A, DATE)              # its hint is never delivered
@@ -298,11 +297,10 @@ def test_a_lost_hint_is_recovered_by_the_sweeper_with_a_warning(world):
     assert any(w["kind"] == "sweeper" for w in world.warnings())
 
 
-@needs_binding("sweeper")
 def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.stop_wrapper_externally(run, "consumer")
-    world.clock.advance(minutes=40)
+    world.clock.advance(hours=74)           # past its liveness deadline: 3 x 24 h + 1 h (ADR #130 §3)
     world.sweep()
     row = world.row(run, "consumer")
     assert row["status"] == "aborted"
@@ -310,10 +308,9 @@ def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world)
 
 
 @defect("B-N1")
-@needs_binding("sweeper")
 def test_a_warning_about_an_old_partition_reaches_the_bell(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), "2026-10-13")
     world.stop_wrapper_externally(run, "consumer")
-    world.clock.advance(days=2)
+    world.clock.advance(days=4)
     world.sweep()
     assert any(w["kind"] == "zombie" and w["task_date"] == "2026-10-13" for w in world.warnings())

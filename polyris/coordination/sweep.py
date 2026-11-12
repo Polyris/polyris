@@ -1,0 +1,40 @@
+"""Rules of the sweeper, the periodic re-check from facts (ADR #130 §8).
+
+The sweeper runs every 5 minutes. It re-checks each waiting task at its due
+time, so a lost wake-up hint delays a task instead of losing it. These are
+its pure rules; the Lambda in sam/lambdas/coordination applies them.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import Optional
+
+#: What a task row's ``source`` says when the sweeper asks the reconciler.
+SOURCE = "sweeper"
+#: The row that holds the lease; ``_``-prefixed rows are internal (CLAUDE.md).
+LEASE_KEY = "_sweeper_lease"
+#: How long a run holds the lease. Longer than the function's 240 s timeout,
+#: shorter than the 5-minute schedule, so a crashed run never blocks the next.
+LEASE = timedelta(seconds=270)
+#: The work budget of one run, inside the function's 240 s timeout.
+BUDGET = timedelta(seconds=200)
+#: A row adopted from an older platform version may have no orchestration
+#: timeout; the SDK's default (a task's 24-hour execution timeout) stands in.
+DEFAULT_ORCHESTRATION_TIMEOUT = timedelta(hours=24)
+
+
+def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optional[float]) -> datetime:
+    """When a waiting task's wrapper is checked even without a signal (ADR #130 §3).
+
+    Three orchestration timeouts cover the wrapper's timeout retries; the
+    extra hour covers a retry that started just before the last one ended.
+    """
+    timeout = (timedelta(seconds=float(orchestration_timeout_seconds)) if orchestration_timeout_seconds
+               else DEFAULT_ORCHESTRATION_TIMEOUT)
+    return started_at + 3 * timeout + timedelta(hours=1)
+
+
+def primary_path_missed(enabled_at: Optional[datetime], due: datetime) -> bool:
+    """Whether the task could run before the sweeper's due time, so its wake-up hint was lost."""
+    return enabled_at is not None and enabled_at < due

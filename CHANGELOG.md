@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Added — the sweeper (ADR #130 §8)
+
+- A new function, `polyris-sweeper`, runs every 5 minutes (EventBridge Scheduler, no retries) and re-checks every waiting task whose due time has come, from its facts. A wake-up hint lost on any path now delays a task; it no longer loses it. A task that still waits is due again in 10, 20, then every 30 minutes.
+- When the sweeper wakes a task that could run before its due time, it writes a `sweeper` warning to the bell: the primary path missed it.
+- A waiting task past its liveness deadline (`started_at` + 3 × `orchestration_timeout` + 1 hour) gets its wrapper checked; if the wrapper is gone, for example stopped outside polyris, the task is marked `aborted` with the reason and a `zombie` warning.
+- One run at a time holds a lease row; a run that dies frees it within 270 seconds.
+
 ### Fixed — pause, resume and restart (ADR #130 §6.5)
 
 - Resume no longer starts a task whose assets are still missing (B-P2), and it wakes a task whose asset arrived during the pause (B-P1). It clears the pause, releases the tasks held at their start, and has the reconciler check every waiting task of the run from its facts; it signals nothing blindly. The response reports how many tasks the reconciler handled and how many it left for the sweeper.

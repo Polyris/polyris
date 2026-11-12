@@ -28,11 +28,13 @@ from botocore.exceptions import BotoCoreError, ClientError
 import env
 from coordination_core import decide as dc
 from coordination_core import spec as sp
+from coordination_core import sweep
 from coordination_core import trigger_rules as tr
 from coordination_core import wake
 from coordination_core.asset_conditions import evaluate as evaluate_assets
 from coordination_core.partition import partition_date
 from coordination_core.records import warning_item
+from coordination_core.times import format_utc, parse_utc
 from coordination_core.statuses import RECONCILABLE, SKIPPED, WAITING_PAUSED
 from failures import CoordinationTransient, reraise_transient
 from logger import log
@@ -156,15 +158,20 @@ class Reconciler:
             self._warn(row, "coordination", reason)
             return self._result(row, source, ERROR, "warned", (reason,))
         try:
-            decision = self._decide(row, status, known_events)
+            decision, enabled_at = self._decide(row, status, known_events)
         except CoordinationTransient:
             raise
         except Exception as exc:  # noqa: BLE001 — ADR #130 §3.5: a decision that cannot be made fails the task with its real cause
             reraise_transient(exc)
             return self._fail_task(row, str(token), exc, source)
-        return self._act(row, str(token), decision, source)
+        result = self._act(row, str(token), decision, source)
+        if result["action"] == "signalled" and enabled_at is not None:
+            result["enabled_at"] = format_utc(enabled_at)
+        return result
 
-    def _decide(self, row: Dict[str, Any], status: str, known_events: Sequence[Dict[str, Any]]) -> dc.Decision:
+    def _decide(self, row: Dict[str, Any], status: str,
+                known_events: Sequence[Dict[str, Any]]) -> Tuple[dc.Decision, Optional[datetime]]:
+        """The decision, and when the facts it rests on last changed (None while it waits)."""
         dependencies = tuple(str(d) for d in _json_list(row.get("dependencies"), "dependencies"))
         spec = sp.parse(_json_list(row.get("wait_for"), "wait_for"))
         view = dc.TaskView(
@@ -178,15 +185,17 @@ class Reconciler:
 
         statuses: List[str] = []
         rule_skips: List[bool] = []
+        changed: List[datetime] = [parse_utc(str(row["started_at"]))] if row.get("started_at") else []
         if dependencies:
             short = str(row["pipeline_execution_short"])
             names = [f"{dep}-{date_key}-{short}" for dep in dependencies]
             facts = _aws(lambda: self.tasks.dependency_facts(names))
-            statuses = [facts[n][0] for n in names]
-            rule_skips = [facts[n][0] == SKIPPED and facts[n][1] == "rule" for n in names]
+            statuses = [facts[n].status for n in names]
+            rule_skips = [facts[n].status == SKIPPED and facts[n].skip_origin == "rule" for n in names]
+            changed += [parse_utc(facts[n].finished_at) for n in names if facts[n].finished_at]
             if tr.evaluate(view.trigger_rule, statuses, rule_skips).verdict != tr.READY:
                 # Pending or never satisfiable: no asset read can change the outcome.
-                return dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips)
+                return dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips), _latest(changed)
 
         assets = None
         if spec.members:
@@ -198,12 +207,18 @@ class Reconciler:
 
         pipeline_execution = str(row.get("pipeline_execution") or "")
         paused = bool(pipeline_execution) and bool(_aws(lambda: self.tasks.paused(pipeline_execution)))
-        return dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips, assets=assets, paused=paused)
+        if assets is not None:
+            changed += [a.fact.event_time for a in assets.assets if a.ready and a.fact is not None]
+        decision = dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips, assets=assets, paused=paused)
+        return decision, _latest(changed)
 
     # ── actions ─────────────────────────────────────────────────────────
 
     def _act(self, row: Dict[str, Any], token: str, decision: dc.Decision, source: str) -> Dict[str, Any]:
         name = str(row["execution_name"])
+        if decision.verdict in (dc.WAIT, dc.PAUSED) and source == sweep.SOURCE and self._past_liveness(row):
+            # ADR #130 §3 step 3: a zombie is found without a signal too, once no wrapper retry can be left.
+            return self._check_wrapper(row, token, decision, source)
         if decision.verdict == dc.WAIT:
             return self._decided(row, source, decision, "none")
         if decision.verdict == dc.PAUSED:
@@ -244,6 +259,26 @@ class Reconciler:
             reason = "; ".join(decision.reasons)
             closed = _aws(lambda: self.tasks.close_skipped(name, token, started_at, reason, now=now))
             return self._decided(row, source, decision, "skipped" if closed else "superseded")
+        return self._abort_zombie(row, token, decision, source, wrapper)
+
+    def _past_liveness(self, row: Dict[str, Any]) -> bool:
+        if not row.get("started_at"):
+            return False
+        timeout = row.get("orchestration_timeout")
+        deadline = sweep.liveness_deadline(parse_utc(str(row["started_at"])), float(timeout) if timeout else None)
+        return self.clock() >= deadline
+
+    def _check_wrapper(self, row: Dict[str, Any], token: str, decision: dc.Decision, source: str) -> Dict[str, Any]:
+        """A waiting row past its liveness deadline: is its wrapper still there to be woken?"""
+        arn = str(row.get("wrapper_execution_arn") or "")
+        wrapper = _aws(lambda: self.signals.execution_status(arn)) if arn else None
+        if wrapper == "RUNNING":
+            return self._decided(row, source, decision, "alive")
+        return self._abort_zombie(row, token, decision, source, wrapper)
+
+    def _abort_zombie(self, row: Dict[str, Any], token: str, decision: dc.Decision, source: str,
+                      wrapper: Optional[str]) -> Dict[str, Any]:
+        name, started_at, now = str(row["execution_name"]), str(row.get("started_at")), self.clock()
         reason = f"the wrapper execution is {wrapper or 'gone'}, so the task can no longer be woken"
         closed = _aws(lambda: self.tasks.close_aborted(name, token, started_at, reason, now=now))
         if closed:
@@ -342,6 +377,10 @@ class Reconciler:
             result["assets"] = [{"asset": a.asset_name, "ready": a.ready, "reason": a.reason}
                                 for a in decision.assets.assets]
         return result
+
+
+def _latest(moments: List[datetime]) -> Optional[datetime]:
+    return max(moments) if moments else None
 
 
 _RECONCILER: Optional[Reconciler] = None

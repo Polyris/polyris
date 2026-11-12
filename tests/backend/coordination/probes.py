@@ -125,6 +125,11 @@ PROBES: Tuple[Probe, ...] = (
              "                sfn.send_task_success(taskToken=item.get('pause_token') or item['wait_token'],\n"
              "                                      output=json.dumps({'signal': 'deps_ready', 'reason': 'resume'}))\n"),
     ), f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
+    # The old warning rows were found by partition date, not by write time: older ones never reached the bell.
+    Probe("B-N1", (Edit("sam/lambdas/coordination/coordination_core/records.py",
+                        "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
+                        ""),),
+          f"{SCENARIOS}::test_a_warning_about_an_old_partition_reaches_the_bell"),
     # The old restart rebuilt the wrapper's input from a few saved fields, without wait_for.
     Probe("B-R1", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
                         "$start := $exists($item.starter_input.S) ? $parse($item.starter_input.S) :",

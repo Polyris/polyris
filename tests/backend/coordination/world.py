@@ -148,6 +148,7 @@ class World:
         self.bindings.query_subscriptions()
         self._fanout = self.bindings.asset_fanout()
         self._console = self.bindings.console()
+        self._sweeper = self.bindings.sweeper()
         self._producers: Dict[str, Pipeline] = {}
         self._stream = StreamAdapter(self.stack)
 
@@ -269,7 +270,9 @@ class World:
         self._task_action("/api/task-restart", run, task)
 
     def sweep(self) -> None:
-        raise NeedsBinding("sweeper", "the sweeper")
+        """One scheduled run of the sweeper, at the clock's current time."""
+        self._sweeper({}, None)
+        self.settle()
 
     def mark_success(self, run: Run, task: str) -> None:
         self._task_action("/api/task-success", run, task)

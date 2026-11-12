@@ -11,7 +11,7 @@ as ``False``, never as an error.
 import json
 import time
 from datetime import date, datetime
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -26,6 +26,15 @@ from failures import CoordinationTransient, is_condition_failed
 
 NOT_FOUND = "not_found"
 _BATCH = 100
+
+
+class DependencyFact(NamedTuple):
+    """What the reconciler reads of one dependency row."""
+
+    status: str
+    skip_origin: str
+    #: When the dependency finished; "" while it has not.
+    finished_at: str
 _UNPROCESSED_RETRIES = 5
 
 
@@ -50,21 +59,22 @@ class TaskStore:
     def get(self, execution_name: str) -> Optional[Dict[str, Any]]:
         return self.table.get_item(Key={"execution_name": execution_name}, ConsistentRead=True).get("Item")
 
-    def dependency_facts(self, execution_names: Sequence[str]) -> Dict[str, Tuple[str, str]]:
-        """``{execution_name: (status, skip_origin)}``; missing rows are ``not_found``."""
-        result: Dict[str, Tuple[str, str]] = {name: (NOT_FOUND, "") for name in execution_names}
+    def dependency_facts(self, execution_names: Sequence[str]) -> Dict[str, DependencyFact]:
+        """``{execution_name: DependencyFact}``; a missing row has status ``not_found``."""
+        result: Dict[str, DependencyFact] = {name: DependencyFact(NOT_FOUND, "", "") for name in execution_names}
         unique = list(dict.fromkeys(execution_names))
         for start in range(0, len(unique), _BATCH):
             pending: Dict[str, Any] = {self.table_name: {
                 "Keys": [{"execution_name": n} for n in unique[start:start + _BATCH]],
                 "ConsistentRead": True,
-                "ProjectionExpression": "execution_name, #s, skip_origin",
+                "ProjectionExpression": "execution_name, #s, skip_origin, finished_at",
                 "ExpressionAttributeNames": {"#s": "status"},
             }}
             for attempt in range(_UNPROCESSED_RETRIES):
                 response = self.resource.batch_get_item(RequestItems=pending)
                 for item in response.get("Responses", {}).get(self.table_name, []):
-                    result[item["execution_name"]] = (str(item.get("status", NOT_FOUND)), str(item.get("skip_origin", "")))
+                    result[item["execution_name"]] = DependencyFact(
+                        str(item.get("status", NOT_FOUND)), str(item.get("skip_origin", "")), str(item.get("finished_at", "")))
                 pending = response.get("UnprocessedKeys") or {}
                 if not pending:
                     break

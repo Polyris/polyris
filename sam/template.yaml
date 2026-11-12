@@ -1002,6 +1002,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-asset-fanout"
       RetentionInDays: !Ref LogRetentionDays
 
+  SweeperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-sweeper"
+      RetentionInDays: !Ref LogRetentionDays
+
   # ---------------------------------------------------------------------------
   # Lambda Functions
   # ---------------------------------------------------------------------------
@@ -1118,6 +1124,47 @@ Resources:
       FilterCriteria:
         Filters:
           - Pattern: '{"eventName": ["INSERT"]}'
+
+  # ADR #130 §8: every 5 minutes, re-checks the waiting tasks that are due, so a
+  # lost wake-up hint delays a task and never loses it.
+  SweeperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-sweeper"
+      CodeUri: lambdas/coordination/
+      Handler: sweeper.handler
+      # A run works for at most 200 s (sweep.BUDGET) and holds its lease for 270 s,
+      # so a run that dies never blocks the next one 5 minutes later.
+      Timeout: 240
+      MemorySize: 256
+      Role: !GetAtt SweeperRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref SweeperLogGroup
+      Environment:
+        Variables:
+          TOKENS_TABLE: !Ref PipelineTokensTable
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
+          PIPELINES_TABLE: !Ref PipelineRegistryTable
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  # No retry: a missed run is covered by the next one, 5 minutes later.
+  SweeperSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${Namespace}-${Stage}-polyris-sweeper"
+      ScheduleExpression: rate(5 minutes)
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt SweeperFunction.Arn
+        RoleArn: !GetAtt SweeperScheduleRole.Arn
+        RetryPolicy:
+          MaximumRetryAttempts: 0
 
   ConsoleApiFunction:
     Type: AWS::Serverless::Function
@@ -1370,6 +1417,62 @@ Resources:
                   - states:StartExecution
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+
+  # The sweeper runs the reconciler in-process; beyond its policy it reads the
+  # due rows from the attention index and keeps its lease row.
+  SweeperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-sweeper-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref CoordinationReconcilePolicy
+      Policies:
+        - PolicyName: SweeperPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Waiting rows that are due (ADR #130 §7).
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !Sub "${PipelineTokensTable.Arn}/index/attention-index"
+              # Releasing the lease row; taking it is a PutItem the policy allows.
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+
+  SweeperScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-sweeper-schedule-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeSweeper
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt SweeperFunction.Arn
 
   ConsoleApiRole:
     Type: AWS::IAM::Role

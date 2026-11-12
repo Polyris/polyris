@@ -223,7 +223,7 @@ notify_dependents SFN
               └─ wait ───────────► nothing (still waiting for other conditions)
 ```
 
-A failed reconcile call never fails `notify_dependents`. When the wrapper's status write finds the task already moved by someone else (an operator's skip or success), the wrapper ends without running the task.
+A failed reconcile call never fails `notify_dependents`: every waiting task is also re-checked by the sweeper at its due time (every 5 minutes it takes the due rows; a task that still waits is due again in 10, 20, then every 30 minutes), so a lost hint delays a task and never loses it. When the wrapper's status write finds the task already moved by someone else (an operator's skip or success), the wrapper ends without running the task.
 
 ### Flow 4: Asset-Based Cross-Pipeline Triggers
 

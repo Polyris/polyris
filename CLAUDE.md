@@ -377,7 +377,7 @@ sam/
       pause_waiter/sfn.tpl.json
   lambdas/
     console_api/      # REST API (28 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
-    coordination/     # reconcile + asset-fanout (ADR #130): decide readiness, signal wrappers, start push consumers
+    coordination/     # reconcile, asset-fanout, sweeper (ADR #130): decide readiness, signal wrappers, start push consumers, re-check
     query_subscriptions/  # Finds downstream subscribers for a completed task
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
 tests/
@@ -545,6 +545,7 @@ In `template.yaml`, always verify:
 | `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
 | `asset-fanout` | Read the `asset-events` stream (INSERT only) and reconcile every task waiting on the new fact's asset (ADR #130 §6.1) | the same as `reconcile` |
+| `sweeper` | Every 5 minutes (EventBridge Scheduler): re-check the waiting tasks that are due, warn about lost hints, abort zombies past their liveness deadline (ADR #130 §8) | the same as `reconcile` |
 | `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `ui_bootstrap` still uses bare `print()` — migrate opportunistically.

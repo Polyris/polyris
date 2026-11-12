@@ -28,11 +28,13 @@ def store(ddb):
 def test_dependency_facts_read_every_key_in_chunks(store, tokens):
     names = [f"task{i}" for i in range(150)]
     tokens.put_item(Item={"execution_name": "task7", "status": "success"})
-    tokens.put_item(Item={"execution_name": "task120", "status": "skipped", "skip_origin": "rule"})
+    tokens.put_item(Item={"execution_name": "task120", "status": "skipped", "skip_origin": "rule",
+                          "finished_at": "2026-11-12T05:00:00.000Z"})
     facts = store.dependency_facts(names)
     assert len(facts) == 150
-    assert facts["task7"] == ("success", "") and facts["task120"] == ("skipped", "rule")
-    assert facts["task0"] == (NOT_FOUND, "")
+    assert facts["task7"] == ("success", "", "")
+    assert facts["task120"] == ("skipped", "rule", "2026-11-12T05:00:00.000Z")
+    assert facts["task0"] == (NOT_FOUND, "", "")
 
 
 def test_unprocessed_keys_are_retried(store, ddb, tokens, mocker):
@@ -42,7 +44,7 @@ def test_unprocessed_keys_are_retried(store, ddb, tokens, mocker):
     calls = iter([{"Responses": {TOKENS: []}, "UnprocessedKeys": pending}])
     mocker.patch.object(ddb, "batch_get_item", side_effect=lambda **kw: next(calls, None) or real(**kw))
     sleep = mocker.patch("stores.time.sleep")
-    assert store.dependency_facts(["extract"])["extract"] == ("success", "")
+    assert store.dependency_facts(["extract"])["extract"] == ("success", "", "")
     sleep.assert_called_once()
 
 

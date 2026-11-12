@@ -146,6 +146,47 @@ def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
     assert own - used == set(), "AssetFanout's own grants that no call uses"
 
 
+def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
+        resources, tokens, asset_events, sfn, ddb):
+    from datetime import timedelta
+
+    import sweeper
+    from coordination_core import attention as att
+    from coordination_core.times import format_utc
+    from coordination_testkit import fact
+
+    clock = NOW + timedelta(hours=74)
+    reconciler = reconcile.Reconciler(ddb, sfn, clock=lambda: clock)
+    wait_for = [{"asset_name": "ns/orders", "freshness_hours": None}]
+    for task in ("load", "zombie"):
+        name = execution_name(task)
+        tokens.put_item(Item=task_row(task, wait_for=wait_for, attention=att.attention(att.WAITING, name),
+                                      attention_at=format_utc(clock - timedelta(minutes=5))))
+    sfn.executions[f"arn:aws:states:us-east-1:123456789012:execution:wrapper:{execution_name('load')}"] = "RUNNING"
+    with recording(ddb) as used:
+        sweeper.Sweeper(reconciler, owner="me").run()            # the lease, a re-check, a zombie
+    asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:10:00.000Z"))
+    tokens.update_item(Key={"execution_name": execution_name("load")}, UpdateExpression="SET #due = :d",
+                       ExpressionAttributeNames={"#due": att.DUE},
+                       ExpressionAttributeValues={":d": format_utc(clock - timedelta(minutes=5))})
+    with recording(ddb) as more:
+        sweeper.Sweeper(reconciler, owner="me").run()            # a woken task with a lost hint
+    used |= more
+    assert sfn.succeeded, "the walk must wake the task"
+    assert used - _dynamodb_grants(_statements(resources, "SweeperRole")) == set()
+    own = _dynamodb_grants(_statements(resources, "SweeperRole", managed=False))
+    assert own - used == set(), "the sweeper's own grants that no call uses"
+
+
+def test_the_sweeper_runs_every_5_minutes_without_retries(resources):
+    schedule = resources["SweeperSchedule"]["Properties"]
+    assert schedule["ScheduleExpression"] == "rate(5 minutes)"
+    assert schedule["Target"]["Arn"] == {"!GetAtt": "SweeperFunction.Arn"}
+    assert schedule["Target"]["RetryPolicy"] == {"MaximumRetryAttempts": 0}
+    [statement] = resources["SweeperScheduleRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
+    assert (statement["Action"], statement["Resource"]) == (["lambda:InvokeFunction"], [{"!GetAtt": "SweeperFunction.Arn"}])
+
+
 def _serialize(value):
     from boto3.dynamodb.types import TypeSerializer
 
@@ -183,6 +224,7 @@ def test_step_functions_actions_per_role(resources):
     reconciler = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution"}
     assert actions("ReconcileRole") == reconciler
     assert actions("AssetFanoutRole") == reconciler | {"states:StartExecution"}
+    assert actions("SweeperRole") == reconciler
     # The fake implements exactly the calls the code makes.
     assert {"states:" + "".join(p.title() for p in m.split("_")) for m in vars(FakeSfn) if not m.startswith("_")} \
         == reconciler | {"states:StartExecution"}
@@ -201,6 +243,7 @@ def test_describe_execution_is_scoped_to_wrapper_executions(resources):
 @pytest.mark.parametrize("function,module_name,role", [
     ("ReconcileFunction", "reconcile", "ReconcileRole"),
     ("AssetFanoutFunction", "asset_fanout", "AssetFanoutRole"),
+    ("SweeperFunction", "sweeper", "SweeperRole"),
 ])
 def test_function_wiring(resources, function, module_name, role):
     import importlib
@@ -223,3 +266,9 @@ def test_time_budgets_fit_their_timeouts(resources):
     assert reconcile.RESUME_BUDGET_SECONDS + 5 <= resources["ReconcileFunction"]["Properties"]["Timeout"]
     # AssetFanout stops starting records with RESERVE_MS left: one record's work fits in that reserve.
     assert asset_fanout.RESERVE_MS / 1000 < resources["AssetFanoutFunction"]["Properties"]["Timeout"]
+    # The sweeper works within its budget, and its lease outlives a run that dies at the timeout
+    # but not the next scheduled run (ADR #130 §8).
+    from coordination_core import sweep
+
+    timeout = resources["SweeperFunction"]["Properties"]["Timeout"]
+    assert sweep.BUDGET.total_seconds() + 30 <= timeout < sweep.LEASE.total_seconds() < 5 * 60

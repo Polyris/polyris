@@ -132,6 +132,14 @@ class Bindings:
         self._set(asset_fanout, "_FANOUT", fanout)
         return asset_fanout.handler
 
+    def sweeper(self) -> Callable[[Any, Any], Any]:
+        """The sweeper over the bound reconciler; World.sweep runs one scheduled invocation."""
+        import reconcile
+        import sweeper
+
+        self._set(sweeper, "_SWEEPER", sweeper.Sweeper(reconcile._RECONCILER, owner="harness"))
+        return sweeper.handler
+
     def query_subscriptions(self) -> Callable[[Any, Any], Any]:
         module = _load("query_subscriptions_handler", LAMBDAS / "query_subscriptions" / "index.py")
         import qs_dal
