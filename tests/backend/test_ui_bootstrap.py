@@ -319,3 +319,31 @@ def test_vendored_cfnresponse_matches_bucket_cleanup_copy():
     ours = (LAMBDA_DIR / "cfnresponse.py").read_bytes()
     theirs = (REPO_ROOT / "sam" / "lambdas" / "bucket_cleanup" / "cfnresponse.py").read_bytes()
     assert ours == theirs
+
+
+
+def test_every_s3_call_names_the_stack_account_as_owner(lam, responses, distribution_id):
+    """Same protection as polyris-up (ADR #131): moto ignores ExpectedBucketOwner,
+    so the parameter is asserted on the requests themselves."""
+    _buckets({"index.html": "<html>"}, dest_files={"stale.js": "x"})
+    calls = []
+    lam.s3.meta.events.register("provide-client-params.s3.*",
+                                lambda params, model, **kw: calls.append((model.name, dict(params))))
+
+    lam.handler(_event("Create", distribution_id), _Ctx())
+
+    assert responses[-1]["Status"] == "SUCCESS"
+    assert {op for op, _ in calls} >= {"ListObjectsV2", "CopyObject", "PutObject", "DeleteObjects"}
+    assert all(p.get("ExpectedBucketOwner") == "111111111111" for _, p in calls), calls
+    assert all(p.get("ExpectedSourceBucketOwner") == "111111111111" for op, p in calls if op == "CopyObject")
+
+
+def test_account_of():
+    assert lam_account("arn:aws:cloudformation:us-east-1:111111111111:stack/acme-dev/x") == "111111111111"
+    assert lam_account("not-an-arn") == ""
+
+
+def lam_account(stack_id):
+    _load_module("cfnresponse", "cfnresponse.py")
+    _load_module("config_js", "config_js.py")
+    return _load_module("ui_bootstrap_index_acct", "index.py").account_of(stack_id)

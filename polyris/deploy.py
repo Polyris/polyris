@@ -65,6 +65,7 @@ from .platform import (
     PARAM_NAMESPACE,
     PARAM_STAGE,
     AmbiguousPlatformStack,
+    is_platform_stack,
     parameters_of,
     select_platform_stack,
 )
@@ -518,6 +519,20 @@ def _check_name_lengths(dag: DAG, namespace: str, stage: str) -> None:
             sys.exit(1)
 
 
+def _keep_existing_pipeline_stack(session: "boto3.Session", legacy: str, adopted: str) -> bool:
+    """True when the pipeline already runs as ``legacy`` and ``adopted`` doesn't exist.
+
+    Renaming would deploy a second copy next to it (both schedules firing)
+    and make polyris-destroy target a stack that isn't there.
+    """
+    cfn = session.client("cloudformation")
+    try:
+        return describe_stack(cfn, legacy) is not None and describe_stack(cfn, adopted) is None
+    except (ClientError, BotoCoreError) as e:
+        print(f"\n❌ Could not check existing pipeline stacks: {e}")
+        sys.exit(1)
+
+
 def _platform_naming(platform: dict, *, namespace: str, stage: str, cli_stage: Optional[str]) -> Tuple[str, str]:
     """Namespace/stage for a project without config.py, taken from the discovered platform stack.
 
@@ -658,13 +673,14 @@ def deploy_pipeline(
     # platform stack is discovered by tag once the AWS session exists (ADR #131).
     sam_stack_name = cli_stack or stack_name_from_config
 
-    # Without config.py, a pipeline on a discovered platform takes its
-    # namespace/stage from that platform (below), so two platforms in one
-    # account can't produce colliding pipeline stack names.
+    # Without config.py, a pipeline on a platform installed by polyris-up
+    # takes its namespace/stage from that platform (below) — discovered or
+    # named with --stack — so two platforms in one account can't produce
+    # colliding pipeline stack names. Stacks deployed with `sam deploy`
+    # (untagged) keep the pre-ADR-131 naming, and so does any pipeline that
+    # already exists under it.
     from polyris.config import _find_project_config
 
-    # Whether the stack came from discovery or --stack, a project without
-    # config.py has no naming of its own: it takes the platform's.
     adopt_platform_naming = _find_project_config() is None
 
     # IAM name guards — skipped on destroy (stack deletion needs only dag_id for
@@ -721,14 +737,19 @@ def deploy_pipeline(
         except (ClientError, BotoCoreError) as e:
             print(f"\n❌ Could not read platform stack {sam_stack_name}: {e}")
             sys.exit(1)
-    if adopt_platform_naming and platform:
+    if adopt_platform_naming and platform and is_platform_stack(platform):
         platform_stage = parameters_of(platform).get(PARAM_STAGE)
         if cli_stage and platform_stage and cli_stage != platform_stage:
             print(f"\n❌ --stage {cli_stage}, but platform {sam_stack_name} is stage {platform_stage}.")
             print("   Install that stage first (polyris-up --stage ...), or name its platform with --stack.")
             sys.exit(1)
-        namespace, stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
-        pipeline_stack = f"{namespace}-{stage}-polyris-{dag.dag_id}"
+        new_namespace, new_stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
+        adopted = f"{new_namespace}-{new_stage}-polyris-{dag.dag_id}"
+        if adopted != pipeline_stack and _keep_existing_pipeline_stack(session, pipeline_stack, adopted):
+            print(f"Keeping pipeline stack {_c(pipeline_stack, CYAN)}: it was deployed before polyris named "
+                  f"pipelines after their platform.")
+        else:
+            namespace, stage, pipeline_stack = new_namespace, new_stage, adopted
     assert sam_stack_name  # narrow Optional for mypy after the exit above
     if not destroy and adopt_platform_naming:
         _check_name_lengths(dag, namespace, stage)

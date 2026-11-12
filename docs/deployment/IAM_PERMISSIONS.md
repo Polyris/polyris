@@ -44,7 +44,7 @@ If your org requires enumerated permissions, the installer role needs these serv
 
 | AWS service | Actions | Why |
 |-------------|---------|-----|
-| `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListStackResources` | `polyris-up` / SAM build the change set and execute it |
+| `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources` | `polyris-up` / SAM build the change set and execute it |
 | `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
 | `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 10 roles + 2 managed policies |
 | `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 8 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |

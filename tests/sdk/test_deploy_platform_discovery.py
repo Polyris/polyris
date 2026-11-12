@@ -206,3 +206,62 @@ def test_explicit_stack_without_config_takes_that_platforms_naming(mocker, tmp_p
         deploy_mod.deploy_pipeline(dag, stack="acme-prod", region=REGION)
     out = capsys.readouterr().out
     assert "acme-prod-polyris-orders" in out and "polyris-dev-polyris-orders" not in out
+
+
+
+def _run_named_deploy(mocker, tmp_path, monkeypatch, *, stacks, stack_arg):
+    """deploy_pipeline(dag 'orders', --stack stack_arg) without config.py; returns stdout."""
+    from polyris import DAG, task
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("POLYRIS_NAMESPACE", raising=False)
+    monkeypatch.delenv("POLYRIS_STAGE", raising=False)
+    mocker.patch("polyris.config._find_project_config", return_value=None)
+    mocker.patch("polyris.validation.validate_asl_from_dag", return_value=(True, [], []))
+
+    class _Sts:
+        def get_caller_identity(self):
+            return {"Account": "123456789012"}
+
+    class _Cfn:
+        def describe_stacks(self, StackName):
+            return {"Stacks": [s for s in stacks if s["StackName"] == StackName]}
+
+    session = _Session()
+    session.client = lambda name: _Sts() if name == "sts" else _Cfn()
+    session.region_name = REGION
+    mocker.patch("polyris.deploy.boto3").Session.return_value = session
+    with DAG("orders", schedule=None) as dag:
+        @task.sfn(arn="arn:aws:states:eu-central-1:123456789012:stateMachine:x")
+        def t():
+            pass
+        t()
+    with pytest.raises(SystemExit):  # the fake platform has no outputs; the summary prints first
+        deploy_mod.deploy_pipeline(dag, stack=stack_arg, region=REGION)
+    return None
+
+
+def _platform_params(name, namespace, stage, tagged):
+    tags = [{"Key": PLATFORM_TAG_KEY, "Value": PLATFORM_TAG_VALUE}] if tagged else []
+    return {"StackName": name, "Tags": tags,
+            "Parameters": [{"ParameterKey": "Namespace", "ParameterValue": namespace},
+                           {"ParameterKey": "Stage", "ParameterValue": stage}]}
+
+
+def test_sam_deployed_stack_keeps_pre_131_naming(mocker, tmp_path, monkeypatch, capsys):
+    """Review round 2 blocker: v1.1.3 told config.py-less users to pass --stack; their pipelines
+    are named polyris-<stage>-polyris-<dag>. An untagged (sam deploy) platform must keep that."""
+    _run_named_deploy(mocker, tmp_path, monkeypatch, stack_arg="acme-dev",
+                      stacks=[_platform_params("acme-dev", "acme", "dev", tagged=False)])
+    out = capsys.readouterr().out
+    assert "polyris-dev-polyris-orders" in out and "acme-dev-polyris-orders" not in out
+
+
+def test_tagged_platform_keeps_an_existing_legacy_pipeline_stack(mocker, tmp_path, monkeypatch, capsys):
+    """A sam stack adopted by polyris-up: its pipelines already run under the old name."""
+    _run_named_deploy(mocker, tmp_path, monkeypatch, stack_arg="acme-dev", stacks=[
+        _platform_params("acme-dev", "acme", "dev", tagged=True),
+        {"StackName": "polyris-dev-polyris-orders", "Tags": []},
+    ])
+    out = capsys.readouterr().out
+    assert "Keeping pipeline stack" in out and "pipeline stack:  polyris-dev-polyris-orders" in out

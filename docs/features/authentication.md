@@ -68,7 +68,7 @@ All resources are tagged with `Environment = "polyris"`.
 
 ## Enabling Authentication
 
-**Installed with `polyris-up`:** auth is on by default, and `--admin-email` creates the first user. Self sign-up is disabled: every Cognito user gets full console access, so only an admin creates users (see *User Management* below). To turn it on for an existing stack:
+**Installed with `polyris-up`:** auth is on by default, and `--admin-email` creates the first user. Self sign-up is disabled: every Cognito user gets full console access, so only an admin creates users (see *User Management* below). If your stack ran with self sign-up enabled, check who has an account and revoke what you don't recognise: `aws cognito-idp list-users --user-pool-id <CognitoUserPoolId>`, then `admin-delete-user` for unknown users and revoke their personal access tokens in the console. To turn it on for an existing stack:
 
 ```bash
 polyris-up --param EnableCognitoAuth=true --admin-email admin@yourcompany.com

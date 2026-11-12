@@ -37,6 +37,10 @@
   Templates over 51,200 bytes go through the results bucket, as before.
 - Without `--stack` or `stack_name` in `config.py`, it uses the single stack
   `polyris-up` tagged in the region (several → error asking for `--stack`).
+  Without `config.py`, pipelines on a `polyris-up` platform are named after it
+  (`<namespace>-<stage>-polyris-<dag>`); platforms deployed with `sam deploy`,
+  and pipelines that already exist under the old `polyris-<stage>-…` name, keep
+  their names.
   Without an explicit region it uses your AWS profile's region instead of
   `us-east-1`.
 
@@ -65,6 +69,9 @@
   register and administer the platform. The pool is now admin-create-only
   (`AllowAdminCreateUserOnly`); users come from `AdminEmail`, the AWS console
   or `aws cognito-idp admin-create-user`.
+- Accounts created while sign-up was open keep working after the upgrade.
+  Audit them: `aws cognito-idp list-users --user-pool-id <CognitoUserPoolId>`,
+  delete unknown users, and revoke their personal access tokens.
 
 ### Fixed — `/api/health` always reported "unhealthy"
 

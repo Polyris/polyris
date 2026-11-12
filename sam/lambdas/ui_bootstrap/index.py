@@ -79,28 +79,40 @@ def cache_control_for(key: str) -> str:
     return IMMUTABLE
 
 
-def _list_keys(bucket: str, prefix: str = "") -> list[str]:
+def account_of(stack_id: str) -> str:
+    """Account id from a stack ARN (arn:aws:cloudformation:<region>:<account>:stack/...)."""
+    parts = stack_id.split(":")
+    return parts[4] if len(parts) > 5 else ""
+
+
+def _owner(account: str) -> dict:
+    # Every S3 call names the expected owner, as polyris-up does (ADR #131):
+    # the artifacts bucket name is predictable and bucket names are global.
+    return {"ExpectedBucketOwner": account} if account else {}
+
+
+def _list_keys(bucket: str, prefix: str = "", *, account: str = "") -> list[str]:
     keys: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, **_owner(account)):
         keys.extend(o["Key"] for o in page.get("Contents", []))
     return keys
 
 
-def _delete_keys(bucket: str, keys: list[str]) -> None:
+def _delete_keys(bucket: str, keys: list[str], *, account: str = "") -> None:
     # delete_objects takes at most 1000 keys per call.
     for i in range(0, len(keys), 1000):
         chunk = keys[i:i + 1000]
-        s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in chunk]})
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in chunk]}, **_owner(account))
 
 
-def install_ui(props: dict, request_id: str) -> int:
+def install_ui(props: dict, request_id: str, *, account: str = "") -> int:
     """Copy the UI, prune stale files, write config.js, invalidate. Returns files copied."""
     dest_bucket = props["DestBucket"]
     source_bucket = props["SourceBucket"]
     source_prefix = props["SourcePrefix"].rstrip("/") + "/"
 
-    source_keys = _list_keys(source_bucket, source_prefix)
+    source_keys = _list_keys(source_bucket, source_prefix, account=account)
     if not source_keys:
         # Refuse to continue: pruning below would delete the live UI and leave
         # an empty site. The usual cause is an artifacts upload that failed.
@@ -118,12 +130,13 @@ def install_ui(props: dict, request_id: str) -> int:
             MetadataDirective="REPLACE",  # without it CacheControl/ContentType are ignored
             CacheControl=cache_control_for(dest_key),
             ContentType=content_type_for(dest_key),
+            **({"ExpectedSourceBucketOwner": account, "ExpectedBucketOwner": account} if account else {}),
         )
         installed.add(dest_key)
 
-    stale = [k for k in _list_keys(dest_bucket) if k not in installed and k != CONFIG_JS_KEY]
+    stale = [k for k in _list_keys(dest_bucket, account=account) if k not in installed and k != CONFIG_JS_KEY]
     if stale:
-        _delete_keys(dest_bucket, stale)
+        _delete_keys(dest_bucket, stale, account=account)
 
     s3.put_object(
         Bucket=dest_bucket,
@@ -136,6 +149,7 @@ def install_ui(props: dict, request_id: str) -> int:
         ).encode("utf-8"),
         ContentType="application/javascript",
         CacheControl=NO_CACHE,
+        **_owner(account),
     )
 
     cloudfront.create_invalidation(
@@ -162,6 +176,7 @@ def handler(event, context):
     props = event.get("ResourceProperties", {})
     request_type = event.get("RequestType", "")
     phys_id = physical_resource_id(props.get("DestBucket", ""))
+    account = account_of(event.get("StackId", ""))
     print(f"UiBootstrap event: {request_type}")
 
     if request_type == "Delete":
@@ -170,8 +185,8 @@ def handler(event, context):
         # fails with a clear "bucket not empty" reason.
         try:
             if stack_is_being_torn_down(event.get("StackId", "")):
-                keys = _list_keys(props["DestBucket"])
-                _delete_keys(props["DestBucket"], keys)
+                keys = _list_keys(props["DestBucket"], account=account)
+                _delete_keys(props["DestBucket"], keys, account=account)
                 print(f"Emptied {len(keys)} objects from {props['DestBucket']}")
         except Exception as e:
             print(f"Error emptying {props.get('DestBucket')}: {e}")
@@ -179,7 +194,7 @@ def handler(event, context):
         return
 
     try:
-        copied = install_ui(props, event.get("RequestId", "ui-bootstrap"))
+        copied = install_ui(props, event.get("RequestId", "ui-bootstrap"), account=account)
     except Exception as e:
         print(f"Error: {e}")
         cfnresponse.send(event, context, cfnresponse.FAILED, {}, physical_resource_id=phys_id, reason=str(e))

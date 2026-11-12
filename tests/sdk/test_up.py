@@ -613,7 +613,7 @@ def test_down_refuses_while_pipelines_still_run(fake_cfn, s3, capsys):
     assert up._run(up.run_down, _down_args()) == 1
 
     err = capsys.readouterr().err
-    assert "acme-dev-polyris-orders" in err and "polyris-destroy" in err
+    assert "still deployed on this platform: orders" in err and "polyris-destroy" in err
     assert "delete_stack" not in fake_cfn["cfn"].names()
 
 
@@ -843,3 +843,105 @@ def test_down_finds_pipelines_through_the_registry(fake_cfn, s3, capsys):
 
     err = capsys.readouterr().err
     assert "1 pipeline(s) still deployed on this platform: orders" in err
+
+
+# ── Second review round (PR #51) ─────────────────────────────────────────────
+
+
+def _record_s3_params(client):
+    """Capture (operation, params) of every S3 API call the client makes — the boto3 boundary.
+
+    moto ignores ExpectedBucketOwner, so asserting it reached the request is the only way to
+    pin the protection in tests.
+    """
+    calls = []
+
+    def capture(params, model, **kw):
+        calls.append((model.name, dict(params)))
+
+    client.meta.events.register("provide-client-params.s3.*", capture)
+    return calls
+
+
+def test_every_artifacts_bucket_request_carries_expected_owner(s3, tmp_path):
+    calls = _record_s3_params(s3)
+    root, manifest = up.extract_archive(_write_archive(tmp_path / "a.zip"))
+    bucket = artifacts_bucket_name(ACCOUNT, REGION)
+
+    up.ensure_artifacts_bucket(s3, bucket, region=REGION, owner=ACCOUNT)
+    up.upload_artifacts(s3, bucket, root, manifest, owner=ACCOUNT)
+    up._upload_template(s3, bucket=bucket, region=REGION, version="1", template={}, owner=ACCOUNT)
+    up.count_objects(s3, bucket, owner=ACCOUNT)
+    up.empty_bucket(s3, bucket, owner=ACCOUNT)
+    up.bucket_owner_status(s3, bucket, owner=ACCOUNT)
+
+    ops = [(op, p) for op, p in calls if p.get("Bucket") == bucket and op != "CreateBucket"]
+    assert {op for op, _ in ops} >= {"HeadBucket", "HeadObject", "PutObject", "PutPublicAccessBlock",
+                                     "PutBucketEncryption", "PutBucketTagging", "ListObjectVersions",
+                                     "DeleteObjects"}
+    missing = [op for op, p in ops if p.get("ExpectedBucketOwner") != ACCOUNT]
+    assert missing == [], f"S3 calls without ExpectedBucketOwner: {missing}"
+
+
+def test_flagless_up_points_at_a_failed_platform_stack(fake_cfn, capsys):
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="ROLLBACK_COMPLETE")])
+    assert up._run(up.run_up, _up_args()) == 1  # stops at the namespace prompt (no terminal)
+    assert "polyris-down --stack acme-dev" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", ["ROLLBACK_COMPLETE", "DELETE_FAILED"])
+def test_named_dead_stack_points_at_polyris_down(fake_cfn, capsys, status):
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus=status)])
+    assert up._run(up.run_up, _up_args(namespace="acme", stage="dev")) == 1
+    err = capsys.readouterr().err
+    assert status in err and "polyris-down --stack acme-dev" in err
+
+
+def test_session_reads_polyris_region_first(aws, monkeypatch):
+    monkeypatch.delenv("AWS_DEFAULT_REGION")
+    monkeypatch.setenv("AWS_REGION", "ap-south-1")
+    monkeypatch.setenv("POLYRIS_REGION", "sa-east-1")
+    assert up._session(None, None)[1] == "sa-east-1"
+
+
+def test_down_deletes_its_own_pending_stack(fake_cfn, capsys):
+    pending = {"StackName": "acme-dev", "StackStatus": "REVIEW_IN_PROGRESS", "Tags": [],
+               "_change_sets": [{"ChangeSetName": "polyris-1731400000000"}], "_resources": []}
+    fake_cfn["cfn"] = FakeCfn([pending])
+    assert up._run(up.run_down, _down_args(stack="acme-dev", yes=True)) == 0
+    assert "delete_stack" in fake_cfn["cfn"].names()
+
+
+def _registry(rows):
+    ddb = boto3.client("dynamodb", region_name=REGION)
+    ddb.create_table(TableName="reg", BillingMode="PAY_PER_REQUEST",
+                     KeySchema=[{"AttributeName": "pipeline_name", "KeyType": "HASH"}],
+                     AttributeDefinitions=[{"AttributeName": "pipeline_name", "AttributeType": "S"}])
+    for row in rows:
+        ddb.put_item(TableName="reg", Item={k: {"S": v} for k, v in row.items()})
+
+
+def test_registry_rows_without_arn_count_as_live_and_names_are_listed_once(fake_cfn, s3):
+    _registry([{"pipeline_name": "pending"}, {"pipeline_name": "orders"}])
+    stack = _platform("acme-dev", Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"},
+                                              {"ParameterKey": "Stage", "ParameterValue": "dev"}],
+                      Outputs=[{"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"}])
+    cfn = FakeCfn([stack, {"StackName": "acme-dev-polyris-orders", "Tags": []}])
+    session = boto3.Session(region_name=REGION)
+    assert up.pipelines_on_platform(session, cfn, stack, "acme-dev") == ["orders", "pending"]
+
+
+def test_registry_skips_state_machines_being_deleted(fake_cfn, s3, mocker):
+    _registry([{"pipeline_name": "going", "sfn_arn": f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:going"}])
+    stack = _platform("acme-dev", Outputs=[{"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"}])
+    session = boto3.Session(region_name=REGION)
+    real_client = session.client
+
+    def client(name, *a, **k):
+        c = real_client(name, *a, **k)
+        if name == "stepfunctions":
+            mocker.patch.object(c, "describe_state_machine", return_value={"status": "DELETING"})
+        return c
+
+    mocker.patch.object(session, "client", side_effect=client)
+    assert up.pipelines_on_platform(session, FakeCfn([stack]), stack, "acme-dev") == []

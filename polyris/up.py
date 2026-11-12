@@ -44,6 +44,7 @@ from .platform import (
     PARAM_STAGE,
     PARAM_UI_PREFIX,
     PLATFORM_TAG_KEY,
+    DEAD_STACK_STATUSES,
     AmbiguousPlatformStack,
     Manifest,
     artifact_key,
@@ -132,9 +133,10 @@ def _header(text: str) -> None:
 def _session(profile: Optional[str], region: Optional[str]) -> Tuple[boto3.Session, str, str]:
     """Return (session, region, account_id). No region anywhere is an error, never a default."""
     try:
-        # boto3 reads AWS_DEFAULT_REGION but not AWS_REGION; the AWS CLI reads
-        # both (AWS_REGION first), and so does polyris-deploy. Match them.
-        session = boto3.Session(profile_name=profile, region_name=region or os.environ.get("AWS_REGION") or None)
+        # Same precedence as polyris-deploy: POLYRIS_REGION, then AWS_REGION
+        # (boto3 itself reads only AWS_DEFAULT_REGION), then the profile.
+        env_region = os.environ.get("POLYRIS_REGION") or os.environ.get("AWS_REGION")
+        session = boto3.Session(profile_name=profile, region_name=region or env_region or None)
     except ProfileNotFound as e:
         raise UpError(str(e), f"List profiles with {_c('aws configure list-profiles', CYAN)}.")
     resolved_region = session.region_name
@@ -189,6 +191,17 @@ def find_platform_stack(
     if name is None:
         return None, None
     return name, describe_stack(cfn, name)
+
+
+def _warn_dead_platform_stacks(cfn) -> None:
+    """Point at platform stacks left over from a failed install or delete (discovery skips them)."""
+    dead = sorted(
+        (s["StackName"], s.get("StackStatus", "")) for s in all_stacks(cfn)
+        if is_platform_stack(s) and s.get("StackStatus", "") in DEAD_STACK_STATUSES
+    )
+    for name, status in dead:
+        print(_c(f"   {name} is {status} (a failed install or delete). Remove it with "
+                 f"polyris-down --stack {name}.", YELLOW))
 
 
 def _has_polyris_change_set(cfn, stack_name: str) -> bool:
@@ -476,20 +489,29 @@ def run_up(args: argparse.Namespace) -> None:
     cfn = session.client("cloudformation")
     s3 = session.client("s3")
 
-    if args.stack:
-        stack_name, existing = find_platform_stack(cfn, args.stack)
-    elif args.namespace or args.stage:
-        # --namespace / --stage name the target: `polyris-up --stage prod` next
-        # to an existing acme-dev must create acme-prod, not update acme-dev.
-        args.namespace = args.namespace or _prompt("Namespace (unique prefix, e.g. your org)")
-        args.stage = args.stage or "dev"
-        stack_name, existing = find_platform_stack(cfn, default_stack_name(args.namespace, args.stage))
-    else:
-        stack_name, existing = find_platform_stack(cfn, None)
-    try:
+    try:  # validate flags before asking anything
         overrides = parse_param_overrides(args.param or [])
     except ValueError as e:
         raise UpError(str(e))
+    args.namespace_from_flags = bool(args.namespace or args.stage)
+    if args.stack:
+        stack_name, existing = find_platform_stack(cfn, args.stack)
+    else:
+        stack_name, existing = (None, None)
+        if not (args.namespace or args.stage):
+            stack_name, existing = find_platform_stack(cfn, None)
+            if not existing:
+                _warn_dead_platform_stacks(cfn)
+                print("\n   No platform stack found — new install.")
+                args.namespace = _prompt("Namespace (unique prefix, e.g. your org)")
+                args.stage = _prompt("Stage", "dev")
+        if not existing:
+            # --namespace / --stage (or the answers) name the target:
+            # `polyris-up --stage prod` next to an existing acme-dev must
+            # create acme-prod, not update acme-dev.
+            args.namespace = args.namespace or _prompt("Namespace (unique prefix, e.g. your org)")
+            args.stage = args.stage or "dev"
+            stack_name, existing = find_platform_stack(cfn, default_stack_name(args.namespace, args.stage))
 
     status = (existing or {}).get("StackStatus", "")
     if status == "REVIEW_IN_PROGRESS":
@@ -503,9 +525,9 @@ def run_up(args: argparse.Namespace) -> None:
                           "Pick another --namespace / --stage, or name the right stack with --stack.")
         print(f"   {stack_name} is left from an interrupted install — finishing it as a new install.")
         existing = None
-    elif status == "ROLLBACK_COMPLETE":
+    elif status in DEAD_STACK_STATUSES:
         raise UpError(
-            f"Stack {stack_name} failed its first create (ROLLBACK_COMPLETE) and can't be updated.",
+            f"Stack {stack_name} is {status} and can't be updated.",
             f"Remove it with {_c(f'polyris-down --stack {stack_name}', CYAN)}, fix the cause shown in its events, "
             "then run polyris-up again.",
         )
@@ -525,7 +547,8 @@ def run_up(args: argparse.Namespace) -> None:
             _confirm_yes("Continue?")
         values: Dict[str, str] = {}
     else:
-        print(f"\n   No platform stack found{f' named {stack_name}' if stack_name else ''} — new install.")
+        if args.stack or args.namespace_from_flags:
+            print(f"\n   No platform stack named {stack_name} — new install.")
         namespace = args.namespace or _prompt("Namespace (unique prefix, e.g. your org)")
         stage = args.stage or _prompt("Stage", "dev")
         errors = validate_namespace_stage(namespace, stage)
@@ -667,7 +690,8 @@ def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) 
     """
     params = parameters_of(stack)
     prefix = f"{params.get(PARAM_NAMESPACE, '')}-{params.get(PARAM_STAGE, '')}-polyris-"
-    found = {s["StackName"] for s in all_stacks(cfn)
+    # Pipeline names (dag ids), so a pipeline found both ways is listed once.
+    found = {s["StackName"][len(prefix):] for s in all_stacks(cfn)
              if s["StackName"].startswith(prefix) and s["StackName"] != stack_name}
     outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
     table = outputs.get("PipelineRegistryTable")
@@ -685,13 +709,18 @@ def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) 
     for row in rows:
         name = row.get("pipeline_name", {}).get("S", "")
         arn = row.get("sfn_arn", {}).get("S", "")
-        if not name or name.startswith("_") or not arn:
+        if not name or name.startswith("_"):
             continue
-        try:
-            sfn.describe_state_machine(stateMachineArn=arn)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "StateMachineDoesNotExist":
-                continue  # destroyed pipeline: its registry row outlives it
+        if arn:
+            try:
+                if sfn.describe_state_machine(stateMachineArn=arn).get("status") == "DELETING":
+                    continue
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "StateMachineDoesNotExist":
+                    continue  # destroyed pipeline: its registry row outlives it
+        # No ARN yet (registration still running or failed) or an unknown
+        # state: count it as live — a false "still deployed" is recoverable
+        # with --yes, deleting the platform under a live pipeline is not.
         found.add(name)
     return sorted(found)
 
@@ -708,7 +737,8 @@ def run_down(args: argparse.Namespace) -> None:
     if not stack or not stack_name:
         print(f"\n   No platform stack{f' named {stack_name}' if stack_name else ''} in {region} — nothing to remove.")
         return
-    if not is_platform_shaped(stack):
+    ours_pending = stack.get("StackStatus") == "REVIEW_IN_PROGRESS" and _has_polyris_change_set(cfn, stack_name)
+    if not (is_platform_shaped(stack) or ours_pending):
         raise UpError(f"Stack {stack_name} is not a Polyris platform stack — refusing to delete it.")
     if stack.get("StackStatus", "").endswith("_IN_PROGRESS") and stack.get("StackStatus") != "REVIEW_IN_PROGRESS":
         raise UpError(f"Stack {stack_name} is busy ({stack['StackStatus']}). Try again when it finishes.")
