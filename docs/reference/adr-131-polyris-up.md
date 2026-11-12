@@ -59,6 +59,7 @@ Refuses non-platform and mid-update stacks, and — unless `--yes` — a platfor
 
 - **`UiBootstrap`** (gated by the `ArtifactsBucket` parameter, which `polyris-up` sets) copies the prebuilt UI into `ConsoleUiBucket`, prunes files of the previous build, renders `config.js` from the stack's own values, and invalidates CloudFront. `config.js` therefore follows the stack even when it is updated outside `polyris-up`. Its PhysicalResourceId is stable, and on Delete it empties the bucket only when the parent stack is being torn down. `sam/lambdas/ui_bootstrap/config_js.py` is the canonical `config.js` shape; the heredocs in `ui/deploy.sh` and `sam/deploy-ui.sh` are pinned to it by a parity test.
 - **`AdminEmail`** creates the first console user (`AWS::Cognito::UserPoolUser`); Cognito emails the temporary password.
+- **No Cognito self sign-up** (`AllowAdminCreateUserOnly`). The console API gives every Cognito user full access, and auth is on by default, so anyone who opened the console URL could otherwise register and administer the platform. Users come from `AdminEmail`, the AWS console or `admin-create-user`.
 - **`AWS::Region`** replaces the `AwsRegion` parameter at every use site, so the region can't drift from the deploy region. `AwsRegion` stays declared, ignored, so existing `samconfig.toml` files keep deploying; it goes in the next major version.
 
 ### Pipelines

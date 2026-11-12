@@ -309,3 +309,9 @@ def test_change_set_guards():
         {"ResourceChange": {"LogicalResourceId": "U", "ResourceType": "AWS::Cognito::UserPoolUser",
                             "Action": "Remove"}}]}) == ["U (AWS::Cognito::UserPoolUser, Remove)"]
     assert P.parameters_of({"Parameters": [{"ParameterKey": "A", "ParameterValue": "1"}]}) == {"A": "1"}
+
+
+def test_cognito_has_no_self_sign_up(template):
+    """Every Cognito user is a console admin (console_api auth.py), so sign-up must be admin-only."""
+    pool = template["Resources"]["CognitoUserPool"]["Properties"]
+    assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True

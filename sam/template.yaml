@@ -1515,6 +1515,11 @@ Resources:
     Condition: EnableCognitoAuthCondition
     Properties:
       UserPoolName: !Sub "${Namespace}-${Stage}-polyris-console"
+      # No self sign-up: every Cognito user gets full console access
+      # (console_api auth.py), so only an admin may create users — the
+      # AdminEmail user, the AWS console, or `aws cognito-idp admin-create-user`.
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
       AutoVerifiedAttributes:
         - email
       UsernameAttributes:

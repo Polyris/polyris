@@ -55,6 +55,14 @@
   kept only so existing `samconfig.toml` files still deploy; remove it from
   yours. It goes away in the next major version.
 
+### Security — console users can't sign themselves up
+
+- The Cognito user pool allowed self sign-up, and the console API gives every
+  Cognito user full access, so anyone who opened the console URL could
+  register and administer the platform. The pool is now admin-create-only
+  (`AllowAdminCreateUserOnly`); users come from `AdminEmail`, the AWS console
+  or `aws cognito-idp admin-create-user`.
+
 ### Fixed — `/api/health` always reported "unhealthy"
 
 - `ConsoleApiRole` lacked `states:ListStateMachines`, which the health check's
