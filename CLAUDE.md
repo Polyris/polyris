@@ -722,6 +722,7 @@ make test-cov
 **Test rules:**
 - pytest-mock (`mocker` fixture) everywhere — no `unittest.mock` import at all, including `MagicMock` as a bare object factory (use `mocker.MagicMock`)
 - Backend tests in `tests/backend/`, SDK tests in `tests/sdk/`
+- **Every Lambda test suite runs in CI.** The `lambdas` job in `ci.yml` lists each suite as its own step, and `make test-lambdas` runs the same suites locally. A Lambda with `tests/` or `test_*.py` needs both, or its tests silently never run; `tests/sdk/test_ci_runs_every_lambda_suite.py` fails until it has them.
 - Coverage floor is a ratchet — raise the floor when you raise coverage (#22)
 - **`dal/__init__.py` submodule shadowing:** `from dal.executions_repo import executions_repo` replaces the submodule attribute on the `dal` package with the singleton instance. Tests patching module-level globals on a `dal` submodule must use `importlib.import_module('dal.executions_repo')` to get the actual module object.
 

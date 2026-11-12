@@ -113,7 +113,7 @@ jobs:
           # boto3 calls rather than mocking them (Principle #14) — e.g.
           # console_api/tests/routes/test_reconcile_sfn_status.py against a real
           # Step Functions backend.
-          pip install pytest pytest-mock boto3 "rsa>=4.9" "moto>=4.0.0"
+          pip install pytest pytest-mock boto3 "rsa>=4.9" "moto>=4.0.0" pyyaml
           # console_api/routes/backfill.py imports polyris.partitions /
           # polyris.granularity. In the deployed Lambda the polyris package is
           # bundled via Makefile; for CI install it editable so imports match runtime.
@@ -156,6 +156,20 @@ jobs:
           # Lambda's own modules (config, routes, dal, …) importable.
           # ee/team/tests live in the private polyris-ee repo (stripped here).
           cd sam/lambdas/console_api && PYTHONPATH=. python -m pytest tests/ -v
+
+      - name: Run coordination tests
+        run: |
+          # moto tables are built from sam/template.yaml (pyyaml); Step
+          # Functions is a fake at the boto3 boundary.
+          cd sam/lambdas/coordination && PYTHONPATH=. python -m pytest tests/ -v
+
+      - name: Run query_subscriptions tests
+        run: |
+          cd sam/lambdas/query_subscriptions && PYTHONPATH=. python -m pytest test_query_subscriptions.py -v
+
+      - name: Run bucket_cleanup tests
+        run: |
+          cd sam/lambdas/bucket_cleanup && PYTHONPATH=. python -m pytest test_bucket_cleanup.py -v
 
   # ============================================
   # Step Function Templates

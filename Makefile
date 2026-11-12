@@ -79,6 +79,8 @@ test-lambdas:
 	fi
 	@echo "  Running coordination tests (moto, tables from sam/template.yaml)..."
 	cd sam/lambdas/coordination && PYTHONPATH=. python3 -m pytest tests/ -v
+	cd sam/lambdas/query_subscriptions && PYTHONPATH=. python3 -m pytest test_query_subscriptions.py -v
+	cd sam/lambdas/bucket_cleanup && PYTHONPATH=. python3 -m pytest test_bucket_cleanup.py -v
 
 # SFN JSONata expression tests (requires Node.js)
 test-sfn-jsonata:

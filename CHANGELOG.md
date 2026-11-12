@@ -7,10 +7,11 @@
 - `asset-events` gets `asset-partition-index` (partition `asset_name`, sort `partition_date`): asset conditions read facts by partition, newest first.
 - Each table gets one new GSI, so the deploy stays within DynamoDB's one-GSI-change-per-table limit. Both indexes are additive and sparse: rows without the key attributes are not indexed.
 
-### Fixed — tooling: deterministic enum generation, `make test-lambdas` exit code, sets in API responses
+### Fixed — tooling: deterministic enum generation, `make test-lambdas` exit code, sets in API responses, Lambda suites CI never ran
 
 - `python -m polyris.codegen.sync_enums` now produces identical output on Python 3.12 and 3.13: docstrings are normalised with `inspect.cleandoc` and continuation lines are re-indented. The three `constants_generated.py` files are regenerated.
 - `make test-lambdas` now exits non-zero when the `console_api` tests fail. Before, a failure printed a warning and the target still succeeded.
+- CI and `make test-lambdas` now run the `query_subscriptions` and `bucket_cleanup` Lambda tests, which neither ran before, and the new `coordination` suite. `tests/sdk/test_ci_runs_every_lambda_suite.py` fails when a Lambda's tests are missing from either.
 - `cors_response` serialises Python `set`/`frozenset` values (DynamoDB string sets) as sorted JSON arrays, not as their Python repr, which is not valid JSON. Covered by `test_response.py`.
 
 ### Fixed — `wait_for` subscription table routing
