@@ -1147,6 +1147,7 @@ Resources:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+          ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
       Tags:
         Environment: polyris
         Stage: !Ref Stage
@@ -1445,12 +1446,25 @@ Resources:
                   - dynamodb:Query
                 Resource:
                   - !Sub "${PipelineTokensTable.Arn}/index/attention-index"
-              # Releasing the lease row; taking it is a PutItem the policy allows.
+              # Releasing the lease row and dropping push retry rows; writes the policy allows.
               - Effect: Allow
                 Action:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt PipelineTokensTable.Arn
+              # The catch-up: the subscribed assets, and each one's push consumers.
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt AssetSubscriptionsTable.Arn
+              # Push retries and the catch-up start consumer pipelines (deterministic names).
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
 
   SweeperScheduleRole:
     Type: AWS::IAM::Role

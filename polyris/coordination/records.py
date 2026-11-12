@@ -14,6 +14,7 @@ from . import attention as att
 from .asset_conditions import Fact
 from .partition import partition_date
 from .statuses import FAILED
+from .sweep import next_push_retry
 from .times import format_utc, parse_utc
 
 WARNING_KINDS = frozenset({"coordination", "zombie", "push", "sweeper", "notify"})
@@ -100,7 +101,7 @@ def push_retry_item(
         "attempts": 0,
         "first_failed_at": format_utc(now),
         att.KEY: att.attention(att.RETRY, run_name),
-        att.DUE: format_utc(att.next_due(now, 0)),
+        att.DUE: format_utc(next_push_retry(now, 0)),
         "ttl": int((now + RETRY_TTL).timestamp()),
     }
 

@@ -271,6 +271,8 @@ An EventBridge schedule runs it every 5 minutes (ADR #130 §8). One run at a tim
 - A task that still waits is due again later: 10, 20, then every 30 minutes
 - A task it wakes although it could run before its due time had its hint lost: it writes a `sweeper` warning
 - Past a task's liveness deadline (`started_at` + 3 × `orchestration_timeout` + 1 h), it checks the wrapper and aborts a task nothing can wake
+- Retries the push starts that failed transiently (`retry#` rows), from 5 minutes up to every hour; gives up after 24 h with a `push` warning
+- Hourly, replays the push branch for every fact of the last 48 h (a lost stream record); `_engine_health` keeps its progress
 
 ---
 

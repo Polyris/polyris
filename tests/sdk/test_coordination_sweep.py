@@ -23,5 +23,16 @@ def test_a_wake_is_a_primary_path_miss_only_when_the_task_could_run_before_its_d
     assert not sweep.primary_path_missed(None, due)
 
 
+def test_push_retries_back_off_from_5_minutes_to_an_hour():
+    delays = [sweep.next_push_retry(STARTED, n) - STARTED for n in range(6)]
+    assert delays == [timedelta(minutes=m) for m in (5, 10, 20, 40, 60, 60)]
+
+
+def test_the_catch_up_runs_hourly_and_at_once_when_it_never_ran():
+    assert sweep.catch_up_due(STARTED, None)
+    assert sweep.catch_up_due(STARTED, STARTED - timedelta(hours=1))
+    assert not sweep.catch_up_due(STARTED, STARTED - timedelta(minutes=59))
+
+
 def test_the_lease_outlives_a_run_but_not_the_schedule():
     assert sweep.BUDGET < sweep.LEASE < timedelta(minutes=5)

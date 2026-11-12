@@ -196,7 +196,7 @@ class TestPushRetryItem:
                                error="ThrottlingException", now=NOW)
         assert item["execution_name"] == "_retry_push_pushed-2026-11-12-and-0a1b2c3d"
         assert item[att.KEY] == att.attention(att.RETRY, "pushed-2026-11-12-and-0a1b2c3d")
-        assert item[att.DUE] == "2026-11-12T06:10:00.123Z"           # first retry 10 minutes later
+        assert item[att.DUE] == "2026-11-12T06:05:00.123Z"           # first retry 5 minutes later (ADR #130 §8)
         assert (item["attempts"], item["first_failed_at"]) == (0, "2026-11-12T06:00:00.123Z")
         assert item["ttl"] == int((NOW + timedelta(days=7)).timestamp())
         assert "date" not in item and "pipeline_execution" not in item

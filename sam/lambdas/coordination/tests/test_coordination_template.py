@@ -147,7 +147,7 @@ def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
 
 
 def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
-        resources, tokens, asset_events, sfn, ddb):
+        resources, tokens, asset_events, consumers, registry, sfn, ddb):
     from datetime import timedelta
 
     import sweeper
@@ -169,10 +169,22 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
     tokens.update_item(Key={"execution_name": execution_name("load")}, UpdateExpression="SET #due = :d",
                        ExpressionAttributeNames={"#due": att.DUE},
                        ExpressionAttributeValues={":d": format_utc(clock - timedelta(minutes=5))})
+    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "pushed", "sfn_arn": "arn:pushed"})
+    registry.put_item(Item={"pipeline_name": "pushed",
+                            "asset_schedule": json.dumps({"operator": "AND", "assets": ["ns/orders"]})})
+    from coordination_core.records import push_retry_item
+    retry = push_retry_item(run_name="pushed-retry", consumer="pushed", sfn_arn="arn:pushed", run_input="{}",
+                            error="ThrottlingException", now=clock - timedelta(hours=1))
+    retry[att.DUE] = format_utc(clock - timedelta(minutes=1))
+    tokens.put_item(Item=retry)
+    tokens.delete_item(Key={"execution_name": "_engine_health"})       # make the catch-up due again
+    asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time=format_utc(clock - timedelta(hours=1))))
     with recording(ddb) as more:
-        sweeper.Sweeper(reconciler, owner="me").run()            # a woken task with a lost hint
+        # A woken task with a lost hint, a push retry, and the catch-up's push.
+        sweeper.Sweeper(reconciler, owner="me").run()
     used |= more
     assert sfn.succeeded, "the walk must wake the task"
+    assert {s["name"] for s in sfn.started} >= {"pushed-retry"} and len(sfn.started) == 2
     assert used - _dynamodb_grants(_statements(resources, "SweeperRole")) == set()
     own = _dynamodb_grants(_statements(resources, "SweeperRole", managed=False))
     assert own - used == set(), "the sweeper's own grants that no call uses"
@@ -224,7 +236,7 @@ def test_step_functions_actions_per_role(resources):
     reconciler = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution"}
     assert actions("ReconcileRole") == reconciler
     assert actions("AssetFanoutRole") == reconciler | {"states:StartExecution"}
-    assert actions("SweeperRole") == reconciler
+    assert actions("SweeperRole") == reconciler | {"states:StartExecution"}
     # The fake implements exactly the calls the code makes.
     assert {"states:" + "".join(p.title() for p in m.split("_")) for m in vars(FakeSfn) if not m.startswith("_")} \
         == reconciler | {"states:StartExecution"}

@@ -219,7 +219,7 @@ Eleven IAM roles the stack creates during Install. Every role's `RoleName` start
 | `polyris-query-subscriptions-role` | Lambda | Reads the `dep-subscriptions` DDB table to find downstream tasks when an upstream completes |
 | `polyris-reconcile-role` | Lambda | Decides whether a waiting task is ready and signals its wrapper (ADR #130). Its grants are the `polyris-reconcile` policy below |
 | `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions; runs the reconciler for each waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset |
-| `polyris-sweeper-role` | Lambda | Every 5 minutes, re-checks the waiting tasks that are due (ADR #130 §8): runs the reconciler (the `polyris-reconcile` policy), reads the attention index and keeps its lease row |
+| `polyris-sweeper-role` | Lambda | Every 5 minutes, re-checks the waiting tasks that are due (ADR #130 §8): runs the reconciler (the `polyris-reconcile` policy), reads the attention index, keeps its lease row, and retries or catches up push starts (reads `asset-subscriptions`, starts the pipelines scheduled on an asset) |
 | `polyris-sweeper-schedule-role` | EventBridge Scheduler | Invokes the sweeper function, and nothing else |
 | `polyris-notify-role` | Lambda | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |

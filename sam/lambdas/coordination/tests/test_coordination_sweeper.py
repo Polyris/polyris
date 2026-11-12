@@ -175,6 +175,7 @@ def test_a_task_that_could_run_before_its_due_time_wakes_with_a_warning(make, to
     assert sfn.succeeded[0]["token"] == "token-load"
     [warning] = _warnings(tokens, "sweeper")
     assert warning["execution_name"] == f"_notify_warn_sweeper_{load}"
+    assert (warning["task_date"], warning["pipeline_name"]) == ("2026-11-12", "orders")
     assert "2026-11-12T05:10:00.000Z" in warning["error"]
 
 
@@ -253,6 +254,204 @@ def test_a_row_without_started_at_is_never_past_its_deadline(make, tokens, clock
     make().run()
 
     assert _row(tokens, name)["status"] == "waiting"
+
+
+# ── push retries ────────────────────────────────────────────────────────
+
+PUSHED_ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:pushed"
+RUN_NAME = "pushed-2026-11-12-and-0a1b2c3d"
+
+
+def _retry_row(tokens, clock, *, failed_hours_ago: float = 1, attempts: int = 0) -> str:
+    from coordination_core.records import push_retry_item
+
+    item = push_retry_item(run_name=RUN_NAME, consumer="pushed", sfn_arn=PUSHED_ARN,
+                           run_input='{"triggered_by": "asset"}', error="ThrottlingException",
+                           now=clock.now - timedelta(hours=failed_hours_ago))
+    item[att.DUE] = format_utc(clock.now - timedelta(minutes=1))
+    item["attempts"] = attempts
+    tokens.put_item(Item=item)
+    return item["execution_name"]
+
+
+def test_a_due_push_retry_starts_the_run_and_drops_its_row(make, tokens, sfn, clock):
+    row = _retry_row(tokens, clock)
+
+    result = make().run()
+
+    assert (result["push_retried"], result["push_started"]) == (1, 1)
+    assert sfn.started == [{"arn": PUSHED_ARN, "name": RUN_NAME, "input": {"triggered_by": "asset"}}]
+    assert "Item" not in tokens.get_item(Key={"execution_name": row})
+
+
+def test_a_run_started_meanwhile_counts_as_started(make, tokens, sfn, clock):
+    row = _retry_row(tokens, clock)
+    sfn.started.append({"arn": PUSHED_ARN, "name": RUN_NAME, "input": {}})
+
+    assert make().run()["push_started"] == 1
+    assert "Item" not in tokens.get_item(Key={"execution_name": row})
+
+
+def test_a_transient_start_failure_backs_off(make, tokens, sfn, clock):
+    from coordination_testkit import client_error
+
+    row = _retry_row(tokens, clock, attempts=2)
+    sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
+
+    make().run()
+
+    retry = _row(tokens, row)
+    assert (retry["attempts"], retry[att.DUE]) == (3, format_utc(clock.now + timedelta(minutes=40)))
+    assert "ThrottlingException" in retry["error"]
+
+
+def test_a_permanent_start_failure_becomes_a_warning(make, tokens, sfn, clock):
+    from coordination_testkit import client_error
+
+    row = _retry_row(tokens, clock)
+    sfn.errors["start_execution"] = client_error("StateMachineDoesNotExist", "StartExecution")
+
+    make().run()
+
+    assert "Item" not in tokens.get_item(Key={"execution_name": row})
+    [warning] = _warnings(tokens, "push")
+    assert warning["pipeline_name"] == "pushed" and "StateMachineDoesNotExist" in warning["error"]
+
+
+def test_after_24_hours_the_sweeper_gives_up_with_a_warning(make, tokens, sfn, clock):
+    row = _retry_row(tokens, clock, failed_hours_ago=24)
+
+    assert make().run()["push_given_up"] == 1
+    assert sfn.started == [] and "Item" not in tokens.get_item(Key={"execution_name": row})
+    [warning] = _warnings(tokens, "push")
+    assert "gave up" in warning["error"] and "ThrottlingException" in warning["error"]
+
+
+def test_failed_retry_bookkeeping_leaves_the_row_for_the_next_run(make, tokens, sfn, clock, mocker):
+    from coordination_testkit import client_error
+
+    row = _retry_row(tokens, clock)
+    run = make()
+    real_update, real_delete = run.tasks.table.update_item, run.tasks.table.delete_item
+    sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
+    mocker.patch.object(run.tasks.table, "update_item", side_effect=lambda **kw: (
+        real_update(**kw) if kw["Key"]["execution_name"] == "_engine_health"
+        else (_ for _ in ()).throw(client_error("InternalServerError", "UpdateItem"))))
+    run.run()
+    assert _row(tokens, row)["attempts"] == 0                     # unchanged, still due
+
+    del sfn.errors["start_execution"]
+    mocker.patch.object(run.tasks.table, "delete_item", side_effect=lambda **kw: (
+        real_delete(**kw) if kw["Key"]["execution_name"] == sweep.LEASE_KEY
+        else (_ for _ in ()).throw(client_error("InternalServerError", "DeleteItem"))))
+    run.run()
+    assert _row(tokens, row)["run_name"] == RUN_NAME               # started, but the row stays to be dropped later
+
+
+def test_a_retry_row_dropped_meanwhile_is_skipped(make, tokens, sfn, clock, mocker):
+    row = _retry_row(tokens, clock)
+    run = make()
+    mocker.patch.object(run.tasks, "get", return_value=None)
+
+    assert run.push_retries(deadline=float("inf"))["push_retried"] == 0
+    assert sfn.started == [] and _row(tokens, row)
+
+
+def test_a_push_warning_that_cannot_be_written_still_drops_the_row(make, tokens, sfn, clock, mocker):
+    from coordination_testkit import client_error
+
+    row = _retry_row(tokens, clock, failed_hours_ago=24)
+    run = make()
+    mocker.patch.object(run.tasks, "put", side_effect=client_error("AccessDeniedException", "PutItem"))
+
+    assert run.run()["push_given_up"] == 1
+    assert "Item" not in tokens.get_item(Key={"execution_name": row})
+
+
+def test_the_budget_stops_push_retries_too(make, tokens, sfn, clock):
+    _retry_row(tokens, clock)
+    ticks = iter([0.0, 10_000.0])
+
+    result = make(monotonic=lambda: next(ticks, 10_000.0)).run()
+
+    assert result["push_retried"] == 0 and sfn.started == []
+
+
+# ── the catch-up ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def pushed(consumers, registry):
+    import json
+
+    registry.put_item(Item={"pipeline_name": "pushed", "asset_schedule": json.dumps({"operator": "AND", "assets": ["ns/a"]})})
+    consumers.put_item(Item={"asset_name": "ns/a", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN})
+
+
+def test_the_catch_up_starts_a_run_whose_stream_record_was_lost(make, tokens, asset_events, pushed, sfn, clock):
+    asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+
+    result = make().run()
+
+    assert (result["catch_up"], result["facts_replayed"]) == ("done", 1)
+    [run] = sfn.started
+    assert run["name"].startswith("pushed-2026-11-12-and-")
+    assert _row(tokens, sweep.HEALTH_KEY)["catchup_at"] == format_utc(clock.now)
+
+
+def test_the_catch_up_runs_hourly_and_never_starts_a_run_twice(make, tokens, asset_events, pushed, sfn, clock):
+    asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+    make().run()
+    clock.now += timedelta(minutes=30)
+    assert make().run()["catch_up"] == "not due"
+    clock.now += timedelta(minutes=30)
+    assert make().run()["catch_up"] == "done"
+    assert len(sfn.started) == 1
+
+
+def test_the_catch_up_replays_only_new_facts_of_the_last_48_hours(make, asset_events, pushed, sfn, clock):
+    from coordination_testkit import legacy_fact
+
+    asset_events.put_item(Item=legacy_fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+    asset_events.put_item(Item=fact("ns/a", "2026-11-09", event_time="2026-11-09T05:00:00.000Z"))
+
+    assert make().run()["facts_replayed"] == 0
+    assert sfn.started == []
+
+
+def test_a_catch_up_cut_short_by_the_budget_goes_on_from_its_cursor(make, tokens, consumers, asset_events,
+                                                                     pushed, sfn, clock):
+    consumers.put_item(Item={"asset_name": "ns/b", "pipeline_name": "other", "sfn_arn": PUSHED_ARN})
+    ticks = iter([0.0, 0.0, 10_000.0])          # the run's deadline, ns/a, then ns/b past it
+
+    first = make(monotonic=lambda: next(ticks, 10_000.0)).run()
+
+    assert first["catch_up"] == "partial"
+    assert _row(tokens, sweep.HEALTH_KEY)["catchup_cursor"] == "ns/a"
+    assert make().run()["catch_up"] == "done"                     # a cursor makes it due at once
+    assert "catchup_cursor" not in _row(tokens, sweep.HEALTH_KEY)
+
+
+def test_failed_catch_up_bookkeeping_only_means_starting_over(make, tokens, pushed, mocker):
+    from coordination_testkit import client_error
+
+    run = make()
+    mocker.patch.object(run.tasks.table, "update_item", side_effect=client_error("InternalServerError", "UpdateItem"))
+
+    assert run.run()["catch_up"] == "done"
+    assert run.tasks.get(sweep.HEALTH_KEY) is None
+
+
+def test_every_page_of_subscriptions_and_facts_is_read(make, consumers, asset_events, pushed, sfn, mocker):
+    asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+    asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time="2026-11-12T05:30:00.000Z"))
+    consumers.put_item(Item={"asset_name": "ns/z", "pipeline_name": "other", "sfn_arn": PUSHED_ARN})
+    run = make()
+    scan, query = run.consumers.scan, run.facts.query
+    mocker.patch.object(run.consumers, "scan", side_effect=lambda **kw: scan(**kw, Limit=1))
+    mocker.patch.object(run.facts, "query", side_effect=lambda **kw: query(**kw, Limit=1))
+
+    assert run.run()["facts_replayed"] == 2
 
 
 # ── the handler ─────────────────────────────────────────────────────────

@@ -314,6 +314,18 @@ class World:
         for client in (self.ddb, self.resource.meta.client):
             client.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
 
+    def fail_starts(self, pipeline: Pipeline, code: str, *, times: int) -> None:
+        """The next `times` StartExecution calls for `pipeline` fail with `code` (e.g. throttling)."""
+        runtime, real, left = self.runtime, self.runtime.start_execution, [times]
+
+        def start_execution(**kwargs: Any) -> Dict[str, Any]:
+            if kwargs.get("stateMachineArn") == pipeline.arn and left[0] > 0:
+                left[0] -= 1
+                raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, "StartExecution")
+            return real(**kwargs)
+
+        runtime.start_execution = start_execution
+
     # ── observations ───────────────────────────────────────────────────
 
     def signals(self, run: Run, task: str) -> List[Dict[str, Any]]:

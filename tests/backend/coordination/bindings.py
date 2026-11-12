@@ -137,7 +137,10 @@ class Bindings:
         import reconcile
         import sweeper
 
-        self._set(sweeper, "_SWEEPER", sweeper.Sweeper(reconcile._RECONCILER, owner="harness"))
+        self._set(sweeper, "_SWEEPER", sweeper.Sweeper(
+            reconcile._RECONCILER, owner="harness",
+            subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
+            consumers_table=self.stack.tables["AssetSubscriptionsTable"]))
         return sweeper.handler
 
     def query_subscriptions(self) -> Callable[[Any, Any], Any]:

@@ -307,6 +307,26 @@ def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world)
     assert "can no longer be woken" in row["error"]
 
 
+def test_a_push_start_that_failed_transiently_is_retried_by_the_sweeper(world):
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
+    world.fail_starts(consumer, "ThrottlingException", times=1)
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    assert world.push_runs(consumer) == []
+    world.clock.advance(minutes=6)
+    world.sweep()
+    assert len(world.push_runs(consumer)) == 1
+
+
+def test_a_push_whose_stream_record_was_lost_is_started_by_the_catch_up(world):
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
+    world.write_event(A, DATE)              # its stream record is never delivered
+    world.sweep()
+    assert len(world.push_runs(consumer)) == 1
+    world.deliver_hints()                   # delivered late: the run name makes it a no-op
+    assert len(world.push_runs(consumer)) == 1
+
+
 @defect("B-N1")
 def test_a_warning_about_an_old_partition_reaches_the_bell(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), "2026-10-13")
