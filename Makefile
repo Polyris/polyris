@@ -62,21 +62,26 @@ test-cov:
 		--cov=polyris --cov-report=term-missing
 
 # Lambda tests
+# Lambda suites run with no AWS profile, region or credentials, as in CI: a suite
+# that needs one must set it itself, so a local run cannot hide what CI will hit.
+HERMETIC_AWS = env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_ACCESS_KEY_ID \
+	-u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
+
 test-lambdas:
 	@echo "🧪 Running Lambda tests..."
 	@if [ -f sam/lambdas/notify/test_notify.py ]; then \
 		echo "  Running notify tests..."; \
-		cd sam/lambdas/notify && PYTHONPATH=. python3 -m pytest test_notify.py -v; \
+		cd sam/lambdas/notify && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_notify.py -v; \
 	fi
 	@if [ -d sam/lambdas/console_api/tests ]; then \
 		echo "  Running console_api tests (requires boto3, pytest-mock)..."; \
-		cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -v || \
+		cd sam/lambdas/console_api && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest tests/ -v || \
 			{ echo "  ❌ console_api tests failed (run: pip install -e '.[dev]')"; exit 1; }; \
 	fi
 	@echo "  Running coordination tests (moto, tables from sam/template.yaml)..."
-	cd sam/lambdas/coordination && PYTHONPATH=. python3 -m pytest tests/ -v
-	cd sam/lambdas/query_subscriptions && PYTHONPATH=. python3 -m pytest test_query_subscriptions.py -v
-	cd sam/lambdas/bucket_cleanup && PYTHONPATH=. python3 -m pytest test_bucket_cleanup.py -v
+	cd sam/lambdas/coordination && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest tests/ -v
+	cd sam/lambdas/query_subscriptions && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_query_subscriptions.py -v
+	cd sam/lambdas/bucket_cleanup && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_bucket_cleanup.py -v
 
 # SFN JSONata expression tests (requires Node.js)
 test-sfn-jsonata:

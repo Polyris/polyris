@@ -45,6 +45,17 @@ def test_the_suites_are_found():
     assert {"console_api", "coordination"} <= set(_suites())
 
 
+def test_make_test_lambdas_runs_every_suite_without_the_developers_aws_setup():
+    """CI has no AWS profile, region or credentials. Run the suites the same way locally, so a
+    suite that silently relies on the developer's ~/.aws fails here first (bucket_cleanup did)."""
+    runs = [line for line in _make_target("test-lambdas").splitlines() if "-m pytest" in line]
+    assert runs and all("$(HERMETIC_AWS) python3 -m pytest" in line for line in runs), runs
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    for unset in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID"):
+        assert f"-u {unset}" in makefile
+    assert "AWS_CONFIG_FILE=/dev/null" in makefile and "AWS_SHARED_CREDENTIALS_FILE=/dev/null" in makefile
+
+
 def _test_dirs():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     return pyproject["tool"]["pytest"]["ini_options"]["testpaths"]
