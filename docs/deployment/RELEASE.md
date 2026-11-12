@@ -1,89 +1,42 @@
-# Release Process
+# Release process
 
-This covers two distinct things: **publishing the open-source repo** (the free
-source tree) and **publishing deployable artifacts** (CloudFormation template + UI
-for users to launch). They are separate.
+How a polyris version is cut and what each release publishes. Read this before tagging.
 
-## Artifact release (tag → S3 + Launch Stack)
-
-Polyris uses GitHub Actions to publish releases automatically on `git tag`.
-
-## One-time setup
-
-### 1. Deploy bootstrap stack
+## Cut a release
 
 ```bash
-cd sam
-aws cloudformation deploy \
-  --template-file bootstrap.yaml \
-  --stack-name polyris-bootstrap \
-  --parameter-overrides \
-    GitHubOrg=Polyris \
-    GitHubRepo=polyris \
-    ReleasesBucketName=polyris-releases \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1
+./scripts/release.sh full v1.2.0     # all gates (make check), or `lib` for SDK-only gates
 ```
 
-This creates:
-- Public S3 bucket `polyris-releases` for release artifacts
-- GitHub OIDC provider (one per AWS account)
-- IAM role `polyris-github-release` for GitHub Actions
+`release.sh` runs the gates, bumps the version in `pyproject.toml`, `polyris/__init__.py`, `ui/package.json` and the `polyris @ …@vX.Y.Z` pin in `sam/lambdas/console_api/requirements.txt`, commits, tags, pushes, creates the GitHub Release (or reuses it) and attaches `install.sh`.
 
-### 2. Get outputs
+Before tagging, smoke-test current `main` on a dev account (root `CLAUDE.md` Principle #15).
+
+## What the tag publishes
+
+Pushing the `v*` tag starts [`.github/workflows/release.yml`](../../.github/workflows/release.yml). It builds the platform release that `polyris-up` installs and attaches it to the tag's GitHub Release:
+
+| Asset | Contents |
+|---|---|
+| `polyris-platform-vX.Y.Z.zip` | `manifest.json`, the template as JSON, one zip per Lambda (built by `sam build`), the Step Functions definitions, the static UI (`ui/out`) |
+| `polyris-platform-vX.Y.Z.zip.sha256` | Checksum `polyris-up` verifies after download |
+| `install.sh` | The CLI installer (attached by `release.sh`) |
+
+`polyris-up` downloads the archive whose version equals the installed polyris version, so **every `v*` tag must carry one**. If the workflow fails, fix the cause and re-run it for the existing tag: Actions → *Release artifacts* → *Run workflow* → tag `v1.2.0`.
+
+The workflow refuses to build when the tag doesn't match the version in `pyproject.toml`.
+
+Every pull request runs the same build as a trial (CI job *Platform archive (trial build)*): `sam build`, the archive script, and `cfn-lint` on the template exactly as `polyris-up` would deploy it. Nothing is published; a change that would break the release fails in the PR instead of on tag day.
+
+Archive layout and the `polyris-up` side of the contract: [ADR #131](../reference/adr-131-polyris-up.md), `polyris/platform.py` and `scripts/build_platform_release.py`.
+
+## Build the archive locally
+
+To test an unreleased build end to end:
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name polyris-bootstrap \
-  --query "Stacks[0].Outputs" \
-  --output table
+(cd sam && sam build --build-dir ../build/sam)
+(cd ui && npm ci && npm run build)
+python scripts/build_platform_release.py --version 0.0.0-dev --sam-build-dir build/sam --ui-dir ui/out --out dist
+polyris-up --archive dist/polyris-platform-v0.0.0-dev.zip --namespace mydev
 ```
-
-### 3. Add GitHub Secrets
-
-In your GitHub repo → Settings → Secrets → Actions → New repository secret:
-
-| Secret | Value from outputs |
-|--------|-------------------|
-| `AWS_RELEASE_ROLE_ARN` | `GitHubReleaseRoleArn` output |
-| `RELEASES_BUCKET` | `ReleasesBucketName` output |
-
----
-
-## Publishing a release
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-GitHub Actions automatically:
-1. Builds UI (`npm run build`) — ensures consistent build environment
-2. Packages SAM template (`sam package`) — uploads Lambda ZIPs and SFN templates to S3, replaces local paths with S3 URLs
-3. Publishes `template.yaml` to `s3://polyris-releases/v1.0.0/template.yaml`
-4. Publishes UI to `s3://polyris-releases/v1.0.0/ui/`
-5. Updates `latest/` pointer
-6. Creates GitHub Release with Launch Stack button and `ui-dist.zip` for Tier 2
-
-## Launch Stack URL
-
-After publishing `v1.0.0`:
-```
-https://console.aws.amazon.com/cloudformation/home#/stacks/create?templateURL=https://polyris-releases.s3.amazonaws.com/v1.0.0/template.yaml
-```
-
-This URL is automatically included in the GitHub Release notes.
-
-## Pre-releases
-
-Tags with `-` are automatically marked as pre-release:
-```bash
-git tag v1.0.0-beta.1
-git push origin v1.0.0-beta.1
-```
-
-## Security model
-
-- **OIDC** — no long-lived AWS credentials stored in GitHub. GitHub gets temporary credentials per run.
-- **Scope** — role only allows pushes from your repo's tags and main branch.
-- **OIDC provider** — one per AWS account. If it already exists, comment out `GitHubOidcProvider` in `bootstrap.yaml`.

@@ -47,25 +47,23 @@ Full DSL reference — `retries`, `trigger_rule`, seven task types (`sfn`,
 
 ## Install
 
-Requires **Python 3.11+** and an AWS account. One command — checks
-prerequisites, clones the latest release, tells you what to run next:
+Requires **Python 3.11+** and AWS credentials — no git, Node.js, SAM CLI or AWS CLI. Install the CLI, then the platform into your AWS account:
 
 ```bash
 curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
+polyris-up                          # asks for a namespace + admin email, prints the console URL
+polyris-init hello-world --hello    # a first pipeline that runs right away
+cd hello-world && polyris-deploy
 ```
 
-Pin a specific version with `POLYRIS_REF=v0.94.0` before the pipe. Full
-manual walkthrough (dev-mode setup, main-branch install, teardown):
-[QUICKSTART.md](docs/getting-started/QUICKSTART.md).
+`polyris-up` deploys the prebuilt release of your polyris version. Step by step: [QUICKSTART.md](docs/getting-started/QUICKSTART.md); upgrading, stages, users and removal: [manage-the-platform.md](docs/how-to/manage-the-platform.md).
 
 ## Try it locally (no AWS)
 
 Validate DAGs, generate Step Functions JSON, mock-execute — all offline:
 
 ```bash
-git clone https://github.com/Polyris/polyris
-cd polyris
-pip install -e .
+curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.sh | bash
 polyris-init my-pipeline --local
 cd my-pipeline
 

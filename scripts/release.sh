@@ -119,8 +119,14 @@ fi
 
 read -r -p "Create GitHub Release with auto-generated notes? [y/N] " confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
-  gh release create "$VERSION" --title "$VERSION" --generate-notes
-  echo "✅ GitHub Release $VERSION created"
+  # The release workflow (.github/workflows/release.yml) may have created it
+  # already while attaching the platform archive — reuse it then.
+  if gh release view "$VERSION" >/dev/null 2>&1; then
+    echo "ℹ️  GitHub Release $VERSION already exists (created by the release workflow)"
+  else
+    gh release create "$VERSION" --title "$VERSION" --generate-notes
+    echo "✅ GitHub Release $VERSION created"
+  fi
 
   # Attach scripts/install.sh as a release asset so the README's install
   # URL (github.com/Polyris/polyris/releases/latest/download/install.sh)
@@ -129,8 +135,10 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
   # version of install.sh even when they clone the release tag — see
   # README "Install" section for context.
   echo "→ uploading scripts/install.sh as release asset"
-  gh release upload "$VERSION" scripts/install.sh
+  gh release upload "$VERSION" scripts/install.sh --clobber
   echo "✅ install.sh attached to $VERSION"
+  echo "ℹ️  The platform archive (polyris-up) is attached by the release workflow:"
+  echo "    gh run list --workflow release.yml"
 else
   echo "ℹ️  skipped — create manually: gh release create $VERSION --title $VERSION --generate-notes"
   echo "    then: gh release upload $VERSION scripts/install.sh"

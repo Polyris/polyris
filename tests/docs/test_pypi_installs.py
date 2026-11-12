@@ -1,7 +1,8 @@
 """Bare `pip install polyris` in docs is a lie today — polyris ships from
 git tags, not PyPI. Every install snippet must use the PEP 508 direct-URL
-form (`polyris @ git+…@<VERSION>`), a version pin (`polyris==X`), or an
-extras form (`polyris[extra] @ git+…`).
+form (`polyris @ git+…@<VERSION>`), a release source-archive URL
+(`…/Polyris/polyris/archive/refs/tags/<VERSION>.tar.gz`), a version pin
+(`polyris==X`), or an extras form (`polyris[extra] @ git+…`).
 
 Delete this check when polyris is published to PyPI. Legitimate
 meta-references (e.g. gotchas doc explaining *why* the bare form doesn't
@@ -24,9 +25,10 @@ from tests.docs._helpers import (
 
 _PIP_INSTALL_RE = re.compile(r"pip\s+install\s+([^\n`#]*)")
 # Reject `polyris-word`, `polyris.foo`, `polyris[extra]`, `polyris @ git+…`,
-# `polyris==X` etc. — those are all legit non-PyPI-bare specs.
+# `polyris==X`, and `polyris` as a URL path segment (`…/Polyris/polyris/…`)
+# — those are all legit non-PyPI-bare specs.
 _BARE_POLYRIS_TOKEN_RE = re.compile(
-    r"(?<![-\w.])['\"]?polyris['\"]?(?![-\w.\[]|\s*[@=~<>])"
+    r"(?<![-\w./])['\"]?polyris['\"]?(?![-\w.\[/]|\s*[@=~<>])"
 )
 
 

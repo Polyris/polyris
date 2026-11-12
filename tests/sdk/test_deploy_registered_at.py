@@ -33,7 +33,6 @@ def _make_deploy_mocks(mocker):
     """Wire enough boto3 + config mocks for deploy_pipeline to reach the
     registration section without hitting real AWS."""
     mocker.patch("polyris.validation.validate_asl_from_dag", return_value=(True, [], []))
-    mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
     boto = mocker.patch("polyris.deploy.boto3")
     session = mocker.MagicMock()
     boto.Session.return_value = session
@@ -49,6 +48,8 @@ def _make_deploy_mocks(mocker):
         ]}]}
 
     cfn.describe_stacks.side_effect = _describe_stacks
+    # CloudFormation accepts the change set (boto3 change-set deploy, ADR #131).
+    cfn.describe_change_set.return_value = {"Status": "CREATE_COMPLETE", "ChangeSetName": "cs"}
     scheduler = mocker.MagicMock()
     scheduler.get_schedule.return_value = {
         "GroupName": "default",

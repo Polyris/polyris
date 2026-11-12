@@ -4,6 +4,12 @@ Polyris uses `config.py` for per-stage pipeline project settings. Read by
 `polyris-deploy` when it deploys a pipeline — a single `--stage <name>` picks
 up stack name, region, profile, and roles for that environment.
 
+`config.py` is optional while there is one platform stack in the region:
+without it, `polyris-deploy` finds the stack `polyris-up` installed (by its
+tag) and uses your AWS profile's region. Add it when you have several stages,
+need a fixed account guard (`account_id`), or deploy to a stack created with
+`sam deploy` (those aren't tagged).
+
 `ui/deploy.sh` does **not** read `config.py` — UI deploy is a per-stack
 action independent of any pipeline; pass the stack + region as CLI args.
 
@@ -56,7 +62,7 @@ the fields *inside* each stage's dict, plus the module-level `DEFAULT_STAGE`.
 
 | Field | Read by | Purpose |
 |-------|---------|---------|
-| `stack_name` | `polyris-deploy` | The SAM CloudFormation stack `sam deploy` created. `polyris-deploy` calls `describe_stacks(<stack_name>)` to fetch wrapper ARN, orchestration role ARN, DynamoDB table names, and results bucket. **Must match `stack_name` in `sam/samconfig.toml`.** |
+| `stack_name` | `polyris-deploy` | The platform stack (`polyris-up` names it `<Namespace>-<Stage>`; for `sam deploy`, the `stack_name` in `sam/samconfig.toml`). `polyris-deploy` calls `describe_stacks(<stack_name>)` to fetch wrapper ARN, orchestration role ARN, DynamoDB table names, and results bucket. Optional when one `polyris-up` platform is in the region. |
 | `namespace` | `polyris-deploy` | Prefix for the *pipeline* stacks polyris-deploy creates: `{namespace}-{stage}-polyris-{dag_id}` (where `{stage}` is the dict key). Does not need to match `stack_name`. |
 | `region` | `polyris-deploy` | The AWS region of the SAM stack. All SDK calls use this. |
 | `profile` | `polyris-deploy` | Named profile from `~/.aws/credentials`. Optional. |
@@ -159,7 +165,7 @@ cd ui && ./deploy.sh myorg-prod us-east-1 --profile polyris-prod
 independent — it takes the SAM stack + region positionally and does not read
 `config.py`. Both work in either layout:
 
-- **Monorepo** (pipelines + SAM + UI in one repo). `scripts/setup-polyris.sh`
+- **Monorepo** (pipelines + SAM + UI in one repo). `polyris-init --project`
   writes `pipelines/config.py`; `polyris.config` walks up from the pipeline
   directory to find it, so `polyris-deploy` works from any pipeline subdir.
 - **Split-repo** (pipelines in repo A, SAM in repo B, UI in repo C). Each repo

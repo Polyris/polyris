@@ -14,7 +14,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
   - [S3 buckets (2)](#s3-buckets-2)
   - [Cognito (1 user pool + 1 client)](#cognito-1-user-pool--1-client)
   - [CloudFront + API Gateway (Console UI)](#cloudfront--api-gateway-console-ui)
-  - [CloudWatch log groups (17)](#cloudwatch-log-groups-17)
+  - [CloudWatch log groups (18)](#cloudwatch-log-groups-18)
   - [IAM (10 roles + 2 managed policies)](#iam-10-roles--2-managed-policies)
 - [Where does each pipeline run's state live?](#where-does-each-pipeline-runs-state-live)
 - [Stack outputs to read after deploy](#stack-outputs-to-read-after-deploy)
@@ -83,7 +83,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-check-assets` | Asset ingest path | Validates incoming asset events against `asset-subscriptions` |
 | `polyris-notify-asset-subscribers` | Asset publish path | Starts downstream asset-triggered pipelines when an asset event lands |
 | `polyris-notify` | `failure-handler` SFN | Publishes alerts through the configured notification channels |
-| `polyris-ui-bootstrap` | CustomResource on install | Copies the built Console UI bundle from the SAM artifacts bucket to `ConsoleUiBucket` |
+| `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Copies the prebuilt Console UI from the artifacts bucket into `ConsoleUiBucket`, deletes files of the previous build, writes `config.js` from the stack's values, invalidates CloudFront. Absent on a from-source `sam deploy` (there `ui/deploy.sh` uploads the UI) |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
 
 ### DynamoDB tables (8)
@@ -110,12 +110,16 @@ All tables are on-demand billing, so idle cost is $0. Point-in-time recovery is 
 
 Both buckets have `BlockPublicAccess` on and are readable only through the CloudFront OAC (UI bucket) or the polyris task/orchestration roles (results bucket).
 
+`polyris-up` also keeps one bucket **outside** the stack: `polyris-artifacts-<account>-<region>`, private and encrypted. It holds the Lambda zips, Step Functions definitions, UI and template of each installed release (keys carry the version and a content hash), because CloudFormation needs that code before it creates the functions. One artifacts bucket serves every platform stack in the region; `polyris-down` deletes it with the last one.
+
 ### Cognito (1 user pool + 1 client)
 
 | Logical name | Purpose |
 |--------------|---------|
 | `polyris-user-pool` | Authenticates Console users. Emits ID tokens the Console API validates via JWKS |
 | `polyris-user-pool-client` | The OAuth2 client the Console UI uses to exchange login credentials for tokens |
+
+When the `AdminEmail` parameter is set (`polyris-up --admin-email`), the stack also creates that user (`AWS::Cognito::UserPoolUser`); Cognito emails it a temporary password. Changing `AdminEmail` replaces the user.
 
 MFA is available but off by default; enable per your org's policy via `aws cognito-idp update-user-pool`.
 
@@ -129,7 +133,7 @@ MFA is available but off by default; enable per your org's policy via `aws cogni
 | `polyris-console-ui-url-rewrite` | CloudFront Function | Client-side routing — rewrites SPA paths to `/index.html` |
 | `polyris-console-api` | Serverless HttpApi (API Gateway v2) | Public HTTPS endpoint the Console UI + PAT clients call |
 
-### CloudWatch log groups (17)
+### CloudWatch log groups (18)
 
 One per Lambda + one per SFN + one per major workflow. Retention: 30 days by default (change via the `LogRetentionDays` CFN parameter at install).
 
@@ -140,6 +144,7 @@ One per Lambda + one per SFN + one per major workflow. Retention: 30 days by def
 | Demo SFNs (1) | `/aws/vendedlogs/states/polyris-test-*` (shared) |
 | Console API (1) | `/aws/lambda/polyris-console-api` |
 | Ops Lambdas (5) | `/aws/lambda/polyris-evaluate-deps`, `-notify`, `-query-subscriptions`, `-check-assets`, `-notify-asset-subscribers` |
+| UI bootstrap (1, stacks installed by `polyris-up`) | `/aws/lambda/polyris-ui-bootstrap` |
 
 Your workload logs (Lambdas / Glue jobs / ECS tasks that your pipelines invoke) are NOT in this list — they go to wherever YOU configured them.
 

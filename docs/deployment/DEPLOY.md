@@ -2,8 +2,8 @@
 
 CloudFormation-based pipeline deployment. AWS manages state natively.
 
-- No external tools needed beyond AWS CLI
-- Same workflow as `sam deploy` for shared infra
+- Python only: deploys through a CloudFormation change set with boto3 — no AWS CLI or SAM CLI
+- Finds the platform stack installed by `polyris-up` on its own; `config.py` is optional
 
 ## Usage
 
@@ -54,9 +54,10 @@ State is managed by CloudFormation — create, update, and delete handled automa
 
 ## Prerequisites
 
-1. Shared infra deployed: `sam deploy` (its CloudFormation Outputs are what `polyris-deploy` reads via `describe_stacks`)
-2. AWS credentials configured: `aws configure`
-3. polyris installed: `pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"` — replace `<VERSION>` with a real tag from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags) (e.g. `v1.0.1`).
+1. The platform installed: `polyris-up` ([QUICKSTART.md](../getting-started/QUICKSTART.md)). `polyris-deploy` reads its CloudFormation outputs.
+2. AWS credentials for the same account and region (standard credential chain, or `--profile` / `--region`).
+
+Which platform stack: `--stack` > `stack_name` in `config.py` > the one stack tagged by `polyris-up` in the region. Several tagged stacks and no name is an error that asks for `--stack`. Which region: `--region` > `POLYRIS_REGION` / `AWS_REGION` > `config.py` > your AWS profile's region.
 
 ## Pipeline file
 

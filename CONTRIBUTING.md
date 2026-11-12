@@ -215,7 +215,7 @@ routes follow the same `register(router)` seam in the private repo.)
 3. Run JSONata tests: `cd tests/sfn_jsonata && npm test`
 4. Run smoke tests: `pytest tests/sdk/test_smoke.py -v`
 5. Update ASL snapshots if needed: `SNAPSHOT_UPDATE=1 pytest tests/sdk/test_asl_snapshots.py`
-6. Deploy to dev: `sam deploy`
+6. Deploy to dev from your checkout: [FROM_SOURCE.md](docs/deployment/FROM_SOURCE.md)
 7. Test in AWS Console
 
 ---
