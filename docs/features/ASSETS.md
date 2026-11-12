@@ -616,21 +616,13 @@ Consumer task starts
         │
         ▼
 Registration helper
-        │
-        ├── Check task dependencies (existing)
-        └── Check asset dependencies
-            │
-            ▼
-        CheckAssets Lambda
-            │
-            ├── Query asset-events table (latest event per asset)
-            ├── Check freshness (if `.within(...)` was specified)
-            └── If not ready → save subscription to dep-subscriptions
-                              (key: "asset:<name>" + task identifier)
-        │
-        ▼
-If ready → signal wrapper → task continues
-If not  → wait for signal (waitForTaskToken)
+        ├── Save the task row
+        ├── Save one pointer per asset: "asset:<name>" → this run's task
+        └── reconcile Lambda
+                ├── Read asset-events for this run's partition
+                │   (and `.within(...)` freshness, `.consecutive(...)` days)
+                ├── If ready → signal the wrapper → task continues
+                └── If not   → the task waits; the pointer brings the next fact
 ```
 
 Producer side (a task with `outlets=[...]`):
@@ -639,15 +631,16 @@ Producer side (a task with `outlets=[...]`):
 Producer task completes with outlets
         │
         ▼
-RunTask helper
-        │
-        ├── Emit EventBridge events (existing push path)
-        ├── Record asset event in asset-events table
-        └── NotifyAssetSubscribers Lambda
-            │
-            ├── Query subscribers for each outlet
-            └── sendTaskSuccess to each waiting task
+RunTask helper ── records one fact per outlet in asset-events
+        │          (partition = the producer run's date)
+        ▼
+asset-events stream ──► AssetFanout Lambda
+                            ├── Find the tasks waiting on the asset ("asset:<name>")
+                            └── reconcile Lambda for each: wake it if a fact
+                                serves its run's partition
 ```
+
+A task is woken only by a fact for its own run's partition: a backfill for an old date never runs on today's fact. Weekly and monthly facts also serve the rest of their period and the next one.
 
 The two DynamoDB tables involved:
 

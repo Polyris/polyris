@@ -63,8 +63,23 @@ def _resource(value: Any) -> Tuple[str, Optional[str]]:
     return match.group(1), match.group(2)
 
 
-def _statements(resources: Dict[str, Any]):
-    return resources["ReconcileRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
+def _statements(resources: Dict[str, Any], role: str = "ReconcileRole", *, managed: bool = True):
+    """The role's statements: its inline policies, and the managed policies it attaches."""
+    props = resources[role]["Properties"]
+    statements = [s for policy in props.get("Policies", []) for s in policy["PolicyDocument"]["Statement"]]
+    for arn in props.get("ManagedPolicyArns", []) if managed else []:
+        if isinstance(arn, dict):          # a policy of this template; AWS-managed ones are strings
+            statements += resources[arn["!Ref"]]["Properties"]["PolicyDocument"]["Statement"]
+    return statements
+
+
+def _dynamodb_grants(statements) -> Set[Call]:
+    return {(action, *_resource(r)) for s in statements for action in s["Action"]
+            if action.startswith("dynamodb:") and action not in STREAM_ACTIONS for r in s["Resource"]}
+
+
+STREAM_ACTIONS = {"dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator",
+                  "dynamodb:ListStreams"}
 
 
 def _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb) -> Set[Call]:
@@ -102,12 +117,62 @@ def _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, 
 def test_reconcile_role_allows_exactly_the_calls_the_code_makes(
         resources, reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb):
     used = _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb)
-    granted: Set[Call] = set()
-    for statement in _statements(resources):
-        for action in (a for a in statement["Action"] if a.startswith("dynamodb:")):
-            granted |= {(action, *_resource(r)) for r in statement["Resource"]}
+    granted = _dynamodb_grants(_statements(resources))
     assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
     assert granted - used == set(), "grants no call uses (drop them, or walk the path that needs them)"
+    assert "Policies" not in resources["ReconcileRole"]["Properties"], "the reconciler's grants live in its policy"
+
+
+def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
+        resources, reconciler, tokens, subscriptions, asset_events, sfn, ddb, mocker):
+    import asset_fanout
+    from coordination_testkit import client_error, fact
+
+    fanout = asset_fanout.AssetFanout(reconciler, subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1])
+    tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "freshness_hours": None}]))
+    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": execution_name("load")})
+    item = fact("ns/orders", "2026-11-12")
+    record = {"eventName": "INSERT",
+              "dynamodb": {"SequenceNumber": "1", "NewImage": {k: _serialize(v) for k, v in item.items()}}}
+    asset_events.put_item(Item=item)
+    with recording(ddb) as used:
+        assert fanout.handle([record], lambda: 10 ** 6) == {"batchItemFailures": []}
+        mocker.patch.object(fanout.subscriptions, "query", side_effect=client_error("AccessDeniedException", "Query"))
+        fanout.handle([record], lambda: 10 ** 6)           # a non-transient failure writes a warning
+    assert sfn.succeeded, "the walk must wake the task"
+    assert used - _dynamodb_grants(_statements(resources, "AssetFanoutRole")) == set()
+    own = _dynamodb_grants(_statements(resources, "AssetFanoutRole", managed=False))
+    assert own - used == set(), "AssetFanout's own grants that no call uses"
+
+
+def _serialize(value):
+    from boto3.dynamodb.types import TypeSerializer
+
+    return TypeSerializer().serialize(value)
+
+
+def test_asset_fanout_reads_only_the_asset_events_stream(resources):
+    [stream] = [s for s in _statements(resources, "AssetFanoutRole", managed=False)
+                if set(s["Action"]) == STREAM_ACTIONS]
+    assert stream["Resource"] == [{"!GetAtt": "AssetEventsTable.StreamArn"}]
+
+
+def test_the_stream_mapping_follows_adr_130(resources):
+    """ADR #130 §6.1: INSERT only, from the start, retried until handled, no failure destination (D22)."""
+    assert resources["AssetEventsTable"]["Properties"]["StreamSpecification"] == {"StreamViewType": "NEW_IMAGE"}
+    mapping = resources["AssetEventsFanoutMapping"]["Properties"]
+    assert mapping == {
+        "EventSourceArn": {"!GetAtt": "AssetEventsTable.StreamArn"},
+        "FunctionName": {"!Ref": "AssetFanoutFunction"},
+        "StartingPosition": "TRIM_HORIZON",
+        "BatchSize": 10,
+        "MaximumRetryAttempts": -1,
+        "MaximumRecordAgeInSeconds": -1,
+        "BisectBatchOnFunctionError": True,
+        "FunctionResponseTypes": ["ReportBatchItemFailures"],
+        "FilterCriteria": {"Filters": [{"Pattern": '{"eventName": ["INSERT"]}'}]},
+    }
+    assert "AssetEventsFanoutMapping" in resources["RunTaskHelperSfn"]["DependsOn"]
 
 
 def test_reconcile_role_step_functions_actions(resources):
@@ -127,14 +192,27 @@ def test_describe_execution_is_scoped_to_wrapper_executions(resources):
     assert "${AWS::Region}" in arn["!Sub"]      # not the AwsRegion parameter, which can drift
 
 
-def test_reconcile_function_wiring(resources):
-    props = resources["ReconcileFunction"]["Properties"]
-    module, function = props["Handler"].split(".")
+@pytest.mark.parametrize("function,module_name,role", [
+    ("ReconcileFunction", "reconcile", "ReconcileRole"),
+    ("AssetFanoutFunction", "asset_fanout", "AssetFanoutRole"),
+])
+def test_function_wiring(resources, function, module_name, role):
+    import importlib
+
+    props = resources[function]["Properties"]
+    module, handler = props["Handler"].split(".")
     assert (LAMBDA_ROOT.parent.parent / props["CodeUri"]).resolve() == LAMBDA_ROOT
-    assert callable(getattr(reconcile, function)) and module == "reconcile"
-    assert props["Role"] == {"!GetAtt": "ReconcileRole.Arn"}
+    assert module == module_name and callable(getattr(importlib.import_module(module), handler))
+    assert props["Role"] == {"!GetAtt": f"{role}.Arn"}
     variables = props["Environment"]["Variables"]
     assert variables == {var: {"!Ref": logical} for var, (logical, _) in TABLES.items()}
     assert {var: getattr(env, var) for var in variables} == {var: name for var, (_, name) in TABLES.items()}
+
+
+def test_time_budgets_fit_their_timeouts(resources):
+    import asset_fanout
+
     # Resume's budget fits inside the timeout with room for the last row.
-    assert reconcile.RESUME_BUDGET_SECONDS + 5 <= props["Timeout"]
+    assert reconcile.RESUME_BUDGET_SECONDS + 5 <= resources["ReconcileFunction"]["Properties"]["Timeout"]
+    # AssetFanout stops starting records with RESERVE_MS left: one record's work fits in that reserve.
+    assert asset_fanout.RESERVE_MS / 1000 < resources["AssetFanoutFunction"]["Properties"]["Timeout"]

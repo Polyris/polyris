@@ -128,7 +128,7 @@ hello-world through assets and lineage.
 │
 ├── sam/                          # Shared AWS infrastructure
 │   ├── template.yaml             # SAM template — all AWS resources
-│   ├── lambdas/                  # 9 Lambda functions
+│   ├── lambdas/                  # 10 Lambda functions
 │   └── sfn_templates/            # 14 SFN definitions (11 orchestration + 3 test)
 │
 ├── polyris/                      # Python DSL library

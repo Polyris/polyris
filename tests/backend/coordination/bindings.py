@@ -61,6 +61,16 @@ class Bindings:
         self.stack.bind_lambda("ReconcileFunction", reconcile.handler)
         return reconcile.handler
 
+    def asset_fanout(self) -> Any:
+        """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
+        import asset_fanout
+        import reconcile
+
+        fanout = asset_fanout.AssetFanout(reconcile._RECONCILER,
+                                          subscriptions_table=self.stack.tables["DependencySubscriptionsTable"])
+        self._set(asset_fanout, "_FANOUT", fanout)
+        return asset_fanout.handler
+
     def query_subscriptions(self) -> Callable[[Any, Any], Any]:
         module = _load("query_subscriptions_handler", LAMBDAS / "query_subscriptions" / "index.py")
         import qs_dal

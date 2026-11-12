@@ -216,3 +216,54 @@ class TestListAssetNames:
         # Cap is on items scanned, not unique names. Since names are all unique,
         # we should see exactly 300 (cap), not 500 (full).
         assert len(names) == 300
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# write_fact (ADR #130 §1)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _collision():
+    from botocore.exceptions import ClientError
+    return ClientError({'Error': {'Code': 'ConditionalCheckFailedException', 'Message': 'exists'}}, 'PutItem')
+
+
+def _write(repo, now):
+    return repo.write_fact(asset_name='ns/orders', partition_key='2026-W46', granularity=None, cascade='auto',
+                           source_dag='producer', source_task='build', uri='s3://b/o', ttl_days=365, now=now)
+
+
+def test_write_fact_writes_the_shared_shape_and_never_overwrites(mocker):
+    from datetime import datetime, timezone
+    from coordination_core.records import asset_fact_item
+    table = mocker.MagicMock()
+    repo = _make_repo_with_table(mocker, table)
+    now = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
+    item = _write(repo, now)
+    assert item == asset_fact_item(asset_name='ns/orders', partition_key='2026-W46', granularity='weekly',
+                                   cascade='auto', source_dag='producer', source_task='build', uri='s3://b/o',
+                                   now=now, ttl_days=365)
+    table.put_item.assert_called_once_with(Item=item, ConditionExpression='attribute_not_exists(event_time)')
+
+
+def test_write_fact_moves_a_same_millisecond_collision_to_the_next_millisecond(mocker):
+    from datetime import datetime, timezone
+    table = mocker.MagicMock()
+    table.put_item.side_effect = [_collision(), None]
+    repo = _make_repo_with_table(mocker, table)
+    item = _write(repo, datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc))
+    assert item['event_time'] == '2026-11-12T06:00:00.001Z'
+    assert table.put_item.call_count == 2
+
+
+def test_write_fact_raises_other_errors_and_gives_up_after_its_attempts(mocker):
+    import pytest
+    from botocore.exceptions import ClientError
+    from datetime import datetime, timezone
+    now = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
+    table = mocker.MagicMock()
+    table.put_item.side_effect = ClientError({'Error': {'Code': 'AccessDeniedException', 'Message': 'no'}}, 'PutItem')
+    with pytest.raises(ClientError):
+        _write(_make_repo_with_table(mocker, table), now)
+    table.put_item.side_effect = _collision()
+    with pytest.raises(RuntimeError, match='no free event_time'):
+        _write(_make_repo_with_table(mocker, table), now)

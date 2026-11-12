@@ -172,6 +172,8 @@ TABLE_NAME = os.environ.get('DYNAMODB_TABLE', 'pipeline-executions')
 PIPELINES_TABLE = os.environ.get('PIPELINES_TABLE', 'pipeline-registry')
 SUBSCRIPTIONS_TABLE = os.environ.get('SUBSCRIPTIONS_TABLE', 'dep-subscriptions')
 ASSET_EVENTS_TABLE = os.environ.get('ASSET_EVENTS_TABLE', 'asset-events')
+# How long an asset fact lives; the same value run_task's fact writes use.
+ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))
 QUEUED_EVENTS_TABLE = os.environ.get('QUEUED_EVENTS_TABLE', 'queued-asset-events')
 TASK_EVENTS_TABLE = os.environ.get('TASK_EVENTS_TABLE', 'task-events')
 # Personal Access Token store (ADR #65). Dedicated table, not pipeline-tokens.
@@ -184,12 +186,6 @@ RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 # SFN Helpers
 NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
 NOTIFY_ASSET_CONSUMERS_SFN_ARN = os.environ.get('NOTIFY_ASSET_CONSUMERS_SFN_ARN', '')
-# Lambda ARN for waking `wait_for` subscribers on manual mark-success. The
-# run_task SFN invokes this Lambda on natural completion; mark-success must
-# invoke it too so pull-waiters are woken on the same event path.
-NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN = os.environ.get(
-    'NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN', ''
-)
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
 
 # ============================================

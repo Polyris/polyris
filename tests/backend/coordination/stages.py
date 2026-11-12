@@ -6,4 +6,4 @@ names a bound stage, so markers are removed as their code lands.
 """
 
 STAGES = ("core", "task-deps", "assets", "push", "operations", "sweeper")
-BOUND_STAGES = frozenset({"core", "task-deps"})
+BOUND_STAGES = frozenset({"core", "task-deps", "assets"})

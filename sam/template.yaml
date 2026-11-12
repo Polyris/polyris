@@ -423,6 +423,9 @@ Resources:
               - cascade
               - source_dag
               - uri
+      # ADR #130 §6.1: new facts reach AssetFanout through this stream.
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -1047,6 +1050,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-reconcile"
       RetentionInDays: !Ref LogRetentionDays
 
+  AssetFanoutLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-asset-fanout"
+      RetentionInDays: !Ref LogRetentionDays
+
   # ---------------------------------------------------------------------------
   # Lambda Functions
   # ---------------------------------------------------------------------------
@@ -1203,6 +1212,51 @@ Resources:
         Stage: !Ref Stage
         Namespace: !Ref Namespace
 
+  # ADR #130 §6.1: wakes the tasks waiting on each new asset fact.
+  AssetFanoutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-asset-fanout"
+      CodeUri: lambdas/coordination/
+      Handler: asset_fanout.handler
+      # Stops starting records 10 s before the end (RESERVE_MS); the rest
+      # are redelivered.
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt AssetFanoutRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref AssetFanoutLogGroup
+      Environment:
+        Variables:
+          TOKENS_TABLE: !Ref PipelineTokensTable
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
+          PIPELINES_TABLE: !Ref PipelineRegistryTable
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  # ADR #130 §6.1. Retries until the record is handled (records live for the
+  # stream's 24 h); a record AssetFanout cannot handle becomes a warning in
+  # the handler itself, so there is no on-failure destination (D22).
+  AssetEventsFanoutMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt AssetEventsTable.StreamArn
+      FunctionName: !Ref AssetFanoutFunction
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 10
+      MaximumRetryAttempts: -1
+      MaximumRecordAgeInSeconds: -1
+      BisectBatchOnFunctionError: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"eventName": ["INSERT"]}'
+
   ConsoleApiFunction:
     Type: AWS::Serverless::Function
     # polyris SDK is vendored as `polyris/` subdirectory before `sam build`
@@ -1255,10 +1309,6 @@ Resources:
           RESTART_HELPER_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
           NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
           NOTIFY_ASSET_CONSUMERS_SFN_ARN: !Ref NotifyAssetConsumersSfn
-          # Mark Successful wakes pull-waiters (wait_for=[asset]) by invoking
-          # NotifyAssetSubscribersFunction directly — same Lambda the run_task
-          # SFN calls on natural completion.
-          NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN: !GetAtt NotifyAssetSubscribersFunction.Arn
           NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
@@ -1471,8 +1521,65 @@ Resources:
                   - states:SendTaskSuccess
                 Resource: "*"
 
-  # Exactly the calls sam/lambdas/coordination makes; pinned both ways by
-  # test_reconcile_role_allows_exactly_the_calls_the_code_makes.
+  # What the reconciler needs (ADR #130 §3), shared by every coordination
+  # function that runs it in-process. Exactly the calls the code makes:
+  # pinned both ways by test_coordination_template.py. No Description: it
+  # would make every future wording change a replacement (Principle #33).
+  CoordinationReconcilePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Namespace}-${Stage}-polyris-reconcile"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Task row, dependency rows and pause flag (consistent reads);
+          # park / close / attention updates; warning rows.
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:UpdateItem
+              - dynamodb:PutItem
+            Resource:
+              - !GetAtt PipelineTokensTable.Arn
+          # Resume: candidate rows of one run.
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource:
+              - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
+          # Pointers are deleted once the signal was accepted.
+          - Effect: Allow
+            Action:
+              - dynamodb:DeleteItem
+            Resource:
+              - !GetAtt DependencySubscriptionsTable.Arn
+          # Asset facts: the partition index plus recent writes (base table).
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource:
+              - !GetAtt AssetEventsTable.Arn
+              - !Sub "${AssetEventsTable.Arn}/index/asset-partition-index"
+          # Declared granularity of facts written before ADR #130.
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+            Resource:
+              - !GetAtt PipelineRegistryTable.Arn
+          # Task tokens have no resource-level permissions.
+          - Effect: Allow
+            Action:
+              - states:SendTaskSuccess
+              - states:SendTaskFailure
+            Resource: "*"
+          # Dead-token check on the task's wrapper execution.
+          - Effect: Allow
+            Action:
+              - states:DescribeExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-dependency-wrapper:*"
+
   ReconcileRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1486,58 +1593,43 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref CoordinationReconcilePolicy
+
+  # AssetFanout runs the reconciler in-process; beyond its policy it reads
+  # the asset-events stream and the asset:{name} subscriptions.
+  AssetFanoutRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-asset-fanout-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref CoordinationReconcilePolicy
       Policies:
-        - PolicyName: ReconcilePolicy
+        - PolicyName: AssetFanoutPolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Task row, dependency rows and pause flag (consistent reads);
-              # park / close / attention updates; warning rows.
               - Effect: Allow
                 Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:PutItem
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
                 Resource:
-                  - !GetAtt PipelineTokensTable.Arn
-              # Resume: candidate rows of one run.
+                  - !GetAtt AssetEventsTable.StreamArn
+              # Tasks waiting on the fact's asset (consistent read).
               - Effect: Allow
                 Action:
                   - dynamodb:Query
-                Resource:
-                  - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
-              # Pointers are deleted once the signal was accepted.
-              - Effect: Allow
-                Action:
-                  - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt DependencySubscriptionsTable.Arn
-              # Asset facts: the partition index plus recent writes (base table).
-              - Effect: Allow
-                Action:
-                  - dynamodb:Query
-                Resource:
-                  - !GetAtt AssetEventsTable.Arn
-                  - !Sub "${AssetEventsTable.Arn}/index/asset-partition-index"
-              # Declared granularity of facts written before ADR #130.
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                Resource:
-                  - !GetAtt PipelineRegistryTable.Arn
-              # Task tokens have no resource-level permissions.
-              - Effect: Allow
-                Action:
-                  - states:SendTaskSuccess
-                  - states:SendTaskFailure
-                Resource: "*"
-              # Dead-token check on the task's wrapper execution.
-              - Effect: Allow
-                Action:
-                  - states:DescribeExecution
-                Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-dependency-wrapper:*"
 
   ConsoleApiRole:
     Type: AWS::IAM::Role
@@ -1629,13 +1721,6 @@ Resources:
                 Action:
                   - lambda:InvokeFunction
                 Resource: !GetAtt NotifyFunction.Arn
-              # Mark Successful needs to wake wait_for subscribers — invoke the
-              # same Lambda that run_task calls on natural completion. Fire-and-
-              # forget (InvocationType: Event); errors are logged, not surfaced.
-              - Effect: Allow
-                Action:
-                  - lambda:InvokeFunction
-                Resource: !GetAtt NotifyAssetSubscribersFunction.Arn
 
   # ---------------------------------------------------------------------------
   # API Gateway (HTTP API)
@@ -2014,7 +2099,11 @@ Resources:
       DefinitionUri: sfn_templates/helpers/failure_handler/sfn.tpl.json
   RunTaskHelperSfn:
     Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
+    # A fact recorded by the new definition must find the mapping that wakes
+    # its waiters (ADR #130, Migration).
+    DependsOn:
+      - OrchestrationRolePolicy
+      - AssetEventsFanoutMapping
     Properties:
       Name: !Sub "${Namespace}-${Stage}-polyris-dep-run-task-helper"
       Type: STANDARD
@@ -2031,7 +2120,6 @@ Resources:
         task_events_table: !Ref TaskEventsTable
         notify_dependents_helper_arn: !Ref NotifyDependentsSfn
         asset_events_table: !Ref AssetEventsTable
-        notify_asset_subscribers_lambda_arn: !GetAtt NotifyAssetSubscribersFunction.Arn
         notify_asset_consumers_sfn_arn: !Ref NotifyAssetConsumersSfn
         notify_function_arn: !GetAtt NotifyFunction.Arn
         console_api_endpoint: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"

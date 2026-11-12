@@ -1,19 +1,18 @@
 """Tests for notify_asset_consumers_for_manual_success in task_actions.py.
 
-Verifies the Mark Successful side-effect chain: record asset events, start the
-push-consumer SFN, AND invoke NotifyAssetSubscribersFunction for pull-waiters
-(the latter closes the gap where `mark_success` on an asset-producing task
-would wake push consumers but leave `wait_for` subscribers hanging).
+Mark Successful records each outlet's fact for the marked run's partition
+(ADR #130 §1, B-M1) and starts the push consumers. Tasks waiting on the
+asset are woken by the asset-events stream, not by this function.
 """
 import json
 
 import pytest
 
+import task_actions
 from task_actions import notify_asset_consumers_for_manual_success
 
-
 _OUTLETS = [
-    {"name": "orders/clean", "uri": "s3://bucket/clean/"},
+    {"name": "orders/clean", "uri": "s3://bucket/clean/", "granularity": "weekly"},
     {"name": "orders/analytics"},
 ]
 
@@ -28,226 +27,82 @@ def mock_sfn(mocker):
     return mocker.patch("task_actions.sfn")
 
 
-@pytest.fixture
-def mock_lambda(mocker):
-    return mocker.patch("task_actions.lambda_client")
+def _call(events_repo, outlets=_OUTLETS, **kwargs):
+    notify_asset_consumers_for_manual_success(
+        outlets=outlets, task_name="extract", pipeline_name="orders-clean",
+        partition_key="2026-11-10", events_repo=events_repo, **kwargs,
+    )
 
 
-def test_wakes_wait_for_subscribers_via_lambda_invoke(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """Mark Successful must invoke NotifyAssetSubscribersFunction so pull-
-    waiters (`wait_for=[asset]`) are woken the same way natural completion
-    wakes them. Fire-and-forget (InvocationType=Event)."""
+def test_records_one_fact_per_outlet_for_the_marked_partition(mocker, events_repo, mock_sfn):
     mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
-    mocker.patch(
-        "task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN",
-        "arn:aws:lambda:...:function:notify-asset-subscribers",
-    )
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="extract",
-        pipeline_name="orders-clean",
-        date="2026-11-10",
-        events_repo=events_repo,
-    )
-
-    mock_lambda.invoke.assert_called_once()
-    call = mock_lambda.invoke.call_args
-    assert call.kwargs["InvocationType"] == "Event"
-    assert call.kwargs["FunctionName"] == "arn:aws:lambda:...:function:notify-asset-subscribers"
-    payload = json.loads(call.kwargs["Payload"].decode("utf-8"))
-    assert payload["outlets"] == _OUTLETS
-    assert payload["source_task"] == "extract"
-    assert payload["source_dag"] == "orders-clean"
-    assert "event_time" in payload
+    _call(events_repo)
+    calls = [c.kwargs for c in events_repo.write_fact.call_args_list]
+    assert calls == [
+        {"asset_name": "orders/clean", "partition_key": "2026-11-10", "granularity": "weekly", "cascade": "auto",
+         "source_dag": "orders-clean", "source_task": "extract", "uri": "s3://bucket/clean/",
+         "ttl_days": task_actions.ASSET_EVENT_TTL_DAYS},
+        {"asset_name": "orders/analytics", "partition_key": "2026-11-10", "granularity": None, "cascade": "auto",
+         "source_dag": "orders-clean", "source_task": "extract", "uri": "",
+         "ttl_days": task_actions.ASSET_EVENT_TTL_DAYS},
+    ]
 
 
-def test_records_asset_event_per_outlet_with_full_payload(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """Pins the asset-events DDB put payload shape. If a field is renamed
-    (source_dag → dag_name, asset_name → name, …), downstream SFN/query
-    code breaks silently — mocks don't validate attribute names."""
+def test_facts_live_as_long_as_run_task_facts():
+    assert task_actions.ASSET_EVENT_TTL_DAYS == 365
+
+
+def test_starts_push_consumers_per_outlet_for_the_marked_partition(mocker, events_repo, mock_sfn):
     mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
-    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "fn:notify")
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="extract",
-        pipeline_name="orders-clean",
-        date="2026-11-10",
-        events_repo=events_repo,
-    )
-
-    # One put per outlet (two outlets → two calls).
-    assert events_repo.put.call_count == 2
-    calls = events_repo.put.call_args_list
-    first = calls[0].args[0]
-    second = calls[1].args[0]
-    # Pin every field; a rename would fail here.
-    for payload, outlet in [(first, _OUTLETS[0]), (second, _OUTLETS[1])]:
-        assert payload["asset_name"] == outlet["name"]
-        assert payload["uri"] == outlet.get("uri", "")
-        assert payload["source_task"] == "extract"
-        assert payload["source_dag"] == "orders-clean"
-        assert payload["execution_date"] == "2026-11-10"
-        assert "event_time" in payload
-        assert "ttl" in payload
-        assert isinstance(payload["ttl"], int)
-
-
-def test_starts_notify_asset_consumers_sfn_per_outlet(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """Pins the push-consumer SFN start payload shape. Each outlet gets a
-    start_execution call with cascade_all=False and the canonical input
-    shape expected by notify_asset_consumers/sfn.tpl.json."""
-    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "arn:sfn:consumers")
-    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "fn:notify")
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="extract",
-        pipeline_name="orders-clean",
-        date="2026-11-10",
-        events_repo=events_repo,
-    )
-
+    _call(events_repo)
     assert mock_sfn.start_execution.call_count == 2
-    for call in mock_sfn.start_execution.call_args_list:
-        assert call.kwargs["stateMachineArn"] == "arn:sfn:consumers"
-        input_dict = json.loads(call.kwargs["input"])
-        assert input_dict["source_task"] == "extract"
-        assert input_dict["source_dag"] == "orders-clean"
-        assert input_dict["execution_date"] == "2026-11-10"
-        assert input_dict["cascade_all"] is False
-        assert "asset_name" in input_dict
+    first = json.loads(mock_sfn.start_execution.call_args_list[0].kwargs["input"])
+    assert first == {"asset_name": "orders/clean", "execution_date": "2026-11-10", "source_task": "extract",
+                     "source_dag": "orders-clean", "cascade_all": False}
 
 
-def test_single_warn_when_only_lambda_arn_missing(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """When only NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN is unset (SFN ARN is
-    fine), one aggregated warn still fires listing just the missing one.
-    Previously two separate warns fired on this path."""
-    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "arn:sfn:consumers")
-    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "")
-    log_warn = mocker.patch("task_actions.log.warn")
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="t",
-        pipeline_name="p",
-        date="2026-01-01",
-        events_repo=events_repo,
-    )
-
-    assert log_warn.call_count == 1
-    missing = log_warn.call_args.kwargs.get("missing", [])
-    assert any("NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN" in m for m in missing)
-    assert not any("NOTIFY_ASSET_CONSUMERS_SFN_ARN" in m for m in missing)
-
-
-def test_single_lambda_invoke_regardless_of_outlet_count(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """The Lambda invoke is one call per Mark Successful — the Lambda's own
-    DAL handles per-outlet subscription lookup. Prevents N-outlet × M-invoke
-    fan-out at the Console API."""
+def test_wakes_no_waiting_task_itself(mocker, events_repo, mock_sfn):
+    """The stream wakes them; there is no Lambda to invoke any more."""
     mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
-    mocker.patch(
-        "task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN",
-        "arn:fn:notify",
-    )
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,  # 2 outlets
-        task_name="t",
-        pipeline_name="p",
-        date="2026-01-01",
-        events_repo=events_repo,
-    )
-
-    assert mock_lambda.invoke.call_count == 1
+    assert not hasattr(task_actions, "lambda_client")
+    assert not hasattr(task_actions, "NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN")
+    _call(events_repo)
 
 
-def test_skips_lambda_invoke_when_env_unconfigured(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """OSS-only deploys without the pull-waiter Lambda wired should log a
-    warning and skip the invoke — not crash."""
-    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
-    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "")
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="t",
-        pipeline_name="p",
-        date="2026-01-01",
-        events_repo=events_repo,
-    )
-
-    mock_lambda.invoke.assert_not_called()
-
-
-def test_single_warn_when_both_arns_unconfigured(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """When both notification targets are unset, one aggregated warn beats two
-    separate ones — avoids doubling log volume on misconfigured deploys."""
+def test_without_the_push_target_facts_are_still_recorded(mocker, events_repo, mock_sfn):
     mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "")
-    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "")
-    log_warn = mocker.patch("task_actions.log.warn")
-
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="t",
-        pipeline_name="p",
-        date="2026-01-01",
-        events_repo=events_repo,
-    )
-
-    # Exactly one aggregated warn, listing both missing targets.
-    assert log_warn.call_count == 1
-    kwargs = log_warn.call_args.kwargs
-    assert "NOTIFY_ASSET_CONSUMERS_SFN_ARN" in str(kwargs.get("missing", []))
-    assert "NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN" in str(kwargs.get("missing", []))
-
-
-def test_lambda_invoke_error_logged_but_does_not_raise(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    """Pull-waiter wake is best-effort — matches the push SFN start pattern
-    above it. An InvokeFunction error must not fail the manual action."""
-    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
-    mocker.patch("task_actions.NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN", "arn:fn:notify")
-    mock_lambda.invoke.side_effect = RuntimeError("Lambda unreachable")
-
-    # Must not raise
-    notify_asset_consumers_for_manual_success(
-        outlets=_OUTLETS,
-        task_name="t",
-        pipeline_name="p",
-        date="2026-01-01",
-        events_repo=events_repo,
-    )
-
-    mock_lambda.invoke.assert_called_once()
-
-
-def test_empty_outlets_skips_everything(
-    mocker, events_repo, mock_sfn, mock_lambda,
-):
-    notify_asset_consumers_for_manual_success(
-        outlets=[],
-        task_name="t",
-        pipeline_name="p",
-        date="2026-01-01",
-        events_repo=events_repo,
-    )
-
-    events_repo.put.assert_not_called()
+    warn = mocker.patch.object(task_actions.log, "warn")
+    _call(events_repo)
+    assert events_repo.write_fact.call_count == 2
     mock_sfn.start_execution.assert_not_called()
-    mock_lambda.invoke.assert_not_called()
+    warn.assert_called_once()
+
+
+def test_a_failed_fact_is_logged_and_the_rest_continue(mocker, events_repo, mock_sfn):
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
+    events_repo.write_fact.side_effect = [RuntimeError("AccessDenied"), None]
+    error = mocker.patch.object(task_actions.log, "error")
+    _call(events_repo)
+    assert events_repo.write_fact.call_count == 2
+    assert mock_sfn.start_execution.call_count == 2
+    assert error.call_args.kwargs["error"] == "AccessDenied"
+
+
+def test_a_failed_push_start_is_logged_and_does_not_raise(mocker, events_repo, mock_sfn):
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
+    mock_sfn.start_execution.side_effect = RuntimeError("Throttled")
+    error = mocker.patch.object(task_actions.log, "error")
+    _call(events_repo)
+    assert error.call_count == 2
+
+
+def test_outlets_without_a_name_are_ignored(mocker, events_repo, mock_sfn):
+    mocker.patch("task_actions.NOTIFY_ASSET_CONSUMERS_SFN_ARN", "sfn:consumers")
+    _call(events_repo, outlets=[{"uri": "s3://x"}])
+    events_repo.write_fact.assert_not_called()
+
+
+def test_empty_outlets_skip_everything(events_repo, mock_sfn):
+    _call(events_repo, outlets=[])
+    events_repo.write_fact.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()

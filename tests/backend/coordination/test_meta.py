@@ -71,8 +71,10 @@ def test_a_defect_whose_scenarios_run_has_a_probe_on_one_of_them():
 def test_probes_apply_to_their_files():
     for probe in PROBES:
         assert probe.defect in DEFECTS, probe
-        text = (REPO_ROOT / probe.path).read_text()
-        assert text.count(probe.old) == 1, f"{probe.defect}: the probe text must occur once in {probe.path}"
+        assert probe.edits, probe
+        for edit in probe.edits:
+            text = (REPO_ROOT / edit.path).read_text()
+            assert text.count(edit.old) == 1, f"{probe.defect}: an edit's text must occur once in {edit.path}"
 
 
 def test_skipped_scenarios_call_only_verbs_the_world_has():

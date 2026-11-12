@@ -45,6 +45,8 @@ def ddb():
                     {k: gsi[k] for k in ("IndexName", "KeySchema", "Projection")}
                     for gsi in props["GlobalSecondaryIndexes"]
                 ]
+            if props.get("StreamSpecification"):
+                kwargs["StreamSpecification"] = {"StreamEnabled": True, **props["StreamSpecification"]}
             resource.create_table(**kwargs)
         yield resource
 

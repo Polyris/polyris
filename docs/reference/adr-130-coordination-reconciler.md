@@ -81,7 +81,9 @@ No readiness flag, set, counter or lock is written.
 
 **Asset fact rows.** Writers:
 - the `run_task` template;
-- one helper, `write_asset_fact`, used by `mark_success` and by every other fact writer outside `run_task`.
+- one helper, `asset_events_repo.write_fact` (console DAL), used by `mark_success` and by every other fact writer outside `run_task`.
+
+A fact is keyed by `(asset_name, event_time)`. Both writers put it with `attribute_not_exists(event_time)` and retry a collision with a later time, so two facts of one asset in the same millisecond never overwrite each other: an overwrite would lose a fact and, as a `MODIFY`, never reach the INSERT-only stream mapping.
 
 Each row records:
 
@@ -234,7 +236,7 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 
 **Writers only write the fact.**
 - `run_task` keeps `Record_Asset_Event` and drops its two notify states.
-- `mark_success` and every other writer outside `run_task` call `write_asset_fact`.
+- `mark_success` and every other writer outside `run_task` call `asset_events_repo.write_fact`.
 
 #### 6.2 Task completion → `notify_dependents`
 
@@ -371,7 +373,7 @@ Targets: primary path p99 ≤ 30 s; through the sweeper ≤ 40 min.
 
 - `decide`, `asset_conditions`, `trigger_rules` and `partition_date` live in `polyris/coordination/`, under the 100% pure-logic coverage floor. `polyris/local.py` uses the same `trigger_rules`.
 - `python -m polyris.codegen.sync_coordination` emits them into `sam/lambdas/coordination/coordination_core/` **and** `sam/lambdas/console_api/coordination_core/`, with a `--check` gate in CI. The console and the Lambdas therefore always run the same code from the same platform release, independent of the SDK version pinned in `requirements.txt`.
-- One CodeUri, `sam/lambdas/coordination/`, holds three functions (`Reconcile`, `AssetFanout`, `Sweeper`), each with its own least-privilege role.
+- One CodeUri, `sam/lambdas/coordination/`, holds three functions (`Reconcile`, `AssetFanout`, `Sweeper`), each with its own role. What the reconciler needs is one managed policy (`polyris-reconcile`) that every role running it attaches; each role adds only its own needs. A test records every call the code makes and compares it with the roles.
 
 **Removed:**
 - `EvaluateDepsFunction`, `CheckAssetsFunction`, `NotifyAssetSubscribersFunction`;

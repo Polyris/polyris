@@ -120,28 +120,9 @@ def test_task_skipped_emits_skipped_status(run_task_template):
 # ───────────────────────────────────────────────────────────────────────────
 
 
-def test_suppress_asset_event_check_exists(run_task_template):
-    """Check_Has_Outlets must consider _suppress_asset_event flag, not
-    just whether outlets exist. Without this, cascade='none' lies —
-    asset events fire and downstream consumers wake up."""
-    state = run_task_template["States"]["Check_Has_Outlets"]
-    condition = state["Choices"][0]["Condition"]
-    assert "_suppress_asset_event" in condition, (
-        f"Check_Has_Outlets must read _suppress_asset_event: {condition}"
-    )
-
-
-def test_suppress_default_emits_events(run_task_template):
-    """Default behavior (no _suppress_asset_event flag) must still
-    emit asset events. Otherwise the entire system breaks for normal
-    scheduled runs."""
-    state = run_task_template["States"]["Check_Has_Outlets"]
-    condition = state["Choices"][0]["Condition"]
-    # When flag is absent, the condition resolves to true (still emit)
-    # via the `? : true` fallback
-    assert ": true" in condition or "true %}" in condition, (
-        f"Default-emit semantics broken: {condition}"
-    )
+# cascade='none' (from _suppress_asset_event) is evaluated, not string-matched,
+# in test_run_task_facts.py: the fact is recorded with cascade 'none' and starts
+# no push consumer (ADR #130 §6.1).
 
 
 # ───────────────────────────────────────────────────────────────────────────

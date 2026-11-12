@@ -86,21 +86,6 @@ def test_skip_check_default_preserves_existing_flow(template):
     )
 
 
-def test_emit_asset_events_honors_suppress_flag(template):
-    """Check_Has_Outlets must guard Emit_Asset_Events with
-    _suppress_asset_event. Regression for cascade='none' backfill
-    (ADR #57) — without this, isolated backfills would still emit
-    asset events and trigger downstream consumers."""
-    states = template["States"]
-    choice = states["Check_Has_Outlets"]
-    cond = choice["Choices"][0]["Condition"]
-    assert "_suppress_asset_event" in cond, (
-        f"Check_Has_Outlets condition must check _suppress_asset_event for cascade='none' backfill semantics: {cond}"
-    )
-    # Default must still skip to next state without emitting (existing flow)
-    assert choice["Default"] == "Check_Orchestration_Token_Success"
-
-
 def test_pause_check_still_runs_for_normal_tasks(template):
     """After the skip check, normal tasks must still hit Check_Execution_Paused
     so pause/resume semantics are preserved."""

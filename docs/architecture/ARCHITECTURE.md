@@ -170,8 +170,7 @@ Run_Task Helper SFN
      │    ├─ Save_Success ───────────► pipeline_tokens [updateItem]
      │    ├─ Emit_Task_Finished ─────► task_events [putItem]
      │    ├─ Notify_Dependents ──────► notify_dependents SFN (see Flow 3)
-     │    ├─ Emit_Asset_Events ──────► asset_events [putItem] (if outlets)
-     │    ├─ Notify_Asset_Subscribers ► Lambda (see Flow 4)
+     │    ├─ Emit_Asset_Events ──────► asset_events [putItem] (if outlets; see Flow 4)
      │    └─ Send_Pipeline_Success ──► orchestrator token (if last task)
      │
      └─ ON FAILURE:
@@ -232,25 +231,25 @@ A failed reconcile call never fails `notify_dependents`. When the wrapper's stat
 Producer task completes with outlets: [{name: "inventory"}]
      │
      ▼
-notify_asset_subscribers Lambda
-     ├─ Write asset_events [putItem] (asset_name + event_time)
-     ├─ Query asset_subscriptions (who subscribes to "inventory"?)
-     │    returns: [{dag_id: "consumer_pipeline", ...}]
+run_task Record_Asset_Event ──► asset_events [putItem, never overwrites]
+     │    one fact per outlet: partition_key (the run's date), partition_date,
+     │    granularity, cascade, event_time
      │
-     └─ For each subscriber:
-          │
-          ├─ PULL model (wait_for):
-          │    └─ reconcile Lambda (from registration and every re-check)
-          │         reads: asset_events — does a fact satisfy the run's date?
-          │         if yes → signal task ready
-          │
-          └─ PUSH model (asset_trigger on DAG → notify_asset_consumers SFN):
-               ├─ OR logic: start pipeline immediately
-               └─ AND logic:
-                    ├─ Write queued_asset_events [putItem]
-                    ├─ Check: all required assets received?
-                    └─ If all present → StartExecution (consumer pipeline)
+     ├─ PULL model (wait_for) ── asset_events stream (INSERT) ──► AssetFanout Lambda
+     │    ├─ Query dependency_subscriptions "asset:inventory" (consistent)
+     │    └─ For each waiting task: reconcile Lambda (in-process)
+     │         reads: asset_events — does a fact satisfy the run's date?
+     │         if yes → signal the task's wrapper
+     │
+     └─ PUSH model (schedule=[asset], unless cascade='none') ──► notify_asset_consumers SFN
+          ├─ OR logic: start pipeline immediately
+          └─ AND logic:
+               ├─ Write queued_asset_events [putItem]
+               ├─ Check: all required assets received?
+               └─ If all present → StartExecution (consumer pipeline)
 ```
+
+A fact's partition is the partition of the run that produced it; Mark Successful records it for the marked run's date. A task is woken only when a fact serves its own run's date (hourly and daily: that date; weekly and monthly: its period or the one before).
 
 ### Flow 5: Failure → Alerting
 
@@ -337,7 +336,8 @@ CloudFormation delete_stack
 | Task stuck in `waiting` | registration helper execution | `dependency_subscriptions` — is subscription there? |
 | Task never becomes `deps_ready` | notify_dependents execution | `pipeline_tokens` — check dep statuses |
 | Task `deps_ready` but not running | run_task helper execution | `pipeline_registry` — is pipeline paused? |
-| Asset trigger didn't fire | notify_asset_subscribers logs | `asset_events` + `asset_subscriptions` |
+| `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
+| Asset trigger didn't fire | notify_asset_consumers execution | `asset_events` + `asset_subscriptions` |
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |

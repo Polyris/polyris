@@ -127,6 +127,8 @@ class Stack:
             if props.get("GlobalSecondaryIndexes"):
                 kwargs["GlobalSecondaryIndexes"] = [{k: g[k] for k in ("IndexName", "KeySchema", "Projection")}
                                                     for g in props["GlobalSecondaryIndexes"]]
+            if props.get("StreamSpecification"):
+                kwargs["StreamSpecification"] = {"StreamEnabled": True, **props["StreamSpecification"]}
             self.ddb.create_table(**kwargs)
 
     # ── pipelines ──────────────────────────────────────────────────────

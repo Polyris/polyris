@@ -230,10 +230,9 @@ def wired(fake_env, mocker):
     # asset-events is a separate table; land its writes in the same in-memory
     # store so tests can assert on both from one place (as they did when a
     # single patched dynamodb.Table served every table name).
-    mocker.patch.object(
-        tasks_module.asset_events_repo, 'put',
-        side_effect=lambda item: fake_table.put_item(Item=item),
-    )
+    from dal.assets_repo import AssetEventsRepo
+    mocker.patch.object(AssetEventsRepo, 'table', new_callable=mocker.PropertyMock,
+                        return_value=fake_table)
     # Side effects unrelated to the chain under test — real SFN/S3 calls
     # would need a live AWS account, out of scope for this in-process test.
     mocker.patch.object(tasks_module, 'stop_task_executions')
@@ -820,13 +819,15 @@ class TestAssetEventsOnManualSuccess:
         )
         assert resp['statusCode'] == 200, resp
 
-        # Asset event recorded under the asset's name.
+        # The fact, as every writer records it (ADR #130 §1).
         asset_event = next(
             (v for k, v in fake_table.items.items() if v.get('asset_name') == 'sales/daily'), None,
         )
         assert asset_event is not None, "no asset event was recorded"
         assert asset_event['source_task'] == 'transform'
         assert asset_event['source_dag'] == 'acme-daily'
+        assert (asset_event['partition_key'], asset_event['partition_date']) == ('2026-07-24', '2026-07-24')
+        assert asset_event['fact_version'] == 2
 
         # notify_asset_consumers_via_sfn's SFN was invoked (not just the
         # orchestration send_task_success callback — a genuinely separate call).
@@ -835,6 +836,21 @@ class TestAssetEventsOnManualSuccess:
             if 'asset_name' in c.kwargs.get('input', '')
         ]
         assert len(asset_notify_calls) == 1
+
+    def test_the_fact_belongs_to_the_marked_runs_partition_not_to_today(self, wired, mocker):
+        """B-M1: marking an old run by its execution name (the request carries
+        no date, so the route's own date is today) records the fact for the
+        row's date."""
+        tasks_module, fake_table = wired
+        name = 'transform-2026-07-24--2026-07-24-0a1b2c3d'      # the real execution_name format
+        fake_table.items[name] = {**_waiting_task(), 'execution_name': name}
+        mocker.patch.object(tasks_module.pipelines_repo, 'get', return_value=self._registry_with_outlet())
+
+        resp = tasks_module.mark_success(name, {'body': json.dumps({})})
+        assert resp['statusCode'] == 200, resp
+
+        fact = next(v for v in fake_table.items.values() if v.get('asset_name') == 'sales/daily')
+        assert fact['partition_key'] == fact['execution_date'] == '2026-07-24'
 
     def test_mark_success_without_outlets_emits_nothing(self, wired):
         """No registry entry (default in `wired`) → no outlets found → the

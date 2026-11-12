@@ -5,22 +5,20 @@ and Slack routes (slack.py) to avoid code duplication.
 
 Functions:
 - notify_dependents_via_sfn: Invoke notify_dependents_helper SFN
-- notify_asset_consumers_for_manual_success: Record asset event + notify
+- notify_asset_consumers_for_manual_success: Record asset facts + start
   push-triggered consumers, for Mark Successful specifically (§7c)
 - get_terminal_statuses: Get set of terminal statuses
 - build_condition_expression_values: Build ExpressionAttributeValues for terminal check
 """
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import Dict, List, Set
 
 from config import (
     sfn,
-    lambda_client,
+    ASSET_EVENT_TTL_DAYS,
     NOTIFY_DEPENDENTS_HELPER_ARN,
     NOTIFY_ASSET_CONSUMERS_SFN_ARN,
-    NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
 )
 from constants import TASK_TERMINAL_STATUSES
 from logger import log
@@ -140,78 +138,56 @@ def notify_asset_consumers_for_manual_success(
     outlets: List[Dict],
     task_name: str,
     pipeline_name: str,
-    date: str,
+    partition_key: str,
     events_repo,
-    asset_event_ttl_days: int = 30,
+    asset_event_ttl_days: int = ASSET_EVENT_TTL_DAYS,
 ) -> None:
-    """Record asset events and notify push-triggered consumer pipelines —
-    the same two steps the wrapper's own Record_Asset_Event +
-    Notify_Asset_Consumers_SFN states perform on a normal successful
-    completion (run_task/sfn.tpl.json's Emit_Asset_Events Map), invoked here
-    for Mark Successful specifically: it's the one manual action that
-    explicitly claims real work happened (its own doc line: "work completed,
-    verified via logs/S3"), so a downstream pipeline scheduled on this asset
-    (push model, schedule=[asset]) should be told the same way a normal
-    completion would tell it. Skip/Fail/Stop correctly do not call this —
-    they make no claim that anything was actually produced.
+    """Record the facts of a task marked successful, and start its push consumers.
 
-    Best-effort per outlet: one outlet's failure (DDB or SFN) is logged and
-    does not stop the remaining outlets from being processed, matching the
-    wrapper's own per-item MaxConcurrency Map semantics where one item
-    failing fails that item, not the whole task's manual-resolution response.
+    Mark Successful is the one manual action that claims real work happened,
+    so it records each outlet's fact the way run_task's Record_Asset_Event
+    does (ADR #130 §1). The asset-events stream then wakes the tasks waiting
+    on those assets, as for any other fact. Skip, Fail and Stop record
+    nothing: they claim no output.
+
+    Best-effort per outlet: one outlet's failure is logged and does not stop
+    the others, nor the manual action's own response.
 
     Args:
-        outlets: list of dicts with at least a 'name' key (and optional
-            'uri'), as stored in the pipeline registry's dag_metadata nodes.
+        outlets: dicts with at least a 'name' key (optional 'uri' and
+            'granularity'), as stored in the pipeline registry's dag_metadata.
         task_name: the task whose outlets these are.
         pipeline_name: the owning pipeline (source_dag).
-        date: execution date (YYYY-MM-DD).
-        events_repo: the asset-events DAL repo (dal.asset_events_repo). Passed
-            in rather than imported so this shared utils module keeps no hard
-            boto3 dependency beyond what callers already have — the DAL owns
-            the table handle, so no caller needs a raw resource.
-        asset_event_ttl_days: TTL for the asset event record, matching the
-            wrapper template's own ${asset_event_ttl_days} default.
+        partition_key: the partition of the marked run — the task row's
+            ``date`` — never the day the action happens (B-M1).
+        events_repo: the asset-events DAL repo (dal.asset_events_repo).
+        asset_event_ttl_days: how long the facts live.
     """
     if not outlets:
         return
 
-    # Collect missing env vars once up-front so a mis-wired deploy logs a
-    # single actionable warning rather than one per missing ARN interleaved
-    # through the per-outlet loop.
-    missing = []
     if not NOTIFY_ASSET_CONSUMERS_SFN_ARN:
-        missing.append("NOTIFY_ASSET_CONSUMERS_SFN_ARN (push consumers)")
-    if not NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN:
-        missing.append("NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN (wait_for waiters)")
-    if missing:
-        log.warn(
-            "notify_asset_consumers_for_manual_success",
-            "Asset notification targets not configured; some consumers will not be woken",
-            missing=missing,
-        )
-
-    now = datetime.now(timezone.utc)
-    ttl = int(now.timestamp()) + (asset_event_ttl_days * 24 * 60 * 60)
+        log.warn("notify_asset_consumers_for_manual_success",
+                 "NOTIFY_ASSET_CONSUMERS_SFN_ARN is not configured; push consumers will not start")
 
     for outlet in outlets:
         asset_name = outlet.get('name')
         if not asset_name:
             continue
-        uri = outlet.get('uri', '')
 
         try:
-            events_repo.put({
-                'asset_name': asset_name,
-                'event_time': now.isoformat(),
-                'uri': uri,
-                'source_task': task_name,
-                'source_dag': pipeline_name,
-                'execution_date': date,
-                'ttl': ttl,
-            })
+            events_repo.write_fact(
+                asset_name=asset_name,
+                partition_key=partition_key,
+                granularity=outlet.get('granularity'),
+                cascade='auto',
+                source_dag=pipeline_name,
+                source_task=task_name,
+                uri=outlet.get('uri', ''),
+                ttl_days=asset_event_ttl_days,
+            )
         except Exception as e:
-            log.error("notify_asset_consumers_for_manual_success", "Failed to record asset event",
+            log.error("notify_asset_consumers_for_manual_success", "Failed to record asset fact",
                       asset_name=asset_name, task_name=task_name, error=str(e))
 
         if not NOTIFY_ASSET_CONSUMERS_SFN_ARN:
@@ -221,10 +197,10 @@ def notify_asset_consumers_for_manual_success(
             safe_asset = asset_name.replace('/', '-').replace('.', '-')[:40]
             sfn.start_execution(
                 stateMachineArn=NOTIFY_ASSET_CONSUMERS_SFN_ARN,
-                name=f"notify-asset-{safe_asset}-{date}-{exec_id}",
+                name=f"notify-asset-{safe_asset}-{partition_key}-{exec_id}",
                 input=json.dumps({
                     'asset_name': asset_name,
-                    'execution_date': date,
+                    'execution_date': partition_key,
                     'source_task': task_name,
                     'source_dag': pipeline_name,
                     'cascade_all': False,
@@ -235,31 +211,6 @@ def notify_asset_consumers_for_manual_success(
         except Exception as e:
             log.error("notify_asset_consumers_for_manual_success", "Failed to start SFN",
                       asset_name=asset_name, task_name=task_name, error=str(e))
-
-    # Wake pull-waiters (`wait_for=[asset]`). The run_task SFN invokes
-    # NotifyAssetSubscribersFunction on natural completion; mark-success is the
-    # one manual action that claims real work happened, so pull-waiters must be
-    # woken the same way push consumers are above. Single invocation with the
-    # full outlet list — the Lambda handles per-outlet subscription lookup.
-    if NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN:
-        try:
-            lambda_client.invoke(
-                FunctionName=NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN,
-                InvocationType='Event',  # fire-and-forget; subscriber wake is best-effort
-                Payload=json.dumps({
-                    'outlets': outlets,
-                    'source_task': task_name,
-                    'source_dag': pipeline_name,
-                    'event_time': now.isoformat(),
-                }).encode('utf-8'),
-            )
-            log.info("notify_asset_consumers_for_manual_success", "Invoked wait_for notifier",
-                     task_name=task_name, outlet_count=len(outlets))
-        except Exception as e:
-            log.error("notify_asset_consumers_for_manual_success", "Failed to invoke wait_for notifier",
-                      task_name=task_name, error=str(e))
-    # Missing-ARN path already flagged by the single up-front `missing` warn
-    # above; no per-call repeat here.
 
 
 def extract_pipeline_execution_short(item: Dict, execution_name: str) -> str:

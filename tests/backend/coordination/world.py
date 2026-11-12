@@ -40,10 +40,13 @@ def plain(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Clock:
+    """Time for the stack. Every reading moves it 1 ms on, as real time would between two calls."""
+
     def __init__(self, start: datetime):
         self.now = start
 
     def text(self) -> str:
+        self.now += timedelta(milliseconds=1)
         return self.now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{self.now.microsecond // 1000:03d}Z"
 
     def advance(self, **delta: float) -> None:
@@ -75,6 +78,54 @@ class Run:
         return f"{task}-{self.date}-{self.short}"
 
 
+class StreamAdapter:
+    """The asset-events stream as the event source mapping delivers it (template settings applied).
+
+    Records are read from moto's stream, filtered with the mapping's
+    FilterCriteria, and handed to the handler in batches of its BatchSize.
+    Records the handler reports as failed stay pending and are delivered again.
+    """
+
+    def __init__(self, stack: Stack):
+        import boto3
+
+        props = stack.resources["AssetEventsFanoutMapping"]["Properties"]
+        self.batch_size = int(props["BatchSize"])
+        self.patterns = [json.loads(f["Pattern"]) for f in props["FilterCriteria"]["Filters"]]
+        table = stack.tables["AssetEventsTable"]
+        self.arn = stack.ddb.describe_table(TableName=table)["Table"]["LatestStreamArn"]
+        self.streams = boto3.client("dynamodbstreams", region_name="us-east-1")
+        self.seen: set = set()
+        self.pending: List[Dict[str, Any]] = []
+
+    def _matches(self, record: Dict[str, Any]) -> bool:
+        return any(all(record.get(key) in values for key, values in pattern.items()) for pattern in self.patterns)
+
+    def _read(self) -> None:
+        for shard in self.streams.describe_stream(StreamArn=self.arn)["StreamDescription"]["Shards"]:
+            iterator = self.streams.get_shard_iterator(StreamArn=self.arn, ShardId=shard["ShardId"],
+                                                       ShardIteratorType="TRIM_HORIZON")["ShardIterator"]
+            for record in self.streams.get_records(ShardIterator=iterator)["Records"]:
+                sequence = record["dynamodb"]["SequenceNumber"]
+                if sequence not in self.seen:
+                    self.seen.add(sequence)
+                    if self._matches(record):
+                        self.pending.append({**record, "eventSourceARN": self.arn})
+
+    def deliver(self, handler: Callable[[Any, Any], Any], *, asset: Optional[str] = None) -> None:
+        self._read()
+        chosen = [r for r in self.pending
+                  if asset is None or r["dynamodb"]["NewImage"]["asset_name"]["S"] == asset]
+        held = [r for r in self.pending if r not in chosen]
+        failed: List[Dict[str, Any]] = []
+        for start in range(0, len(chosen), self.batch_size):
+            batch = chosen[start:start + self.batch_size]
+            result = handler({"Records": batch}, None)
+            ids = {f["itemIdentifier"] for f in result.get("batchItemFailures", [])}
+            failed += [r for r in batch if r["dynamodb"]["SequenceNumber"] in ids]
+        self.pending = held + failed
+
+
 class World:
     clock: Clock
     stack: Stack
@@ -95,6 +146,9 @@ class World:
         self.bindings = Bindings(self.stack, self.resource, lambda: self.clock.now)
         self.bindings.reconcile()
         self.bindings.query_subscriptions()
+        self._fanout = self.bindings.asset_fanout()
+        self._producers: Dict[str, Pipeline] = {}
+        self._stream = StreamAdapter(self.stack)
 
     def close(self) -> None:
         self.bindings.close()
@@ -160,13 +214,28 @@ class World:
 
     # ── verbs whose code paths arrive with later phases ────────────────
 
-    def write_event(self, asset: Any, partition: str, *, writer: str = "run_task") -> None:
-        """`writer` records a fact of `asset` (an Asset) for `partition`; its hint waits for deliver_hints."""
-        raise NeedsBinding("assets", f"{writer} writes a partitioned fact; its stream record waits for deliver_hints")
+    def write_event(self, asset: Any, partition: str, *, writer: str = "run_task") -> Run:
+        """`writer` records a fact of `asset` for `partition`; its hint waits for deliver_hints.
+
+        The run_task writer is the real one: a producer pipeline whose task has
+        `outlets=[asset]` runs for the partition and succeeds.
+        """
+        if writer != "run_task":
+            raise NeedsBinding("operations", f"the {writer} writer")
+        from dags import pipeline
+
+        producer = self._producers.get(asset.name)
+        if producer is None:
+            safe = "".join(c if c.isalnum() else "_" for c in asset.name)
+            producer = self._producers[asset.name] = self.deploy(pipeline(f"producer_{safe}", [("build", {"outlets": [asset]})]))
+        run = self.start_run(producer, partition)
+        self.complete(run, "build")
+        return run
 
     def deliver_hints(self, asset: Any = None) -> None:
-        """Deliver the pending stream records, all of them or `asset`'s only."""
-        raise NeedsBinding("assets", "asset-events stream → AssetFanout")
+        """Deliver the stream records not yet delivered — all of them, or `asset`'s only."""
+        self._stream.deliver(self._fanout, asset=None if asset is None else asset.name)
+        self.settle()
 
     def pause(self, run: Run) -> None:
         raise NeedsBinding("operations", "pause through the console route")
@@ -210,7 +279,9 @@ class World:
                 left[0] -= 1
             raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, operation)
 
-        self.ddb.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
+        # Both clients: the interpreter's (state-machine integrations) and the Lambdas'.
+        for client in (self.ddb, self.resource.meta.client):
+            client.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
 
     # ── observations ───────────────────────────────────────────────────
 

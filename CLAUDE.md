@@ -457,7 +457,7 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | `api_tokens_repo` | `api-tokens` | `token_id` | — | `hash-index`, `owner-index` |
 
 **Two separate subscription tables, split by semantics (not by consumer):**
-- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Holds BOTH task-to-task deps within a pipeline (`dependency_key = "{upstream}-{pipeline_exec_short}"`) AND `wait_for=[asset]` subscriptions (`dependency_key = "asset:{name}"`, `subscriber = "{task}"`). One schema, one semantic shape ("X is waiting on Y"). Readers: `query_subscriptions`, `notify_asset_subscribers`, `check_assets`. Writers: `registration` SFN (task deps), `check_assets` Lambda (writes `wait_for` subscriptions), `notify_asset_subscribers` Lambda (deletes rows after `SendTaskSuccess`).
+- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5): a task dependency (`dependency_key = "{upstream}-{pipeline_execution_short}"`) or a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name` and no token. Writer: the registration SFN. Readers: `query_subscriptions` (for `notify_dependents`) and `AssetFanout`, both consistent. The reconciler deletes a task's pointers after its signal was accepted (Principle #40).
 - `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Holds push-trigger subscriptions only (`schedule=[asset]`). One subscription per (asset, consumer pipeline). Reader: `notify_asset_consumers` SFN's `Query_Subscriptions` state. Writer: `polyris-deploy` (deploy-time registration).
 
 The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while dep/wait_for subscriptions are per-(upstream, subscriber-task-execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
@@ -552,6 +552,7 @@ In `template.yaml`, always verify:
 | `check-assets` | Asset freshness checks + `wait_for` subscription writes | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `notify-asset-subscribers` | Wake `wait_for` tasks on asset events | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
+| `asset-fanout` | Read the `asset-events` stream (INSERT only) and reconcile every task waiting on the new fact's asset (ADR #130 §6.1) | the same as `reconcile` |
 | `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `evaluate_deps`, `notify_asset_subscribers`, `check_assets`, `query_subscriptions`, `ui_bootstrap` still use bare `print()` — migrate opportunistically.

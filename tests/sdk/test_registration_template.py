@@ -6,39 +6,26 @@ evaluated here with jsonata-python and compared with the Python code they
 must agree with. tests/backend/coordination runs the whole template.
 """
 
-import hashlib
 import json
-import re
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import timedelta
 
 import pytest
+from sfn_jsonata import NOW, evaluate, load_template
 
 from polyris.coordination import attention, wake
 from polyris.coordination.times import format_utc
 
-TEMPLATE_PATH = (
-    Path(__file__).parent.parent.parent
-    / "sam" / "sfn_templates" / "helpers" / "registration" / "sfn.tpl.json"
-)
-NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
 TRANSIENT = {"Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException",
              "Lambda.TooManyRequestsException", wake.TRANSIENT_ERROR}
 
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    return json.loads(re.sub(r"\$\{[^}]+\}", "0", TEMPLATE_PATH.read_text()))
+    return load_template("helpers/registration/sfn.tpl.json")
 
 
 def _evaluate(expression: str, states_input: dict):
-    jsonata = pytest.importorskip("jsonata")
-    compiled = jsonata.Jsonata(expression.strip()[2:-2])
-    compiled.assign("states", {"input": states_input})
-    compiled.register_lambda("now", lambda: format_utc(NOW))
-    compiled.register_lambda("hash", lambda text, alg: hashlib.new(alg.replace("-", "").lower(),
-                                                                    str(text).encode()).hexdigest())
-    return compiled.evaluate(None)
+    return evaluate(expression, input=states_input)
 
 
 def test_no_orphan_states(template):

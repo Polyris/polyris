@@ -1,5 +1,18 @@
 ## Unreleased
 
+### Changed — asset facts carry their partition; a stream wakes `wait_for` tasks (ADR #130)
+
+- `run_task` and Mark Successful record each outlet's fact with `partition_key` (the producing run's date), `partition_date`, `granularity`, `cascade` and `fact_version`. A task waiting on the asset is woken only by a fact that serves its own run's date, so a backfill for an old date no longer runs on today's fact.
+- A new `asset-fanout` function reads the `asset-events` stream (new facts only) and asks the reconciler about every task waiting on the fact's asset. Writers no longer call a notifier: `run_task`'s `Notify_Asset_Subscribers` step and the console's invoke of `NotifyAssetSubscribersFunction` are gone.
+- A `cascade='none'` backfill records its facts too; it still starts no push consumer.
+- A failed `notify_dependents` no longer fails the producing task: it writes a warning, and the dependants are re-checked later.
+
+### Fixed — asset facts lost or misdated (ADR #130)
+
+- Mark Successful recorded its fact for the day of the action, or the request's date, instead of the marked run's partition (B-M1).
+- Two facts of one asset written in the same millisecond (likely in a parallel backfill) overwrote each other. Both writers now refuse to overwrite and retry with a later time.
+- Facts from Mark Successful expired after 30 days, those from `run_task` after 365; both now keep 365.
+
 ### Changed — task dependencies are decided by the reconciler (ADR #130)
 
 - Registration saves the task row, signals a task without dependencies at once, and otherwise writes the run's subscriptions and calls `reconcile`. A subscription is a per-run pointer: its subscriber is the waiting task's `execution_name`, and it carries no task token.
