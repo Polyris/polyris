@@ -8,11 +8,16 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 1.0.1 · **Next milestone:** consolidate paid-integration language out of OSS docs (#24)
+**Version:** 1.1.4 · **Next milestone:** v1.2.0, the coordination reconciler (ADR #130)
 
 ## In flight
 
-- Nothing. The v0.93.1 gap-closing pass is complete and green.
+- **Coordination reconciler** (`docs/reference/adr-130-coordination-reconciler.md`), on
+  `feat/coordination-reconciler`, ships as v1.2.0 in one delivery. Done: `reconcile` and
+  `asset-fanout` decide readiness from facts; registration, `notify_dependents`, asset facts
+  and asset-scheduled pipelines are wired to them; the old coordination Lambdas, the push
+  state machine and the AND-queue table are gone. Next: pause, resume and restart from
+  facts, the sweeper and the engine-health banner; then docs, reviews and a live deploy.
 
 ## Decided, not done
 
@@ -27,10 +32,6 @@ Update it when something moves. Paths here are checked by
   fixing it changes that function's contract.
 ## Known debt, measured
 
-- **Coverage omit list is still too wide.** `polyris/register.py` only has
-  `get_sfn_client` touching boto3; the rest is pure logic sitting unmeasured behind
-  an "AWS/CLI" exemption. The fix shape is to split the AWS call out and measure the
-  remainder — as was done for `polyris/output.py`, `polyris/init.py`, and `polyris/local.py`.
 - **npm audit: 3 high, 0 critical** — `next`, `postcss`, `sharp`. All unreachable
   under `output: 'export'`; reasoning recorded in `SECURITY.md`. No patched
   `next` 16.2.x exists.

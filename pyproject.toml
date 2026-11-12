@@ -158,7 +158,6 @@ omit = [
     # check-sfn-templates / check-backfill-parity in ci.yml) against the real
     # tree, which is the check that actually matters.
     "polyris/codegen/check_sfn_templates.py",
-    "polyris/codegen/check_shared_constants.py",
     "polyris/codegen/check_backfill_status_parity.py",
     "polyris/__init__.py",
     "polyris/*/__init__.py",

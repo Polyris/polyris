@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Changed — tooling: a lighter Stop hook
+
+- The Stop hook runs `scripts/verify-changed.sh --hook`. It does nothing when the checkout is unchanged since the last green run, from any session, so a second session no longer re-runs the whole gate on the first one's work at every stop. It skips the coverage floor and the UI build; a run without flags, `--full` and CI keep both. Every mode waits for a run already going on the checkout instead of starting a second one.
+
 ### Fixed — long task ids no longer collide across runs (ADR #130 §6.6)
 
 - A task's wrapper execution is named `{task id}-{date}-{run suffix}`, at most 80 characters. A task id over 57 characters used to have the date and the run suffix cut off, so its runs on different dates collided (`ExecutionAlreadyExists`), and so did two long ids that differ only at the end. Now a long id keeps a prefix plus a hash of the whole id, and the date and the suffix are always kept. Generation fails if two task ids of one pipeline would still share a name. Redeploy a pipeline to apply it.
