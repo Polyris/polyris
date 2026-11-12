@@ -22,7 +22,9 @@ TEMPLATE_BODY_LIMIT = 51_200
 # A FAILED change set with one of these reasons just means "nothing to do".
 _NO_CHANGES_MARKERS = ("didn't contain changes", "No updates are to be performed")
 
-STACK_WAIT = {"Delay": 10, "MaxAttempts": 360}  # up to an hour, like the console
+# Stack waiters: poll every 10 s for up to an hour, like the console.
+STACK_WAIT_DELAY_S = 10
+STACK_WAIT_MAX_ATTEMPTS = 360
 _CHANGE_SET_MAX_WAIT_S = 600
 
 
@@ -134,12 +136,25 @@ def create_change_set(
         waited += poll_interval
 
 
+def wait_for_stack(cfn, *, stack_name: str, waiter: str) -> None:
+    """Block until a stack operation settles. Raises botocore's WaiterError on failure.
+
+    The one place stacks are waited on. The WaiterConfig is a literal at the
+    call so it type-checks against boto3-stubs' WaiterConfigTypeDef (a TypedDict;
+    a plain ``dict[str, int]`` constant doesn't).
+    """
+    cfn.get_waiter(waiter).wait(
+        StackName=stack_name,
+        WaiterConfig={"Delay": STACK_WAIT_DELAY_S, "MaxAttempts": STACK_WAIT_MAX_ATTEMPTS},
+    )
+
+
 def execute_change_set(cfn, *, stack_name: str, change_set: Dict[str, Any]) -> None:
     """Execute a ready change set and block until the stack settles."""
     cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"])
     waiter_name = "stack_create_complete" if change_set.get("ChangeSetType") == "CREATE" else "stack_update_complete"
     try:
-        cfn.get_waiter(waiter_name).wait(StackName=stack_name, WaiterConfig=STACK_WAIT)
+        wait_for_stack(cfn, stack_name=stack_name, waiter=waiter_name)
     except WaiterError as e:
         raise ChangeSetError(
             f"Stack {stack_name} did not finish: {e}. The events above (or the CloudFormation console) "

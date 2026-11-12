@@ -34,7 +34,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import boto3
 from botocore.exceptions import (
@@ -937,7 +937,7 @@ def deploy_pipeline(
     if dag.schedule and not dag.is_asset_triggered:
         schedule_name = f"{stack_name}-schedule"
         scheduler_client = session.client("scheduler")
-        desired_state = "DISABLED" if dag.is_paused_upon_creation else "ENABLED"
+        desired_state: Literal["DISABLED", "ENABLED"] = "DISABLED" if dag.is_paused_upon_creation else "ENABLED"
         try:
             # EventBridge Scheduler's update_schedule is a full replace, not a
             # toggle — fetch the schedule CFN just deployed and resubmit it

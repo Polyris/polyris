@@ -409,7 +409,7 @@ cd ui && npm ci && npm run build && ./deploy.sh <stack> <region> --profile <prof
 cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 ```
 
-**Release contract (ADR #131).** Every `v*` tag must publish `polyris-platform-vX.Y.Z.zip` (`.github/workflows/release.yml` → `scripts/build_platform_release.py`); `polyris-up` downloads the one matching `polyris.__version__`. The archive layout lives in `polyris/platform.py` (`Manifest`), imported by both sides — change it there, and bump `MANIFEST_FORMAT` if an older `polyris-up` can't read the new layout. A new `AWS::Serverless::Function` or `AWS::Serverless::StateMachine` with a local `CodeUri` / `DefinitionUri` is picked up automatically. Any other `AWS::Serverless::*` local path (`CodeUri`, `ContentUri`, `DefinitionUri` — e.g. a layer) fails `rewrite_template`, and with it the PR's *Platform archive* CI job, until `scripts/build_platform_release.py` packages it.
+**Release contract (ADR #131).** Every `v*` tag must publish `polyris-platform-vX.Y.Z.zip` (`.github/workflows/release.yml` → `scripts/build_platform_release.py`). CI owns the GitHub Release: draft → attach assets → publish, never the other way round — the repo keeps *Immutable releases* on, so a release published before its assets can never get them; `polyris-up` downloads the one matching `polyris.__version__`. The archive layout lives in `polyris/platform.py` (`Manifest`), imported by both sides — change it there, and bump `MANIFEST_FORMAT` if an older `polyris-up` can't read the new layout. A new `AWS::Serverless::Function` or `AWS::Serverless::StateMachine` with a local `CodeUri` / `DefinitionUri` is picked up automatically. Any other `AWS::Serverless::*` local path (`CodeUri`, `ContentUri`, `DefinitionUri` — e.g. a layer) fails `rewrite_template`, and with it the PR's *Platform archive* CI job, until `scripts/build_platform_release.py` packages it.
 
 **Neither `polyris-up` nor `polyris-deploy` may shell out to the `aws` / `sam` CLIs** — deploys go through `polyris/cfn_changeset.py` (boto3 change sets). The user-side promise is "Python and AWS credentials".
 
@@ -740,6 +740,7 @@ make test-cov
 
 **Test rules:**
 - pytest-mock (`mocker` fixture) everywhere — no `unittest.mock` import at all, including `MagicMock` as a bare object factory (use `mocker.MagicMock`)
+- SDK tests are hermetic: `tests/sdk/conftest.py` clears `AWS_*` / `POLYRIS_*` variables and points the AWS config files at an empty place before every test. A test that needs a profile, region or stage sets it with `monkeypatch`. Never rely on the developer's shell or `~/.aws` — the v1.1.4 release gate failed on a leftover `AWS_PROFILE`.
 - Backend tests in `tests/backend/`, SDK tests in `tests/sdk/`
 - **Every Lambda test suite runs in CI.** The `lambdas` job in `ci.yml` lists each suite as its own step, and `make test-lambdas` runs the same suites locally. A Lambda with `tests/` or `test_*.py` needs both, or its tests silently never run; `tests/sdk/test_ci_runs_every_lambda_suite.py` fails until it has them.
 - Coverage floor is a ratchet — raise the floor when you raise coverage (#22)

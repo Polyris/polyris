@@ -53,6 +53,22 @@
 - CI and `make test-lambdas` now run the `query_subscriptions` and `bucket_cleanup` Lambda tests, which neither ran before, and the new `coordination` suite. `tests/sdk/test_ci_runs_every_lambda_suite.py` fails when a Lambda's tests are missing from either.
 - `cors_response` serialises Python `set`/`frozenset` values (DynamoDB string sets) as sorted JSON arrays, not as their Python repr, which is not valid JSON. Covered by `test_response.py`.
 
+### Changed — CI publishes each release, assets first
+
+- `.github/workflows/release.yml` now creates the GitHub Release as a draft,
+  attaches the platform archive, its `.sha256` and `install.sh`, and only
+  then publishes it. `scripts/release.sh` stops after pushing the tag. A
+  published release is never missing its assets, and the repo can keep
+  GitHub's *Immutable releases* on so nobody can swap the archive
+  `polyris-up` deploys (see `docs/deployment/RELEASE.md`).
+
+### Fixed — `make check` failed with boto3-stubs installed
+
+- mypy with boto3-stubs rejected the stack waiter config in `polyris-down`,
+  which stopped `release.sh full v1.1.4`. Stack waits now go through
+  `cfn_changeset.wait_for_stack`, and the dev extra installs boto3-stubs for
+  every service the SDK calls, so CI type-checks as strictly.
+
 ### Added — install with `polyris-up`: Python and AWS credentials only
 
 - New `polyris-up` installs or upgrades the platform from the prebuilt release
