@@ -21,7 +21,7 @@ JSONata dialect (the live smoke and TestState runs cover it), quotas.
 
 from __future__ import annotations
 
-import copy
+import decimal
 import hashlib
 import itertools
 import json
@@ -47,6 +47,12 @@ class StatesError(Exception):
 
 def client_error(code: str, operation: str, message: str = "") -> ClientError:
     return ClientError({"Error": {"Code": code, "Message": message or code}}, operation)
+
+
+def _lambda_json(value: Any) -> Any:
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
 
 
 def matches(error: str, names: List[str]) -> bool:
@@ -513,9 +519,14 @@ class Runtime:
         if handler is None:
             raise StatesError("Lambda.ResourceNotFoundException", f"no in-process handler for {name}")
         try:
-            return handler(copy.deepcopy(payload), None)
+            result = handler(json.loads(json.dumps(payload)), None)
         except Exception as exc:   # noqa: BLE001 — a Lambda error reaches the state under its error type
             raise StatesError(type(exc).__name__, json.dumps({"errorMessage": str(exc)})) from exc
+        try:
+            # The Lambda runtime returns JSON; like its marshaller, numbers from DynamoDB become floats.
+            return json.loads(json.dumps(result, default=_lambda_json))
+        except TypeError as exc:
+            raise StatesError("Runtime.MarshalError", str(exc)) from exc
 
     def _start_child(self, frame: Frame, resource: str, arguments: Dict[str, Any], *, waits: bool) -> Any:
         machine_arn = arguments["StateMachineArn"]

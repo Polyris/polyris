@@ -111,7 +111,7 @@ The write is conditional (`attribute_not_exists(event_time)`, retried with a fre
 |---|---|
 | → `waiting` (row created) | registration `Save_Task_Record` |
 | `waiting` → `waiting_paused` (dependencies satisfied, pipeline paused) | reconciler (§3) |
-| `waiting`/`waiting_paused` → `deps_ready`, `skipped` (+ `skip_origin='rule'`, `finished_at`, `reason`), `upstream_failed` | **the wrapper**, after it receives the signal (§6.4) |
+| `waiting`/`waiting_paused` → `deps_ready`, `skipped` (+ `skip_origin='rule'`, `skip_reason`, `finished_at`), `upstream_failed` | **the wrapper**, after it receives the signal (§6.4) |
 | → `failed` (task failures, including coordination errors) | wrapper → failure handler, which never overwrites `upstream_failed` |
 | `waiting` → `aborted` (zombie: wrapper no longer running), or → `skipped` (a pre-upgrade wrapper consumed a skip signal) | reconciler (§3, step 3) |
 | `waiting_delay`, `waiting_decision`, `running`, terminal statuses, `pause_token` rows | wrapper / `run_task` / `pause_waiter` / console actions, as today |
@@ -257,7 +257,7 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 3. **Everything else:** write all subscriptions in one Map, then call `reconcile(execution_name)` with `Retry`.
 4. **Failures in the registration SFN are caught.**
    - **Transient** means Lambda throttling or service errors, or the reconciler's own `CoordinationTransient`. Everything else is **non-transient**.
-   - **`Save_Task_Record` fails** after its `Retry`: there is no row for the sweeper to find, so the failure is always sent as `SendTaskFailure(wait_token, error="CoordinationError", cause)`. The failure handler then writes the `failed` row even when none exists yet, with a `PutItem` of a minimal row instead of an update conditional on `attribute_exists`.
+   - **`Save_Task_Record` fails** after its `Retry`: there is no row for the sweeper to find, so the failure is always sent as `SendTaskFailure(wait_token, error="CoordinationError", cause)`. The failure handler then writes the `failed` row even when none exists yet: its update also sets the task's identity fields (`task_name`, `pipeline_execution`, `date`, ...) when they are missing, instead of being conditional on `attribute_exists`, so the failure appears in its run.
    - **Any later step fails non-transiently:** `SendTaskFailure(wait_token, error="CoordinationError", cause)`. The task fails loudly with the reason instead of hanging (B-G1).
    - **Any later step fails transiently** after `Retry`: registration ends quietly with `attention_at = now`. The row is already saved, so nothing is lost. The sweeper reconciles it within one run.
 
@@ -270,8 +270,8 @@ After `Wait_For_Dependencies` resumes:
 | Signal | Wrapper action |
 |---|---|
 | `deps_ready` | `SET status = deps_ready REMOVE wait_token, attention, attention_at IF status IN (:waiting, :waiting_paused) AND wrapper_execution_arn = :self` |
-| `deps_skip` | the same with `skipped`, `skip_origin='rule'`, `finished_at` and `reason`, **before** notifying dependants |
-| `deps_blocked` | the same with `upstream_failed` and `reason`, then the failure handler as today, which leaves `upstream_failed` rows alone |
+| `deps_skip` | the same with `skipped`, `skip_origin='rule'`, `skip_reason` and `finished_at`, **before** notifying dependants |
+| `deps_blocked` | the same with `upstream_failed`, its reason in `error`, and `finished_at`; then the failure handler as today, which leaves `upstream_failed` rows alone |
 
 If the condition fails, another owner has already moved the task. Example: an operator's skip or success, which writes the status before it stops the wrapper. The wrapper then ends quietly as *superseded*: it does not run the task and raises no failure. A failure of the write itself, as opposed to its condition, fails the wrapper visibly.
 

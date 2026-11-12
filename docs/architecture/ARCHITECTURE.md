@@ -125,21 +125,24 @@ Orchestrator SFN (pipeline-level)
 ┌─────────────────────────────────────────────────────────────────┐
 │  Dependency Wrapper SFN (one per task)                          │
 │                                                                 │
-│  1. Emit_Wrapper_Started ──────► pipeline_tokens [putItem]      │
+│  1. Emit_Wrapper_Started ──────► task_events [putItem]          │
 │  2. Wait_For_Dependencies ─────► Registration Helper SFN        │
 │     │                              │                            │
 │     │    ┌─────────────────────────┘                            │
 │     │    │  a. Save_Task_Record ───► pipeline_tokens [putItem]  │
-│     │    │  b. Write subscriptions ► dependency_subscriptions    │
-│     │    │  c. Check if deps done ─► evaluate_deps Lambda       │
-│     │    │  d. If ready: signal ───► SendTaskSuccess (token)    │
+│     │    │  b. root task: signal ──► SendTaskSuccess (token)    │
+│     │    │  c. otherwise: subscriptions ► dependency_subscriptions │
+│     │    │     then reconcile Lambda (decides, signals if ready) │
 │     │    └─────────────────────────────────────────────────     │
 │     │                                                           │
-│  3. Emit_Deps_Ready ──────────► pipeline_tokens [putItem]       │
+│  3. Claim_Deps_Ready ─────────► pipeline_tokens [updateItem]    │
+│     (the wrapper writes the status that follows the signal)     │
 │  4. Run_Task Helper SFN ──────► (see Flow 2)                    │
 │  5. Handle_Failure (if error) ► failure_handler SFN             │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+Every registration failure is caught: a lost row or a non-transient error fails the task with its cause (`CoordinationError`); a transient one leaves the saved row due for the next check.
 
 ### Flow 2: Task Execution (run_task Helper)
 
@@ -184,7 +187,7 @@ Run_Task Helper SFN
 
 ### Flow 3: Dependency Notification Chain
 
-This is the core of "how does task B know that task A finished?"
+This is the core of "how does task B know that task A finished?" (ADR #130).
 
 ```
 Task A completes (success or failed)
@@ -193,38 +196,35 @@ Task A completes (success or failed)
 notify_dependents SFN
      │
      ├─ Query_Subscriptions ─────► query_subscriptions Lambda
-     │    └─ reads ──────────────► dependency_subscriptions table
-     │       query: task_name + pipeline_execution_short
-     │       returns: list of subscribers [{task_name, wait_token, ...}]
+     │    └─ consistent read ────► dependency_subscriptions table
+     │       key: {task A}-{pipeline_execution_short}
+     │       returns: subscribers — each a waiting task's execution_name
      │
      ├─ Has_Subscribers? ── no ──► Done (no one waiting)
      │
-     └─ yes ► Process_Subscribers (Map, concurrency=10)
+     └─ yes ► Reconcile_Subscribers (Map, concurrency=10)
               │
-              for each subscriber:
+              for each subscriber: reconcile Lambda
+              │    reads (consistent): the task row, its dependency rows,
+              │      its wait_for assets, the pause flag
+              │    applies the trigger rule (5 rules — ADR #117)
               │
-              ├─ Get_Subscriber_Record ──► pipeline_tokens [getItem]
-              │    (get full record: deps, trigger_rule, wait_token)
+              ├─ ready ──────────► SendTaskSuccess({signal: 'deps_ready'})
+              │    └─ wrapper writes deps_ready, then runs the task
               │
-              ├─ evaluate_deps Lambda
-              │    input: dependencies[], trigger_rule, date, execution
-              │    reads: pipeline_tokens [BatchGetItem] — all dep statuses
-              │    reads: pipeline_tokens [BatchGetItem] — skip_origin, only if a dep is skipped
-              │    logic: apply trigger_rule (5 rules — ADR #117)
-              │    output: {is_ready, is_blocked, verdict, reason, dep_statuses}
+              ├─ skip ───────────► SendTaskSuccess({signal: 'deps_skip'})
+              │    └─ wrapper writes 'skipped' (skip_origin='rule'), then
+              │       notifies its own dependants; the run stays 'success' (ADR #115)
               │
-              ├─ If is_ready ────► SendTaskSuccess(wait_token)
-              │    └─ wrapper resumes at step 3 (Emit_Deps_Ready)
+              ├─ upstream_failed ► SendTaskSuccess({signal: 'deps_blocked'})
+              │    └─ wrapper writes 'upstream_failed', then the failure path
               │
-              ├─ If verdict='skip' ──► SendTaskSuccess({signal: 'deps_skip'})
-              │    └─ wrapper resolves 'skipped', run stays 'success' (ADR #115) —
-              │       the rule's condition never occurred; not an error
+              ├─ paused ─────────► status waiting_paused (resume wakes it)
               │
-              ├─ If verdict='upstream_failed' ──► SendTaskSuccess({signal: 'deps_blocked'})
-              │    └─ wrapper goes to Emit_Deps_Blocked → failure path → resolves 'upstream_failed'
-              │
-              └─ Otherwise ──────► skip (still waiting for other deps)
+              └─ wait ───────────► nothing (still waiting for other conditions)
 ```
+
+A failed reconcile call never fails `notify_dependents`. When the wrapper's status write finds the task already moved by someone else (an operator's skip or success), the wrapper ends without running the task.
 
 ### Flow 4: Asset-Based Cross-Pipeline Triggers
 
@@ -240,8 +240,8 @@ notify_asset_subscribers Lambda
      └─ For each subscriber:
           │
           ├─ PULL model (wait_for):
-          │    └─ check_assets Lambda (called from registration helper)
-          │         reads: asset_events — is asset fresh enough?
+          │    └─ reconcile Lambda (from registration and every re-check)
+          │         reads: asset_events — does a fact satisfy the run's date?
           │         if yes → signal task ready
           │
           └─ PUSH model (asset_trigger on DAG → notify_asset_consumers SFN):
@@ -341,7 +341,7 @@ CloudFormation delete_stack
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
-| Wrong trigger_rule result | evaluate_deps Lambda logs | Check `dep_statuses` + `trigger_rule` in log |
+| Wrong trigger_rule result | reconcile Lambda logs | `verdict`, `reasons` and `deps` in the line for the task's `execution_name` |
 
 ---
 
@@ -416,7 +416,7 @@ of these in every state reachable under the intervention-first model, ADR #114, 
 could never fire at all — see `docs/features/DSL.md#trigger-rules`).
 
 A blocked rule (all deps terminal, condition not satisfied) resolves one of
-two ways via `evaluate_deps`'s `verdict` field (ADR #115). `upstream_failed`
+two ways via the reconciler's verdict (ADR #115, ADR #130). `upstream_failed`
 fires when a success/no-failure-requiring rule is blocked by a genuine
 failure. `skip` fires when the condition never occurred — the task resolves
 `skipped`, the run stays `success`, no error.
@@ -603,10 +603,10 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 
 ### Task stuck in "waiting"
 
-1. Check **Dependencies** tab in task modal - are upstreams complete?
-2. Check **Subscriptions** in DynamoDB - is subscription created?
-3. Check **notify_dependents_helper** execution - did it run?
-4. Check **wait_token** - is it valid?
+1. Check the **Dependencies** tab in the task modal — are the upstreams complete?
+2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting.
+3. Check `dependency_subscriptions`: one row per dependency, key `{upstream}-{pipeline_execution_short}`, subscriber = the task's `execution_name`.
+4. Check the upstream's **notify_dependents** execution — did it run?
 
 ### Task stuck in "waiting_delay"
 

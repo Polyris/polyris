@@ -5,5 +5,5 @@ BOUND_STAGES and is skipped until then. test_meta.py rejects a marker that
 names a bound stage, so markers are removed as their code lands.
 """
 
-STAGES = ("core", "wiring", "operations", "sweeper")
-BOUND_STAGES = frozenset({"core"})
+STAGES = ("core", "task-deps", "assets", "push", "operations", "sweeper")
+BOUND_STAGES = frozenset({"core", "task-deps"})

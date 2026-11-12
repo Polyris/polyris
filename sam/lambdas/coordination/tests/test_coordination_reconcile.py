@@ -460,6 +460,27 @@ def test_the_wrapper_routes_every_signal_the_reconciler_sends():
     assert "$res.signal" in json.dumps(wait["Assign"]) and "$res.reason" in json.dumps(wait["Assign"])
 
 
+def _fields(update_expression):
+    """{"SET": {...}, "REMOVE": {...}} attribute names of an UpdateExpression (#names resolved by the caller)."""
+    parts = re.split(r"\b(SET|REMOVE)\b", update_expression)
+    found = {}
+    for keyword, body in zip(parts[1::2], parts[2::2]):
+        found[keyword] = {clause.split("=")[0].strip() for clause in body.split(",") if clause.strip()}
+    return found
+
+
+def test_a_skip_closed_by_the_reconciler_has_the_shape_the_wrapper_writes(reconciler, tokens, sfn):
+    claim = _state(_sfn("dependency_wrapper/sfn.tpl.json")["States"], "Claim_Skipped")["Arguments"]
+    names = claim["ExpressionAttributeNames"]
+    fields = {k: {names.get(f, f) for f in v} for k, v in _fields(claim["UpdateExpression"]).items()}
+    tokens.put_item(Item=task_row("extract", status="skipped", skip_origin="rule"))
+    _dead(tokens, sfn, "SUCCEEDED", dependencies=json.dumps(["extract"]))
+    reconciler.reconcile(LOAD, source="sweeper")
+    stored = row(tokens)
+    assert fields["SET"] <= set(stored), sorted(fields["SET"] - set(stored))
+    assert not fields["REMOVE"] & set(stored), sorted(fields["REMOVE"] & set(stored))
+
+
 def test_coordination_error_fails_the_task_instead_of_re_registering():
     wait = _state(_sfn("dependency_wrapper/sfn.tpl.json")["States"], "Wait_For_Dependencies")
     retried = {e for r in wait["Retry"] for e in r["ErrorEquals"]}

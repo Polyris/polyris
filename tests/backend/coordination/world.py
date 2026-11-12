@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
+from bindings import Bindings
 from platform_stack import Stack
 from sfn_runtime import ACCOUNT, REGION, Execution
 
@@ -79,13 +80,24 @@ class World:
     stack: Stack
     runtime: Any
     ddb: Any
+    resource: Any
+    bindings: Bindings
 
     def __init__(self, ddb_client: Any, *, start: Optional[datetime] = None):
+        import boto3
+
         self.clock = Clock(start or datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc))
         self.stack = Stack(ddb_client, now=self.clock.text)
         self.runtime = self.stack.runtime
         self.ddb = ddb_client
+        self.resource = boto3.resource("dynamodb", region_name="us-east-1")
         self._run_ids = itertools.count(0xABCD0000)
+        self.bindings = Bindings(self.stack, self.resource, lambda: self.clock.now)
+        self.bindings.reconcile()
+        self.bindings.query_subscriptions()
+
+    def close(self) -> None:
+        self.bindings.close()
 
     # ── setup ──────────────────────────────────────────────────────────
 
@@ -150,11 +162,11 @@ class World:
 
     def write_event(self, asset: Any, partition: str, *, writer: str = "run_task") -> None:
         """`writer` records a fact of `asset` (an Asset) for `partition`; its hint waits for deliver_hints."""
-        raise NeedsBinding("wiring", f"{writer} writes a partitioned fact; its stream record waits for deliver_hints")
+        raise NeedsBinding("assets", f"{writer} writes a partitioned fact; its stream record waits for deliver_hints")
 
     def deliver_hints(self, asset: Any = None) -> None:
         """Deliver the pending stream records, all of them or `asset`'s only."""
-        raise NeedsBinding("wiring", "asset-events stream → AssetFanout")
+        raise NeedsBinding("assets", "asset-events stream → AssetFanout")
 
     def pause(self, run: Run) -> None:
         raise NeedsBinding("operations", "pause through the console route")
@@ -169,13 +181,13 @@ class World:
         raise NeedsBinding("sweeper", "the sweeper")
 
     def mark_success(self, run: Run, task: str) -> None:
-        raise NeedsBinding("wiring", "the console's mark_success writes the fact for the run's partition")
+        raise NeedsBinding("assets", "the console's mark_success writes the fact for the run's partition")
 
     def skip(self, run: Run, task: str) -> None:
         raise NeedsBinding("operations", "the console's skip while the wrapper waits")
 
     def push_runs(self, pipeline: Pipeline) -> List[Run]:
-        raise NeedsBinding("wiring", "push triggers through AssetFanout")
+        raise NeedsBinding("push", "push triggers through AssetFanout")
 
     # ── faults ─────────────────────────────────────────────────────────
 

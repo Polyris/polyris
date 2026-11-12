@@ -44,4 +44,8 @@ def world():
     from world import World
 
     with mock_aws():
-        yield World(boto3.client("dynamodb", region_name="us-east-1"))
+        built = World(boto3.client("dynamodb", region_name="us-east-1"))
+        try:
+            yield built
+        finally:
+            built.close()

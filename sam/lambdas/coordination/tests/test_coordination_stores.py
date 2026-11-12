@@ -211,6 +211,12 @@ def test_transient_classification(exc, transient):
     assert failures.is_transient(exc) is transient
 
 
+def test_the_transient_error_keeps_the_name_the_state_machines_retry_on():
+    from coordination_core import wake
+
+    assert failures.CoordinationTransient.__name__ == wake.TRANSIENT_ERROR
+
+
 def test_non_aws_errors_have_no_code_and_are_not_re_raised():
     assert failures.error_code(ValueError("x")) == ""
     failures.reraise_transient(ValueError("x"))     # no exception

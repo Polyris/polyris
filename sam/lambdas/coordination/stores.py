@@ -115,7 +115,8 @@ class TaskStore:
             names["#e"] = "error"   # DynamoDB rejects unused expression names
         return _conditional(lambda: self.table.update_item(
             Key={"execution_name": execution_name},
-            UpdateExpression=update + " REMOVE #att, #due",
+            # The same shape as the wrapper's own post-wait writes (Claim_* states).
+            UpdateExpression=update + " REMOVE wait_token, #att, #due",
             ConditionExpression="wait_token = :t AND started_at = :s AND #s IN (:waiting, :paused)",
             ExpressionAttributeNames=names,
             ExpressionAttributeValues={**values, ":t": token, ":s": started_at,

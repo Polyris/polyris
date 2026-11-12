@@ -1,5 +1,17 @@
 ## Unreleased
 
+### Changed — task dependencies are decided by the reconciler (ADR #130)
+
+- Registration saves the task row, signals a task without dependencies at once, and otherwise writes the run's subscriptions and calls `reconcile`. A subscription is a per-run pointer: its subscriber is the waiting task's `execution_name`, and it carries no task token.
+- The wrapper writes the status that follows a dependency signal (`deps_ready`, `skipped` with `skip_origin='rule'` and `skip_reason`, or `upstream_failed`), only while the task is still waiting for this wrapper. When someone else moved the task first, for example an operator's skip, the wrapper ends without running it.
+- `notify_dependents` asks the reconciler about each subscriber. A failed call never fails `notify_dependents` or the task that completed.
+- The failure handler records `upstream_failed` for an `UpstreamFailed` error.
+
+### Fixed — silent hangs in registration and auto-skip (ADR #130)
+
+- A failed registration now fails the task with its cause (`CoordinationError`) instead of leaving it waiting until `orchestration_timeout` (B-G1). When the task row itself could not be written, the failure handler creates it, so the failure shows in its run.
+- When a `skip_tasks` skip cannot be recorded, the task fails visibly instead of waking its dependants without a row (B-S1).
+
 ### Added — coordination reconciler function and indexes (ADR #130)
 
 - The stack gains the `reconcile` function (`<namespace>-<stage>-polyris-reconcile`), its own role and its log group. It decides whether a waiting task is ready and signals its wrapper (ADR #130 §3). Its role allows exactly the DynamoDB and Step Functions calls the code makes; a test records every call and compares it with the role in both directions.

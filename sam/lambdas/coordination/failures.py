@@ -38,7 +38,11 @@ _TRANSIENT_NETWORK = (EndpointConnectionError, ConnectionClosedError, ConnectTim
 
 
 class CoordinationTransient(Exception):
-    """A transient failure. Nothing was written; the caller should retry."""
+    """A transient failure. Nothing was written; the caller should retry.
+
+    Lambda reports it under its class name, which the state machines' Retry
+    matches: the name must stay equal to coordination_core.wake.TRANSIENT_ERROR.
+    """
 
 
 def error_code(exc: BaseException) -> str:

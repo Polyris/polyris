@@ -161,9 +161,9 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Comment": "Auto_Skip_Register failed - continue gracefully",
-          "Output": "{% $states.input %}",
-          "Next": "Auto_Skip_Notify_Dependents"
+          "Comment": "B-S1: without the skipped row, dependants must not be woken. Fail visibly instead.",
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput} | %}",
+          "Next": "Handle_Failure"
         }
       ]
     },
@@ -265,7 +265,9 @@
           "task_config": "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}",
           "outlets": "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}",
           "wait_for": "{% $exists($states.input.wait_for) ? $states.input.wait_for : [] %}",
-          "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}"
+          "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}",
+          "starter_input": "{% $states.context.Execution.Input %}",
+          "orchestration_timeout": "{% $exists($states.input.orchestration_timeout) ? $number($states.input.orchestration_timeout) : ${default_orchestration_timeout_seconds} %}"
         }
       },
       "Assign": {
@@ -310,14 +312,226 @@
       "Choices": [
         {
           "Condition": "{% $callback_signal = 'deps_skip' %}",
-          "Next": "Emit_Deps_Skip"
+          "Next": "Claim_Skipped"
         },
         {
           "Condition": "{% $callback_signal = 'deps_blocked' %}",
-          "Next": "Emit_Deps_Blocked"
+          "Next": "Claim_Upstream_Failed"
         }
       ],
-      "Default": "Emit_Deps_Ready"
+      "Default": "Claim_Deps_Ready"
+    },
+    "Claim_Deps_Ready": {
+      "Type": "Task",
+      "Comment": "ADR #130 §6.4: the receiver of the signal writes the status that follows it. The condition fails when another owner already moved the task (an operator's skip or success): the wrapper then ends as superseded.",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "#s IN (:waiting, :paused) AND wrapper_execution_arn = :self",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "deps_ready"
+          },
+          ":waiting": {
+            "S": "waiting"
+          },
+          ":paused": {
+            "S": "waiting_paused"
+          },
+          ":self": {
+            "S": "{% $states.context.Execution.Id %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Emit_Deps_Ready",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Output": "{% $states.input %}",
+          "Next": "Superseded"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput} | %}",
+          "Next": "Handle_Failure"
+        }
+      ]
+    },
+    "Claim_Skipped": {
+      "Type": "Task",
+      "Comment": "ADR #130 §6.4: a rule skip, written before dependants are notified. skip_origin='rule' lets an all_success cascade tell it from a manual skip (ADR #115).",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, skip_origin = :rule, skip_reason = :reason, finished_at = :now REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "#s IN (:waiting, :paused) AND wrapper_execution_arn = :self",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "skipped"
+          },
+          ":rule": {
+            "S": "rule"
+          },
+          ":reason": {
+            "S": "{% $callback_reason != '' ? $callback_reason : 'Trigger rule condition did not occur' %}"
+          },
+          ":now": {
+            "S": "{% $now() %}"
+          },
+          ":waiting": {
+            "S": "waiting"
+          },
+          ":paused": {
+            "S": "waiting_paused"
+          },
+          ":self": {
+            "S": "{% $states.context.Execution.Id %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Emit_Deps_Skip",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Output": "{% $states.input %}",
+          "Next": "Superseded"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput} | %}",
+          "Next": "Handle_Failure"
+        }
+      ]
+    },
+    "Claim_Upstream_Failed": {
+      "Type": "Task",
+      "Comment": "ADR #130 §6.4: upstream_failed with its reason; the failure handler that follows leaves upstream_failed rows alone.",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "UpdateExpression": "SET #s = :status, #e = :reason, finished_at = :now REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "#s IN (:waiting, :paused) AND wrapper_execution_arn = :self",
+        "ExpressionAttributeNames": {
+          "#s": "status",
+          "#e": "error"
+        },
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S": "upstream_failed"
+          },
+          ":reason": {
+            "S": "{% $callback_reason != '' ? $callback_reason : 'Upstream task failed' %}"
+          },
+          ":now": {
+            "S": "{% $now() %}"
+          },
+          ":waiting": {
+            "S": "waiting"
+          },
+          ":paused": {
+            "S": "waiting_paused"
+          },
+          ":self": {
+            "S": "{% $states.context.Execution.Id %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Emit_Deps_Blocked",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Output": "{% $states.input %}",
+          "Next": "Superseded"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput} | %}",
+          "Next": "Handle_Failure"
+        }
+      ]
+    },
+    "Superseded": {
+      "Type": "Succeed",
+      "Comment": "Another owner moved the task while this wrapper waited (ADR #130 §6.4). That owner also answers the pipeline; this wrapper ends quietly without running the task."
     },
     "Emit_Deps_Ready": {
       "Type": "Task",

@@ -1871,10 +1871,8 @@ Resources:
           - CloudWatchLogsLogGroup:
               LogGroupArn: !GetAtt NotifyDependentsLogGroup.Arn
       DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        evaluate_deps_lambda: !GetAtt EvaluateDepsFunction.Arn
         query_subscriptions_lambda: !GetAtt QuerySubscriptionsFunction.Arn
-        subscriptions_table: !Ref DependencySubscriptionsTable
+        reconcile_function_arn: !GetAtt ReconcileFunction.Arn
       DefinitionUri: sfn_templates/helpers/notify_dependents/sfn.tpl.json
   NotifyAssetConsumersSfn:
     Type: AWS::Serverless::StateMachine
@@ -1908,11 +1906,9 @@ Resources:
           - CloudWatchLogsLogGroup:
               LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
       DefinitionSubstitutions:
-        registry_table: !Ref PipelineRegistryTable
-        asset_subscriptions_table: !Ref AssetSubscriptionsTable
         subscriptions_table: !Ref DependencySubscriptionsTable
         tokens_table: !Ref PipelineTokensTable
-        check_assets_lambda_arn: !GetAtt CheckAssetsFunction.Arn
+        reconcile_function_arn: !GetAtt ReconcileFunction.Arn
       DefinitionUri: sfn_templates/helpers/registration/sfn.tpl.json
   RegisterPipelineSfn:
     Type: AWS::Serverless::StateMachine

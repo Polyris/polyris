@@ -30,7 +30,6 @@ def test_a_root_task_starts_at_registration(world):
     assert world.pipeline_status(run) == "SUCCEEDED"
 
 
-@needs_binding("wiring")
 def test_a_downstream_task_starts_only_after_its_upstream_succeeds(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     assert world.running_tasks(run) == ["extract"]
@@ -53,7 +52,7 @@ def _orders():
 
 
 @defect("B-A1")
-@needs_binding("wiring")
+@needs_binding("assets")
 @pytest.mark.parametrize("order", list(_orders()), ids=lambda o: ",".join(s.replace(" ", "-") for s in o))
 def test_and_of_two_assets_wakes_once_after_both_in_every_order(world, order):
     consumer = world.deploy(waits_for("consumer_p", [A, B]))
@@ -73,7 +72,7 @@ def test_and_of_two_assets_wakes_once_after_both_in_every_order(world, order):
     assert len(world.signals(run, "consumer")) == 1
 
 
-@needs_binding("wiring")
+@needs_binding("assets")
 @pytest.mark.parametrize("member", [A, B], ids=["a", "b"])
 def test_or_wakes_on_either_member(world, member):
     run = world.start_run(world.deploy(waits_for("p", [A | B])), DATE)
@@ -83,7 +82,7 @@ def test_or_wakes_on_either_member(world, member):
 
 
 @defect("B-A2")
-@needs_binding("wiring")
+@needs_binding("assets")
 @pytest.mark.parametrize("first", [B, C], ids=["b", "c"])
 def test_mixed_and_or_needs_a_and_one_of_b_or_c(world, first):
     run = world.start_run(world.deploy(waits_for("p", [A, B | C])), DATE)
@@ -96,7 +95,7 @@ def test_mixed_and_or_needs_a_and_one_of_b_or_c(world, first):
 
 
 @defect("B-A3")
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_an_early_and_member_is_rechecked_for_freshness(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=2), B])), DATE)
     world.write_event(A, DATE)
@@ -111,7 +110,7 @@ def test_an_early_and_member_is_rechecked_for_freshness(world):
 
 
 @defect("B-C1")
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_a_backfill_does_not_pass_on_todays_fact(world):
     consumer = world.deploy(waits_for("p", [A]))
     world.write_event(A, DATE)
@@ -123,7 +122,7 @@ def test_a_backfill_does_not_pass_on_todays_fact(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_a_fact_for_a_later_partition_does_not_satisfy_an_earlier_run(world):
     world.write_event(A, "2026-11-13")
     world.deliver_hints()
@@ -131,7 +130,7 @@ def test_a_fact_for_a_later_partition_does_not_satisfy_an_earlier_run(world):
     assert world.running_tasks(run) == []
 
 
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_a_weekly_fact_from_monday_satisfies_the_rest_of_its_week(world):
     world.write_event(WEEKLY, "2026-W46")    # Monday 2026-11-09
     world.deliver_hints()
@@ -140,7 +139,7 @@ def test_a_weekly_fact_from_monday_satisfies_the_rest_of_its_week(world):
 
 
 @defect("B-K1")
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_same_named_waiting_tasks_in_two_pipelines_both_wake(world):
     first = world.start_run(world.deploy(waits_for("p1", [A])), DATE)
     second = world.start_run(world.deploy(waits_for("p2", [A])), DATE)
@@ -151,7 +150,7 @@ def test_same_named_waiting_tasks_in_two_pipelines_both_wake(world):
 
 
 @defect("B-T1")
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.write_event(A, DATE)
@@ -162,7 +161,7 @@ def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     assert len(world.signals(run, "consumer")) == 1
 
 
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_a_re_registered_task_is_woken_exactly_once(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.time_out_registration(run, "consumer")     # the wrapper retries and registers again
@@ -176,7 +175,7 @@ def test_a_re_registered_task_is_woken_exactly_once(world):
 
 
 @defect("B-M1")
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
     produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), "2026-11-01")
     world.mark_success(produced, "build")            # done on 2026-11-12
@@ -186,7 +185,7 @@ def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
 
 
 @defect("B-F1")
-@needs_binding("wiring")
+@needs_binding("assets")
 def test_a_failed_fan_out_does_not_fail_the_producer(world):
     producer = world.deploy(pipeline("producer", [("build", {"outlets": [A]})]))
     world.start_run(world.deploy(waits_for("c", [A])), DATE)
@@ -201,7 +200,7 @@ def test_a_failed_fan_out_does_not_fail_the_producer(world):
 
 
 @defect("B-U1")
-@needs_binding("wiring")
+@needs_binding("push")
 def test_push_and_starts_exactly_one_run_for_the_day(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A, B]))
     world.write_event(A, DATE)
@@ -215,7 +214,7 @@ def test_push_and_starts_exactly_one_run_for_the_day(world):
 
 
 @defect("B-X1")
-@needs_binding("wiring")
+@needs_binding("push")
 def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
     first = world.deploy(pipeline("pushed_1", [("report", {})], schedule=[A]))
     second = world.deploy(pipeline("pushed_2", [("report", {})], schedule=[A]))
@@ -230,7 +229,6 @@ def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
 
 
 @defect("B-G1")
-@needs_binding("wiring")
 def test_a_failed_registration_fails_the_task_with_its_cause(world):
     world.inject_failure("PutItem", "PipelineTokensTable", "AccessDeniedException",
                          when=lambda params: params.get("Item", {}).get("status") == {"S": "waiting"})
@@ -240,11 +238,13 @@ def test_a_failed_registration_fails_the_task_with_its_cause(world):
 
 
 @defect("B-S1")
-@needs_binding("wiring")
 def test_a_failed_auto_skip_write_does_not_wake_dependants(world):
     world.inject_failure("PutItem", "PipelineTokensTable", "AccessDeniedException",
                          when=lambda params: params.get("Item", {}).get("status") == {"S": "skipped"})
     run = world.start_run(world.deploy(chain("p", "extract", "load")), DATE, skip_tasks=["extract"])
+    # The skip could not be recorded, so the task fails visibly instead of vanishing.
+    assert world.status(run, "extract") == "failed"
+    assert "AccessDeniedException" in world.row(run, "extract")["error"]
     assert world.running_tasks(run) == []
     assert world.status(run, "load") != "running"
 

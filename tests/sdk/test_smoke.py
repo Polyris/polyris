@@ -339,49 +339,6 @@ def test_api_has_task_events_endpoint():
     print("✅ API has task_events endpoint")
 
 
-def test_trigger_rule_sync():
-    """Test that JSONata and Python trigger_rule implementations are in sync."""
-    # Check JSONata in registration helper
-    registration_path = os.path.join(REPO_ROOT, 
-                                      'sam/sfn_templates/helpers/registration/sfn.tpl.json')
-    with open(registration_path) as f:
-        jsonata_content = f.read()
-    
-    # Check Python in evaluate_deps (source of truth for trigger rules)
-    evaluate_deps_path = os.path.join(REPO_ROOT, 
-                               'sam/lambdas/evaluate_deps/index.py')
-    with open(evaluate_deps_path) as f:
-        python_content = f.read()
-    
-    # Check constants.py for status definitions
-    constants_path = os.path.join(REPO_ROOT, 
-                               'sam/lambdas/evaluate_deps/constants.py')
-    with open(constants_path) as f:
-        constants_content = f.read()
-    
-    # All trigger rules that should be supported (ADR #117 — trimmed to 5)
-    rules = ['all_success', 'one_success', 'all_done', 'all_skipped', 'none_skipped']
-    
-    for rule in rules:
-        assert rule in jsonata_content, f"trigger_rule '{rule}' missing in JSONata"
-        assert rule in python_content, f"trigger_rule '{rule}' missing in Python"
-    
-    # aborted must be treated as failure/done - check constants.py where sets are defined
-    assert 'aborted' in jsonata_content, "aborted status missing in JSONata trigger_rule"
-    assert 'ABORTED' in constants_content, "ABORTED not defined in constants.py"
-    # v0.79.5 (ADR #77) — class-level sets moved to module-level
-    # constants generated from polyris/constants.py.
-    assert 'TASK_FAILURE_STATUSES' in constants_content, \
-        "TASK_FAILURE_STATUSES not defined in constants.py"
-
-    # Verify index.py imports and uses the failure states
-    assert 'from constants import' in python_content, "constants not imported"
-    assert 'TASK_FAILURE_STATUSES' in python_content, "TASK_FAILURE_STATUSES not imported"
-    assert 'TERMINAL_FAILURE' in python_content, "TERMINAL_FAILURE not used in trigger rules"
-    
-    print("✅ trigger_rule implementations in sync")
-
-
 def test_pipeline_execution_short_length():
     """Test that pipeline_execution_short uses 20 chars (not 8 or 16) to avoid collisions."""
     wrapper_path = os.path.join(REPO_ROOT, 
@@ -554,9 +511,11 @@ def test_task_completed_contract():
     with open(notify_path, 'r') as f:
         content = f.read()
     
-    # notify_dependents should propagate completion info
-    assert 'status' in content, "notify_dependents missing status"
+    # notify_dependents finds the subscribers of {task}-{pipeline_execution_short}
+    # and hands each subscriber's execution_name to the reconciler (ADR #130 §6.2)
     assert 'pipeline_execution_short' in content, "notify_dependents missing pipeline_execution_short"
+    assert '${reconcile_function_arn}' in content, "notify_dependents does not call the reconciler"
+    assert "'execution_name': $s.subscriber" in content, "notify_dependents does not pass the subscriber"
     
     print("✅ task completion contract verified (DynamoDB + SFN helpers have required fields)")
 
@@ -665,7 +624,6 @@ def run_all_tests():
         test_wrapper_emits_events,
         test_run_task_emits_events,
         test_api_has_task_events_endpoint,
-        test_trigger_rule_sync,
         test_pipeline_execution_short_length,
         test_no_dead_code,
         test_task_completed_contract,

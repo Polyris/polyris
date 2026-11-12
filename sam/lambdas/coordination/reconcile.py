@@ -29,6 +29,7 @@ import env
 from coordination_core import decide as dc
 from coordination_core import spec as sp
 from coordination_core import trigger_rules as tr
+from coordination_core import wake
 from coordination_core.asset_conditions import evaluate as evaluate_assets
 from coordination_core.partition import partition_date
 from coordination_core.records import warning_item
@@ -39,7 +40,7 @@ from signals import ACCEPTED, Signals
 from stores import FactStore, Registry, SubscriptionStore, TaskStore
 
 #: What the wrapper's Check_Deps_Signal state routes on.
-SIGNALS = {dc.READY: "deps_ready", dc.SKIP: "deps_skip", dc.UPSTREAM_FAILED: "deps_blocked"}
+SIGNALS = {dc.READY: wake.DEPS_READY, dc.SKIP: wake.DEPS_SKIP, dc.UPSTREAM_FAILED: wake.DEPS_BLOCKED}
 #: Verdict reported when no decision could be made.
 ERROR = "error"
 #: Resume handles a run's rows for this long, then leaves the rest due for the sweeper.

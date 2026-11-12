@@ -10,14 +10,12 @@ from typing import Any, Dict, Optional
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from coordination_core.wake import COORDINATION_ERROR
 from failures import is_dead_token, reraise_transient
 
 ACCEPTED = "accepted"
 DEAD = "dead"
 
-#: Error name sent with SendTaskFailure. Never a `States.*` name: the
-#: wrapper's Retry matches States.Timeout and would re-register the task.
-COORDINATION_ERROR = "CoordinationError"
 _CAUSE_LIMIT = 2000
 
 

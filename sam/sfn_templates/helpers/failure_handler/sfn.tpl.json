@@ -17,7 +17,7 @@
     },
     "Update_Status_Failed": {
       "Type": "Task",
-      "Comment": "Update DynamoDB: status=failed",
+      "Comment": "status=failed, or upstream_failed for a pre-upgrade wrapper's block (error UpstreamFailed). Never overwrites a terminal status. When registration never wrote the row (ADR #130 §6.3), this creates it with the task's identity, so the failure shows in its run (B-G1).",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -26,15 +26,38 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "ConditionExpression": "attribute_exists(execution_name) AND NOT (#s = :s1 OR #s = :s2 OR #s = :s3 OR #s = :s4 OR #s = :s5)",
-        "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn",
+        "ConditionExpression": "attribute_not_exists(execution_name) OR NOT (#s = :s1 OR #s = :s2 OR #s = :s3 OR #s = :s4 OR #s = :s5)",
+        "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn, task_name = if_not_exists(task_name, :taskName), pipeline_name = if_not_exists(pipeline_name, :pipelineName), pipeline_execution = if_not_exists(pipeline_execution, :pipelineExecution), pipeline_execution_short = if_not_exists(pipeline_execution_short, :short), #d = if_not_exists(#d, :date), #ttl = if_not_exists(#ttl, :ttl), wrapper_execution_arn = if_not_exists(wrapper_execution_arn, :wrapper)",
         "ExpressionAttributeNames": {
           "#s": "status",
-          "#e": "error"
+          "#e": "error",
+          "#d": "date",
+          "#ttl": "ttl"
         },
         "ExpressionAttributeValues": {
           ":status": {
-            "S": "failed"
+            "S": "{% $exists($states.input.error.Error) and $states.input.error.Error = 'UpstreamFailed' ? 'upstream_failed' : 'failed' %}"
+          },
+          ":taskName": {
+            "S": "{% $states.input.task_name %}"
+          },
+          ":pipelineName": {
+            "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+          },
+          ":pipelineExecution": {
+            "S": "{% $exists($states.input.pipeline_execution) ? $states.input.pipeline_execution : 'unknown' %}"
+          },
+          ":short": {
+            "S": "{% $exists($states.input.pipeline_execution_short) ? $states.input.pipeline_execution_short : 'unknown' %}"
+          },
+          ":date": {
+            "S": "{% $states.input.date %}"
+          },
+          ":ttl": {
+            "N": "{% $string($states.input.ttl) %}"
+          },
+          ":wrapper": {
+            "S": "{% $exists($states.input.wrapper_execution_arn) ? $states.input.wrapper_execution_arn : '' %}"
           },
           ":error": {
             "S": "{% $states.input.error_truncated %}"
