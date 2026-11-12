@@ -242,6 +242,48 @@ jobs:
         run: cfn-lint sam/template.yaml
 
   # ============================================
+  # Platform archive — trial build (ADR #131)
+  # ============================================
+  # Builds the release archive `polyris-up` installs, exactly as
+  # release.yml does on a tag, but publishes nothing: a change that breaks
+  # `sam build`, the archive script or the deployable template fails here,
+  # not on release day. The UI is not rebuilt (the `ui` job covers that);
+  # a one-file stand-in fills its slot. Runs in parallel with the other jobs.
+  platform-archive:
+    name: Platform archive (trial build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lambda runtime is python3.12 (sam/template.yaml Globals); sam build's
+      # pip builder needs the same interpreter on PATH.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install aws-sam-cli pyyaml boto3 cfn-lint
+
+      - name: Build Lambdas (sam build)
+        working-directory: sam
+        run: sam build --build-dir ../build/sam
+
+      - name: Assemble archive
+        run: |
+          mkdir -p build/ui-stub && echo '<!doctype html>' > build/ui-stub/index.html
+          python scripts/build_platform_release.py \
+            --version 0.0.0 \
+            --sam-build-dir build/sam \
+            --ui-dir build/ui-stub \
+            --out build/dist \
+            --write-deployable-template build/deployable-template.json
+
+      - name: Lint the template polyris-up deploys
+        run: cfn-lint build/deployable-template.json
+
+  # ============================================
   # Docs — link check (lychee)
   # ============================================
   # lychee is a Rust link checker that runs offline against local files.

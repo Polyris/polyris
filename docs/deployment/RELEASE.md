@@ -26,6 +26,8 @@ Pushing the `v*` tag starts [`.github/workflows/release.yml`](../../.github/work
 
 The workflow refuses to build when the tag doesn't match the version in `pyproject.toml`.
 
+Every pull request runs the same build as a trial (CI job *Platform archive (trial build)*): `sam build`, the archive script, and `cfn-lint` on the template exactly as `polyris-up` would deploy it. Nothing is published; a change that would break the release fails in the PR instead of on tag day.
+
 Archive layout and the `polyris-up` side of the contract: [ADR #131](../reference/adr-131-polyris-up.md), `polyris/platform.py` and `scripts/build_platform_release.py`.
 
 ## Build the archive locally

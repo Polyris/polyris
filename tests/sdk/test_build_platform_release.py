@@ -105,3 +105,26 @@ def test_main_writes_checksum(tmp_path, capsys):
     sha = (tmp_path / "dist" / "polyris-platform-v9.9.9.zip.sha256").read_text().split()
     assert sha[1] == "polyris-platform-v9.9.9.zip" and len(sha[0]) == 64
     assert "sha256=" in capsys.readouterr().out
+
+
+def test_deployable_template_points_every_local_path_at_s3(tmp_path):
+    archive = build.build_archive(version="9.9.9", sam_build_dir=_fake_sam_build(tmp_path), ui_dir=_ui(tmp_path),
+                                  out_dir=tmp_path / "dist")
+    dest = tmp_path / "deployable.json"
+    build.write_deployable_template(archive, dest)
+
+    tpl = json.loads(dest.read_text())
+    assert tpl["Description"] == "Polyris platform v9.9.9"
+    for res in tpl["Resources"].values():
+        props = res.get("Properties") or {}
+        for key in ("CodeUri", "DefinitionUri"):
+            if key in props:
+                assert isinstance(props[key], dict) and props[key]["Bucket"].startswith("polyris-artifacts-")
+
+
+def test_main_writes_deployable_template_on_request(tmp_path):
+    dest = tmp_path / "t.json"
+    assert build.main(["--version", "1", "--sam-build-dir", str(_fake_sam_build(tmp_path)),
+                       "--ui-dir", str(_ui(tmp_path)), "--out", str(tmp_path / "d"),
+                       "--write-deployable-template", str(dest)]) == 0
+    assert dest.is_file()

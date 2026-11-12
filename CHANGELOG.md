@@ -20,7 +20,8 @@
   built-in test Step Function, so the first `polyris-deploy` works unedited.
 - Every `v*` tag now publishes `polyris-platform-vX.Y.Z.zip` (+ `.sha256`) to
   its GitHub Release (`.github/workflows/release.yml`,
-  `scripts/build_platform_release.py`).
+  `scripts/build_platform_release.py`). Every PR trial-builds the archive and
+  lints the template `polyris-up` would deploy (CI job *Platform archive*).
 - Template: `AdminEmail` parameter creates the first Cognito user, which
   receives its temporary password by email.
 - See [ADR #131](docs/reference/adr-131-polyris-up.md) and the rewritten

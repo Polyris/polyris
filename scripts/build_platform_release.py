@@ -39,7 +39,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from polyris.platform import Manifest, release_asset_name  # noqa: E402
+from polyris.platform import Manifest, release_asset_name, rewrite_template  # noqa: E402
 
 SAM_DIR = REPO_ROOT / "sam"
 TEMPLATE_PATH = SAM_DIR / "template.yaml"
@@ -162,12 +162,34 @@ def build_archive(*, version: str, sam_build_dir: Path, ui_dir: Path, out_dir: P
     return archive
 
 
+def write_deployable_template(archive: Path, dest: Path) -> None:
+    """Write the template exactly as polyris-up would deploy it, with a placeholder bucket.
+
+    CI runs cfn-lint on the result, so a release whose rewritten template is
+    invalid fails on the pull request rather than at install time.
+    """
+    with zipfile.ZipFile(archive) as zf:
+        manifest = Manifest.from_dict(json.loads(zf.read("manifest.json")))
+        template = json.loads(zf.read(manifest.template))
+    bucket = "polyris-artifacts-123456789012-us-east-1"
+    rewritten = rewrite_template(
+        template,
+        bucket=bucket,
+        function_keys={lid: f"v{manifest.version}/lambdas/0/{lid}.zip" for lid in manifest.functions},
+        state_machine_keys={lid: f"v{manifest.version}/sfn/0/{lid}.json" for lid in manifest.state_machines},
+        version=manifest.version,
+    )
+    dest.write_text(json.dumps(rewritten, indent=1))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", required=True, help="Release version without the leading v (e.g. 1.2.0)")
     parser.add_argument("--sam-build-dir", required=True, type=Path, help="Output of `sam build --build-dir`")
     parser.add_argument("--ui-dir", required=True, type=Path, help="Static UI export (ui/out)")
     parser.add_argument("--out", required=True, type=Path, help="Directory to write the archive into")
+    parser.add_argument("--write-deployable-template", type=Path, metavar="PATH",
+                        help="Also write the template as polyris-up would deploy it (for cfn-lint in CI)")
     args = parser.parse_args(argv)
 
     version = args.version.removeprefix("v")
@@ -175,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (archive.parent / f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n")
     print(f"{archive} ({archive.stat().st_size // 1024} KiB) sha256={digest}")
+    if args.write_deployable_template:
+        write_deployable_template(archive, args.write_deployable_template)
+        print(f"deployable template → {args.write_deployable_template}")
     return 0
 
 
