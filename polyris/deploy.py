@@ -19,13 +19,14 @@ Workflow:
     3. Reads infra ARNs/tables from the SAM CloudFormation stack outputs
     4. Generates ASL JSON
     5. Generates CloudFormation template
-    6. aws cloudformation deploy
+    6. Deploys via a CloudFormation change set (boto3)
     7. Calls SFN with register_only=true (pipeline registration)
 """
 
+import hashlib
 import json
+import os
 import sys
-import subprocess
 import importlib.util
 import argparse
 import threading
@@ -49,8 +50,27 @@ from .generators import (
     generate_dag_hash,
 )
 from .dag import DAG
+from .cfn_changeset import (
+    TEMPLATE_BODY_LIMIT,
+    ChangeSetError,
+    _watch_stack_events,
+    all_stacks,
+    create_change_set,
+    describe_stack,
+    execute_change_set,
+    start_event_watcher,
+)
+from .platform import (
+    NAMESPACE_STAGE_MAX_LEN,
+    PARAM_NAMESPACE,
+    PARAM_STAGE,
+    AmbiguousPlatformStack,
+    is_platform_stack,
+    parameters_of,
+    select_platform_stack,
+)
 from .config import config as polyris_config
-from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, GREEN, RED, YELLOW, RESET
+from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN
 from .resource_check import (
     check_resource_references,
     print_resource_check_result,
@@ -369,78 +389,6 @@ def _register_pipeline(
     print("  ✅ Registration triggered")
 
 
-def _colorize_status(status: str) -> str:
-    """Color a CloudFormation ResourceStatus by outcome: red for
-    failed/rollback, green for complete, cyan for in-progress, yellow for
-    anything else (e.g. REVIEW_IN_PROGRESS). Plain text if stdout isn't a
-    real terminal (checked at call time, not cached, so tests can patch
-    sys.stdout.isatty directly)."""
-    if not sys.stdout.isatty():
-        return status
-    if "FAILED" in status or "ROLLBACK" in status:
-        color = RED
-    elif "COMPLETE" in status:
-        color = GREEN
-    elif "IN_PROGRESS" in status:
-        color = CYAN
-    else:
-        color = YELLOW
-    return f"{color}{status}{RESET}"
-
-
-def _watch_stack_events(
-    cfn_client,
-    stack_name: str,
-    seen_event_ids: set,
-    stop_event: threading.Event,
-    poll_interval: float = 2.0,
-) -> None:
-    """Print new CloudFormation stack events as they happen, until
-    stop_event is set.
-
-    Purely observational — only reads describe_stack_events; never raises,
-    so a polling hiccup (or the stack not existing yet, on a fresh CREATE)
-    can never affect the actual deploy outcome, which is driven entirely by
-    the separate `aws cloudformation deploy` subprocess this runs alongside.
-
-    `seen_event_ids` must already be seeded (by the caller) with any events
-    that existed BEFORE this deploy started — CloudFormation keeps full
-    event history per stack across past deploys, so without seeding, the
-    first poll here would print old, unrelated events from a previous
-    deploy as if they were happening right now.
-    """
-    while not stop_event.is_set():
-        try:
-            events = cfn_client.describe_stack_events(StackName=stack_name)["StackEvents"]
-            new_events = [e for e in events if e["EventId"] not in seen_event_ids]
-            new_events.sort(key=lambda e: e["Timestamp"])
-            for e in new_events:
-                seen_event_ids.add(e["EventId"])
-                reason = f" — {e['ResourceStatusReason']}" if e.get("ResourceStatusReason") else ""
-                status_colored = _colorize_status(e["ResourceStatus"])
-                # Pad the RAW status (not the color-escaped string) so
-                # ANSI codes don't throw off the column alignment.
-                padding = " " * max(0, 28 - len(e["ResourceStatus"]))
-                print(f"    {status_colored}{padding} {e['ResourceType']:<32} {e['LogicalResourceId']}{reason}")
-
-        except Exception as e:
-            # Deliberately broad, and deliberately not narrowed to
-            # (ClientError, BotoCoreError): this is a daemon *narration* thread
-            # wrapping both the AWS call and the event formatting below it. The
-            # deploy's correctness does not depend on it, but a traceback from
-            # it mid-deploy — or a dead poller — is worse than a skipped tick.
-            # ADR #28's narrow rule is for paths whose failure means something;
-            # this one's does not. What Principle #11 forbids is the *silent*
-            # swallow this used to be (`pass`, no comment), so it now says so.
-            #
-            # "does not exist" is expected on the first few polls of a CREATE:
-            # CloudFormation hasn't registered the stack yet. Suppress that
-            # specific case to avoid confusing "progress poll skipped" output.
-            if "does not exist" not in str(e):
-                print(f"    (progress poll skipped: {e})")
-        stop_event.wait(poll_interval)
-
-
 # =============================================================================
 # Config resolution + pre-deploy summary
 # =============================================================================
@@ -530,6 +478,100 @@ def _print_deploy_summary(
     print(_c("───────────────────────────────────────────────────────────────────", BOLD))
 
 
+def _explicit_region(cli_region: Optional[str], stage_config) -> Optional[str]:
+    """Region named explicitly: --region > POLYRIS_REGION/AWS_REGION > config.py. None if nothing names one.
+
+    When this is None the deploy uses the AWS profile's own region (``aws
+    configure``), so a project without config.py deploys where its profile
+    points rather than silently to us-east-1. us-east-1 stays the last resort.
+    """
+    return (cli_region or os.environ.get("POLYRIS_REGION") or os.environ.get("AWS_REGION")
+            or stage_config.get("region"))
+
+
+def _check_name_lengths(dag: DAG, namespace: str, stage: str) -> None:
+    """Exit before any AWS write when IAM role names would exceed 64 characters."""
+    _ns_stage_total = len(namespace) + len(stage)
+    if _ns_stage_total > NAMESPACE_STAGE_MAX_LEN:
+        print(
+            f"\n❌ Namespace+Stage too long — cannot deploy '{dag.dag_id}':\n"
+            f"   namespace={namespace!r} ({len(namespace)} chars) + "
+            f"stage={stage!r} ({len(stage)} chars) = {_ns_stage_total} chars (limit {NAMESPACE_STAGE_MAX_LEN}).\n"
+            f"   IAM role names would exceed 64 chars with the polyris suffix. "
+            f"Shorten namespace or stage before deploying."
+        )
+        sys.exit(1)
+
+    # Scheduler role only exists for time-triggered DAGs — guard only fires then.
+    # {namespace}-{stage}-polyris-{dag_id}-scheduler-role = ns+1+stage+9+dag_id+15
+    if dag.schedule and not dag.is_asset_triggered:
+        _scheduler_role_len = len(namespace) + 1 + len(stage) + 9 + len(dag.dag_id) + 15
+        if _scheduler_role_len > 64:
+            _dag_id_budget = 39 - _ns_stage_total
+            print(
+                f"\n❌ DAG ID too long for this namespace+stage — cannot deploy '{dag.dag_id}':\n"
+                f"   '{namespace}-{stage}-polyris-{dag.dag_id}-scheduler-role' "
+                f"= {_scheduler_role_len} chars (IAM limit 64).\n"
+                f"   With namespace={namespace!r} + stage={stage!r} ({_ns_stage_total} chars), "
+                f"dag_id must be at most {_dag_id_budget} chars (currently {len(dag.dag_id)}).\n"
+                f"   Shorten the dag_id before deploying."
+            )
+            sys.exit(1)
+
+
+def _keep_existing_pipeline_stack(session: "boto3.Session", legacy: str, adopted: str) -> bool:
+    """True when the pipeline already runs as ``legacy`` and ``adopted`` doesn't exist.
+
+    Renaming would deploy a second copy next to it (both schedules firing)
+    and make polyris-destroy target a stack that isn't there.
+    """
+    cfn = session.client("cloudformation")
+    try:
+        return describe_stack(cfn, legacy) is not None and describe_stack(cfn, adopted) is None
+    except (ClientError, BotoCoreError) as e:
+        print(f"\n❌ Could not check existing pipeline stacks: {e}")
+        sys.exit(1)
+
+
+def _platform_naming(platform: dict, *, namespace: str, stage: str, cli_stage: Optional[str]) -> Tuple[str, str]:
+    """Namespace/stage for a project without config.py, taken from the discovered platform stack.
+
+    POLYRIS_NAMESPACE and --stage / POLYRIS_STAGE still win when set.
+    """
+    params = parameters_of(platform)
+    if not os.environ.get("POLYRIS_NAMESPACE") and params.get(PARAM_NAMESPACE):
+        namespace = params[PARAM_NAMESPACE]
+    if not (cli_stage or os.environ.get("POLYRIS_STAGE")) and params.get(PARAM_STAGE):
+        stage = params[PARAM_STAGE]
+    return namespace, stage
+
+
+def _discover_platform_stack(session: "boto3.Session", region: str) -> Tuple[Optional[str], Optional[dict]]:
+    """Find the platform stack by the tag polyris-up puts on it (ADR #131).
+
+    Returns (name, describe_stacks entry), or (None, None).
+    Used only when neither --stack nor config.py names one. Never guesses:
+    several platform stacks in the region is an error that asks for --stack.
+    Stacks deployed with ``sam deploy`` carry no tag and are not found here;
+    they keep working through config.py's stack_name.
+    """
+    stacks: list = []
+    try:
+        stacks = all_stacks(session.client("cloudformation"))
+        name = select_platform_stack(stacks, include_review=False)  # no outputs yet
+    except AmbiguousPlatformStack as e:
+        print(f"\n❌ Several Polyris platform stacks in {region}: {', '.join(e.names)}.")
+        print("   Pick one with --stack <name>, or set stack_name in config.py.")
+        sys.exit(1)
+    except (ClientError, BotoCoreError) as e:
+        print(f"\n❌ Could not list CloudFormation stacks to find the platform: {e}")
+        sys.exit(1)
+    if not name:
+        return None, None
+    print(f"Found platform stack {_c(name, CYAN)} (installed by polyris-up).")
+    return name, next(s for s in stacks if s.get("StackName") == name)
+
+
 def _fail_no_stack_name(stage: str) -> None:
     """Exit with a clear message when stack_name cannot be resolved.
 
@@ -544,6 +586,8 @@ def _fail_no_stack_name(stage: str) -> None:
     has_config = _find_project_config() is not None
 
     print(f"\n❌ No SAM stack_name resolved for stage '{stage}'.")
+    print("   No platform stack installed by polyris-up was found in this region either.")
+    print(f"   New install? Run {_c('polyris-up', CYAN)}. Wrong region? Pass --region.")
     print("")
     if has_config:
         print("   Add stack_name to your config.py:")
@@ -614,48 +658,35 @@ def deploy_pipeline(
     cli_profile = profile
     cli_stack = stack
 
+    cli_stage = stage
     stage = stage or polyris_config.stage
     stage_config = polyris_config.for_stage(stage)
 
-    region = region or stage_config.region
     profile = profile or stage_config.profile
+    # None when nothing names a region; the AWS session below then falls back
+    # to the profile's own region (see _explicit_region).
+    explicit_region = _explicit_region(region, stage_config)
     namespace = stage_config.namespace
+
+    stack_name_from_config = stage_config.stack_name
+    # May still be None here: without --stack or config.py stack_name, the
+    # platform stack is discovered by tag once the AWS session exists (ADR #131).
+    sam_stack_name = cli_stack or stack_name_from_config
+
+    # Without config.py, a pipeline on a platform installed by polyris-up
+    # takes its namespace/stage from that platform (below) — discovered or
+    # named with --stack — so two platforms in one account can't produce
+    # colliding pipeline stack names. Stacks deployed with `sam deploy`
+    # (untagged) keep the pre-ADR-131 naming, and so does any pipeline that
+    # already exists under it.
+    from polyris.config import _find_project_config
+
+    adopt_platform_naming = _find_project_config() is None
 
     # IAM name guards — skipped on destroy (stack deletion needs only dag_id for
     # the stack name; no IAM roles are created, so length checks are irrelevant).
-    if not destroy:
-        _ns_stage_total = len(namespace) + len(stage)
-        if _ns_stage_total > 25:
-            print(
-                f"\n❌ Namespace+Stage too long — cannot deploy '{dag.dag_id}':\n"
-                f"   namespace={namespace!r} ({len(namespace)} chars) + "
-                f"stage={stage!r} ({len(stage)} chars) = {_ns_stage_total} chars (limit 25).\n"
-                f"   IAM role names would exceed 64 chars with the polyris suffix. "
-                f"Shorten namespace or stage before deploying."
-            )
-            sys.exit(1)
-
-        # Scheduler role only exists for time-triggered DAGs — guard only fires then.
-        # {namespace}-{stage}-polyris-{dag_id}-scheduler-role = ns+1+stage+9+dag_id+15
-        if dag.schedule and not dag.is_asset_triggered:
-            _scheduler_role_len = len(namespace) + 1 + len(stage) + 9 + len(dag.dag_id) + 15
-            if _scheduler_role_len > 64:
-                _dag_id_budget = 39 - _ns_stage_total
-                print(
-                    f"\n❌ DAG ID too long for this namespace+stage — cannot deploy '{dag.dag_id}':\n"
-                    f"   '{namespace}-{stage}-polyris-{dag.dag_id}-scheduler-role' "
-                    f"= {_scheduler_role_len} chars (IAM limit 64).\n"
-                    f"   With namespace={namespace!r} + stage={stage!r} ({_ns_stage_total} chars), "
-                    f"dag_id must be at most {_dag_id_budget} chars (currently {len(dag.dag_id)}).\n"
-                    f"   Shorten the dag_id before deploying."
-                )
-                sys.exit(1)
-
-    stack_name_from_config = stage_config.stack_name
-    sam_stack_name = cli_stack or stack_name_from_config
-    if not sam_stack_name:
-        _fail_no_stack_name(stage)
-    assert sam_stack_name  # narrow Optional for mypy after the exit above
+    if not destroy and not adopt_platform_naming:
+        _check_name_lengths(dag, namespace, stage)
 
     pipeline_stack = f"{namespace}-{stage}-polyris-{dag.dag_id}"
 
@@ -666,24 +697,18 @@ def deploy_pipeline(
             "stack": cli_stack,
         },
         config={
-            "region": stage_config.region,
+            "region": stage_config.get("region"),
             "profile": stage_config.profile,
             "stack": stack_name_from_config,
         },
     )
-    _print_deploy_summary(
-        dag_id=dag.dag_id,
-        stage=stage,
-        stack_name=sam_stack_name,
-        namespace=namespace,
-        region=region,
-        profile=profile,
-        pipeline_stack=pipeline_stack,
-    )
 
     # ── AWS session + credentials check ──────────────────────────────────
     try:
-        session = boto3.Session(profile_name=profile, region_name=region)
+        session = boto3.Session(profile_name=profile, region_name=explicit_region)
+        region = session.region_name or "us-east-1"
+        if not session.region_name:
+            session = boto3.Session(profile_name=profile, region_name=region)
         caller_identity = session.client("sts").get_caller_identity()
     except ProfileNotFound as e:
         print(f"❌ AWS profile not found: {e}")
@@ -700,6 +725,44 @@ def deploy_pipeline(
     except BotoCoreError as e:
         print(f"❌ AWS error: {e}")
         sys.exit(1)
+
+    platform = None
+    if not sam_stack_name:
+        sam_stack_name, platform = _discover_platform_stack(session, region)
+        if not sam_stack_name:
+            _fail_no_stack_name(stage)
+    elif adopt_platform_naming:
+        try:
+            platform = describe_stack(session.client("cloudformation"), sam_stack_name)
+        except (ClientError, BotoCoreError) as e:
+            print(f"\n❌ Could not read platform stack {sam_stack_name}: {e}")
+            sys.exit(1)
+    if adopt_platform_naming and platform and is_platform_stack(platform):
+        platform_stage = parameters_of(platform).get(PARAM_STAGE)
+        if cli_stage and platform_stage and cli_stage != platform_stage:
+            print(f"\n❌ --stage {cli_stage}, but platform {sam_stack_name} is stage {platform_stage}.")
+            print("   Install that stage first (polyris-up --stage ...), or name its platform with --stack.")
+            sys.exit(1)
+        new_namespace, new_stage = _platform_naming(platform, namespace=namespace, stage=stage, cli_stage=cli_stage)
+        adopted = f"{new_namespace}-{new_stage}-polyris-{dag.dag_id}"
+        if adopted != pipeline_stack and _keep_existing_pipeline_stack(session, pipeline_stack, adopted):
+            print(f"Keeping pipeline stack {_c(pipeline_stack, CYAN)}: it was deployed before polyris named "
+                  f"pipelines after their platform.")
+        else:
+            namespace, stage, pipeline_stack = new_namespace, new_stage, adopted
+    assert sam_stack_name  # narrow Optional for mypy after the exit above
+    if not destroy and adopt_platform_naming:
+        _check_name_lengths(dag, namespace, stage)
+
+    _print_deploy_summary(
+        dag_id=dag.dag_id,
+        stage=stage,
+        stack_name=sam_stack_name,
+        namespace=namespace,
+        region=region,
+        profile=profile,
+        pipeline_stack=pipeline_stack,
+    )
 
     # Guard: verify we're deploying to the expected account
     expected_account = stage_config.get("account_id")
@@ -827,59 +890,38 @@ def deploy_pipeline(
         print(f"  DAG hash: {_c(generate_dag_hash(dag), CYAN)}")
         return
 
-    # Deploy via CloudFormation
+    # Deploy via a CloudFormation change set — boto3 only, no `aws` CLI
+    # (ADR #131). Templates over CloudFormation's inline limit go through the
+    # results bucket, as `aws cloudformation deploy --s3-bucket` used to do.
     print(f"\nDeploying stack: {_c(stack_name, CYAN)}")
-    cmd = [
-        "aws",
-        "cloudformation",
-        "deploy",
-        "--template-file",
-        str(template_path),
-        "--stack-name",
-        stack_name,
-        "--region",
-        region,
-        "--capabilities",
-        "CAPABILITY_NAMED_IAM",
-        "--no-fail-on-empty-changeset",
-    ]
-    if profile:
-        cmd += ["--profile", profile]
-    if results_bucket:
-        cmd += ["--s3-bucket", results_bucket, "--s3-prefix", "cfn-pipeline-templates"]
+    cfn = session.client("cloudformation")
+    template_body = json.dumps(template)
+    source: dict = {"template_body": template_body}
+    if len(template_body.encode()) > TEMPLATE_BODY_LIMIT:
+        if not results_bucket:
+            print(f"\n❌ Template is {len(template_body.encode())} bytes (inline limit {TEMPLATE_BODY_LIMIT}) "
+                  "and the platform stack has no ResultsBucket output to upload it to.")
+            sys.exit(1)
+        key = f"cfn-pipeline-templates/{stack_name}-{hashlib.sha256(template_body.encode()).hexdigest()[:16]}.json"
+        session.client("s3").put_object(Bucket=results_bucket, Key=key, Body=template_body.encode())
+        source = {"template_url": f"https://{results_bucket}.s3.{region}.amazonaws.com/{key}"}
 
-    # Background, purely-observational progress display: poll the same
-    # stack events the AWS Console shows, printing new ones as `aws
-    # cloudformation deploy` (below, unchanged) runs. Seed with whatever
-    # events already exist so an UPDATE doesn't print old history from a
-    # past deploy as if it's happening now.
-    watcher_cfn = session.client("cloudformation")
-    seen_event_ids: set = set()
+    stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        existing_events = watcher_cfn.describe_stack_events(StackName=stack_name)["StackEvents"]
-        seen_event_ids.update(e["EventId"] for e in existing_events)
-    except Exception:
-        pass  # fresh stack that doesn't exist yet — nothing to seed
-    stop_watching = threading.Event()
-    watcher_thread = threading.Thread(
-        target=_watch_stack_events,
-        args=(watcher_cfn, stack_name, seen_event_ids, stop_watching),
-        daemon=True,
-    )
-    watcher_thread.start()
-    try:
-        result = subprocess.run(cmd, capture_output=False)
-    finally:
-        stop_watching.set()
-        watcher_thread.join(timeout=5)
-
-    if result.returncode != 0:
-        print("\n❌ CloudFormation deploy failed")
+        change_set = create_change_set(cfn, stack_name=stack_name, capabilities=["CAPABILITY_NAMED_IAM"], **source)
+        if change_set is None:
+            print("  No changes to deploy — the stack already matches this DAG.")
+        else:
+            execute_change_set(cfn, stack_name=stack_name, change_set=change_set)
+    except (ChangeSetError, ClientError, BotoCoreError) as e:
+        print(f"\n❌ CloudFormation deploy failed: {e}")
         sys.exit(1)
+    finally:
+        stop_narration()
 
     # Explicitly (re-)enforce the schedule's enabled/disabled state.
     #
-    # `aws cloudformation deploy` only diffs the new template against what
+    # A CloudFormation change set only diffs the new template against what
     # CloudFormation tracked as the LAST-applied template — it does not
     # re-verify the live resource's actual configuration. So if someone
     # manually disables this schedule via the AWS Console (bypassing CFN), a

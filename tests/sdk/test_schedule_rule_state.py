@@ -175,7 +175,7 @@ def _fake_current_schedule(state="ENABLED"):
 
 class TestPostDeployScheduleStateEnforcement:
     """Full deploy_pipeline() flow, mocked at the AWS-boundary only (boto3
-    Session, subprocess.run for `aws cloudformation deploy`) — everything
+    Session; CloudFormation change sets go through the boto3 client) — everything
     else runs for real, so these exercise the actual code path."""
 
     def _run_deploy(self, mocker, dag, current_schedule_state="ENABLED"):
@@ -195,6 +195,7 @@ class TestPostDeployScheduleStateEnforcement:
                 return _sam_stack_response()
             return _pipeline_stack_response(ARN)
         cfn.describe_stacks.side_effect = _describe_stacks
+        cfn.describe_change_set.return_value = {"Status": "CREATE_COMPLETE", "ChangeSetName": "cs"}
 
         scheduler = mocker.MagicMock()
         scheduler.get_schedule.return_value = _fake_current_schedule(current_schedule_state)
@@ -211,7 +212,6 @@ class TestPostDeployScheduleStateEnforcement:
         cfg.profile = None
         cfg.for_stage.return_value = _stage_cfg_mock(mocker)
 
-        mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
         mocker.patch("polyris.deploy._register_pipeline")
 
         deploy_pipeline(dag, stage="dev", region="us-east-1")
@@ -283,6 +283,7 @@ class TestPostDeployScheduleStateEnforcement:
                 return _sam_stack_response()
             return _pipeline_stack_response(ARN)
         cfn.describe_stacks.side_effect = _describe_stacks
+        cfn.describe_change_set.return_value = {"Status": "CREATE_COMPLETE", "ChangeSetName": "cs"}
 
         scheduler = mocker.MagicMock()
         scheduler.get_schedule.side_effect = Exception("ThrottlingException")
@@ -298,7 +299,6 @@ class TestPostDeployScheduleStateEnforcement:
         cfg.namespace = "acme"
         cfg.profile = None
         cfg.for_stage.return_value = _stage_cfg_mock(mocker)
-        mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
         mocker.patch("polyris.deploy._register_pipeline")
 
         # Must not raise — the deploy as a whole already succeeded via CFN.

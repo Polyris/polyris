@@ -39,6 +39,8 @@ def _build_help_text() -> str:
         f"{rule}\n"
         "\n"
         f"{_c('Available commands:', BOLD)}\n"
+        f"  {_col('polyris-up', 20)} Install or upgrade the platform in your AWS account\n"
+        f"  {_col('polyris-down', 20)} Delete the platform stack\n"
         f"  {_col('polyris-init', 20)} Create a new pipeline or project config\n"
         f"  {_col('polyris-deploy', 20)} Deploy pipeline via CloudFormation\n"
         f"  {_col('polyris-validate', 20)} Validate pipeline(s) for errors\n"

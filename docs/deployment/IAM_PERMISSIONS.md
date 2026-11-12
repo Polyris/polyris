@@ -7,10 +7,10 @@ Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-
 ## Contents
 
 - [Lifecycle overview](#lifecycle-overview)
-- [Install — first-time `sam deploy`](#install--first-time-sam-deploy)
+- [Install — `polyris-up` (or a from-source `sam deploy`)](#install--polyris-up-or-a-from-source-sam-deploy)
 - [Deploy — per-pipeline `polyris-deploy`](#deploy--per-pipeline-polyris-deploy)
 - [Operate](#operate)
-- [Remove — `sam delete` / stack teardown](#remove--sam-delete--stack-teardown)
+- [Remove — `polyris-down` / stack teardown](#remove--polyris-down--stack-teardown)
 - [IAM roles polyris creates](#iam-roles-polyris-creates)
 - [Cross-account model](#cross-account-model)
 
@@ -18,16 +18,16 @@ Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-
 
 | Phase | Who runs it | Frequency | AWS-level permissions needed |
 |-------|-------------|-----------|------------------------------|
-| **Install** | Platform admin or CI role | Once per account | Broad — 118 resources across 10 services |
+| **Install** | Platform admin or CI role | Once per account | Broad — 86 resources across 10 services |
 | **Deploy** | Developer or CI role | Per pipeline, per change | Narrow — CloudFormation + Step Functions + PassRole |
 | **Operate** | Console user (Cognito) / on-call engineer | Continuous | None (Console user) or read-only (on-call) |
 | **Remove** | Platform admin | Rare | Same as Install + S3 bucket empty rights |
 
 Approval question for each phase: *what happens if this role is compromised?* Install/Remove have the largest blast radius; Deploy and Operate are narrower.
 
-## Install — first-time `sam deploy`
+## Install — `polyris-up` (or a from-source `sam deploy`)
 
-The polyris SAM stack creates 84 resources across 10 AWS services in one CloudFormation stack. The role that runs `sam build && sam deploy` needs permission to create every resource type in the stack.
+The polyris platform stack creates 86 resources across 10 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
 
 ### Recommended approach: AWS-managed policies
 
@@ -44,14 +44,15 @@ If your org requires enumerated permissions, the installer role needs these serv
 
 | AWS service | Actions | Why |
 |-------------|---------|-----|
-| `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListStackResources` | SAM builds the CFN change set and executes it |
+| `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources` | `polyris-up` / SAM build the change set and execute it |
+| `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
 | `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 11 roles + 2 managed policies |
 | `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 8 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
 | `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion` | 9 Lambda functions (console-api, reconcile, evaluate-deps, notify-*, etc.) |
 | `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource` | 14 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
-| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 18 log groups |
-| `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket` | Console UI bucket + results bucket |
-| `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig` | Console API auth |
+| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 19 log groups |
+| `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutEncryptionConfiguration`, `PutBucketTagging`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket`, `ListBucketVersions`, `DeleteObjectVersion` | Console UI bucket, results bucket, and the artifacts bucket `polyris-up` uploads release code to |
+| `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig`, `AdminCreateUser`, `AdminDeleteUser`, `AdminGetUser` | Console API auth; the first console admin when `AdminEmail` is set |
 | `cloudfront` | `CreateDistribution`, `UpdateDistribution`, `DeleteDistribution`, `GetDistribution`, `CreateOriginAccessControl`, `DeleteOriginAccessControl`, `CreateResponseHeadersPolicy`, `DeleteResponseHeadersPolicy`, `CreateFunction`, `DeleteFunction`, `PublishFunction`, `UpdateFunction` | Console UI hosting |
 | `apigateway` | `POST`, `GET`, `PUT`, `DELETE`, `PATCH` on `/v2/apis/*` and `/tags/*` | Console API HTTP endpoint |
 
@@ -190,11 +191,11 @@ The runtime role polyris creates for your task Lambdas / Glue / ECS / Batch cont
 
 Default coverage (as of 1.0.1): Athena queries + Glue Data Catalog CRUD + basic S3 + task-service `StartJobRun` / `RunTask` / `SubmitJob` etc. Full list: [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam).
 
-## Remove — `sam delete` / stack teardown
+## Remove — `polyris-down` / stack teardown
 
 Same permission surface as Install — the CFN operations that created every resource must be able to delete every resource. Plus one extra concern: S3 buckets must be empty before CFN can delete them.
 
-The polyris stack ships a `BucketCleanupFunction` Custom Resource that empties buckets automatically on stack deletion. The role running `sam delete` needs `lambda:InvokeFunction` on it (already covered by `PowerUserAccess`).
+Before deleting, `polyris-down` reads the pipeline registry (`dynamodb:Scan`) and checks each pipeline's state machine (`states:DescribeStateMachine`). It empties the console UI bucket itself, the results bucket only with `--delete-data`, and the artifacts bucket when it deletes it (`s3:ListBucketVersions`, `s3:DeleteObject`, `s3:DeleteObjectVersion`). For a from-source `sam delete`, the stack can ship a `BucketCleanupFunction` Custom Resource (`AutoEmptyBucketsOnDelete=true`) that empties both buckets on stack deletion; the role running `sam delete` needs `lambda:InvokeFunction` on it (already covered by `PowerUserAccess`).
 
 If the cleanup Lambda fails (permission issue, timeout on a very full bucket), you can empty buckets manually before retrying:
 
@@ -203,11 +204,11 @@ aws s3 rm "s3://${Namespace}-${Stage}-polyris-console-ui" --recursive
 aws s3 rm "s3://${Namespace}-${Stage}-polyris-results" --recursive
 ```
 
-Then re-run `sam delete`.
+Then re-run `polyris-down` (or `sam delete`).
 
 ## IAM roles polyris creates
 
-Ten IAM roles the stack creates during Install. Every role's `RoleName` starts with `${Namespace}-${Stage}-polyris-`. Every trust policy names `states.amazonaws.com`, `lambda.amazonaws.com`, or another AWS service — none accept root or IAM user principals.
+Eleven IAM roles the stack creates during Install. Every role's `RoleName` starts with `${Namespace}-${Stage}-polyris-`. Every trust policy names `states.amazonaws.com`, `lambda.amazonaws.com`, or another AWS service — none accept root or IAM user principals.
 
 | Role | Trust principal | Purpose |
 |------|-----------------|---------|
@@ -218,6 +219,7 @@ Ten IAM roles the stack creates during Install. Every role's `RoleName` starts w
 | `polyris-query-subscriptions-role` | Lambda | Reads the `dep-subscriptions` DDB table to find downstream tasks when an upstream completes |
 | `polyris-check-assets-role` | Lambda | Reads `asset-events` and `asset-subscriptions` DDB tables for asset-triggered pipelines |
 | `polyris-notify-asset-subscribers-role` | Lambda | Starts downstream pipeline executions when an asset publishes |
+| `polyris-reconcile-role` | Lambda | Decides whether a waiting task is ready and signals its wrapper (ADR #130). Reads task, dependency, pause and asset-fact rows; writes only coordination statuses and warnings; `DescribeExecution` limited to dependency-wrapper executions |
 | `polyris-notify-role` | Lambda | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |
 | `polyris-bucket-cleanup-role` | Lambda | One-off role for the CustomResource that empties S3 buckets on Remove |

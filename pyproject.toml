@@ -63,6 +63,8 @@ polyris-register = "polyris.register:main"
 polyris-validate = "polyris.validation:main"
 polyris-local = "polyris.local:main"
 polyris-build-lambda = "polyris.build_lambda:main"
+polyris-up = "polyris.up:main_up"
+polyris-down = "polyris.up:main_down"
 
 [tool.setuptools.package-data]
 polyris = ["py.typed"]
@@ -136,6 +138,12 @@ omit = [
     # it actually needs AWS; if it does not, write the test.
     #
     "polyris/deploy.py",
+    # polyris-up / polyris-down: S3 + CloudFormation orchestration (ADR #131).
+    # Its pure logic is in polyris/platform.py and polyris/cfn_changeset.py,
+    # which ARE measured; the AWS orchestration is exercised in
+    # tests/sdk/test_up.py (S3/STS on moto, CloudFormation faked at the client)
+    # and by the live smoke run.
+    "polyris/up.py",
     "polyris/codegen/sync_enums.py",
     "polyris/codegen/sync_variables.py",
     # codegen drift-checkers. Their *logic* is unit-tested against tmp_path

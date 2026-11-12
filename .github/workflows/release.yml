@@ -1,0 +1,82 @@
+name: Release artifacts
+
+# Builds the platform release archive that `polyris-up` installs (ADR #131)
+# and attaches it to the GitHub Release of the tag:
+#
+#   polyris-platform-vX.Y.Z.zip          template + Lambda zips + SFN definitions + UI
+#   polyris-platform-vX.Y.Z.zip.sha256   checked by polyris-up after download
+#
+# `polyris-up` downloads the archive matching the installed polyris version,
+# so every v* tag must carry one. scripts/release.sh pushes the tag and
+# creates the Release; whichever of the two runs first creates it, the other
+# reuses it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build artifacts for, e.g. v1.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  platform-archive:
+    name: Platform archive
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # Lambda runtime is python3.12 (sam/template.yaml Globals); sam build's
+      # pip builder needs the same interpreter on PATH.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Check tag matches package version
+        run: |
+          VERSION="${TAG#v}"
+          grep -q "^version = \"$VERSION\"$" pyproject.toml \
+            || { echo "::error::pyproject.toml version is not $VERSION"; exit 1; }
+
+      - name: Install build tools
+        run: pip install aws-sam-cli pyyaml boto3
+
+      - name: Build Lambdas (sam build)
+        working-directory: sam
+        run: sam build --build-dir ../build/sam
+
+      - name: Build UI
+        working-directory: ui
+        run: npm ci && npm run build
+
+      - name: Assemble archive
+        run: |
+          python scripts/build_platform_release.py \
+            --version "${TAG#v}" \
+            --sam-build-dir build/sam \
+            --ui-dir ui/out \
+            --out dist
+
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          gh release upload "$TAG" dist/polyris-platform-*.zip dist/polyris-platform-*.zip.sha256 --clobber

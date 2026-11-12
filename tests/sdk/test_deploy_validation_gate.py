@@ -189,6 +189,10 @@ def test_namespace_stage_length_guardrail(mocker):
 
     Guards are skipped on --destroy (no IAM roles created); test uses deploy path.
     """
+    # A project with config.py: its own naming applies, so the guard runs
+    # before any AWS call (without config.py the platform's naming is
+    # adopted first — see test_deploy_platform_discovery.py).
+    mocker.patch("polyris.config._find_project_config", return_value="config.py")
     dag = mocker.MagicMock()
     dag.dag_id = "my-pipeline"
     mocker.patch(
@@ -243,6 +247,10 @@ def test_scheduler_role_dag_id_length_guardrail(mocker):
     With ns=5, stage=4 (total 9, well under 25), dag_id must be ≤ 30 chars.
     Guard only fires for time-triggered DAGs (dag.schedule truthy, not asset-triggered).
     """
+    # A project with config.py: its own naming applies, so the guard runs
+    # before any AWS call (without config.py the platform's naming is
+    # adopted first — see test_deploy_platform_discovery.py).
+    mocker.patch("polyris.config._find_project_config", return_value="config.py")
     dag = mocker.MagicMock()
     # ns(5) + stage(4) + dag_id(31) = 40 > 39 → scheduler role = 65 chars
     dag.dag_id = "this-is-a-very-long-pipeline-id"  # 31 chars

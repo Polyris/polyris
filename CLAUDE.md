@@ -397,15 +397,21 @@ tests/
 ## Deployment
 
 ```bash
-# Infrastructure
-cd sam && sam build && sam deploy --profile <profile>
+# Users (ADR #131): prebuilt release of the installed polyris version — Python + AWS credentials only
+polyris-up --profile <profile>                 # install / upgrade the platform
+polyris-down --profile <profile>               # remove it
 
-# UI only
-cd ui && npm ci && npm run build && ./deploy.sh --profile <profile>
+# Contributors: from a checkout
+cd sam && sam build && sam deploy --profile <profile>
+cd ui && npm ci && npm run build && ./deploy.sh <stack> <region> --profile <profile>
 
 # Pipeline
 cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 ```
+
+**Release contract (ADR #131).** Every `v*` tag must publish `polyris-platform-vX.Y.Z.zip` (`.github/workflows/release.yml` → `scripts/build_platform_release.py`); `polyris-up` downloads the one matching `polyris.__version__`. The archive layout lives in `polyris/platform.py` (`Manifest`), imported by both sides — change it there, and bump `MANIFEST_FORMAT` if an older `polyris-up` can't read the new layout. A new `AWS::Serverless::Function` or `AWS::Serverless::StateMachine` with a local `CodeUri` / `DefinitionUri` is picked up automatically. Any other `AWS::Serverless::*` local path (`CodeUri`, `ContentUri`, `DefinitionUri` — e.g. a layer) fails `rewrite_template`, and with it the PR's *Platform archive* CI job, until `scripts/build_platform_release.py` packages it.
+
+**Neither `polyris-up` nor `polyris-deploy` may shell out to the `aws` / `sam` CLIs** — deploys go through `polyris/cfn_changeset.py` (boto3 change sets). The user-side promise is "Python and AWS credentials".
 
 **Pre-deploy resource check:** `polyris-deploy` runs two advisory checks before generating the CloudFormation template:
 
@@ -546,7 +552,7 @@ In `template.yaml`, always verify:
 | `check-assets` | Asset freshness checks + `wait_for` subscription writes | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `notify-asset-subscribers` | Wake `wait_for` tasks on asset events | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
-| `ui-bootstrap` | Copy UI to S3 on deploy | — |
+| `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `evaluate_deps`, `notify_asset_subscribers`, `check_assets`, `query_subscriptions`, `ui_bootstrap` still use bare `print()` — migrate opportunistically.
 
@@ -610,11 +616,23 @@ except (ClientError, BotoCoreError) as e:
 
 **Re-raise permission errors** — never return `{}` or `[]` silently on AccessDeniedException.
 
+**A new AWS call in `console_api` needs its IAM action on `ConsoleApiRole` in the same change.** Step Functions calls are pinned by `tests/sdk/test_console_api_sfn_iam_parity.py`; a missing `states:ListStateMachines` left `/api/health` at 503 on every stack until the ADR #131 live smoke caught it.
+
 **Stop pipeline hierarchy** (always stop in this order):
 1. Pipeline SFN execution (reconstruct ARN: `sfn_arn.replace(':stateMachine:', ':execution:') + ':' + pipeline_execution`)
 2. All `wrapper_execution_arn` from task items (deduplicated)
 3. All `task_execution_arn` from task items
 4. Update DynamoDB → `stopped`/`aborted`
+
+---
+
+## CloudFormation custom resources (Lambda-backed)
+
+Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
+1. **Bundle `cfnresponse.py`.** The runtime only injects `cfnresponse` for inline (`ZipFile`) functions; with `CodeUri` the import fails and the stack waits an hour. Copy `sam/lambdas/bucket_cleanup/cfnresponse.py` (a parity test keeps copies identical).
+2. **Stable `PhysicalResourceId`.** Pass it explicitly (derive it from a property such as the bucket name), never default to `context.log_stream_name`. A changed id makes CloudFormation follow every Update with a Delete of the "old" resource — which for `UiBootstrap` wiped the UI it had just installed.
+3. **Delete ≠ teardown.** A Delete also fires when an update removes the resource. Destroy data only if the parent stack status is `DELETE_IN_PROGRESS` / `ROLLBACK_IN_PROGRESS`; on any doubt keep it, and always answer SUCCESS on Delete.
+4. **`s3.copy_object` ignores `CacheControl` / `ContentType` unless `MetadataDirective="REPLACE"`** — and with REPLACE you must pass `ContentType`, or it becomes `binary/octet-stream`.
 
 ---
 
