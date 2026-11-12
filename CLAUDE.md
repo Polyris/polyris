@@ -252,6 +252,62 @@ events: List[Dict[str, Any]] = raw
 
 Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
 
+**38. Error visibility: no infrastructure failure may be silent**
+Every infrastructure failure ends in one of three ways (ADR #130 §9):
+- it is retried automatically until it succeeds;
+- it fails the affected task with the real cause, visible in the console;
+- it surfaces in the console as a warning (bell) or as the engine-health banner.
+
+It is always logged with `error=str(e)`. See the [Error Visibility section](#error-visibility-adr-38) for the `_notify_warn_` pattern.
+
+Production code and tests cite "Principle #38" for error visibility. Never renumber this entry.
+
+**39. When a new field replaces an old one in a multi-reader contract, keep writing the old field until every reader is migrated**
+If code A introduces a field that supersedes an old one while code B still falls back to the old field, A must write both. Stopping the old write silently breaks B's fallback, often only in one timing window.
+
+Correct: write both until every reader is updated and deployed. If every reader is replaced in the same deploy, nothing is left to fall back.
+Anti-pattern: write only the new field because "the old one is deprecated" while B still reads it.
+
+Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
+
+**40. Delete a wake-up pointer only after the signal it serves was accepted — never before**
+A subscription, or any pointer that says "wake this waiter", may be deleted only after the signal it exists for was accepted. If you delete first and then fail to signal, nothing will ever re-check the waiter.
+
+In the reconciler (ADR #130 §3), a run's pointers are deleted only after an accepted signal. Leftover pointers are harmless no-ops that expire by TTL.
+
+**41. Wake-up hints may be lost; wake-up decisions may not**
+- **Hint paths** only say "check this waiter again": the asset-events stream, `notify_dependents`, registration, resume. They may fail or drop a hint, because a periodic re-check from facts (the sweeper, ADR #130 §8) recovers it.
+- **Decision and action paths** never fail silently: the reconciler and the wrapper's status write. They retry, fail the affected task with the real cause, or surface a console warning (#38).
+
+Anti-pattern: a wake-up path whose loss nothing re-checks, for example a fire-and-forget invoke with no periodic re-check behind it.
+
+**42. A second bug of the same class in one mechanism stops the patching — question the model first**
+When a mechanism produces a second bug of the same class (e.g. "task silently hangs until timeout"), do not patch it a third time. Stop and write down, before any code:
+- what the bug class is;
+- why the current model keeps producing it;
+- what model would make it impossible.
+
+Then decide with the maintainer: patch now and schedule the model change, or change the model now. Record the decision in an ADR.
+
+**Why:** a flag-based AND gate drafted on an unmerged branch (superseded by ADR #130) produced four separate silent-hang bugs, each fixed locally. The root cause was the model: readiness was accumulated from events instead of evaluated from facts. Each local fix looked like an isolated oversight; together they were a signal.
+
+**How to apply:** keep a running count per mechanism during a branch. "Same class" means the same user-visible failure, not the same line of code. This is the escalation step of Principle #5. It does not forbid shipping the patch, but the model question must be asked and answered.
+
+**43. The receiver of a signal owns the status transition that follows it**
+When component A signals component B (e.g. `SendTaskSuccess` to a waiting wrapper), B writes the resulting status, not A. If A writes it, two things break:
+- a crash between the signal and the write loses the status;
+- a consumed token cannot be told apart from an expired one.
+
+Under ADR #130 the wrapper writes `deps_ready`, `skipped` or `upstream_failed` itself, and the reconciler only signals.
+
+**44. A guard for an optional overlay import catches only that module's absence**
+`try: import ee` must catch only a `ModuleNotFoundError` whose `name` is the overlay module. If it catches every `ImportError`, a broken import inside the overlay silently removes every route the overlay provides.
+
+**45. No custom CloudWatch metrics, alarms, SNS topics or DLQs in the platform template**
+Code computes engine health on demand and shows it in the console (ADR #130 §9). Failures follow #38 and #41. Custom metrics, alarms, topics and queues cost every user money and need someone to watch them.
+
+A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)

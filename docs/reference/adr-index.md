@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_99 rows indexed (75 inline, 24 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_100 rows indexed (75 inline, 25 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|
@@ -109,3 +109,4 @@ _99 rows indexed (75 inline, 24 standalone). Actual ADR count is higher — ADRs
 | 126 | Pre-deploy resource existence check in `polyris-deploy` | inline |
 | 127 | Pre-deploy resource override check in `polyris-deploy` | inline |
 | 128 | `mark_success` wakes `wait_for` subscribers via direct Lambda invoke | [`adr-128-mark-success-wakes-wait-for.md`](adr-128-mark-success-wakes-wait-for.md) |
+| 130 | Coordination layer: one reconciler, facts as state, stream-driven hints | [`adr-130-coordination-reconciler.md`](adr-130-coordination-reconciler.md) |

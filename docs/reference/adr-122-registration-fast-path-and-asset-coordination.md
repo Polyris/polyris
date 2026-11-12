@@ -1,6 +1,6 @@
 # ADR #122 — Registration fast-path resolves `deps_skip`/`deps_blocked`; `evaluate_deps` gates on `assets_ready` for wait_for coordination
 
-> **Status:** ACCEPTED AND IMPLEMENTED.
+> **Superseded by [ADR #130](adr-130-coordination-reconciler.md).** Readiness is now decided by a single reconciler from facts; the registration verdicts and the `assets_ready` flag described here are removed. Do not use as reference. Kept for git-history readability only.
 
 ## Context
 
