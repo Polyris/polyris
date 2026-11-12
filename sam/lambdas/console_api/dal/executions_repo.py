@@ -11,6 +11,8 @@ Table schema:
 """
 
 from boto3.dynamodb.conditions import Key
+
+from coordination_core import attention as att
 from config import dynamodb, TABLE_NAME
 from utils import scan_all, query_all
 
@@ -270,6 +272,25 @@ class ExecutionsRepo:
         """
         query_params.setdefault('IndexName', 'date-pipeline-index')
         return self.table.query(**query_params)
+
+    def recent_warnings(self, since: str, limit: int) -> list:
+        """Warning rows (`records.warning_item`) written since `since` (UTC, `…Z`), newest first.
+
+        Read from the attention index by write time (ADR #130 §9), across its
+        16 `warn#` shards, so a warning about a task of any partition date
+        reaches the bell (defect B-N1). The index projects what the bell shows.
+        """
+        rows: list = []
+        for partition in att.partitions(att.WARN):
+            response = self.table.query(
+                IndexName=att.INDEX,
+                KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).gte(since),
+                ScanIndexForward=False,
+                Limit=limit,
+            )
+            rows.extend(response.get('Items', []))
+        rows.sort(key=lambda r: str(r.get(att.DUE, '')), reverse=True)
+        return rows[:limit]
 
     # ── Scan operations ───────────────────────────────────────────────────
 

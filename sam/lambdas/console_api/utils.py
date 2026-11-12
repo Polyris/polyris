@@ -71,7 +71,7 @@ def is_internal_record(execution_name: str) -> bool:
 
     Internal records use _ prefix:
     - _pause_{pipeline_execution} — pause state
-    - _notify_warn_{execution_name} — infrastructure warning (visible in Notifications bell)
+    - _notify_warn_{kind}_{execution_name} — infrastructure warning (visible in Notifications bell)
 
     Canonical output store records (``output#pipeline#task#date``, written by the
     run_task wrapper for upstream reads) are also internal — they carry a task's

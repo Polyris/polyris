@@ -16,8 +16,9 @@ Update it when something moves. Paths here are checked by
   `feat/coordination-reconciler`, ships as v1.2.0 in one delivery. Done: `reconcile` and
   `asset-fanout` decide readiness from facts; registration, `notify_dependents`, asset facts
   and asset-scheduled pipelines are wired to them; the old coordination Lambdas, the push
-  state machine and the AND-queue table are gone. Next: pause, resume and restart from
-  facts, the sweeper and the engine-health banner; then docs, reviews and a live deploy.
+  state machine and the AND-queue table are gone; pause, resume and restart decide from
+  facts; the sweeper re-checks, retries, catches up and reports; the console shows engine
+  health and reads warnings by write time. Next: docs, reviews and a live deploy.
 
 ## Decided, not done
 

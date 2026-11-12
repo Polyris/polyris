@@ -739,14 +739,13 @@ class TestSyntheticOutputMarker:
             'transform', {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'})},
         )
         assert resp['statusCode'] == 200, resp
-        # _notify_warn_* record emitted so the UI Notifications bell surfaces it.
-        # status='failed' MUST match `notifications.py::get_notifications`'s
-        # filter (`Attr('status').is_in(['failed', 'waiting_decision'])`);
-        # anything else lands in DDB but stays invisible to the operator.
-        warn_keys = [k for k in fake_table.items if k.startswith('_notify_warn_marker_blocked_')]
+        # A `manual` warning row, which the bell reads through the attention index
+        # (tests/routes/test_coordination_visibility.py pins that read).
+        warn_keys = [k for k in fake_table.items if k.startswith('_notify_warn_manual_marker_blocked_')]
         assert len(warn_keys) == 1, f"Expected exactly one _notify_warn_ record; got {warn_keys}"
         warn_row = fake_table.items[warn_keys[0]]
-        assert warn_row['status'] == 'failed'
+        assert (warn_row['kind'], warn_row['task_date']) == ('manual', '2026-07-24')
+        assert warn_row['attention'].startswith('warn#')
         assert 'real output' in warn_row['error'].lower()
         # Real output preserved regardless.
         assert json.loads(

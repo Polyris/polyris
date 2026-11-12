@@ -15,11 +15,10 @@ from .partitions import GRANULARITIES, detect_granularity
 from . import attention as att
 from .asset_conditions import Fact
 from .partition import partition_date
-from .statuses import FAILED
+from .statuses import FAILED, WARNING_KINDS
 from .sweep import next_push_retry
 from .times import format_utc, parse_utc
 
-WARNING_KINDS = frozenset({"coordination", "zombie", "push", "sweeper", "notify"})
 WARNING_TTL = timedelta(days=8)
 WARNING_PREFIX = "_notify_warn_"
 

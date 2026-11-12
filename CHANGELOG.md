@@ -1,5 +1,13 @@
 ## Unreleased
 
+### Added — engine health and warnings in the console (ADR #130 §9)
+
+- `GET /api/health` has a `coordination` section: the problems with task coordination, judged from the sweeper's last self-check. A sweeper that has not reported for 15 minutes, a disabled asset-events stream or mapping, and waiting tasks more than 40 minutes behind their checks are each a problem. The API then answers `degraded` with 200, not 503.
+- The console shows a banner under its header while there are problems, and lists them.
+- The bell reads warnings from the attention index by the time they were written, so a warning about a task of an old partition, a backfill for example, now reaches it (B-N1). Each warning is named by its kind: a task that can no longer be woken, a delayed wake-up, an asset-scheduled run that could not start, dependent tasks that were not notified, a failed registration step, a manual action that kept the real output.
+- Every warning row has one shape, `records.warning_item`, with a `kind` from `WarningKind` and an 8-day TTL. The registration warnings of a generated pipeline and the console's notify and manual-action warnings now use it too; they used to carry the task's date and a 1-day TTL.
+- A template test keeps CloudWatch alarms, dashboards, SNS topics, SQS queues, dead-letter configs and the permission to publish metrics or messages out of the platform template (Principle #45).
+
 ### Added — the sweeper (ADR #130 §8)
 
 - A new function, `polyris-sweeper`, runs every 5 minutes (EventBridge Scheduler, no retries) and re-checks every waiting task whose due time has come, from its facts. A wake-up hint lost on any path now delays a task; it no longer loses it. A task that still waits is due again in 10, 20, then every 30 minutes.
@@ -8,7 +16,7 @@
 - One run at a time holds a lease row; a run that dies frees it within 270 seconds.
 - A push start that failed transiently is retried by the sweeper, from 5 minutes up to every hour; after 24 hours it gives up with a `push` warning. A permanent failure is a `push` warning at once.
 - Once an hour the sweeper replays the push of every fact written in the last 48 hours, so a lost stream record cannot lose a push start either. Run names are deterministic, so nothing starts twice.
-- Each run ends with a self-check written to the `_engine_health` row: whether the asset-events stream and its mapping are enabled, the oldest overdue waiting task, and the push retry backlog. The console reads it (next change).
+- Each run ends with a self-check written to the `_engine_health` row: whether the asset-events stream and its mapping are enabled, the oldest overdue waiting task, and the push retry backlog. `/api/health` reads it.
 - After an upgrade, the sweeper adopts what the old version wrote: waiting tasks get an attention entry, due at once, and are reconciled from their facts; old facts get their partition fields. The task scan repeats for an hour, to catch tasks registered during the stack update.
 
 ### Fixed — pause, resume and restart (ADR #130 §6.5)

@@ -236,6 +236,22 @@ class ManualResolution:
     STOP = "stop"                    # Operator stopped a running task (may be restarted later)
 
 
+class WarningKind:
+    """What a warning in the console bell is about (ADR #130 §9).
+
+    Written by the coordination Lambdas, the console, the SFN templates and the
+    generated pipeline state machines as the ``kind`` of a ``_notify_warn_`` row
+    (``records.warning_item``), and shown by the UI bell. Regenerate after a
+    change (``make generate-enums``).
+    """
+    COORDINATION = "coordination"  # a wake-up path failed, or registration could not finish
+    ZOMBIE = "zombie"              # a waiting task can no longer be woken; it was aborted
+    PUSH = "push"                  # a pipeline scheduled on an asset could not be started
+    SWEEPER = "sweeper"            # the sweeper woke a task whose wake-up hint was lost
+    NOTIFY = "notify"              # notify_dependents failed after a task finished
+    MANUAL = "manual"              # a manual action kept the task's real output instead of its marker
+
+
 # =============================================================================
 # Pipeline-level statuses (v0.79.0 SSoT consolidation, ADR #72)
 # =============================================================================

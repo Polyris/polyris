@@ -127,11 +127,35 @@ export function useNotificationsQuery(limit = 10, hours = 4) {
     });
 }
 
+/** Why the coordination engine is unhealthy; empty while it is healthy (ADR #130 §9). */
+export interface EngineHealth {
+    problems: string[];
+}
+
+/**
+ * useEngineHealthQuery - The coordination section of /api/health, polled every 2 minutes.
+ * The sweeper reports every 5 minutes and the backend judges staleness (15 minutes), so a
+ * stopped sweeper shows too; polling faster would only add Step Functions and DynamoDB calls.
+ */
+export function useEngineHealthQuery() {
+    return useQuery({
+        queryKey: queryKeys.engineHealth(),
+        queryFn: async (): Promise<EngineHealth> => {
+            const data = await api.get('/health');
+            const problems = data?.checks?.coordination?.problems;
+            return { problems: Array.isArray(problems) ? problems.map(String) : [] };
+        },
+        staleTime: 60 * 1000,
+        refetchInterval: 2 * 60 * 1000,
+    });
+}
+
 const globalQueries = {
     useAllTasksQuery,
     useAllRunsQuery,
     useTaskEventsQuery,
     useNotificationsQuery,
+    useEngineHealthQuery,
 };
 
 export default globalQueries;

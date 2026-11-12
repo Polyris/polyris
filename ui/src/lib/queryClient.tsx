@@ -49,6 +49,7 @@ export const queryKeys = {
     assetDrift: () => ['assets', 'drift'] as const,
     
     notifications: (limit: number, hours: number) => ['notifications', limit, hours] as const,
+    engineHealth: () => ['engine', 'health'] as const,
     
     globalStats: ['global', 'stats'] as const,
 

@@ -9,6 +9,7 @@
 // file re-exports them for backward-compatible import paths. Don't edit
 // the unions here — edit polyris/constants.py and re-run codegen.
 
+import type { WarningKind } from '@/generated/enums';
 import type {
     TaskStatus,
     TriggerRule,
@@ -233,6 +234,12 @@ export interface Notification {
   timestamp?: string;
   time_ago?: string;
   acknowledged?: boolean;
+  /** ADR #130 §9 — what a coordination warning is about. Populated when type='warning'. */
+  kind?: WarningKind;
+  /** The failure or warning text. */
+  error?: string;
+  /** The partition date of the task a warning is about. */
+  date?: string;
   /** ADR #68 — backfill terminal notifications. Populated when type='backfill'. */
   backfill_status?: 'completed' | 'failed' | 'partial' | 'canceled';
   backfill_id?: string;

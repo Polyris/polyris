@@ -20,6 +20,7 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn
+from coordination_core.records import warning_item
 from dal import asset_events_repo, executions_repo, pipelines_repo
 from dal.task_events_repo import task_events_repo
 from constants import Limits, TaskStatus, TASK_WAITING_STATUSES, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TASK_TERMINAL_STATUSES
@@ -579,26 +580,17 @@ def get_task_events(execution_name: str, event: Dict) -> Dict:
 def _write_notify_warning(
     execution_name: str, task_name: str, pipeline_execution: str, pipeline_name: str, date: str, error: str
 ) -> None:
-    """Write a warning record to pipeline-tokens when notify_dependents fails.
+    """Write a `notify` warning when a manual action could not start notify_dependents (ADR #130 §9).
 
-    This makes the failure visible in the Notifications bell in UI,
-    which polls pipeline-tokens for status=failed records.
+    A lost hint never fails the action: the sweeper re-checks the dependants.
+    The warning reaches the bell through the attention index.
     """
     try:
-        warn_key = f"_notify_warn_{execution_name}"
-        executions_repo.put(
-            {
-                'execution_name': warn_key,
-                'task_name': task_name,
-                'pipeline_execution': pipeline_execution,
-                'pipeline_name': pipeline_name,
-                'date': date,
-                'status': 'failed',
-                'error': f'Downstream notification failed: {error}. Downstream tasks may be stuck waiting.',
-                'finished_at': datetime.now(timezone.utc).isoformat(),
-                'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400,  # 24h TTL
-            }
-        )
+        executions_repo.put(warning_item(
+            kind="notify", execution_name=execution_name, task_name=task_name, pipeline_name=pipeline_name,
+            pipeline_execution=pipeline_execution, task_date=date, error=f"notify_dependents failed: {error}",
+            now=datetime.now(timezone.utc),
+        ))
     except Exception as e:
         log.error("_write_notify_warning", "Failed to write warning", error=str(e))
 
@@ -751,26 +743,19 @@ def _emit_marker_blocked_warn(
     landing its marker because real output is already present. Best-effort —
     a failure here must not block the manual action either."""
     try:
-        # `status: 'failed'` — matches the Notifications bell's filter
-        # (`routes/notifications.py::get_notifications` filters `status
-        # ∈ {'failed', 'waiting_decision'}`). Using 'warning' silently
-        # would land the record in DDB but invisible to the operator.
-        exec_name = f"_notify_warn_marker_blocked_{pipeline_name}_{task_name}_{date}_{action_name}"
-        executions_repo.put({
-            'execution_name': exec_name,
-            'task_name': task_name,
-            'pipeline_name': pipeline_name,
-            'date': date,
-            'status': 'failed',
-            'error': (
+        # A `manual` warning: the bell reads it by write time, so it shows even
+        # when the operator acted on an old partition (ADR #130 §9).
+        executions_repo.put(warning_item(
+            kind="manual", execution_name=f"marker_blocked_{pipeline_name}_{task_name}_{date}_{action_name}",
+            task_name=task_name, pipeline_name=pipeline_name, pipeline_execution="", task_date=date,
+            error=(
                 f"Manual '{action_name}' by {operator} did not write a marker — "
                 f"real output for {task_name}@{date} already existed on the canonical row "
                 "and was preserved. Downstream reads see that real output, not the manual "
                 "resolution."
             ),
-            'finished_at': datetime.now(timezone.utc).isoformat(),
-            'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400,
-        })
+            now=datetime.now(timezone.utc),
+        ))
     except (ClientError, BotoCoreError) as e:
         log.warn(
             "_emit_marker_blocked_warn",

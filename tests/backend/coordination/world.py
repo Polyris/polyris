@@ -14,7 +14,7 @@ import itertools
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
@@ -314,12 +314,16 @@ class World:
         for client in (self.ddb, self.resource.meta.client):
             client.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
 
-    def fail_starts(self, pipeline: Pipeline, code: str, *, times: int) -> None:
-        """The next `times` StartExecution calls for `pipeline` fail with `code` (e.g. throttling)."""
+    def fail_starts(self, target: Union[Pipeline, str], code: str, *, times: int) -> None:
+        """The next `times` StartExecution calls for `target` fail with `code` (e.g. throttling).
+
+        `target` is a deployed pipeline, or a platform state machine's logical id.
+        """
+        arn = target.arn if isinstance(target, Pipeline) else self.stack.machine_arn(target)
         runtime, real, left = self.runtime, self.runtime.start_execution, [times]
 
         def start_execution(**kwargs: Any) -> Dict[str, Any]:
-            if kwargs.get("stateMachineArn") == pipeline.arn and left[0] > 0:
+            if kwargs.get("stateMachineArn") == arn and left[0] > 0:
                 left[0] -= 1
                 raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, "StartExecution")
             return real(**kwargs)

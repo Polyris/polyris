@@ -4,6 +4,7 @@ import React, { lazy, Suspense, useEffect } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import { Button } from '@/components/ui/button';
 import { AlertTriangle, Loader2 } from './utils/icons';
+import EngineHealthBanner from './components/EngineHealthBanner';
 import { 
     HelpModal,
     ErrorBoundary,
@@ -115,7 +116,7 @@ function App() {
         <div className="app-shell">
             <Header
                 apiConnected={apiConnected}
-                onNotificationNavigate={(name, execId) => navigateToExecution(name, execId)}
+                onNotificationNavigate={(name, execId, date) => navigateToExecution(name, execId, date)}
                 onNotificationNavigateBackfill={(backfillId) => router.push(`/backfills/${backfillId}/`)}
             />
             <div className="app-body">
@@ -130,6 +131,8 @@ function App() {
                 </div>
             )}
             
+            <EngineHealthBanner />
+
             <main className="main" id="main-content">
                 {mainView === 'pipelines' ? (
                     <div className="main-top">

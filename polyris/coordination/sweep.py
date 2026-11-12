@@ -74,7 +74,7 @@ def engine_problems(health: Optional[Mapping[str, Any]], now: datetime) -> List[
     from .times import parse_utc
 
     if not health or not health.get("checked_at"):
-        return ["The sweeper has never reported: waiting tasks are not re-checked."]
+        return ["The sweeper has not reported yet: waiting tasks are not re-checked until it does."]
     problems = []
     silent = now - parse_utc(str(health["checked_at"]))
     if silent > STALE_AFTER:

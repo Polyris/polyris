@@ -14,7 +14,7 @@ import {
 
 interface HeaderProps {
     apiConnected: boolean;
-    onNotificationNavigate: (pipelineName: string, executionId?: string) => void;
+    onNotificationNavigate: (pipelineName: string, executionId?: string, date?: string) => void;
     /** ADR #68 — navigate to backfill detail from backfill notification. */
     onNotificationNavigateBackfill?: (backfillId: string) => void;
 }

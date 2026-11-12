@@ -15,7 +15,9 @@ export {
     useAllRunsQuery,
     useTaskEventsQuery,
     useNotificationsQuery,
+    useEngineHealthQuery,
 } from './useGlobalQueries';
+export type { EngineHealth } from './useGlobalQueries';
 
 // Asset queries/types moved to src/ee/team/hooks/queries (Team-tier) — ADR #99.
 

@@ -348,12 +348,12 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
 1. **Heals itself in code.** Retries, the sweeper, push retries and catch-up, idempotent signals and starts. No human is needed.
 2. **Fails loudly in code.** Non-transient coordination errors fail the affected task with the real cause (§3 step 5; registration §6.3). Zombies are marked `aborted` with an explanation (§3 step 3). The user sees a failed task with its reason where they already look, and re-runs it after fixing the cause.
 3. **Engine health is shown in the console.** This covers the case where no code runs at all (schedule removed, event source mapping disabled, stream disabled).
-   - The sweeper writes `_engine_health`: last run, version, adoption state, event source mapping and stream state, oldest overdue waiting row, push retry backlog, last coordination error.
+   - The sweeper writes `_engine_health`: last run, event source mapping and stream state, oldest overdue waiting row, push retry backlog, and its adoption and catch-up progress. A coordination error reaches the bell as a warning, not this row.
    - `/api/health` adds a `coordination` section. It also judges staleness itself: no sweeper run for 15 minutes means the engine is unhealthy.
    - The console shows a banner while the engine is unhealthy.
 
-**Warnings.** One helper, `write_warning(*, kind, execution_name, task_name, pipeline_name, pipeline_execution, task_date, error)`, writes `_notify_warn_{kind}_{execution_name}`:
-- `kind ∈ WarningKind`: `coordination`, `zombie`, `push`, `sweeper`, `notify`;
+**Warnings.** One helper, `records.warning_item(*, kind, execution_name, task_name, pipeline_name, pipeline_execution, task_date, error, now)`, builds the row `_notify_warn_{kind}_{execution_name}`; SFN templates and generated ASL write the same shape, pinned by contract tests:
+- `kind ∈ WarningKind`: `coordination`, `zombie`, `push`, `sweeper`, `notify`, and `manual` for a manual action that kept a task's real output;
 - `attention = warn#{h}`, `attention_at = now`;
 - TTL 8 days.
 

@@ -126,6 +126,29 @@ def _wrapper_name_part(node_id: str) -> str:
     return fit_task_id(node_id, _TASK_ID_BUDGET)
 
 
+def _warning_item(subject: str, task_name: str, dag_id: str, error: str) -> Dict[str, Any]:
+    """A DynamoDB-typed `coordination` warning row, the shape of records.warning_item (ADR #130 §9).
+
+    `subject` and `error` are JSONata fragments. The row carries no `date`:
+    the bell finds it through the attention index by write time, whatever the
+    partition date of the run (B-N1). A contract test compares the two shapes.
+    """
+    return {
+        "execution_name": {"S": f"{{% '_notify_warn_coordination_' & {subject} %}}"},
+        "kind": {"S": "coordination"},
+        "task_name": {"S": task_name},
+        "pipeline_name": {"S": dag_id},
+        "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
+        "task_date": {"S": JSONATA_DATE},
+        "status": {"S": "failed"},
+        "error": {"S": f"{{% {error} %}}"},
+        "finished_at": {"S": JSONATA_NOW},
+        "attention": {"S": f"{{% 'warn#' & $substring($hash({subject}, 'SHA-256'), 0, 1) %}}"},
+        "attention_at": {"S": JSONATA_NOW},
+        "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"},
+    }
+
+
 def _make_execution_name_expr(task_id: str) -> str:
     """JSONata for a wrapper execution's Name: {task id part}-{date}-{run suffix}.
 
@@ -1408,17 +1431,8 @@ def _build_registration_chain(
         "Resource": "arn:aws:states:::dynamodb:putItem",
         "Arguments": {
             "TableName": tokens_table,
-            "Item": {
-                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-register_pipeline' %}"},
-                "pipeline_name": {"S": dag.dag_id},
-                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                "task_name": {"S": "Register_Pipeline"},
-                "date": {"S": JSONATA_DATE},
-                "status": {"S": "failed"},
-                "error": {"S": "{% 'Register_Pipeline failed: ' & $string($states.input._registration_error) %}"},
-                "finished_at": {"S": JSONATA_NOW},
-                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
-            }
+            "Item": _warning_item("$states.context.Execution.Name & '-register_pipeline'", "Register_Pipeline",
+                                  dag.dag_id, "'Register_Pipeline failed: ' & $string($states.input._registration_error)")
         },
         "Output": "{% $sift($states.input, function($v, $k) { $k != '_registration_error' }) %}",
         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1464,17 +1478,8 @@ def _build_registration_chain(
         "Resource": "arn:aws:states:::dynamodb:putItem",
         "Arguments": {
             "TableName": tokens_table,
-            "Item": {
-                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"},
-                "pipeline_name": {"S": dag.dag_id},
-                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                "task_name": {"S": "Save_DAG_Snapshot"},
-                "date": {"S": JSONATA_DATE},
-                "status": {"S": "failed"},
-                "error": {"S": "{% 'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error) %}"},
-                "finished_at": {"S": JSONATA_NOW},
-                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
-            }
+            "Item": _warning_item("$states.context.Execution.Name & '-save_dag_snapshot'", "Save_DAG_Snapshot",
+                                  dag.dag_id, "'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error)")
         },
         "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1526,17 +1531,11 @@ def _build_registration_chain(
                         "Resource": "arn:aws:states:::dynamodb:putItem",
                         "Arguments": {
                             "TableName": tokens_table,
-                            "Item": {
-                                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-write_subscription-' & $string($states.input._asset_name) %}"},
-                                "pipeline_name": {"S": dag.dag_id},
-                                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                                "task_name": {"S": "WriteSubscription"},
-                                "date": {"S": JSONATA_DATE},
-                                "status": {"S": "failed"},
-                                "error": {"S": "{% 'WriteSubscription failed for ' & $string($states.input._asset_name) & ': ' & $string($states.input._subscription_error) %}"},
-                                "finished_at": {"S": JSONATA_NOW},
-                                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
-                            }
+                            "Item": _warning_item(
+                                "$states.context.Execution.Name & '-write_subscription-' & $string($states.input._asset_name)",
+                                "WriteSubscription", dag.dag_id,
+                                "'WriteSubscription failed for ' & $string($states.input._asset_name) & ': ' "
+                                "& $string($states.input._subscription_error)")
                         },
                         "Output": "{% null %}",
                         "Retry": [_STANDARD_DYNAMODB_RETRY],

@@ -639,24 +639,22 @@ Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
 - If an error blocks downstream tasks → write `_notify_warn_` record to `pipeline-tokens`
 - A catch on a wake-up path (subscription write/query, `send_task_success`, a fail-open fallback) logs at `log.error`, never `log.warn` — a swallowed WARN is what hid the historical `wait_for` subscription-table schema mismatch for months (DAL wrote `dependency_key`/`subscriber`, env var pointed at `AssetSubscriptionsTable` which keyed on `asset_name`/`pipeline_name`); the ValidationException was caught and logged as warning
 
-**`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI):
+**`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI, ADR #130 §9). Build every warning row with `records.warning_item` — never by hand:
 ```python
-executions_repo.put({
-    'execution_name': f'_notify_warn_{execution_name}',
-    'task_name': task_name,
-    'pipeline_execution': pipeline_execution,
-    'pipeline_name': pipeline_name,
-    'date': date,
-    'status': 'failed',
-    'error': f'Context: {error}',
-    'finished_at': datetime.now(timezone.utc).isoformat(),
-    'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400
-})
+from coordination_core.records import warning_item
+
+executions_repo.put(warning_item(
+    kind="notify",                      # a WarningKind; add a member there for a new kind
+    execution_name=execution_name, task_name=task_name, pipeline_name=pipeline_name,
+    pipeline_execution=pipeline_execution, task_date=date,
+    error=f'Context: {error}', now=datetime.now(timezone.utc),
+))
 ```
+The row carries no `date`: the bell reads it from `attention-index` (`warn#{h}`) by write time, so a warning about an old partition still shows. A row with a `date` and no `attention` reaches the bell only while that date is in its window — the B-N1 bug. SFN templates and generated ASL write the same shape; a contract test compares each with `warning_item`.
 
 **Special prefixes in `pipeline-tokens`** — internal records:
 - `_pause_{pipeline_execution}` — pause state
-- `_notify_warn_{execution_name}` — infrastructure warning
+- `_notify_warn_{kind}_{execution_name}` — infrastructure warning (`records.warning_item`)
 
 **CRITICAL:** All loops iterating `pipeline-tokens` items MUST filter `_` prefixed records:
 ```python

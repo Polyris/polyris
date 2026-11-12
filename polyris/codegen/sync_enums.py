@@ -135,6 +135,15 @@ def _render_python_body() -> str:
     ))
     parts.append("\n")
 
+    # WarningKind — the `kind` of a coordination warning row; the UI bell shows it.
+    parts.append(_enum_class_py(
+        "WarningKind",
+        "What a warning in the console bell is about (ADR #130 §9).",
+        [(n, getattr(src.WarningKind, n))
+         for n in vars(src.WarningKind) if not n.startswith("_")],
+    ))
+    parts.append("\n")
+
     # PipelineStatus, ExecutionStatus, BackfillStatus, etc.
     for cls in (src.PipelineStatus, src.ExecutionStatus,
                 src.BackfillStatus, src.BackfillCascade,
@@ -289,6 +298,15 @@ def _render_ts_body() -> str:
         "(mark_success / skip / fail / stop). Single source of truth crossing "
         "SDK + backend + UI — see polyris/constants.py::ManualResolution.",
         [getattr(src.ManualResolution, n) for n in vars(src.ManualResolution)
+         if not n.startswith("_")],
+    ))
+    parts.append("\n")
+
+    parts.append(_ts_union(
+        "WarningKind",
+        "What a warning in the console bell is about (ADR #130 §9). "
+        "See polyris/constants.py::WarningKind.",
+        [getattr(src.WarningKind, n) for n in vars(src.WarningKind)
          if not n.startswith("_")],
     ))
     parts.append("\n")

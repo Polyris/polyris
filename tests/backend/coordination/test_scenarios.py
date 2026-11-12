@@ -297,6 +297,18 @@ def test_a_lost_hint_is_recovered_by_the_sweeper_with_a_warning(world):
     assert any(w["kind"] == "sweeper" for w in world.warnings())
 
 
+def test_a_lost_notify_after_mark_success_warns_and_the_sweeper_wakes_the_dependant(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.fail_starts("NotifyDependentsSfn", "ThrottlingException", times=1)
+    world.mark_success(run, "extract")
+    assert world.running_tasks(run) == []
+    [warning] = world.warnings()
+    assert (warning["kind"], warning["task_name"], warning["task_date"]) == ("notify", "extract", DATE)
+    world.clock.advance(minutes=40)
+    world.sweep()
+    assert world.running_tasks(run) == ["load"]
+
+
 def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.stop_wrapper_externally(run, "consumer")

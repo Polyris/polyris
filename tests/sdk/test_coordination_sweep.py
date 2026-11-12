@@ -46,7 +46,7 @@ def test_a_fresh_report_with_everything_enabled_is_healthy():
 
 
 def test_every_way_the_engine_can_be_unhealthy_is_named():
-    assert sweep.engine_problems(None, STARTED) == ["The sweeper has never reported: waiting tasks are not re-checked."]
+    assert sweep.engine_problems(None, STARTED) == ["The sweeper has not reported yet: waiting tasks are not re-checked until it does."]
     problems = sweep.engine_problems(_health(checked_at="2026-11-12T04:40:00.000Z", fanout_mapping="Disabled",
                                              stream="", oldest_overdue="2026-11-12T04:00:00.000Z"), STARTED)
     assert problems == [

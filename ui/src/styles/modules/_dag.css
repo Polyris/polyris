@@ -368,6 +368,19 @@
 .connection-banner button {
     margin-left: 0.5rem;
 }
+
+/* Coordination engine health (ADR #130 §9) */
+.engine-health-banner {
+    background: var(--warning);
+    color: #000;
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+}
+.engine-health-banner__text { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.engine-health-banner__problems { margin: 0; padding-left: 1.25rem; }
 @keyframes slideDown {
     from { transform: translateY(-100%); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }

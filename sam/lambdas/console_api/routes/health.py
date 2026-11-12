@@ -10,6 +10,7 @@ from boto3.dynamodb.conditions import Key, Attr
 
 from config import sfn
 from constants import Limits
+from coordination_core import sweep
 from dal import executions_repo, pipelines_repo, circuit_breakers_repo
 from response import cors_response
 from logger import log
@@ -62,6 +63,12 @@ def health_check(event: Dict) -> Dict:
     checks['circuit_breakers'] = _check_circuit_breakers()
     if checks['circuit_breakers']['status'] == UNHEALTHY:
         overall_status = DEGRADED
+
+    # 5. The coordination engine (ADR #130 §9). The console shows a banner while it is
+    # unhealthy; the API itself still serves, so the run stays degraded, not 503.
+    checks['coordination'] = _check_coordination()
+    if checks['coordination']['status'] != HEALTHY and overall_status == HEALTHY:
+        overall_status = DEGRADED
     
     # Calculate total check time
     elapsed_ms = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
@@ -91,6 +98,24 @@ def health_check_simple(event: Dict) -> Dict:
         'status': 'ok',
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
+
+
+def _check_coordination() -> Dict:
+    """The sweeper's last report, judged by the same rule the sweeper uses (sweep.engine_problems).
+
+    Staleness is judged here, from the report's own time: a sweeper that stopped
+    running cannot report that it stopped.
+    """
+    try:
+        report = executions_repo.get(sweep.HEALTH_KEY)
+    except (ClientError, BotoCoreError) as e:
+        log.error("health", "Could not read the engine health row", error=str(e))
+        return {'status': UNHEALTHY, 'problems': [f'The engine health row cannot be read: {e}'], 'report': {}}
+    problems = sweep.engine_problems(report, datetime.now(timezone.utc))
+    shown = {k: report[k] for k in ('checked_at', 'fanout_mapping', 'stream', 'oldest_overdue') if report and k in report}
+    if report and 'push_retry_backlog' in report:
+        shown['push_retry_backlog'] = int(report['push_retry_backlog'])     # a DynamoDB Decimal
+    return {'status': UNHEALTHY if problems else HEALTHY, 'problems': problems, 'report': shown}
 
 
 def _check_dynamodb() -> Dict:

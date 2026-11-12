@@ -81,7 +81,13 @@
         "TableName": "${tokens_table}",
         "Item": {
           "execution_name": {
-            "S": "{% '_notify_warn_' & $states.context.Execution.Name & '-register_pipeline' %}"
+            "S": "{% '_notify_warn_coordination_' & $states.context.Execution.Name & '-register_pipeline' %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "Register_Pipeline"
           },
           "pipeline_name": {
             "S": "chain"
@@ -89,10 +95,7 @@
           "pipeline_execution": {
             "S": "{% $states.context.Execution.Name %}"
           },
-          "task_name": {
-            "S": "Register_Pipeline"
-          },
-          "date": {
+          "task_date": {
             "S": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}"
           },
           "status": {
@@ -104,8 +107,14 @@
           "finished_at": {
             "S": "{% $now() %}"
           },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-register_pipeline', 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
           "ttl": {
-            "N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
           }
         }
       },
@@ -196,7 +205,13 @@
         "TableName": "${tokens_table}",
         "Item": {
           "execution_name": {
-            "S": "{% '_notify_warn_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"
+            "S": "{% '_notify_warn_coordination_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "Save_DAG_Snapshot"
           },
           "pipeline_name": {
             "S": "chain"
@@ -204,10 +219,7 @@
           "pipeline_execution": {
             "S": "{% $states.context.Execution.Name %}"
           },
-          "task_name": {
-            "S": "Save_DAG_Snapshot"
-          },
-          "date": {
+          "task_date": {
             "S": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}"
           },
           "status": {
@@ -219,8 +231,14 @@
           "finished_at": {
             "S": "{% $now() %}"
           },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-save_dag_snapshot', 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
           "ttl": {
-            "N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
           }
         }
       },

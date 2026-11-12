@@ -816,21 +816,10 @@ it lacked permissions on a table — downstream tasks hung with no signal in UI 
 1. `Catch` blocks must preserve `$states.errorOutput` in Output — do not lose context
 2. Errors in Express SFNs must either propagate via `Catch` → `failure_handler`, or be logged in CloudWatch (ALL level)
 
-**`_notify_warn_` pattern implementation:**
-```python
-# When notify_dependents_via_sfn fails → downstream tasks stuck
-executions_repo.put({
-    'execution_name': f'_notify_warn_{execution_name}',
-    'task_name': task_name,
-    'pipeline_execution': pipeline_execution,
-    'pipeline_name': pipeline_name,
-    'date': date,
-    'status': 'failed',
-    'error': f'Downstream notification failed: {error}',
-    'finished_at': datetime.now(timezone.utc).isoformat(),
-    'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400
-})
-```
+**`_notify_warn_` pattern implementation:** superseded by ADR #130 §9. A warning row is built
+with `records.warning_item(kind=…)` and named `_notify_warn_{kind}_{execution_name}`; it carries
+no `date`, and the bell reads it from `attention-index` by write time. The date-keyed row this
+ADR first described reached the bell only while its date was in the bell's window.
 
 **Important:** Records with `execution_name.startswith('_')` are internal/special.
 All loops iterating `pipeline-tokens` items MUST filter such records:
@@ -843,7 +832,7 @@ This pattern is already applied throughout `console_api/routes/`.
 
 **Special prefixes in `pipeline-tokens`:**
 - `_pause_{pipeline_execution}` — pause state record
-- `_notify_warn_{execution_name}` — infrastructure warning visible in UI
+- `_notify_warn_{kind}_{execution_name}` — infrastructure warning visible in UI (ADR #130 §9)
 
 ---
 

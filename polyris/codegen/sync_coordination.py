@@ -34,7 +34,7 @@ TARGET_DIRS = [
 ]
 
 #: Names copied from polyris/coordination/statuses.py into the literal module.
-STATUS_SETS = ("RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE")
+STATUS_SETS = ("RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE", "WARNING_KINDS")
 STATUS_NAMES = ("SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED")
 
 _PARENT_PARTITIONS = "from ..partitions import"

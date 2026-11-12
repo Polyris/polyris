@@ -11,11 +11,12 @@ from ..constants import (
     SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     TaskStatus,
+    WarningKind,
 )
 
 __all__ = [
     "RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE",
-    "SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED",
+    "SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED", "WARNING_KINDS",
 ]
 
 #: The reconciler acts only on rows in these statuses.
@@ -31,3 +32,5 @@ WAITING = TaskStatus.WAITING.value
 WAITING_PAUSED = TaskStatus.WAITING_PAUSED.value
 ABORTED = TaskStatus.ABORTED.value
 FAILED = TaskStatus.FAILED.value
+#: Every `kind` a warning row may carry (polyris.constants.WarningKind).
+WARNING_KINDS = frozenset(v for k, v in vars(WarningKind).items() if not k.startswith("_"))

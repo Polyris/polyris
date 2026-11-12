@@ -1,3 +1,4 @@
+import { warningKindLabel } from '@/utils/warningKinds';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNotificationsQuery } from '@/hooks/queries';
 import { useAuth } from '@/hooks/useAuth';
@@ -33,7 +34,8 @@ function getInitialShownNotifs(): Set<string> {
 }
 
 interface NotificationsProps {
-    onNavigate: (pipelineName: string, execution?: string) => void;
+    /** `date` is the partition date of the task the notification is about, when it has one. */
+    onNavigate: (pipelineName: string, execution?: string, date?: string) => void;
     /** ADR #68 — navigate to backfill detail when a backfill notification is clicked. */
     onNavigateBackfill?: (backfillId: string) => void;
 }
@@ -181,9 +183,10 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
         unseenNotifs.forEach((n: NotificationType) => {
             try {
                 new Notification(
-                    n.type === 'decision_required' ? 'Needs Decision' : 'Pipeline Failed',
+                    n.type === 'decision_required' ? 'Needs Decision'
+                        : n.type === 'warning' ? warningKindLabel(n.kind) : 'Pipeline Failed',
                     {
-                        body: `${n.pipeline_name} • ${n.task_name}`,
+                        body: [n.pipeline_name, n.task_name].filter(Boolean).join(' • '),
                         icon: '/favicon.ico',
                         tag: n.id
                     }
@@ -227,7 +230,7 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
             return;
         }
         if (onNavigate) {
-            onNavigate(notification.pipeline_name ?? '', notification.pipeline_execution);
+            onNavigate(notification.pipeline_name ?? '', notification.pipeline_execution, notification.date || undefined);
         }
         markRead(notification.id);
         setShowDropdown(false);
@@ -313,10 +316,14 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                                             <div className="ntf-notification-item-title">
                                                 {notification.type === 'backfill'
                                                     ? `Backfill ${notification.backfill_status}: ${notification.target_pipeline}`
-                                                    : notification.pipeline_name}
+                                                    : notification.pipeline_name || 'Task coordination'}
                                             </div>
-                                            <div className="ntf-notification-item-subtitle">
-                                                {notification.type === 'backfill'
+                                            <div className="ntf-notification-item-subtitle"
+                                                 title={notification.type === 'warning' ? notification.error : undefined}>
+                                                {notification.type === 'warning'
+                                                    ? [warningKindLabel(notification.kind), notification.task_name, notification.time_ago]
+                                                        .filter(Boolean).join(' • ')
+                                                    : notification.type === 'backfill'
                                                     ? `${notification.completed_partitions}/${notification.total_partitions} partitions • ${notification.time_ago}`
                                                     : notification.type === 'decision_required'
                                                     ? `${notification.task_name} • awaiting decision • ${notification.time_ago}`
@@ -333,6 +340,8 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                                                         ? `View backfill ${notification.backfill_id}`
                                                         : notification.type === 'decision_required'
                                                         ? `View ${notification.pipeline_name} decision`
+                                                        : notification.type === 'warning'
+                                                        ? `View ${notification.pipeline_name || 'coordination'} warning`
                                                         : `View ${notification.pipeline_name} failure`
                                                 }
                                             >

@@ -9,6 +9,8 @@ See ADR #68.
 from datetime import datetime, timedelta, timezone
 from typing import Dict
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from boto3.dynamodb.conditions import Key, Attr
 
 from dal import executions_repo, backfills_repo
@@ -16,6 +18,7 @@ from constants import Limits
 from response import cors_response
 from logger import log
 from utils import safe_param_int
+from coordination_core.times import format_utc
 
 
 def get_notifications(event: Dict) -> Dict:
@@ -75,6 +78,8 @@ def get_notifications(event: Dict) -> Dict:
                 items_scanned += response.get('Count', 0)
                 
                 for item in response.get('Items', []):
+                    # Warnings written as ADR #130 rows carry no `date`, so this index never
+                    # lists them: they come from the attention index below.
                     status = item.get('status', '')
                     is_decision = status == 'waiting_decision'
                     # A waiting_decision task is paused (not finished) so it has no
@@ -110,8 +115,11 @@ def get_notifications(event: Dict) -> Dict:
                 if not last_key:
                     break
         
+        # Coordination warnings: from the attention index by write time, whatever
+        # the partition date of the task they are about (ADR #130 §9, B-N1).
+        notifications = list(run_state.values()) + _coordination_warnings(cutoff, now, limit)
+
         # Sort by timestamp descending (newest first)
-        notifications = list(run_state.values())
         notifications.sort(key=lambda x: x.get('finished_at', ''), reverse=True)
         notifications = notifications[:limit]
 
@@ -136,6 +144,27 @@ def get_notifications(event: Dict) -> Dict:
     except Exception as e:
         log.error("notifications", "Error in get_notifications", error=str(e))
         return cors_response(500, {'error': f'Failed to get notifications: {str(e)}'})
+
+
+def _coordination_warnings(cutoff: datetime, now: datetime, limit: int) -> list:
+    """The bell's warning rows; a failed read is logged and leaves the rest of the bell intact."""
+    try:
+        rows = executions_repo.recent_warnings(format_utc(cutoff), limit)
+    except (ClientError, BotoCoreError) as e:
+        log.error("notifications", "Could not read coordination warnings", error=str(e))
+        return []
+    return [{
+        'id': str(row.get('execution_name', '')),
+        'type': 'warning',
+        'kind': row.get('kind', ''),
+        'pipeline_name': row.get('pipeline_name', ''),
+        'task_name': row.get('task_name', ''),
+        'pipeline_execution': row.get('pipeline_execution', ''),
+        'error': row.get('error', ''),
+        'date': row.get('task_date', ''),
+        'finished_at': row.get('finished_at', ''),
+        'time_ago': _format_time_ago(str(row['finished_at']), now) if row.get('finished_at') else 'just now',
+    } for row in rows]
 
 
 _BACKFILL_TERMINAL_STATUSES = {'completed', 'failed', 'partial', 'canceled'}
