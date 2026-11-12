@@ -7,10 +7,10 @@ Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-
 ## Contents
 
 - [Lifecycle overview](#lifecycle-overview)
-- [Install — first-time `sam deploy`](#install--first-time-sam-deploy)
+- [Install — `polyris-up` (or a from-source `sam deploy`)](#install--polyris-up-or-a-from-source-sam-deploy)
 - [Deploy — per-pipeline `polyris-deploy`](#deploy--per-pipeline-polyris-deploy)
 - [Operate](#operate)
-- [Remove — `sam delete` / stack teardown](#remove--sam-delete--stack-teardown)
+- [Remove — `polyris-down` / stack teardown](#remove--polyris-down--stack-teardown)
 - [IAM roles polyris creates](#iam-roles-polyris-creates)
 - [Cross-account model](#cross-account-model)
 
