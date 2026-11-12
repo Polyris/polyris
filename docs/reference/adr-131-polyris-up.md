@@ -79,7 +79,7 @@ Refuses non-platform and mid-update stacks, and — unless `--yes` — a platfor
 - Every `v*` tag must carry a platform archive; `polyris-up` for a version without one fails with a clear message. The workflow can be re-run for an existing tag.
 - Two paths deploy one template: `polyris-up` (prebuilt, `UiBootstrap`) and from-source `sam deploy` (`ui/deploy.sh`). With `ArtifactsBucket` empty the template behaves as before. A stack moves to `polyris-up` by adoption; moving it back takes a `sam deploy` with `ArtifactsBucket=""` (otherwise `UsePreviousValue` keeps the prebuilt UI path).
 - The release repository is fixed in `polyris/platform.py` (`RELEASE_REPO`); a fork installs its own builds with `--archive`.
-- `releases/latest` can exist for a few minutes before the workflow attaches the archive; `polyris-up` then reports the failed download with the fix. If the workflow fails, re-run it for the tag before announcing the release.
+- CI publishes the release itself, in the order draft → attach the archive, its `.sha256` and `install.sh` → publish, so a published release always has its assets. With GitHub's *Immutable releases* enabled, published assets can't be swapped — this matters because `polyris-up` deploys them with broad IAM rights, and the checksum file lives in the same release. A failed workflow leaves an invisible draft; re-run it for the tag.
 - The artifacts bucket keeps every installed release (keys are content-addressed); there is no lifecycle rule yet.
 
 ## Rejected alternatives
