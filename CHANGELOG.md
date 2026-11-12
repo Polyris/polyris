@@ -1,9 +1,10 @@
 ## Unreleased
 
-### Fixed — a task held in its pause wait after resume (ADR #130 §8, B-P3)
+### Fixed — tasks stuck in their pause wait (ADR #130 §8, §9, B-P3, B-P4)
 
 - A task that saved its pause token while resume ran, or whose release failed, stayed paused until its 12-hour pause heartbeat: resume reads the run's rows through an index and saw no token. `pause_waiter` now also puts the row under `paused#` in the attention index, and the sweeper releases it once its run is no longer paused, with a `sweeper` warning. `run_task` drops the entry when it continues.
 - Resume counts a release whose token is already dead as done, not as a failed task.
+- If `pause_waiter` cannot save the pause token, it fails the pause wait with `CoordinationError` and the cause, so the task fails visibly. Before, nothing could release it, and after its 12-hour heartbeat it ran, paused or not (B-P4).
 - Adoption puts a row held in its pause wait under `paused#`, not `waiting#`, where the reconciler could not move it and it counted as overdue on every run.
 
 ### Added — engine health and warnings in the console (ADR #130 §9)

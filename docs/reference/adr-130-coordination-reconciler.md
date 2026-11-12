@@ -54,6 +54,7 @@ Every hang and wrong wake in this layer since ADR #122 traces to five causes.
 | B-P1 | Asset arrives during a pause → subscription deleted, status stays `waiting` → resume ignores it → hang |
 | B-P2 | Task deps finish during a pause, assets missing → resume runs the task without its assets |
 | B-P3 | A task saves its pause token while resume runs (resume finds the run's rows through an index), or its release fails → resume misses it → it waits for its 12-hour pause heartbeat |
+| B-P4 | `pause_waiter` cannot save the pause token → nothing can release the task → after its 12-hour heartbeat it runs, paused or not |
 | B-R1 | `restart_task` passes neither `wait_for` nor the other starter fields → the restarted task is not gated on assets |
 | B-N1 | Warning rows are dated by partition and grouped per run → warnings for older dates never reach the bell; one warning hides another |
 | B-S1 | `Auto_Skip_Register` swallows a failed status write and still notifies dependants |
@@ -352,7 +353,7 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
 **Three levels, with no extra infrastructure.** No custom metrics, no CloudWatch alarms, no SNS, no DLQ.
 
 1. **Heals itself in code.** Retries, the sweeper, push retries and catch-up, idempotent signals and starts. No human is needed.
-2. **Fails loudly in code.** Non-transient coordination errors fail the affected task with the real cause (§3 step 5; registration §6.3). Zombies are marked `aborted` with an explanation (§3 step 3). The user sees a failed task with its reason where they already look, and re-runs it after fixing the cause.
+2. **Fails loudly in code.** Non-transient coordination errors fail the affected task with the real cause (§3 step 5; registration §6.3; a pause token `pause_waiter` cannot save fails the pause wait with `CoordinationError`, B-P4). Zombies are marked `aborted` with an explanation (§3 step 3). The user sees a failed task with its reason where they already look, and re-runs it after fixing the cause.
 3. **Engine health is shown in the console.** This covers the case where no code runs at all (schedule removed, event source mapping disabled, stream disabled).
    - The sweeper writes `_engine_health`: last run, event source mapping and stream state, oldest overdue waiting row, push retry backlog, and its adoption and catch-up progress. A coordination error reaches the bell as a warning, not this row.
    - `/api/health` adds a `coordination` section. It also judges staleness itself: no sweeper run for 15 minutes means the engine is unhealthy.

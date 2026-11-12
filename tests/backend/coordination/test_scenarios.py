@@ -288,6 +288,20 @@ def test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_
     assert any(w["kind"] == "sweeper" and w["task_name"] == "load" for w in world.warnings())
 
 
+@defect("B-P4")
+def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
+    world.inject_failure("UpdateItem", "PipelineTokensTable", "AccessDeniedException",
+                         when=lambda params: "pause_token = :token" in params.get("UpdateExpression", ""))
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.hold("RunTaskHelperSfn")
+    world.complete(run, "extract")
+    world.pause(run)
+    world.release("RunTaskHelperSfn")       # it reads the pause; pause_waiter cannot save its token
+    assert world.status(run, "load") == "failed"
+    assert "could not enter its pause wait" in world.row(run, "load")["error"]
+    assert world.running_tasks(run) == []
+
+
 @defect("B-R1")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)

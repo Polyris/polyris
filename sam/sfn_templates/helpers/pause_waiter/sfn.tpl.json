@@ -53,7 +53,39 @@
           "BackoffRate": 2,
           "JitterStrategy": "FULL"
         }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Without a saved token nothing can release the task, and it would run when its 12-hour pause heartbeat ran out, paused or not. Fail its pause wait instead, with the cause.",
+          "Output": "{% $merge([$states.input, {'save_error': $states.errorOutput}]) %}",
+          "Next": "Fail_Pause_Wait"
+        }
       ]
+    },
+    "Fail_Pause_Wait": {
+      "Type": "Task",
+      "Comment": "run_task's pause wait fails with CoordinationError (ADR #130 §9, B-P4): run_task fails, and the wrapper's failure handler marks the task failed with this cause, visible in the console.",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
+      "Arguments": {
+        "TaskToken": "{% $states.input.pause_token %}",
+        "Error": "CoordinationError",
+        "Cause": "{% $substring('The task could not enter its pause wait, so it did not start; restart it once the cause is fixed: ' & $string($states.input.save_error), 0, 32768) %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "End": true
     }
   }
 }

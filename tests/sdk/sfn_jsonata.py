@@ -47,17 +47,25 @@ def find_state(states: Dict[str, Any], name: str) -> Dict[str, Any]:
 
 
 def evaluate(value: Any, *, input: Any = None, context: Optional[Dict[str, Any]] = None,
-             variables: Optional[Dict[str, Any]] = None, now: datetime = NOW) -> Any:
-    """Evaluate every `{% ... %}` string in `value` as Step Functions would."""
+             variables: Optional[Dict[str, Any]] = None, now: datetime = NOW, error_output: Any = None) -> Any:
+    """Evaluate every `{% ... %}` string in `value` as Step Functions would.
+
+    `error_output` is `$states.errorOutput`, which a Catch's Output can read.
+    """
     jsonata = pytest.importorskip("jsonata")
     if isinstance(value, dict):
-        return {k: evaluate(v, input=input, context=context, variables=variables, now=now) for k, v in value.items()}
+        return {k: evaluate(v, input=input, context=context, variables=variables, now=now, error_output=error_output)
+                for k, v in value.items()}
     if isinstance(value, list):
-        return [evaluate(v, input=input, context=context, variables=variables, now=now) for v in value]
+        return [evaluate(v, input=input, context=context, variables=variables, now=now, error_output=error_output)
+                for v in value]
     if not (isinstance(value, str) and value.strip().startswith("{%") and value.strip().endswith("%}")):
         return value
     compiled = jsonata.Jsonata(value.strip()[2:-2].strip())
-    compiled.assign("states", {"input": input, "context": context or {}})
+    states: Dict[str, Any] = {"input": input, "context": context or {}}
+    if error_output is not None:
+        states["errorOutput"] = error_output
+    compiled.assign("states", states)
     for name, val in (variables or {}).items():
         compiled.assign(name, val)
     compiled.register_lambda("now", lambda: format_utc(now))

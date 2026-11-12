@@ -140,6 +140,24 @@ PROBES: Tuple[Probe, ...] = (
              "          },\n",
              ""),
     ), f"{SCENARIOS}::test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper"),
+    # Without its Catch, a pause waiter that cannot save the token just fails: nobody releases the task.
+    Probe("B-P4", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
+                        ',\n'
+                        '      "Catch": [\n'
+                        '        {\n'
+                        '          "ErrorEquals": [\n'
+                        '            "States.ALL"\n'
+                        '          ],\n'
+                        '          "Comment": "Without a saved token nothing can release the task, and'
+                        ' it would run when its 12-hour pause heartbeat ran out, paused or not. Fail its'
+                        ' pause wait instead, with the cause.",\n'
+                        '          "Output": "{% $merge([$states.input, {\'save_error\':'
+                        ' $states.errorOutput}]) %}",\n'
+                        '          "Next": "Fail_Pause_Wait"\n'
+                        '        }\n'
+                        '      ]',
+                        ""),),
+          f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
     Probe("B-N1", (Edit("sam/lambdas/coordination/coordination_core/records.py",
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),
