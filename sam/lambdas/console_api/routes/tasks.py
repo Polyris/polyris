@@ -1296,7 +1296,7 @@ def restart_task(task_name: str, event: Dict) -> Dict:
         )
 
     # RESTART_HELPER_ARN is set automatically by the SAM template (see
-    # template.yaml — !Sub arn:aws:states:${AwsRegion}:${AWS::AccountId}:...).
+    # template.yaml — !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:...).
     # Its absence means a broken/partial deploy; the previous fallback path was
     # dead code that couldn't do the two-level stop the helper does and would
     # leave ghost wrappers alive on waiting_decision restarts. Fail fast with a

@@ -12,9 +12,12 @@
 #
 # All values are read from the CLI — the script deliberately does NOT touch
 # config.py (that's a pipeline concern, not a UI-deploy concern) or
-# sam/samconfig.toml. Whoever calls this passes what it needs; the setup
-# script in scripts/setup-polyris.sh does the reading and passes explicit
-# args.
+# sam/samconfig.toml. Whoever calls this passes what it needs.
+#
+# This is the from-source path. Stacks installed by `polyris-up` get their UI
+# from the UiBootstrap custom resource instead (ADR #131); its config.js
+# renderer (sam/lambdas/ui_bootstrap/config_js.py) is the canonical shape and
+# tests/backend/test_ui_bootstrap.py pins this script's heredoc to it.
 
 set -e
 set -o pipefail

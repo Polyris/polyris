@@ -21,7 +21,6 @@ confirm_changeset = false
 parameter_overrides = [
   "Namespace=myorg",  # prefix for all resources (e.g. S3 bucket, DynamoDB table, etc.)
   "Stage=dev",        # stage name - part of the resource names (e.g. S3 bucket, DynamoDB table, etc.)
-  "AwsRegion=us-east-1",
 
   # Optional — Cognito auth for Console UI (recommended for production)
   "EnableCognitoAuth=true",

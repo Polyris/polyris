@@ -52,13 +52,11 @@ DEFAULT_STAGE = "dev"
 
 **Workflow:**
 ```bash
-# 1. Deploy infrastructure (one-time)
-cd sam
-# Set Stage=dev in samconfig.toml
-sam build && sam deploy
+# 1. Install the platform (one-time)
+polyris-up --namespace myorg --stage dev
 
 # 2. Create pipeline
-cd ../pipelines
+cd pipelines
 polyris-init my-pipeline
 cd my-pipeline
 

@@ -44,7 +44,7 @@ Task-oriented recipes for specific problems. Each answers one question.
 | [DEPLOY.md](deployment/DEPLOY.md) | Pipeline deployment (polyris-deploy) |
 | [INFRASTRUCTURE.md](deployment/INFRASTRUCTURE.md) | What the polyris SAM stack deploys (resource inventory, stack outputs, SFN template sources) |
 | [IAM_PERMISSIONS.md](deployment/IAM_PERMISSIONS.md) | Minimum permissions for install / deploy / operate / remove |
-| [RELEASE.md](deployment/RELEASE.md) | Release process and Launch Stack |
+| [RELEASE.md](deployment/RELEASE.md) | Release process and the platform archive `polyris-up` installs |
 | [CROSS_ACCOUNT_ROLES.md](deployment/CROSS_ACCOUNT_ROLES.md) | Multi-account IAM setup |
 
 ## Operations

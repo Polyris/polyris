@@ -168,8 +168,8 @@ class TestInteractiveInit:
 class TestInitProject:
     # Contract: config.py always lands at ``<base_dir>/pipelines/config.py``.
     # One rule, no filesystem-dependent branching (was previously "put it
-    # wherever the caller ran the command", which drifted from what
-    # scripts/setup-polyris.sh writes).
+    # wherever the caller ran the command", which drifted from the documented
+    # pipelines/ layout).
 
     def test_writes_config_py_with_the_given_namespace(self, tmp_path, mocker):
         _inputs(mocker, "acme")

@@ -15,13 +15,61 @@ polyris    # print the command index
 
 ---
 
+## polyris-up
+
+Install or upgrade the Polyris platform in your AWS account from the prebuilt release of the installed polyris version. Runs from any directory and writes nothing there.
+
+```bash
+polyris-up                                   # new install (asks for namespace, stage, admin email) or upgrade
+polyris-up --namespace acme --stage dev --admin-email you@acme.com --yes
+polyris-up --param EnablePitr=true           # change one template parameter, keep the rest
+polyris-up --namespace acme --stage prod     # a second stage next to an existing one
+```
+
+| Option | Description |
+|--------|-------------|
+| `--namespace` | Resource prefix for a new install. Bucket names are global, so it must be unique to you |
+| `--stage` | Stage of a new install (default: `dev`). Namespace + Stage ≤ 25 characters |
+| `--admin-email` | First console admin; Cognito emails a temporary password |
+| `--param KEY=VALUE` | Set a template parameter (repeatable). Unset parameters keep their current value. `Namespace`, `Stage`, `ArtifactsBucket`, `UiArtifactsPrefix` are refused |
+| `--stack` | Platform stack name (default: the one stack tagged as a Polyris platform, or `<namespace>-<stage>` when those flags are given). Naming a platform stack created with `sam deploy` switches it to `polyris-up` (asks to confirm); a stack that isn't a Polyris platform is refused |
+| `--profile`, `--region` | AWS profile / region (default: the standard credential chain; no region anywhere is an error) |
+| `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
+| `--yes` | Don't ask for confirmation |
+| `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
+
+The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`).
+
+---
+
+## polyris-down
+
+Delete the platform stack. Lists the DynamoDB tables (always deleted) and buckets with their object counts, then asks you to type the stack name.
+
+```bash
+polyris-down                    # refuses while ResultsBucket holds task results
+polyris-down --delete-data      # also delete task results
+```
+
+| Option | Description |
+|--------|-------------|
+| `--delete-data` | Empty and delete `ResultsBucket` too |
+| `--stack`, `--profile`, `--region` | As for `polyris-up` |
+| `--yes` | Don't ask for confirmation |
+
+It refuses a stack that isn't a Polyris platform, a stack that is mid-update, and — unless `--yes` — a platform that still has pipeline stacks (`<namespace>-<stage>-polyris-*`); remove those first with `polyris-destroy`. The artifacts bucket is deleted when no other platform stack is left in the region.
+
+---
+
 ## polyris-init
 
 Create a new pipeline or initialize project config.
 
 ```bash
+# A first pipeline that runs right away on the installed platform
+polyris-init hello-world --hello
+
 # Initialize project — writes pipelines/config.py (creates pipelines/ if missing).
-# Always writes to the same location so the layout matches scripts/setup-polyris.sh.
 polyris-init --project
 
 # Create a new pipeline (creates my-pipeline/dag.py)
@@ -45,6 +93,7 @@ polyris-init my-pipeline --dir ./pipelines
 |--------|-------------|
 | `name` | Pipeline name (optional with `--project` or `-i`) |
 | `--project` | Generate `pipelines/config.py` (creates `pipelines/` if missing) |
+| `--hello` | Scaffold a pipeline that calls the platform's built-in test Step Function — deploys and runs without edits. Finds the platform like `polyris-deploy` does; accepts `--profile`, `--region`, `--stack` |
 | `--local` | Create pipeline without AWS (for exploring DSL) |
 | `--schedule` | Cron schedule (default: `@daily`) |
 | `--dir` | Base directory (default: `.`) |

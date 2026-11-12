@@ -1,5 +1,59 @@
 ## Unreleased
 
+### Added — install with `polyris-up`: Python and AWS credentials only
+
+- New `polyris-up` installs or upgrades the platform from the prebuilt release
+  of the installed polyris version: it uploads the Lambda zips, Step Functions
+  definitions, UI and template to `polyris-artifacts-<account>-<region>` and
+  deploys through a CloudFormation change set. It asks only for Namespace,
+  Stage and an admin email; on upgrade the stack's own parameters are reused
+  (`--param Key=Value` changes one). No git, Node.js, SAM CLI or AWS CLI.
+- New `polyris-down` removes the platform: it refuses non-platform stacks and
+  (unless `--yes`) platforms that still run pipeline stacks, lists what goes
+  away, asks for the stack name, and refuses while `ResultsBucket` holds task
+  results unless `--delete-data` is passed.
+- A change that replaces or removes a table, bucket, user pool or the admin
+  user needs confirmation or `--accept-data-loss`; `--yes` never covers it.
+- Stacks created with `sam deploy` switch over with `polyris-up --stack <name>`
+  (parameters kept); `polyris-up` points at that command when it meets one.
+- New `polyris-init <name> --hello` scaffolds a pipeline on the platform's
+  built-in test Step Function, so the first `polyris-deploy` works unedited.
+- Every `v*` tag now publishes `polyris-platform-vX.Y.Z.zip` (+ `.sha256`) to
+  its GitHub Release (`.github/workflows/release.yml`,
+  `scripts/build_platform_release.py`).
+- Template: `AdminEmail` parameter creates the first Cognito user, which
+  receives its temporary password by email.
+- See [ADR #131](docs/reference/adr-131-polyris-up.md) and the rewritten
+  [QUICKSTART.md](docs/getting-started/QUICKSTART.md).
+
+### Changed — `polyris-deploy` no longer needs the AWS CLI
+
+- Deploys through boto3 change sets (`polyris/cfn_changeset.py`, shared with
+  `polyris-up`) instead of shelling out to `aws cloudformation deploy`.
+  Templates over 51,200 bytes go through the results bucket, as before.
+- Without `--stack` or `stack_name` in `config.py`, it uses the single stack
+  `polyris-up` tagged in the region (several → error asking for `--stack`).
+  Without an explicit region it uses your AWS profile's region instead of
+  `us-east-1`.
+
+### Changed — install scripts
+
+- `scripts/install.sh` now installs only the CLI: it needs Python ≥ 3.11
+  (no git), installs the latest release into its own virtualenv (or with
+  `pipx`) and links the commands into `~/.local/bin`.
+- Removed `scripts/setup-polyris.sh` (its install, `--create-user` and
+  `--delete` flows are `polyris-up`, `AdminEmail` and `polyris-down`) and the
+  unused `sam/bootstrap.yaml`.
+- Template parameters `ReleasesBucket` / `ReleaseVersion` are replaced by
+  `ArtifactsBucket` / `UiArtifactsPrefix` (set by `polyris-up`).
+
+### Deprecated — `AwsRegion` template parameter
+
+- Every region in the template is now the built-in `AWS::Region`, so it can
+  no longer drift from the region you deploy to. `AwsRegion` is ignored and
+  kept only so existing `samconfig.toml` files still deploy; remove it from
+  yours. It goes away in the next major version.
+
 ### Fixed — `/api/health` always reported "unhealthy"
 
 - `ConsoleApiRole` lacked `states:ListStateMachines`, which the health check's
@@ -7,6 +61,19 @@
   call, so every deployed stack returned HTTP 503. Granted; pinned by
   `tests/sdk/test_console_api_sfn_iam_parity.py`, which checks every
   Step Functions call in console_api against the role.
+
+### Fixed — `UiBootstrap` custom resource
+
+The resource was never enabled before; making it the UI path for `polyris-up`
+surfaced three defects, all fixed and tested (`tests/backend/test_ui_bootstrap.py`):
+- `cfnresponse` was not bundled, so the Lambda would crash on import and leave
+  the stack waiting an hour;
+- its PhysicalResourceId changed between invocations, so every update would be
+  followed by a Delete that wiped the UI it had just installed;
+- `copy_object` ran without `MetadataDirective=REPLACE`, so Cache-Control and
+  Content-Type were never applied; it also passed the API URL without `/api`.
+- Its log group is now declared in the template, so `polyris-down` removes it
+  (Lambda used to create `/aws/lambda/…-ui-bootstrap` itself and it was left behind).
 
 ### Fixed — `wait_for` subscription table routing
 

@@ -33,9 +33,8 @@ This document describes how the polyris Console authenticates users via AWS Cogn
 
 Before enabling authentication, ensure you have:
 
-- AWS CLI configured with appropriate permissions
-- Console infrastructure already deployed (`sam deploy` completed)
-- Node.js 22+ for building the UI
+- The platform installed — with `polyris-up` (auth is on by default) or from source with `sam deploy`
+- For the from-source path: the AWS CLI and Node.js 22+ to rebuild the UI
 
 ## Architecture
 
@@ -68,6 +67,14 @@ All Cognito resources follow the pattern `{namespace}-{stage}-polyris-{resource}
 All resources are tagged with `Environment = "polyris"`.
 
 ## Enabling Authentication
+
+**Installed with `polyris-up`:** auth is on by default, and `--admin-email` creates the first user. To turn it on for an existing stack:
+
+```bash
+polyris-up --param EnableCognitoAuth=true --admin-email admin@yourcompany.com
+```
+
+The stack's `UiBootstrap` resource rewrites `config.js` with the new Cognito settings, so there is no UI step. The steps below are for a from-source `sam deploy`.
 
 ### Step 1: Enable Cognito
 
@@ -159,7 +166,9 @@ aws cognito-idp admin-add-user-to-group \
 
 ## Disabling Authentication
 
-To disable authentication:
+**Installed with `polyris-up`:** `polyris-up --param EnableCognitoAuth=false` — `config.js` follows automatically.
+
+From-source stacks:
 
 ### Step 1: Update SAM parameters
 

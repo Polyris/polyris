@@ -1,12 +1,11 @@
 """Tests for the background CloudFormation stack-event watcher added to
 `polyris-deploy` for real-time per-resource progress output.
 
-`aws cloudformation deploy` (the subprocess this wraps) does not print
-per-resource progress by default — confirmed against its own documented
-behavior across CLI versions. This watcher polls the same
-describe_stack_events data the AWS Console's Events tab shows, printing new
-events as `aws cloudformation deploy` runs, without changing anything about
-how that subprocess call itself behaves.
+Executing a CloudFormation change set prints nothing per resource. This
+watcher (``polyris/cfn_changeset.py``) polls the same describe_stack_events
+data the AWS Console's Events tab shows, printing new events while the
+change set runs, without changing anything about how the deploy itself
+behaves.
 
 The single most important property here: this is purely observational.
 Every test in TestDeployStillWorksExactlyAsBefore exists specifically to
@@ -17,7 +16,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from polyris.deploy import _watch_stack_events, deploy_pipeline, _colorize_status
+from polyris.cfn_changeset import _colorize_status, _watch_stack_events
+from polyris.deploy import deploy_pipeline
 from polyris._ansi import c as _ansi_c, BOLD, CYAN, RESET
 from polyris import DAG, task
 
@@ -306,6 +306,7 @@ class TestDeployStillWorksExactlyAsBefore:
                 {"ParameterKey": "Namespace", "ParameterValue": "acme"},
             ]}]}
         cfn.describe_stacks.side_effect = _describe_stacks
+        cfn.describe_change_set.return_value = {"Status": "CREATE_COMPLETE", "ChangeSetName": "cs"}
         if cfn_events_behavior:
             cfn_events_behavior(cfn)
         scheduler = mocker.MagicMock()
@@ -336,6 +337,7 @@ class TestDeployStillWorksExactlyAsBefore:
         stage_cfg.get = lambda k, default=None: {"account_id": "999999999999"}.get(k, default)
         cfg.for_stage.return_value = stage_cfg
         mocker.patch("polyris.deploy._register_pipeline")
+        self.cfn = cfn
         return session
 
     def _dag(self, dag_id):
@@ -346,20 +348,19 @@ class TestDeployStillWorksExactlyAsBefore:
             t()
         return dag
 
-    def test_successful_subprocess_still_reports_success(self, mocker, capsys):
-        mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
+    def test_successful_change_set_still_reports_success(self, mocker, capsys):
         self._base_mocks(mocker, self._dag("ok-deploy"))
 
         deploy_pipeline(self._dag("ok-deploy"), stage="dev", region="us-east-1")
 
         assert "deployed successfully" in capsys.readouterr().out
 
-    def test_failed_subprocess_still_exits_nonzero_even_with_watcher_running(self, mocker):
-        """The core regression test: a failing `aws cloudformation deploy`
+    def test_failed_change_set_still_exits_nonzero_even_with_watcher_running(self, mocker):
+        """The core regression test: a failing CloudFormation change set
         must still sys.exit(1), regardless of anything the watcher does."""
         import pytest
-        mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=1))
         self._base_mocks(mocker, self._dag("fail-deploy"))
+        self.cfn.describe_change_set.return_value = {"Status": "FAILED", "StatusReason": "Template error: boom"}
 
         with pytest.raises(SystemExit) as exc:
             deploy_pipeline(self._dag("fail-deploy"), stage="dev", region="us-east-1")
@@ -369,7 +370,6 @@ class TestDeployStillWorksExactlyAsBefore:
         """describe_stack_events failing during the initial seed (e.g. a
         genuinely fresh stack that doesn't exist yet) must not affect the
         deploy's own success path at all."""
-        mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
 
         def _events_always_fail(cfn):
             cfn.describe_stack_events.side_effect = Exception("Stack does not exist")
@@ -381,7 +381,6 @@ class TestDeployStillWorksExactlyAsBefore:
     def test_watcher_thread_is_stopped_before_deploy_pipeline_returns(self, mocker):
         """No lingering background thread left running after deploy_pipeline
         returns — confirms the finally-block join() actually executes."""
-        mocker.patch("polyris.deploy.subprocess.run", return_value=mocker.MagicMock(returncode=0))
         self._base_mocks(mocker, self._dag("clean-exit"))
 
         threads_before = {t.ident for t in threading.enumerate()}

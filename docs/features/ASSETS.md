@@ -656,7 +656,7 @@ The two DynamoDB tables involved:
 | `asset-events` | Every asset materialization (PK: `asset_name`, SK: `event_time`) |
 | `asset-subscriptions` | Cross-pipeline triggers waiting on an asset (PK: `asset_name`, SK: `pipeline_name`) |
 
-Everything provisions with `sam build && sam deploy` — no manual steps.
+Everything is created by `polyris-up` (or a from-source `sam deploy`) — no manual steps.
 
 ---
 
