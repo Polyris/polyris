@@ -241,12 +241,14 @@ run_task Record_Asset_Event ──► asset_events [putItem, never overwrites]
      │         reads: asset_events — does a fact satisfy the run's date?
      │         if yes → signal the task's wrapper
      │
-     └─ PUSH model (schedule=[asset], unless cascade='none') ──► notify_asset_consumers SFN
-          ├─ OR logic: start pipeline immediately
-          └─ AND logic:
-               ├─ Write queued_asset_events [putItem]
-               ├─ Check: all required assets received?
-               └─ If all present → StartExecution (consumer pipeline)
+     └─ PUSH model (schedule=[asset], unless cascade='none') ── the same AssetFanout call
+          ├─ Query asset_subscriptions "inventory" (consistent)
+          └─ For each consumer pipeline (never the producer itself):
+               ├─ evaluate its whole schedule for the fact's date, as pull does
+               └─ if satisfied → StartExecution under run_name(...):
+                    AND → one run per date; OR or cascade='all' → one per event
+                    ExecutionAlreadyExists → already started; transient error →
+                    push retry row for the sweeper; anything else → warning
 ```
 
 A fact's partition is the partition of the run that produced it; Mark Successful records it for the marked run's date. A task is woken only when a fact serves its own run's date (hourly and daily: that date; weekly and monthly: its period or the one before).

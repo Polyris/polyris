@@ -12,6 +12,8 @@ TOKENS_TABLE = os.environ.get("TOKENS_TABLE", "pipeline-tokens")
 SUBSCRIPTIONS_TABLE = os.environ.get("SUBSCRIPTIONS_TABLE", "dependency-subscriptions")
 ASSET_EVENTS_TABLE = os.environ.get("ASSET_EVENTS_TABLE", "asset-events")
 PIPELINES_TABLE = os.environ.get("PIPELINES_TABLE", "pipeline-registry")
+#: Push consumers: pipelines with `schedule=[assets]` (AssetFanout only).
+ASSET_SUBSCRIPTIONS_TABLE = os.environ.get("ASSET_SUBSCRIPTIONS_TABLE", "asset-subscriptions")
 
 PIPELINE_EXECUTION_INDEX = "pipeline-execution-index"
 

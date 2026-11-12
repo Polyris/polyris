@@ -79,5 +79,10 @@ def asset_events(ddb):
 
 
 @pytest.fixture
+def consumers(ddb):
+    return ddb.Table(TABLES["ASSET_SUBSCRIPTIONS_TABLE"][1])
+
+
+@pytest.fixture
 def registry(ddb):
     return ddb.Table(TABLES["PIPELINES_TABLE"][1])

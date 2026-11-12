@@ -5,8 +5,8 @@ and Slack routes (slack.py) to avoid code duplication.
 
 Functions:
 - notify_dependents_via_sfn: Invoke notify_dependents_helper SFN
-- notify_asset_consumers_for_manual_success: Record asset facts + start
-  push-triggered consumers, for Mark Successful specifically (§7c)
+- record_facts_for_manual_success: Record asset facts for Mark Successful
+  specifically (§7c); the asset-events stream wakes their consumers
 - get_terminal_statuses: Get set of terminal statuses
 - build_condition_expression_values: Build ExpressionAttributeValues for terminal check
 """
@@ -18,7 +18,6 @@ from config import (
     sfn,
     ASSET_EVENT_TTL_DAYS,
     NOTIFY_DEPENDENTS_HELPER_ARN,
-    NOTIFY_ASSET_CONSUMERS_SFN_ARN,
 )
 from constants import TASK_TERMINAL_STATUSES
 from logger import log
@@ -134,7 +133,7 @@ def notify_dependents_via_sfn(
         return False
 
 
-def notify_asset_consumers_for_manual_success(
+def record_facts_for_manual_success(
     outlets: List[Dict],
     task_name: str,
     pipeline_name: str,
@@ -142,13 +141,14 @@ def notify_asset_consumers_for_manual_success(
     events_repo,
     asset_event_ttl_days: int = ASSET_EVENT_TTL_DAYS,
 ) -> None:
-    """Record the facts of a task marked successful, and start its push consumers.
+    """Record the facts of a task marked successful.
 
     Mark Successful is the one manual action that claims real work happened,
     so it records each outlet's fact the way run_task's Record_Asset_Event
-    does (ADR #130 §1). The asset-events stream then wakes the tasks waiting
-    on those assets, as for any other fact. Skip, Fail and Stop record
-    nothing: they claim no output.
+    does (ADR #130 §1). The asset-events stream does the rest, as for any
+    other fact: it wakes the tasks waiting on the asset and starts the
+    pipelines scheduled on it. Skip, Fail and Stop record nothing: they claim
+    no output.
 
     Best-effort per outlet: one outlet's failure is logged and does not stop
     the others, nor the manual action's own response.
@@ -163,18 +163,10 @@ def notify_asset_consumers_for_manual_success(
         events_repo: the asset-events DAL repo (dal.asset_events_repo).
         asset_event_ttl_days: how long the facts live.
     """
-    if not outlets:
-        return
-
-    if not NOTIFY_ASSET_CONSUMERS_SFN_ARN:
-        log.warn("notify_asset_consumers_for_manual_success",
-                 "NOTIFY_ASSET_CONSUMERS_SFN_ARN is not configured; push consumers will not start")
-
-    for outlet in outlets:
+    for outlet in outlets or []:
         asset_name = outlet.get('name')
         if not asset_name:
             continue
-
         try:
             events_repo.write_fact(
                 asset_name=asset_name,
@@ -187,29 +179,7 @@ def notify_asset_consumers_for_manual_success(
                 ttl_days=asset_event_ttl_days,
             )
         except Exception as e:
-            log.error("notify_asset_consumers_for_manual_success", "Failed to record asset fact",
-                      asset_name=asset_name, task_name=task_name, error=str(e))
-
-        if not NOTIFY_ASSET_CONSUMERS_SFN_ARN:
-            continue
-        try:
-            exec_id = uuid.uuid4().hex[:8]
-            safe_asset = asset_name.replace('/', '-').replace('.', '-')[:40]
-            sfn.start_execution(
-                stateMachineArn=NOTIFY_ASSET_CONSUMERS_SFN_ARN,
-                name=f"notify-asset-{safe_asset}-{partition_key}-{exec_id}",
-                input=json.dumps({
-                    'asset_name': asset_name,
-                    'execution_date': partition_key,
-                    'source_task': task_name,
-                    'source_dag': pipeline_name,
-                    'cascade_all': False,
-                }),
-            )
-            log.info("notify_asset_consumers_for_manual_success", "Started SFN",
-                     asset_name=asset_name, task_name=task_name)
-        except Exception as e:
-            log.error("notify_asset_consumers_for_manual_success", "Failed to start SFN",
+            log.error("record_facts_for_manual_success", "Failed to record asset fact",
                       asset_name=asset_name, task_name=task_name, error=str(e))
 
 

@@ -1233,6 +1233,7 @@ Resources:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+          ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
       Tags:
         Environment: polyris
         Stage: !Ref Stage
@@ -1624,12 +1625,20 @@ Resources:
                   - dynamodb:ListStreams
                 Resource:
                   - !GetAtt AssetEventsTable.StreamArn
-              # Tasks waiting on the fact's asset (consistent read).
+              # Tasks waiting on the fact's asset, and pipelines scheduled on it
+              # (consistent reads).
               - Effect: Allow
                 Action:
                   - dynamodb:Query
                 Resource:
                   - !GetAtt DependencySubscriptionsTable.Arn
+                  - !GetAtt AssetSubscriptionsTable.Arn
+              # Push: start a consumer pipeline (deterministic name, so never twice).
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
 
   ConsoleApiRole:
     Type: AWS::IAM::Role
@@ -2120,7 +2129,6 @@ Resources:
         task_events_table: !Ref TaskEventsTable
         notify_dependents_helper_arn: !Ref NotifyDependentsSfn
         asset_events_table: !Ref AssetEventsTable
-        notify_asset_consumers_sfn_arn: !Ref NotifyAssetConsumersSfn
         notify_function_arn: !GetAtt NotifyFunction.Arn
         console_api_endpoint: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
         pause_waiter_arn: !Ref PauseWaiterSfn

@@ -185,7 +185,6 @@ RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 
 # SFN Helpers
 NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
-NOTIFY_ASSET_CONSUMERS_SFN_ARN = os.environ.get('NOTIFY_ASSET_CONSUMERS_SFN_ARN', '')
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
 
 # ============================================

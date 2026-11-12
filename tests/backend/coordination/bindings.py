@@ -67,7 +67,8 @@ class Bindings:
         import reconcile
 
         fanout = asset_fanout.AssetFanout(reconcile._RECONCILER,
-                                          subscriptions_table=self.stack.tables["DependencySubscriptionsTable"])
+                                          subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
+                                          consumers_table=self.stack.tables["AssetSubscriptionsTable"])
         self._set(asset_fanout, "_FANOUT", fanout)
         return asset_fanout.handler
 

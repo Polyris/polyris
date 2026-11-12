@@ -1,5 +1,19 @@
 ## Unreleased
 
+### Changed — asset-scheduled pipelines start from facts (ADR #130 §6.1)
+
+- `asset-fanout` now also starts the pipelines scheduled on an asset (`schedule=[...]`). For each new fact it evaluates the consumer's whole schedule for the fact's partition, with the same rule as `wait_for`; `.within(...)` is judged as of the fact's time, so a late or repeated event gives the same answer.
+- An AND schedule starts one run per date; an OR schedule or `cascade='all'` one run per event. Runs get deterministic names, so a repeated event never starts a second run. A pipeline never triggers itself, and a `cascade='none'` fact starts nothing.
+- A consumer that cannot be started never affects the producer or the other consumers: a transient failure leaves a retry row, anything else a warning.
+- `run_task` and Mark Successful no longer start consumers themselves; Mark Successful only records the facts.
+- Backfill child runs are named the same way (pipeline, partition, backfill and tier hashed into the last 8 characters).
+
+### Fixed — asset triggers (ADR #130)
+
+- A failure to notify a consumer failed the producing task (B-F1).
+- An AND schedule lost its day when the start failed after the last asset arrived; every event now re-evaluates the schedule from facts (B-U1).
+- Runs started by an AND schedule all ended in `-asset-and`, and backfill runs shared one suffix, so two runs' tasks with the same id collided (B-X1).
+
 ### Changed — asset facts carry their partition; a stream wakes `wait_for` tasks (ADR #130)
 
 - `run_task` and Mark Successful record each outlet's fact with `partition_key` (the producing run's date), `partition_date`, `granularity`, `cascade` and `fact_version`. A task waiting on the asset is woken only by a fact that serves its own run's date, so a backfill for an old date no longer runs on today's fact.

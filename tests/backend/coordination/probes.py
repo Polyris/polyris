@@ -75,4 +75,29 @@ PROBES: Tuple[Probe, ...] = (
                         '        if status not in RECONCILABLE or row.get("pause_token"):',
                         '        if row.get("pause_token"):'),),
           f"{SCENARIOS}::test_a_repeated_hint_does_not_disturb_a_running_task"),
+    # The old AND trigger counted events: every event could start another run.
+    Probe("B-U1", (Edit("sam/lambdas/coordination/asset_fanout.py",
+                        '        every_event = fact.get("cascade") == "all" or schedule.operator == sp.OR',
+                        "        every_event = True"),),
+          f"{SCENARIOS}::test_push_and_starts_exactly_one_run_for_the_day"),
+    # The old AND run names ended in the constant `-asset-and`.
+    Probe("B-X1", (Edit("sam/lambdas/coordination/coordination_core/run_name.py",
+                        '    tail = f"-{_clean(date)}-{kind}-{_digest(pipeline, date, kind, discriminator, length=8)}"',
+                        '    tail = f"-{_clean(date)}-asset-and"'),),
+          f"{SCENARIOS}::test_two_push_consumers_with_the_same_task_id_on_one_day_both_run"),
+    # Three guards: notify_dependents swallows a failed query, run_task does not wait for its
+    # result, and run_task's catch only warns. The probe couples the producer to all three again.
+    Probe("B-F1", (
+        Edit("sam/sfn_templates/helpers/notify_dependents/sfn.tpl.json",
+             '            "States.ALL"\n          ],\n          "Comment": "Hints lost; the sweeper re-checks the waiting tasks.",',
+             '            "Probe.NeverMatches"\n          ],\n          "Comment": "Hints lost; the sweeper re-checks the waiting tasks.",'),
+        Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
+             '            "Comment": "Notify waiting tasks via SFN helper (sync - ensure delivery)",\n'
+             '            "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",',
+             '            "Comment": "Notify waiting tasks via SFN helper (sync - ensure delivery)",\n'
+             '            "Resource": "arn:aws:states:::states:startExecution.sync:2",'),
+        Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
+             '                    "Output": "{% $states.input %}",\n                    "Next": "Warn_Notify_Dependents_Failed"',
+             '                    "Output": "{% $states.input %}",\n                    "Next": "Notify_Dependents_Failed"'),
+    ), f"{SCENARIOS}::test_a_failed_fan_out_does_not_fail_the_producer"),
 )

@@ -1461,7 +1461,7 @@
         },
         "Check_Has_Outlets": {
             "Type": "Choice",
-            "Comment": "Record a fact for every outlet. A cascade='none' backfill (ADR #57) records it too, with cascade 'none': it starts no push consumer, but pull consumers of that partition see it (ADR #130 §6.1).",
+            "Comment": "Record a fact for every outlet. A cascade='none' backfill (ADR #57) records it too, with cascade 'none': AssetFanout starts no push consumer for it, but pull consumers of that partition see it (ADR #130 §6.1).",
             "Choices": [
                 {
                     "Condition": "{% $exists($states.input.outlets) and $count($states.input.outlets) > 0 %}",
@@ -1472,7 +1472,7 @@
         },
         "Emit_Asset_Events": {
             "Type": "Map",
-            "Comment": "Record one fact per outlet (ADR #130 §1). The asset-events stream wakes waiting tasks; push consumers are still started here.",
+            "Comment": "Record one fact per outlet (ADR #130 §1). The asset-events stream does the rest: AssetFanout wakes waiting tasks and starts push consumers, so no consumer can fail this task.",
             "Items": "{% ( $suppressed := $exists($states.input._suppress_asset_event) and $states.input._suppress_asset_event = true; $all := $exists($states.input.cascade_all) and $states.input.cascade_all = true; $cascade := $suppressed ? 'none' : ($all ? 'all' : 'auto'); $append([], $map($states.input.outlets, function($o) { {'name': $o.name, 'uri': $exists($o.uri) ? $o.uri : '', 'granularity': $exists($o.granularity) ? $o.granularity : '', 'cascade': $cascade} })) ) %}",
             "MaxConcurrency": 5,
             "ItemProcessor": {
@@ -1528,7 +1528,7 @@
                             "ConditionExpression": "attribute_not_exists(event_time)"
                         },
                         "Output": "{% $states.input %}",
-                        "Next": "Starts_Push_Consumers",
+                        "End": true,
                         "Retry": [
                             {
                                 "ErrorEquals": [
@@ -1550,42 +1550,6 @@
                                 "MaxAttempts": 3,
                                 "BackoffRate": 2,
                                 "JitterStrategy": "FULL"
-                            }
-                        ]
-                    },
-                    "Starts_Push_Consumers": {
-                        "Type": "Choice",
-                        "Comment": "A cascade='none' fact starts no push consumer.",
-                        "Choices": [
-                            {
-                                "Condition": "{% $states.input.cascade = 'none' %}",
-                                "Next": "Fact_Recorded"
-                            }
-                        ],
-                        "Default": "Notify_Asset_Consumers_SFN"
-                    },
-                    "Fact_Recorded": {
-                        "Type": "Succeed"
-                    },
-                    "Notify_Asset_Consumers_SFN": {
-                        "Type": "Task",
-                        "Comment": "Notify pipelines subscribed to this asset (sync - ensure delivery). Uses aws-sdk:sfn:startSyncExecution because NotifyAssetConsumersSfn is EXPRESS — startExecution.sync:2 fails silently on Express SFN per CLAUDE.md.",
-                        "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
-                        "Arguments": {
-                            "StateMachineArn": "${notify_asset_consumers_sfn_arn}",
-                            "Input": "{% $string({'asset_name': $states.input.name, 'execution_date': $states.context.Execution.Input.date, 'source_task': $states.context.Execution.Input.task_name, 'source_dag': $states.context.Execution.Input.pipeline_name, 'cascade_all': $exists($states.context.Execution.Input.cascade_all) ? $states.context.Execution.Input.cascade_all : false}) %}"
-                        },
-                        "End": true,
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "StepFunctions.ServiceException",
-                                    "StepFunctions.TooManyRequests",
-                                    "States.Timeout"
-                                ],
-                                "IntervalSeconds": 2,
-                                "MaxAttempts": 5,
-                                "BackoffRate": 2
                             }
                         ]
                     }

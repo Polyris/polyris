@@ -220,7 +220,7 @@ Twelve IAM roles the stack creates during Install. Every role's `RoleName` start
 | `polyris-check-assets-role` | Lambda | Reads `asset-events` and `asset-subscriptions` DDB tables for asset-triggered pipelines |
 | `polyris-notify-asset-subscribers-role` | Lambda | Starts downstream pipeline executions when an asset publishes |
 | `polyris-reconcile-role` | Lambda | Decides whether a waiting task is ready and signals its wrapper (ADR #130). Its grants are the `polyris-reconcile` policy below |
-| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream and the `asset:{name}` subscriptions, and runs the reconciler for each waiting task (the `polyris-reconcile` policy) |
+| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions; runs the reconciler for each waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset |
 | `polyris-notify-role` | Lambda | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |
 | `polyris-bucket-cleanup-role` | Lambda | One-off role for the CustomResource that empties S3 buckets on Remove |

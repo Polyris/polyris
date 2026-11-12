@@ -18,6 +18,7 @@ from coordination_testkit import (
     RUN,
     SHORT,
     TABLES,
+    FUNCTION_TABLES,
     FakeSfn,
     execution_name,
     legacy_fact,
@@ -175,11 +176,16 @@ def test_the_stream_mapping_follows_adr_130(resources):
     assert "AssetEventsFanoutMapping" in resources["RunTaskHelperSfn"]["DependsOn"]
 
 
-def test_reconcile_role_step_functions_actions(resources):
-    actions = {a for s in _statements(resources) for a in s["Action"] if a.startswith("states:")}
-    used = {"states:" + "".join(p.title() for p in m.split("_"))
-            for m in vars(FakeSfn) if not m.startswith("_")}
-    assert actions == used == {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution"}
+def test_step_functions_actions_per_role(resources):
+    def actions(role):
+        return {a for s in _statements(resources, role) for a in s["Action"] if a.startswith("states:")}
+
+    reconciler = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution"}
+    assert actions("ReconcileRole") == reconciler
+    assert actions("AssetFanoutRole") == reconciler | {"states:StartExecution"}
+    # The fake implements exactly the calls the code makes.
+    assert {"states:" + "".join(p.title() for p in m.split("_")) for m in vars(FakeSfn) if not m.startswith("_")} \
+        == reconciler | {"states:StartExecution"}
 
 
 def test_describe_execution_is_scoped_to_wrapper_executions(resources):
@@ -205,8 +211,9 @@ def test_function_wiring(resources, function, module_name, role):
     assert module == module_name and callable(getattr(importlib.import_module(module), handler))
     assert props["Role"] == {"!GetAtt": f"{role}.Arn"}
     variables = props["Environment"]["Variables"]
-    assert variables == {var: {"!Ref": logical} for var, (logical, _) in TABLES.items()}
-    assert {var: getattr(env, var) for var in variables} == {var: name for var, (_, name) in TABLES.items()}
+    expected = {var: TABLES[var] for var in FUNCTION_TABLES[function]}
+    assert variables == {var: {"!Ref": logical} for var, (logical, _) in expected.items()}
+    assert {var: getattr(env, var) for var in variables} == {var: name for var, (_, name) in expected.items()}
 
 
 def test_time_budgets_fit_their_timeouts(resources):

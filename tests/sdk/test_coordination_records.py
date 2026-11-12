@@ -14,6 +14,7 @@ from polyris.coordination.records import (
     PARTITION_INDEX_PROJECTION,
     asset_fact_item,
     fact_from_item,
+    push_retry_item,
     warning_item,
 )
 from polyris.coordination.times import format_utc, parse_utc
@@ -186,3 +187,23 @@ class TestFactFromItem:
     def test_an_unknown_granularity_raises(self):
         with pytest.raises(ValueError, match="yearly"):
             fact_from_item({**fact_item(), "granularity": "yearly"})
+
+
+class TestPushRetryItem:
+    def test_shape(self):
+        item = push_retry_item(run_name="pushed-2026-11-12-and-0a1b2c3d", consumer="pushed",
+                               sfn_arn="arn:aws:states:us-east-1:1:stateMachine:pushed", run_input='{"a": 1}',
+                               error="ThrottlingException", now=NOW)
+        assert item["execution_name"] == "_retry_push_pushed-2026-11-12-and-0a1b2c3d"
+        assert item[att.KEY] == att.attention(att.RETRY, "pushed-2026-11-12-and-0a1b2c3d")
+        assert item[att.DUE] == "2026-11-12T06:10:00.123Z"           # first retry 10 minutes later
+        assert (item["attempts"], item["first_failed_at"]) == (0, "2026-11-12T06:00:00.123Z")
+        assert item["ttl"] == int((NOW + timedelta(days=7)).timestamp())
+        assert "date" not in item and "pipeline_execution" not in item
+
+    @pytest.mark.parametrize("missing", ["run_name", "consumer", "sfn_arn"])
+    def test_needs_what_a_restart_needs(self, missing):
+        args = dict(run_name="r", consumer="c", sfn_arn="arn", run_input="{}", error="e", now=NOW)
+        args[missing] = " "
+        with pytest.raises(ValueError):
+            push_retry_item(**args)

@@ -22,6 +22,10 @@ WARNING_KINDS = frozenset({"coordination", "zombie", "push", "sweeper", "notify"
 WARNING_TTL = timedelta(days=8)
 WARNING_PREFIX = "_notify_warn_"
 
+RETRY_PUSH_PREFIX = "_retry_push_"
+#: A push retry row lives a week; the sweeper gives up on it after a day (ADR #130 §7).
+RETRY_TTL = timedelta(days=7)
+
 CASCADES = frozenset({"auto", "none", "all"})
 #: Facts written by ADR #130 writers. Older facts have no version.
 FACT_VERSION = 2
@@ -68,6 +72,38 @@ def warning_item(
         att.KEY: att.attention(att.WARN, execution_name),
         att.DUE: format_utc(now),
         "ttl": int((now + WARNING_TTL).timestamp()),
+    }
+
+
+def push_retry_item(
+    *,
+    run_name: str,
+    consumer: str,
+    sfn_arn: str,
+    run_input: str,
+    error: str,
+    now: datetime,
+) -> Dict[str, Any]:
+    """A push start that failed transiently, for the sweeper to retry (ADR #130 §7).
+
+    Keyed by the run's deterministic name, so a repeated failure finds the
+    same row and a retried start can never run the consumer twice.
+    """
+    if not (run_name.strip() and consumer.strip() and sfn_arn.strip()):
+        raise ValueError("a push retry needs the run name, the consumer and its state machine")
+    return {
+        "execution_name": f"{RETRY_PUSH_PREFIX}{run_name}",
+        "kind": "push",
+        "consumer": consumer,
+        "sfn_arn": sfn_arn,
+        "run_name": run_name,
+        "run_input": run_input,
+        "error": error,
+        "attempts": 0,
+        "first_failed_at": format_utc(now),
+        att.KEY: att.attention(att.RETRY, run_name),
+        att.DUE: format_utc(att.next_due(now, 0)),
+        "ttl": int((now + RETRY_TTL).timestamp()),
     }
 
 

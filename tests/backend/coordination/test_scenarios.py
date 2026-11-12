@@ -178,7 +178,6 @@ def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
 
 
 @defect("B-F1")
-@needs_binding("push")
 def test_a_failed_fan_out_does_not_fail_the_producer(world):
     producer = world.deploy(pipeline("producer", [("build", {"outlets": [A]})]))
     world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
@@ -189,13 +188,13 @@ def test_a_failed_fan_out_does_not_fail_the_producer(world):
     world.complete(run, "build")
     world.deliver_hints()
     assert world.status(run, "build") == "success"
+    assert world.pipeline_status(run) == "SUCCEEDED"         # the producer's run, not just its row
 
 
 # ── push ────────────────────────────────────────────────────────────────
 
 
 @defect("B-U1")
-@needs_binding("push")
 def test_push_and_starts_exactly_one_run_for_the_day(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A, B]))
     world.write_event(A, DATE)
@@ -209,15 +208,18 @@ def test_push_and_starts_exactly_one_run_for_the_day(world):
 
 
 @defect("B-X1")
-@needs_binding("push")
 def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
     first = world.deploy(pipeline("pushed_1", [("report", {})], schedule=[A]))
     second = world.deploy(pipeline("pushed_2", [("report", {})], schedule=[A]))
     world.write_event(A, DATE)
     world.deliver_hints()
-    for consumer in (first, second):
-        [run] = world.push_runs(consumer)
+    runs = [run for consumer in (first, second) for run in world.push_runs(consumer)]
+    assert len(runs) == 2
+    for run in runs:
+        assert world.pipeline_status(run) == "RUNNING"
         assert world.running_tasks(run) == ["report"]
+    # Each task is its own row: colliding names would make both runs share one.
+    assert len({world.row(run, "report")["pipeline_execution"] for run in runs}) == 2
 
 
 # ── loud failures ───────────────────────────────────────────────────────

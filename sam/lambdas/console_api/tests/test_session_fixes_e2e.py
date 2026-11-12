@@ -787,9 +787,9 @@ class TestSyntheticOutputMarker:
 
 class TestAssetEventsOnManualSuccess:
     """§7c: Mark Successful — the one manual action that explicitly claims
-    real work happened — notifies push-triggered asset consumers the same
-    way a normal completion would. Skip/Fail/Stop correctly never do this,
-    since they make no claim that anything was actually produced."""
+    real work happened — records its facts the same way a normal completion
+    would. Skip/Fail/Stop correctly never do this, since they make no claim
+    that anything was actually produced."""
 
     def _registry_with_outlet(self, task_name='transform', asset_name='sales/daily'):
         return {
@@ -801,14 +801,12 @@ class TestAssetEventsOnManualSuccess:
             }),
         }
 
-    def test_mark_success_with_outlets_records_asset_event_and_notifies_consumers(self, wired, mocker):
+    def test_mark_success_with_outlets_records_the_fact(self, wired, mocker):
         tasks_module, fake_table = wired
         fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
         mocker.patch.object(tasks_module.pipelines_repo, 'get',
                             return_value=self._registry_with_outlet())
         import task_actions
-        mocker.patch.object(task_actions, 'NOTIFY_ASSET_CONSUMERS_SFN_ARN',
-                            'arn:aws:states:us-east-1:123456789012:stateMachine:notify-asset-consumers')
         fake_sfn = mocker.Mock()
         fake_sfn.start_execution = mocker.Mock(return_value={'executionArn': 'arn:x'})
         mocker.patch.object(tasks_module, 'sfn', fake_sfn)
@@ -829,13 +827,8 @@ class TestAssetEventsOnManualSuccess:
         assert (asset_event['partition_key'], asset_event['partition_date']) == ('2026-07-24', '2026-07-24')
         assert asset_event['fact_version'] == 2
 
-        # notify_asset_consumers_via_sfn's SFN was invoked (not just the
-        # orchestration send_task_success callback — a genuinely separate call).
-        asset_notify_calls = [
-            c for c in fake_sfn.start_execution.call_args_list
-            if 'asset_name' in c.kwargs.get('input', '')
-        ]
-        assert len(asset_notify_calls) == 1
+        # No consumer is started from here: the asset-events stream does it (ADR #130 §6.1).
+        assert not [c for c in fake_sfn.start_execution.call_args_list if 'asset_name' in c.kwargs.get('input', '')]
 
     def test_the_fact_belongs_to_the_marked_runs_partition_not_to_today(self, wired, mocker):
         """B-M1: marking an old run by its execution name (the request carries

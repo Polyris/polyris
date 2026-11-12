@@ -423,8 +423,8 @@ with DAG("etl", schedule="@daily") as dag:
 
 **What happens:**
 1. Task completes successfully
-2. `run_task_helper` records asset event in DynamoDB
-3. `notify_asset_consumers` SFN is invoked to trigger subscribed pipelines
+2. `run_task_helper` records a fact for each outlet, for the run's partition
+3. The `asset-events` stream hands the fact to `AssetFanout`, which wakes the tasks waiting on the asset and starts the pipelines scheduled on it
 
 ---
 
@@ -449,10 +449,11 @@ with DAG(
 ```
 
 **What happens:**
-1. Task with `outlets` completes successfully
-2. `run_task_helper` invokes `notify_asset_consumers` SFN (async)
-3. SFN checks if all required assets are ready
-4. If ready → starts the consumer DAG (via StartExecution)
+1. A task with `outlets` completes and records its fact for its run's partition
+2. `AssetFanout` evaluates the consumer's whole `schedule` for that partition, with the same rule as `wait_for` (`.within(...)` is judged as of the fact's time)
+3. If it is satisfied, `AssetFanout` starts the consumer for that date
+
+A run's name is derived from the consumer, the date and the kind of trigger, so a repeated event never starts a second run. A failure to start one consumer never affects the producer or other consumers: a transient one is retried, anything else shows up as a warning.
 
 ---
 
@@ -473,17 +474,19 @@ with DAG(
 ```
 
 **How it works:**
-1. Each asset event is recorded in DynamoDB with atomic counter
-2. `notify_asset_consumers` SFN checks: "Are all required assets present?"
-3. Only triggers DAG when ALL assets are ready for the same date
-4. Uses distributed lock to prevent duplicate triggers
+1. Every fact re-evaluates the schedule from the recorded facts for that fact's date — nothing is counted, so a lost or repeated event changes nothing
+2. The DAG starts once every asset has a fact that serves the date
+3. One run per DAG and date: a later event for the same date starts nothing
 
 **Example timeline:**
 ```
-10:00 - asset_a arrives → counter=1, wait
-10:15 - asset_b arrives → counter=2, wait
-10:30 - asset_c arrives → counter=3 → all present → TRIGGER DAG
+10:00 - asset_a arrives → b and c missing for the date, wait
+10:15 - asset_b arrives → c missing, wait
+10:30 - asset_c arrives → all present → START the DAG for the date
+10:45 - asset_c arrives again → the date's run exists, nothing happens
 ```
+
+Facts of different granularities combine: with `schedule=[daily_sales, weekly_prices]`, each day's sales fact starts that day's run once the current or previous week's prices fact exists.
 
 ---
 
@@ -694,43 +697,6 @@ Via UI:
 
 ---
 
-## Queue Management
-
-### View Queued Assets
-
-Assets waiting for AND conditions:
-
-```bash
-GET /api/assets/queued
-```
-
-### Skip Asset in Queue
-
-Skip waiting for a specific asset:
-
-```bash
-POST /api/assets/skip-in-queue
-{
-  "dag_id": "feeds",
-  "asset_name": "processed/acme",
-  "date": "2026-01-12"
-}
-```
-
-### Clear Queue
-
-Clear all queued assets for a DAG (today's queue):
-
-```bash
-POST /api/assets/clear-queue
-{
-  "dag_id": "feeds",
-  "date": "2026-01-12"
-}
-```
-
----
-
 ## Asset Lineage Graph
 
 The UI shows a visual lineage graph:
@@ -865,8 +831,7 @@ with DAG(
 2. **Add URIs**: Helps with lineage tracking and debugging
 3. **Group related assets**: Use `group` parameter for UI organization
 4. **Document inlets**: Even if not used for triggering
-5. **Monitor queues**: Check queued assets in UI
-6. **Use date-based materialization**: Assets are keyed by date
+5. **Use date-based materialization**: a fact belongs to the partition of the run that produced it
 
 ---
 

@@ -36,7 +36,7 @@ from utils import (
 )
 from task_actions import (
     notify_dependents_via_sfn,
-    notify_asset_consumers_for_manual_success,
+    record_facts_for_manual_success,
     is_terminal_status,
     build_condition_expression_values,
     TERMINAL_CONDITION_EXPRESSION,
@@ -806,7 +806,7 @@ def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
 
 def _emit_asset_events_for_manual_success(item: Dict, task_name: str) -> None:
     """§7c: for Mark Successful specifically, record the facts of this task's
-    outlets and start its push consumers, as a normal completion would.
+    outlets, as a normal completion would.
 
     Outlets are a deploy-time DAG property, read from the pipeline registry's
     dag_metadata.nodes (ADR #119). The facts belong to the partition of the
@@ -826,7 +826,7 @@ def _emit_asset_events_for_manual_success(item: Dict, task_name: str) -> None:
                   task_name=task_name, execution_name=item.get('execution_name', ''))
         return
 
-    notify_asset_consumers_for_manual_success(
+    record_facts_for_manual_success(
         outlets, task_name, pipeline_name, str(partition_key), asset_events_repo,
     )
 

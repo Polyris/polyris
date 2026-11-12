@@ -458,7 +458,7 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 
 **Two separate subscription tables, split by semantics (not by consumer):**
 - `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5): a task dependency (`dependency_key = "{upstream}-{pipeline_execution_short}"`) or a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name` and no token. Writer: the registration SFN. Readers: `query_subscriptions` (for `notify_dependents`) and `AssetFanout`, both consistent. The reconciler deletes a task's pointers after its signal was accepted (Principle #40).
-- `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Holds push-trigger subscriptions only (`schedule=[asset]`). One subscription per (asset, consumer pipeline). Reader: `notify_asset_consumers` SFN's `Query_Subscriptions` state. Writer: `polyris-deploy` (deploy-time registration).
+- `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Push consumers only (`schedule=[asset]`): one row per (asset, consumer pipeline). Writer: the pipeline's own registration chain (`Register_Asset_Subscriptions`, at deploy and on every run). Reader: `AssetFanout`, which evaluates the consumer's schedule from its registry entry (ADR #130 §6.1).
 
 The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while dep/wait_for subscriptions are per-(upstream, subscriber-task-execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
 

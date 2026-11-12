@@ -156,7 +156,13 @@ class World:
     # ── setup ──────────────────────────────────────────────────────────
 
     def deploy(self, dag: Any) -> Pipeline:
-        return Pipeline(dag, self.stack.deploy_pipeline(dag))
+        """Deploy as polyris-deploy does: load the machine, then run it register_only, so the
+        real registration states write the registry entry and any push subscriptions."""
+        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag))
+        self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register",
+                                     input=json.dumps({"register_only": True}))
+        self.settle()
+        return pipeline
 
     def start_run(self, pipeline: Pipeline, date: str, **inputs: Any) -> Run:
         name = f"{pipeline.name}-run-{date}-{next(self._run_ids):08x}"
@@ -256,7 +262,13 @@ class World:
         raise NeedsBinding("operations", "the console's skip while the wrapper waits")
 
     def push_runs(self, pipeline: Pipeline) -> List[Run]:
-        raise NeedsBinding("push", "push triggers through AssetFanout")
+        """Runs of `pipeline` that a fact started (AssetFanout's push), oldest first."""
+        runs = []
+        for execution in self.runtime.executions.values():
+            payload = execution.input if isinstance(execution.input, dict) else {}
+            if execution.machine.arn == pipeline.arn and payload.get("triggered_by") == "asset":
+                runs.append(Run(pipeline, execution.name, payload["variables"]["current_date"], execution.arn))
+        return runs
 
     # ── faults ─────────────────────────────────────────────────────────
 

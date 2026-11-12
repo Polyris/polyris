@@ -50,6 +50,31 @@ def parse(items: Sequence[Mapping[str, Any]]) -> AssetGroup:
     return AssetGroup(AND, tuple(_parse_item(item) for item in items))
 
 
+def parse_schedule(schedule: Mapping[str, Any]) -> AssetGroup:
+    """Parse an asset-triggered pipeline's ``schedule=[...]`` as the registry stores it.
+
+    The registry form (``DAG.asset_schedule_info``) is one group,
+    ``{"operator": ..., "assets": [...]}``, whose members are bare asset
+    names, conditions (``{"asset_name": ..., "freshness_hours": ...}``) or
+    nested groups of the same form.
+    """
+    if not isinstance(schedule, Mapping):
+        raise ValueError(f"asset schedule must be an object, got {type(schedule).__name__}")
+    group = _parse_item(_with_named_leaves(schedule))
+    if not isinstance(group, AssetGroup):
+        raise ValueError("asset schedule must be a group with 'operator' and 'assets'")
+    return group
+
+
+def _with_named_leaves(node: Any) -> Any:
+    """The registry form with bare names turned into conditions (no other change)."""
+    if isinstance(node, str):
+        return {"asset_name": node}
+    if isinstance(node, Mapping) and "operator" in node and isinstance(node.get("assets"), (list, tuple)):
+        return {**node, "assets": [_with_named_leaves(m) for m in node["assets"]]}
+    return node
+
+
 def asset_names(node: SpecNode) -> FrozenSet[str]:
     """Every asset name the spec mentions, at any nesting depth."""
     if isinstance(node, AssetLeaf):

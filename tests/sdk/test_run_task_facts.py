@@ -72,14 +72,19 @@ def test_cascade_follows_the_run(states, flags, cascade):
 
 
 def test_a_suppressed_run_still_records_its_facts(states):
-    """cascade='none' (ADR #57) suppresses push consumers only: pull consumers of the partition see the fact."""
+    """cascade='none' (ADR #57) suppresses push consumers only: pull consumers of the partition see the fact.
+    run_task records it with cascade 'none'; AssetFanout starts nothing for it."""
     [rule] = states["Check_Has_Outlets"]["Choices"]
     outlets = [{"name": "ns/a"}]
     assert evaluate(rule["Condition"], input={"outlets": outlets, "_suppress_asset_event": True}) is True
     assert rule["Next"] == "Emit_Asset_Events"
-    push = find_state(states, "Starts_Push_Consumers")
-    assert evaluate(push["Choices"][0]["Condition"], input={"cascade": "none"}) is True
-    assert push["Choices"][0]["Next"] == "Fact_Recorded"
+
+
+def test_run_task_starts_no_consumer_itself(states):
+    """Push consumers start from the fact, in AssetFanout: none can fail the producer (B-F1)."""
+    processor = states["Emit_Asset_Events"]["ItemProcessor"]["States"]
+    assert set(processor) == {"Record_Asset_Event"}
+    assert processor["Record_Asset_Event"].get("End") is True
 
 
 def test_waiting_tasks_are_woken_by_the_stream_not_by_run_task(states):

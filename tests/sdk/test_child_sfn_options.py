@@ -130,17 +130,12 @@ def test_task_skipped_emits_skipped_status(run_task_template):
 # ───────────────────────────────────────────────────────────────────────────
 
 
-def test_cascade_all_propagated_to_notify_consumers(run_task_template):
-    """run_task must include cascade_all in the input it passes to
-    notify_asset_consumers SFN. Without this, cascade='all' is silently
-    ignored at the consumer-trigger boundary."""
-    # Find the Notify_Asset_Consumers_SFN state inside Emit_Asset_Events Map
+def test_cascade_all_is_recorded_on_the_fact(run_task_template):
+    """cascade='all' reaches the push consumers through the fact itself: AssetFanout
+    starts them regardless of their schedule (ADR #130 §6.1). The mapping is
+    evaluated in test_run_task_facts.py; here, that run_task reads the flag."""
     emit = run_task_template["States"]["Emit_Asset_Events"]
-    consumer_state = emit["ItemProcessor"]["States"]["Notify_Asset_Consumers_SFN"]
-    sfn_input_expr = consumer_state["Arguments"]["Input"]
-    assert "cascade_all" in sfn_input_expr, (
-        f"cascade_all must be passed to notify_asset_consumers: {sfn_input_expr}"
-    )
+    assert "cascade_all" in emit["Items"] and "'all'" in emit["Items"]
 
 
 def test_cascade_all_choice_state_in_notify_consumers(notify_consumers_template):

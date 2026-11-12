@@ -3,7 +3,7 @@
 import pytest
 
 from polyris.assets import Asset
-from polyris.coordination.spec import AND, OR, AssetGroup, AssetLeaf, asset_names, parse
+from polyris.coordination.spec import AND, OR, AssetGroup, AssetLeaf, asset_names, parse, parse_schedule
 from polyris.generators import _serialize_wait_for
 
 a, b, c = Asset("ns/a"), Asset("ns/b"), Asset("ns/c")
@@ -53,3 +53,38 @@ class TestRejectsOtherShapes:
     def test_invalid_specs_raise(self, items):
         with pytest.raises(ValueError):
             parse(items)
+
+
+class TestParsesTheRegistrySchedule:
+    """parse_schedule reads DAG.asset_schedule_info, what the registry stores for push consumers."""
+
+    @staticmethod
+    def _registry_form(schedule):
+        import warnings
+
+        from polyris import DAG, task
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with DAG("pushed", schedule=schedule) as dag:
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def report(): ...
+
+                report()
+        return dag.asset_schedule_info
+
+    def test_and_of_names(self):
+        a, b = Asset("s3://ns/a"), Asset("s3://ns/b")
+        assert parse_schedule(self._registry_form([a, b])) == AssetGroup(AND, (AssetLeaf("ns/a"), AssetLeaf("ns/b")))
+
+    def test_or_and_nested_groups_and_freshness(self):
+        a, b, c = Asset("s3://ns/a"), Asset("s3://ns/b"), Asset("s3://ns/c")
+        assert parse_schedule(self._registry_form([a.within(hours=2), b | c])) == AssetGroup(AND, (
+            AssetLeaf("ns/a", freshness_hours=2), AssetGroup(OR, (AssetLeaf("ns/b"), AssetLeaf("ns/c")))))
+        assert parse_schedule(self._registry_form([a | b])).operator == OR
+
+    @pytest.mark.parametrize("bad", [[], "ns/a", {"asset_name": "ns/a"}, {"operator": "AND", "assets": []},
+                                     {"operator": "AND", "assets": [{"name": "ns/a"}]}])
+    def test_other_shapes_are_rejected(self, bad):
+        with pytest.raises(ValueError):
+            parse_schedule(bad)

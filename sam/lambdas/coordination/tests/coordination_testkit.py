@@ -20,6 +20,13 @@ TABLES = {
     "SUBSCRIPTIONS_TABLE": ("DependencySubscriptionsTable", "test-dependency-subscriptions"),
     "ASSET_EVENTS_TABLE": ("AssetEventsTable", "test-asset-events"),
     "PIPELINES_TABLE": ("PipelineRegistryTable", "test-pipeline-registry"),
+    "ASSET_SUBSCRIPTIONS_TABLE": ("AssetSubscriptionsTable", "test-asset-subscriptions"),
+}
+#: Variables each coordination function reads (the others' tables it never touches).
+FUNCTION_TABLES = {
+    "ReconcileFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE"),
+    "AssetFanoutFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
+                            "ASSET_SUBSCRIPTIONS_TABLE"),
 }
 
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
@@ -54,6 +61,7 @@ class FakeSfn:
 
     def __init__(self) -> None:
         self.succeeded: List[Dict[str, Any]] = []
+        self.started: List[Dict[str, Any]] = []
         self.failed: List[Dict[str, Any]] = []
         self.dead_tokens: set = set()
         self.executions: Dict[str, str] = {}
@@ -78,6 +86,13 @@ class FakeSfn:
         self.failed.append({"token": taskToken, "error": error, "cause": cause})
         self.dead_tokens.add(taskToken)
         return {}
+
+    def start_execution(self, *, stateMachineArn: str, name: str, input: str) -> Dict[str, Any]:
+        self._raise_if_set("start_execution")
+        if name in {s["name"] for s in self.started}:
+            raise client_error("ExecutionAlreadyExists", "StartExecution")
+        self.started.append({"arn": stateMachineArn, "name": name, "input": json.loads(input)})
+        return {"executionArn": f"{stateMachineArn}:{name}"}
 
     def describe_execution(self, *, executionArn: str) -> Dict[str, Any]:
         self._raise_if_set("describe_execution")
