@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Added — coordination indexes (ADR #130)
+
+- `pipeline-tokens` gets `attention-index` (partition `attention`, sort `attention_at`): a sparse index of task rows that may need a wake, push retries and coordination warnings, ordered by due time.
+- `asset-events` gets `asset-partition-index` (partition `asset_name`, sort `partition_date`): asset conditions read facts by partition, newest first.
+- Each table gets one new GSI, so the deploy stays within DynamoDB's one-GSI-change-per-table limit. Both indexes are additive and sparse: rows without the key attributes are not indexed.
+
 ### Fixed — tooling: deterministic enum generation, `make test-lambdas` exit code, sets in API responses
 
 - `python -m polyris.codegen.sync_enums` now produces identical output on Python 3.12 and 3.13: docstrings are normalised with `inspect.cleandoc` and continuation lines are re-indented. The three `constants_generated.py` files are regenerated.

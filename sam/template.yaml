@@ -182,6 +182,10 @@ Resources:
           AttributeType: S
         - AttributeName: backfill_id
           AttributeType: S
+        - AttributeName: attention
+          AttributeType: S
+        - AttributeName: attention_at
+          AttributeType: S
       GlobalSecondaryIndexes:
         - IndexName: pipeline-execution-index
           KeySchema:
@@ -252,6 +256,28 @@ Resources:
               - skipped_partitions
               - cascade
               - started_by
+        # ADR #130 §7: sparse. Only rows that may need a wake (waiting#h),
+        # push retries (retry#h) and coordination warnings (warn#h) carry
+        # `attention`; `attention_at` is the row's due time.
+        - IndexName: attention-index
+          KeySchema:
+            - AttributeName: attention
+              KeyType: HASH
+            - AttributeName: attention_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - status
+              - task_name
+              - pipeline_name
+              - pipeline_execution
+              - task_date
+              - kind
+              - error
+              - finished_at
+              - started_at
+              - attempts
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -346,6 +372,8 @@ Resources:
           AttributeType: S
         - AttributeName: execution_date
           AttributeType: S
+        - AttributeName: partition_date
+          AttributeType: S
       GlobalSecondaryIndexes:
         - IndexName: date-index
           KeySchema:
@@ -355,6 +383,24 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        # ADR #130 §4, §7: asset conditions read facts by partition, newest
+        # first. Sparse: facts written before ADR #130 get `partition_date`
+        # during sweeper adoption.
+        - IndexName: asset-partition-index
+          KeySchema:
+            - AttributeName: asset_name
+              KeyType: HASH
+            - AttributeName: partition_date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - event_time
+              - partition_key
+              - granularity
+              - cascade
+              - source_dag
+              - uri
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true

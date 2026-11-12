@@ -135,7 +135,7 @@ def _evaluate_leaf(
 def _latest(name: str, target: date, reader: FactReader, known: List[Fact]) -> AssetResult:
     first = oldest_useful_date(target)
     seen_any = False
-    for fact in _merged(reader.facts(name, last=target, first=first), known, first, target):
+    for fact in merge_facts(reader.facts(name, last=target, first=first), known, first, target):
         seen_any = True
         if satisfies(fact, target):
             return AssetResult(name, "latest", True, OK, fact)
@@ -146,7 +146,7 @@ def _within(
     name: str, hours: float, target: date, now: datetime, reader: FactReader, known: List[Fact]
 ) -> AssetResult:
     newest: Optional[Fact] = None
-    for fact in _merged(reader.facts(name, last=target, first=None), known, None, target):
+    for fact in merge_facts(reader.facts(name, last=target, first=None), known, None, target):
         if newest is not None and fact.partition_date != newest.partition_date:
             break
         if newest is None or fact.event_time > newest.event_time:
@@ -161,17 +161,22 @@ def _consecutive(
     name: str, days: int, target: date, reader: FactReader, known: List[Fact]
 ) -> AssetResult:
     first = target - timedelta(days=days - 1)
-    present = {f.partition_date for f in _merged(reader.facts(name, last=target, first=first), known, first, target)}
+    present = {f.partition_date for f in merge_facts(reader.facts(name, last=target, first=first), known, first, target)}
     missing = tuple(d for d in (first + timedelta(days=i) for i in range(days)) if d not in present)
     if missing:
         return AssetResult(name, "consecutive", False, MISSING_DATES, missing_dates=missing)
     return AssetResult(name, "consecutive", True, OK)
 
 
-def _merged(
+def merge_facts(
     stream: Iterable[Fact], extra: List[Fact], first: Optional[date], last: date
 ) -> Iterator[Fact]:
-    """Merge reader facts with caller-held facts, newest partition first, no duplicates."""
+    """Merge a newest-first fact stream with extra facts, newest partition first.
+
+    Keeps only extras with ``first <= partition_date <= last`` and drops
+    duplicates (same partition date and event time). The DAL uses it to merge
+    index reads with recent base-table reads; the evaluator to add known facts.
+    """
     pending = sorted(
         (f for f in extra if f.partition_date <= last and (first is None or f.partition_date >= first)),
         key=lambda f: f.partition_date,

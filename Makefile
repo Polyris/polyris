@@ -77,6 +77,8 @@ test-lambdas:
 		cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -v || \
 			{ echo "  ❌ console_api tests failed (run: pip install -e '.[dev]')"; exit 1; }; \
 	fi
+	@echo "  Running coordination tests (moto, tables from sam/template.yaml)..."
+	cd sam/lambdas/coordination && PYTHONPATH=. python3 -m pytest tests/ -v
 
 # SFN JSONata expression tests (requires Node.js)
 test-sfn-jsonata:
@@ -205,7 +207,7 @@ check-backfill-parity:
 # Sync logger.py from _shared/ to each Lambda (v0.79.4, ADR #76)
 sync-loggers:
 	@echo "🔄 Syncing Lambda loggers..."
-	@for lambda in evaluate_deps notify_asset_subscribers check_assets query_subscriptions console_api; do \
+	@for lambda in evaluate_deps notify_asset_subscribers check_assets query_subscriptions console_api coordination; do \
 		if ! diff -q sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py > /dev/null 2>&1; then \
 			echo "❌ $$lambda/logger.py out of sync!"; \
 			echo "   Run: cp sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py"; \

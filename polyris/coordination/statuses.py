@@ -13,6 +13,11 @@ from ..constants import (
     TaskStatus,
 )
 
+__all__ = [
+    "RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE",
+    "SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED",
+]
+
 #: The reconciler acts only on rows in these statuses.
 RECONCILABLE = frozenset(RECONCILABLE_STATUSES)
 #: Statuses after which a task never changes on its own.
@@ -22,3 +27,7 @@ SUCCESS_ONLY = frozenset(SUCCESS_STATUSES - {TaskStatus.SKIPPED.value})
 #: Real failures, as trigger rules count them.
 FAILURE = frozenset(FAILURE_STATUSES)
 SKIPPED = TaskStatus.SKIPPED.value
+WAITING = TaskStatus.WAITING.value
+WAITING_PAUSED = TaskStatus.WAITING_PAUSED.value
+ABORTED = TaskStatus.ABORTED.value
+FAILED = TaskStatus.FAILED.value

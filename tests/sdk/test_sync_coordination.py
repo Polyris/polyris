@@ -25,8 +25,11 @@ def test_copies_never_import_outside_the_package():
 def test_literal_statuses_match_the_source_of_truth():
     namespace: dict = {}
     exec(sc.render()["statuses.py"], namespace)
-    for name in ("RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE", "SKIPPED"):
+    for name in sc.STATUS_SETS + sc.STATUS_NAMES:
         assert namespace[name] == getattr(statuses, name), name
+    assert set(statuses.__all__) == set(sc.STATUS_SETS + sc.STATUS_NAMES), (
+        "a name exported by polyris/coordination/statuses.py is missing from the generator"
+    )
 
 
 def test_a_module_reaching_outside_the_package_is_refused(tmp_path):

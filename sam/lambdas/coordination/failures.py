@@ -1,0 +1,67 @@
+"""How coordination classifies AWS errors (ADR #130 §3).
+
+* transient — retrying the same call can succeed: nothing is written and the
+  caller (a stream retry, an SFN `Retry`, the sweeper) repeats the call;
+* dead token — the task token can no longer be signalled;
+* condition failed — another owner already moved the row: not an error;
+* everything else is non-transient and must surface (the task fails with
+  the real cause, or a warning is written).
+"""
+
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
+
+TRANSIENT_CODES = frozenset({
+    "ThrottlingException",
+    "Throttling",
+    "ProvisionedThroughputExceededException",
+    "RequestLimitExceeded",
+    "TooManyRequestsException",
+    "TransactionConflictException",
+    "InternalServerError",
+    "InternalFailure",
+    "ServiceUnavailable",
+    "ServiceUnavailableException",
+    "RequestTimeout",
+    "RequestTimeoutException",
+})
+DEAD_TOKEN_CODES = frozenset({"TaskTimedOut", "InvalidToken", "TaskDoesNotExist"})
+CONDITION_FAILED = "ConditionalCheckFailedException"
+
+_TRANSIENT_NETWORK = (EndpointConnectionError, ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError)
+
+
+class CoordinationTransient(Exception):
+    """A transient failure. Nothing was written; the caller should retry."""
+
+
+def error_code(exc: BaseException) -> str:
+    if isinstance(exc, ClientError):
+        return str(exc.response.get("Error", {}).get("Code", ""))
+    return ""
+
+
+def is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, ClientError):
+        return error_code(exc) in TRANSIENT_CODES
+    return isinstance(exc, _TRANSIENT_NETWORK)
+
+
+def is_dead_token(exc: BaseException) -> bool:
+    return error_code(exc) in DEAD_TOKEN_CODES
+
+
+def is_condition_failed(exc: BaseException) -> bool:
+    return error_code(exc) == CONDITION_FAILED
+
+
+def reraise_transient(exc: BaseException) -> None:
+    """Re-raise ``exc`` as :class:`CoordinationTransient` when it is transient."""
+    if isinstance(exc, (ClientError, BotoCoreError)) and is_transient(exc):
+        raise CoordinationTransient(f"{type(exc).__name__}: {exc}") from exc

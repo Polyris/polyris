@@ -370,7 +370,7 @@ Targets: primary path p99 ≤ 30 s; through the sweeper ≤ 40 min.
 ### 10. Packaging
 
 - `decide`, `asset_conditions`, `trigger_rules` and `partition_date` live in `polyris/coordination/`, under the 100% pure-logic coverage floor. `polyris/local.py` uses the same `trigger_rules`.
-- `python -m polyris.codegen.sync_coordination` emits them into `sam/lambdas/coordination/_generated/` **and** `sam/lambdas/console_api/_generated/`, with a `--check` gate in CI. The console and the Lambdas therefore always run the same code from the same platform release, independent of the SDK version pinned in `requirements.txt`.
+- `python -m polyris.codegen.sync_coordination` emits them into `sam/lambdas/coordination/coordination_core/` **and** `sam/lambdas/console_api/coordination_core/`, with a `--check` gate in CI. The console and the Lambdas therefore always run the same code from the same platform release, independent of the SDK version pinned in `requirements.txt`.
 - One CodeUri, `sam/lambdas/coordination/`, holds three functions (`Reconcile`, `AssetFanout`, `Sweeper`), each with its own least-privilege role.
 
 **Removed:**

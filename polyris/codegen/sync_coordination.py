@@ -33,6 +33,10 @@ TARGET_DIRS = [
     REPO_ROOT / "sam" / "lambdas" / "console_api" / PACKAGE,
 ]
 
+#: Names copied from polyris/coordination/statuses.py into the literal module.
+STATUS_SETS = ("RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE")
+STATUS_NAMES = ("SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED")
+
 _PARENT_PARTITIONS = "from ..partitions import"
 # Any import that would reach outside the copied package.
 _FORBIDDEN = re.compile(r"^\s*(from\s+\.\.|from\s+polyris\b|import\s+polyris\b)", re.MULTILINE)
@@ -52,10 +56,11 @@ def _render_statuses() -> str:
         '"""Task status sets used by the coordination logic (literal copy, ADR #130)."""',
         "",
     ]
-    for name in ("RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE"):
+    for name in STATUS_SETS:
         values = ", ".join(repr(v) for v in sorted(getattr(statuses, name)))
         lines.append(f"{name} = frozenset({{{values}}})")
-    lines.append(f"SKIPPED = {statuses.SKIPPED!r}")
+    for name in STATUS_NAMES:
+        lines.append(f"{name} = {getattr(statuses, name)!r}")
     return "\n".join(lines) + "\n"
 
 

@@ -7,3 +7,7 @@ TERMINAL = frozenset({'aborted', 'failed', 'skipped', 'succeeded', 'success', 'u
 SUCCESS_ONLY = frozenset({'succeeded', 'success'})
 FAILURE = frozenset({'aborted', 'failed', 'upstream_failed'})
 SKIPPED = 'skipped'
+WAITING = 'waiting'
+WAITING_PAUSED = 'waiting_paused'
+ABORTED = 'aborted'
+FAILED = 'failed'
