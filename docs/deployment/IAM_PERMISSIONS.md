@@ -27,14 +27,14 @@ Approval question for each phase: *what happens if this role is compromised?* In
 
 ## Install — first-time `sam deploy`
 
-The polyris SAM stack creates 118 resources across 10 AWS services in one CloudFormation stack. The role that runs `sam build && sam deploy` needs permission to create every resource type in the stack.
+The polyris SAM stack creates 84 resources across 10 AWS services in one CloudFormation stack. The role that runs `sam build && sam deploy` needs permission to create every resource type in the stack.
 
 ### Recommended approach: AWS-managed policies
 
 Attach both:
 
 - `arn:aws:iam::aws:policy/PowerUserAccess` — everything except IAM
-- `arn:aws:iam::aws:policy/IAMFullAccess` — for the 10 IAM roles + 2 managed policies polyris creates
+- `arn:aws:iam::aws:policy/IAMFullAccess` — for the 11 IAM roles + 2 managed policies polyris creates
 
 These two together cover install with reasonable blast radius (no root, no billing, no organization changes). Suitable for a dedicated `polyris-installer` IAM user or CI role.
 
@@ -45,11 +45,11 @@ If your org requires enumerated permissions, the installer role needs these serv
 | AWS service | Actions | Why |
 |-------------|---------|-----|
 | `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListStackResources` | SAM builds the CFN change set and executes it |
-| `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 10 roles + 2 managed policies |
+| `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 11 roles + 2 managed policies |
 | `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 8 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
-| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion` | 8 Lambda functions (console-api, evaluate-deps, notify-*, etc.) |
+| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion` | 9 Lambda functions (console-api, reconcile, evaluate-deps, notify-*, etc.) |
 | `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource` | 14 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
-| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 17 log groups |
+| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 18 log groups |
 | `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket` | Console UI bucket + results bucket |
 | `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig` | Console API auth |
 | `cloudfront` | `CreateDistribution`, `UpdateDistribution`, `DeleteDistribution`, `GetDistribution`, `CreateOriginAccessControl`, `DeleteOriginAccessControl`, `CreateResponseHeadersPolicy`, `DeleteResponseHeadersPolicy`, `CreateFunction`, `DeleteFunction`, `PublishFunction`, `UpdateFunction` | Console UI hosting |

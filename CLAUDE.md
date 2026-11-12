@@ -441,10 +441,10 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 
 | Repo | Table suffix | PK | SK | GSIs |
 |------|-------------|----|----|------|
-| `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index` |
+| `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130) |
 | `dep_subscriptions_repo` | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
-| `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index` |
+| `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index`, `asset-partition-index` (sparse, ADR #130) |
 | `queued_events_repo` | `queued-asset-events` | `dag_date` | `asset_name` | — |
 | `task_events_repo` | `task-events` | `task_run_id` | `event_time` | `run-index`, `execution-name-index` |
 | `asset_subscriptions_repo` | `asset-subscriptions` | `asset_name` | `pipeline_name` | — |
@@ -545,6 +545,7 @@ In `template.yaml`, always verify:
 | `evaluate-deps` | Evaluate trigger rules | `TOKENS_TABLE` |
 | `check-assets` | Asset freshness checks + `wait_for` subscription writes | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `notify-asset-subscribers` | Wake `wait_for` tasks on asset events | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
+| `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
 | `ui-bootstrap` | Copy UI to S3 on deploy | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `evaluate_deps`, `notify_asset_subscribers`, `check_assets`, `query_subscriptions`, `ui_bootstrap` still use bare `print()` — migrate opportunistically.

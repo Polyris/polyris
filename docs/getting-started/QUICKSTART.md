@@ -205,7 +205,7 @@ sam build && sam deploy --profile "$AWS_PROFILE"
 First deploy takes ~5-10 minutes. Creates:
 - 8 DynamoDB tables
 - 14 Step Functions state machines (11 orchestration + 3 test SFNs)
-- 8 Lambda functions
+- 9 Lambda functions
 - API Gateway, Cognito, S3, CloudFront
 
 Full inventory + purpose per resource: [INFRASTRUCTURE.md](../deployment/INFRASTRUCTURE.md).

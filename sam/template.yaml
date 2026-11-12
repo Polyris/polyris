@@ -1019,6 +1019,12 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-console-api"
       RetentionInDays: !Ref LogRetentionDays
 
+  ReconcileLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-reconcile"
+      RetentionInDays: !Ref LogRetentionDays
+
   # ---------------------------------------------------------------------------
   # Lambda Functions
   # ---------------------------------------------------------------------------
@@ -1140,6 +1146,36 @@ Resources:
           # last task_dep completes wakes dep_wrapper too early.
           TOKENS_TABLE: !Ref PipelineTokensTable
           EVALUATE_DEPS_LAMBDA: !GetAtt EvaluateDepsFunction.Arn
+      Tags:
+        Environment: polyris
+        Stage: !Ref Stage
+        Namespace: !Ref Namespace
+
+  # ADR #130 §3: the only code that decides whether a waiting task is ready
+  # and the only code that signals it. One CodeUri holds every coordination
+  # function; each gets its own least-privilege role.
+  ReconcileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-reconcile"
+      CodeUri: lambdas/coordination/
+      Handler: reconcile.handler
+      # Resume handles one run's rows for at most 20 s (RESUME_BUDGET_SECONDS),
+      # then leaves the rest due for the sweeper.
+      Timeout: 30
+      # Every task wake runs through this function; CPU scales with memory,
+      # and 256 MB keeps the boto3 cold start short for a negligible GB-s cost.
+      MemorySize: 256
+      Role: !GetAtt ReconcileRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref ReconcileLogGroup
+      Environment:
+        Variables:
+          TOKENS_TABLE: !Ref PipelineTokensTable
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+          ASSET_EVENTS_TABLE: !Ref AssetEventsTable
+          PIPELINES_TABLE: !Ref PipelineRegistryTable
       Tags:
         Environment: polyris
         Stage: !Ref Stage
@@ -1412,6 +1448,74 @@ Resources:
                 Action:
                   - states:SendTaskSuccess
                 Resource: "*"
+
+  # Exactly the calls sam/lambdas/coordination makes; pinned both ways by
+  # test_reconcile_role_allows_exactly_the_calls_the_code_makes.
+  ReconcileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-reconcile-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReconcilePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Task row, dependency rows and pause flag (consistent reads);
+              # park / close / attention updates; warning rows.
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+              # Resume: candidate rows of one run.
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
+              # Pointers are deleted once the signal was accepted.
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt DependencySubscriptionsTable.Arn
+              # Asset facts: the partition index plus recent writes (base table).
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt AssetEventsTable.Arn
+                  - !Sub "${AssetEventsTable.Arn}/index/asset-partition-index"
+              # Declared granularity of facts written before ADR #130.
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
+              # Task tokens have no resource-level permissions.
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: "*"
+              # Dead-token check on the task's wrapper execution.
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-dependency-wrapper:*"
 
   ConsoleApiRole:
     Type: AWS::IAM::Role

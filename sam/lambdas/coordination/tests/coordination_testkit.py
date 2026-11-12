@@ -30,11 +30,18 @@ STARTED_AT = "2026-11-12T05:00:00.000Z"
 
 
 def template() -> Dict[str, Any]:
-    """sam/template.yaml with intrinsic functions kept as opaque values."""
+    """sam/template.yaml; an intrinsic function becomes ``{"!GetAtt": "X.Arn"}`` and so on."""
     class Loader(yaml.SafeLoader):
         pass
 
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
+    def intrinsic(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> Dict[str, Any]:
+        if isinstance(node, yaml.ScalarNode):
+            return {f"!{suffix}": loader.construct_scalar(node)}
+        if isinstance(node, yaml.SequenceNode):
+            return {f"!{suffix}": loader.construct_sequence(node, deep=True)}
+        return {f"!{suffix}": loader.construct_mapping(node, deep=True)}
+
+    Loader.add_multi_constructor("!", intrinsic)
     return yaml.load((REPO_ROOT / "sam" / "template.yaml").read_text(), Loader=Loader)
 
 

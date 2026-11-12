@@ -1,7 +1,8 @@
 ## Unreleased
 
-### Added — coordination indexes (ADR #130)
+### Added — coordination reconciler function and indexes (ADR #130)
 
+- The stack gains the `reconcile` function (`<namespace>-<stage>-polyris-reconcile`), its own role and its log group. It decides whether a waiting task is ready and signals its wrapper (ADR #130 §3). Its role allows exactly the DynamoDB and Step Functions calls the code makes; a test records every call and compares it with the role in both directions.
 - `pipeline-tokens` gets `attention-index` (partition `attention`, sort `attention_at`): a sparse index of task rows that may need a wake, push retries and coordination warnings, ordered by due time.
 - `asset-events` gets `asset-partition-index` (partition `asset_name`, sort `partition_date`): asset conditions read facts by partition, newest first.
 - Each table gets one new GSI, so the deploy stays within DynamoDB's one-GSI-change-per-table limit. Both indexes are additive and sparse: rows without the key attributes are not indexed.
