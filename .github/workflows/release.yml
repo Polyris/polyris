@@ -1,15 +1,16 @@
 name: Release artifacts
 
-# Builds the platform release archive that `polyris-up` installs (ADR #131)
-# and attaches it to the GitHub Release of the tag:
+# Builds and publishes the GitHub Release of every v* tag (ADR #131):
 #
 #   polyris-platform-vX.Y.Z.zip          template + Lambda zips + SFN definitions + UI
 #   polyris-platform-vX.Y.Z.zip.sha256   checked by polyris-up after download
+#   install.sh                           the CLI installer from this tag
 #
-# `polyris-up` downloads the archive matching the installed polyris version,
-# so every v* tag must carry one. scripts/release.sh pushes the tag and
-# creates the Release; whichever of the two runs first creates it, the other
-# reuses it.
+# Order matters: create the release as a DRAFT → attach every asset →
+# publish. A published release is never missing its archive, and with
+# "Immutable releases" enabled in the repo settings nobody can swap the
+# files afterwards — they are what polyris-up deploys into users' AWS
+# accounts. scripts/release.sh only pushes the tag.
 on:
   push:
     tags: ["v*"]
@@ -73,10 +74,38 @@ jobs:
             --ui-dir ui/out \
             --out dist
 
-      - name: Attach to GitHub Release
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
-          gh release upload "$TAG" dist/polyris-platform-*.zip dist/polyris-platform-*.zip.sha256 --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists (draft: $(gh release view "$TAG" --json isDraft -q .isDraft))"
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+
+      - name: Attach assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = "false" ]; then
+            # Already published: with Immutable releases its assets are fixed.
+            # Re-running for such a tag only succeeds if they are all there.
+            have=$(gh release view "$TAG" --json assets -q '.assets[].name')
+            for f in "polyris-platform-$TAG.zip" "polyris-platform-$TAG.zip.sha256" install.sh; do
+              echo "$have" | grep -qx "$f" || { echo "::error::$TAG is published but lacks $f"; exit 1; }
+            done
+            echo "Published release already has every asset — nothing to do."
+            exit 0
+          fi
+          gh release upload "$TAG" dist/polyris-platform-*.zip dist/polyris-platform-*.zip.sha256 \
+            scripts/install.sh --clobber
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = "true" ]; then
+            gh release edit "$TAG" --draft=false
+          fi
+          gh release view "$TAG" --json url,assets -q '.url, (.assets[].name)'

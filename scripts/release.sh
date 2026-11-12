@@ -7,6 +7,10 @@
 #
 # Both modes bump all three version files (pyproject.toml, polyris/__init__.py,
 # ui/package.json) so check-versions stays green. The difference is gates only.
+#
+# The script commits, tags and pushes. The GitHub Release itself (notes,
+# platform archive, install.sh) is created and published by
+# .github/workflows/release.yml on the tag push.
 set -euo pipefail
 
 MODE="${1:?usage: release.sh lib|full vX.Y.Z}"
@@ -104,42 +108,15 @@ else
 fi
 
 # ── GitHub Release ─────────────────────────────────────────────────────────────
-# Uses `gh release create --generate-notes`, which pulls PR titles + commit
-# subjects between the previous tag and this one and formats them itself
-# (contributor list + "Full Changelog" link included). No AI — straight from
-# git history, so the notes never claim work that wasn't done. Edit after
-# with `gh release edit $VERSION --notes-file <file>` if you want a custom
-# summary on top.
+# Published by CI, not here (.github/workflows/release.yml, ADR #131): the tag
+# push starts a workflow that builds the platform archive, creates the release
+# as a DRAFT with `--generate-notes` (PR titles + commit subjects from git
+# history), attaches the archive, its .sha256 and install.sh, and only then
+# publishes it. A release is never public without its assets, and with
+# "Immutable releases" enabled its files can't be swapped afterwards — they are
+# what polyris-up deploys into users' AWS accounts.
 
-if ! command -v gh &>/dev/null; then
-  echo "ℹ️  gh not found — skipping GitHub Release"
-  echo "   Create manually: gh release create $VERSION --title $VERSION --generate-notes"
-  exit 0
-fi
-
-read -r -p "Create GitHub Release with auto-generated notes? [y/N] " confirm
-if [[ "$confirm" =~ ^[Yy]$ ]]; then
-  # The release workflow (.github/workflows/release.yml) may have created it
-  # already while attaching the platform archive — reuse it then.
-  if gh release view "$VERSION" >/dev/null 2>&1; then
-    echo "ℹ️  GitHub Release $VERSION already exists (created by the release workflow)"
-  else
-    gh release create "$VERSION" --title "$VERSION" --generate-notes
-    echo "✅ GitHub Release $VERSION created"
-  fi
-
-  # Attach scripts/install.sh as a release asset so the README's install
-  # URL (github.com/Polyris/polyris/releases/latest/download/install.sh)
-  # always serves the installer that shipped with the latest tag, not
-  # whatever is on main. Without this, curl-installers get the main branch
-  # version of install.sh even when they clone the release tag — see
-  # README "Install" section for context.
-  echo "→ uploading scripts/install.sh as release asset"
-  gh release upload "$VERSION" scripts/install.sh --clobber
-  echo "✅ install.sh attached to $VERSION"
-  echo "ℹ️  The platform archive (polyris-up) is attached by the release workflow:"
-  echo "    gh run list --workflow release.yml"
-else
-  echo "ℹ️  skipped — create manually: gh release create $VERSION --title $VERSION --generate-notes"
-  echo "    then: gh release upload $VERSION scripts/install.sh"
-fi
+echo ""
+echo "ℹ️  GitHub Actions now builds and publishes the $VERSION release (5–10 minutes):"
+echo "    gh run watch \$(gh run list --workflow release.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+echo "    gh release view $VERSION        # once the run is green"

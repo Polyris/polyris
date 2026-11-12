@@ -1,5 +1,21 @@
 ## Unreleased
 
+### Changed — CI publishes each release, assets first
+
+- `.github/workflows/release.yml` now creates the GitHub Release as a draft,
+  attaches the platform archive, its `.sha256` and `install.sh`, and only
+  then publishes it. `scripts/release.sh` stops after pushing the tag. A
+  published release is never missing its assets, and the repo can keep
+  GitHub's *Immutable releases* on so nobody can swap the archive
+  `polyris-up` deploys (see `docs/deployment/RELEASE.md`).
+
+### Fixed — `make check` failed with boto3-stubs installed
+
+- mypy with boto3-stubs rejected the stack waiter config in `polyris-down`,
+  which stopped `release.sh full v1.1.4`. Stack waits now go through
+  `cfn_changeset.wait_for_stack`, and the dev extra installs boto3-stubs for
+  every service the SDK calls, so CI type-checks as strictly.
+
 ### Added — install with `polyris-up`: Python and AWS credentials only
 
 - New `polyris-up` installs or upgrades the platform from the prebuilt release

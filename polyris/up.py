@@ -69,13 +69,13 @@ from .platform import (
 )
 from .platform import MANIFEST_NAME
 from .cfn_changeset import (
-    STACK_WAIT,
     ChangeSetError,
     all_stacks,
     create_change_set,
     describe_stack,
     execute_change_set,
     start_event_watcher,
+    wait_for_stack,
 )
 
 
@@ -784,7 +784,7 @@ def run_down(args: argparse.Namespace) -> None:
     try:
         cfn.delete_stack(StackName=stack_name)
         try:
-            cfn.get_waiter("stack_delete_complete").wait(StackName=stack_name, WaiterConfig=STACK_WAIT)
+            wait_for_stack(cfn, stack_name=stack_name, waiter="stack_delete_complete")
         except WaiterError as e:
             raise UpError(f"Stack {stack_name} was not deleted: {e}")
     finally:
