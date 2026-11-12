@@ -1417,6 +1417,9 @@ Resources:
                   - states:StopExecution
                   - states:DescribeExecution
                   - states:ListExecutions
+                  # /api/health (Step Functions check) and the pipeline-ARN
+                  # fallback in pipelines_list / pipelines_actions.
+                  - states:ListStateMachines
                   - states:SendTaskSuccess
                   - states:SendTaskFailure
                   - states:SendTaskHeartbeat

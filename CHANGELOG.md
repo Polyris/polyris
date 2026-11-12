@@ -1,5 +1,13 @@
 ## Unreleased
 
+### Fixed — `/api/health` always reported "unhealthy"
+
+- `ConsoleApiRole` lacked `states:ListStateMachines`, which the health check's
+  Step Functions probe (and the pipeline-ARN fallback in the pipeline list)
+  call, so every deployed stack returned HTTP 503. Granted; pinned by
+  `tests/sdk/test_console_api_sfn_iam_parity.py`, which checks every
+  Step Functions call in console_api against the role.
+
 ### Fixed — `wait_for` subscription table routing
 
 - `NotifyAssetSubscribersFunction` and `CheckAssetsFunction` received

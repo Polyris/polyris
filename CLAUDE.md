@@ -553,6 +553,8 @@ except (ClientError, BotoCoreError) as e:
 
 **Re-raise permission errors** — never return `{}` or `[]` silently on AccessDeniedException.
 
+**A new AWS call in `console_api` needs its IAM action on `ConsoleApiRole` in the same change.** Step Functions calls are pinned by `tests/sdk/test_console_api_sfn_iam_parity.py`; a missing `states:ListStateMachines` left `/api/health` at 503 on every stack until the ADR #131 live smoke caught it.
+
 **Stop pipeline hierarchy** (always stop in this order):
 1. Pipeline SFN execution (reconstruct ARN: `sfn_arn.replace(':stateMachine:', ':execution:') + ':' + pipeline_execution`)
 2. All `wrapper_execution_arn` from task items (deduplicated)
