@@ -259,10 +259,14 @@ def test_upload_artifacts_is_content_addressed_and_idempotent(s3, tmp_path, caps
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
 
     fkeys, skeys, prefix = up.upload_artifacts(s3, bucket, root, manifest)
+    first = capsys.readouterr().out.strip()
     again = up.upload_artifacts(s3, bucket, root, manifest)
+    second = capsys.readouterr().out.strip()
 
     assert again == (fkeys, skeys, prefix)
-    assert "2 uploaded" not in capsys.readouterr().out.splitlines()[-1]  # second run uploads nothing
+    # 1 Lambda zip + 1 SFN definition + 2 UI files
+    assert first == "artifacts: 4 uploaded"
+    assert second == "artifacts: 0 uploaded, 4 already in the bucket"
     digest = hashlib.sha256(b"zip-bytes").hexdigest()[:16]
     assert fkeys == {"ConsoleApiFunction": f"v{__version__}/lambdas/{digest}/ConsoleApiFunction.zip"}
     keys = {o["Key"] for o in s3.list_objects_v2(Bucket=bucket)["Contents"]}

@@ -216,3 +216,41 @@ def test_failed_change_set_is_deleted_and_cleanup_errors_dont_hide_the_cause(cap
     with pytest.raises(C.ChangeSetError, match="Template format error"):
         _create(_NoDelete(change_states=[{"Status": "FAILED", "StatusReason": "Template format error"}]))
     assert "could not delete failed change set" in capsys.readouterr().out
+
+
+def test_event_watcher_prints_final_events_on_stop(mocker, capsys):
+    """The stack can settle between two polls; stop() polls once more so the
+    narration ends on the final COMPLETE line, not on IN_PROGRESS."""
+    from datetime import datetime, timezone
+
+    class _Settles(FakeCfn):
+        calls_made = 0
+
+        def describe_stack_events(self, StackName):
+            self.calls_made += 1
+            if self.calls_made == 1:  # seed: history before this deploy
+                return {"StackEvents": [{"EventId": "old"}]}
+            return {"StackEvents": [{"EventId": "old"}, {
+                "EventId": "done", "Timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "ResourceStatus": "CREATE_COMPLETE", "ResourceType": "AWS::CloudFormation::Stack",
+                "LogicalResourceId": "s"}]}
+
+    mocker.patch.object(C, "_watch_stack_events", side_effect=lambda cfn, n, seen, stop, **kw: stop.wait())
+    C.start_event_watcher(_Settles(), "s")()
+    out = capsys.readouterr().out
+    assert "CREATE_COMPLETE" in out and "old" not in out
+
+
+def test_final_poll_tolerates_a_deleted_stack(mocker, capsys):
+    class _Gone(FakeCfn):
+        seeded = False
+
+        def describe_stack_events(self, StackName):
+            if not self.seeded:
+                self.seeded = True
+                return {"StackEvents": []}
+            raise ClientError({"Error": {"Code": "ValidationError", "Message": "Stack s does not exist"}}, "X")
+
+    mocker.patch.object(C, "_watch_stack_events", side_effect=lambda cfn, n, seen, stop, **kw: stop.wait())
+    C.start_event_watcher(_Gone(), "s")()
+    assert capsys.readouterr().out == ""

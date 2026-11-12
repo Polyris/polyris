@@ -571,7 +571,7 @@ def _fail_no_stack_name(stage: str) -> None:
 
     print(f"\n❌ No SAM stack_name resolved for stage '{stage}'.")
     print("   No platform stack installed by polyris-up was found in this region either.")
-    print("   New install? Run `polyris-up`. Wrong region? Pass --region.")
+    print(f"   New install? Run {_c('polyris-up', CYAN)}. Wrong region? Pass --region.")
     print("")
     if has_config:
         print("   Add stack_name to your config.py:")

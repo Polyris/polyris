@@ -98,7 +98,7 @@ def _prompt(label: str, default: Optional[str] = None, *, required: bool = True)
         if default is not None or not required:
             return default or ""
         raise UpError(f"{label} is required, and stdin is not a terminal.",
-                      "Pass it as a flag (see `polyris-up --help`).")
+                      f"Pass it as a flag (see {_c('polyris-up --help', CYAN)}).")
     suffix = f" [{default}]" if default else ""
     while True:
         answer = input(f"  {label}{suffix}: ").strip()
@@ -133,7 +133,7 @@ def _session(profile: Optional[str], region: Optional[str]) -> Tuple[boto3.Sessi
     try:
         session = boto3.Session(profile_name=profile, region_name=region)
     except ProfileNotFound as e:
-        raise UpError(str(e), "List profiles with `aws configure list-profiles`.")
+        raise UpError(str(e), f"List profiles with {_c('aws configure list-profiles', CYAN)}.")
     resolved_region = session.region_name
     if not resolved_region:
         raise UpError(
@@ -144,7 +144,7 @@ def _session(profile: Optional[str], region: Optional[str]) -> Tuple[boto3.Sessi
         account = session.client("sts").get_caller_identity()["Account"]
     except NoCredentialsError:
         raise UpError("No AWS credentials found.",
-                      "Pass --profile, set AWS_PROFILE, run `aws configure`, or use AWS CloudShell.")
+                      f"Pass --profile, set AWS_PROFILE, run {_c('aws configure', CYAN)}, or use AWS CloudShell.")
     except (ClientError, BotoCoreError) as e:
         raise UpError(f"Could not verify AWS credentials: {e}")
     return session, resolved_region, account
@@ -192,7 +192,7 @@ def hello_task_arn(*, profile: Optional[str], region: Optional[str], stack: Opti
     if not existing or not name:
         raise UpError(
             f"No Polyris platform stack found in {_region}.",
-            "Install it with `polyris-up`, or pass --region / --stack.",
+            f"Install it with {_c('polyris-up', CYAN)}, or pass --region / --stack.",
         )
     outputs = {o["OutputKey"]: o["OutputValue"] for o in existing.get("Outputs") or []}
     if OUTPUT_TEST_SFN_ARN not in outputs:
@@ -349,28 +349,32 @@ def tree_digest(root: Path) -> str:
 
 def upload_artifacts(s3, bucket: str, root: Path, manifest: Manifest) -> Tuple[Dict[str, str], Dict[str, str], str]:
     """Upload code, definitions and the UI. Returns (function keys, state machine keys, UI prefix)."""
-    uploaded = 0
+    uploaded = total = 0
     function_keys: Dict[str, str] = {}
     for logical_id, rel in manifest.functions.items():
         path = root / rel
         key = artifact_key(manifest.version, "lambdas", _sha256_file(path), path.name)
         uploaded += _upload_once(s3, bucket, key, path)
+        total += 1
         function_keys[logical_id] = key
     state_machine_keys: Dict[str, str] = {}
     for logical_id, rel in manifest.state_machines.items():
         path = root / rel
         key = artifact_key(manifest.version, "sfn", _sha256_file(path), path.name)
         uploaded += _upload_once(s3, bucket, key, path)
+        total += 1
         state_machine_keys[logical_id] = key
     ui_root = root / manifest.ui
     prefix = ui_prefix(manifest.version, tree_digest(ui_root))
+    # index.html last: its presence marks a complete upload for the check below.
+    files = sorted((p for p in ui_root.rglob("*") if p.is_file()), key=lambda p: p.name == "index.html")
+    total += len(files)
     if not _object_exists(s3, bucket, f"{prefix}/index.html"):
-        # index.html last: its presence marks a complete upload for the check above.
-        files = sorted((p for p in ui_root.rglob("*") if p.is_file()), key=lambda p: p.name == "index.html")
         for path in files:
             s3.upload_file(str(path), bucket, f"{prefix}/{path.relative_to(ui_root).as_posix()}")
         uploaded += len(files)
-    print(f"   artifacts: {uploaded} uploaded, the rest already present")
+    reused = total - uploaded
+    print(f"   artifacts: {uploaded} uploaded" + (f", {reused} already in the bucket" if reused else ""))
     return function_keys, state_machine_keys, prefix
 
 
@@ -460,7 +464,8 @@ def run_up(args: argparse.Namespace) -> None:
     elif status == "ROLLBACK_COMPLETE":
         raise UpError(
             f"Stack {stack_name} failed its first create (ROLLBACK_COMPLETE) and can't be updated.",
-            f"Remove it with `polyris-down --stack {stack_name}`, fix the cause shown in its events, then run polyris-up again.",
+            f"Remove it with {_c(f'polyris-down --stack {stack_name}', CYAN)}, fix the cause shown in its events, "
+            "then run polyris-up again.",
         )
 
     if existing:
@@ -621,8 +626,8 @@ def run_down(args: argparse.Namespace) -> None:
     if pipelines and not args.yes:
         raise UpError(
             f"{len(pipelines)} pipeline stack(s) still run on this platform: {', '.join(pipelines)}.",
-            "Remove them first with `polyris-destroy` (their schedules would keep firing), "
-            "or pass --yes to delete the platform anyway.",
+            f"Remove them first with {_c('polyris-destroy', CYAN)} in each pipeline's directory "
+            "(their schedules would keep firing), or pass --yes to delete the platform anyway.",
         )
 
     print(f"\n   Deleting {_c(stack_name, CYAN)} removes:")

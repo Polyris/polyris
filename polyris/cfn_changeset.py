@@ -157,6 +157,10 @@ def start_event_watcher(cfn, stack_name: str) -> Callable[[], None]:
     def _stop() -> None:
         stop.set()
         thread.join(timeout=5)
+        # The stack can settle between two polls; one last poll prints its
+        # final events (e.g. the stack's own CREATE_COMPLETE) instead of
+        # ending the narration on IN_PROGRESS lines.
+        _print_new_events(cfn, stack_name, seen)
     return _stop
 
 
@@ -201,34 +205,39 @@ def _watch_stack_events(
     deploy as if they were happening right now.
     """
     while not stop_event.is_set():
-        try:
-            events = cfn_client.describe_stack_events(StackName=stack_name)["StackEvents"]
-            new_events = [e for e in events if e["EventId"] not in seen_event_ids]
-            new_events.sort(key=lambda e: e["Timestamp"])
-            for e in new_events:
-                seen_event_ids.add(e["EventId"])
-                reason = f" — {e['ResourceStatusReason']}" if e.get("ResourceStatusReason") else ""
-                status_colored = _colorize_status(e["ResourceStatus"])
-                # Pad the RAW status (not the color-escaped string) so
-                # ANSI codes don't throw off the column alignment.
-                padding = " " * max(0, 28 - len(e["ResourceStatus"]))
-                print(f"    {status_colored}{padding} {e['ResourceType']:<32} {e['LogicalResourceId']}{reason}")
-
-        except Exception as e:
-            # Deliberately broad, and deliberately not narrowed to
-            # (ClientError, BotoCoreError): this is a daemon *narration* thread
-            # wrapping both the AWS call and the event formatting below it. The
-            # deploy's correctness does not depend on it, but a traceback from
-            # it mid-deploy — or a dead poller — is worse than a skipped tick.
-            # ADR #28's narrow rule is for paths whose failure means something;
-            # this one's does not. What Principle #11 forbids is the *silent*
-            # swallow this used to be (`pass`, no comment), so it now says so.
-            #
-            # "does not exist" is expected on the first few polls of a CREATE:
-            # CloudFormation hasn't registered the stack yet. Suppress that
-            # specific case to avoid confusing "progress poll skipped" output.
-            if "does not exist" not in str(e):
-                print(f"    (progress poll skipped: {e})")
+        _print_new_events(cfn_client, stack_name, seen_event_ids)
         stop_event.wait(poll_interval)
+
+
+def _print_new_events(cfn_client, stack_name: str, seen_event_ids: set) -> None:
+    """One poll: print the events not seen yet, oldest first. Never raises."""
+    try:
+        events = cfn_client.describe_stack_events(StackName=stack_name)["StackEvents"]
+        new_events = [e for e in events if e["EventId"] not in seen_event_ids]
+        new_events.sort(key=lambda e: e["Timestamp"])
+        for e in new_events:
+            seen_event_ids.add(e["EventId"])
+            reason = f" — {e['ResourceStatusReason']}" if e.get("ResourceStatusReason") else ""
+            status_colored = _colorize_status(e["ResourceStatus"])
+            # Pad the RAW status (not the color-escaped string) so
+            # ANSI codes don't throw off the column alignment.
+            padding = " " * max(0, 28 - len(e["ResourceStatus"]))
+            print(f"    {status_colored}{padding} {e['ResourceType']:<32} {e['LogicalResourceId']}{reason}")
+
+    except Exception as e:
+        # Deliberately broad, and deliberately not narrowed to
+        # (ClientError, BotoCoreError): this is *narration*, wrapping both the
+        # AWS call and the event formatting below it. The deploy's
+        # correctness does not depend on it, but a traceback from it
+        # mid-deploy — or a dead poller — is worse than a skipped tick.
+        # ADR #28's narrow rule is for paths whose failure means something;
+        # this one's does not. What Principle #11 forbids is the *silent*
+        # swallow this used to be (`pass`, no comment), so it says so.
+        #
+        # "does not exist" is expected on the first few polls of a CREATE
+        # (and on the final poll after a DELETE): suppress that case to avoid
+        # confusing "progress poll skipped" output.
+        if "does not exist" not in str(e):
+            print(f"    (progress poll skipped: {e})")
 
 
