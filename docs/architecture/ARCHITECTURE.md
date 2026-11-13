@@ -149,8 +149,10 @@ Every registration failure is caught: a lost row or a non-transient error fails 
 ```
 Run_Task Helper SFN
      │
-     ├─ Check_Execution_Paused ──► pipeline_registry [getItem]
-     │    └─ if paused ──────────► pause_waiter SFN (waitForTaskToken)
+     ├─ Check_Pause ─────────────► pipeline_tokens _pause_{run} [getItem]
+     │    └─ if paused ──────────► pause_waiter SFN (waitForTaskToken): saves the
+     │                             token with a paused# entry; resume, or the
+     │                             sweeper once the run is no longer paused, releases it
      │
      ├─ Update_Status_Running ───► pipeline_tokens [updateItem]
      ├─ Emit_Task_Started ───────► task_events [putItem]
@@ -223,7 +225,7 @@ notify_dependents SFN
               └─ wait ───────────► nothing (still waiting for other conditions)
 ```
 
-A failed reconcile call never fails `notify_dependents`: every waiting task is also re-checked by the sweeper at its due time (every 5 minutes it takes the due rows; a task that still waits is due again in 10, 20, then every 30 minutes), so a lost hint delays a task and never loses it. When the wrapper's status write finds the task already moved by someone else (an operator's skip or success), the wrapper ends without running the task.
+A failed reconcile call never fails `notify_dependents`. Every waiting task is also re-checked by the sweeper at its due time: every 5 minutes it takes the due rows, and a task that still waits is due again in 10, 20, then every 30 minutes. A lost hint therefore delays a task and never loses it. When the wrapper's status write finds the task already moved by someone else (an operator's skip or success), the wrapper ends without running the task.
 
 ### Flow 4: Asset-Based Cross-Pipeline Triggers
 
@@ -233,7 +235,7 @@ Producer task completes with outlets: [{name: "inventory"}]
      ▼
 run_task Record_Asset_Event ──► asset_events [putItem, never overwrites]
      │    one fact per outlet: partition_key (the run's date), partition_date,
-     │    granularity, cascade, event_time
+     │    granularity, event_time
      │
      ├─ PULL model (wait_for) ── asset_events stream (INSERT) ──► AssetFanout Lambda
      │    ├─ Query dependency_subscriptions "asset:inventory" (consistent)
@@ -241,12 +243,12 @@ run_task Record_Asset_Event ──► asset_events [putItem, never overwrites]
      │         reads: asset_events — does a fact satisfy the run's date?
      │         if yes → signal the task's wrapper
      │
-     └─ PUSH model (schedule=[asset], unless cascade='none') ── the same AssetFanout call
+     └─ PUSH model (schedule=[asset]) ── the same AssetFanout call
           ├─ Query asset_subscriptions "inventory" (consistent)
           └─ For each consumer pipeline (never the producer itself):
                ├─ evaluate its whole schedule for the fact's date, as pull does
                └─ if satisfied → StartExecution under run_name(...):
-                    AND → one run per date; OR or cascade='all' → one per event
+                    AND → one run per date; OR → one per event
                     ExecutionAlreadyExists → already started; transient error →
                     push retry row for the sweeper; anything else → warning
 ```
@@ -335,11 +337,12 @@ CloudFormation delete_stack
 
 | Symptom | Where to look | Table / Service |
 |---------|--------------|-----------------|
-| Task stuck in `waiting` | registration helper execution | `dependency_subscriptions` — is subscription there? |
-| Task never becomes `deps_ready` | notify_dependents execution | `pipeline_tokens` — check dep statuses |
-| Task `deps_ready` but not running | run_task helper execution | `pipeline_registry` — is pipeline paused? |
+| Task stuck in `waiting` | reconcile logs for the task's `execution_name`: `verdict` and `reasons` | `dependency_subscriptions` — pointers; `asset_events` — a fact for the run's date? |
+| Task never becomes `deps_ready` | reconcile logs; the upstream's notify_dependents execution | `pipeline_tokens` — dependency statuses; the task's `attention_at` (next sweeper check) |
+| Task `deps_ready` but not running | run_task helper execution: held in its pause wait? | `pipeline_tokens` — `_pause_{run}` and the row's `pause_token` |
+| Engine banner in the console | `GET /api/health` → `checks.coordination.problems`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
 | `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
-| Asset trigger didn't fire | `/aws/lambda/polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
+| Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
@@ -388,10 +391,10 @@ Quick reference — for full attribute definitions and access patterns see
 | Table | Purpose | PK | SK |
 |-------|---------|----|----|
 | pipeline_tokens | Task state | execution_name | - |
-| dependency_subscriptions | Dependency tracking | dependency_key | - |
+| dependency_subscriptions | Per-run pointers to waiting tasks | dependency_key | subscriber |
 | pipeline_registry | Pipeline metadata | pipeline_name | - |
 | asset_events | Asset history | asset_name | event_time |
-| asset_subscriptions | Asset→DAG subscriptions | asset_name | dag_id |
+| asset_subscriptions | Pipelines scheduled on an asset | asset_name | pipeline_name |
 | task_events | Task history | task_run_id | event_time |
 
 ---
@@ -554,6 +557,8 @@ No always-on control plane, so idle cost is near zero.
                                   └───────────────────────┘
 ```
 
+A task of a paused run waits as `waiting_paused` at one of two points: before its dependency signal, where the reconciler parks it, or at the start of run_task, where it holds a pause token. Resume releases both; the sweeper releases a pause token resume missed (ADR #130).
+
 **Terminal statuses:** success, failed, skipped, aborted, upstream_failed
 
 **Non-terminal:** stopped (can be restarted), pending (SFN redrive)
@@ -604,7 +609,7 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 ### Task stuck in "waiting"
 
 1. Check the **Dependencies** tab in the task modal — are the upstreams complete?
-2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting.
+2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting. The sweeper re-checks a waiting task 10, 20, then every 30 minutes; if the console shows the engine banner, that check is not happening.
 3. Check `dependency_subscriptions`: one row per dependency, key `{upstream}-{pipeline_execution_short}`, subscriber = the task's `execution_name`.
 4. Check the upstream's **notify_dependents** execution — did it run?
 

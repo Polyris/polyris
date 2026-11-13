@@ -84,34 +84,24 @@ curl -X POST ${API_URL}/api/execution-stop?id={arn} \
 
 ### Task stuck in "waiting"
 
-**Symptoms:** Task shows "waiting" but dependencies are complete.
+**Symptoms:** a task shows "waiting" although you expect its dependencies or assets to be in place.
 
 **Check:**
-1. **Dependencies tab** in task modal — are all upstreams success/skipped?
-
-2. **Subscription exists** in DynamoDB:
+1. **Why it waits.** Each check of the task logs one line with its `verdict` and `reasons`, such as `waiting for 1 dependencies` or the asset dates still missing:
    ```bash
-   aws dynamodb scan \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-dep-subscriptions \
-     --filter-expression "contains(subscriber_name, :task)" \
-     --expression-attribute-values '{":task": {"S": "your-task"}}'
+   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-reconcile --since 2h \
+     --filter-pattern '"<execution_name>"'
    ```
+   The execution name is in the task modal: `{task}-{date}-{run suffix}`.
+2. **Dependencies tab** in the task modal: are the upstream tasks finished, in a state the trigger rule accepts?
+3. **Assets:** a `wait_for` asset needs a fact that serves the run's date (see [ASSETS.md § Granularity](../features/ASSETS.md#granularity)). A fact for another date, today's for instance, does not count.
+4. **Engine health:** a banner in the console, or `GET /api/health` → `checks.coordination.problems`, means waiting tasks are not being re-checked; see [The console shows "Task coordination needs attention"](#the-console-shows-task-coordination-needs-attention).
+5. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
 
-3. **notify_dependents_helper** executed:
-   - Open upstream task's wrapper execution in Step Functions Console
-   - Check if "NotifyDependents" state ran successfully
-
-4. **Wait token is valid** — tokens expire after 1 year, but executions timeout sooner.
-
-**Fix:** 
-- If subscription missing: restart the pipeline for this date
-- If notify didn't run: check upstream task's failure handler
-- Emergency: manually send task token:
-  ```bash
-  aws stepfunctions send-task-success \
-    --task-token "aqc..." \
-    --task-output '{"status": "success"}'
-  ```
+**Fix:**
+- A dependency or asset is missing: run its producer for that date, or mark the upstream task successful in the console; its facts are dated by its own run.
+- Everything is in place: the sweeper re-checks a waiting task 10, 20, then every 30 minutes and starts it at the next check. A `sweeper` warning in the bell says the regular wake-up was lost on the way.
+- The task should not wait at all: skip it or mark it successful from the task modal.
 
 ---
 
@@ -254,13 +244,19 @@ Check *why* the upstream was skipped:
 
 ---
 
-### Asset shows stale in UI
+## Coordination Issues
 
-**Symptoms:** Asset materialized recently but UI shows old timestamp.
+### The console shows "Task coordination needs attention"
 
-**Check:** Asset events table has the latest event.
+The banner lists what is wrong; `GET /api/health` returns the same list in `checks.coordination.problems`. Waiting tasks are not re-checked while it shows.
 
-**Fix:** Asset events are eventually consistent. Wait 30s or refresh. If it persists, check the newest fact of the asset in the `asset-events` DynamoDB table.
+| Problem | What to do |
+|---------|------------|
+| The sweeper has not reported yet | Normal for the first 5 minutes after an install or upgrade. If it stays, check that the EventBridge schedule `${NAMESPACE}-${STAGE}-polyris-sweeper` exists and is enabled |
+| The sweeper last reported N minutes ago | Read the sweeper's logs: `aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-sweeper --since 1h`. A run that fails on every attempt shows its error there |
+| Asset events are not delivered: the stream mapping is … | Enable the event source mapping of `${NAMESPACE}-${STAGE}-polyris-asset-fanout` (Lambda console → the function → Configuration → Triggers) |
+| Asset events are not recorded for delivery: the table stream is … | The stream of `${NAMESPACE}-${STAGE}-polyris-asset-events` was turned off outside polyris. Turn it on again (view type `NEW_IMAGE`) and point asset-fanout's trigger at the new stream. Meanwhile the sweeper still wakes waiting tasks at their checks, and its hourly catch-up starts asset-scheduled pipelines |
+| Waiting tasks are N minutes behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
 
 ---
 

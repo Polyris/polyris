@@ -80,7 +80,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-query-subscriptions` | `notify-dependents` SFN | Reads `dep-subscriptions` to find who to notify when an upstream completes |
 | `polyris-reconcile` | `registration` and `notify-dependents` SFNs, asset-fanout | Decides whether a waiting task is ready (trigger rule, `wait_for` assets, pause) and signals its wrapper (ADR #130) |
 | `polyris-asset-fanout` | `asset-events` stream | Wakes the tasks waiting on a new asset fact and starts the pipelines scheduled on that asset |
-| `polyris-sweeper` | EventBridge Scheduler, every 5 minutes | Re-checks the waiting tasks whose due time has come, so a lost wake-up hint delays a task instead of losing it; aborts a task whose wrapper is gone; releases a task a resume missed from its pause wait; retries failed push starts and hourly replays the pushes of recent facts; adopts rows an older version wrote; reports the engine's health (ADR #130 §8) |
+| `polyris-sweeper` | EventBridge Scheduler, every 5 minutes | Re-checks the waiting tasks whose due time has come, so a lost wake-up hint delays a task instead of losing it. Aborts a task whose wrapper is gone, and releases a task a resume missed from its pause wait. Retries failed push starts and hourly replays the pushes of recent facts. Adopts rows an older version wrote and reports the engine's health (ADR #130 §8) |
 | `polyris-notify` | `failure-handler` SFN | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Copies the prebuilt Console UI from the artifacts bucket into `ConsoleUiBucket`, deletes files of the previous build, writes `config.js` from the stack's values, invalidates CloudFront. Absent on a from-source `sam deploy` (there `ui/deploy.sh` uploads the UI) |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
@@ -89,11 +89,11 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 
 | Logical name | Contents |
 |--------------|----------|
-| `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output. Hottest table |
+| `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output, and the coordination rows the sweeper keeps (`_engine_health`, `_sweeper_lease`, warnings). Its sparse `attention-index` lists the rows that need attention by due time: waiting tasks, tasks held in their pause wait, push retries, warnings. Hottest table |
 | `polyris-pipeline-registry` | One row per deployed pipeline. Holds the DAG snapshot the Console renders |
 | `polyris-dep-subscriptions` | One pointer per waiting task and per thing it waits on (an upstream task of its run, or a `wait_for` asset). Read by `query-subscriptions` and asset-fanout; deleted once the task is signalled |
 | `polyris-task-events` | Append-only audit trail of task lifecycle events (queued, started, succeeded, failed, restarted, manually-resolved). Feeds the Console's per-task History tab |
-| `polyris-asset-events` | Append-only asset facts, one per materialisation. Its stream feeds asset-fanout, which wakes `wait_for` tasks and starts asset-scheduled pipelines |
+| `polyris-asset-events` | Append-only asset facts, one per materialisation, with the partition each belongs to (`asset-partition-index` finds them by partition date). Its stream feeds asset-fanout, which wakes `wait_for` tasks and starts asset-scheduled pipelines |
 | `polyris-asset-subscriptions` | (asset, downstream_pipeline) edges — the asset-DAG's dependency graph |
 | `polyris-api-tokens` | Personal access tokens for the Console REST API (alternative to Cognito login) |
 
@@ -165,6 +165,8 @@ A common admin/developer question during an incident. Table maps concepts to con
 | "Where's the large XCom payload the task pushed?" | `polyris-results` S3 bucket, at the `_s3_ref` path the DDB `result` field points to |
 | "Why did the Console API return 500?" | `/aws/lambda/polyris-console-api` log group, filter by request ID from the browser response |
 | "Which tasks depend on this one?" | `polyris-dep-subscriptions` DDB (GSI: `subscriber-index`) |
+| "Why is this task still waiting?" | `/aws/lambda/polyris-reconcile` log group, filter by the task's execution name: each line has the `verdict` and its `reasons` |
+| "Is task coordination healthy?" | The Console's engine banner, or `GET /api/health` → `checks.coordination.problems` |
 | "When did this task last transition to `failed`?" | `polyris-task-events` DDB, query by `task_run_id` |
 | "Did Cognito reject the login?" | CloudTrail → filter EventSource `cognito-idp.amazonaws.com` |
 

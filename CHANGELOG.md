@@ -1,5 +1,23 @@
 ## Unreleased
 
+### Upgrading to 1.2.0 (ADR #130)
+
+The coordination layer changes under running pipelines, so upgrade in a quiet window:
+
+1. **Before.** Disable your pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`) and wait until no task is `running` (the console's Tasks view). Tasks still waiting for dependencies or assets can stay: the new version adopts them and checks them from their facts.
+2. **Upgrade.** Run `polyris-up --profile <profile>`. The same update adds two DynamoDB indexes and lasts as long as they take to build: minutes on small tables, longer on large ones.
+3. **After.** Enable the schedules again and start, from the console, the runs whose schedule fired during the window. Within about 5 minutes the sweeper reports for the first time; until then the console shows "The sweeper has not reported yet". After that, no banner means task coordination is healthy.
+4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline and the naming of long task ids.
+
+### Changed — what you notice after upgrading (ADR #130)
+
+- `wait_for` is partition-aware: a task waits for a fact that serves its run's date, so a run for a past date never starts on today's fact, and `wait_for=[a, b]` waits for both. Weekly and monthly assets serve a daily run with their latest version from the current or the previous week or month.
+- `.within(...)` judges the latest partition up to the run's date.
+- Marking a task successful records its outlets' facts for the task's own date, not the day you mark it.
+- A pipeline scheduled on assets of different cadences runs at the finest one, for example daily with the latest weekly input. Before, it ran only on dates when every input had a fact.
+- A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
+- Warnings reach the bell whatever date they are about, and the console shows a banner while task coordination is unhealthy.
+
 ### Fixed — an operator's decision survives a wrapper the console could not stop (ADR #130 §6.3, B-O1)
 
 - When an operator skips, fails or marks a waiting task, the console stops its wrapper. If that stop failed, the wrapper kept waiting, registered again when its dependency wait timed out, and the unconditional write put the row back to `waiting`: the task then ran, although its dependants had already been told otherwise. Registration now writes the row only if it is new, belongs to another wrapper, or still waits; otherwise it keeps the row and wakes the wrapper, which ends without running the task.
@@ -61,7 +79,7 @@
 ### Changed — asset-scheduled pipelines start from facts (ADR #130 §6.1)
 
 - `asset-fanout` now also starts the pipelines scheduled on an asset (`schedule=[...]`). For each new fact it evaluates the consumer's whole schedule for the fact's partition, with the same rule as `wait_for`; `.within(...)` is judged as of the fact's time, so a late or repeated event gives the same answer.
-- An AND schedule starts one run per date; an OR schedule or `cascade='all'` one run per event. Runs get deterministic names, so a repeated event never starts a second run. A pipeline never triggers itself, and a `cascade='none'` fact starts nothing.
+- An AND schedule starts one run per date; an OR schedule one run per event. Runs get deterministic names, so a repeated event never starts a second run. A pipeline never triggers itself.
 - A consumer that cannot be started never affects the producer or the other consumers: a transient failure leaves a retry row, anything else a warning.
 - `run_task` and Mark Successful no longer start consumers themselves; Mark Successful only records the facts.
 - Backfill child runs are named the same way (pipeline, partition, backfill and tier hashed into the last 8 characters).
@@ -74,9 +92,8 @@
 
 ### Changed — asset facts carry their partition; a stream wakes `wait_for` tasks (ADR #130)
 
-- `run_task` and Mark Successful record each outlet's fact with `partition_key` (the producing run's date), `partition_date`, `granularity`, `cascade` and `fact_version`. A task waiting on the asset is woken only by a fact that serves its own run's date, so a backfill for an old date no longer runs on today's fact.
+- `run_task` and Mark Successful record each outlet's fact with `partition_key` (the producing run's date), `partition_date`, `granularity` and `fact_version`. A task waiting on the asset is woken only by a fact that serves its own run's date, so a backfill for an old date no longer runs on today's fact.
 - A new `asset-fanout` function reads the `asset-events` stream (new facts only) and asks the reconciler about every task waiting on the fact's asset. Writers no longer call a notifier: `run_task`'s `Notify_Asset_Subscribers` step and the console's invoke of `NotifyAssetSubscribersFunction` are gone.
-- A `cascade='none'` backfill records its facts too; it still starts no push consumer.
 - A failed `notify_dependents` no longer fails the producing task: it writes a warning, and the dependants are re-checked later.
 
 ### Fixed — asset facts lost or misdated (ADR #130)

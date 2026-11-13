@@ -247,7 +247,7 @@ GET /api/execution-parent?id={execution_name}
 GET /api/notifications?limit=20&hours=4
 ```
 
-Task failures, tasks waiting for a decision, warnings and finished backfills, newest first. A warning
+Task failures, tasks waiting for a decision and warnings, newest first. A warning
 (`"type": "warning"`) carries a `kind` from `WarningKind` and is listed by the time
 it was written, whatever the date of the task it is about.
 

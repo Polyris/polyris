@@ -308,6 +308,18 @@ Code computes engine health on demand and shows it in the console (ADR #130 §9)
 
 A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR.
 
+**46. A task token handed over through a write is findable by the sweeper, and a failed write fails the token**
+When a state stores its `waitForTaskToken` for another component to send (`pause_waiter` saves `pause_token` for resume):
+- the same write gives the row an attention entry (`paused#`), so the sweeper releases the task if the sender missed it. A sender that finds tokens through an index or one scan misses a token written while it ran (B-P3);
+- a failed write is caught and fails the token with the cause. Nothing else will ever hold that token, so without the catch the task waits for its heartbeat and then runs anyway (B-P4);
+- adoption and any other backfill of attention entries route a row by the same rule as its writer: a row holding a pause token goes to `paused#`, not `waiting#`.
+
+**47. A writer writing again under the same identity never replaces a row another owner moved on**
+A retry, or a re-registration after a timeout, is a second write. Condition it on the row still being where this writer left it (same `wrapper_execution_arn`, a waiting status), and route the conditional failure to a superseded path that touches nothing. An unconditional `PutItem` on re-registration put an operator's skip back to `waiting` and ran the task (B-O1). A new owner (a restart) may still replace the row. This is Principle #34 applied to a writer and its own later writes.
+
+**48. A value an ADR defines clause by clause is one pure function with a test per clause**
+The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)

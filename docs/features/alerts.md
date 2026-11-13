@@ -12,7 +12,6 @@ The Console shows a notification for every event that needs your attention:
 | Task's dependency window expires (`wait_for=[asset.within(...)]` timed out) | Decision required |
 | polyris could not coordinate a task: it can no longer be woken and was aborted, its wake-up came late, an asset-scheduled run could not start, its dependent tasks were not notified, or a registration step failed | Warning, named by its kind |
 | A manual action found real output and kept it instead of writing its marker | Warning |
-| Backfill completes / partially completes / fails | Backfill status |
 
 Successful runs do not generate notifications — the Console shows their status in the pipeline list.
 
@@ -24,7 +23,7 @@ Successful runs do not generate notifications — the Console shows their status
 
 Notifications auto-refresh every 30s (or 3s when there's an active run in view). No manual reload needed.
 
-A warning shows by the time it was written, so a warning about an old partition, a backfill for example, still appears. Warnings expire after 8 days.
+A warning shows by the time it was written, so a warning about a run for an old date still appears. Warnings expire after 8 days. A task failure shows while its run's date is within the window you ask for; a failed run for an older date shows in that run, not in the bell.
 
 ## When coordination itself is unhealthy
 
@@ -56,7 +55,7 @@ Query params:
 - `limit` — max rows (default 10, cap 50)
 - `hours` — how far back to look (default 24, cap 168)
 
-Response: `{"notifications": [{id, type, pipeline_name, task_name, pipeline_execution, error, date, finished_at, time_ago}]}`. `type` is `failure`, `decision_required`, `warning` or `backfill`; a warning also has a `kind`, and a backfill its own status fields. Poll every 30-60s; each notification is idempotent (same event returns the same row).
+Response: `{"notifications": [{id, type, pipeline_name, task_name, pipeline_execution, error, date, finished_at, time_ago}]}`. `type` is `failure`, `decision_required` or `warning`; a warning also has a `kind`. Poll every 30-60s; each notification is idempotent (same event returns the same row).
 
 ## Why the `alerts=` DAG argument was removed
 

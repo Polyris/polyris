@@ -18,7 +18,8 @@ Update it when something moves. Paths here are checked by
   and asset-scheduled pipelines are wired to them; the old coordination Lambdas, the push
   state machine and the AND-queue table are gone; pause, resume and restart decide from
   facts; the sweeper re-checks, retries, catches up and reports; the console shows engine
-  health and reads warnings by write time. Next: docs, reviews and a live deploy.
+  health and reads warnings by write time; the docs describe the new model. Next: reviews
+  (break, architect, reliability) and a live deploy.
 
 ## Decided, not done
 
