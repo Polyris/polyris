@@ -6,7 +6,7 @@
     "Prepare_Inputs": {
       "Type": "Pass",
       "Comment": "Build execution context with task_run_id for tracing",
-      "Output": "{% ( $today := $exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'); $ttl := $floor($toMillis($now()) / 1000) + ($exists($states.input.orchestration_timeout) and $states.input.orchestration_timeout > 2592000 ? $states.input.orchestration_timeout : 2592000) + 86400; $pipelineExec := $exists($states.input.pipeline_execution) ? $states.input.pipeline_execution : 'unknown'; $rawShort := $exists($states.input.pipeline_execution_short) ? $states.input.pipeline_execution_short : ($length($pipelineExec) > 20 ? $substring($pipelineExec, $length($pipelineExec) - 20) : $pipelineExec); $pipelineShort := $replace($replace($rawShort, '.', ''), ':', ''); $execName := $exists($states.input.execution_name_override) ? $states.input.execution_name_override : ($states.input.task_name & '-' & $today & '-' & $pipelineShort); $skipTasks := $exists($states.input.skip_tasks) ? $states.input.skip_tasks : []; $taskRunId := $exists($states.input.task_run_id) ? $states.input.task_run_id : ($execName & '-' & $substring($string($toMillis($now())), 7)); $attempt := $exists($states.input.attempt) ? $states.input.attempt : 1; $states.input ~> |$| { 'task_run_id': $taskRunId, 'attempt': $attempt, 'execution_name': $execName, 'date': $today, 'ttl': $ttl, 'orchestration_token': $exists($states.input.token) ? $states.input.token : '', 'dependencies': $exists($states.input.dependencies) ? $states.input.dependencies : [], 'cross_account_role': $exists($states.input.cross_account_role) ? $states.input.cross_account_role : 'same', 'pipeline_name': $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown', 'pipeline_execution': $pipelineExec, 'pipeline_execution_short': $pipelineShort, 'skip_tasks': $skipTasks, 'parent_execution_id': $pipelineExec, 'backfill_id': $exists($states.input.backfill_id) ? $states.input.backfill_id : '', 'partition_key': $exists($states.input.partition_key) ? $states.input.partition_key : $today, 'wrapper_execution_arn': $states.context.Execution.Id } | ) %}",
+      "Output": "{% ( $today := $exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'); $ttl := $floor($toMillis($now()) / 1000) + ($exists($states.input.orchestration_timeout) and $states.input.orchestration_timeout > 2592000 ? $states.input.orchestration_timeout : 2592000) + 86400; $pipelineExec := $exists($states.input.pipeline_execution) ? $states.input.pipeline_execution : 'unknown'; $rawShort := $exists($states.input.pipeline_execution_short) ? $states.input.pipeline_execution_short : ($length($pipelineExec) > 20 ? $substring($pipelineExec, $length($pipelineExec) - 20) : $pipelineExec); $pipelineShort := $replace($replace($rawShort, '.', ''), ':', ''); $execName := $exists($states.input.execution_name_override) ? $states.input.execution_name_override : ($states.input.task_name & '-' & $today & '-' & $pipelineShort); $skipTasks := $exists($states.input.skip_tasks) ? $states.input.skip_tasks : []; $taskRunId := $exists($states.input.task_run_id) ? $states.input.task_run_id : ($execName & '-' & $substring($string($toMillis($now())), 7)); $attempt := $exists($states.input.attempt) ? $states.input.attempt : 1; $states.input ~> |$| { 'task_run_id': $taskRunId, 'attempt': $attempt, 'generation': $exists($states.input.generation) ? $states.input.generation : 1, 'execution_name': $execName, 'date': $today, 'ttl': $ttl, 'orchestration_token': $exists($states.input.token) ? $states.input.token : '', 'dependencies': $exists($states.input.dependencies) ? $states.input.dependencies : [], 'cross_account_role': $exists($states.input.cross_account_role) ? $states.input.cross_account_role : 'same', 'pipeline_name': $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown', 'pipeline_execution': $pipelineExec, 'pipeline_execution_short': $pipelineShort, 'skip_tasks': $skipTasks, 'parent_execution_id': $pipelineExec, 'backfill_id': $exists($states.input.backfill_id) ? $states.input.backfill_id : '', 'partition_key': $exists($states.input.partition_key) ? $states.input.partition_key : $today, 'wrapper_execution_arn': $states.context.Execution.Id } | ) %}",
       "Next": "Emit_Wrapper_Started"
     },
     "Emit_Wrapper_Started": {
@@ -137,6 +137,15 @@
           },
           "skip_reason": {
             "S": "auto_skipped"
+          },
+          "generation": {
+            "N": "{% $string($states.input.generation) %}"
+          }
+        },
+        "ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g",
+        "ExpressionAttributeValues": {
+          ":g": {
+            "N": "{% $string($states.input.generation) %}"
           }
         }
       },
@@ -157,6 +166,14 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Comment": "A newer generation owns the row (ADR #130 §2.1): end without writing or notifying.",
+          "Output": "{% $states.input %}",
+          "Next": "Superseded"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -254,6 +271,7 @@
           "wait_before": "{% $exists($states.input.wait_before) ? $states.input.wait_before : 0 %}",
           "trigger_rule": "{% $exists($states.input.trigger_rule) ? $states.input.trigger_rule : 'all_success' %}",
           "execution_name": "{% $states.input.execution_name %}",
+          "generation": "{% $states.input.generation %}",
           "date": "{% $states.input.date %}",
           "current_date": "{% $exists($states.input.current_date) ? $states.input.current_date : $states.input.date %}",
           "ttl": "{% $states.input.ttl %}",
@@ -278,6 +296,14 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "Superseded"
+          ],
+          "Comment": "Registration found the row owned by a newer generation (ADR #130 §2.1): end without running the task.",
+          "Output": "{% $states.input %}",
+          "Next": "Superseded"
+        },
+        {
+          "ErrorEquals": [
             "States.Timeout"
           ],
           "Output": "{% $states.input ~> |$| {'error': {'Error': 'DependencyTimeout', 'Cause': 'Timed out waiting for dependencies'}} | %}",
@@ -295,8 +321,7 @@
       "Retry": [
         {
           "ErrorEquals": [
-            "StepFunctions.ExecutionLimitExceeded",
-            "States.Timeout"
+            "StepFunctions.ExecutionLimitExceeded"
           ],
           "IntervalSeconds": 5,
           "MaxAttempts": 2,
@@ -323,7 +348,7 @@
     },
     "Claim_Deps_Ready": {
       "Type": "Task",
-      "Comment": "ADR #130 §6.4: the receiver of the signal writes the status that follows it. The condition fails when another owner already moved the task (an operator's skip or success): the wrapper then ends as superseded. claimed_by makes a retry idempotent: when the write was applied but its answer lost, the retry finds the row claimed by this wrapper with this status and passes (B-W1).",
+      "Comment": "ADR #130 §6.4: the receiver of the signal writes the status that follows it. The condition fails when another owner already moved the task (an operator's skip or success): the wrapper then ends as superseded. The generation fences it (ADR #130 §2.1); a retry after a lost answer finds the row in this status under its own generation and passes (B-W1).",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -332,8 +357,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status, claimed_by = :self REMOVE wait_token, attention, attention_at",
-        "ConditionExpression": "(#s IN (:waiting, :paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND #s = :status)",
+        "UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation)) AND #s IN (:waiting, :paused, :status)",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
@@ -347,8 +372,8 @@
           ":paused": {
             "S": "waiting_paused"
           },
-          ":self": {
-            "S": "{% $states.context.Execution.Id %}"
+          ":g": {
+            "N": "{% $string($states.input.generation) %}"
           }
         }
       },
@@ -396,8 +421,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status, skip_origin = :rule, skip_reason = :reason, finished_at = :now, claimed_by = :self REMOVE wait_token, attention, attention_at",
-        "ConditionExpression": "(#s IN (:waiting, :paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND #s = :status)",
+        "UpdateExpression": "SET #s = :status, skip_origin = :rule, skip_reason = :reason, finished_at = :now REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation)) AND #s IN (:waiting, :paused, :status)",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
@@ -420,8 +445,8 @@
           ":paused": {
             "S": "waiting_paused"
           },
-          ":self": {
-            "S": "{% $states.context.Execution.Id %}"
+          ":g": {
+            "N": "{% $string($states.input.generation) %}"
           }
         }
       },
@@ -469,8 +494,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status, #e = :reason, finished_at = :now, claimed_by = :self REMOVE wait_token, attention, attention_at",
-        "ConditionExpression": "(#s IN (:waiting, :paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND #s = :status)",
+        "UpdateExpression": "SET #s = :status, #e = :reason, finished_at = :now REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation)) AND #s IN (:waiting, :paused, :status)",
         "ExpressionAttributeNames": {
           "#s": "status",
           "#e": "error"
@@ -491,8 +516,8 @@
           ":paused": {
             "S": "waiting_paused"
           },
-          ":self": {
-            "S": "{% $states.context.Execution.Id %}"
+          ":g": {
+            "N": "{% $string($states.input.generation) %}"
           }
         }
       },
@@ -759,10 +784,14 @@
           }
         },
         "UpdateExpression": "SET #s = :status, wait_delay_started_ms = if_not_exists(wait_delay_started_ms, :started_ms), wait_delay_until_ms = if_not_exists(wait_delay_until_ms, :until_ms)",
+        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
         "ExpressionAttributeValues": {
+          ":g": {
+            "N": "{% $string($states.input.generation) %}"
+          },
           ":status": {
             "S": "waiting_delay"
           },
@@ -791,6 +820,14 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Comment": "A newer generation owns the row (ADR #130 §2.1): end without running the task.",
+          "Output": "{% $states.input %}",
+          "Next": "Superseded"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -856,7 +893,7 @@
         "StateMachineArn": "${failure_handler_arn}",
         "Input": "{% $states.input %}"
       },
-      "Next": "Fail_State",
+      "Next": "Route_After_Failure",
       "Retry": [
         {
           "ErrorEquals": [
@@ -879,6 +916,17 @@
           "Next": "Fail_State"
         }
       ]
+    },
+    "Route_After_Failure": {
+      "Type": "Choice",
+      "Comment": "A failure handler that found the row owned by a newer generation changed nothing (ADR #130 §2.1): this wrapper was superseded, not failed.",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.Output.status) and $states.input.Output.status = 'superseded' %}",
+          "Next": "Superseded"
+        }
+      ],
+      "Default": "Fail_State"
     },
     "Resolve_PagerDuty": {
       "Type": "Task",

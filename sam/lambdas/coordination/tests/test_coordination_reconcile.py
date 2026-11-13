@@ -557,32 +557,43 @@ def test_an_unreadable_fact_counts_for_no_task_and_is_reported(reconciler, token
 @pytest.mark.parametrize("claim", ["Claim_Deps_Ready", "Claim_Skipped", "Claim_Upstream_Failed"])
 def test_a_claim_retried_after_its_write_applied_passes_and_no_other_owner_does(tokens, claim):
     """B-W1: a claim whose write applied but whose answer was lost is retried, and the retry passes its own
-    condition. Another wrapper, or an operator who moved the task since, still makes it fail."""
+    condition. A wrapper of another generation, or an operator who decided the task since, fails it (ADR #130 §2.1)."""
+    from decimal import Decimal
+
     from boto3.dynamodb.types import TypeDeserializer
     from botocore.exceptions import ClientError
 
-    args = _state(_sfn("dependency_wrapper/sfn.tpl.json")["States"], claim)["Arguments"]
-    values = {k: "x" if str(v.get("S", "")).startswith("{%") else TypeDeserializer().deserialize(v)
-              for k, v in args["ExpressionAttributeValues"].items()}
-    load = task_row("load")
-    mine, other = load["wrapper_execution_arn"], load["wrapper_execution_arn"] + "-restarted"
+    from coordination_core import ownership
 
-    def claim_as(arn):
+    args = _state(_sfn("dependency_wrapper/sfn.tpl.json")["States"], claim)["Arguments"]
+
+    def values(generation):
+        out = {}
+        for k, v in args["ExpressionAttributeValues"].items():
+            if str(v.get("S", "")).startswith("{%"):
+                out[k] = "x"
+            elif str(v.get("N", "")).startswith("{%"):
+                out[k] = Decimal(generation)
+            else:
+                out[k] = TypeDeserializer().deserialize(v)
+        return out
+
+    def claim_as(generation):
         tokens.update_item(
             Key={"execution_name": LOAD},
             UpdateExpression=args["UpdateExpression"], ConditionExpression=args["ConditionExpression"],
-            ExpressionAttributeNames=args["ExpressionAttributeNames"],
-            ExpressionAttributeValues={**values, ":self": arn})
+            ExpressionAttributeNames=args["ExpressionAttributeNames"], ExpressionAttributeValues=values(generation))
 
-    tokens.put_item(Item=load)
-    claim_as(mine)
-    claim_as(mine)                                   # the retry
+    tokens.put_item(Item=task_row("load", generation=2))
+    claim_as(2)
+    claim_as(2)                                      # the retry
     with pytest.raises(ClientError, match="ConditionalCheckFailed"):
-        claim_as(other)
-    tokens.update_item(Key={"execution_name": LOAD}, UpdateExpression="SET #s = :s",
-                       ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": "success"})
+        claim_as(1)                                  # a wrapper a restart replaced
+    tokens.update_item(Key={"execution_name": LOAD}, UpdateExpression=f"SET #s = :s, {ownership.RAISE}",
+                       ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":s": "success", **ownership.RAISE_VALUES})
     with pytest.raises(ClientError, match="ConditionalCheckFailed"):
-        claim_as(mine)                               # an operator marked it successful meanwhile
+        claim_as(2)                                  # an operator marked it successful meanwhile
 
 
 def test_a_run_date_that_is_no_partition_key_fails_the_waiting_task_with_the_cause(reconciler, tokens, sfn):

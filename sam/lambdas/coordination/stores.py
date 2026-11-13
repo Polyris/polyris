@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 
 import env
 from coordination_core import attention as att
+from coordination_core import ownership
 from coordination_core.asset_conditions import Fact, merge_facts
 from coordination_core.records import PARTITION_INDEX, fact_from_item
 from coordination_core.statuses import ABORTED, RECONCILABLE, SKIPPED, WAITING, WAITING_PAUSED
@@ -131,16 +132,18 @@ class TaskStore:
                            {":aborted": ABORTED, ":error": error, ":now": format_utc(now)})
 
     def _close(self, execution_name: str, token: str, started_at: str, update: str, values: Dict[str, Any]) -> bool:
+        """Close a row for good. Closing ends its wrapper's ownership, so the same write raises the
+        generation: a wrapper that is in fact still alive can no longer write the row (ADR #130 §2.1)."""
         names = {"#s": "status", "#att": att.KEY, "#due": att.DUE}
         if ":error" in values:
             names["#e"] = "error"   # DynamoDB rejects unused expression names
         return _conditional(lambda: self.table.update_item(
             Key={"execution_name": execution_name},
             # The same shape as the wrapper's own post-wait writes (Claim_* states).
-            UpdateExpression=update + " REMOVE wait_token, #att, #due",
+            UpdateExpression=f"{update}, {ownership.RAISE} REMOVE wait_token, #att, #due",
             ConditionExpression="wait_token = :t AND started_at = :s AND #s IN (:waiting, :paused)",
             ExpressionAttributeNames=names,
-            ExpressionAttributeValues={**values, ":t": token, ":s": started_at,
+            ExpressionAttributeValues={**values, **ownership.RAISE_VALUES, ":t": token, ":s": started_at,
                                        ":waiting": WAITING, ":paused": WAITING_PAUSED},
         ))
 

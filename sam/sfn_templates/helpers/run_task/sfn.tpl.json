@@ -79,13 +79,22 @@
                 "StateMachineArn": "${pause_waiter_arn}",
                 "Input": {
                     "execution_name": "{% $states.input.execution_name %}",
-                    "pause_token": "{% $states.context.Task.Token %}"
+                    "pause_token": "{% $states.context.Task.Token %}",
+                    "generation": "{% $exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0 %}"
                 }
             },
             "HeartbeatSeconds": ${pause_heartbeat_seconds},
             "Output": "{% $states.input %}",
             "Next": "Update_Status_Running",
             "Catch": [
+                {
+                    "ErrorEquals": [
+                        "Superseded"
+                    ],
+                    "Comment": "The pause wait found the row owned by a newer generation (ADR #130 §2.1): end quietly.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
                 {
                     "ErrorEquals": [
                         "States.Timeout",
@@ -120,11 +129,14 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, retry_attempt = :ra0, task_arn = :task_arn, task_type = :task_type REMOVE wait_delay_until_ms, wait_delay_started_ms, pause_token, attention, attention_at",
-                "ConditionExpression": "attribute_not_exists(attempt) OR attempt <= :expectedAttempt",
+                "ConditionExpression": "(attribute_not_exists(attempt) OR attempt <= :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "running"
                     },
@@ -707,7 +719,11 @@
                     }
                 },
                 "UpdateExpression": "SET wait_delay_started_ms = :started_ms, wait_delay_until_ms = :until_ms",
+                "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":started_ms": {
                         "N": "{% $string($millis()) %}"
                     },
@@ -733,6 +749,14 @@
                 }
             ],
             "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer generation owns the row (ADR #130 §2.1): end quietly.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
                 {
                     "ErrorEquals": [
                         "States.ALL"
@@ -770,8 +794,11 @@
                     }
                 },
                 "UpdateExpression": "SET retry_attempt = :ra REMOVE wait_delay_until_ms, wait_delay_started_ms",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":ra": {
                         "N": "{% $string($retry_attempt) %}"
                     },
@@ -902,12 +929,15 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, #e = :error, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status",
                     "#e": "error"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "waiting_decision"
                     },
@@ -1024,11 +1054,14 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, finished_at = :finished, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "success"
                     },
@@ -1145,12 +1178,15 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, #r = :result, finished_at = :finished, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status",
                     "#r": "result"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "success"
                     },
@@ -1669,13 +1705,25 @@
                     }
                 },
                 "UpdateExpression": "SET notification_failed = :nf",
+                "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":nf": {
                         "BOOL": true
                     }
                 }
             },
             "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer generation owns the row (ADR #130 §2.1): end quietly.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
                 {
                     "ErrorEquals": [
                         "States.ALL"
@@ -1705,12 +1753,15 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status",
                     "#e": "error"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "failed"
                     },

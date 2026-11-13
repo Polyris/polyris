@@ -7,13 +7,18 @@ from polyris.coordination import sweep
 STARTED = datetime(2026, 11, 12, 5, 0, tzinfo=timezone.utc)
 
 
-def test_the_liveness_deadline_covers_three_orchestration_timeouts_and_an_hour():
-    assert sweep.liveness_deadline(STARTED, 3600) == STARTED + timedelta(hours=4)
+def test_the_liveness_deadline_covers_one_orchestration_timeout_and_an_hour():
+    """D41: a wrapper waits for its dependencies once; it no longer retries the wait."""
+    assert sweep.liveness_deadline(STARTED, 3600) == STARTED + timedelta(hours=2)
+
+
+def test_a_pre_upgrade_wrapper_still_retries_its_wait_twice():
+    assert sweep.liveness_deadline(STARTED, 3600, legacy=True) == STARTED + timedelta(hours=4)
 
 
 def test_a_row_without_an_orchestration_timeout_uses_the_sdk_default():
-    assert sweep.liveness_deadline(STARTED, None) == STARTED + timedelta(hours=73)
-    assert sweep.liveness_deadline(STARTED, 0) == STARTED + timedelta(hours=73)
+    assert sweep.liveness_deadline(STARTED, None) == STARTED + timedelta(hours=25)
+    assert sweep.liveness_deadline(STARTED, 0, legacy=True) == STARTED + timedelta(hours=73)
 
 
 def test_a_wake_is_a_primary_path_miss_only_when_the_task_could_run_before_its_due_time():

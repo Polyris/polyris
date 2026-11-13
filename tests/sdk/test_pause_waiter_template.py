@@ -48,7 +48,12 @@ def test_the_first_check_is_due_when_python_says(update):
 
 
 def test_a_token_that_cannot_be_saved_fails_the_pause_wait_with_the_cause(states):
-    [catch] = states["Save_Pause_Token"]["Catch"]
+    superseded, catch = states["Save_Pause_Token"]["Catch"]
+    assert (superseded["ErrorEquals"], superseded["Next"]) == (["DynamoDB.ConditionalCheckFailedException"],
+                                                               "Superseded_Pause_Wait")
+    # The superseded path answers the pause token, so its catcher must carry the input, not the error.
+    assert evaluate(superseded["Output"], input={"pause_token": "pause-1"},
+                    error_output={"Error": "DynamoDB.ConditionalCheckFailedException"})["pause_token"] == "pause-1"
     assert (catch["ErrorEquals"], catch["Next"]) == (["States.ALL"], "Fail_Pause_Wait")
     carried = evaluate(catch["Output"], input={"execution_name": "load-x", "pause_token": "pause-1"},
                        error_output={"Error": "DynamoDB.AmazonDynamoDBException", "Cause": "AccessDenied"})
@@ -60,3 +65,16 @@ def test_a_token_that_cannot_be_saved_fails_the_pause_wait_with_the_cause(states
     assert (arguments["TaskToken"], arguments["Error"]) == ("pause-1", wake.COORDINATION_ERROR)
     assert arguments["Cause"].startswith("The task could not enter its pause wait, so it did not start")
     assert "AccessDenied" in arguments["Cause"]
+
+
+def test_a_superseded_pause_wait_holds_nothing_and_ends_run_task_quietly(states):
+    """ADR #130 §2.1: an operator decided the task, or a restart replaced it, while it entered its wait."""
+    from polyris.coordination import ownership
+
+    save = states["Save_Pause_Token"]["Arguments"]
+    assert save["ConditionExpression"] == ownership.FENCE
+    assert evaluate(save["ExpressionAttributeValues"][":g"]["N"], input={"generation": 2}) == "2"
+    superseded = states["Superseded_Pause_Wait"]
+    arguments = evaluate(superseded["Arguments"], input={"pause_token": "pause-1"})
+    assert superseded["Resource"].endswith(":sfn:sendTaskFailure") and superseded["End"] is True
+    assert (arguments["TaskToken"], arguments["Error"]) == ("pause-1", "Superseded")

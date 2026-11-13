@@ -164,10 +164,15 @@ class World:
 
     # ── setup ──────────────────────────────────────────────────────────
 
-    def deploy(self, dag: Any) -> Pipeline:
+    def deploy(self, dag: Any, *, before_upgrade: bool = False) -> Pipeline:
         """Deploy as polyris-deploy does: load the machine, then run it register_only, so the
-        real registration states write the registry entry and any push subscriptions."""
-        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag))
+        real registration states write the registry entry and any push subscriptions.
+
+        `before_upgrade`: the pipeline's tasks start the wrapper as v1.1.4 defined it, as runs
+        in flight across the upgrade do; every helper they call is the current one.
+        """
+        wrapper_arn = self.stack.legacy_wrapper_arn() if before_upgrade else None
+        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag, wrapper_arn=wrapper_arn))
         self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register",
                                      input=json.dumps({"register_only": True}))
         self.settle()
@@ -186,6 +191,13 @@ class World:
         self.invariants.observe()
 
     # ── tasks ──────────────────────────────────────────────────────────
+
+    def task_runs(self, run: Run, task: str) -> int:
+        """How many run_task executions `task` of `run` has started, superseded ones included."""
+        name = run.execution_name(task)
+        helper = self.stack.machine_arn("RunTaskHelperSfn")
+        return sum(1 for e in self.runtime.executions.values()
+                   if e.machine.arn == helper and isinstance(e.input, dict) and e.input.get("execution_name") == name)
 
     def running_tasks(self, run: Run) -> List[str]:
         """Tasks of `run` whose user work has started and not finished."""
@@ -225,6 +237,19 @@ class World:
                       if f.execution is wrapper and f.state == "Wait_For_Dependencies"), None)
         if token is None:
             raise AssertionError(f"{task} is not waiting for its dependencies")
+        self.runtime.time_out(token)
+        self.settle()
+
+    def time_out_pause_wait(self, run: Run, task: str) -> None:
+        """The task's pause wait in run_task reaches its heartbeat timeout (12 hours by default)."""
+        name = run.execution_name(task)
+        helper = self.stack.machine_arn("RunTaskHelperSfn")
+        token = next((t for t, f in self.runtime.tokens.items()
+                      if f.execution.machine.arn == helper and f.state == "Save_Pause_Token_And_Wait"
+                      and isinstance(f.execution.input, dict) and f.execution.input.get("execution_name") == name),
+                     None)
+        if token is None:
+            raise AssertionError(f"{task} is not held in its pause wait")
         self.runtime.time_out(token)
         self.settle()
 
@@ -449,8 +474,9 @@ class World:
     def wrapper(self, run: Run, task: str) -> Execution:
         suffix = run.name[-8:] if len(run.name) > 8 else run.name
         name = f"{task}-{run.date}-{suffix}"[:80]
+        wrappers = self.stack.machine_names["DependencyWrapperSfn"]   # the current one, or the v1.1.4 one
         found = [e for e in self.runtime.executions.values()
-                 if e.machine.arn == self.stack.machine_arn("DependencyWrapperSfn") and e.name == name]
+                 if e.machine.name.startswith(wrappers) and e.name == name]
         if not found:
             raise AssertionError(f"no wrapper execution {name}")
         return found[0]

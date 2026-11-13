@@ -13,7 +13,58 @@
       "Type": "Pass",
       "Comment": "Truncate error to prevent exceeding DynamoDB/EventBridge limits (50KB max)",
       "Output": "{% ( $err := $string($states.input.error); $truncErr := $length($err) > 50000 ? $substring($err, 0, 50000) & '...[truncated, original size: ' & $string($length($err)) & ']' : $err; $states.input ~> |$| {'error_truncated': $truncErr} | ) %}",
-      "Next": "Update_Status_Failed"
+      "Next": "Check_Ownership"
+    },
+    "Check_Ownership": {
+      "Type": "Task",
+      "Comment": "ADR #130 §2.1: a wrapper whose generation the row no longer holds was superseded (an operator decided the task, or a restart replaced it). Its failure is no failure of the task: it writes, notifies and alerts nothing.",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Key": {
+          "execution_name": {
+            "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "ProjectionExpression": "generation",
+        "ConsistentRead": true
+      },
+      "Output": "{% $states.input ~> |$| {'row_generation': $exists($states.result.Item.generation.N) ? $number($states.result.Item.generation.N) : null, 'owner_generation': $exists($states.input.generation) ? $number($states.input.generation) : 0} | %}",
+      "Next": "Route_Ownership",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "The status write below is fenced by the generation too, so going on is safe.",
+          "Output": "{% $states.input %}",
+          "Next": "Update_Status_Failed"
+        }
+      ]
+    },
+    "Route_Ownership": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $states.input.row_generation != null and $states.input.row_generation != $states.input.owner_generation %}",
+          "Next": "Superseded_Complete"
+        }
+      ],
+      "Default": "Update_Status_Failed"
     },
     "Update_Status_Failed": {
       "Type": "Task",
@@ -26,8 +77,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "ConditionExpression": "attribute_not_exists(execution_name) OR NOT (#s = :s1 OR #s = :s2 OR #s = :s3 OR #s = :s4 OR #s = :s5)",
-        "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn, task_name = if_not_exists(task_name, :taskName), pipeline_name = if_not_exists(pipeline_name, :pipelineName), pipeline_execution = if_not_exists(pipeline_execution, :pipelineExecution), pipeline_execution_short = if_not_exists(pipeline_execution_short, :short), #d = if_not_exists(#d, :date), #ttl = if_not_exists(#ttl, :ttl), wrapper_execution_arn = if_not_exists(wrapper_execution_arn, :wrapper)",
+        "ConditionExpression": "attribute_not_exists(execution_name) OR ((generation = :g OR attribute_not_exists(generation)) AND NOT (#s = :s1 OR #s = :s2 OR #s = :s3 OR #s = :s4 OR #s = :s5))",
+        "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn, task_name = if_not_exists(task_name, :taskName), pipeline_name = if_not_exists(pipeline_name, :pipelineName), pipeline_execution = if_not_exists(pipeline_execution, :pipelineExecution), pipeline_execution_short = if_not_exists(pipeline_execution_short, :short), #d = if_not_exists(#d, :date), #ttl = if_not_exists(#ttl, :ttl), wrapper_execution_arn = if_not_exists(wrapper_execution_arn, :wrapper), generation = if_not_exists(generation, :g)",
         "ExpressionAttributeNames": {
           "#s": "status",
           "#e": "error",
@@ -35,6 +86,9 @@
           "#ttl": "ttl"
         },
         "ExpressionAttributeValues": {
+          ":g": {
+            "N": "{% $string($exists($states.input.generation) ? $states.input.generation : 0) %}"
+          },
           ":status": {
             "S": "{% $exists($states.input.error.Error) and $states.input.error.Error = 'UpstreamFailed' ? 'upstream_failed' : 'failed' %}"
           },
@@ -232,6 +286,15 @@
         "status": "failed",
         "execution_name": "{% $states.input.execution_name %}",
         "error": "{% $states.input.error_truncated %}"
+      },
+      "End": true
+    },
+    "Superseded_Complete": {
+      "Type": "Pass",
+      "Comment": "Nothing was written, notified or alerted: the wrapper routes this to its Superseded end.",
+      "Output": {
+        "status": "superseded",
+        "execution_name": "{% $states.input.execution_name %}"
       },
       "End": true
     }

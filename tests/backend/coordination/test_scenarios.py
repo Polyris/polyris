@@ -155,13 +155,15 @@ def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     assert world.warnings() == []           # a repeated hint is a no-op, not an anomaly
 
 
-def test_a_re_registered_task_is_woken_exactly_once(world):
+def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
+    """D41: orchestration_timeout is the real maximum; the wrapper does not wait or register again."""
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
-    world.time_out_registration(run, "consumer")     # the wrapper retries and registers again
+    world.time_out_registration(run, "consumer")
+    assert world.status(run, "consumer") == "failed"
+    assert "Timed out waiting for dependencies" in str(world.row(run, "consumer")["error"])
     world.write_event(A, DATE)
     world.deliver_hints()
-    assert world.running_tasks(run) == ["consumer"]
-    assert len(world.signals(run, "consumer")) == 1
+    assert world.running_tasks(run) == []
 
 
 # ── writers ─────────────────────────────────────────────────────────────
@@ -469,6 +471,57 @@ def test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped(world):
     assert world.status(run, "load") == "skipped"
     assert world.running_tasks(run) == []
     assert world.wrapper(run, "load").status == "SUCCEEDED"   # it ended as superseded
+
+
+@defect("B-O2")
+def test_a_wrapper_a_restart_replaced_never_takes_the_row_back(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.fail_stops("ThrottlingException", times=10)      # no wrapper can be stopped
+    world.skip(run, "load")
+    world.restart(run, "load")              # a new wrapper takes over; the old one still waits
+    world.complete(run, "extract")
+    assert world.running_tasks(run) == ["load"]             # the new wrapper runs it
+    world.time_out_registration(run, "load")                # the old wrapper's wait ends
+    assert world.wrapper(run, "load").status == "SUCCEEDED"   # superseded: it changed nothing
+    assert (world.status(run, "load"), world.task_runs(run, "load")) == ("running", 1)
+
+
+@defect("B-O3")
+def test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load"), before_upgrade=True), DATE)
+    world.fail_stops("ThrottlingException", times=10)
+    world.skip(run, "load")                 # the console cannot stop load's v1.1.4 wrapper
+    world.time_out_registration(run, "load")    # that wrapper retries its wait and registers again
+    world.complete(run, "extract")
+    assert world.status(run, "load") == "skipped"
+    assert world.task_runs(run, "load") == 0
+
+
+@defect("B-O4")
+def test_run_task_never_starts_a_task_an_operator_decided_after_its_wait(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.hold("RunTaskHelperSfn")
+    world.complete(run, "extract")          # load is claimed; its run_task waits to take a step
+    world.fail_stops("ThrottlingException", times=10)
+    world.skip(run, "load")                 # the console can stop neither its wrapper nor its run_task
+    world.release("RunTaskHelperSfn")
+    assert (world.status(run, "load"), world.running_tasks(run)) == ("skipped", [])
+    assert world.task_runs(run, "load") == 1                # started, then superseded
+
+
+@defect("B-O5")
+def test_a_task_an_operator_decided_while_paused_is_never_released_to_run(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.hold("RunTaskHelperSfn")
+    world.complete(run, "extract")          # load is claimed; its run_task waits to take a step
+    world.pause(run)
+    world.release("RunTaskHelperSfn")       # run_task finds the run paused and holds load
+    assert world.status(run, "load") == "waiting_paused"
+    world.fail_stops("ThrottlingException", times=10)
+    world.skip(run, "load")                 # the console cannot stop load's run_task
+    world.resume(run)                       # resume releases only the tasks still held
+    world.time_out_pause_wait(run, "load")  # 12 hours later the pause wait's heartbeat runs out
+    assert (world.status(run, "load"), world.running_tasks(run)) == ("skipped", [])
 
 
 def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_it(world):

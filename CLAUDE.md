@@ -314,10 +314,10 @@ When a state stores its `waitForTaskToken` for another component to send (`pause
 - a failed write is caught and fails the token with the cause. Nothing else will ever hold that token, so without the catch the task waits for its heartbeat and then runs anyway (B-P4);
 - adoption and any other backfill of attention entries route a row by the same rule as its writer: a row holding a pause token goes to `paused#`, not `waiting#`.
 
-**47. A writer writing again under the same identity never replaces a row another owner moved on**
-A retry, or a re-registration after a timeout, is a second write. Condition it on the row still being where this writer left it (same `wrapper_execution_arn`, a waiting status), and route the conditional failure to a superseded path that touches nothing. An unconditional `PutItem` on re-registration put an operator's skip back to `waiting` and ran the task (B-O1). A new owner (a restart) may still replace the row. This is Principle #34 applied to a writer and its own later writes.
+**47. A task row has one owner at a time, named by its generation**
+Every write made for an owner (the wrapper, registration, `run_task`, the pause wait, the failure handler) carries `ownership.FENCE` with the owner's generation. Every write that ends an ownership (an operator's decision, a restart, the reconciler closing a zombie) raises it with `ownership.RAISE`, in the same update that records the decision. A fenced write ends its writer quietly: no status, no notification, no work. Six bugs came from writers that checked something else or nothing (B-O1…B-O5, B-W1); see ADR #130 §2.1. `tests/sdk/test_task_row_writers.py` lists every writer of the tokens table, and a new one fails it until it has a role there.
 
-The converse holds for a `Retry`: a write can be applied while its answer is lost (a 5xx, a timeout), so the retried write must accept the row it already moved. Record the writer on the row and let the condition pass when the row shows this writer's own result: `Claim_*` writes `claimed_by = :self` and accepts `claimed_by = :self AND status = :status` (B-W1). Test it by applying the write twice.
+A retry after a lost answer must accept the row it already moved: a claim accepts its own target status under its own generation (B-W1). Test such a write by applying it twice.
 
 **48. A value an ADR defines clause by clause is one pure function with a test per clause**
 The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
@@ -496,6 +496,7 @@ The two tables exist because push-trigger subscriptions are per-(asset, pipeline
 - `task_execution_arn` — ARN of run_task SFN execution
 - `orchestration_token` — `.waitForTaskToken` for signaling deps ready
 - `wait_token` — token for notify_dependents to signal ready
+- `generation` — the owner's generation (ADR #130 §2.1): writes made for an owner are fenced by it; decisions and restarts raise it
 
 **dependency_key format:** `{upstream_task_name}-{pipeline_execution_short}` — must match exactly between writer (registration) and reader (query_subscriptions).
 

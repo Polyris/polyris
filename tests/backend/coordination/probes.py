@@ -140,10 +140,9 @@ PROBES: Tuple[Probe, ...] = (
              "          },\n",
              ""),
     ), f"{SCENARIOS}::test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper"),
-    # Without its Catch, a pause waiter that cannot save the token just fails: nobody releases the task.
+    # Without its catcher, a pause waiter that cannot save the token just fails: nobody releases the task.
     Probe("B-P4", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
                         ',\n'
-                        '      "Catch": [\n'
                         '        {\n'
                         '          "ErrorEquals": [\n'
                         '            "States.ALL"\n'
@@ -154,16 +153,16 @@ PROBES: Tuple[Probe, ...] = (
                         '          "Output": "{% $merge([$states.input, {\'save_error\':'
                         ' $states.errorOutput}]) %}",\n'
                         '          "Next": "Fail_Pause_Wait"\n'
-                        '        }\n'
-                        '      ]',
+                        '        }',
                         ""),),
           f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
     # The old registration replaced the row whatever it held.
-    Probe("B-O1", (Edit(REGISTRATION,
-                        '"ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self'
-                        ' OR #s IN (:waiting, :paused)"',
-                        '"ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self'
-                        ' OR #s IN (:waiting, :paused) OR attribute_exists(execution_name)"'),),
+    Probe("B-O1", (Edit("sam/lambdas/console_api/coordination_core/ownership.py",
+                        'RAISE = "generation = if_not_exists(generation, :zero) + :one"',
+                        'RAISE = "generation = if_not_exists(generation, :one) + :zero"'),
+                   Edit("sam/lambdas/coordination/coordination_core/ownership.py",
+                        'RAISE = "generation = if_not_exists(generation, :zero) + :one"',
+                        'RAISE = "generation = if_not_exists(generation, :one) + :zero"')),
           f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
     # Without the cutover every consumer subscribed now reacts to every fact the catch-up replays.
     Probe("B-U2", (Edit("sam/lambdas/coordination/asset_fanout.py",
@@ -172,14 +171,53 @@ PROBES: Tuple[Probe, ...] = (
           f"{SCENARIOS}::test_a_consumer_deployed_after_the_facts_does_not_start_for_them"),
     # Without the claim marker a retried claim fails its own condition and ends as superseded.
     Probe("B-W1", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
-                        '"SET #s = :status, claimed_by = :self REMOVE wait_token, attention, attention_at"',
-                        '"SET #s = :status REMOVE wait_token, attention, attention_at"'),),
+                        '"UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",\n'
+                        '        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))'
+                        ' AND #s IN (:waiting, :paused, :status)",',
+                        '"UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",\n'
+                        '        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))'
+                        ' AND #s IN (:waiting, :paused)",'),),
           f"{SCENARIOS}::test_a_claim_whose_answer_is_lost_still_runs_the_task"),
     # A subscription time that moves on every registration hides the facts a lost stream record left behind.
     Probe("B-U2", (Edit("polyris/generators.py",
                         '"subscribed_at = if_not_exists(subscribed_at, :now)"',
                         '"subscribed_at = :now"'),),
           f"{SCENARIOS}::test_a_consumer_registered_again_keeps_its_subscription_time"),
+    # The old model: a wrapper retried its wait and re-registered over whatever row another wrapper owned.
+    Probe("B-O2", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
+                        '"StepFunctions.ExecutionLimitExceeded"\n          ],\n          "IntervalSeconds": 5,',
+                        '"StepFunctions.ExecutionLimitExceeded",\n            "States.Timeout"\n          ],\n'
+                        '          "IntervalSeconds": 5,'),
+                   Edit(REGISTRATION,
+                        '"ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR '
+                        '(attribute_not_exists(generation) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",',
+                        '"ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR '
+                        'wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)",')),
+          f"{SCENARIOS}::test_a_wrapper_a_restart_replaced_never_takes_the_row_back"),
+    # Waking a superseded wrapper with deps_ready: a pre-upgrade wrapper has no claim to fail.
+    Probe("B-O3", (Edit(REGISTRATION,
+                        '"Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",\n'
+                        '      "Arguments": {\n'
+                        '        "TaskToken": "{% $states.input.wait_token %}",\n'
+                        '        "Error": "Superseded",',
+                        '"Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",\n'
+                        '      "Arguments": {\n'
+                        '        "TaskToken": "{% $states.input.wait_token %}",\n'
+                        '        "Output": "{\\"signal\\":\\"deps_ready\\",\\"reason\\":\\"superseded\\"}",\n'
+                        '        "Error": "Superseded",'),),
+          f"{SCENARIOS}::test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided"),
+    # run_task's running write without the generation fence takes the row back from an operator's decision.
+    Probe("B-O4", (Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
+                        '"ConditionExpression": "(attribute_not_exists(attempt) OR attempt <= :expectedAttempt) AND '
+                        '(generation = :g OR attribute_not_exists(generation))",',
+                        '"ConditionExpression": "(attribute_not_exists(attempt) OR attempt <= :expectedAttempt) AND '
+                        '(generation = :g OR attribute_exists(execution_name))",'),),
+          f"{SCENARIOS}::test_run_task_never_starts_a_task_an_operator_decided_after_its_wait"),
+    # The pause wait's heartbeat retry saved its token over an operator's decision, unconditionally.
+    Probe("B-O5", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
+                        '"ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",',
+                        '"ConditionExpression": "(generation = :g OR attribute_exists(execution_name))",'),),
+          f"{SCENARIOS}::test_a_task_an_operator_decided_while_paused_is_never_released_to_run"),
     # A Lambda timeout that is not a transient error fails the task although its row is saved.
     Probe("B-G2", (Edit("sam/sfn_templates/helpers/registration/sfn.tpl.json",
                         '"Sandbox.Timedout",\n            "CoordinationTransient"\n          ],\n          "Comment": "Transient after retries',

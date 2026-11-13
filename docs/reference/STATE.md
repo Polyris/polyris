@@ -14,12 +14,13 @@ Update it when something moves. Paths here are checked by
 
 - **Coordination reconciler** (`docs/reference/adr-130-coordination-reconciler.md`), on
   `feat/coordination-reconciler`, ships as v1.2.0 in one delivery. Done: `reconcile` and
-  `asset-fanout` decide readiness from facts; registration, `notify_dependents`, asset facts
-  and asset-scheduled pipelines are wired to them; the old coordination Lambdas, the push
-  state machine and the AND-queue table are gone; pause, resume and restart decide from
-  facts; the sweeper re-checks, retries, catches up and reports; the console shows engine
-  health and reads warnings by write time; the docs describe the new model. Next: reviews
-  (break, architect, reliability) and a live deploy.
+  `asset-fanout` decide readiness from facts, and registration, `notify_dependents`, asset
+  facts and asset-scheduled pipelines are wired to them. The old coordination Lambdas, the
+  push state machine and the AND-queue table are gone. Pause, resume and restart decide from
+  facts; the sweeper re-checks, retries, catches up and reports. The console shows engine
+  health and reads warnings by write time, and the docs describe the new model. Two review
+  rounds are done; next: fix the round 2 findings, then a live deploy and an upgrade
+  rehearsal (Principle #15).
 
 ## Decided, not done
 
@@ -32,6 +33,10 @@ Update it when something moves. Paths here are checked by
   sequential-chain fallback overrides the answer and a fan-out of independent
   tasks is unreachable. Pinned by a test that documents current behaviour;
   fixing it changes that function's contract.
+- **Coordination follow-ups after v1.2.0.** Listed with their reasons in ADR #130,
+  *Out of scope* → *Deferred after the CR-6 reviews*; the first is the next ADR on the
+  execution model (a waiting task as a row, not a process).
+
 ## Known debt, measured
 
 - **npm audit: 3 high, 0 critical** — `next`, `postcss`, `sharp`. All unreachable

@@ -87,13 +87,19 @@
           },
           "attention_at": {
             "S": "{% $fromMillis($toMillis($now()) + 600000) %}"
+          },
+          "generation": {
+            "N": "{% $string($exists($states.input.generation) ? $states.input.generation : 0) %}"
           }
         },
-        "ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)",
+        "ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR (attribute_not_exists(generation) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
         "ExpressionAttributeValues": {
+          ":g": {
+            "N": "{% $string($exists($states.input.generation) ? $states.input.generation : 0) %}"
+          },
           ":self": {
             "S": "{% $exists($states.input.wrapper_execution_arn) ? $states.input.wrapper_execution_arn : '' %}"
           },
@@ -319,7 +325,7 @@
           }
         },
         "UpdateExpression": "SET attention_at = :now",
-        "ConditionExpression": "wait_token = :token AND #s IN (:waiting, :paused)",
+        "ConditionExpression": "wait_token = :token AND #s IN (:waiting, :paused) AND (generation = :g OR attribute_not_exists(generation))",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
@@ -329,6 +335,9 @@
           },
           ":token": {
             "S": "{% $states.input.wait_token %}"
+          },
+          ":g": {
+            "N": "{% $string($exists($states.input.generation) ? $states.input.generation : 0) %}"
           },
           ":waiting": {
             "S": "waiting"
@@ -352,11 +361,12 @@
     },
     "Signal_Superseded": {
       "Type": "Task",
-      "Comment": "Wake the wrapper. Its claim of the row is conditional on the row still waiting under its own ARN, so the claim fails and the wrapper ends as Superseded without running the task (ADR #130 §6.4).",
-      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+      "Comment": "The row belongs to a newer generation (ADR #130 §2.1). A current wrapper routes Superseded to its quiet end; a pre-upgrade wrapper fails into the failure handler, which finds the row raised and changes nothing.",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
       "Arguments": {
         "TaskToken": "{% $states.input.wait_token %}",
-        "Output": "{\"signal\":\"deps_ready\",\"reason\":\"an operator resolved the task while its wrapper waited\"}"
+        "Error": "Superseded",
+        "Cause": "The task row is owned by a newer generation: an operator decided the task, or a restart replaced this wrapper."
       },
       "Output": "{% $states.input %}",
       "Next": "Registered",

@@ -18,6 +18,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import RECONCILE_FUNCTION_ARN, lambda_client, sfn
+from coordination_core import ownership
 from coordination_core.wake import DEAD_TOKEN_CODES
 from dal import executions_repo, pipelines_repo, backfills_repo
 from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
@@ -533,12 +534,14 @@ def _mark_pending_tasks_stopped(pipeline_execution: str, items: list = None) -> 
         task_execution_arn = item.get('task_execution_arn', '')
         _sfn_stop(task_execution_arn, context='run_task')
 
-        # Update to stopped
+        # Update to stopped. Stopping ends the wrapper's ownership, so the same write
+        # raises the generation (ADR #130 §2.1).
         try:
             executions_repo.update(
                 execution_name,
-                'SET #s = :status, finished_at = :finished',
+                f'SET #s = :status, finished_at = :finished, {ownership.RAISE}',
                 expr_values={
+                    **ownership.RAISE_VALUES,
                     ':status': 'stopped',
                     ':finished': stopped_at,
                     ':s1': 'success',

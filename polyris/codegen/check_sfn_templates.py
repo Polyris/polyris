@@ -89,6 +89,10 @@ HELPER_OPERATION_STATUSES = {
     # restart_task helper returns this as its Output.status to indicate
     # the task was restarted (vs. failed-to-restart). Not a TaskStatus.
     'restarted',
+    # failure_handler returns this as its Output.status when the task row
+    # belongs to a newer generation (ADR #130 §2.1): it wrote nothing, and
+    # the wrapper routes it to its Superseded end. Not a TaskStatus.
+    'superseded',
 }
 
 

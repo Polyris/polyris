@@ -57,15 +57,22 @@ STEPS = {
 }
 
 
-def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optional[float]) -> datetime:
+#: A wrapper started before the upgrade retries its dependency wait twice on a
+#: timeout, so it may wait three timeouts; a current wrapper waits one (D41).
+LEGACY_WAITS = 3
+
+
+def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optional[float], *,
+                      legacy: bool = False) -> datetime:
     """When a waiting task's wrapper is checked even without a signal (ADR #130 §3).
 
-    Three orchestration timeouts cover the wrapper's timeout retries; the
-    extra hour covers a retry that started just before the last one ended.
+    The wrapper's dependency wait lasts one orchestration timeout, or three for
+    a ``legacy`` (pre-upgrade) wrapper that still retries it. The extra hour
+    covers a wait that started just before the row's ``started_at`` was written.
     """
     timeout = (timedelta(seconds=float(orchestration_timeout_seconds)) if orchestration_timeout_seconds
                else DEFAULT_ORCHESTRATION_TIMEOUT)
-    return started_at + 3 * timeout + timedelta(hours=1)
+    return started_at + (LEGACY_WAITS if legacy else 1) * timeout + timedelta(hours=1)
 
 
 def next_push_retry(now: datetime, attempts: int) -> datetime:

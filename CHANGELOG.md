@@ -14,6 +14,7 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 
 - `wait_for` is partition-aware: a task waits for a fact that serves its run's date, so a run for a past date never starts on today's fact, and `wait_for=[a, b]` waits for both. Weekly and monthly assets serve a daily run with their latest version from the current or the previous week or month.
 - `.within(...)` judges the latest partition up to the run's date.
+- `orchestration_timeout` is the real maximum time a task waits for its dependencies. Before, the wait was repeated twice, so a task could wait three times as long. Raise `orchestration_timeout` if a pipeline relied on that.
 - A task with `wait_for` needs its run's date to be a partition key: `YYYY-MM-DD`, `YYYY-MM-DDTHH`, `YYYY-Www` or `YYYY-MM`. In a run dated otherwise, for example `20261113`, the task fails with `CoordinationError` and the cause.
 - Marking a task successful records its outlets' facts for the task's own date, not the day you mark it.
 - A pipeline scheduled on assets of different cadences runs at the finest one, for example daily with the latest weekly input. Before, it ran only on dates when every input had a fact.
@@ -38,9 +39,15 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - After an upgrade, older asset facts get their partition fields for one hour, not only once, like waiting tasks.
 - Resume checks a run's waiting tasks for 10 seconds, down from 20, so the console's call answers within the API's 30-second limit; the sweeper checks the rest on its next run.
 
+### Fixed — one owner per task row (ADR #130 §2.1, B-O2…B-O5)
+
+- When the console could not stop a task's wrapper (a throttled or denied StopExecution), that wrapper could still write the task's row. After a restart it took the row back and the task ran twice. A wrapper started before the upgrade ran a task an operator had decided. `run_task` wrote `running` over a skip or a success and ran the task. A pause wait retried at its heartbeat put a decided task back on hold.
+- Every task row now carries a generation. Operator decisions, restarts and the reconciler's closes raise it, and every write made for a wrapper checks it, so an old wrapper ends without writing, notifying or running anything.
+- A restart keeps the task's row and hands it to the new wrapper; it no longer deletes it.
+
 ### Fixed — findings of the coordination review (ADR #130, B-W1, B-U2, B-F2, B-M2)
 
-- A wrapper whose status write was applied but whose answer was lost (a 5xx or a timeout) retried the write, failed its own condition and ended as superseded: the task never ran. The write now records its wrapper in `claimed_by`, so the retry passes.
+- A wrapper whose status write was applied but whose answer was lost (a 5xx or a timeout) retried the write, failed its own condition and ended as superseded: the task never ran. The claim now accepts its own target status under its own generation (see below), so the retry passes.
 - The hourly push catch-up started a newly deployed asset-scheduled pipeline for facts recorded before its first deploy. A pipeline now reacts only to facts recorded after it subscribed. The subscription time is set at the first registration and kept by the registration every run repeats.
 - One fact that no reader could place on a partition, for example an older version's fact for a run date such as `latest`, failed every task waiting on its asset. It now counts for no task, and the bell shows a `coordination` warning.
 - When Mark Successful could not record an outlet's fact, it logged the error and reported plain success, and the tasks waiting on the asset waited with no trace in the console. The task still becomes successful; the bell now shows a `manual` warning, and the response lists the asset in `failed_facts`. Restart the task to record the fact.

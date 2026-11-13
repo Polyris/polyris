@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 import pytest
+from polyris.coordination import ownership
 
 TEMPLATE_PATH = Path(__file__).parent.parent.parent / "sam" / "sfn_templates" / "helpers" / "run_task" / "sfn.tpl.json"
 
@@ -1487,7 +1488,7 @@ def test_save_success_preserve_never_sets_result(template):
 def test_save_success_preserve_keeps_stale_attempt_guard(template):
     """Same attempt-based rejection as Save_Success — restart safety preserved."""
     state = template["States"]["Save_Success_Preserve"]
-    assert state["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+    assert state["Arguments"]["ConditionExpression"] == f"(attempt = :expectedAttempt) AND {ownership.FENCE}"
     catch = {e: c["Next"] for c in state["Catch"] for e in c["ErrorEquals"]}
     assert catch["DynamoDB.ConditionalCheckFailedException"] == "Stale_Attempt_Superseded"
 
@@ -1694,7 +1695,7 @@ class TestRetryVisibility:
         an old :expectedAttempt — the ConditionExpression must reject it so the
         new wrapper's state is never clobbered mid-flight (ADR #125 + ADR #107)."""
         s = self.rt["States"]["Save_Retry_Attempt"]
-        assert s["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+        assert s["Arguments"]["ConditionExpression"] == f"(attempt = :expectedAttempt) AND {ownership.FENCE}"
         # And the stale-write Catch must terminate quietly, not continue the loop.
         catches = s["Catch"]
         guard_catch = next(c for c in catches if "DynamoDB.ConditionalCheckFailedException" in c["ErrorEquals"])

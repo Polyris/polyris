@@ -27,6 +27,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 import env
 from coordination_core import decide as dc
+from coordination_core import ownership
 from coordination_core import spec as sp
 from coordination_core import sweep
 from coordination_core import trigger_rules as tr
@@ -277,7 +278,8 @@ class Reconciler:
         if not row.get("started_at"):
             return False
         timeout = row.get("orchestration_timeout")
-        deadline = sweep.liveness_deadline(parse_utc(str(row["started_at"])), float(timeout) if timeout else None)
+        deadline = sweep.liveness_deadline(parse_utc(str(row["started_at"])), float(timeout) if timeout else None,
+                                           legacy=ownership.is_legacy(row.get(ownership.FIELD)))
         return self.clock() >= deadline
 
     def _check_wrapper(self, row: Dict[str, Any], token: str, decision: dc.Decision, source: str) -> Dict[str, Any]:

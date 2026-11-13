@@ -12,7 +12,7 @@ from datetime import timedelta
 import pytest
 from sfn_jsonata import NOW, evaluate, load_template
 
-from polyris.coordination import attention, wake
+from polyris.coordination import attention, ownership, wake
 from polyris.coordination.times import format_utc
 
 #: A Lambda timeout (Sandbox.Timedout) or crash (Lambda.Unknown) leaves the saved row to the sweeper too.
@@ -111,25 +111,31 @@ def test_a_lost_row_always_fails_the_task(template):
     assert (lost["ErrorEquals"], lost["Next"]) == (["States.ALL"], "Fail_Task")
 
 
-def test_registering_again_never_replaces_a_row_an_operator_resolved(template):
-    """B-O1: a new wrapper (a restart) may replace any row; the same wrapper, registering
-    again after its dependency wait timed out, only a row that still waits."""
+def test_registration_writes_only_a_new_row_or_one_its_generation_owns(template):
+    """ADR #130 §2.1: a raised generation fences every older wrapper. A row written before the
+    upgrade has none and keeps the B-O1 rule: replaced only by another wrapper or while it waits."""
     from polyris.constants import RECONCILABLE_STATUSES
 
     arguments = template["States"]["Save_Task_Record"]["Arguments"]
     assert arguments["ConditionExpression"] == (
-        "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)")
+        "attribute_not_exists(execution_name) OR generation = :g OR "
+        "(attribute_not_exists(generation) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))")
     values = arguments["ExpressionAttributeValues"]
     assert {values[":waiting"]["S"], values[":paused"]["S"]} == set(RECONCILABLE_STATUSES)
     assert _evaluate(values[":self"]["S"], {"wrapper_execution_arn": "arn:w"}) == "arn:w"
     assert arguments["Item"]["wrapper_execution_arn"] == values[":self"]   # the row names the same wrapper
+    assert arguments["Item"][ownership.FIELD] == values[":g"]               # and the owner's generation
+    assert _evaluate(values[":g"]["N"], {"generation": 3}) == "3"
+    assert _evaluate(values[":g"]["N"], {}) == str(ownership.LEGACY)         # a pre-upgrade wrapper
 
 
-def test_a_kept_row_wakes_the_wrapper_so_its_claim_fails(template):
+def test_a_kept_row_answers_the_wrapper_superseded(template):
+    """A current wrapper routes Superseded to its quiet end; a pre-upgrade one fails into a failure
+    handler that finds the row raised (ADR #130 §2.1)."""
     signal = template["States"]["Signal_Superseded"]
-    assert signal["Resource"].endswith(":sfn:sendTaskSuccess")
+    assert signal["Resource"].endswith(":sfn:sendTaskFailure")
     assert _evaluate(signal["Arguments"]["TaskToken"], {"wait_token": "T"}) == "T"
-    assert json.loads(signal["Arguments"]["Output"])["signal"] in wake.SIGNALS
+    assert signal["Arguments"]["Error"] == "Superseded"
 
 
 def test_the_task_fails_with_the_coordination_error(template):
@@ -155,7 +161,7 @@ def test_every_task_state_catches_everything(template):
 
 def test_due_now_is_pinned_to_the_token_and_a_waiting_status(template):
     defer = template["States"]["Defer_To_Sweeper"]["Arguments"]
-    assert defer["ConditionExpression"] == "wait_token = :token AND #s IN (:waiting, :paused)"
+    assert defer["ConditionExpression"] == f"wait_token = :token AND #s IN (:waiting, :paused) AND {ownership.FENCE}"
     assert defer["UpdateExpression"] == f"SET {attention.DUE} = :now"
 
 

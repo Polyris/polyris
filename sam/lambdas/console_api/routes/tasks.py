@@ -20,6 +20,7 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn
+from coordination_core import ownership
 from coordination_core.records import warning_item
 from dal import asset_events_repo, executions_repo, pipelines_repo
 from dal.task_events_repo import task_events_repo
@@ -938,16 +939,19 @@ def _execute_task_action(
     skip_origin_set = ', skip_origin = :skip_origin' if skip_origin else ''
     skip_origin_values = {':skip_origin': skip_origin} if skip_origin else {}
     try:
+        # The decision ends the wrapper's ownership: raising the generation in the same
+        # write fences every later write of that wrapper (ADR #130 §2.1).
         if include_error_field:
             executions_repo.update(
                 execution_name,
-                f'SET #s = :status, finished_at = :finished, #e = :error{skip_origin_set}',
+                f'SET #s = :status, finished_at = :finished, #e = :error{skip_origin_set}, {ownership.RAISE}',
                 expr_values=expr_values_fn(
                     {
                         ':status': target_status,
                         ':finished': datetime.now(timezone.utc).isoformat(),
                         ':error': reason,
                         **skip_origin_values,
+                        **ownership.RAISE_VALUES,
                     }
                 ),
                 expr_names={'#s': 'status', '#e': 'error'},
@@ -956,12 +960,13 @@ def _execute_task_action(
         else:
             executions_repo.update(
                 execution_name,
-                f'SET #s = :status, finished_at = :finished{skip_origin_set}',
+                f'SET #s = :status, finished_at = :finished{skip_origin_set}, {ownership.RAISE}',
                 expr_values=expr_values_fn(
                     {
                         ':status': target_status,
                         ':finished': datetime.now(timezone.utc).isoformat(),
                         **skip_origin_values,
+                        **ownership.RAISE_VALUES,
                     }
                 ),
                 expr_names={'#s': 'status'},
@@ -1179,13 +1184,15 @@ def stop_task(task_name: str, event: Dict) -> Dict:
     else:
         final_status = TaskStatus.STOPPED
 
-    # Claim: update status FIRST (only if not already terminal)
+    # Claim: update status FIRST (only if not already terminal). Stopping ends the wrapper's
+    # ownership, so the same write raises the generation (ADR #130 §2.1).
     try:
         executions_repo.update(
             execution_name,
-            'SET #s = :status, finished_at = :finished',
+            f'SET #s = :status, finished_at = :finished, {ownership.RAISE}',
             expr_values=build_condition_expression_values(
-                {':status': final_status, ':finished': datetime.now(timezone.utc).isoformat()}
+                {':status': final_status, ':finished': datetime.now(timezone.utc).isoformat(),
+                 **ownership.RAISE_VALUES}
             ),
             expr_names={'#s': 'status'},
             condition_expr=TERMINAL_CONDITION_EXPRESSION,

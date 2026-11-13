@@ -15,10 +15,14 @@
           }
         },
         "UpdateExpression": "SET #s = :status, pause_token = :token, paused_at = :paused_at, attention = :attention, attention_at = :due, attempts = :zero",
+        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
         "ExpressionAttributeValues": {
+          ":g": {
+            "N": "{% $string($exists($states.input.generation) ? $states.input.generation : 0) %}"
+          },
           ":status": {
             "S": "waiting_paused"
           },
@@ -57,6 +61,14 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Comment": "A newer generation owns the row (ADR #130 §2.1): an operator decided the task or a restart replaced it. Hold nothing and end the wait as superseded.",
+          "Output": "{% $states.input %}",
+          "Next": "Superseded_Pause_Wait"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "Comment": "Without a saved token nothing can release the task, and it would run when its 12-hour pause heartbeat ran out, paused or not. Fail its pause wait instead, with the cause.",
@@ -64,6 +76,28 @@
           "Next": "Fail_Pause_Wait"
         }
       ]
+    },
+    "Superseded_Pause_Wait": {
+      "Type": "Task",
+      "Comment": "run_task routes Superseded to its quiet end: it writes nothing and runs nothing.",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
+      "Arguments": {
+        "TaskToken": "{% $states.input.pause_token %}",
+        "Error": "Superseded",
+        "Cause": "The task row is owned by a newer generation: an operator decided the task, or a restart replaced it."
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "End": true
     },
     "Fail_Pause_Wait": {
       "Type": "Task",

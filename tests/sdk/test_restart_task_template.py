@@ -99,7 +99,7 @@ def test_without_a_current_deploy_the_original_task_config_and_outlets_stay(rest
 
 
 def test_a_row_without_starter_input_restarts_from_its_saved_fields_with_a_warning(restart):
-    assert restart["Delete_Old_Record"]["Next"] == "Check_Starter_Input"
+    assert restart["Hand_Over_Ownership"]["Next"] == "Check_Starter_Input"
     assert restart["Check_Starter_Input"]["Default"] == "Warn_Restart_Without_Starter_Input"
     assert restart["Warn_Restart_Without_Starter_Input"]["Next"] == "Start_New_Wrapper"
     assert all(c["Next"] == "Start_New_Wrapper" for c in restart["Warn_Restart_Without_Starter_Input"]["Catch"])
