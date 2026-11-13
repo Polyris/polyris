@@ -1,4 +1,4 @@
-"""Asset-system tests — combinators, refs, schedule normalization, watchers.
+"""Asset-system tests — combinators, refs, schedule normalization.
 
 Drives the pure-logic surface of ``polyris.assets`` (CLAUDE.md #13):
 
@@ -7,9 +7,8 @@ Drives the pure-logic surface of ``polyris.assets`` (CLAUDE.md #13):
   - The reference types ``AssetRef`` / ``AssetConsecutiveRef`` and the
     container types ``AssetAll`` / ``AssetAny`` / ``AssetAlias`` — their
     operators, ``to_dict`` shape, and name flattening.
-  - ``normalize_asset_schedule`` across every supported input shape, plus the
-    module-level ``is_asset_triggered`` / ``get_asset_schedule_info`` helpers.
-  - ``Watcher`` registration and ``generate_watchers_config`` grouping.
+  - ``normalize_asset_schedule`` across every supported input shape, and the
+    leaf-name flattening subscription registration relies on.
 
 The ``from_pyarrow`` / ``from_parquet`` / ``from_pydantic`` / ``from_glue_table``
 / ``from_iceberg`` constructors are intentionally not covered here — they need
@@ -28,11 +27,8 @@ from polyris.assets import (
     AssetRef,
     AssetConsecutiveRef,
     AssetAlias,
-    Watcher,
-    generate_watchers_config,
+    _flatten_asset_names,
     normalize_asset_schedule,
-    is_asset_triggered,
-    get_asset_schedule_info,
 )
 
 
@@ -405,8 +401,7 @@ class TestNormalizeAssetSchedule:
         """AND is associative: [a, AssetAll([b, c])] must flatten to a single
         AssetAll([a, b, c]), not nest the AssetAll as a raw element. Before the
         fix, leaving it nested crashed asset_names/to_dict downstream with
-        AttributeError ('AssetAll' object has no attribute 'name') the first
-        time anyone called get_asset_schedule_info() on such a DAG — a
+        AttributeError ('AssetAll' object has no attribute 'name') — a
         completely reachable pattern (schedule=[asset_a, asset_b & asset_c]),
         not a contrived edge case."""
         res = normalize_asset_schedule([Asset("ns/a"), AssetAll([Asset("ns/b"), Asset("ns/c")])])
@@ -447,47 +442,16 @@ class TestNormalizeAssetSchedule:
             "assets": [{"asset_name": "ns/a", "freshness_hours": 24}, "ns/b"],
         }
 
-    def test_get_asset_schedule_info_does_not_crash_on_nested_and_in_list(self):
-        """End-to-end: the actual deploy-time function that computes
-        EventBridge trigger patterns must not crash on this input."""
-        dag = SimpleNamespace(dag_id="x", schedule=[Asset("ns/a"), Asset("ns/b") & Asset("ns/c")])
-        info = get_asset_schedule_info(dag)
-        assert info["assets"] == ["ns/a", "ns/b", "ns/c"]
-        assert info["eventbridge_rule_pattern"]["detail"]["asset_name"] == ["ns/a", "ns/b", "ns/c"]
 
 
 # ============================================================ #
-# module-level helpers
+# leaf names of an asset schedule
 # ============================================================ #
-class TestModuleHelpers:
-    def test_is_asset_triggered(self):
-        assert is_asset_triggered(SimpleNamespace(schedule=None)) is False
-        assert is_asset_triggered(SimpleNamespace(schedule="rate(1 hour)")) is False
-        assert is_asset_triggered(SimpleNamespace(schedule=Asset("ns/x"))) is True
-        assert is_asset_triggered(SimpleNamespace(schedule=[Asset("ns/x")])) is True
-
-    def test_get_asset_schedule_info_none(self):
-        assert get_asset_schedule_info(SimpleNamespace(schedule=None)) is None
-
-    def test_get_asset_schedule_info_and(self):
-        info = get_asset_schedule_info(SimpleNamespace(schedule=Asset("ns/x")))
-        assert info["operator"] == "AND"
-        assert info["assets"] == ["ns/x"]
-        assert info["eventbridge_rule_pattern"]["detail"]["asset_name"] == ["ns/x"]
-
-    def test_get_asset_schedule_info_or_flattens(self):
-        sched = AssetAny([Asset("ns/a"), AssetAll([Asset("ns/b"), Asset("ns/c")])])
-        info = get_asset_schedule_info(SimpleNamespace(schedule=sched))
-        assert info["operator"] == "OR"
-        # AssetAll member is flattened into individual names.
-        assert info["eventbridge_rule_pattern"]["detail"]["asset_name"] == ["ns/a", "ns/b", "ns/c"]
-
-    def test_eventbridge_pattern_flattens_nested_assetany_in_and(self):
-        """AssetAll with a nested AssetAny must produce flat leaf names in the
-        EventBridge pattern, not the display string '(ns/b | ns/c)'."""
-        dag_ns = SimpleNamespace(schedule=[Asset("ns/a"), Asset("ns/b") | Asset("ns/c")])
-        info = get_asset_schedule_info(dag_ns)
-        assert info["eventbridge_rule_pattern"]["detail"]["asset_name"] == ["ns/a", "ns/b", "ns/c"]
+class TestFlattenAssetNames:
+    def test_nested_groups_flatten_to_leaf_names(self):
+        """Subscription rows are keyed by plain names, never '(ns/b | ns/c)'."""
+        schedule = normalize_asset_schedule([Asset("ns/a"), Asset("ns/b") | Asset("ns/c")])
+        assert _flatten_asset_names(schedule) == ["ns/a", "ns/b", "ns/c"]
 
     def test_alias_subscription_assets_field_is_flat_strings(self):
         """assets.S written to DDB subscription rows must be a flat list of strings.
@@ -498,7 +462,6 @@ class TestModuleHelpers:
         assets.py asset_status[asset] = ...). _flatten_asset_names must be used to
         keep assets.S flat so every consumer can treat list items as plain strings.
         """
-        from polyris.assets import _flatten_asset_names
         from polyris import DAG, task as task_mod
 
         ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
@@ -512,39 +475,3 @@ class TestModuleHelpers:
         # Must be a flat list of strings — no dicts allowed
         assert all(isinstance(name, str) for name in flat), f"Non-string in flat: {flat}"
         assert sorted(flat) == ["ns/a", "ns/b", "ns/c"]
-
-
-# ============================================================ #
-# Watcher / generate_watchers_config
-# ============================================================ #
-class TestWatchers:
-    def test_watcher_registers_on_asset_and_serializes(self):
-        a = Asset("ns/inv")
-        w = Watcher(asset=a, sqs_queue_arn="arn:aws:sqs:us-east-1:1:q", batch_size=5)
-        assert w in a._watchers
-        d = w.to_dict()
-        assert d["asset_name"] == "ns/inv"
-        assert d["sqs_queue_arn"].endswith(":q")
-        assert d["batch_size"] == 5
-
-    def test_empty_config(self):
-        cfg = generate_watchers_config([])
-        assert cfg["lambda_config"] is None
-        assert cfg["event_source_mappings"] == []
-        assert cfg["iam_statements"] == []
-
-    def test_config_groups_by_queue_and_takes_max_batch(self):
-        q = "arn:aws:sqs:us-east-1:1:shared"
-        w1 = Watcher(asset=Asset("ns/a"), sqs_queue_arn=q, batch_size=5)
-        w2 = Watcher(asset=Asset("ns/b"), sqs_queue_arn=q, batch_size=10)
-        cfg = generate_watchers_config([w1, w2])
-        # Both share a queue → a single event source mapping.
-        assert len(cfg["event_source_mappings"]) == 1
-        esm = cfg["event_source_mappings"][0]
-        assert esm["event_source_arn"] == q
-        assert esm["batch_size"] == 10  # max of the two
-        assert len(esm["watchers"]) == 2
-        # IAM grants SQS + EventBridge.
-        actions = [a for stmt in cfg["iam_statements"] for a in stmt["actions"]]
-        assert "sqs:ReceiveMessage" in actions
-        assert "events:PutEvents" in actions

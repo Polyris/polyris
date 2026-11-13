@@ -18,6 +18,10 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
 - Warnings reach the bell whatever date they are about, and the console shows a banner while task coordination is unhealthy.
 
+### Removed — dead asset helpers in the SDK
+
+- `polyris.assets.Watcher`, `generate_watchers_config`, `get_asset_schedule_info` and the module-level `is_asset_triggered` had no caller. The first two described an SQS watcher that was never built; the last two built an EventBridge pattern for asset events that polyris no longer publishes. `DAG.is_asset_triggered` stays.
+
 ### Fixed — an operator's decision survives a wrapper the console could not stop (ADR #130 §6.3, B-O1)
 
 - When an operator skips, fails or marks a waiting task, the console stops its wrapper. If that stop failed, the wrapper kept waiting, registered again when its dependency wait timed out, and the unconditional write put the row back to `waiting`: the task then ran, although its dependants had already been told otherwise. Registration now writes the row only if it is new, belongs to another wrapper, or still waits; otherwise it keeps the row and wakes the wrapper, which ends without running the task.

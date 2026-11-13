@@ -213,15 +213,15 @@ Why: `AssetAlias` semantics are OR — the pipeline triggers when ANY member fir
 the operator: `[alias, a]` becomes `AssetAll([b, c, a])` instead of
 `AssetAll([AssetAny([b, c]), a])`.
 
-## EventBridge patterns use `_flatten_asset_names`, never `asset_names`
+## Flat lists of asset names use `_flatten_asset_names`, never `asset_names`
 
 `AssetAll.asset_names` formats nested `AssetAny` groups as display strings like
-`"(ns/b | ns/c)"`. EventBridge event pattern matching requires exact string
-values — those display strings will never match a real `asset_name` field.
+`"(ns/b | ns/c)"`. A subscription row is keyed by one plain `asset_name`, so such
+a string never matches a real asset.
 
 Use `_flatten_asset_names(node)` (from `polyris/assets.py`) wherever a flat list
-of leaf asset name strings is needed: EventBridge patterns, SFN Map `Items` for
-subscription registration. `asset_names` is for display/repr only.
+of leaf asset names is needed: the SFN Map `Items` of the asset-subscription
+registration and the `assets` field it writes. `asset_names` is for display/repr only.
 
 ## `_create_task` parameters that support `default_args` must default to `None`
 
