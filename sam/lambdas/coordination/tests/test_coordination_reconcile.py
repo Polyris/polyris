@@ -504,7 +504,8 @@ def test_a_skip_closed_by_the_reconciler_has_the_shape_the_wrapper_writes(reconc
     _dead(tokens, sfn, "SUCCEEDED", dependencies=json.dumps(["extract"]))
     reconciler.reconcile(LOAD, source="sweeper")
     stored = row(tokens)
-    assert fields["SET"] <= set(stored), sorted(fields["SET"] - set(stored))
+    outcome = fields["SET"] - {"claimed_by"}                 # the wrapper's own retry marker (B-W1), not the outcome
+    assert outcome <= set(stored), sorted(outcome - set(stored))
     assert not fields["REMOVE"] & set(stored), sorted(fields["REMOVE"] & set(stored))
 
 
@@ -513,3 +514,61 @@ def test_coordination_error_fails_the_task_instead_of_re_registering():
     retried = {e for r in wait["Retry"] for e in r["ErrorEquals"]}
     assert not retried & {"CoordinationError", "States.ALL", "States.TaskFailed"}
     assert any("States.ALL" in c["ErrorEquals"] and c["Next"] == "Handle_Failure" for c in wait["Catch"])
+
+
+def test_an_unreadable_fact_counts_for_no_task_and_is_reported(reconciler, tokens, asset_events, sfn):
+    """B-F2: one malformed fact must not fail every task waiting on its asset."""
+    from coordination_testkit import fact
+
+    tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "freshness_hours": None}]))
+    asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:00:00.000Z",
+                                    partition_date="2026-11-1"))            # not a date: unreadable
+    result = reconciler.reconcile(LOAD, source="sweeper")
+
+    assert (result["verdict"], result["action"]) == ("wait", "none")
+    assert sfn.failed == []
+    reported = warning(tokens, "coordination", "fact-ns/orders-2026-11-12T05:00:00.000Z")
+    assert "cannot be read, so it counts for no task" in reported["error"]
+
+    asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:30:00.000Z"))
+    assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "signalled"   # a good fact still counts
+
+
+@pytest.mark.parametrize("claim", ["Claim_Deps_Ready", "Claim_Skipped", "Claim_Upstream_Failed"])
+def test_a_claim_retried_after_its_write_applied_passes_and_no_other_owner_does(tokens, claim):
+    """B-W1: a claim whose write applied but whose answer was lost is retried, and the retry passes its own
+    condition. Another wrapper, or an operator who moved the task since, still makes it fail."""
+    from boto3.dynamodb.types import TypeDeserializer
+    from botocore.exceptions import ClientError
+
+    args = _state(_sfn("dependency_wrapper/sfn.tpl.json")["States"], claim)["Arguments"]
+    values = {k: "x" if str(v.get("S", "")).startswith("{%") else TypeDeserializer().deserialize(v)
+              for k, v in args["ExpressionAttributeValues"].items()}
+    load = task_row("load")
+    mine, other = load["wrapper_execution_arn"], load["wrapper_execution_arn"] + "-restarted"
+
+    def claim_as(arn):
+        tokens.update_item(
+            Key={"execution_name": LOAD},
+            UpdateExpression=args["UpdateExpression"], ConditionExpression=args["ConditionExpression"],
+            ExpressionAttributeNames=args["ExpressionAttributeNames"],
+            ExpressionAttributeValues={**values, ":self": arn})
+
+    tokens.put_item(Item=load)
+    claim_as(mine)
+    claim_as(mine)                                   # the retry
+    with pytest.raises(ClientError, match="ConditionalCheckFailed"):
+        claim_as(other)
+    tokens.update_item(Key={"execution_name": LOAD}, UpdateExpression="SET #s = :s",
+                       ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": "success"})
+    with pytest.raises(ClientError, match="ConditionalCheckFailed"):
+        claim_as(mine)                               # an operator marked it successful meanwhile
+
+
+def test_a_run_date_that_is_no_partition_key_fails_the_waiting_task_with_the_cause(reconciler, tokens, sfn):
+    """`wait_for` needs the run's date on the date line: a date such as 20261113 fails the task loudly."""
+    tokens.put_item(Item=task_row("load", wait_for=ORDERS, date="20261113"))
+    result = reconciler.reconcile(LOAD, source="registration")
+    assert result["action"] == "failed_task"
+    assert [f["error"] for f in sfn.failed] == ["CoordinationError"]
+    assert "'20261113' is not a partition key" in sfn.failed[0]["cause"]

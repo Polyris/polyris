@@ -211,8 +211,8 @@ class Reconciler:
         if spec.members:
             now = self.clock()
             registry = Registry(self.resource, self.pipelines_table)
-            reader = FactStore(self.resource, self.asset_events_table, registry, now)
-            known = [registry.fact(item) for item in known_events]
+            reader = FactStore(self.resource, self.asset_events_table, registry, now, on_unreadable=self.unreadable_fact)
+            known = [f for f in map(reader.read, known_events) if f is not None]
             assets = evaluate_assets(spec, target=partition_date(date_key), now=now, reader=reader, known_facts=known)
 
         pipeline_execution = str(row.get("pipeline_execution") or "")
@@ -350,6 +350,20 @@ class Reconciler:
             # The sweeper still finds the row at its existing due time.
             log.error("reconcile_run", "could not make the row due now",
                      execution_name=row["execution_name"], error=str(exc))
+
+    def unreadable_fact(self, item: Dict[str, Any], exc: Exception) -> None:
+        """A fact no reader can use: logged, and one warning per fact (repeated reads rewrite it)."""
+        asset, recorded = str(item.get("asset_name", "")), str(item.get("event_time", ""))
+        error = f"The fact of asset {asset} recorded at {recorded} cannot be read, so it counts for no task: {exc}"
+        log.error("reconcile", "unreadable asset fact", asset_name=asset, event_time=recorded, error=str(exc))
+        try:
+            self.tasks.put(warning_item(
+                kind="coordination", execution_name=f"fact-{asset}-{recorded}", task_name="",
+                pipeline_name=str(item.get("source_dag", "")), pipeline_execution="",
+                task_date=str(item.get("partition_key", "")), error=error, now=self.clock(),
+            ))
+        except (ClientError, BotoCoreError) as write_error:
+            log.error("reconcile", "could not write the warning row", asset_name=asset, error=str(write_error))
 
     def _warn(self, row: Dict[str, Any], kind: str, error: str) -> None:
         item = warning_item(

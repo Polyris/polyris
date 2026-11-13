@@ -284,26 +284,34 @@
         "States": {
           "WriteSubscription": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Comment": "subscribed_at is written once: a consumer reacts only to facts recorded after it subscribed (ADR #130 \u00a76.1)",
+            "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
               "TableName": "${asset_subscriptions_table}",
-              "Item": {
+              "Key": {
                 "asset_name": {
                   "S": "{% $states.input %}"
                 },
                 "pipeline_name": {
                   "S": "asset_triggered"
-                },
-                "sfn_arn": {
+                }
+              },
+              "UpdateExpression": "SET sfn_arn = :arn, #op = :op, #assets = :assets, registered_at = :now, subscribed_at = if_not_exists(subscribed_at, :now)",
+              "ExpressionAttributeNames": {
+                "#op": "operator",
+                "#assets": "assets"
+              },
+              "ExpressionAttributeValues": {
+                ":arn": {
                   "S": "{% $states.context.StateMachine.Id %}"
                 },
-                "operator": {
+                ":op": {
                   "S": "AND"
                 },
-                "assets": {
+                ":assets": {
                   "S": "[\"raw/inventory\", \"raw/catalog\"]"
                 },
-                "registered_at": {
+                ":now": {
                   "S": "{% $now() %}"
                 }
               }

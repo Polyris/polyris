@@ -323,7 +323,7 @@
     },
     "Claim_Deps_Ready": {
       "Type": "Task",
-      "Comment": "ADR #130 §6.4: the receiver of the signal writes the status that follows it. The condition fails when another owner already moved the task (an operator's skip or success): the wrapper then ends as superseded.",
+      "Comment": "ADR #130 §6.4: the receiver of the signal writes the status that follows it. The condition fails when another owner already moved the task (an operator's skip or success): the wrapper then ends as superseded. claimed_by makes a retry idempotent: when the write was applied but its answer lost, the retry finds the row claimed by this wrapper with this status and passes (B-W1).",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -332,8 +332,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",
-        "ConditionExpression": "#s IN (:waiting, :paused) AND wrapper_execution_arn = :self",
+        "UpdateExpression": "SET #s = :status, claimed_by = :self REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "(#s IN (:waiting, :paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND #s = :status)",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
@@ -396,8 +396,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status, skip_origin = :rule, skip_reason = :reason, finished_at = :now REMOVE wait_token, attention, attention_at",
-        "ConditionExpression": "#s IN (:waiting, :paused) AND wrapper_execution_arn = :self",
+        "UpdateExpression": "SET #s = :status, skip_origin = :rule, skip_reason = :reason, finished_at = :now, claimed_by = :self REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "(#s IN (:waiting, :paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND #s = :status)",
         "ExpressionAttributeNames": {
           "#s": "status"
         },
@@ -469,8 +469,8 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET #s = :status, #e = :reason, finished_at = :now REMOVE wait_token, attention, attention_at",
-        "ConditionExpression": "#s IN (:waiting, :paused) AND wrapper_execution_arn = :self",
+        "UpdateExpression": "SET #s = :status, #e = :reason, finished_at = :now, claimed_by = :self REMOVE wait_token, attention, attention_at",
+        "ConditionExpression": "(#s IN (:waiting, :paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND #s = :status)",
         "ExpressionAttributeNames": {
           "#s": "status",
           "#e": "error"

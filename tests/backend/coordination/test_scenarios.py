@@ -176,6 +176,22 @@ def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
     assert world.running_tasks(consumer) == ["consumer"]
 
 
+@defect("B-M2")
+def test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it(world):
+    produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), DATE)
+    world.inject_failure("PutItem", "AssetEventsTable", "AccessDeniedException", times=1)
+    response = world.mark_success(produced, "build")
+    assert list(response["failed_facts"]) == [A.name]
+    assert any(w["kind"] == "manual" and f"fact of asset {A.name} was not recorded" in w["error"]
+               for w in world.warnings())
+    consumer = world.start_run(world.deploy(waits_for("c", [A])), DATE)
+    assert world.status(consumer, "consumer") == "waiting"
+    world.restart(produced, "build")
+    world.complete(produced, "build")
+    world.deliver_hints()
+    assert world.running_tasks(consumer) == ["consumer"]
+
+
 @defect("B-F1")
 def test_a_failed_fan_out_does_not_fail_the_producer(world):
     producer = world.deploy(pipeline("producer", [("build", {"outlets": [A]})]))
@@ -206,6 +222,21 @@ def test_push_and_starts_exactly_one_run_for_the_day(world):
     assert len(world.push_runs(consumer)) == 1
 
 
+@defect("B-U2")
+def test_a_consumer_deployed_after_the_facts_does_not_start_for_them(world):
+    world.write_event(A, "2026-11-10")
+    world.write_event(A, "2026-11-11")
+    world.deliver_hints()                   # no consumer yet: these facts start nothing
+    world.clock.advance(minutes=5)
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
+    world.clock.advance(hours=1)
+    world.sweep()                           # the hourly catch-up replays the facts of the last 48 hours
+    assert world.push_runs(consumer) == []
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    assert [run.date for run in world.push_runs(consumer)] == [DATE]
+
+
 @defect("B-X1")
 def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
     first = world.deploy(pipeline("pushed_1", [("report", {})], schedule=[A]))
@@ -231,6 +262,38 @@ def test_a_failed_registration_fails_the_task_with_its_cause(world):
     run = world.start_run(world.deploy(chain("p", "extract")), DATE)
     assert world.status(run, "extract") == "failed"
     assert "AccessDeniedException" in world.row(run, "extract")["error"]
+
+
+@defect("B-U2")
+def test_a_consumer_registered_again_keeps_its_subscription_time(world):
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
+    world.write_event(A, DATE)              # its stream record is never delivered
+    world.clock.advance(minutes=5)
+    world.start_run(consumer, "2026-11-11")  # every run registers its subscriptions again
+    world.clock.advance(hours=1)
+    world.sweep()                           # the catch-up still sees a fact recorded after the subscription
+    assert [run.date for run in world.push_runs(consumer)] == [DATE]
+
+
+@defect("B-F2")
+def test_an_unreadable_fact_fails_no_waiting_task(world):
+    run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
+    world.write_event(A, "latest", writer="older version")   # a run date that is no partition key: unreadable
+    world.deliver_hints()
+    assert world.status(run, "consumer") == "waiting"
+    world.write_event(A, DATE)              # the reader now meets both rows
+    world.deliver_hints()
+    assert world.running_tasks(run) == ["consumer"]
+    assert any(w["kind"] == "coordination" and "cannot be read" in w["error"] for w in world.warnings())
+
+
+@defect("B-W1")
+def test_a_claim_whose_answer_is_lost_still_runs_the_task(world):
+    orders = world.deploy(chain("orders", "extract"))
+    world.inject_failure("UpdateItem", "PipelineTokensTable", "InternalServerError", times=1, after=True,
+                         when=lambda params: "deps_ready" in str(params.get("ExpressionAttributeValues", {}).get(":status")))
+    run = world.start_run(orders, DATE)     # extract's claim is written, then its answer fails: the wrapper retries
+    assert world.running_tasks(run) == ["extract"]
 
 
 @defect("B-S1")

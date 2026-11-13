@@ -789,7 +789,7 @@ def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
         return None
 
 
-def record_manual_success_facts(item: Dict, task_name: str) -> None:
+def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     """For Mark Successful specifically, record the facts of this task's
     outlets, as a normal completion would (ADR #130 §1). Every Mark Successful
     path calls it: this route and the Slack action.
@@ -798,23 +798,41 @@ def record_manual_success_facts(item: Dict, task_name: str) -> None:
     dag_metadata.nodes (ADR #119). The facts belong to the partition of the
     marked run, the row's ``date`` — never the day the action happens (B-M1).
 
-    Best-effort: any failure here is logged and does not affect the manual
-    action's own success response.
+    A fact that cannot be recorded does not undo the action: it becomes a
+    `manual` warning in the bell (Principle #38), since nothing would ever
+    re-check a fact that does not exist. Returns ``{asset: error}``.
     """
     pipeline_name = item.get('pipeline_name', '')
     node = _lookup_dag_node(pipeline_name, task_name)
     outlets = node.get('outlets') if node else None
     if not outlets:
-        return
+        return {}
     partition_key = item.get('date')
     if not partition_key:
-        log.error("record_manual_success_facts", "The task row has no date; no fact recorded",
-                  task_name=task_name, execution_name=item.get('execution_name', ''))
-        return
+        failed = {str(o.get('name')): 'the task row has no date' for o in outlets if o.get('name')}
+    else:
+        failed = record_facts_for_manual_success(
+            outlets, task_name, pipeline_name, str(partition_key), asset_events_repo,
+        )
+    for asset_name, error in failed.items():
+        _warn_fact_not_recorded(item, task_name, asset_name, error)
+    return failed
 
-    record_facts_for_manual_success(
-        outlets, task_name, pipeline_name, str(partition_key), asset_events_repo,
-    )
+
+def _warn_fact_not_recorded(item: Dict, task_name: str, asset_name: str, error: str) -> None:
+    execution_name = str(item.get('execution_name', ''))
+    try:
+        executions_repo.put(warning_item(
+            kind="manual", execution_name=f"{execution_name}-fact-{asset_name}", task_name=task_name,
+            pipeline_name=str(item.get('pipeline_name', '')), pipeline_execution=str(item.get('pipeline_execution', '')),
+            task_date=str(item.get('date', '')),
+            error=(f"Marked successful, but the fact of asset {asset_name} was not recorded: {error}. "
+                   "Tasks waiting on it for this run's partition keep waiting; restart the task to record it."),
+            now=datetime.now(timezone.utc),
+        ))
+    except (ClientError, BotoCoreError) as e:
+        log.error("record_manual_success_facts", "Could not write the warning row",
+                  asset_name=asset_name, execution_name=execution_name, error=str(e))
 
 
 def _execute_task_action(
@@ -966,8 +984,7 @@ def _execute_task_action(
     stop_task_executions(item, stop_error, stop_cause)
     record_manual_decision(execution_name, action_name, stop_cause, item)
     _write_synthetic_output_marker(item, action_name, stop_cause, item.get('date', date), operator=operator_display(event))
-    if emit_asset_events:
-        record_manual_success_facts(item, actual_task_name)
+    failed_facts = record_manual_success_facts(item, actual_task_name) if emit_asset_events else {}
 
     log.info(action_name, "Successfully completed", execution_name=execution_name, actual_task_name=actual_task_name)
 
@@ -1039,9 +1056,10 @@ def _execute_task_action(
         )
 
     resolve_pagerduty(item)
-    return cors_response(
-        200, {'message': success_message.format(execution_name=execution_name), 'execution_name': execution_name}
-    )
+    body = {'message': success_message.format(execution_name=execution_name), 'execution_name': execution_name}
+    if failed_facts:
+        body['failed_facts'] = failed_facts      # each also a `manual` warning in the bell
+    return cors_response(200, body)
 
 
 def skip_task(task_name: str, event: Dict) -> Dict:

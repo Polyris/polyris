@@ -13,6 +13,7 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 
 - `wait_for` is partition-aware: a task waits for a fact that serves its run's date, so a run for a past date never starts on today's fact, and `wait_for=[a, b]` waits for both. Weekly and monthly assets serve a daily run with their latest version from the current or the previous week or month.
 - `.within(...)` judges the latest partition up to the run's date.
+- A task with `wait_for` needs its run's date to be a partition key: `YYYY-MM-DD`, `YYYY-MM-DDTHH`, `YYYY-Www` or `YYYY-MM`. In a run dated otherwise, for example `20261113`, the task fails with `CoordinationError` and the cause.
 - Marking a task successful records its outlets' facts for the task's own date, not the day you mark it.
 - A pipeline scheduled on assets of different cadences runs at the finest one, for example daily with the latest weekly input. Before, it ran only on dates when every input had a fact.
 - A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
@@ -21,6 +22,14 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 ### Removed — dead asset helpers in the SDK
 
 - `polyris.assets.Watcher`, `generate_watchers_config`, `get_asset_schedule_info` and the module-level `is_asset_triggered` had no caller. The first two described an SQS watcher that was never built; the last two built an EventBridge pattern for asset events that polyris no longer publishes. `DAG.is_asset_triggered` stays.
+
+### Fixed — findings of the coordination review (ADR #130, B-W1, B-U2, B-F2, B-M2)
+
+- A wrapper whose status write was applied but whose answer was lost (a 5xx or a timeout) retried the write, failed its own condition and ended as superseded: the task never ran. The write now records its wrapper in `claimed_by`, so the retry passes.
+- The hourly push catch-up started a newly deployed asset-scheduled pipeline for facts recorded before its first deploy. A pipeline now reacts only to facts recorded after it subscribed. The subscription time is set at the first registration and kept by the registration every run repeats.
+- One fact that no reader could place on a partition, for example an older version's fact for a run date such as `latest`, failed every task waiting on its asset. It now counts for no task, and the bell shows a `coordination` warning.
+- When Mark Successful could not record an outlet's fact, it logged the error and reported plain success, and the tasks waiting on the asset waited with no trace in the console. The task still becomes successful; the bell now shows a `manual` warning, and the response lists the asset in `failed_facts`. Restart the task to record the fact.
+- A task whose wrapper started before the upgrade failed when its dependency wait timed out and it registered again: the old wrapper sends no `starter_input` or `orchestration_timeout`. Registration now stores empty values, which restart and the liveness deadline treat like those of an adopted row.
 
 ### Fixed — an operator's decision survives a wrapper the console could not stop (ADR #130 §6.3, B-O1)
 

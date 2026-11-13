@@ -121,6 +121,8 @@ class AssetFanout:
             consumer = str(row["pipeline_name"])
             if consumer == str(fact.get("source_dag", "")):
                 continue             # a pipeline never triggers itself
+            if row.get("subscribed_at") and str(fact.get("event_time", "")) < str(row["subscribed_at"]):
+                continue             # it subscribed after the fact: a consumer reacts only to later facts (B-U2)
             counts["consumers"] += 1
             try:
                 counts["started"] += self._push_one(fact, consumer, str(row["sfn_arn"]))
@@ -145,7 +147,7 @@ class AssetFanout:
         every_event = fact.get("cascade") == "all" or schedule.operator == sp.OR
         if fact.get("cascade") != "all":
             reader = FactStore(self.reconciler.resource, self.reconciler.asset_events_table, registry,
-                               self.reconciler.clock())
+                               self.reconciler.clock(), on_unreadable=self.reconciler.unreadable_fact)
             # `.within()` is judged as of the triggering fact, so a retry or a late record gives the same answer.
             evaluation = evaluate_assets(schedule, target=evidence.partition_date, now=evidence.event_time,
                                          reader=reader, known_facts=[evidence])

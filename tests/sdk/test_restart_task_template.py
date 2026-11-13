@@ -115,3 +115,14 @@ def test_the_restart_warning_has_the_shape_of_warning_item(restart):
     expected = warning_item(kind="coordination", execution_name=EXECUTION, task_name="load", pipeline_name="orders",
                             pipeline_execution=RUN, task_date="2026-11-12", error=written["error"], now=NOW)
     assert written == expected
+
+
+def test_an_empty_starter_input_is_a_legacy_row_too(restart):
+    """A pre-upgrade wrapper that registered again saved '' (registration's Save_Task_Record)."""
+    row = _row()
+    row["starter_input"] = {"S": ""}
+    [choice] = restart["Check_Starter_Input"]["Choices"]
+
+    assert evaluate(choice["Condition"], input={"item": row}) is False
+    replayed = _restart_input(restart, row)
+    assert (replayed["task_name"], replayed["dependencies"], replayed["date"]) == ("load", ["extract"], "2026-11-12")

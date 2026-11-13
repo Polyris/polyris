@@ -207,6 +207,23 @@ def test_an_or_schedule_starts_once_per_event(fanout, asset_events, pushed, sfn)
     assert all(r["input"]["trigger_assets"] == ["ns/a"] for r in sfn.started)
 
 
+@pytest.mark.parametrize("subscribed_at,starts", [
+    (None, True),                               # a row an older version wrote: no cutover
+    ("2026-11-12T03:00:00.000Z", True),         # subscribed before the fact
+    ("2026-11-12T05:00:00.000Z", False),        # subscribed after it (B-U2)
+])
+def test_a_consumer_reacts_only_to_facts_recorded_after_it_subscribed(fanout, asset_events, consumers, pushed, sfn,
+                                                                      subscribed_at, starts):
+    pushed({"operator": "AND", "assets": ["ns/a"]})
+    if subscribed_at:
+        consumers.update_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"},
+                              UpdateExpression="SET subscribed_at = :t", ExpressionAttributeValues={":t": subscribed_at})
+
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
+
+    assert len(sfn.started) == (1 if starts else 0)
+
+
 def test_a_weekly_fact_starts_the_run_of_its_monday(fanout, asset_events, pushed, sfn):
     pushed({"operator": "AND", "assets": ["ns/weekly"]})
     _push(fanout, asset_events, fact("ns/weekly", "2026-W46"))

@@ -230,12 +230,21 @@ class World:
 
     # ── verbs whose code paths arrive with later phases ────────────────
 
-    def write_event(self, asset: Any, partition: str, *, writer: str = "run_task") -> Run:
+    def write_event(self, asset: Any, partition: str, *, writer: str = "run_task") -> Optional[Run]:
         """`writer` records a fact of `asset` for `partition`; its hint waits for deliver_hints.
 
         The run_task writer is the real one: a producer pipeline whose task has
-        `outlets=[asset]` runs for the partition and succeeds.
+        `outlets=[asset]` runs for the partition and succeeds. The "older
+        version" writer stores the row run_task wrote before ADR #130 (no
+        partition_date, no granularity), as an upgraded stack still holds them.
         """
+        if writer == "older version":
+            self.resource.Table(self.stack.tables["AssetEventsTable"]).put_item(Item={
+                "asset_name": asset.name, "event_time": self.clock.text(), "uri": "", "source_task": "build",
+                "source_dag": "legacy_producer", "execution_date": partition,
+                "ttl": int(self.clock.read().timestamp()) + 365 * 86400,
+            })
+            return None
         if writer != "run_task":
             raise NeedsBinding("operations", f"the {writer} writer")
         from dags import pipeline
@@ -282,8 +291,8 @@ class World:
         self._sweeper({}, None)
         self.settle()
 
-    def mark_success(self, run: Run, task: str) -> None:
-        self._task_action("/api/task-success", run, task)
+    def mark_success(self, run: Run, task: str) -> Dict[str, Any]:
+        return self._task_action("/api/task-success", run, task)
 
     def skip(self, run: Run, task: str) -> None:
         self._task_action("/api/task-skip", run, task)
@@ -300,27 +309,40 @@ class World:
     # ── faults ─────────────────────────────────────────────────────────
 
     def inject_failure(self, operation: str, table: str, code: str, *,
-                       when: Optional[Callable[[Dict[str, Any]], bool]] = None, times: Optional[int] = None) -> None:
+                       when: Optional[Callable[[Dict[str, Any]], bool]] = None, times: Optional[int] = None,
+                       after: bool = False) -> None:
         """Make DynamoDB `operation` on `table` (a logical id) fail with `code`.
 
         `when` narrows it to calls whose API parameters match; `times` limits
-        how many calls fail (default: every matching call).
+        how many calls fail (default: every matching call). With `after`, the
+        call is applied and only its answer fails, as a write whose response is
+        lost to a 5xx or a timeout.
         """
         name = self.stack.tables[table]
         left = [times]
+        marker = f"polyris-fail-after-{id(left)}"
 
-        def fail(params: Dict[str, Any], **_: Any) -> None:
+        def fail(params: Dict[str, Any], context: Optional[Dict[str, Any]] = None, **_: Any) -> None:
             if params.get("TableName") != name or (when is not None and not when(params)):
                 return
             if left[0] is not None:
                 if left[0] <= 0:
                     return
                 left[0] -= 1
+            if after and context is not None:
+                context[marker] = True
+                return
             raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, operation)
+
+        def fail_answer(context: Optional[Dict[str, Any]] = None, **_: Any) -> None:
+            if context is not None and context.pop(marker, False):
+                raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected after the write)"}}, operation)
 
         # Both clients: the interpreter's (state-machine integrations) and the Lambdas'.
         for client in (self.ddb, self.resource.meta.client):
             client.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
+            if after:
+                client.meta.events.register(f"after-call.dynamodb.{operation}", fail_answer)
 
     def fail_starts(self, target: Union[Pipeline, str], code: str, *, times: int) -> None:
         """The next `times` StartExecution calls for `target` fail with `code` (e.g. throttling).

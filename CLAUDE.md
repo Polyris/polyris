@@ -277,7 +277,7 @@ In the reconciler (ADR #130 §3), a run's pointers are deleted only after an acc
 
 **41. Wake-up hints may be lost; wake-up decisions may not**
 - **Hint paths** only say "check this waiter again": the asset-events stream, `notify_dependents`, registration, resume. They may fail or drop a hint, because a periodic re-check from facts (the sweeper, ADR #130 §8) recovers it.
-- **Decision and action paths** never fail silently: the reconciler and the wrapper's status write. They retry, fail the affected task with the real cause, or surface a console warning (#38).
+- **Decision and action paths** never fail silently: the reconciler, the wrapper's status write, and every write of a fact. They retry, fail the affected task with the real cause, or surface a console warning (#38). A fact is state, not a hint: nothing re-checks a fact that was never written, so Mark Successful turns a failed fact write into a `manual` warning (B-M2).
 
 Anti-pattern: a wake-up path whose loss nothing re-checks, for example a fire-and-forget invoke with no periodic re-check behind it.
 
@@ -317,8 +317,19 @@ When a state stores its `waitForTaskToken` for another component to send (`pause
 **47. A writer writing again under the same identity never replaces a row another owner moved on**
 A retry, or a re-registration after a timeout, is a second write. Condition it on the row still being where this writer left it (same `wrapper_execution_arn`, a waiting status), and route the conditional failure to a superseded path that touches nothing. An unconditional `PutItem` on re-registration put an operator's skip back to `waiting` and ran the task (B-O1). A new owner (a restart) may still replace the row. This is Principle #34 applied to a writer and its own later writes.
 
+The converse holds for a `Retry`: a write can be applied while its answer is lost (a 5xx, a timeout), so the retried write must accept the row it already moved. Record the writer on the row and let the condition pass when the row shows this writer's own result: `Claim_*` writes `claimed_by = :self` and accepts `claimed_by = :self AND status = :status` (B-W1). Test it by applying the write twice.
+
 **48. A value an ADR defines clause by clause is one pure function with a test per clause**
 The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
+
+**49. A helper template reads an input an older caller may omit through `$exists`**
+During an upgrade, wrappers started on the old definitions keep calling the new helpers until they finish. `$string()` of a missing field fails the state, and with it the task: a pre-upgrade wrapper registering again failed on `starter_input`. Default such a field to a value its readers already treat as absent (`''`, `0`), and pin it with a test that runs the helper on the old caller's input (`PRE_UPGRADE_WRAPPER_INPUT` in `tests/sdk/test_registration_template.py`).
+
+**50. A time that marks a beginning is written once**
+When the writer runs again, as registration does on every run, write the field with `if_not_exists`. Otherwise it moves forward and silently narrows whatever it gates: `subscribed_at` decides which facts a push consumer reacts to, and a moving one would hide the facts a lost stream record left for the catch-up (B-U2).
+
+**51. A reader of shared rows skips a row it cannot parse, and says so**
+One malformed row must not fail every decision that reads the table. Catch the parse error per row, count the row for nothing, and write a warning. `FactStore.read` does this for asset facts (B-F2).
 
 ---
 

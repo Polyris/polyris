@@ -5,7 +5,7 @@
   "States": {
     "Save_Task_Record": {
       "Type": "Task",
-      "Comment": "Register the task row. attention/attention_at put it in the attention index (ADR #130 §7): due for a sweeper check 10 minutes from now. starter_input is the wrapper's own start input, which a restart replays. The condition keeps a row an operator resolved while this same wrapper waited (B-O1): a new wrapper (a restart) may replace any row, this one only a row still waiting.",
+      "Comment": "Register the task row. attention/attention_at put it in the attention index (ADR #130 §7): due for a sweeper check 10 minutes from now. starter_input is the wrapper's own start input, which a restart replays. The condition keeps a row an operator resolved while this same wrapper waited (B-O1): a new wrapper (a restart) may replace any row, this one only a row still waiting. A wrapper started before ADR #130 passes neither starter_input nor orchestration_timeout: the row then holds '' (restart treats it as a legacy row) and 0 (readers use the platform default).",
       "Resource": "arn:aws:states:::dynamodb:putItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -77,10 +77,10 @@
             "S": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}"
           },
           "starter_input": {
-            "S": "{% $string($states.input.starter_input) %}"
+            "S": "{% $exists($states.input.starter_input) ? $string($states.input.starter_input) : '' %}"
           },
           "orchestration_timeout": {
-            "N": "{% $string($states.input.orchestration_timeout) %}"
+            "N": "{% $exists($states.input.orchestration_timeout) ? $string($states.input.orchestration_timeout) : '0' %}"
           },
           "attention": {
             "S": "{% 'waiting#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"

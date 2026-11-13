@@ -151,3 +151,27 @@ def test_due_now_is_pinned_to_the_token_and_a_waiting_status(template):
 
 def test_due_time_constants_are_what_the_template_uses():
     assert attention.FIRST_DUE == timedelta(minutes=10)
+
+
+#: The input a v1.1.x wrapper passes to the registration helper. Such a wrapper, in
+#: flight during the upgrade, registers again when its dependency wait times out,
+#: and by then the helper runs the new definition (ADR #130 Migration).
+PRE_UPGRADE_WRAPPER_INPUT = {
+    "cross_account_role": "", "current_date": "2026-11-12", "date": "2026-11-12", "dependencies": ["extract"],
+    "execution_name": "load-2026-11-12--2026-11-12-abcdef12", "orchestration_token": "orch",
+    "outlets": [], "pipeline_execution": "orders-run-2026-11-12-abcdef12",
+    "pipeline_execution_short": "-2026-11-12-abcdef12", "pipeline_name": "orders",
+    "task_arn": "arn:aws:states:us-east-1:123456789012:stateMachine:load", "task_config": {},
+    "task_name": "load", "task_type": "sfn", "trigger_rule": "all_success", "triggered_by": "schedule",
+    "ttl": 1800000000, "wait_before": 0, "wait_for": [], "wait_token": "T",
+    "wrapper_execution_arn": "arn:aws:states:us-east-1:123456789012:execution:wrapper:load",
+}
+
+
+def test_a_pre_upgrade_wrapper_can_register_again(template):
+    """Every field of the row evaluates for the old input; an undefined value fails
+    the state in AWS (States.QueryEvaluationError) and with it the task."""
+    item = evaluate(template["States"]["Save_Task_Record"]["Arguments"]["Item"], input=PRE_UPGRADE_WRAPPER_INPUT)
+    assert {name: value for name, value in item.items() if None in value.values()} == {}
+    assert item["starter_input"] == {"S": ""}                 # restart treats it as a legacy row
+    assert item["orchestration_timeout"] == {"N": "0"}        # unknown: readers use the platform default

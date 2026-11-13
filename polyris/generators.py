@@ -1504,17 +1504,23 @@ def _build_registration_chain(
                 "States": {
                     "WriteSubscription": {
                         "Type": "Task",
-                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Comment": "subscribed_at is written once: a consumer reacts only to facts recorded after it subscribed (ADR #130 §6.1)",
+                        "Resource": "arn:aws:states:::dynamodb:updateItem",
                         "Arguments": {
                             "TableName": asset_subscriptions_table,
-                            "Item": {
+                            "Key": {
                                 "asset_name": {"S": "{% $states.input %}"},
                                 "pipeline_name": {"S": dag.dag_id},
-                                "sfn_arn": {"S": JSONATA_SFN_ARN},
-                                "operator": {"S": asset_schedule.get("operator", "AND")},
-                                "assets": {"S": json.dumps(_flatten_asset_names(dag._asset_schedule))},
-                                "registered_at": {"S": JSONATA_NOW}
-                            }
+                            },
+                            "UpdateExpression": ("SET sfn_arn = :arn, #op = :op, #assets = :assets, registered_at = :now, "
+                                                 "subscribed_at = if_not_exists(subscribed_at, :now)"),
+                            "ExpressionAttributeNames": {"#op": "operator", "#assets": "assets"},
+                            "ExpressionAttributeValues": {
+                                ":arn": {"S": JSONATA_SFN_ARN},
+                                ":op": {"S": asset_schedule.get("operator", "AND")},
+                                ":assets": {"S": json.dumps(_flatten_asset_names(dag._asset_schedule))},
+                                ":now": {"S": JSONATA_NOW},
+                            },
                         },
                         "Output": "{% null %}",
                         "Retry": [_STANDARD_DYNAMODB_RETRY],

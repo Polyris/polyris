@@ -14,7 +14,7 @@ _OUTLETS = [
 
 
 def _call(events_repo, outlets=_OUTLETS):
-    record_facts_for_manual_success(outlets=outlets, task_name="extract", pipeline_name="orders-clean",
+    return record_facts_for_manual_success(outlets=outlets, task_name="extract", pipeline_name="orders-clean",
                                     partition_key="2026-11-10", events_repo=events_repo)
 
 
@@ -43,13 +43,14 @@ def test_starts_nothing_itself(mocker):
     assert not hasattr(task_actions, "NOTIFY_ASSET_CONSUMERS_SFN_ARN")
 
 
-def test_a_failed_fact_is_logged_and_the_rest_continue(mocker):
+def test_a_failed_fact_is_logged_returned_and_the_rest_continue(mocker):
     events_repo = mocker.MagicMock()
     events_repo.write_fact.side_effect = [RuntimeError("AccessDenied"), None]
     error = mocker.patch.object(task_actions.log, "error")
-    _call(events_repo)
+    failed = _call(events_repo)
     assert events_repo.write_fact.call_count == 2
     assert error.call_args.kwargs["error"] == "AccessDenied"
+    assert failed == {_OUTLETS[0]["name"]: "AccessDenied"}
 
 
 def test_outlets_without_a_name_or_no_outlets_record_nothing(mocker):

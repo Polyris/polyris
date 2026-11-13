@@ -56,6 +56,10 @@ Every hang and wrong wake in this layer since ADR #122 traces to five causes.
 | B-P3 | A task saves its pause token while resume runs (resume finds the run's rows through an index), or its release fails → resume misses it → it waits for its 12-hour pause heartbeat |
 | B-P4 | `pause_waiter` cannot save the pause token → nothing can release the task → after its 12-hour heartbeat it runs, paused or not |
 | B-O1 | An operator resolves a waiting task, but the console cannot stop its wrapper → when the wrapper's dependency wait times out it registers again, the unconditional write puts the row back to `waiting`, and the task runs |
+| B-W1 | A wrapper's claim is applied but its answer is lost (a 5xx, a timeout) → the retry fails its own condition, the wrapper ends as superseded, and the task never runs |
+| B-U2 | A consumer is deployed after facts were recorded → the hourly catch-up starts it for those older facts |
+| B-F2 | One fact that no reader can place on a partition → every task waiting on its asset fails its decision |
+| B-M2 | Mark Successful cannot record a fact → it logs and reports plain success; the tasks waiting on the asset hang with no trace in the console |
 | B-R1 | `restart_task` passes neither `wait_for` nor the other starter fields → the restarted task is not gated on assets |
 | B-N1 | Warning rows are dated by partition and grouped per run → warnings for older dates never reach the bell; one warning hides another |
 | B-S1 | `Auto_Skip_Register` swallows a failed status write and still notifies dependants |
@@ -196,6 +200,8 @@ The index is eventually consistent. To close the lag window, the reader also run
 
 **Granularity** is taken from the fact row. If the row has none (legacy rows), the evaluator uses the producer's registry entry via `source_dag`; failing that, `daily`.
 
+**Unreadable facts.** A fact the reader cannot place on the date line counts for no task. Example: a row a version before this ADR recorded for a run date that is no partition key, such as `latest`. The reader writes one `coordination` warning for the fact and goes on, so one bad row never fails the decision of every task waiting on its asset (B-F2).
+
 **Push specs** come from the consumer's registry entry, which has the full nesting and `.within()`. `asset-subscriptions` is only the index of who to evaluate.
 
 ### 5. Subscriptions are per-run pointers
@@ -231,6 +237,7 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 - **Pull:** query the `asset:{name}` subscriptions (consistent) and call `reconcile(subscriber, known_events=[record])` with bounded parallelism.
 - **Push** (unless `cascade = none`):
   - for each `asset-subscriptions` row, evaluate the consumer's registry spec for **the event's own date**, D = `partition_date`, with the same rule as pull (§4). A run therefore follows the cadence of the finest input: a daily `sales` event starts that day's run with the latest weekly `prices` (D12). If a coarse input was missing for two or more periods, the dates it blocked are not started later automatically; recovering them is a backfill. A `.within()` in a push spec is evaluated as of the triggering fact's `event_time`, not the time of evaluation, so a retry, a late record or a catch-up replay gives the same answer as the first evaluation;
+  - a consumer reacts only to facts recorded after it subscribed: a row whose `subscribed_at` is later than the fact's `event_time` is skipped. `subscribed_at` is written once, at the consumer's first registration (`if_not_exists`), so the registration that every run repeats does not move it. Rows written before the field existed have none and are not filtered (B-U2);
   - if satisfied (or `cascade = all`), start the consumer with a deterministic name from the run-name helper (§6.6);
   - `ExecutionAlreadyExists` counts as done;
   - a permanent error (`StateMachineDoesNotExist`) drops the item and writes one warning;
@@ -239,7 +246,7 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 
 **Writers only write the fact.**
 - `run_task` keeps `Record_Asset_Event` and drops its two notify states.
-- `mark_success` and every other writer outside `run_task` call `asset_events_repo.write_fact`.
+- `mark_success` and every other writer outside `run_task` call `asset_events_repo.write_fact`. A fact that Mark Successful cannot write does not undo the action: it becomes a `manual` warning, and the response lists it in `failed_facts`.
 
 #### 6.2 Task completion → `notify_dependents`
 
@@ -259,6 +266,8 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 
    Neither key is ever empty. Contract tests check the shard range and that JSONata and Python compute the same shard.
 
+   A wrapper started before the upgrade can register again after its dependency wait timed out, and its input has neither `starter_input` nor `orchestration_timeout`. The row then stores `''` and `0`, which restart and the liveness deadline treat like an adopted row that lacks them (§8 step 6).
+
    The write is conditional: `attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self OR status IN (waiting, waiting_paused)`. A new wrapper, a restart or another run, may replace any row; the same wrapper registering again after its dependency wait timed out may only replace a row that still waits. When an operator resolved the task meanwhile and the console could not stop the wrapper, the write fails, the row is kept, and registration wakes the wrapper with `deps_ready`; its claim (§6.4) fails, so it ends as `Superseded` without running the task (B-O1).
 2. **Fast path:** a task with no dependencies and no `wait_for` is signalled immediately. Pause is enforced at run start by `pause_waiter`.
 3. **Everything else:** write all subscriptions in one Map, then call `reconcile(execution_name)` with `Retry`.
@@ -276,9 +285,11 @@ After `Wait_For_Dependencies` resumes:
 
 | Signal | Wrapper action |
 |---|---|
-| `deps_ready` | `SET status = deps_ready REMOVE wait_token, attention, attention_at IF status IN (:waiting, :waiting_paused) AND wrapper_execution_arn = :self` |
+| `deps_ready` | `SET status = deps_ready, claimed_by = :self REMOVE wait_token, attention, attention_at IF (status IN (:waiting, :waiting_paused) AND wrapper_execution_arn = :self) OR (claimed_by = :self AND status = deps_ready)` |
 | `deps_skip` | the same with `skipped`, `skip_origin='rule'`, `skip_reason` and `finished_at`, **before** notifying dependants |
 | `deps_blocked` | the same with `upstream_failed`, its reason in `error`, and `finished_at`; then the failure handler as today, which leaves `upstream_failed` rows alone |
+
+The second branch makes a retry idempotent. When the write is applied but its answer is lost (a 5xx or a timeout), the state's `Retry` writes again and finds its own claim (B-W1).
 
 If the condition fails, another owner has already moved the task. Example: an operator's skip or success, which writes the status before it stops the wrapper. The wrapper then ends quietly as *superseded*: it does not run the task and raises no failure. A failure of the write itself, as opposed to its condition, fails the wrapper visibly.
 
@@ -337,7 +348,7 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
    - the run is still paused → due again, with the same backoff;
    - otherwise send the pause callback as resume does, and write a `sweeper` warning: resume missed the task.
 3. **Push retries.** For `retry#0..f` rows that are due, retry with backoff (5 min → 1 h).
-4. **Push catch-up,** hourly. For every subscribed asset, read the facts written in the last 48 hours (consistent base-table query) and replay AssetFanout's push branch for each of them: same date, same rule, same `cascade` handling, same deterministic names. Only facts with `fact_version = 2`, written by the new code, are replayed. Facts written by the old code were already handled by the old push path, so they are never replayed and nothing starts twice. No time cutover or per-subscription timestamp is needed.
+4. **Push catch-up,** hourly. For every subscribed asset, read the facts written in the last 48 hours (consistent base-table query) and replay AssetFanout's push branch for each of them: same date, same rule, same `cascade` handling, same deterministic names. Only facts with `fact_version = 2`, written by the new code, are replayed. Facts written by the old code were already handled by the old push path, so they are never replayed and nothing starts twice. A consumer deployed after a fact is not started for it: the replay applies the `subscribed_at` rule of §6.1.
 5. **Engine self-check:**
    - event source mapping `Enabled`;
    - stream enabled;
@@ -402,7 +413,7 @@ Each has a test (`tests/backend/coordination/README.md`).
 5. **Every reconcilable row without `pause_token` is in the attention index, and every row held in its pause wait is in `paused#`.** A row that leaves a reconcilable status leaves the index within one sweeper run. After a deploy, adoption completes.
 6. **Facts are never overwritten.**
 7. **Every asset-event INSERT is processed by AssetFanout.** Pull waiters are also covered by the sweeper, and push consumers by retry rows and the catch-up pass.
-8. **Push runs at most once** per (consumer, date) for AND and per (consumer, event) for OR, and **at least once** within the catch-up window.
+8. **Push runs at most once** per (consumer, date) for AND and per (consumer, event) for OR, and **at least once** within the catch-up window for each fact recorded after the consumer subscribed.
 
 ## Key design choices
 

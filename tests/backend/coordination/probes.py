@@ -165,13 +165,38 @@ PROBES: Tuple[Probe, ...] = (
                         '"ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self'
                         ' OR #s IN (:waiting, :paused) OR attribute_exists(execution_name)"'),),
           f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
+    # Without the cutover every consumer subscribed now reacts to every fact the catch-up replays.
+    Probe("B-U2", (Edit("sam/lambdas/coordination/asset_fanout.py",
+                        '            if row.get("subscribed_at") and str(fact.get("event_time", "")) < str(row["subscribed_at"]):\n',
+                        '            if False:\n'),),
+          f"{SCENARIOS}::test_a_consumer_deployed_after_the_facts_does_not_start_for_them"),
+    # Without the claim marker a retried claim fails its own condition and ends as superseded.
+    Probe("B-W1", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
+                        '"SET #s = :status, claimed_by = :self REMOVE wait_token, attention, attention_at"',
+                        '"SET #s = :status REMOVE wait_token, attention, attention_at"'),),
+          f"{SCENARIOS}::test_a_claim_whose_answer_is_lost_still_runs_the_task"),
+    # A subscription time that moves on every registration hides the facts a lost stream record left behind.
+    Probe("B-U2", (Edit("polyris/generators.py",
+                        '"subscribed_at = if_not_exists(subscribed_at, :now)"',
+                        '"subscribed_at = :now"'),),
+          f"{SCENARIOS}::test_a_consumer_registered_again_keeps_its_subscription_time"),
+    # Without the warning a fact Mark Successful could not record leaves no trace but a log line.
+    Probe("B-M2", (Edit("sam/lambdas/console_api/routes/tasks.py",
+                        "        _warn_fact_not_recorded(item, task_name, asset_name, error)\n",
+                        "        pass\n"),),
+          f"{SCENARIOS}::test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it"),
+    # Without the guard an unreadable fact raises out of the reader and fails the waiting task.
+    Probe("B-F2", (Edit("sam/lambdas/coordination/stores.py",
+                        "            return self.registry.fact(item)\n        except ValueError as exc:\n",
+                        "            return self.registry.fact(item)\n        except KeyError as exc:\n"),),
+          f"{SCENARIOS}::test_an_unreadable_fact_fails_no_waiting_task"),
     Probe("B-N1", (Edit("sam/lambdas/coordination/coordination_core/records.py",
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),
           f"{SCENARIOS}::test_a_warning_about_an_old_partition_reaches_the_bell"),
     # The old restart rebuilt the wrapper's input from a few saved fields, without wait_for.
     Probe("B-R1", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
-                        "$start := $exists($item.starter_input.S) ? $parse($item.starter_input.S) :",
+                        "$start := ($exists($item.starter_input.S) and $item.starter_input.S != '') ? $parse($item.starter_input.S) :",
                         "$start := false ? $parse($item.starter_input.S) :"),),
           f"{SCENARIOS}::test_a_restarted_task_is_still_gated_on_its_assets"),
 )

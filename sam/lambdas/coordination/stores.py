@@ -287,12 +287,28 @@ class Registry:
 
 
 class FactStore:
-    """``FactReader`` over the partition index plus recent consistent reads (ADR #130 §4)."""
+    """``FactReader`` over the partition index plus recent consistent reads (ADR #130 §4).
 
-    def __init__(self, resource: Any, table_name: str, registry: Registry, now: datetime):
+    A fact that cannot be read (a malformed partition, an unknown granularity)
+    counts for no task, and ``on_unreadable`` is told about it: one bad fact
+    must not fail the decision of every task waiting on its asset (B-F2).
+    """
+
+    def __init__(self, resource: Any, table_name: str, registry: Registry, now: datetime, *,
+                 on_unreadable: Optional[Callable[[Dict[str, Any], Exception], None]] = None):
         self.table = resource.Table(table_name)
         self.registry = registry
         self.now = now
+        self.on_unreadable = on_unreadable
+
+    def read(self, item: Dict[str, Any]) -> Optional[Fact]:
+        """The fact of an ``asset-events`` item, or None when it cannot be read."""
+        try:
+            return self.registry.fact(item)
+        except ValueError as exc:
+            if self.on_unreadable is not None:
+                self.on_unreadable(item, exc)
+            return None
 
     def facts(self, asset_name: str, *, last: date, first: Optional[date]) -> Iterable[Fact]:
         return merge_facts(self._indexed(asset_name, last, first), self._recent(asset_name), first, last)
@@ -310,7 +326,9 @@ class FactStore:
         while True:
             response = self.table.query(**kwargs)
             for item in response.get("Items", []):
-                yield self.registry.fact(item)
+                fact = self.read(item)
+                if fact is not None:
+                    yield fact
             if "LastEvaluatedKey" not in response:
                 return
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
@@ -324,7 +342,7 @@ class FactStore:
         facts: List[Fact] = []
         while True:
             response = self.table.query(**kwargs)
-            facts.extend(self.registry.fact(item) for item in response.get("Items", []))
+            facts.extend(f for f in map(self.read, response.get("Items", [])) if f is not None)
             if "LastEvaluatedKey" not in response:
                 return facts
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]

@@ -140,8 +140,8 @@ def record_facts_for_manual_success(
     partition_key: str,
     events_repo,
     asset_event_ttl_days: int = ASSET_EVENT_TTL_DAYS,
-) -> None:
-    """Record the facts of a task marked successful.
+) -> Dict[str, str]:
+    """Record the facts of a task marked successful; returns ``{asset: error}`` for each failure.
 
     Mark Successful is the one manual action that claims real work happened,
     so it records each outlet's fact the way run_task's Record_Asset_Event
@@ -150,8 +150,9 @@ def record_facts_for_manual_success(
     pipelines scheduled on it. Skip, Fail and Stop record nothing: they claim
     no output.
 
-    Best-effort per outlet: one outlet's failure is logged and does not stop
-    the others, nor the manual action's own response.
+    Per outlet: one outlet's failure is logged and does not stop the others,
+    nor the manual action itself. The caller makes each failure visible: a
+    fact is state, not a hint, so nothing would ever re-check a missing one.
 
     Args:
         outlets: dicts with at least a 'name' key (optional 'uri' and
@@ -163,6 +164,7 @@ def record_facts_for_manual_success(
         events_repo: the asset-events DAL repo (dal.asset_events_repo).
         asset_event_ttl_days: how long the facts live.
     """
+    failed: Dict[str, str] = {}
     for outlet in outlets or []:
         asset_name = outlet.get('name')
         if not asset_name:
@@ -181,6 +183,8 @@ def record_facts_for_manual_success(
         except Exception as e:
             log.error("record_facts_for_manual_success", "Failed to record asset fact",
                       asset_name=asset_name, task_name=task_name, error=str(e))
+            failed[asset_name] = str(e)
+    return failed
 
 
 def extract_pipeline_execution_short(item: Dict, execution_name: str) -> str:

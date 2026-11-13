@@ -86,6 +86,8 @@ Each successful producer run records a fact of the asset, dated by the run's dat
 
 A daily consumer of a weekly asset therefore uses the latest version from this week or the last one, and a run for a past date waits for a fact of its own date, never today's (ADR #130).
 
+Run dates are partition keys: `2026-01-12` (daily), `2026-01-12T06` (hourly), `2026-W03` (weekly) or `2026-01` (monthly). A `wait_for` task in a run dated otherwise, for example `20260112`, fails with `CoordinationError` and the cause.
+
 ### Schema Declaration
 
 Declare a column schema directly in the asset definition. The schema is stored with the asset in the pipeline registry.
@@ -375,6 +377,8 @@ with DAG(
 
 A run's name is derived from the consumer, the date and the kind of trigger, so a repeated event never starts a second run. A failure to start one consumer never affects the producer or other consumers: a transient one is retried, anything else shows up as a warning.
 
+A consumer reacts only to facts recorded after its first deploy. Deploying a new consumer does not start it for facts that already exist; its first run starts with the next fact.
+
 ---
 
 ## AND Logic (All Assets Required)
@@ -606,7 +610,9 @@ A producer task records one fact per outlet when it succeeds, in the `asset-even
 | `granularity` | `daily` | the asset's declared [granularity](#granularity) |
 | `source_dag`, `source_task` | `acme-daily`, `process_data` | the producer |
 
-Marking a producer task successful in the console records its outlets' facts too, dated by the task's run, not by the day you mark it.
+Marking a producer task successful in the console records its outlets' facts too, dated by the task's run, not by the day you mark it. If a fact cannot be recorded, the task still becomes successful, and the bell shows a warning for that asset; tasks waiting on it keep waiting until you restart the task.
+
+A fact that no reader can place on a partition (for example, one recorded by an older version for a run date such as `latest`) counts for no task, and the bell shows a warning for it.
 
 ---
 
