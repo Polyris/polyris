@@ -105,8 +105,30 @@ def test_transient_failures_defer_to_the_sweeper_and_others_fail_the_task(templa
 
 def test_a_lost_row_always_fails_the_task(template):
     """B-G1: with no row there is nothing for the sweeper to find."""
-    [catch] = template["States"]["Save_Task_Record"]["Catch"]
-    assert (catch["ErrorEquals"], catch["Next"]) == (["States.ALL"], "Fail_Task")
+    kept, lost = template["States"]["Save_Task_Record"]["Catch"]
+    assert (kept["ErrorEquals"], kept["Next"]) == (["DynamoDB.ConditionalCheckFailedException"], "Signal_Superseded")
+    assert (lost["ErrorEquals"], lost["Next"]) == (["States.ALL"], "Fail_Task")
+
+
+def test_registering_again_never_replaces_a_row_an_operator_resolved(template):
+    """B-O1: a new wrapper (a restart) may replace any row; the same wrapper, registering
+    again after its dependency wait timed out, only a row that still waits."""
+    from polyris.constants import RECONCILABLE_STATUSES
+
+    arguments = template["States"]["Save_Task_Record"]["Arguments"]
+    assert arguments["ConditionExpression"] == (
+        "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)")
+    values = arguments["ExpressionAttributeValues"]
+    assert {values[":waiting"]["S"], values[":paused"]["S"]} == set(RECONCILABLE_STATUSES)
+    assert _evaluate(values[":self"]["S"], {"wrapper_execution_arn": "arn:w"}) == "arn:w"
+    assert arguments["Item"]["wrapper_execution_arn"] == values[":self"]   # the row names the same wrapper
+
+
+def test_a_kept_row_wakes_the_wrapper_so_its_claim_fails(template):
+    signal = template["States"]["Signal_Superseded"]
+    assert signal["Resource"].endswith(":sfn:sendTaskSuccess")
+    assert _evaluate(signal["Arguments"]["TaskToken"], {"wait_token": "T"}) == "T"
+    assert json.loads(signal["Arguments"]["Output"])["signal"] in wake.SIGNALS
 
 
 def test_the_task_fails_with_the_coordination_error(template):

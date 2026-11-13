@@ -45,8 +45,28 @@ class StatesError(Exception):
         self.cause = cause
 
 
+class Exceptions:
+    """A boto3 client's `exceptions`: one ClientError subclass per error code.
+
+    Code under test writes `except sfn.exceptions.TaskTimedOut`; `client_error`
+    raises the matching subclass, so such a clause catches it as it would in AWS.
+    """
+
+    def __init__(self) -> None:
+        self._classes: Dict[str, type] = {}
+
+    def __getattr__(self, code: str) -> type:
+        if code.startswith("_"):
+            raise AttributeError(code)
+        return self._classes.setdefault(code, type(code, (ClientError,), {}))
+
+
+EXCEPTIONS = Exceptions()
+
+
 def client_error(code: str, operation: str, message: str = "") -> ClientError:
-    return ClientError({"Error": {"Code": code, "Message": message or code}}, operation)
+    error_class = getattr(EXCEPTIONS, code)
+    return error_class({"Error": {"Code": code, "Message": message or code}}, operation)
 
 
 def _lambda_json(value: Any) -> Any:
@@ -151,6 +171,9 @@ class ExternalJob:
 
 
 class Runtime:
+    #: As a boto3 Step Functions client offers it (see Exceptions).
+    exceptions = EXCEPTIONS
+
     def __init__(self, ddb_client: Any, *, now: Callable[[], str],
                  lambdas: Optional[Dict[str, Callable[[Any, Any], Any]]] = None):
         self.ddb = ddb_client

@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Fixed — an operator's decision survives a wrapper the console could not stop (ADR #130 §6.3, B-O1)
+
+- When an operator skips, fails or marks a waiting task, the console stops its wrapper. If that stop failed, the wrapper kept waiting, registered again when its dependency wait timed out, and the unconditional write put the row back to `waiting`: the task then ran, although its dependants had already been told otherwise. Registration now writes the row only if it is new, belongs to another wrapper, or still waits; otherwise it keeps the row and wakes the wrapper, which ends without running the task.
+
 ### Fixed — the enabling time follows ADR #130 §9
 
 - When a task could first run, which the sweeper's primary-path miss rule and the reconcile log use, now follows the ADR: never earlier than the run's last resume; `one_success` from its earliest success, not its latest dependency; an OR group of assets from its earliest ready member, not its newest. A task held by a pause no longer counts as a miss, and a real miss on a `one_success` rule or an OR group is no longer hidden.

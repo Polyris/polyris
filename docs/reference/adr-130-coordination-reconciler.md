@@ -55,6 +55,7 @@ Every hang and wrong wake in this layer since ADR #122 traces to five causes.
 | B-P2 | Task deps finish during a pause, assets missing → resume runs the task without its assets |
 | B-P3 | A task saves its pause token while resume runs (resume finds the run's rows through an index), or its release fails → resume misses it → it waits for its 12-hour pause heartbeat |
 | B-P4 | `pause_waiter` cannot save the pause token → nothing can release the task → after its 12-hour heartbeat it runs, paused or not |
+| B-O1 | An operator resolves a waiting task, but the console cannot stop its wrapper → when the wrapper's dependency wait times out it registers again, the unconditional write puts the row back to `waiting`, and the task runs |
 | B-R1 | `restart_task` passes neither `wait_for` nor the other starter fields → the restarted task is not gated on assets |
 | B-N1 | Warning rows are dated by partition and grouped per run → warnings for older dates never reach the bell; one warning hides another |
 | B-S1 | `Auto_Skip_Register` swallows a failed status write and still notifies dependants |
@@ -257,6 +258,8 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
    - `attention_at = now + 10 min` (first due time).
 
    Neither key is ever empty. Contract tests check the shard range and that JSONata and Python compute the same shard.
+
+   The write is conditional: `attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self OR status IN (waiting, waiting_paused)`. A new wrapper, a restart or another run, may replace any row; the same wrapper registering again after its dependency wait timed out may only replace a row that still waits. When an operator resolved the task meanwhile and the console could not stop the wrapper, the write fails, the row is kept, and registration wakes the wrapper with `deps_ready`; its claim (§6.4) fails, so it ends as `Superseded` without running the task (B-O1).
 2. **Fast path:** a task with no dependencies and no `wait_for` is signalled immediately. Pause is enforced at run start by `pause_waiter`.
 3. **Everything else:** write all subscriptions in one Map, then call `reconcile(execution_name)` with `Retry`.
 4. **Failures in the registration SFN are caught.**

@@ -5,7 +5,7 @@
   "States": {
     "Save_Task_Record": {
       "Type": "Task",
-      "Comment": "Register the task row. attention/attention_at put it in the attention index (ADR #130 §7): due for a sweeper check 10 minutes from now. starter_input is the wrapper's own start input, which a restart replays.",
+      "Comment": "Register the task row. attention/attention_at put it in the attention index (ADR #130 §7): due for a sweeper check 10 minutes from now. starter_input is the wrapper's own start input, which a restart replays. The condition keeps a row an operator resolved while this same wrapper waited (B-O1): a new wrapper (a restart) may replace any row, this one only a row still waiting.",
       "Resource": "arn:aws:states:::dynamodb:putItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -88,6 +88,21 @@
           "attention_at": {
             "S": "{% $fromMillis($toMillis($now()) + 600000) %}"
           }
+        },
+        "ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":self": {
+            "S": "{% $exists($states.input.wrapper_execution_arn) ? $states.input.wrapper_execution_arn : '' %}"
+          },
+          ":waiting": {
+            "S": "waiting"
+          },
+          ":paused": {
+            "S": "waiting_paused"
+          }
         }
       },
       "Output": "{% $states.input %}",
@@ -107,6 +122,14 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException"
+          ],
+          "Comment": "An operator resolved the task while this wrapper waited, and the console could not stop the wrapper. Keep the row as the operator left it.",
+          "Output": "{% $states.input %}",
+          "Next": "Signal_Superseded"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -307,6 +330,38 @@
           "ErrorEquals": [
             "States.ALL"
           ],
+          "Output": "{% $states.input %}",
+          "Next": "Registered"
+        }
+      ]
+    },
+    "Signal_Superseded": {
+      "Type": "Task",
+      "Comment": "Wake the wrapper. Its claim of the row is conditional on the row still waiting under its own ARN, so the claim fails and the wrapper ends as Superseded without running the task (ADR #130 §6.4).",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+      "Arguments": {
+        "TaskToken": "{% $states.input.wait_token %}",
+        "Output": "{\"signal\":\"deps_ready\",\"reason\":\"an operator resolved the task while its wrapper waited\"}"
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Registered",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "The wrapper waits on; when its timeouts run out, its failure handler leaves a resolved row alone.",
           "Output": "{% $states.input %}",
           "Next": "Registered"
         }

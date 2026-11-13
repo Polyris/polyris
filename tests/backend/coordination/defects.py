@@ -10,6 +10,7 @@ DEFECTS = {
     "B-P2": "Task deps finish during a pause, assets missing: resume runs the task without its assets",
     "B-P3": "A task saves its pause token while resume runs: resume misses it, it waits for its 12-hour heartbeat",
     "B-P4": "pause_waiter cannot save the token: nobody can release the task; it runs after 12 hours, paused or not",
+    "B-O1": "An operator resolves a waiting task but its wrapper cannot be stopped: registering again overwrites the row and runs the task",
     "B-R1": "restart_task passes neither wait_for nor the other starter fields: the restart is not gated on assets",
     "B-N1": "Warning rows dated by partition and grouped per run: older warnings never reach the bell",
     "B-S1": "Auto_Skip_Register swallows a failed status write and still notifies dependants",

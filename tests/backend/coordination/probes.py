@@ -158,6 +158,13 @@ PROBES: Tuple[Probe, ...] = (
                         '      ]',
                         ""),),
           f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
+    # The old registration replaced the row whatever it held.
+    Probe("B-O1", (Edit(REGISTRATION,
+                        '"ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self'
+                        ' OR #s IN (:waiting, :paused)"',
+                        '"ConditionExpression": "attribute_not_exists(execution_name) OR wrapper_execution_arn <> :self'
+                        ' OR #s IN (:waiting, :paused) OR attribute_exists(execution_name)"'),),
+          f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
     Probe("B-N1", (Edit("sam/lambdas/coordination/coordination_core/records.py",
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),

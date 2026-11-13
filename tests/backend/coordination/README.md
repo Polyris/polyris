@@ -58,7 +58,7 @@ A verb whose code path has not landed raises `NeedsBinding`. A scenario that use
 
 ## Defects and mutation probes
 
-`defects.py` lists the defects of ADR #130 by the ids in the ADR's defects table, and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file.
+`defects.py` lists the defects of ADR #130 by the ids in the ADR's defects table, and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect.
 
 `test_meta.py` keeps these consistent:
 - every defect has a scenario, and every scenario names a known defect;

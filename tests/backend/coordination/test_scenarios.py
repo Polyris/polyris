@@ -396,6 +396,18 @@ def test_a_warning_about_an_old_partition_reaches_the_bell(world):
 # ── the matrix rows of COORDINATION_DESIGN §4.2 not pinned above ─────────
 
 
+@defect("B-O1")
+def test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.fail_stops("ThrottlingException", times=1)
+    world.skip(run, "load")                 # the console cannot stop load's wrapper, which goes on waiting
+    world.time_out_registration(run, "load")    # orchestration_timeout later it registers again
+    world.complete(run, "extract")
+    assert world.status(run, "load") == "skipped"
+    assert world.running_tasks(run) == []
+    assert world.wrapper(run, "load").status == "SUCCEEDED"   # it ended as superseded
+
+
 def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_it(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.skip(run, "load")                 # while load still waits for extract

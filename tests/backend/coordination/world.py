@@ -22,7 +22,7 @@ from botocore.exceptions import ClientError
 from bindings import Bindings
 from invariants import Invariants
 from platform_stack import Stack
-from sfn_runtime import ACCOUNT, REGION, Execution
+from sfn_runtime import ACCOUNT, REGION, Execution, client_error
 
 TASK_ARN = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:user-{{}}"
 _deserializer = TypeDeserializer()
@@ -333,7 +333,7 @@ class World:
         def start_execution(**kwargs: Any) -> Dict[str, Any]:
             if kwargs.get("stateMachineArn") == arn and left[0] > 0:
                 left[0] -= 1
-                raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, "StartExecution")
+                raise client_error(code, "StartExecution", f"{code} (injected)")
             return real(**kwargs)
 
         runtime.start_execution = start_execution
@@ -345,10 +345,22 @@ class World:
         def send_task_success(**kwargs: Any) -> Dict[str, Any]:
             if left[0] > 0:
                 left[0] -= 1
-                raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, "SendTaskSuccess")
+                raise client_error(code, "SendTaskSuccess", f"{code} (injected)")
             return real(**kwargs)
 
         runtime.send_task_success = send_task_success
+
+    def fail_stops(self, code: str, *, times: int) -> None:
+        """The next `times` StopExecution calls fail with `code`, as a throttled stop would."""
+        runtime, real, left = self.runtime, self.runtime.stop_execution, [times]
+
+        def stop_execution(**kwargs: Any) -> Dict[str, Any]:
+            if left[0] > 0:
+                left[0] -= 1
+                raise client_error(code, "StopExecution", f"{code} (injected)")
+            return real(**kwargs)
+
+        runtime.stop_execution = stop_execution
 
     def fail_invokes(self, function: str, *, times: int) -> None:
         """The next `times` invocations of a platform function (logical id) by a state machine
