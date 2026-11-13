@@ -53,8 +53,10 @@ def error_code(exc: BaseException) -> str:
 
 
 def is_transient(exc: BaseException) -> bool:
+    """A listed code, or any server-side failure (HTTP 5xx) whose code the list does not know yet."""
     if isinstance(exc, ClientError):
-        return error_code(exc) in TRANSIENT_CODES
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        return error_code(exc) in TRANSIENT_CODES or (isinstance(status, int) and status >= 500)
     return isinstance(exc, _TRANSIENT_NETWORK)
 
 

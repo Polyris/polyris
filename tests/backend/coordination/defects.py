@@ -10,6 +10,7 @@ DEFECTS = {
     "B-P2": "Task deps finish during a pause, assets missing: resume runs the task without its assets",
     "B-P3": "A task saves its pause token while resume runs: resume misses it, it waits for its 12-hour heartbeat",
     "B-P4": "pause_waiter cannot save the token: nobody can release the task; it runs after 12 hours, paused or not",
+    "B-G2": "A reconciler that times out during registration fails a healthy task instead of leaving it to the sweeper",
     "B-M2": "A Mark Successful whose fact cannot be recorded reports plain success: the tasks waiting on it hang silently",
     "B-F2": "One unreadable fact fails every task waiting on its asset",
     "B-W1": "A wrapper claim whose write applied but whose answer was lost ends as superseded: the task never runs",

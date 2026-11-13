@@ -36,14 +36,15 @@ def clock() -> Clock:
 class FakeLambda:
     """The Lambda call of the self-check: the asset-fanout function's event source mappings."""
 
-    def __init__(self, state: str = "Enabled"):
-        self.state = state
+    def __init__(self, state: str = "Enabled", result: str = "OK"):
+        self.state, self.result = state, result
 
     def list_event_source_mappings(self, *, FunctionName: str) -> Dict[str, Any]:
         if self.state == "error":
             from coordination_testkit import client_error
             raise client_error("AccessDeniedException", "ListEventSourceMappings")
-        return {"EventSourceMappings": [] if self.state == "missing" else [{"State": self.state}]}
+        mapping = {"State": self.state, "LastProcessingResult": self.result}
+        return {"EventSourceMappings": [] if self.state == "missing" else [mapping]}
 
 
 @pytest.fixture
@@ -131,6 +132,18 @@ def test_due_rows_are_checked_and_due_again_with_backoff(make, tokens, clock):
     assert _row(tokens, later)[att.DUE] == format_utc(clock.now + timedelta(minutes=1))
 
 
+def test_a_row_whose_check_changed_nothing_backs_off_too(make, tokens, clock):
+    """A warned row is re-checked with the same backoff, not every run, and does not hold the "behind" banner."""
+    name = _waiting(tokens, "load", due=clock.now - timedelta(minutes=50))
+    tokens.update_item(Key={"execution_name": name}, UpdateExpression="REMOVE wait_token")   # can never be signalled
+
+    assert make().run()["healthy"] is True
+
+    row = _row(tokens, name)
+    assert (row[att.DUE], row["attempts"]) == (format_utc(clock.now + timedelta(minutes=10)), 1)
+    assert _row(tokens, sweep.HEALTH_KEY)["oldest_overdue"] == ""
+
+
 def test_every_page_of_due_rows_is_read(make, tokens, clock, mocker):
     # One shard, one row per page.
     names = [_waiting(tokens, f"t{i}", due=clock.now - timedelta(minutes=i + 1)) for i in range(3)]
@@ -196,7 +209,7 @@ def _adoption_done(tokens, clock) -> None:
     """The engine row of a stack whose adoption finished long ago."""
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "adoption_generation": sweep.ADOPTION_GENERATION,
                           "adopt_tasks_cursor": "", "adopt_tasks_until": format_utc(clock.now - timedelta(days=1)),
-                          "adopt_facts_cursor": "", "adopt_facts_done": True})
+                          "adopt_facts_cursor": "", "adopt_facts_until": format_utc(clock.now - timedelta(days=1))})
 
 
 @pytest.mark.parametrize("flag", [False, None])          # resumed, or never paused at all
@@ -547,6 +560,27 @@ def test_a_catch_up_cut_short_by_the_budget_goes_on_from_its_cursor(make, tokens
     assert "catchup_cursor" not in _row(tokens, sweep.HEALTH_KEY)
 
 
+def test_a_catch_up_cut_short_inside_one_asset_goes_on_after_its_last_replayed_fact(
+        make, tokens, asset_events, pushed, sfn, clock, registry):
+    """An asset with more facts than one run can replay still finishes, over several runs."""
+    import json
+
+    registry.put_item(Item={"pipeline_name": "pushed", "asset_schedule": json.dumps({"operator": "OR", "assets": ["ns/a"]})})
+    times = [f"2026-11-12T0{h}:00:00.000Z" for h in (3, 4, 5)]
+    for event_time in times:
+        asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time=event_time))
+    ticks = iter([0.0, 0.0, 0.0, 0.0, 10_000.0])     # the run's deadline, the asset, two facts, the third past it
+
+    first = make(monotonic=lambda: next(ticks, 10_000.0)).run()
+
+    assert (first["catch_up"], first["facts_replayed"]) == ("partial", 2)
+    assert _row(tokens, sweep.HEALTH_KEY)["catchup_within"] == {"asset": "ns/a", "after": times[1]}
+    second = make().run()
+    assert (second["catch_up"], second["facts_replayed"]) == ("done", 1)
+    assert "catchup_within" not in _row(tokens, sweep.HEALTH_KEY)
+    assert len(sfn.started) == 3                    # one OR run per fact, none twice
+
+
 def test_failed_catch_up_bookkeeping_only_means_starting_over(make, tokens, pushed, mocker):
     from coordination_testkit import client_error
 
@@ -607,6 +641,19 @@ def test_the_task_scan_repeats_for_an_hour_then_stops(make, tokens, clock):
     assert make().run()["tasks_adopted"] == 0
 
 
+def test_the_fact_scan_repeats_for_an_hour_then_stops(make, asset_events, clock):
+    """A fact an old run_task definition writes during the stack update still gets its partition fields."""
+    from coordination_testkit import legacy_fact
+
+    make().run()
+    clock.now += timedelta(minutes=30)
+    asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+    assert make().run()["facts_adopted"] == 1
+    clock.now += timedelta(minutes=31)
+    asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time="2026-11-12T06:00:00.000Z"))
+    assert make().run()["facts_adopted"] == 0
+
+
 def test_a_new_adoption_generation_scans_again(make, tokens, clock, monkeypatch):
     make().run()
     clock.now += timedelta(hours=2)
@@ -657,12 +704,12 @@ def test_adoption_resumes_from_its_cursors(make, tokens, asset_events, clock, mo
 
     run.adopt(deadline=1.0)
     health = _row(tokens, sweep.HEALTH_KEY)
-    assert health["adopt_tasks_cursor"] and health["adopt_facts_cursor"] and not health["adopt_facts_done"]
+    assert health["adopt_tasks_cursor"] and health["adopt_facts_cursor"] and not health["adopt_facts_until"]
 
     run.adopt(deadline=1.0)                              # the budget lasts now: both scans finish
     assert len([i for i in tokens.scan()["Items"] if i["execution_name"].startswith("t") and att.KEY in i]) == 3
     assert all("partition_date" in i for i in asset_events.scan()["Items"])
-    assert _row(tokens, sweep.HEALTH_KEY)["adopt_facts_done"] is True
+    assert _row(tokens, sweep.HEALTH_KEY)["adopt_facts_until"] == format_utc(clock.now + sweep.ADOPTION_REPEAT)
 
 
 def test_an_adoption_that_lost_a_race_counts_nothing(make, tokens, asset_events, mocker):
@@ -706,8 +753,40 @@ def test_the_self_check_reports_what_the_console_reads(make, tokens, clock):
 
     health = _row(tokens, sweep.HEALTH_KEY)
     assert (health["checked_at"], health["fanout_mapping"], health["stream"]) == (format_utc(clock.now), "Enabled", "ENABLED")
+    assert (health["fanout_result"], health["failed_steps"]) == ("OK", [])
     assert (health["oldest_overdue"], health["push_retry_backlog"]) == ("", 1)
     assert sweep.engine_problems(health, clock.now) == []
+
+
+def test_a_mapping_whose_last_call_failed_is_reported(make, tokens, clock):
+    assert make(lambda_client=FakeLambda(result="PROBLEM: Function call failed")).run()["healthy"] is False
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert sweep.engine_problems(health, clock.now) == [
+        "Asset events are not delivered: the stream mapping's last call failed (PROBLEM: Function call failed)."]
+
+
+def test_every_step_of_a_run_is_a_method():
+    assert all(callable(getattr(sweeper.Sweeper, step, None)) for step in sweep.STEPS)
+
+
+def test_a_failing_step_skips_neither_the_others_nor_the_self_check(make, tokens, clock, mocker):
+    """Principle #38: the failure reaches the banner, and the next run tries the step again."""
+    from coordination_testkit import client_error
+
+    run = make()
+    mocker.patch.object(run, "catch_up", side_effect=client_error("ThrottlingException", "Query"))
+    adopt = mocker.spy(run, "adopt")
+
+    result = run.run()
+
+    assert adopt.call_count == 1 and result["healthy"] is False
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert health["checked_at"] == format_utc(clock.now)
+    assert [s.split(": ")[0] for s in health["failed_steps"]] == ["catch_up"]
+    [problem] = sweep.engine_problems(health, clock.now)
+    assert problem.startswith("The sweeper could not finish the hourly push catch-up on its last run: ClientError:")
+    assert "ThrottlingException" in problem
+    assert "Item" not in tokens.get_item(Key={"execution_name": sweep.LEASE_KEY})     # released
 
 
 @pytest.mark.parametrize("kind", [att.WAITING, att.PAUSED])

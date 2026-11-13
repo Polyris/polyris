@@ -641,8 +641,11 @@ def run_up(args: argparse.Namespace) -> None:
             _confirm_yes("Continue anyway?")
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        execute_change_set(cfn, stack_name=stack_name, change_set=change_set)
+        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=args.disable_rollback)
     except ChangeSetError as e:
+        if args.disable_rollback:
+            raise UpError(str(e), "Nothing was rolled back (--disable-rollback): fix the cause, then run the "
+                                  "same polyris-up command again.")
         raise UpError(str(e))
     finally:
         stop_narration()
@@ -851,6 +854,9 @@ def build_up_parser() -> argparse.ArgumentParser:
     parser.add_argument("--accept-data-loss", action="store_true",
                         help="Allow a change that replaces or removes a table, bucket, user pool or admin user "
                              "(--yes alone never does)")
+    parser.add_argument("--disable-rollback", action="store_true",
+                        help="If the update fails, keep what it already changed instead of rolling back "
+                             "(for an upgrade whose release notes ask for it)")
     colorize_parser(parser)
     return parser
 

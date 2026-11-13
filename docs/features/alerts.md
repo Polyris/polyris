@@ -27,7 +27,7 @@ A warning shows by the time it was written, so a warning about a run for an old 
 
 ## When coordination itself is unhealthy
 
-A banner under the Console header lists the problems while task coordination is unhealthy: the sweeper has not reported for 15 minutes, asset events are not delivered, or waiting tasks are more than 40 minutes behind their checks. Waiting tasks may not start until it clears. `GET /api/health` reports the same problems in `checks.coordination.problems`.
+A banner under the Console header lists the problems while task coordination is unhealthy: the sweeper has not reported for 15 minutes or could not finish one of its steps, asset events are not delivered, or waiting tasks are more than 40 minutes behind their checks. Waiting tasks may not start until it clears. `GET /api/health` reports the same problems in `checks.coordination.problems`.
 
 ## What to do with one
 

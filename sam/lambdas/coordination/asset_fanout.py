@@ -40,6 +40,9 @@ from stores import FactStore, Registry
 
 #: Stop starting new records with this much of the invocation left.
 RESERVE_MS = 10_000
+#: Inside a record, stop with this much left: the rest are lost hints, which the sweeper's checks and
+#: the hourly push catch-up recover, so one record never times the function out and blocks its shard.
+RECORD_RESERVE_MS = 5_000
 _deserializer = TypeDeserializer()
 
 
@@ -73,8 +76,8 @@ class AssetFanout:
             try:
                 fact = fact_of(record)
                 fact_from_item(fact, declared_granularity="daily")     # a fact nobody could read is poison
-                self.fan_out(fact)
-                self.push(fact)
+                self.fan_out(fact, remaining_ms=remaining_ms)
+                self.push(fact, remaining_ms=remaining_ms)
             except CoordinationTransient as exc:
                 log.error("asset_fanout", "a transient failure; the record is redelivered", sequence=sequence,
                           error=str(exc))
@@ -92,12 +95,18 @@ class AssetFanout:
     def _redeliver(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {"batchItemFailures": [{"itemIdentifier": str(r["dynamodb"]["SequenceNumber"])} for r in records]}
 
-    def fan_out(self, fact: Dict[str, Any]) -> Dict[str, int]:
+    def fan_out(self, fact: Dict[str, Any], *, remaining_ms: Optional[Callable[[], int]] = None) -> Dict[str, int]:
         """Reconcile every task waiting on the fact's asset. Raises only CoordinationTransient."""
         asset = str(fact["asset_name"])
         subscribers = self._subscribers(asset)
         woken = lost = 0
-        for name in subscribers:
+        for index, name in enumerate(subscribers):
+            if remaining_ms is not None and remaining_ms() < RECORD_RESERVE_MS:
+                lost += len(subscribers) - index
+                # Principle #41: a lost hint delays the task; the sweeper re-checks it from facts.
+                log.error("asset_fanout", "time budget reached inside a record; the sweeper re-checks the rest",
+                          asset_name=asset, left=len(subscribers) - index)
+                break
             try:
                 result = self.reconciler.reconcile(name, source="asset_fanout", known_events=[fact])
                 woken += result["action"] == "signalled"
@@ -111,13 +120,18 @@ class AssetFanout:
                  partition_key=str(fact.get("partition_key", fact.get("execution_date", ""))), **counts)
         return counts
 
-    def push(self, fact: Dict[str, Any]) -> Dict[str, int]:
+    def push(self, fact: Dict[str, Any], *, remaining_ms: Optional[Callable[[], int]] = None) -> Dict[str, int]:
         """Start every push consumer the fact completes. Raises only CoordinationTransient."""
         counts = {"consumers": 0, "started": 0}
         if fact.get("cascade") == "none":
             return counts            # a cascade='none' backfill starts no consumer (ADR #57)
         asset = str(fact["asset_name"])
         for row in self._consumers(asset):
+            if remaining_ms is not None and remaining_ms() < RECORD_RESERVE_MS:
+                # The hourly catch-up replays this fact for the consumers not reached (ADR #130 §8).
+                log.error("asset_fanout", "time budget reached inside a record; the catch-up starts the rest",
+                          asset_name=asset, event_time=str(fact.get("event_time", "")))
+                break
             consumer = str(row["pipeline_name"])
             if consumer == str(fact.get("source_dag", "")):
                 continue             # a pipeline never triggers itself

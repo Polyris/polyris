@@ -342,11 +342,31 @@ def test_when_failing_the_task_also_fails_a_warning_remains(reconciler, tokens, 
     assert "Failing the task also failed" in warning(tokens, "coordination")["error"]
 
 
-def test_failing_a_task_whose_token_is_dead_leaves_a_warning(reconciler, tokens, sfn):
-    tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "partition": "daily"}]))
+def test_failing_a_task_whose_token_is_dead_and_names_no_wrapper_leaves_a_warning(reconciler, tokens, sfn):
+    tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "partition": "daily"}],
+                                  wrapper_execution_arn=""))
     sfn.dead_tokens.add("token-load")
     assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "warned"
     assert warning(tokens, "coordination")["error"].endswith("The task token is already dead.")
+
+
+@pytest.mark.parametrize("wrapper,action,status", [
+    ("RUNNING", "consumed", "waiting"),     # a concurrent wake consumed the token: the wrapper owns the status
+    ("ABORTED", "aborted", "aborted"),      # no wrapper is left: a zombie, closed as one
+    (None, "aborted", "aborted"),
+])
+def test_failing_a_task_whose_token_is_dead_checks_its_wrapper(reconciler, tokens, sfn, wrapper, action, status):
+    item = task_row("load", wait_for=[{"asset_name": "ns/orders", "partition": "daily"}])
+    tokens.put_item(Item=item)
+    sfn.dead_tokens.add("token-load")
+    if wrapper:
+        sfn.executions[item["wrapper_execution_arn"]] = wrapper
+
+    result = reconciler.reconcile(LOAD, source="sweeper")
+
+    assert (result["verdict"], result["action"], row(tokens)["status"]) == ("error", action, status)
+    if action == "aborted":
+        assert "Failing the task found its token dead" in warning(tokens, "zombie")["error"]
 
 
 def test_unexpected_failures_never_escape(reconciler, tokens, mocker):

@@ -149,9 +149,16 @@ def wait_for_stack(cfn, *, stack_name: str, waiter: str) -> None:
     )
 
 
-def execute_change_set(cfn, *, stack_name: str, change_set: Dict[str, Any]) -> None:
-    """Execute a ready change set and block until the stack settles."""
-    cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"])
+def execute_change_set(cfn, *, stack_name: str, change_set: Dict[str, Any], disable_rollback: bool = False) -> None:
+    """Execute a ready change set and block until the stack settles.
+
+    With ``disable_rollback`` a failed operation keeps what it already changed
+    (``UPDATE_FAILED``) instead of rolling back, so it can be fixed forward.
+    """
+    if disable_rollback:
+        cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"], DisableRollback=True)
+    else:
+        cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"])
     waiter_name = "stack_create_complete" if change_set.get("ChangeSetType") == "CREATE" else "stack_update_complete"
     try:
         wait_for_stack(cfn, stack_name=stack_name, waiter=waiter_name)

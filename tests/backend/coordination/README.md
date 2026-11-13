@@ -45,9 +45,9 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 |---|---|
 | `deploy(dag)`, `start_run(pipeline, date, **inputs)` | generate the pipeline's ASL and start a run |
 | `complete(run, task, status=)` | finish the user's work for a task |
-| `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact; deliver its stream record separately, so tests choose the interleaving |
+| `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact, by `run_task` or as an older version stored it (`writer="older version"`); deliver its stream record separately, so tests choose the interleaving |
 | `pause`, `resume`, `restart`, `skip`, `mark_success` | operator actions through the console routes |
-| `time_out_registration`, `stop_wrapper_externally`, `inject_failure`, `fail_starts`, `fail_signals`, `fail_invokes` | faults from outside: a timeout, a stop, a refused DynamoDB call, Step Functions start or callback, a Lambda that keeps failing transiently |
+| `time_out_registration`, `stop_wrapper_externally`, `inject_failure`, `fail_starts`, `fail_signals`, `fail_invokes` | faults from outside: a timeout, a stop, a refused DynamoDB call (or, with `after=True`, an applied call whose answer is lost), a Step Functions start or callback, a Lambda that keeps failing (transiently, or with `error="Sandbox.Timedout"` as a timeout) |
 | `hold(machine)`, `release(machine)` | new executions of a platform state machine wait to take a step, to order a race (B-P3) |
 | `sweep()`, `clock.advance(...)` | the safety net and the passing of time; every reading of the clock, by the stack, the Lambdas or the console, moves it on 1 ms |
 | `status`, `row`, `running_tasks`, `signals`, `warnings`, `pipeline_status`, `push_runs` | what a scenario asserts on |

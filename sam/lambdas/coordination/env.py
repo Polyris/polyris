@@ -23,9 +23,24 @@ PIPELINE_EXECUTION_INDEX = "pipeline-execution-index"
 #: consistent read, closing the partition index's propagation lag (ADR #130 §4).
 RECENT_WRITES = timedelta(minutes=15)
 
+#: Every AWS call fails fast, well inside the Lambda's own timeout: botocore's
+#: standard retry mode with three attempts, a 2 s connect and a 5 s read timeout.
+#: Its defaults (ten DynamoDB attempts, a 60 s read) outlast a 30 s reconcile, and
+#: a Lambda that times out cannot report CoordinationTransient (ADR #130 §6.3).
+CLIENT_RETRIES = {"mode": "standard", "total_max_attempts": 3}
+CONNECT_TIMEOUT_SECONDS = 2
+READ_TIMEOUT_SECONDS = 5
+
 _dynamodb = None
 _stepfunctions = None
 _lambda = None
+
+
+def _config():
+    from botocore.config import Config
+
+    return Config(retries=dict(CLIENT_RETRIES), connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                  read_timeout=READ_TIMEOUT_SECONDS)
 
 
 def dynamodb():
@@ -34,7 +49,7 @@ def dynamodb():
     if _dynamodb is None:
         import boto3
 
-        _dynamodb = boto3.resource("dynamodb")
+        _dynamodb = boto3.resource("dynamodb", config=_config())
     return _dynamodb
 
 
@@ -44,7 +59,7 @@ def lambda_():
     if _lambda is None:
         import boto3
 
-        _lambda = boto3.client("lambda")
+        _lambda = boto3.client("lambda", config=_config())
     return _lambda
 
 
@@ -54,5 +69,5 @@ def stepfunctions():
     if _stepfunctions is None:
         import boto3
 
-        _stepfunctions = boto3.client("stepfunctions")
+        _stepfunctions = boto3.client("stepfunctions", config=_config())
     return _stepfunctions

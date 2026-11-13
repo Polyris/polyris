@@ -5,9 +5,10 @@
 The coordination layer changes under running pipelines, so upgrade in a quiet window:
 
 1. **Before.** Disable your pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`) and wait until no task is `running` (the console's Tasks view). Tasks still waiting for dependencies or assets can stay: the new version adopts them and checks them from their facts.
-2. **Upgrade.** Run `polyris-up --profile <profile>`. The same update adds two DynamoDB indexes and lasts as long as they take to build: minutes on small tables, longer on large ones.
+2. **Upgrade.** Run `polyris-up --profile <profile> --disable-rollback`. The same update adds two DynamoDB indexes and lasts as long as they take to build: minutes on small tables, longer on large ones. If it fails, the stack keeps what the update already changed instead of rolling back to 1.1: fix the cause its events name, then run the same command again.
 3. **After.** Enable the schedules again and start, from the console, the runs whose schedule fired during the window. Within about 5 minutes the sweeper reports for the first time; until then the console shows "The sweeper has not reported yet". After that, no banner means task coordination is healthy.
 4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline and the naming of long task ids.
+5. **Runs in flight.** A run that was waiting during the upgrade goes on, more slowly: each of its tasks starts at the sweeper's next check of it, up to 30 minutes after its dependencies finished. A pipeline scheduled on several assets (`schedule=[a, b]`) that the old version started for a date is started again for that date if one of those assets records a new fact for it after the upgrade: the new version names its runs differently.
 
 ### Changed — what you notice after upgrading (ADR #130)
 
@@ -22,6 +23,20 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 ### Removed — dead asset helpers in the SDK
 
 - `polyris.assets.Watcher`, `generate_watchers_config`, `get_asset_schedule_info` and the module-level `is_asset_triggered` had no caller. The first two described an SQS watcher that was never built; the last two built an EventBridge pattern for asset events that polyris no longer publishes. `DAG.is_asset_triggered` stays.
+
+### Added — `polyris-up --disable-rollback`
+
+- A failed update keeps what it already changed (`UPDATE_FAILED`) instead of rolling back, so it can be fixed and run again. The 1.2.0 upgrade uses it.
+
+### Changed — coordination under load and failure (ADR #130)
+
+- One step of the sweeper that fails no longer skips the others or its self-check; the banner names the step. The banner also reports when asset-fanout's last call failed.
+- An asset event with more waiting tasks than one invocation can check no longer blocks the stream: the tasks not reached start at the sweeper's next check, and pipelines scheduled on the asset at the hourly catch-up. The catch-up finishes an asset with many facts over several runs.
+- A waiting task whose check changes nothing, for example one that warns, is checked again 10, 20, then every 30 minutes, instead of every 5 minutes with a new warning each time and the "behind" banner. A task whose decision fails and whose wrapper is gone is closed as `aborted`, with a `zombie` warning.
+- Registration leaves a task to the sweeper when the reconciler times out or crashes, instead of failing it, and retries what it sends to the task's wrapper.
+- The coordination functions' AWS calls give up within their timeouts (three attempts, a 2 s connect and a 5 s read timeout), and any AWS server error counts as transient.
+- After an upgrade, older asset facts get their partition fields for one hour, not only once, like waiting tasks.
+- Resume checks a run's waiting tasks for 10 seconds, down from 20, so the console's call answers within the API's 30-second limit; the sweeper checks the rest on its next run.
 
 ### Fixed — findings of the coordination review (ADR #130, B-W1, B-U2, B-F2, B-M2)
 

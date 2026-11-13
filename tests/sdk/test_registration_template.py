@@ -15,8 +15,9 @@ from sfn_jsonata import NOW, evaluate, load_template
 from polyris.coordination import attention, wake
 from polyris.coordination.times import format_utc
 
+#: A Lambda timeout (Sandbox.Timedout) or crash (Lambda.Unknown) leaves the saved row to the sweeper too.
 TRANSIENT = {"Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException",
-             "Lambda.TooManyRequestsException", wake.TRANSIENT_ERROR}
+             "Lambda.TooManyRequestsException", "Lambda.Unknown", "Sandbox.Timedout", wake.TRANSIENT_ERROR}
 
 
 @pytest.fixture(scope="module")
@@ -135,6 +136,15 @@ def test_the_task_fails_with_the_coordination_error(template):
     fail = template["States"]["Fail_Task"]
     assert fail["Resource"].endswith(":sfn:sendTaskFailure")
     assert fail["Arguments"]["Error"] == wake.COORDINATION_ERROR
+
+
+def test_every_send_to_the_wrapper_is_retried_before_it_gives_up(template):
+    """A throttled send is not a lost signal: after a lost row, Fail_Task is all that can reach the wrapper."""
+    sends = {name: state for name, state in template["States"].items()
+             if state.get("Resource", "").endswith((":sfn:sendTaskSuccess", ":sfn:sendTaskFailure"))}
+    assert set(sends) == {"Signal_Root_Task", "Signal_Superseded", "Fail_Task"}
+    for name, state in sends.items():
+        assert any("States.ALL" in retry["ErrorEquals"] for retry in state.get("Retry", [])), name
 
 
 def test_every_task_state_catches_everything(template):

@@ -384,9 +384,10 @@ class World:
 
         runtime.stop_execution = stop_execution
 
-    def fail_invokes(self, function: str, *, times: int) -> None:
-        """The next `times` invocations of a platform function (logical id) by a state machine
-        fail with CoordinationTransient, the error its Lambda reports for a transient failure."""
+    def fail_invokes(self, function: str, *, times: int, error: str = "CoordinationTransient") -> None:
+        """The next `times` invocations of a platform function (logical id) by a state machine fail
+        with `error`: CoordinationTransient, the error its Lambda reports for a transient failure,
+        or what Step Functions reports for the Lambda itself, such as Sandbox.Timedout for a timeout."""
         from failures import CoordinationTransient
 
         name = self.stack.functions[function]
@@ -395,7 +396,11 @@ class World:
         def handler(event: Any, context: Any) -> Any:
             if left[0] > 0:
                 left[0] -= 1
-                raise CoordinationTransient("throttled (injected)")
+                if error == "CoordinationTransient":
+                    raise CoordinationTransient("throttled (injected)")
+                failure = RuntimeError(f"{error} (injected)")
+                failure.states_error = error  # type: ignore[attr-defined]
+                raise failure
             return real(event, context)
 
         self.runtime.lambdas[name] = handler

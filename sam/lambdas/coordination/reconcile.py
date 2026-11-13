@@ -45,8 +45,10 @@ from stores import FactStore, PauseFlag, Registry, SubscriptionStore, TaskStore
 SIGNALS = {dc.READY: wake.DEPS_READY, dc.SKIP: wake.DEPS_SKIP, dc.UPSTREAM_FAILED: wake.DEPS_BLOCKED}
 #: Verdict reported when no decision could be made.
 ERROR = "error"
-#: Resume handles a run's rows for this long, then leaves the rest due for the sweeper.
-RESUME_BUDGET_SECONDS = 20.0
+#: Resume handles a run's rows for this long, then leaves the rest due for the sweeper. The console's
+#: resume call must answer within the HTTP API's 30 s: the pause releases before this call, a cold
+#: start and the deferral writes after the budget share the rest.
+RESUME_BUDGET_SECONDS = 10.0
 
 
 def _utc_now() -> datetime:
@@ -286,14 +288,18 @@ class Reconciler:
             return self._decided(row, source, decision, "alive")
         return self._abort_zombie(row, token, decision, source, wrapper)
 
-    def _abort_zombie(self, row: Dict[str, Any], token: str, decision: dc.Decision, source: str,
-                      wrapper: Optional[str]) -> Dict[str, Any]:
+    def _abort_zombie(self, row: Dict[str, Any], token: str, decision: Optional[dc.Decision], source: str,
+                      wrapper: Optional[str], *, cause: str = "") -> Dict[str, Any]:
+        """Close a row whose wrapper is gone; `decision` is None when the decision itself failed with `cause`."""
         name, started_at, now = str(row["execution_name"]), str(row.get("started_at")), self.clock()
         reason = f"the wrapper execution is {wrapper or 'gone'}, so the task can no longer be woken"
+        if cause:
+            reason = f"{cause}. Failing the task found its token dead, and {reason}"
         closed = _aws(lambda: self.tasks.close_aborted(name, token, started_at, reason, now=now))
         if closed:
             self._warn(row, "zombie", reason)
-        return self._result(row, source, decision.verdict, "aborted" if closed else "superseded", (reason,), decision)
+        verdict = decision.verdict if decision is not None else ERROR
+        return self._result(row, source, verdict, "aborted" if closed else "superseded", (reason,), decision)
 
     def _fail_task(self, row: Dict[str, Any], token: str, exc: BaseException, source: str) -> Dict[str, Any]:
         """ADR #130 §3 step 5: fail the task with the real cause."""
@@ -307,8 +313,16 @@ class Reconciler:
             self._warn(row, "coordination", f"{cause}. Failing the task also failed: {fail_exc}")
             return self._result(row, source, ERROR, "warned", (cause,))
         if outcome != ACCEPTED:
-            self._warn(row, "coordination", f"{cause}. The task token is already dead.")
-            return self._result(row, source, ERROR, "warned", (cause,))
+            arn = str(row.get("wrapper_execution_arn") or "")
+            if not arn:
+                self._warn(row, "coordination", f"{cause}. The task token is already dead.")
+                return self._result(row, source, ERROR, "warned", (cause,))
+            wrapper = _aws(lambda: self.signals.execution_status(arn))
+            if wrapper == "RUNNING":
+                # A concurrent wake consumed the token; the wrapper owns the status now.
+                return self._result(row, source, ERROR, "consumed", (cause,))
+            # No wrapper is left to fail: the row is a zombie, closed like one (ADR #130 §3 step 3).
+            return self._abort_zombie(row, token, None, source, wrapper, cause=cause)
         return self._result(row, source, ERROR, "failed_task", (cause,))
 
     def _unexpected(self, row: Dict[str, Any], source: str, exc: BaseException) -> Dict[str, Any]:

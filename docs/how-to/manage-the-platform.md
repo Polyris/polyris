@@ -13,6 +13,8 @@ polyris-up
 
 It updates the stack in place and keeps its settings. With nothing new it reports "already up to date". An older polyris won't roll back a newer platform unless you pass `--allow-downgrade`.
 
+When the release notes ask for it, add `--disable-rollback`. A failed update then keeps what it already changed instead of rolling back; fix the cause its events name and run the same command again.
+
 If a change would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user, `polyris-up` lists it and asks before continuing. Without a terminal (CI) it stops unless you pass `--accept-data-loss`; `--yes` never covers data loss.
 
 ## Change a setting

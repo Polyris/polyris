@@ -526,10 +526,12 @@ def test_two_runs_of_one_task_wake_independently(world):
     assert world.running_tasks(first) == ["load"]
 
 
-def test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper(world):
+@defect("B-G2")
+@pytest.mark.parametrize("error", ["CoordinationTransient", "Sandbox.Timedout", "Lambda.Unknown"])
+def test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper(world, error):
     world.write_event(A, DATE)              # the asset is there before the run starts
     world.deliver_hints()
-    world.fail_invokes("ReconcileFunction", times=20)       # every retry of registration's call fails
+    world.fail_invokes("ReconcileFunction", times=20, error=error)   # every retry of registration's call fails
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     assert (world.status(run, "consumer"), world.running_tasks(run)) == ("waiting", [])
     world.sweep()

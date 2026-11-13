@@ -136,6 +136,25 @@ def test_records_left_when_time_runs_out_are_redelivered(fanout, asset_events, s
     spy.assert_not_called()
 
 
+def test_a_record_that_runs_out_of_time_leaves_the_rest_to_the_sweeper_and_moves_on(
+        fanout, tokens, subscriptions, consumers, registry, asset_events, stream, sfn, mocker):
+    """One record with more waiters than fit in the invocation never blocks its shard (Principle #41)."""
+    import json
+
+    for task in ("audit", "load", "report"):
+        _waiting(tokens, subscriptions, task)
+    registry.put_item(Item={"pipeline_name": "pushed", "asset_schedule": json.dumps({"operator": "OR", "assets": ["ns/orders"]})})
+    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN})
+    asset_events.put_item(Item=fact("ns/orders", DATE))
+    left = iter([60_000, 60_000, 60_000, asset_fanout.RECORD_RESERVE_MS - 1])   # the record, two waiters, then out
+    fan_out = mocker.spy(fanout, "fan_out")
+
+    assert fanout.handle(stream(), lambda: next(left, 0)) == {"batchItemFailures": []}
+
+    assert fan_out.spy_return == {"subscribers": 3, "woken": 2, "lost": 1}
+    assert len(sfn.succeeded) == 2 and sfn.started == []           # the push waits for the hourly catch-up
+
+
 def test_subscription_pages_are_followed(fanout, mocker):
     pages = [{"Items": [{"subscriber": "a"}], "LastEvaluatedKey": {"k": 1}}, {"Items": [{"subscriber": "b"}]}]
     query = mocker.patch.object(fanout.subscriptions, "query", side_effect=pages)

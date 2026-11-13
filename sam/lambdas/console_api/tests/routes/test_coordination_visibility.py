@@ -124,6 +124,20 @@ def test_a_stale_report_degrades_the_api_and_names_the_problem(tokens, mocker):
     assert body["checks"]["coordination"]["problems"][0].startswith("The sweeper last reported 30 minutes ago")
 
 
+def test_a_failed_sweeper_step_degrades_the_api_and_is_shown(tokens, mocker):
+    tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
+                          "fanout_mapping": "Enabled", "fanout_result": "OK", "stream": "ENABLED",
+                          "oldest_overdue": "", "failed_steps": ["catch_up: ClientError: throttled"]})
+
+    _, body = _health(mocker, tokens)
+
+    coordination = body["checks"]["coordination"]
+    assert coordination["problems"] == [
+        "The sweeper could not finish the hourly push catch-up on its last run: ClientError: throttled"]
+    assert (coordination["report"]["fanout_result"], coordination["report"]["failed_steps"]) == (
+        "OK", ["catch_up: ClientError: throttled"])
+
+
 def test_no_report_yet_is_named_too(tokens, mocker):
     _, body = _health(mocker, tokens)
     assert body["checks"]["coordination"]["problems"] == [

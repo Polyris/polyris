@@ -180,6 +180,11 @@ PROBES: Tuple[Probe, ...] = (
                         '"subscribed_at = if_not_exists(subscribed_at, :now)"',
                         '"subscribed_at = :now"'),),
           f"{SCENARIOS}::test_a_consumer_registered_again_keeps_its_subscription_time"),
+    # A Lambda timeout that is not a transient error fails the task although its row is saved.
+    Probe("B-G2", (Edit("sam/sfn_templates/helpers/registration/sfn.tpl.json",
+                        '"Sandbox.Timedout",\n            "CoordinationTransient"\n          ],\n          "Comment": "Transient after retries',
+                        '"CoordinationTransient"\n          ],\n          "Comment": "Transient after retries'),),
+          f"{SCENARIOS}::test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper[Sandbox.Timedout]"),
     # Without the warning a fact Mark Successful could not record leaves no trace but a log line.
     Probe("B-M2", (Edit("sam/lambdas/console_api/routes/tasks.py",
                         "        _warn_fact_not_recorded(item, task_name, asset_name, error)\n",

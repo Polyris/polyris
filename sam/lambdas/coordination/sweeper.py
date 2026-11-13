@@ -23,13 +23,12 @@ import json
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from coordination_core import attention as att
-from coordination_core import decide as dc
 from coordination_core import sweep
 from coordination_core.partition import partition_date
 from coordination_core.records import FACT_VERSION, fact_from_item, warning_item
@@ -44,7 +43,8 @@ from signals import DEAD
 from stores import Registry
 
 #: The reconciler's actions after which a row is still waiting and due again.
-_STILL_WAITING = {"none", "parked", "alive", "superseded"}
+#: A failed step's error is cut to this length in `_engine_health`; its log line keeps all of it.
+_FAILURE_CHARS = 500
 
 
 class Sweeper:
@@ -69,13 +69,17 @@ class Sweeper:
             log.info("sweeper", "another run holds the lease")
             return {"skipped": "lease held"}
         deadline = self.monotonic() + sweep.BUDGET.total_seconds()
+        result: Dict[str, Any] = {}
+        failed: List[str] = []
         try:
-            result = self.due_rows(deadline=deadline)
-            result.update(self.paused_rows(deadline=deadline))
-            result.update(self.push_retries(deadline=deadline))
-            result.update(self.catch_up(deadline=deadline))
-            result.update(self.adopt(deadline=deadline))
-            result.update(self.self_check())
+            for step in sweep.STEPS:
+                try:
+                    result.update(getattr(self, step)(deadline=deadline))
+                except Exception as exc:  # noqa: BLE001 — Principle #38: the failure reaches the console banner
+                    # One failing step must not skip the others or the self-check; the next run tries it again.
+                    failed.append(f"{step}: {type(exc).__name__}: {exc}"[:_FAILURE_CHARS])
+                    log.error("sweeper", "a step failed; the next run tries it again", step=step, error=str(exc))
+            result.update(self.self_check(failed_steps=failed))
         finally:
             self._release_lease()
         log.info("sweeper", "done", **result)
@@ -130,7 +134,10 @@ class Sweeper:
                 counts["woken"] += 1
                 if self._missed(row, result):
                     counts["missed"] += 1
-            elif result["verdict"] in (dc.WAIT, dc.PAUSED) and result["action"] in _STILL_WAITING:
+            else:
+                # Still waiting, or an outcome that changed nothing (a warning, a consumed token): the next check
+                # backs off, so the row is not re-warned every run and does not hold the "behind" banner. For a
+                # row that left the index meanwhile, the conditional write is a no-op.
                 self._due_again(row, now)
         return counts
 
@@ -310,9 +317,10 @@ class Sweeper:
         """
         now = self.reconciler.clock()
         health = self.tasks.get(sweep.HEALTH_KEY) or {}
-        cursor = str(health.get("catchup_cursor", ""))
+        cursor = str(health.get("catchup_cursor", ""))            # the last asset finished
+        within = health.get("catchup_within") or {}                # how far the next asset got
         last = parse_utc(str(health["catchup_at"])) if health.get("catchup_at") else None
-        if not cursor and not sweep.catch_up_due(now, last):
+        if not cursor and not within and not sweep.catch_up_due(now, last):
             return {"catch_up": "not due"}
         since = format_utc(now - sweep.CATCH_UP_WINDOW)
         replayed = 0
@@ -320,12 +328,20 @@ class Sweeper:
             if asset <= cursor:
                 continue
             if self.monotonic() >= deadline:
-                self._save_catch_up(cursor=cursor)
+                self._save_catch_up(cursor=cursor, within=within or None)
                 return {"catch_up": "partial", "facts_replayed": replayed}
+            after = str(within.get("after", "")) if within.get("asset") == asset else ""
             for fact in self._recent_facts(asset, since):
+                event_time = str(fact["event_time"])
+                if event_time <= after:
+                    continue                                   # replayed by the run that stopped here
+                if self.monotonic() >= deadline:
+                    self._save_catch_up(cursor=cursor, within={"asset": asset, "after": after} if after else None)
+                    return {"catch_up": "partial", "facts_replayed": replayed}
                 if fact.get("fact_version") == FACT_VERSION:
                     self.fanout.push(fact)
                     replayed += 1
+                after = event_time
             cursor = asset
         self._save_catch_up(done_at=now)
         return {"catch_up": "done", "facts_replayed": replayed}
@@ -352,11 +368,15 @@ class Sweeper:
                 return
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
-    def _save_catch_up(self, *, cursor: str = "", done_at: Optional[datetime] = None) -> None:
+    def _save_catch_up(self, *, cursor: str = "", within: Optional[Dict[str, str]] = None,
+                       done_at: Optional[datetime] = None) -> None:
+        values: Dict[str, Any]
         if done_at is not None:
-            update, values = "SET catchup_at = :at REMOVE catchup_cursor", {":at": format_utc(done_at)}
+            update, values = "SET catchup_at = :at REMOVE catchup_cursor, catchup_within", {":at": format_utc(done_at)}
+        elif within:
+            update, values = "SET catchup_cursor = :c, catchup_within = :w", {":c": cursor, ":w": within}
         else:
-            update, values = "SET catchup_cursor = :c", {":c": cursor}
+            update, values = "SET catchup_cursor = :c REMOVE catchup_within", {":c": cursor}
         try:
             self.tasks.table.update_item(Key={"execution_name": sweep.HEALTH_KEY}, UpdateExpression=update,
                                          ExpressionAttributeValues=values)
@@ -368,37 +388,43 @@ class Sweeper:
     # ── adoption ────────────────────────────────────────────────────────
 
     def adopt(self, *, deadline: float) -> Dict[str, Any]:
-        """Bring rows an older platform version wrote into the new model (ADR #130 §8 step 6).
+        """Bring rows an older platform version wrote into the new model (ADR #130 §8 step 5).
 
         Two resumable scans, kept in `_engine_health` with the adoption
         generation they serve: waiting task rows get an attention entry, due
         now, so the sweeper reconciles them from their facts; facts get their
-        partition fields (a MODIFY, which the INSERT-only stream ignores). The
-        task scan repeats for an hour after it first finishes.
+        partition fields (a MODIFY, which the INSERT-only stream ignores). Each
+        scan repeats for an hour after it first finishes: the old definitions
+        may still write rows and facts while the stack update runs.
         """
         now = self.reconciler.clock()
         health = self.tasks.get(sweep.HEALTH_KEY) or {}
         if int(health.get("adoption_generation", 0)) != sweep.ADOPTION_GENERATION:
-            health = {"adopt_tasks_cursor": "", "adopt_tasks_until": "", "adopt_facts_cursor": "", "adopt_facts_done": False}
-        state = {k: health.get(k, "" if k != "adopt_facts_done" else False) for k in
-                 ("adopt_tasks_cursor", "adopt_tasks_until", "adopt_facts_cursor", "adopt_facts_done")}
+            health = {}
+        state = {k: str(health.get(k, "")) for k in
+                 ("adopt_tasks_cursor", "adopt_tasks_until", "adopt_facts_cursor", "adopt_facts_until")}
         counts = {"tasks_adopted": 0, "facts_adopted": 0}
-        until = str(state["adopt_tasks_until"])
-        if state["adopt_tasks_cursor"] or not until or now < parse_utc(until):
-            cursor, finished = self._scan(self.tasks.table, self._task_filter(), str(state["adopt_tasks_cursor"]),
-                                          self._adopt_task, counts, "tasks_adopted", deadline)
-            state["adopt_tasks_cursor"] = cursor
-            if finished and not until:
-                state["adopt_tasks_until"] = format_utc(now + sweep.ADOPTION_REPEAT)
-        if not state["adopt_facts_done"] and self.monotonic() < deadline:
+        self._adopt_scan(state, "tasks", now, lambda cursor: self._scan(
+            self.tasks.table, self._task_filter(), cursor, self._adopt_task, counts, "tasks_adopted", deadline))
+        if self.monotonic() < deadline:
             registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
-            cursor, finished = self._scan(self.facts, {"FilterExpression": "attribute_not_exists(partition_date)"},
-                                          str(state["adopt_facts_cursor"]),
-                                          lambda item: self._adopt_fact(item, registry), counts, "facts_adopted",
-                                          deadline)
-            state["adopt_facts_cursor"], state["adopt_facts_done"] = cursor, finished
+            self._adopt_scan(state, "facts", now, lambda cursor: self._scan(
+                self.facts, {"FilterExpression": "attribute_not_exists(partition_date)"}, cursor,
+                lambda item: self._adopt_fact(item, registry), counts, "facts_adopted", deadline))
         self._save_health({"adoption_generation": sweep.ADOPTION_GENERATION, **state})
         return counts
+
+    @staticmethod
+    def _adopt_scan(state: Dict[str, str], name: str, now: datetime,
+                    scan: Callable[[str], Tuple[str, bool]]) -> None:
+        """Go on from the scan's cursor, or start it over while its hour of repeats lasts."""
+        cursor, until = state[f"adopt_{name}_cursor"], state[f"adopt_{name}_until"]
+        if not cursor and until and now >= parse_utc(until):
+            return
+        cursor, finished = scan(cursor)
+        state[f"adopt_{name}_cursor"] = cursor
+        if finished and not until:
+            state[f"adopt_{name}_until"] = format_utc(now + sweep.ADOPTION_REPEAT)
 
     @staticmethod
     def _task_filter() -> Dict[str, Any]:
@@ -482,15 +508,18 @@ class Sweeper:
 
     # ── self-check ──────────────────────────────────────────────────────
 
-    def self_check(self) -> Dict[str, Any]:
+    def self_check(self, failed_steps: Sequence[str] = ()) -> Dict[str, Any]:
         """Write what the console's health check reads into `_engine_health` (ADR #130 §9)."""
         now = self.reconciler.clock()
+        mapping_state, mapping_result = self._mapping()
         report = {
             "checked_at": format_utc(now),
-            "fanout_mapping": self._mapping_state(),
+            "fanout_mapping": mapping_state,
+            "fanout_result": mapping_result,
             "stream": self._stream_state(),
             "oldest_overdue": self._oldest_due(now),
             "push_retry_backlog": self._backlog(),
+            "failed_steps": list(failed_steps),
         }
         self._save_health(report)
         problems = sweep.engine_problems(report, now)
@@ -498,13 +527,16 @@ class Sweeper:
             log.error("sweeper", "the coordination engine is unhealthy", problems=problems)
         return {"healthy": not problems}
 
-    def _mapping_state(self) -> str:
+    def _mapping(self) -> Tuple[str, str]:
+        """The stream mapping's State and LastProcessingResult."""
         client = self.lambda_client or env.lambda_()
         try:
             mappings = client.list_event_source_mappings(FunctionName=self.fanout_function)["EventSourceMappings"]
         except (ClientError, BotoCoreError) as exc:
-            return f"unknown ({error_code(exc) or type(exc).__name__})"
-        return str(mappings[0].get("State", "unknown")) if mappings else "missing"
+            return f"unknown ({error_code(exc) or type(exc).__name__})", ""
+        if not mappings:
+            return "missing", ""
+        return str(mappings[0].get("State", "unknown")), str(mappings[0].get("LastProcessingResult", ""))
 
     def _stream_state(self) -> str:
         try:

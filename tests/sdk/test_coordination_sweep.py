@@ -43,6 +43,8 @@ def _health(**fields):
 def test_a_fresh_report_with_everything_enabled_is_healthy():
     assert sweep.engine_problems(_health(), STARTED) == []
     assert sweep.engine_problems(_health(oldest_overdue="2026-11-12T04:30:00.000Z"), STARTED) == []
+    for result in ("OK", "No records processed", ""):
+        assert sweep.engine_problems(_health(fanout_result=result, failed_steps=[]), STARTED) == []
 
 
 def test_every_way_the_engine_can_be_unhealthy_is_named():
@@ -54,6 +56,19 @@ def test_every_way_the_engine_can_be_unhealthy_is_named():
         "Asset events are not delivered: the stream mapping is Disabled.",
         "Asset events are not recorded for delivery: the table stream is missing.",
         "Waiting tasks are 60 minutes behind their checks.",
+    ]
+
+
+def test_a_mapping_whose_last_call_failed_is_named():
+    assert sweep.engine_problems(_health(fanout_result="PROBLEM: Function call failed"), STARTED) == [
+        "Asset events are not delivered: the stream mapping's last call failed (PROBLEM: Function call failed)."]
+
+
+def test_each_failed_sweeper_step_is_named_in_words():
+    failed = ["catch_up: ClientError: throttled", "adopt: KeyError: 'partition_key'"]
+    assert sweep.engine_problems(_health(failed_steps=failed), STARTED) == [
+        "The sweeper could not finish the hourly push catch-up on its last run: ClientError: throttled",
+        "The sweeper could not finish adopting rows an older version wrote on its last run: KeyError: 'partition_key'",
     ]
 
 

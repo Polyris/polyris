@@ -153,7 +153,7 @@
     },
     "Signal_Root_Task": {
       "Type": "Task",
-      "Comment": "The wrapper writes deps_ready itself when it receives this (ADR #130 §6.4).",
+      "Comment": "The wrapper writes deps_ready itself when it receives this (ADR #130 §6.4). Retried; if it still fails, the row is saved and the sweeper reconciles it.",
       "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
       "Arguments": {
         "TaskToken": "{% $states.input.wait_token %}",
@@ -161,6 +161,17 @@
       },
       "Output": "{% $states.input %}",
       "Next": "Registered",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
@@ -262,6 +273,8 @@
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
             "Lambda.TooManyRequestsException",
+            "Lambda.Unknown",
+            "Sandbox.Timedout",
             "CoordinationTransient"
           ],
           "IntervalSeconds": 2,
@@ -277,6 +290,8 @@
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
             "Lambda.TooManyRequestsException",
+            "Lambda.Unknown",
+            "Sandbox.Timedout",
             "CoordinationTransient"
           ],
           "Comment": "Transient after retries: the row is saved; the sweeper reconciles it from facts.",
@@ -369,7 +384,7 @@
     },
     "Fail_Task": {
       "Type": "Task",
-      "Comment": "Fail the wrapper's wait with the real cause. The error name is never States.*, so the wrapper's Retry cannot turn it into a re-registration; its Catch runs the failure handler.",
+      "Comment": "Fail the wrapper's wait with the real cause. The error name is never States.*, so the wrapper's Retry cannot turn it into a re-registration; its Catch runs the failure handler. Retried: after a lost row nothing else would ever signal the wrapper (Principle #46).",
       "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
       "Arguments": {
         "TaskToken": "{% $states.input.wait_token %}",
@@ -378,6 +393,17 @@
       },
       "Output": "{% $states.input %}",
       "Next": "Registered",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [

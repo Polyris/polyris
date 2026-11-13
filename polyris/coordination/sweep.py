@@ -42,6 +42,17 @@ BEHIND_AFTER = timedelta(minutes=40)
 #: The event source mapping and stream states that deliver facts.
 MAPPING_ENABLED = "Enabled"
 STREAM_ENABLED = "ENABLED"
+#: How the mapping's LastProcessingResult begins when its last call to AssetFanout failed.
+MAPPING_PROBLEM = "PROBLEM"
+#: The steps of one sweeper run, in order, and the words the console uses for them.
+#: A step that fails is reported in `_engine_health`; the others and the self-check still run.
+STEPS = {
+    "due_rows": "re-checking waiting tasks",
+    "paused_rows": "releasing tasks held by a pause",
+    "push_retries": "retrying push starts",
+    "catch_up": "the hourly push catch-up",
+    "adopt": "adopting rows an older version wrote",
+}
 
 
 def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optional[float]) -> datetime:
@@ -83,6 +94,9 @@ def engine_problems(health: Optional[Mapping[str, Any]], now: datetime) -> List[
     mapping = str(health.get("fanout_mapping", ""))
     if mapping != MAPPING_ENABLED:
         problems.append(f"Asset events are not delivered: the stream mapping is {mapping or 'missing'}.")
+    result = str(health.get("fanout_result", ""))
+    if result.startswith(MAPPING_PROBLEM):
+        problems.append(f"Asset events are not delivered: the stream mapping's last call failed ({result}).")
     stream = str(health.get("stream", ""))
     if stream != STREAM_ENABLED:
         problems.append(f"Asset events are not recorded for delivery: the table stream is {stream or 'missing'}.")
@@ -90,6 +104,9 @@ def engine_problems(health: Optional[Mapping[str, Any]], now: datetime) -> List[
     if overdue and now - parse_utc(str(overdue)) > BEHIND_AFTER:
         behind = int((now - parse_utc(str(overdue))).total_seconds() // 60)
         problems.append(f"Waiting tasks are {behind} minutes behind their checks.")
+    for failure in health.get("failed_steps") or []:
+        step, _, error = str(failure).partition(": ")
+        problems.append(f"The sweeper could not finish {STEPS.get(step, step)} on its last run: {error}")
     return problems
 
 

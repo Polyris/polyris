@@ -556,7 +556,9 @@ class Runtime:
         try:
             result = handler(json.loads(json.dumps(payload)), None)
         except Exception as exc:   # noqa: BLE001 — a Lambda error reaches the state under its error type
-            raise StatesError(type(exc).__name__, json.dumps({"errorMessage": str(exc)})) from exc
+            # `states_error` names what Step Functions reports for the Lambda itself, e.g. Sandbox.Timedout.
+            error = getattr(exc, "states_error", None) or type(exc).__name__
+            raise StatesError(error, json.dumps({"errorMessage": str(exc)})) from exc
         try:
             # The Lambda runtime returns JSON; like its marshaller, numbers from DynamoDB become floats.
             return json.loads(json.dumps(result, default=_lambda_json))

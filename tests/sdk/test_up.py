@@ -419,6 +419,32 @@ def test_up_update_keeps_previous_parameters(fake_cfn, s3, tmp_path):
     assert params["EnablePitr"] == "true"
 
 
+def test_up_disable_rollback_keeps_a_failed_update_and_says_how_to_go_on(fake_cfn, s3, tmp_path, capsys, mocker):
+    """ADR #130 D13: an upgrade that fails is fixed forward, so it must not roll back."""
+    from botocore.exceptions import WaiterError
+
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v1.0.0",
+                                         Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])])
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), disable_rollback=True)
+    mocker.patch("polyris.cfn_changeset.wait_for_stack",
+                 side_effect=WaiterError("StackUpdateComplete", "UPDATE_FAILED", {}))
+
+    assert up._run(up.run_up, args) == 1
+
+    [execute] = [kw for name, kw in fake_cfn["cfn"].calls if name == "execute_change_set"]
+    assert execute["DisableRollback"] is True
+    captured = capsys.readouterr()
+    assert "Nothing was rolled back (--disable-rollback)" in captured.out + captured.err
+
+
+def test_up_rolls_back_a_failed_update_by_default(fake_cfn, s3, tmp_path):
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v1.0.0",
+                                         Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])])
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+    [execute] = [kw for name, kw in fake_cfn["cfn"].calls if name == "execute_change_set"]
+    assert "DisableRollback" not in execute
+
+
 def test_up_no_changes(fake_cfn, s3, tmp_path, capsys):
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[])],
                               change_status="FAILED", status_reason="didn't contain changes")

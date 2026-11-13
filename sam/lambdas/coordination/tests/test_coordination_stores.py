@@ -4,7 +4,7 @@ import json
 from datetime import date, timedelta
 
 import pytest
-from botocore.exceptions import EndpointConnectionError, NoCredentialsError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 from coordination_testkit import NOW, STARTED_AT, TABLES, FakeSfn, client_error, fact, task_row
 
 import env
@@ -205,6 +205,8 @@ def test_a_missing_execution_has_no_status():
     (client_error("ServiceUnavailable"), True),
     (client_error("AccessDeniedException"), False),
     (client_error("ValidationException"), False),
+    (ClientError({"Error": {"Code": "SomeNewServerError"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "Op"), True),
+    (ClientError({"Error": {"Code": "AccessDeniedException"}, "ResponseMetadata": {"HTTPStatusCode": 400}}, "Op"), False),
     (EndpointConnectionError(endpoint_url="https://dynamodb"), True),
     (NoCredentialsError(), False),
     (ValueError("x"), False),
@@ -232,3 +234,12 @@ def test_clients_are_created_once(ddb, monkeypatch):
     monkeypatch.setattr(env, "_stepfunctions", None)
     assert env.dynamodb() is env.dynamodb()
     assert env.stepfunctions() is env.stepfunctions()
+
+
+def test_every_client_fails_fast_inside_the_lambda_timeout(ddb, monkeypatch):
+    for name in ("_dynamodb", "_stepfunctions", "_lambda"):
+        monkeypatch.setattr(env, name, None)
+    for client in (env.dynamodb().meta.client, env.stepfunctions(), env.lambda_()):
+        config = client.meta.config
+        assert config.retries == {"mode": "standard", "total_max_attempts": 3}
+        assert (config.connect_timeout, config.read_timeout) == (2, 5)
