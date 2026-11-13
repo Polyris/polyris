@@ -14,7 +14,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
@@ -765,35 +765,46 @@ def _emit_marker_blocked_warn(
         )
 
 
-def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
-    """Look up a single task's node from the pipeline registry's dag_metadata
-    (per ADR #119's unified node builder — includes outlets, and, as of the
-    restart data-loss fix, task_config too). Deploy-time DAG properties like
-    these are never stored on the per-execution DynamoDB record, only here.
+def _read_dag_node(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict], str]:
+    """A task's node from the pipeline registry's dag_metadata, or why it cannot be read.
 
-    Returns None on any failure (registry read, missing entry, malformed
-    dag, or task not found) — callers treat this as best-effort and decide
-    their own fallback.
+    Per ADR #119's unified node builder the node holds the outlets and, as of
+    the restart data-loss fix, task_config too. Deploy-time DAG properties like
+    these are never stored on the per-execution DynamoDB record, only here.
+    Returns ``(node, '')`` on success and ``(None, reason)`` otherwise.
     """
     if not pipeline_name:
-        return None
+        return None, 'the task row names no pipeline'
     try:
         registry_item = pipelines_repo.get(pipeline_name)
-        if not registry_item:
-            return None
+    except (ClientError, BotoCoreError) as e:
+        return None, f'the pipeline registry could not be read: {e}'
+    if not registry_item:
+        return None, f'pipeline {pipeline_name} is not in the registry'
+    try:
         dag_str = registry_item.get('dag', '{}')
         dag = json.loads(dag_str) if isinstance(dag_str, str) else dag_str
-        return next((n for n in dag.get('nodes', []) if n.get('id') == task_name), None)
-    except (json.JSONDecodeError, TypeError, ValueError, AttributeError, ClientError, BotoCoreError) as e:
+        node = next((n for n in dag.get('nodes', []) if n.get('id') == task_name), None)
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as e:
+        return None, f'the registry entry of {pipeline_name} cannot be read: {e}'
+    if node is None:
+        return None, f'task {task_name} is not in the deployed pipeline {pipeline_name}'
+    return node, ''
+
+
+def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
+    """Best-effort ``_read_dag_node``: None on any failure, which is logged; callers choose their fallback."""
+    node, reason = _read_dag_node(pipeline_name, task_name)
+    if reason:
         log.warn("_lookup_dag_node", "Could not read node from registry",
-                 task_name=task_name, pipeline_name=pipeline_name, error=str(e))
-        return None
+                 task_name=task_name, pipeline_name=pipeline_name, error=reason)
+    return node
 
 
 def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     """For Mark Successful specifically, record the facts of this task's
-    outlets, as a normal completion would (ADR #130 §1). Every Mark Successful
-    path calls it: this route and the Slack action.
+    outlets, as a normal completion would (ADR #130 §1). Every path that marks
+    a task successful calls it.
 
     Outlets are a deploy-time DAG property, read from the pipeline registry's
     dag_metadata.nodes (ADR #119). The facts belong to the partition of the
@@ -804,7 +815,11 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     re-check a fact that does not exist. Returns ``{asset: error}``.
     """
     pipeline_name = item.get('pipeline_name', '')
-    node = _lookup_dag_node(pipeline_name, task_name)
+    node, reason = _read_dag_node(pipeline_name, task_name)
+    if reason:
+        # Outlets unknown: whatever facts the task had are missing, so say so (B-M2).
+        _warn_fact_not_recorded(item, task_name, '*', f'its outlets are unknown ({reason})')
+        return {'*': reason}
     outlets = node.get('outlets') if node else None
     if not outlets:
         return {}
@@ -821,14 +836,16 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
 
 
 def _warn_fact_not_recorded(item: Dict, task_name: str, asset_name: str, error: str) -> None:
+    """One `manual` warning per missing fact; asset ``*`` means the task's outlets could not be read."""
     execution_name = str(item.get('execution_name', ''))
+    what = 'no fact was recorded' if asset_name == '*' else f'the fact of asset {asset_name} was not recorded'
     try:
         executions_repo.put(warning_item(
-            kind="manual", execution_name=f"{execution_name}-fact-{asset_name}", task_name=task_name,
+            kind="fact", execution_name=f"{execution_name}-fact-{asset_name}", task_name=task_name,
             pipeline_name=str(item.get('pipeline_name', '')), pipeline_execution=str(item.get('pipeline_execution', '')),
             task_date=str(item.get('date', '')),
-            error=(f"Marked successful, but the fact of asset {asset_name} was not recorded: {error}. "
-                   "Tasks waiting on it for this run's partition keep waiting; restart the task to record it."),
+            error=(f"Marked successful, but {what}: {error}. "
+                   "Tasks waiting on its assets for this run's partition keep waiting; restart the task to record them."),
             now=datetime.now(timezone.utc),
         ))
     except (ClientError, BotoCoreError) as e:

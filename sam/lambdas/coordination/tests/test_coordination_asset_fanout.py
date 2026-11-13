@@ -138,7 +138,8 @@ def test_records_left_when_time_runs_out_are_redelivered(fanout, asset_events, s
 
 def test_a_record_that_runs_out_of_time_leaves_the_rest_to_the_sweeper_and_moves_on(
         fanout, tokens, subscriptions, consumers, registry, asset_events, stream, sfn, mocker):
-    """One record with more waiters than fit in the invocation never blocks its shard (Principle #41)."""
+    """One record with more waiters than fit in the invocation never blocks its shard (Principle #41).
+    Its consumers start first: a missed one waits for the hourly catch-up, a missed waiter only for the sweeper."""
     import json
 
     for task in ("audit", "load", "report"):
@@ -146,13 +147,13 @@ def test_a_record_that_runs_out_of_time_leaves_the_rest_to_the_sweeper_and_moves
     registry.put_item(Item={"pipeline_name": "pushed", "asset_schedule": json.dumps({"operator": "OR", "assets": ["ns/orders"]})})
     consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN})
     asset_events.put_item(Item=fact("ns/orders", DATE))
-    left = iter([60_000, 60_000, 60_000, asset_fanout.RECORD_RESERVE_MS - 1])   # the record, two waiters, then out
+    left = iter([60_000, 60_000, 60_000, 60_000, asset_fanout.RECORD_RESERVE_MS - 1])  # record, consumer, 2 waiters
     fan_out = mocker.spy(fanout, "fan_out")
 
     assert fanout.handle(stream(), lambda: next(left, 0)) == {"batchItemFailures": []}
 
     assert fan_out.spy_return == {"subscribers": 3, "woken": 2, "lost": 1}
-    assert len(sfn.succeeded) == 2 and sfn.started == []           # the push waits for the hourly catch-up
+    assert len(sfn.succeeded) == 2 and len(sfn.started) == 1
 
 
 def test_subscription_pages_are_followed(fanout, mocker):
@@ -271,17 +272,54 @@ def test_a_pipeline_never_triggers_itself(fanout, asset_events, pushed, sfn):
     assert sfn.started == []
 
 
-@pytest.mark.parametrize("schedule", [None, "not json", {"operator": "AND", "assets": []}])
-def test_a_consumer_without_a_readable_schedule_is_reported(fanout, asset_events, consumers, registry, tokens,
-                                                           sfn, schedule):
+def test_a_consumer_with_an_unreadable_schedule_is_reported_and_keeps_its_subscription(
+        fanout, asset_events, consumers, registry, tokens, sfn):
+    """Dropping it would leave a pipeline that never runs again to re-register (ADR #130 §6.1)."""
     consumers.put_item(Item={"asset_name": "ns/a", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN})
-    if schedule is not None:
-        import json
-        registry.put_item(Item={"pipeline_name": "pushed",
-                                "asset_schedule": schedule if isinstance(schedule, str) else json.dumps(schedule)})
+    registry.put_item(Item={"pipeline_name": "pushed", "asset_schedule": "not json"})
     _push(fanout, asset_events, fact("ns/a", DATE))
     assert sfn.started == []
     assert tokens.get_item(Key={"execution_name": "_notify_warn_push_push:pushed"}).get("Item")
+    assert consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"}).get("Item")
+
+
+@pytest.mark.parametrize("registered", [
+    None,                                                   # destroyed: no registry entry
+    {"pipeline_name": "pushed", "asset_schedule": "{}"},    # switched to a cron: registration writes "{}"
+    {"pipeline_name": "pushed"},                            # a registry row without the field
+    {"pipeline_name": "pushed", "asset_schedule": '{"operator": "AND", "assets": ["ns/b"]}'},   # dropped ns/a
+], ids=["destroyed", "cron", "no-field", "asset-dropped"])
+def test_a_subscription_its_pipeline_no_longer_has_starts_nothing_and_is_dropped(
+        fanout, asset_events, consumers, registry, tokens, sfn, registered):
+    """B-U3: a stale subscription starts nothing, warns nothing, and is deleted."""
+    consumers.put_item(Item={"asset_name": "ns/a", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN,
+                             "registered_at": "2026-11-11T05:00:00.000Z"})
+    if registered:
+        registry.put_item(Item=registered)
+    _push(fanout, asset_events, fact("ns/a", DATE))
+    assert sfn.started == []
+    assert "Item" not in tokens.get_item(Key={"execution_name": "_notify_warn_push_push:pushed"})
+    assert "Item" not in consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"})
+
+
+def test_a_subscription_registered_again_meanwhile_is_kept(fanout, consumers, registry, mocker):
+    """The pipeline re-registered between the read and the delete: its row is current."""
+    consumers.put_item(Item={"asset_name": "ns/a", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN,
+                             "registered_at": "2026-11-12T05:00:00.000Z"})
+    stale = {"asset_name": "ns/a", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN,
+             "registered_at": "2026-11-11T05:00:00.000Z"}
+    fanout._drop_subscription(stale, "test")
+    assert consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"}).get("Item")
+
+
+def test_a_row_an_older_sdk_wrote_reacts_only_to_facts_after_its_last_registration(
+        fanout, asset_events, consumers, pushed, sfn):
+    """B-U2 for rows without subscribed_at: registered_at, rewritten on every run, is the cutover."""
+    pushed({"operator": "AND", "assets": ["ns/a"]})
+    consumers.update_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"},
+                          UpdateExpression="SET registered_at = :t", ExpressionAttributeValues={":t": "2026-11-12T05:00:00.000Z"})
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
+    assert sfn.started == []
 
 
 @pytest.mark.parametrize("code,outcome", [
@@ -294,7 +332,15 @@ def test_start_failures(fanout, asset_events, pushed, sfn, tokens, code, outcome
     _push(fanout, asset_events, fact("ns/a", DATE))
     rows = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_")]
     kinds = {"_notify_warn_push": "warning", "_retry_push_": "retry"}
-    assert [next(v for k, v in kinds.items() if r["execution_name"].startswith(k)) for r in rows] or ["nothing"] == [outcome]
+    assert ([next(v for k, v in kinds.items() if r["execution_name"].startswith(k)) for r in rows] or ["nothing"]) == [outcome]
+
+
+def test_a_consumer_whose_state_machine_is_gone_loses_its_subscription(fanout, asset_events, consumers, pushed, sfn):
+    """B-U3: one warning, then nothing: the next fact no longer tries to start it."""
+    pushed({"operator": "AND", "assets": ["ns/a"]})
+    sfn.errors["start_execution"] = client_error("StateMachineDoesNotExist", "StartExecution")
+    _push(fanout, asset_events, fact("ns/a", DATE))
+    assert "Item" not in consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"})
 
 
 def test_a_retry_row_keeps_its_first_failure(fanout, asset_events, pushed, sfn, tokens):
@@ -341,13 +387,27 @@ def test_consumer_pages_and_registry_errors(fanout, mocker):
 
 def test_a_poison_record_is_reported_and_the_shard_moves_on(fanout, tokens, subscriptions, asset_events, stream, sfn):
     _waiting(tokens, subscriptions, "load")
-    asset_events.put_item(Item={"asset_name": "ns/orders", "event_time": "2026-11-12T04:00:00.000Z",
-                                "execution_date": "not-a-partition"})
+    asset_events.put_item(Item={**fact("ns/orders", DATE, event_time="2026-11-12T04:00:00.000Z"),
+                                "execution_date": "not-a-partition", "partition_key": "not-a-partition",
+                                "partition_date": "not-a-partition"})
     asset_events.put_item(Item=fact("ns/orders", DATE, event_time="2026-11-12T04:30:00.000Z"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
     assert sfn.succeeded                         # the good record after it was handled
     warning = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_coordination_record:")]
     assert len(warning) == 1 and "not-a-partition" in warning[0]["error"]
+
+
+def test_a_fact_an_older_version_wrote_is_left_to_adoption(fanout, tokens, subscriptions, asset_events, stream,
+                                                            pushed, sfn):
+    """It started its own consumers when it was written; pushing it again would start them twice."""
+    from coordination_testkit import legacy_fact
+
+    _waiting(tokens, subscriptions, "load")
+    pushed({"operator": "AND", "assets": ["ns/orders"]})
+    asset_events.put_item(Item=legacy_fact("ns/orders", DATE, event_time="2026-11-12T04:00:00.000Z"))
+    assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
+    assert (sfn.started, sfn.succeeded) == ([], [])
+    assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_")]
 
 
 def test_a_raw_transient_error_still_redelivers(fanout, asset_events, stream, mocker):
@@ -362,10 +422,10 @@ def test_one_consumers_failure_does_not_stop_the_others(fanout, asset_events, pu
     pushed({"operator": "AND", "assets": ["ns/a"]}, name="second")
     real = fanout._push_one
 
-    def broken_first(fact, consumer, arn):
-        if consumer == "first":
+    def broken_first(fact, row):
+        if row["pipeline_name"] == "first":
             raise KeyError("sfn_arn")
-        return real(fact, consumer, arn)
+        return real(fact, row)
 
     mocker.patch.object(fanout, "_push_one", side_effect=broken_first)
     _push(fanout, asset_events, fact("ns/a", DATE))

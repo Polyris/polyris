@@ -337,6 +337,9 @@ A budget checked only between batches lets one large item run the function into 
 **53. A Lambda's AWS calls fail inside the Lambda's timeout**
 botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function, and a function that times out cannot report its own transient error, so the caller sees `Sandbox.Timedout`. Build clients with a short retry and timeout config (`env._config` in the coordination Lambdas), and let the caller's `Retry`/`Catch` treat the platform's own failures (`Sandbox.Timedout`, `Lambda.Unknown`) and any HTTP 5xx as transient.
 
+**54. Every resource AWS can tag carries the billing tags**
+The tags are `polyris:namespace`, `polyris:stage` and `polyris:component` (`platform` or `pipeline`), plus `polyris:pipeline` on a pipeline's resources (ADR #132). No other keys. In `sam/template.yaml` the Lambda functions take them from `Globals`, and every other resource spells them; `polyris-deploy` uses `resource_tags.pipeline_tags`. A resource without them is missing from every cost report and IAM condition that selects by them. `tests/sdk/test_resource_tags.py` learns from cfn-lint's resource schemas which types AWS can tag and checks every resource after the SAM transform, so a new resource fails it until it is tagged.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)
@@ -474,7 +477,7 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | Repo | Table suffix | PK | SK | GSIs |
 |------|-------------|----|----|------|
 | `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130) |
-| `dep_subscriptions_repo` | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
+| `subscriptions_repo` (query_subscriptions `qs_dal`) | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
 | `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index`, `asset-partition-index` (sparse, ADR #130) |
 | `task_events_repo` | `task-events` | `task_run_id` | `event_time` | `run-index`, `execution-name-index` |

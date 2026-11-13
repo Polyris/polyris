@@ -70,9 +70,17 @@ def test_a_fact_keeps_its_granularity(repo):
 
 
 def test_rows_without_partition_fields_are_not_read(repo):
-    repo.put({"asset_name": "sales", "event_time": "2026-11-12T05:00:00Z", "execution_date": "2026-11-12"})
+    repo.table.put_item(Item={"asset_name": "sales", "event_time": "2026-11-12T05:00:00Z", "execution_date": "2026-11-12"})
 
     assert list(repo.facts("sales", last=D, first=None)) == []
+
+
+def test_a_fact_that_cannot_be_read_is_skipped_not_fatal(repo):
+    """Principle #51: one bad fact must not fail the page that reads the asset."""
+    good = _fact(repo, "sales", "2026-11-12")
+    repo.table.put_item(Item={**good, "event_time": "2026-11-12T07:00:00.000Z", "granularity": "yearly"})
+
+    assert [f.partition_date for f in repo.facts("sales", last=D, first=None)] == [D]
 
 
 def test_it_feeds_asset_conditions(repo):

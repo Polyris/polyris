@@ -22,6 +22,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
 
 
+#: What a state that invokes a coordination Lambda retries (Principle #53): the Lambda service's own
+#: failures, a function timeout (Sandbox.Timedout) or crash (Lambda.Unknown), and CoordinationTransient.
+LAMBDA_TRANSIENT = frozenset({"Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException",
+                              "Lambda.TooManyRequestsException", "Lambda.Unknown", "Sandbox.Timedout",
+                              "CoordinationTransient"})
+
+
 def load_template(relative_path: str, substitutions: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """A template under sam/sfn_templates; unknown `${...}` placeholders become "0"."""
     values = substitutions or {}

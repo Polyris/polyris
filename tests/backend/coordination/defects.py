@@ -15,6 +15,10 @@ DEFECTS = {
     "B-F2": "One unreadable fact fails every task waiting on its asset",
     "B-W1": "A wrapper claim whose write applied but whose answer was lost ends as superseded: the task never runs",
     "B-U2": "The push catch-up starts a consumer deployed after the facts for those older facts",
+    "B-D1": "A scheduled run of a pipeline with variables gets no date and fails; each task takes the day it "
+            "starts, so a run crossing midnight gets two dates and a 23:59 schedule started late the next day's",
+    "B-U3": "A push subscription outlives what made it: an asset dropped from the schedule, or a pipeline moved to a cron, "
+            "keeps its subscription and gets a warning for every fact",
     "B-O2": "A wrapper a restart replaced registers again and takes the row back: the task runs twice",
     "B-O3": "Registration wakes a pre-upgrade wrapper with deps_ready after an operator's decision: the task runs at once",
     "B-O4": "run_task writes running over an operator's decision whose stops failed: the task runs",

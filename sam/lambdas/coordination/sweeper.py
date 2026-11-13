@@ -92,8 +92,10 @@ class Sweeper:
             self.tasks.table.put_item(
                 Item={"execution_name": sweep.LEASE_KEY, "owner": self.owner,
                       "expires_at": format_utc(now + sweep.LEASE)},
-                ConditionExpression="attribute_not_exists(execution_name) OR expires_at < :now",
-                ExpressionAttributeValues={":now": format_utc(now)},
+                # A resend of our own put, whose answer was lost, must not fail its own condition.
+                ConditionExpression="attribute_not_exists(execution_name) OR expires_at < :now OR #o = :me",
+                ExpressionAttributeNames={"#o": "owner"},
+                ExpressionAttributeValues={":now": format_utc(now), ":me": self.owner},
             )
         except ClientError as exc:
             if is_condition_failed(exc):
@@ -173,7 +175,13 @@ class Sweeper:
         due = parse_utc(str(row[att.DUE]))
         if enabled_at is None or not sweep.primary_path_missed(enabled_at, due):
             return False
-        full = self.tasks.get(str(row["execution_name"])) or row      # the index does not project `date`
+        try:
+            full = self.tasks.get(str(row["execution_name"])) or row  # the index does not project `date`
+        except (ClientError, BotoCoreError) as exc:
+            # The warning goes without the task's date; the rest of the due rows still get their check.
+            log.error("sweeper", "could not read the woken row", execution_name=str(row["execution_name"]),
+                      error=str(exc))
+            full = row
         self._sweeper_warning(full, f"The sweeper woke this task at its check due {format_utc(due)}, but it could "
                                     f"run from {format_utc(enabled_at)}: the wake-up hint was lost on the way.")
         return True
@@ -338,13 +346,25 @@ class Sweeper:
                 if self.monotonic() >= deadline:
                     self._save_catch_up(cursor=cursor, within={"asset": asset, "after": after} if after else None)
                     return {"catch_up": "partial", "facts_replayed": replayed}
-                if fact.get("fact_version") == FACT_VERSION:
+                if fact.get("fact_version") == FACT_VERSION and self._readable(fact):
                     self.fanout.push(fact)
                     replayed += 1
                 after = event_time
             cursor = asset
         self._save_catch_up(done_at=now)
         return {"catch_up": "done", "facts_replayed": replayed}
+
+    @staticmethod
+    def _readable(fact: Dict[str, Any]) -> bool:
+        """Whether the catch-up can replay `fact`. The stream reported an unreadable one when it
+        was recorded; the hourly replay skips it with a log line, not a warning per consumer (Principle #51)."""
+        try:
+            fact_from_item(fact, declared_granularity="daily")
+            return True
+        except (KeyError, TypeError, ValueError) as exc:
+            log.warn("sweeper", "an unreadable fact; the catch-up skips it", asset_name=str(fact.get("asset_name", "")),
+                     event_time=str(fact.get("event_time", "")), error=str(exc))
+            return False
 
     def _subscribed_assets(self) -> set:
         kwargs: Dict[str, Any] = {"ProjectionExpression": "asset_name", "ConsistentRead": True}
@@ -405,12 +425,13 @@ class Sweeper:
                  ("adopt_tasks_cursor", "adopt_tasks_until", "adopt_facts_cursor", "adopt_facts_until")}
         counts = {"tasks_adopted": 0, "facts_adopted": 0}
         self._adopt_scan(state, "tasks", now, lambda cursor: self._scan(
-            self.tasks.table, self._task_filter(), cursor, self._adopt_task, counts, "tasks_adopted", deadline))
+            self.tasks.table, ("execution_name",), self._task_filter(), cursor, self._adopt_task, counts,
+            "tasks_adopted", deadline))
         if self.monotonic() < deadline:
             registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
             self._adopt_scan(state, "facts", now, lambda cursor: self._scan(
-                self.facts, {"FilterExpression": "attribute_not_exists(partition_date)"}, cursor,
-                lambda item: self._adopt_fact(item, registry), counts, "facts_adopted", deadline))
+                self.facts, ("asset_name", "event_time"), {"FilterExpression": "attribute_not_exists(partition_date)"},
+                cursor, lambda item: self._adopt_fact(item, registry), counts, "facts_adopted", deadline))
         self._save_health({"adoption_generation": sweep.ADOPTION_GENERATION, **state})
         return counts
 
@@ -436,20 +457,31 @@ class Sweeper:
             "ExpressionAttributeValues": {f":s{i}": s for i, s in enumerate(statuses)},
         }
 
-    def _scan(self, table: Any, query: Dict[str, Any], cursor: str, adopt: Callable[[Dict[str, Any]], bool],
-              counts: Dict[str, int], counter: str, deadline: float) -> tuple:
-        """Scan from `cursor` until done or out of budget; returns (cursor, finished)."""
-        kwargs = dict(query)
+    def _scan(self, table: Any, keys: Tuple[str, ...], query: Dict[str, Any], cursor: str,
+              adopt: Callable[[Dict[str, Any]], bool], counts: Dict[str, int], counter: str,
+              deadline: float) -> Tuple[str, bool]:
+        """Scan from `cursor` until done or out of budget; returns (cursor, finished).
+
+        The budget is checked before each row (Principle #52): a page of old rows must not run
+        the function past its timeout. The cursor is the key of the last row handled, which
+        DynamoDB takes as the ExclusiveStartKey of the next run.
+        """
+        kwargs: Dict[str, Any] = {**query, "Limit": sweep.ADOPTION_PAGE}
         if cursor:
             kwargs["ExclusiveStartKey"] = json.loads(cursor)
-        while self.monotonic() < deadline:
+        last: Optional[Dict[str, Any]] = kwargs.get("ExclusiveStartKey")
+        while True:
             response = table.scan(**kwargs)
             for item in response.get("Items", []):
+                if self.monotonic() >= deadline:
+                    return (json.dumps(last, default=str) if last else ""), False
                 counts[counter] += adopt(item)
+                last = {key: item[key] for key in keys}
             if "LastEvaluatedKey" not in response:
                 return "", True
-            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
-        return json.dumps(kwargs.get("ExclusiveStartKey", {}), default=str) if "ExclusiveStartKey" in kwargs else "", False
+            last = kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+            if self.monotonic() >= deadline:
+                return json.dumps(last, default=str), False
 
     def _adopt_task(self, item: Dict[str, Any]) -> bool:
         """Give a row the attention entry the new code would have written; due now.
@@ -489,9 +521,16 @@ class Sweeper:
             fact = fact_from_item(item, declared_granularity=declared)
             start = partition_date(key)
         except ValueError as exc:
-            # A row nobody could read is not adopted; asset conditions skip it the same way.
+            # A row nobody could read is not adopted; asset conditions skip it the same way (Principle #51).
             log.error("sweeper", "an old fact cannot be adopted", asset_name=item.get("asset_name"),
                       event_time=item.get("event_time"), error=str(exc))
+            asset, event_time = str(item["asset_name"]), str(item["event_time"])
+            self._put_warning(warning_item(
+                kind="coordination", execution_name=f"adopt:{asset}:{event_time}",
+                task_name=str(item.get("source_task", "")), pipeline_name=str(item.get("source_dag", "")),
+                pipeline_execution="", task_date="", now=self.reconciler.clock(),
+                error=f"The fact of {asset} recorded at {event_time} by an older version cannot be read: {exc}. "
+                      f"Tasks waiting on {asset} do not see it; record the fact again for its partition."))
             return False
         try:
             self.facts.update_item(
@@ -511,21 +550,33 @@ class Sweeper:
     def self_check(self, failed_steps: Sequence[str] = ()) -> Dict[str, Any]:
         """Write what the console's health check reads into `_engine_health` (ADR #130 §9)."""
         now = self.reconciler.clock()
+        failed = list(failed_steps)
         mapping_state, mapping_result = self._mapping()
         report = {
             "checked_at": format_utc(now),
             "fanout_mapping": mapping_state,
             "fanout_result": mapping_result,
             "stream": self._stream_state(),
-            "oldest_overdue": self._oldest_due(now),
-            "push_retry_backlog": self._backlog(),
-            "failed_steps": list(failed_steps),
+            "oldest_overdue": self._reading("oldest_overdue", lambda: self._oldest_due(now), "", failed),
+            "push_retry_backlog": self._reading("push_retry_backlog", self._backlog, 0, failed),
+            "failed_steps": failed,
         }
         self._save_health(report)
         problems = sweep.engine_problems(report, now)
         if problems:
             log.error("sweeper", "the coordination engine is unhealthy", problems=problems)
         return {"healthy": not problems}
+
+    @staticmethod
+    def _reading(name: str, read: Callable[[], Any], neutral: Any, failed: List[str]) -> Any:
+        """One reading of the self-check. A failed one goes to `failed_steps`, so the health row
+        is still written and the banner names it."""
+        try:
+            return read()
+        except (ClientError, BotoCoreError) as exc:
+            failed.append(f"self_check {name}: {type(exc).__name__}: {exc}"[:_FAILURE_CHARS])
+            log.error("sweeper", "a self-check reading failed", reading=name, error=str(exc))
+            return neutral
 
     def _mapping(self) -> Tuple[str, str]:
         """The stream mapping's State and LastProcessingResult."""

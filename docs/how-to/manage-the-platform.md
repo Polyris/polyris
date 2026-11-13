@@ -52,6 +52,16 @@ polyris-up --namespace acme --stage prod --admin-email you@acme.com
 
 With several platforms in one region, name the one you mean: `polyris-up --stack acme-prod`. For pipelines, create `pipelines/config.py` with `polyris-init --project` and set `stack_name` per stage ([CONFIGURATION.md](../reference/CONFIGURATION.md)); then `polyris-deploy --stage prod`.
 
+## Track costs
+
+Every resource polyris creates carries `polyris:` tags ([list](../deployment/INFRASTRUCTURE.md#tags)). To split your AWS bill by them:
+
+1. Sign in to the account that pays the bill: the management account, if you use AWS Organizations.
+2. In the Billing and Cost Management console, open **Cost allocation tags**, select the `polyris:` keys and choose **Activate**. A key is listed once a resource carries it, which can take AWS up to 24 hours.
+3. In Cost Explorer, group or filter by a tag: `polyris:stage` compares your stages, `polyris:component` the platform with your pipelines.
+
+Most orchestration cost is state transitions of the platform's shared state machines, so it counts as `platform`. `polyris:pipeline` covers a pipeline's own state machine, log group and scheduler role.
+
 ## Install from AWS CloudShell
 
 CloudShell already has your console credentials, so you need nothing on your machine. Its built-in Python is 3.9; install a newer one first:

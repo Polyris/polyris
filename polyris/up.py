@@ -625,6 +625,13 @@ def run_up(args: argparse.Namespace) -> None:
     except ChangeSetError as e:
         raise UpError(str(e))
     if change_set is None:
+        status = str((existing or {}).get("StackStatus", ""))
+        if status.endswith("_FAILED"):
+            # A failed update kept with --disable-rollback is not "up to date": nothing new to change
+            # does not mean the resources that failed are fixed.
+            raise UpError(f"Stack {stack_name} is {status} and this release changes nothing more.",
+                          "Retry the failed update in the CloudFormation console (Retry, or Roll back), "
+                          "then run polyris-up again.")
         print(_c(f"\n✅ {stack_name} is already up to date (v{manifest.version}).", BOLD_GREEN))
         _print_outputs(existing or {})
         return
@@ -639,11 +646,13 @@ def run_up(args: argparse.Namespace) -> None:
                 raise UpError("Nothing was changed: this would delete data.",
                               "Re-run with --accept-data-loss if that is intended (--yes does not cover it).")
             _confirm_yes("Continue anyway?")
+    # A first install that fails is removed with polyris-down, so only an update keeps what it changed.
+    keep_on_failure = bool(args.disable_rollback) and existing is not None
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=args.disable_rollback)
+        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=keep_on_failure)
     except ChangeSetError as e:
-        if args.disable_rollback:
+        if keep_on_failure:
             raise UpError(str(e), "Nothing was rolled back (--disable-rollback): fix the cause, then run the "
                                   "same polyris-up command again.")
         raise UpError(str(e))
@@ -856,7 +865,7 @@ def build_up_parser() -> argparse.ArgumentParser:
                              "(--yes alone never does)")
     parser.add_argument("--disable-rollback", action="store_true",
                         help="If the update fails, keep what it already changed instead of rolling back "
-                             "(for an upgrade whose release notes ask for it)")
+                             "(for an upgrade whose release notes ask for it; a first install always rolls back)")
     colorize_parser(parser)
     return parser
 

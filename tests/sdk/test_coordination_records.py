@@ -184,6 +184,12 @@ class TestFactFromItem:
     def test_the_stored_granularity_wins_over_the_declared_one(self):
         assert fact_from_item(fact_item(), declared_granularity="daily").granularity == "weekly"
 
+    @pytest.mark.parametrize("stored", ["20261109", "2026-11-9", "2026-11-09T00"])
+    def test_a_partition_date_outside_yyyy_mm_dd_raises(self, stored):
+        """The index keys facts by YYYY-MM-DD: a fact stored otherwise is unreadable, never silently unreachable."""
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            fact_from_item({**fact_item(), "partition_date": stored})
+
     def test_an_unknown_granularity_raises(self):
         with pytest.raises(ValueError, match="yearly"):
             fact_from_item({**fact_item(), "granularity": "yearly"})

@@ -17,6 +17,7 @@ from constants import Limits
 from coordination_core.asset_conditions import Fact
 from coordination_core.partitions import detect_granularity
 from coordination_core.records import PARTITION_INDEX, asset_fact_item, fact_from_item
+from logger import log
 from utils import scan_all, query_all
 
 #: A fact is keyed by (asset_name, event_time): retry a collision with a later millisecond.
@@ -35,9 +36,6 @@ class AssetEventsRepo:
     @property
     def table(self):
         return dynamodb.Table(self._table_name)
-
-    def put(self, item: dict) -> None:
-        self.table.put_item(Item=item)
 
     def write_fact(self, *, asset_name: str, partition_key: str, granularity: Optional[str], cascade: str,
                    source_dag: str, source_task: str, uri: str, ttl_days: int,
@@ -83,7 +81,9 @@ class AssetEventsRepo:
         index. The index is eventually consistent: a fact written a moment ago
         can be missing, which a page that only displays readiness tolerates.
         Rows written before ADR #130 carry no partition fields and are not in
-        the index.
+        the index. A row that cannot be read is skipped and logged, so one bad
+        fact never fails the page (Principle #51); AssetFanout warned about it
+        in the bell when it was recorded.
         """
         condition = Key('asset_name').eq(asset_name) & (
             Key('partition_date').between(first.isoformat(), last.isoformat())
@@ -97,7 +97,13 @@ class AssetEventsRepo:
         while True:
             response = self.table.query(**kwargs)
             for item in response.get('Items', []):
-                yield fact_from_item(item)
+                try:
+                    fact = fact_from_item(item)
+                except ValueError as exc:
+                    log.warn("assets_repo", "skipping an unreadable fact", asset_name=asset_name,
+                             event_time=str(item.get('event_time', '')), error=str(exc))
+                    continue
+                yield fact
             if 'LastEvaluatedKey' not in response:
                 return
             kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']

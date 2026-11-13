@@ -40,10 +40,10 @@ def tables(mocker):
 
 
 def _warning(tokens, asset):
-    return tokens.get_item(Key={"execution_name": f"_notify_warn_manual_{ITEM['execution_name']}-fact-{asset}"}).get("Item")
+    return tokens.get_item(Key={"execution_name": f"_notify_warn_fact_{ITEM['execution_name']}-fact-{asset}"}).get("Item")
 
 
-def test_a_fact_that_cannot_be_recorded_becomes_a_manual_warning(tables, mocker):
+def test_a_fact_that_cannot_be_recorded_becomes_a_fact_warning(tables, mocker):
     from routes import tasks
 
     def write_fact(*, asset_name, **_):
@@ -55,7 +55,7 @@ def test_a_fact_that_cannot_be_recorded_becomes_a_manual_warning(tables, mocker)
     assert tasks.record_manual_success_facts(dict(ITEM), "extract") == {"lake/sales": "AccessDeniedException"}
 
     warning = _warning(tables, "lake/sales")
-    assert (warning["kind"], warning["task_name"], warning["task_date"]) == ("manual", "extract", "2026-11-12")
+    assert (warning["kind"], warning["task_name"], warning["task_date"]) == ("fact", "extract", "2026-11-12")
     assert "fact of asset lake/sales was not recorded: AccessDeniedException" in warning["error"]
     assert warning["attention"].startswith("warn#")
     assert _warning(tables, "lake/prices") is None            # recorded
@@ -70,3 +70,30 @@ def test_a_row_without_a_date_warns_for_every_outlet(tables, mocker):
     assert set(tasks.record_manual_success_facts(item, "extract")) == {"lake/sales", "lake/prices"}
     write.assert_not_called()
     assert _warning(tables, "lake/prices")["error"].startswith("Marked successful, but the fact of asset lake/prices")
+
+
+@pytest.mark.parametrize("registry,reason", [
+    ("unreadable", "the pipeline registry could not be read"),
+    ("missing", "pipeline orders is not in the registry"),
+    ("no node", "task extract is not in the deployed pipeline orders"),
+])
+def test_outlets_that_cannot_be_read_are_a_warning_too(tables, mocker, registry, reason):
+    """B-M2: when the registry cannot say which facts the task produces, the missing facts are not silent."""
+    from botocore.exceptions import ClientError
+    from routes import tasks
+
+    if registry == "unreadable":
+        mocker.patch.object(tasks.pipelines_repo, "get",
+                            side_effect=ClientError({"Error": {"Code": "ThrottlingException"}}, "GetItem"))
+    elif registry == "missing":
+        mocker.patch.object(tasks.pipelines_repo, "get", return_value=None)
+    else:
+        mocker.patch.object(tasks.pipelines_repo, "get", return_value={"dag": json.dumps({"nodes": []})})
+    write = mocker.patch.object(tasks.asset_events_repo, "write_fact")
+
+    failed = tasks.record_manual_success_facts(dict(ITEM), "extract")
+
+    assert list(failed) == ["*"] and failed["*"].startswith(reason)
+    write.assert_not_called()
+    warning = _warning(tables, "*")
+    assert warning["error"].startswith("Marked successful, but no fact was recorded: its outlets are unknown")

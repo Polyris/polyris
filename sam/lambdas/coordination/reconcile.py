@@ -294,6 +294,13 @@ class Reconciler:
                       wrapper: Optional[str], *, cause: str = "") -> Dict[str, Any]:
         """Close a row whose wrapper is gone; `decision` is None when the decision itself failed with `cause`."""
         name, started_at, now = str(row["execution_name"]), str(row.get("started_at")), self.clock()
+        if wrapper is None and row.get("started_at") and now - parse_utc(started_at) < sweep.EXECUTION_VISIBLE_AFTER:
+            # Not visible yet is not gone: the row stays, and the sweeper checks it again.
+            reason = "the wrapper execution is not visible yet"
+            if cause:
+                self._warn(row, "coordination", f"{cause}. Failing the task found its token dead, and {reason}.")
+            verdict = decision.verdict if decision is not None else ERROR
+            return self._result(row, source, verdict, "unconfirmed", (reason,), decision)
         reason = f"the wrapper execution is {wrapper or 'gone'}, so the task can no longer be woken"
         if cause:
             reason = f"{cause}. Failing the task found its token dead, and {reason}"

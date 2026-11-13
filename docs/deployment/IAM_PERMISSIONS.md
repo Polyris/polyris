@@ -48,7 +48,7 @@ If your org requires enumerated permissions, the installer role needs these serv
 | `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
 | `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 11 roles + 3 managed policies |
 | `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 7 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
-| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, query-subscriptions, notify, etc.) |
+| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, query-subscriptions, notify, etc.) and the mapping that feeds the asset-events stream to asset-fanout |
 | `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource` | 13 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
 | `scheduler` | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule`, `GetSchedule` | The sweeper's 5-minute schedule |
 | `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 17 log groups |
@@ -179,7 +179,7 @@ Engineers investigating a failing pipeline need read access to CloudWatch logs, 
     "Resource": "*",
     "Condition": {
       "StringLike": {
-        "aws:ResourceTag/Namespace": "polyris"
+        "aws:ResourceTag/polyris:namespace": "polyris"
       }
     }
   }]
@@ -218,8 +218,8 @@ Eleven IAM roles the stack creates during Install. Every role's `RoleName` start
 | `polyris-console-api-role` | Lambda | Serves the REST API behind the Console UI. Reads DDB tables, describes SFN executions, sends manual-action writes, and invokes the reconciler when a run is resumed |
 | `polyris-query-subscriptions-role` | Lambda | Reads the `dep-subscriptions` DDB table to find downstream tasks when an upstream completes |
 | `polyris-reconcile-role` | Lambda | Decides whether a waiting task is ready and signals its wrapper (ADR #130). Its grants are the `polyris-reconcile` policy below |
-| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions; runs the reconciler for each waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset |
-| `polyris-sweeper-role` | Lambda | Every 5 minutes, re-checks the waiting tasks that are due (ADR #130 §8): runs the reconciler (the `polyris-reconcile` policy, whose `states:SendTaskSuccess` also releases a task a resume missed from its pause wait), reads the attention index, keeps its lease and health rows, retries or catches up push starts (reads `asset-subscriptions`, starts the pipelines scheduled on an asset), adopts rows an older version wrote (scans `pipeline-tokens` and `asset-events`), and checks the stream and its mapping (`dynamodb:DescribeTable`, `lambda:ListEventSourceMappings`) |
+| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions; runs the reconciler for each waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset. It deletes a push subscription whose pipeline is no longer scheduled on the asset |
+| `polyris-sweeper-role` | Lambda | Every 5 minutes, re-checks the waiting tasks that are due (ADR #130 §8). It runs the reconciler with the `polyris-reconcile` policy, whose `states:SendTaskSuccess` also releases a task a resume missed from its pause wait. It reads the attention index and keeps its lease and health rows. It retries or catches up push starts: reads `asset-subscriptions`, starts the pipelines scheduled on an asset and deletes the subscriptions their pipelines no longer have. It adopts rows an older version wrote (scans `pipeline-tokens` and `asset-events`) and checks the stream and its mapping (`dynamodb:DescribeTable`, `lambda:ListEventSourceMappings`) |
 | `polyris-sweeper-schedule-role` | EventBridge Scheduler | Invokes the sweeper function, and nothing else |
 | `polyris-notify-role` | Lambda | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |

@@ -655,7 +655,7 @@ DATA the task processes, use `variables`.
 with DAG(
     "my-pipeline",
     variables={
-        "current_date": "{% $substringBefore($now(), 'T') %}",
+        "run_id": "{% $states.context.Execution.Name %}",
         "environment": "prod",
     }
 ) as dag:
@@ -667,6 +667,8 @@ with DAG(
 values are then available to every task in the run.
 
 ### Date variables
+
+A run has one date, the same for every task (ADR #133). It is the date the run was started for: the one you pick in the console, a backfill's, or an asset trigger's. A run its schedule started gets the UTC day the schedule fired it for, even if it started after midnight; a run started any other way gets the UTC day it started.
 
 Every task's `variables` also carry the run's date in several forms; a variable of yours with the same name wins. For a run dated 2025-07-25:
 

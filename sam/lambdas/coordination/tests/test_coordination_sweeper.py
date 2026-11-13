@@ -105,6 +105,12 @@ def test_a_lease_taken_over_meanwhile_is_left_to_its_new_owner(make, tokens, clo
     assert _row(tokens, sweep.LEASE_KEY)["owner"] == "next"
 
 
+def test_the_lease_holder_takes_its_lease_again(make, clock):
+    """botocore resends a put whose answer was lost; the resend must not fail its own condition."""
+    run = make()
+    assert run._take_lease(clock.now) and run._take_lease(clock.now)
+
+
 def test_a_lease_that_cannot_be_written_fails_the_run(make, tokens, mocker):
     from coordination_testkit import client_error
 
@@ -318,6 +324,29 @@ def test_a_warning_that_cannot_be_written_still_counts_the_miss(make, tokens, as
     assert run.run()["missed"] == 1
 
 
+def test_a_woken_row_that_cannot_be_read_again_still_gets_its_warning(make, tokens, asset_events, sfn, clock, mocker):
+    """The warning goes without the task's date; the due rows after it are still checked."""
+    from coordination_testkit import client_error
+
+    load = _waiting(tokens, "load", due=clock.now - timedelta(minutes=5))
+    _waiting(tokens, "report", due=clock.now - timedelta(minutes=4))
+    asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:10:00.000Z"))
+    run = make()
+    real = run.tasks.get
+
+    def get(name: str) -> Any:            # fails only the re-read after the wake-up, not the reconciler's reads
+        if any(s["token"] == _row(tokens, name).get("wait_token") for s in sfn.succeeded):
+            raise client_error("ProvisionedThroughputExceededException", "GetItem")
+        return real(name)
+
+    mocker.patch.object(run.tasks, "get", side_effect=get)
+
+    result = run.run()
+
+    assert (result["checked"], result["missed"]) == (2, 2)
+    assert {w["execution_name"] for w in _warnings(tokens, "sweeper")} >= {f"_notify_warn_sweeper_{load}"}
+
+
 def test_a_fact_that_came_after_the_due_time_is_no_miss(make, tokens, asset_events, clock):
     _waiting(tokens, "load", due=clock.now - timedelta(minutes=5))
     asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time=format_utc(clock.now - timedelta(minutes=1))))
@@ -527,6 +556,20 @@ def test_the_catch_up_starts_a_run_whose_stream_record_was_lost(make, tokens, as
     assert _row(tokens, sweep.HEALTH_KEY)["catchup_at"] == format_utc(clock.now)
 
 
+def test_the_catch_up_skips_an_unreadable_fact_without_a_warning_per_consumer(make, tokens, asset_events, pushed,
+                                                                             sfn):
+    """The stream reported it once when it was recorded; the hourly replay must not repeat that per consumer."""
+    asset_events.put_item(Item={**fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"),
+                                "partition_date": "20261112"})
+    asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time="2026-11-12T05:10:00.000Z"))
+
+    result = make().run()
+
+    assert (result["catch_up"], result["facts_replayed"]) == ("done", 1)
+    assert len(sfn.started) == 1
+    assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_")]
+
+
 def test_the_catch_up_runs_hourly_and_never_starts_a_run_twice(make, tokens, asset_events, pushed, sfn, clock):
     asset_events.put_item(Item=fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
     make().run()
@@ -680,33 +723,35 @@ def test_an_old_fact_gets_its_partition_fields(make, asset_events, registry, clo
     assert make().run()["facts_adopted"] == 0             # the fact scan runs once per generation
 
 
-def test_an_old_fact_nobody_can_read_is_left_alone(make, asset_events):
+def test_an_old_fact_nobody_can_read_is_left_alone_with_a_warning(make, tokens, asset_events):
+    """Principle #51: skipped, and said so in the bell."""
     from coordination_testkit import legacy_fact
 
     asset_events.put_item(Item=legacy_fact("ns/orders", "yesterday", event_time="2026-11-12T05:00:00.000Z"))
 
     assert make().run()["facts_adopted"] == 0
+    [warning] = _warnings(tokens, "coordination")
+    assert warning["execution_name"] == "_notify_warn_coordination_adopt:ns/orders:2026-11-12T05:00:00.000Z"
+    assert "yesterday" in warning["error"] and warning["pipeline_name"] == "producer"
 
 
-def test_adoption_resumes_from_its_cursors(make, tokens, asset_events, clock, mocker):
+def test_adoption_checks_its_budget_per_row_and_resumes_after_the_last_one(make, tokens, asset_events, clock):
+    """Principle #52: one page of old rows must not run the sweeper past its timeout."""
     from coordination_testkit import legacy_fact
 
     for i in range(3):
         tokens.put_item(Item=task_row(f"t{i}", wait_for=ASSET))
         asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time=f"2026-11-12T05:0{i}:00.000Z"))
     run = make()
-    tokens_scan, facts_scan = run.tasks.table.scan, run.facts.scan
-    mocker.patch.object(run.tasks.table, "scan", side_effect=lambda **kw: tokens_scan(**kw, Limit=1))
-    mocker.patch.object(run.facts, "scan", side_effect=lambda **kw: facts_scan(**kw, Limit=1))
-    # One page of each scan, then the budget is gone: (tasks loop, tasks loop, facts gate, facts loop, facts loop).
-    ticks = iter([0.0, 10_000.0, 0.0, 0.0, 10_000.0])
-    run.monotonic = lambda: next(ticks, 0.0)
+    calls = iter(range(10 ** 6))
+    run.monotonic = lambda: 0.0 if next(calls) < 2 else 10.0        # the budget lasts two rows
 
-    run.adopt(deadline=1.0)
+    assert run.adopt(deadline=1.0) == {"tasks_adopted": 2, "facts_adopted": 0}
     health = _row(tokens, sweep.HEALTH_KEY)
-    assert health["adopt_tasks_cursor"] and health["adopt_facts_cursor"] and not health["adopt_facts_until"]
+    assert health["adopt_tasks_cursor"] and not health["adopt_tasks_until"]
 
-    run.adopt(deadline=1.0)                              # the budget lasts now: both scans finish
+    run.monotonic = lambda: 0.0
+    assert run.adopt(deadline=1.0) == {"tasks_adopted": 1, "facts_adopted": 3}      # each row once
     assert len([i for i in tokens.scan()["Items"] if i["execution_name"].startswith("t") and att.KEY in i]) == 3
     assert all("partition_date" in i for i in asset_events.scan()["Items"])
     assert _row(tokens, sweep.HEALTH_KEY)["adopt_facts_until"] == format_utc(clock.now + sweep.ADOPTION_REPEAT)
@@ -835,6 +880,24 @@ def test_a_health_row_that_cannot_be_written_does_not_fail_the_run(make, tokens,
         if kw["Key"]["execution_name"] == sweep.HEALTH_KEY else real(**kw)))
 
     assert "healthy" in run.run()
+
+
+def test_a_self_check_reading_that_fails_is_reported_and_the_row_still_written(make, tokens, mocker):
+    from coordination_testkit import client_error
+
+    run = make()
+    real = run.tasks.table.query
+
+    def query(**kwargs: Any) -> Dict[str, Any]:
+        if kwargs.get("Limit") == 1:                          # the oldest overdue row
+            raise client_error("ProvisionedThroughputExceededException", "Query")
+        return real(**kwargs)
+
+    mocker.patch.object(run.tasks.table, "query", side_effect=query)
+
+    assert run.run()["healthy"] is False
+    [failure] = _row(tokens, sweep.HEALTH_KEY)["failed_steps"]
+    assert failure.startswith("self_check oldest_overdue: ClientError")
 
 
 def test_every_page_of_the_retry_backlog_is_counted(make, tokens, clock, mocker):

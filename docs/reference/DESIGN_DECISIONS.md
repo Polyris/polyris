@@ -9273,3 +9273,58 @@ three further, real gaps — full detail in `docs/reference/SPIKE_TASK_ACTIONS_D
 - `OverrideCheckResult` carries `expired_token: bool` to let the output layer distinguish credential expiry from IAM denial.
 - `OverrideCheckResult._verified` counts unique resources *successfully fetched*, not total attempts. This differs from `ResourceCheckResult._checked`, which counts total attempts including failures. The print layer gates the success tick on `_verified > 0` to avoid claiming "no issues" when no resource was actually verified. When `_verified == 0` and `_skipped > 0` (all override-checkable resources had existence failures), the print layer emits a warning rather than silence so the operator knows the override check ran but was fully skipped.
 - `_OVERRIDE_CHECKERS` completeness is enforced by `test_override_checkers_covers_all_task_types` — adding a `TaskTypeLiteral` without updating the dict fails the test immediately. The checker entries for Glue, ECS, and Batch are auto-derived from `_OVERRIDE_INFO` via a dict spread — only task types without override params (SFN, Lambda, Athena, etc.) need a manual `None` entry. The comment in `_OVERRIDE_INFO` documents the two paths explicitly.
+
+## ADR #132 — Billing tags: one `polyris:` set on every resource AWS can tag
+
+**Context.** Each kind of resource had its own tags. The Lambda functions had five (`Environment`, `Stack`, `Stage`, `Namespace`, `ManagedBy`), the tables and buckets three to five, and the 13 state machines, 17 log groups and most IAM roles none. A pipeline's resources had `Pipeline`, `Stage`, `Namespace`, `ManagedBy` and `Name`, its scheduler role only two of them. Nothing checked them, so a cost report filtered by tag missed most of the platform, and an IAM condition on `aws:ResourceTag/Namespace` matched only some resources.
+
+**Decision.** Every resource that CloudFormation can tag carries the same keys, and no others:
+
+| Key | Value |
+|---|---|
+| `polyris:namespace` | the `Namespace` parameter |
+| `polyris:stage` | the `Stage` parameter |
+| `polyris:component` | `platform` in the platform stack, `pipeline` in a pipeline's stack |
+| `polyris:pipeline` | the pipeline's id; pipeline resources only |
+
+The old tags are removed. The stack tag `polyris:platform=true` stays: it is how `polyris-up` finds its stack (ADR #131), not a billing tag.
+
+**Key design choices.**
+
+*Prefixed keys.* Companies often have their own `Stage`, `Environment` or `Owner` tags. A `polyris:` key never collides with them and names its owner, so no `ManagedBy` tag is needed.
+
+*Tags in the templates, not on the stack.* CloudFormation copies stack tags to resources, but only on stacks deployed with them: `polyris-up` could set them, a `sam deploy` from a checkout would not. Tags in the templates reach every stack and can be checked before a deploy. The Lambda functions take them from `Globals`; SAM has no `Globals` tags for state machines, so every other resource spells them. `polyris/resource_tags.py` holds the keys and builds a pipeline's tags.
+
+*The rule follows AWS.* `tests/sdk/test_resource_tags.py` reads from the CloudFormation resource schemas that cfn-lint ships which types can be tagged and in which property (`tagging.taggable`, `tagging.tagProperty`). It checks every resource of the platform template after the SAM transform and of each pipeline template shape. Types AWS cannot tag, such as `AWS::Scheduler::Schedule` and `AWS::IAM::ManagedPolicy`, need no list of exceptions, and a type AWS learns to tag joins the rule when cfn-lint is updated. The test also fails if changing a type's tags would replace the resource (Principle #33).
+
+*An HTTP API takes its tags from its OpenAPI body.* SAM writes the `ConsoleApi` tags into the body (`x-amazon-apigateway-tag-value`) and onto its stage; the test reads both.
+
+**Consequences.**
+- Cost Explorer can split the bill by installation, stage and component once the keys are activated as cost allocation tags in the paying account (`docs/how-to/manage-the-platform.md`).
+- Most orchestration cost is state transitions of the platform's shared state machines (the wrapper, `run_task`), tagged `platform`. `polyris:pipeline` covers a pipeline's own state machine, log group and scheduler role, so tags cannot split the shared cost by pipeline.
+- Upgrading removes the old tags: IAM conditions and cost reports on them stop matching. A pipeline's resources keep theirs until its next `polyris-deploy`.
+- Users cannot add tags of their own through polyris; no user has asked for it.
+
+## ADR #133 — A run has one date: the date it was started or scheduled for
+
+**Context.** A run's date (`current_date`) keys its task rows, its asset facts and every `wait_for` decision (ADR #130). A run started from the console, by a backfill or by an asset trigger carries it in its input. A scheduled run did not: EventBridge Scheduler passed only `triggered_by` and `schedule`, and each task took the day from `$now()` when the pipeline built its input. A run scheduled at 23:59 that started at 00:01 got the next day, and the tasks of a run crossing midnight could get two dates. For a pipeline with `variables=`, `Define_Inputs` passed the missing date on as `null`, which `$exists` counts as present: every task got a `null` date and the run failed. It also dropped `triggered_by`.
+
+**Decision.** A run has one date, the same for every task:
+
+1. the date it was started for: `current_date` in its input, or `variables.current_date`;
+2. else the UTC day its schedule fired it for: the schedule's input carries `scheduled_time`, which EventBridge Scheduler fills with `<aws.scheduler.scheduled-time>`;
+3. else the UTC day the execution started (`$states.context.Execution.StartTime`).
+
+Never `$now()`. The expressions test values, not presence, so a `null` is no date.
+
+**Key design choices.**
+
+*The day it was scheduled for, not the day before.* Airflow dates a run by the start of its data interval, so a daily run at midnight carries the previous day. polyris keeps its convention, the run's own day; only the clock that picks the day changes. Moving to data intervals would shift every date by a day.
+
+*The execution's start time, not the current time.* `StartTime` is one value for every state of a run; `$now()` differs from state to state.
+
+*One field name on both sides.* `generators.SCHEDULED_TIME_FIELD` is written by `deploy.py` into the schedule's input and read by the generated pipeline; `tests/sdk/test_run_date.py` pins the pair (Principle #28).
+
+**Consequences.**
+- Pipelines pick this up at their next `polyris-deploy`. Until then, a scheduled pipeline with `variables=` still fails.
+- The harness starts a pipeline the way Scheduler does (`World.fire_schedule`, from the generated schedule's input), so the contract runs end to end (B-D1).

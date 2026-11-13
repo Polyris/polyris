@@ -253,6 +253,18 @@ def test_a_zombie_is_aborted_loudly(reconciler, tokens, sfn, wrapper_status):
     assert warning(tokens, "zombie")[att.KEY].startswith("warn#")
 
 
+def test_a_wrapper_that_is_not_visible_yet_is_not_taken_for_gone(reconciler, tokens, sfn):
+    """DescribeExecution is eventually consistent: a row that registered moments ago keeps its task."""
+    from datetime import timedelta
+
+    from coordination_core.times import format_utc
+    from coordination_testkit import NOW
+
+    _dead(tokens, sfn, None, started_at=format_utc(NOW - timedelta(seconds=30)))
+    assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "unconfirmed"
+    assert row(tokens)["status"] == "waiting" and warning(tokens, "zombie") is None
+
+
 def test_a_dead_token_without_a_wrapper_arn_is_reported(reconciler, tokens, sfn):
     _dead(tokens, sfn, None, wrapper_execution_arn="")
     assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "warned"

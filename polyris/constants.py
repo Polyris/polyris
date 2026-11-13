@@ -250,6 +250,7 @@ class WarningKind:
     SWEEPER = "sweeper"            # the sweeper woke a task whose wake-up hint was lost
     NOTIFY = "notify"              # notify_dependents failed after a task finished
     MANUAL = "manual"              # a manual action kept the task's real output instead of its marker
+    FACT = "fact"                  # a manual action could not record the asset facts it owed
 
 
 # =============================================================================

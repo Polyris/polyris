@@ -115,7 +115,6 @@ class Bindings:
         self._set(config, "_lambda", _LambdaClient(self.stack))
         for repo, logical in ((dal.executions_repo, "PipelineTokensTable"), (dal.backfills_repo, "PipelineTokensTable"),
                               (dal.pipelines_repo, "PipelineRegistryTable"), (dal.asset_events_repo, "AssetEventsTable"),
-                              (dal.dep_subscriptions_repo, "DependencySubscriptionsTable"),
                               (dal.task_events_repo, "TaskEventsTable")):
             self._set(repo, "_table_name", tables[logical])
         self._set(executions, "RECONCILE_FUNCTION_ARN", self.stack.function_arn("ReconcileFunction"))

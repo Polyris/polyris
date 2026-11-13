@@ -21,14 +21,15 @@ def asset(name: str, **kwargs: Any) -> Any:
 
 
 def pipeline(dag_id: str, tasks: Sequence[Tuple[str, Dict[str, Any]]],
-             edges: Iterable[Tuple[str, str]] = (), *, schedule: Any = "cron(0 6 * * ? *)") -> Any:
+             edges: Iterable[Tuple[str, str]] = (), *, schedule: Any = "cron(0 6 * * ? *)",
+             variables: Optional[Dict[str, Any]] = None) -> Any:
     """A pipeline of `@task.sfn` tasks; `tasks` is [(task_id, decorator kwargs)], `edges` [(upstream, downstream)].
 
     `schedule` is a cron expression, or a list of assets for an asset-triggered pipeline.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        with DAG(dag_id, schedule=schedule) as dag:
+        with DAG(dag_id, schedule=schedule, **({"variables": variables} if variables else {})) as dag:
             made: Dict[str, Any] = {}
             for name, kwargs in tasks:
                 def body() -> None:

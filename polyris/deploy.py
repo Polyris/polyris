@@ -46,10 +46,12 @@ from botocore.exceptions import (
 )
 
 from .generators import (
+    SCHEDULED_TIME_FIELD,
     generate_step_function_json,
     generate_dag_hash,
 )
 from .dag import DAG
+from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
     ChangeSetError,
@@ -187,6 +189,8 @@ def _generate_cfn_template(
 
     resources = {}
     outputs = {}
+    # Every resource AWS can tag carries the billing tags (ADR #132). AWS::Scheduler::Schedule cannot.
+    tags = resource_tags.pipeline_tags(namespace, stage, dag.dag_id)
 
     # Log Group
     resources["PipelineLogGroup"] = {
@@ -194,12 +198,7 @@ def _generate_cfn_template(
         "Properties": {
             "LogGroupName": f"/{namespace}/{stage}/polyris/{dag.dag_id}",
             "RetentionInDays": log_retention_days,
-            "Tags": [
-                {"Key": "Pipeline", "Value": dag.dag_id},
-                {"Key": "Stage", "Value": stage},
-                {"Key": "Namespace", "Value": namespace},
-                {"Key": "ManagedBy", "Value": "polyris-deploy"},
-            ],
+            "Tags": tags,
         },
     }
 
@@ -217,13 +216,7 @@ def _generate_cfn_template(
                     {"CloudWatchLogsLogGroup": {"LogGroupArn": {"Fn::GetAtt": ["PipelineLogGroup", "Arn"]}}}
                 ],
             },
-            "Tags": [
-                {"Key": "Name", "Value": full_name},
-                {"Key": "Pipeline", "Value": dag.dag_id},
-                {"Key": "Stage", "Value": stage},
-                {"Key": "Namespace", "Value": namespace},
-                {"Key": "ManagedBy", "Value": "polyris-deploy"},
-            ],
+            "Tags": tags,
         },
         "DependsOn": "PipelineLogGroup",
     }
@@ -268,10 +261,7 @@ def _generate_cfn_template(
                         },
                     }
                 ],
-                "Tags": [
-                    {"Key": "Pipeline", "Value": dag.dag_id},
-                    {"Key": "ManagedBy", "Value": "polyris-deploy"},
-                ],
+                "Tags": tags,
             },
         }
 
@@ -298,6 +288,8 @@ def _generate_cfn_template(
                         {
                             "triggered_by": "schedule",
                             "schedule": schedule_expr,
+                            # The run's date is the day the schedule fired it for, not the day it started (ADR #133).
+                            SCHEDULED_TIME_FIELD: "<aws.scheduler.scheduled-time>",
                         }
                     ),
                 },

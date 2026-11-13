@@ -22,7 +22,7 @@ is safe because every action is idempotent.
 """
 
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer
@@ -31,9 +31,9 @@ from botocore.exceptions import BotoCoreError, ClientError
 import env
 from coordination_core import spec as sp
 from coordination_core.asset_conditions import evaluate as evaluate_assets
-from coordination_core.records import fact_from_item, push_retry_item, warning_item
+from coordination_core.records import FACT_VERSION, fact_from_item, push_retry_item, warning_item
 from coordination_core.run_name import KIND_AND, KIND_EVENT, run_name
-from failures import CoordinationTransient, error_code, is_transient, reraise_transient
+from failures import CoordinationTransient, error_code, is_condition_failed, is_transient, reraise_transient
 from logger import log
 from reconcile import Reconciler
 from stores import FactStore, Registry
@@ -75,9 +75,16 @@ class AssetFanout:
             sequence = str(record["dynamodb"]["SequenceNumber"])
             try:
                 fact = fact_of(record)
+                if fact.get("fact_version") != FACT_VERSION:
+                    # An older version wrote it and started its own consumers; adoption takes it (ADR #130 §8).
+                    log.info("asset_fanout", "a fact of an older version; left to adoption", sequence=sequence,
+                             asset_name=str(fact.get("asset_name", "")))
+                    continue
                 fact_from_item(fact, declared_granularity="daily")     # a fact nobody could read is poison
-                self.fan_out(fact, remaining_ms=remaining_ms)
+                # Push first: consumers are few and only the hourly catch-up replays a missed one, while
+                # waiters are many and the sweeper re-checks every one the budget leaves (ADR #130 §6.1).
                 self.push(fact, remaining_ms=remaining_ms)
+                self.fan_out(fact, remaining_ms=remaining_ms)
             except CoordinationTransient as exc:
                 log.error("asset_fanout", "a transient failure; the record is redelivered", sequence=sequence,
                           error=str(exc))
@@ -135,11 +142,14 @@ class AssetFanout:
             consumer = str(row["pipeline_name"])
             if consumer == str(fact.get("source_dag", "")):
                 continue             # a pipeline never triggers itself
-            if row.get("subscribed_at") and str(fact.get("event_time", "")) < str(row["subscribed_at"]):
-                continue             # it subscribed after the fact: a consumer reacts only to later facts (B-U2)
+            # A consumer reacts only to facts recorded after it subscribed (B-U2). A row an older SDK wrote
+            # has no subscribed_at; its registered_at, rewritten on every run, is the nearest cutover.
+            subscribed = row.get("subscribed_at") or row.get("registered_at")
+            if subscribed and str(fact.get("event_time", "")) < str(subscribed):
+                continue
             counts["consumers"] += 1
             try:
-                counts["started"] += self._push_one(fact, consumer, str(row["sfn_arn"]))
+                counts["started"] += self._push_one(fact, row)
             except CoordinationTransient:
                 raise
             except Exception as exc:  # noqa: BLE001 — one consumer's failure never fails the record (ADR #130 §6.1)
@@ -149,15 +159,18 @@ class AssetFanout:
             log.info("asset_fanout", "pushed", asset_name=asset, **counts)
         return counts
 
-    def _push_one(self, fact: Dict[str, Any], consumer: str, sfn_arn: str) -> int:
-        """Start `consumer` if the fact completes its schedule; 1 when this call started it."""
-        asset = str(fact["asset_name"])
+    def _push_one(self, fact: Dict[str, Any], row: Dict[str, Any]) -> int:
+        """Start the consumer `row` names if the fact completes its schedule; 1 when this call started it."""
+        asset, consumer, sfn_arn = str(fact["asset_name"]), str(row["pipeline_name"]), str(row["sfn_arn"])
         registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
         evidence = registry.fact(fact)
-        schedule = self._schedule(consumer)
-        if schedule is None:
-            self._warn(f"push:{consumer}", f"push consumer {consumer} has no asset schedule in the registry")
+        schedule, scheduled = self._schedule(consumer)
+        if not scheduled or (schedule is not None and asset not in sp.asset_names(schedule)):
+            # The pipeline was destroyed, switched to a cron schedule, or dropped this asset (B-U3).
+            self._drop_subscription(row, "the pipeline is no longer scheduled on this asset")
             return 0
+        if schedule is None:
+            return 0             # unreadable: warned, and the row stays until the schedule is fixed
         every_event = fact.get("cascade") == "all" or schedule.operator == sp.OR
         if fact.get("cascade") != "all":
             reader = FactStore(self.reconciler.resource, self.reconciler.asset_events_table, registry,
@@ -186,24 +199,54 @@ class AssetFanout:
             if is_transient(exc):
                 self._retry_later(name, consumer, sfn_arn, run_input, f"{type(exc).__name__}: {exc}")
                 return 0
+            if code == "StateMachineDoesNotExist":
+                self._drop_subscription(row, "its state machine no longer exists")
             self._warn(f"push:{name}", f"push consumer {consumer} could not be started: {type(exc).__name__}: {exc}")
             return 0
         return 1
 
-    def _schedule(self, consumer: str) -> Optional[sp.AssetGroup]:
+    def _drop_subscription(self, row: Dict[str, Any], reason: str) -> None:
+        """Delete a subscription its pipeline no longer has, unless the pipeline registered again meanwhile."""
+        key = {"asset_name": row["asset_name"], "pipeline_name": row["pipeline_name"]}
+        seen = row.get("registered_at")
+        try:
+            if seen is None:
+                self.consumers.delete_item(Key=key, ConditionExpression="attribute_not_exists(registered_at)")
+            else:
+                self.consumers.delete_item(Key=key, ConditionExpression="registered_at = :seen",
+                                           ExpressionAttributeValues={":seen": seen})
+        except (ClientError, BotoCoreError) as exc:
+            if is_condition_failed(exc):
+                return              # registered again since we read it: it is current
+            # Principle #41: the row only costs a skipped evaluation next time; log and go on.
+            log.error("asset_fanout", "could not drop a stale subscription", asset_name=key["asset_name"],
+                      pipeline_name=key["pipeline_name"], error=str(exc))
+            return
+        log.info("asset_fanout", "dropped a stale subscription", asset_name=key["asset_name"],
+                 pipeline_name=key["pipeline_name"], reason=reason)
+
+    def _schedule(self, consumer: str) -> Tuple[Optional[sp.AssetGroup], bool]:
+        """The consumer's asset schedule, and whether it has one at all.
+
+        ``(None, False)``: no registry entry or no asset schedule, so the
+        pipeline was destroyed or now runs on a cron; registration writes
+        ``"{}"`` for a pipeline without one. ``(None, True)``: the schedule
+        cannot be read; that is warned about, never acted on.
+        """
         try:
             item = self.registry_table.get_item(Key={"pipeline_name": consumer}, ConsistentRead=True).get("Item")
         except (ClientError, BotoCoreError) as exc:
             reraise_transient(exc)
             raise
         raw = (item or {}).get("asset_schedule")
-        if not raw:
-            return None
         try:
-            return sp.parse_schedule(json.loads(raw) if isinstance(raw, str) else raw)
+            value = json.loads(raw) if isinstance(raw, str) and raw else raw
+            if not value:
+                return None, False
+            return sp.parse_schedule(value), True
         except ValueError as exc:
             self._warn(f"push:{consumer}", f"push consumer {consumer} has an unreadable asset schedule: {exc}")
-            return None
+            return None, True
 
     def _retry_later(self, name: str, consumer: str, sfn_arn: str, run_input: str, error: str) -> None:
         item = push_retry_item(run_name=name, consumer=consumer, sfn_arn=sfn_arn, run_input=run_input,

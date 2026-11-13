@@ -9,18 +9,11 @@ def setup_env():
 
 
 class TestHandler:
-    def test_missing_task_name_returns_error(self):
-        """ValueError is caught and returned in `error` field, not raised."""
+    @pytest.mark.parametrize("event", [{'pipeline_execution_short': 'abc123'}, {'task_name': 'producer'}])
+    def test_missing_fields_raise(self, event):
         from index import handler
-        result = handler({'pipeline_execution_short': 'abc123'}, None)
-        assert result['subscribers'] == []
-        assert 'Missing required fields' in result['error']
-
-    def test_missing_pipeline_execution_short_returns_error(self):
-        from index import handler
-        result = handler({'task_name': 'producer'}, None)
-        assert result['subscribers'] == []
-        assert 'Missing required fields' in result['error']
+        with pytest.raises(ValueError, match='Missing required fields'):
+            handler(event, None)
 
     def test_returns_subscribers_from_repo(self, mocker):
         from index import handler
@@ -64,19 +57,24 @@ class TestHandler:
                 'pipeline_execution_short': 'abc123',
             }, None)
 
-    def test_other_errors_swallowed_with_error_field(self, mocker):
-        """Non-permission errors are returned, not raised (keeps SFN moving)."""
+    def test_every_failed_query_raises(self, mocker):
+        """An empty answer would make notify_dependents skip real subscribers in silence; its state retries
+        the failure, and the sweeper re-checks the subscribers after that (Principle #41)."""
+        from botocore.exceptions import ClientError
         from index import handler
-        mocker.patch(
-            'index.subscriptions_repo.list_for_dependency',
-            side_effect=Exception('ResourceNotFound: table missing'),
-        )
-        result = handler({
-            'task_name': 'producer',
-            'pipeline_execution_short': 'abc123',
-        }, None)
-        assert result['subscribers'] == []
-        assert 'ResourceNotFound' in result['error']
+        throttled = ClientError({'Error': {'Code': 'ProvisionedThroughputExceededException'}}, 'Query')
+        mocker.patch('index.subscriptions_repo.list_for_dependency', side_effect=throttled)
+        with pytest.raises(ClientError, match='ProvisionedThroughputExceeded'):
+            handler({'task_name': 'producer', 'pipeline_execution_short': 'abc123'}, None)
+
+
+def test_the_table_client_fails_inside_the_function_timeout(monkeypatch):
+    """Principle #53: botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function."""
+    import qs_dal
+    monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+    monkeypatch.setattr(qs_dal, '_dynamodb', None)
+    config = qs_dal._resource().meta.client.meta.config
+    assert config.retries['total_max_attempts'] == 3 and config.read_timeout <= 10
 
     def test_dependency_key_format(self, mocker):
         from index import handler

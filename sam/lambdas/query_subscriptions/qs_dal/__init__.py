@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import boto3
+from botocore.config import Config
 from boto3.dynamodb.conditions import Key
 from typing import List, Dict, Optional
 
@@ -17,7 +18,10 @@ _dynamodb = None
 def _resource():
     global _dynamodb
     if _dynamodb is None:
-        _dynamodb = boto3.resource('dynamodb')
+        # Fail inside the function's 30 s timeout with the real error (Principle #53): botocore's
+        # defaults (ten DynamoDB attempts, a 60 s read timeout) outlast it.
+        _dynamodb = boto3.resource('dynamodb', config=Config(
+            retries={"total_max_attempts": 3, "mode": "standard"}, connect_timeout=3, read_timeout=5))
     return _dynamodb
 
 

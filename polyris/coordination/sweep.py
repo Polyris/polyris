@@ -35,6 +35,14 @@ ADOPTION_GENERATION = 1
 #: After the task-row scan first finishes, it repeats for this long: rows the old
 #: definitions wrote while the stack update was still running get adopted too.
 ADOPTION_REPEAT = timedelta(hours=1)
+
+#: DescribeExecution is eventually consistent: a wrapper that registered less than this long ago may
+#: not be visible yet, so "does not exist" means gone only for an older row (the console waits as long).
+EXECUTION_VISIBLE_AFTER = timedelta(minutes=2)
+
+#: Rows one adoption scan call reads. The budget is checked before each row (Principle #52);
+#: small pages keep the time between two checks of the page loop short too.
+ADOPTION_PAGE = 200
 #: The console calls the engine unhealthy when the sweeper has not reported for this long,
 STALE_AFTER = timedelta(minutes=15)
 #: or when a waiting task has been due for longer than the sweeper's 40-minute target.

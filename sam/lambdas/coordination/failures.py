@@ -8,14 +8,8 @@
   the real cause, or a warning is written).
 """
 
-from botocore.exceptions import (
-    BotoCoreError,
-    ClientError,
-    ConnectionClosedError,
-    ConnectTimeoutError,
-    EndpointConnectionError,
-    ReadTimeoutError,
-)
+from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
+from botocore.exceptions import ConnectionError as BotoConnectionError
 
 from coordination_core.wake import DEAD_TOKEN_CODES
 
@@ -35,7 +29,9 @@ TRANSIENT_CODES = frozenset({
 })
 CONDITION_FAILED = "ConditionalCheckFailedException"
 
-_TRANSIENT_NETWORK = (EndpointConnectionError, ConnectionClosedError, ConnectTimeoutError, ReadTimeoutError)
+#: The network failures botocore's standard retry mode retries: every connection error (endpoint, connect
+#: timeout, SSL, proxy) and every HTTP client error (closed connection, read timeout, broken response stream).
+_TRANSIENT_NETWORK = (BotoConnectionError, HTTPClientError)
 
 
 class CoordinationTransient(Exception):

@@ -57,6 +57,13 @@ class Clock:
     def advance(self, **delta: float) -> None:
         self.now += timedelta(**delta)
 
+    def jump_to(self, when: str) -> None:
+        """Move the clock on to `when` (ISO 8601, UTC); never back."""
+        target = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        if target < self.now:
+            raise AssertionError(f"the clock is at {self.now.isoformat()}; it cannot go back to {when}")
+        self.now = target
+
 
 @dataclass
 class Pipeline:
@@ -173,7 +180,8 @@ class World:
         """
         wrapper_arn = self.stack.legacy_wrapper_arn() if before_upgrade else None
         pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag, wrapper_arn=wrapper_arn))
-        self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register",
+        # A fresh name per deploy, as polyris-deploy does, so a pipeline can be deployed again.
+        self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register-{next(self._run_ids):08x}",
                                      input=json.dumps({"register_only": True}))
         self.settle()
         return pipeline
@@ -185,6 +193,33 @@ class World:
                                            input=json.dumps(payload))["executionArn"]
         self.settle()
         return Run(pipeline, name, date, arn)
+
+    def fire_schedule(self, pipeline: Pipeline, scheduled_time: str) -> Run:
+        """Start `pipeline` as EventBridge Scheduler does: with the input polyris-deploy gives its
+        schedule, `<aws.scheduler.scheduled-time>` filled in with `scheduled_time` (ISO 8601, UTC)."""
+        from polyris.deploy import _generate_cfn_template
+
+        template = _generate_cfn_template(
+            pipeline.dag, namespace="acme", stage="dev", region="us-east-1",
+            role_arn="arn:aws:iam::123456789012:role/acme-dev-polyris-orchestration-role",
+            wrapper_arn=self.stack.machine_arn("DependencyWrapperSfn"),
+            registry_table=self.stack.tables["PipelineRegistryTable"],
+            tokens_table=self.stack.tables["PipelineTokensTable"],
+            asset_subscriptions_table=self.stack.tables["AssetSubscriptionsTable"],
+        )
+        target = template["Resources"]["PipelineSchedule"]["Properties"]["Target"]
+        payload = str(target["Input"]).replace("<aws.scheduler.scheduled-time>", scheduled_time)
+        name = f"{pipeline.name}-sched-{next(self._run_ids):08x}"
+        arn = self.runtime.start_execution(stateMachineArn=pipeline.arn, name=name, input=payload)["executionArn"]
+        self.settle()
+        return Run(pipeline, name, scheduled_time[:10], arn)
+
+    def start_bare(self, pipeline: Pipeline) -> Run:
+        """Start `pipeline` with an empty input, as `aws stepfunctions start-execution` without --input."""
+        name = f"{pipeline.name}-bare-{next(self._run_ids):08x}"
+        started = self.runtime.start_execution(stateMachineArn=pipeline.arn, name=name, input="{}")
+        self.settle()
+        return Run(pipeline, name, str(started["startDate"])[:10], started["executionArn"])
 
     def settle(self) -> None:
         self.runtime.run()
@@ -458,6 +493,13 @@ class World:
             found.extend(plain(i) for i in response.get("Items", []))
         return found
 
+
+    def push_subscribers(self, asset: Any) -> List[str]:
+        """Pipelines subscribed to `asset` for a push (the asset-subscriptions table), by name."""
+        response = self.ddb.query(TableName=self.stack.tables["AssetSubscriptionsTable"], ConsistentRead=True,
+                                  KeyConditionExpression="asset_name = :a",
+                                  ExpressionAttributeValues={":a": {"S": asset.name}})
+        return sorted(str(plain(i)["pipeline_name"]) for i in response.get("Items", []))
 
     def row(self, run: Run, task: str) -> Optional[Dict[str, Any]]:
         item = self.ddb.get_item(TableName=self.stack.tables["PipelineTokensTable"],

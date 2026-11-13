@@ -22,7 +22,10 @@
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
-            "Lambda.TooManyRequestsException"
+            "Lambda.TooManyRequestsException",
+            "Lambda.Unknown",
+            "Sandbox.Timedout",
+            "States.TaskFailed"
           ],
           "IntervalSeconds": 1,
           "MaxAttempts": 3,
@@ -81,6 +84,8 @@
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
                   "Lambda.TooManyRequestsException",
+                  "Lambda.Unknown",
+                  "Sandbox.Timedout",
                   "CoordinationTransient"
                 ],
                 "IntervalSeconds": 1,

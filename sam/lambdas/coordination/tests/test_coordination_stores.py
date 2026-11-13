@@ -4,7 +4,7 @@ import json
 from datetime import date, timedelta
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError, ProxyConnectionError, ReadTimeoutError, ResponseStreamingError, SSLError
 from coordination_testkit import NOW, STARTED_AT, TABLES, FakeSfn, client_error, fact, task_row
 
 import env
@@ -208,6 +208,10 @@ def test_a_missing_execution_has_no_status():
     (ClientError({"Error": {"Code": "SomeNewServerError"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "Op"), True),
     (ClientError({"Error": {"Code": "AccessDeniedException"}, "ResponseMetadata": {"HTTPStatusCode": 400}}, "Op"), False),
     (EndpointConnectionError(endpoint_url="https://dynamodb"), True),
+    (SSLError(endpoint_url="https://dynamodb", error="bad record mac"), True),       # botocore retries these
+    (ProxyConnectionError(proxy_url="http://proxy:3128", error="refused"), True),
+    (ResponseStreamingError(error="connection reset"), True),
+    (ReadTimeoutError(endpoint_url="https://dynamodb"), True),
     (NoCredentialsError(), False),
     (ValueError("x"), False),
 ])

@@ -28,9 +28,24 @@ from polyris.generators import (
     generate_assets_json,
     generate_all_assets,
     _build_dag_visualization_nodes_edges,
+    _build_pipeline_metadata,
 )
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
+
+
+def test_a_pipeline_without_an_asset_schedule_registers_an_empty_one():
+    """AssetFanout reads "{}" as "not scheduled on assets" and deletes the pipeline's old push
+    subscriptions (ADR #130 §6.1, B-U3); anything else unparsable is only warned about."""
+    from polyris import DAG, task
+
+    with DAG("nightly-report", schedule="cron(0 3 * * ? *)") as dag:
+        @task.sfn(arn=ARN)
+        def build():
+            pass
+        build()
+    _, _, asset_schedule = _build_pipeline_metadata(dag)
+    assert json.dumps(asset_schedule) == "{}"
 
 
 def _asl(states, start="A"):

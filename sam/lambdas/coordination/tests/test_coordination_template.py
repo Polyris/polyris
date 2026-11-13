@@ -166,13 +166,14 @@ def test_reconcile_role_allows_exactly_the_calls_the_code_makes(
 
 
 def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
-        resources, reconciler, tokens, subscriptions, asset_events, sfn, ddb, mocker):
+        resources, reconciler, tokens, subscriptions, asset_events, consumers, sfn, ddb, mocker):
     import asset_fanout
     from coordination_testkit import client_error, fact
 
     fanout = asset_fanout.AssetFanout(reconciler, subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1])
     tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "freshness_hours": None}]))
     subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": execution_name("load")})
+    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})  # destroyed
     item = fact("ns/orders", "2026-11-12")
     record = {"eventName": "INSERT",
               "dynamodb": {"SequenceNumber": "1", "NewImage": {k: _serialize(v) for k, v in item.items()}}}
@@ -182,6 +183,7 @@ def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
         mocker.patch.object(fanout.subscriptions, "query", side_effect=client_error("AccessDeniedException", "Query"))
         fanout.handle([record], lambda: 10 ** 6)           # a non-transient failure writes a warning
     assert sfn.succeeded, "the walk must wake the task"
+    assert "Item" not in consumers.get_item(Key={"asset_name": "ns/orders", "pipeline_name": "gone"})
     assert used - _dynamodb_grants(_statements(resources, "AssetFanoutRole")) == set()
     own = _dynamodb_grants(_statements(resources, "AssetFanoutRole", managed=False))
     assert own - used == set(), "AssetFanout's own grants that no call uses"
@@ -213,6 +215,7 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
                        ExpressionAttributeNames={"#due": att.DUE},
                        ExpressionAttributeValues={":d": format_utc(clock - timedelta(minutes=5))})
     consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "pushed", "sfn_arn": "arn:pushed"})
+    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})  # destroyed
     registry.put_item(Item={"pipeline_name": "pushed",
                             "asset_schedule": json.dumps({"operator": "AND", "assets": ["ns/orders"]})})
     from coordination_core.records import push_retry_item
@@ -257,7 +260,8 @@ def test_asset_fanout_reads_only_the_asset_events_stream(resources):
 def test_the_stream_mapping_follows_adr_130(resources):
     """ADR #130 §6.1: INSERT only, from the start, retried until handled, no failure destination (D22)."""
     assert resources["AssetEventsTable"]["Properties"]["StreamSpecification"] == {"StreamViewType": "NEW_IMAGE"}
-    mapping = resources["AssetEventsFanoutMapping"]["Properties"]
+    mapping = {k: v for k, v in resources["AssetEventsFanoutMapping"]["Properties"].items()
+               if k != "Tags"}                     # billing tags: tests/sdk/test_resource_tags.py (ADR #132)
     assert mapping == {
         "EventSourceArn": {"!GetAtt": "AssetEventsTable.StreamArn"},
         "FunctionName": {"!Ref": "AssetFanoutFunction"},

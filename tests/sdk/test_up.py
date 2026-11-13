@@ -445,6 +445,36 @@ def test_up_rolls_back_a_failed_update_by_default(fake_cfn, s3, tmp_path):
     assert "DisableRollback" not in execute
 
 
+def test_up_on_a_failed_update_with_nothing_to_change_is_not_up_to_date(fake_cfn, s3, tmp_path, capsys):
+    """A stack left UPDATE_FAILED by --disable-rollback stays half-updated until its failure is retried."""
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_FAILED", Description="Polyris platform v1.0.0",
+                                         Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])],
+                              change_status="FAILED", status_reason="didn't contain changes")
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")), disable_rollback=True)) == 1
+
+    captured = capsys.readouterr()
+    assert "already up to date" not in captured.out
+    assert "UPDATE_FAILED" in captured.out + captured.err
+
+
+def test_up_never_keeps_a_failed_first_install(fake_cfn, s3, tmp_path, capsys, mocker):
+    """A first install that fails is removed and run again; only an update keeps what it changed."""
+    from botocore.exceptions import WaiterError
+
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), namespace="acme", stage="dev",
+                    admin_email="a@b.c", disable_rollback=True)
+    mocker.patch("polyris.cfn_changeset.wait_for_stack",
+                 side_effect=WaiterError("StackCreateComplete", "ROLLBACK_COMPLETE", {}))
+
+    assert up._run(up.run_up, args) == 1
+
+    [execute] = [kw for name, kw in fake_cfn["cfn"].calls if name == "execute_change_set"]
+    assert "DisableRollback" not in execute
+    captured = capsys.readouterr()
+    assert "Nothing was rolled back" not in captured.out + captured.err      # it was rolled back: say so, not this
+
+
 def test_up_no_changes(fake_cfn, s3, tmp_path, capsys):
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[])],
                               change_status="FAILED", status_reason="didn't contain changes")

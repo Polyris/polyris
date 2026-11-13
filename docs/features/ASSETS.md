@@ -86,7 +86,7 @@ Each successful producer run records a fact of the asset, dated by the run's dat
 
 A daily consumer of a weekly asset therefore uses the latest version from this week or the last one, and a run for a past date waits for a fact of its own date, never today's (ADR #130).
 
-Run dates are partition keys: `2026-01-12` (daily), `2026-01-12T06` (hourly), `2026-W03` (weekly) or `2026-01` (monthly). A `wait_for` task in a run dated otherwise, for example `20260112`, fails with `CoordinationError` and the cause.
+A run's date is a day, such as `2026-01-12`; facts of hourly, weekly and monthly assets come from such runs too. A `wait_for` task in a run dated otherwise, for example `20260112`, fails with `CoordinationError` and the cause.
 
 ### Schema Declaration
 
@@ -379,6 +379,8 @@ A run's name is derived from the consumer, the date and the kind of trigger, so 
 
 A consumer reacts only to facts recorded after its first deploy. Deploying a new consumer does not start it for facts that already exist; its first run starts with the next fact.
 
+Remove an asset from a consumer's `schedule` and redeploy, and that asset no longer starts it. The same holds for a consumer you destroy or move to a cron schedule: its old subscription is deleted the next time the asset records a fact.
+
 ---
 
 ## AND Logic (All Assets Required)
@@ -539,8 +541,7 @@ If `orchestration_timeout` is not set, it defaults to `execution_timeout` (24h).
 
 ### In the Console
 
-A task with `wait_for` appears as a consumer of the asset in the lineage
-view. The Task Detail modal shows asset dependencies as a labelled
+The Task Detail modal shows a task's `wait_for` assets as a labelled
 section, with the freshness constraint as a badge:
 
 ```

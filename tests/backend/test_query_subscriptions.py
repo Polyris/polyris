@@ -13,6 +13,8 @@ are loaded for the backend test suite.
 import os
 import sys
 
+import pytest
+
 os.environ.setdefault('AWS_DEFAULT_REGION', 'us-east-1')
 os.environ.setdefault('SUBSCRIPTIONS_TABLE', 'test-subscriptions')
 
@@ -47,14 +49,14 @@ def test_happy_path_returns_subscribers(mocker):
     assert result['subscribers'][0]['subscriber'] == 'transform-abc12345'
 
 
-def test_missing_task_name_returns_empty():
-    result = qs_module.handler({'pipeline_execution_short': 'abc12345'}, {})
-    assert result['subscribers'] == []
+def test_missing_task_name_raises():
+    with pytest.raises(ValueError, match='Missing required fields'):
+        qs_module.handler({'pipeline_execution_short': 'abc12345'}, {})
 
 
-def test_missing_pipeline_execution_short_returns_empty():
-    result = qs_module.handler({'task_name': 'extract'}, {})
-    assert result['subscribers'] == []
+def test_missing_pipeline_execution_short_raises():
+    with pytest.raises(ValueError, match='Missing required fields'):
+        qs_module.handler({'task_name': 'extract'}, {})
 
 
 def test_no_subscribers_returns_empty(mocker):
@@ -80,15 +82,12 @@ def test_pagination_handled_inside_repo(mocker):
     assert len(result['subscribers']) == 5
 
 
-def test_ddb_error_returns_empty_with_error(mocker):
+def test_a_failed_query_raises(mocker):
+    """No empty answer: notify_dependents' state retries the failure (Principle #41)."""
     mocker.patch.object(qs_module.subscriptions_repo, 'list_for_dependency',
                         side_effect=Exception('Connection refused'))
-    result = qs_module.handler({
-        'task_name': 'extract',
-        'pipeline_execution_short': 'abc12345',
-    }, {})
-    assert result['subscribers'] == []
-    assert 'error' in result
+    with pytest.raises(Exception, match='Connection refused'):
+        qs_module.handler({'task_name': 'extract', 'pipeline_execution_short': 'abc12345'}, {})
 
 
 def test_access_denied_reraises(mocker):

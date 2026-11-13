@@ -96,7 +96,7 @@
             "S": "{% $states.context.Execution.Name %}"
           },
           "task_date": {
-            "S": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}"
+            "S": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
           },
           "status": {
             "S": "failed"
@@ -220,7 +220,7 @@
             "S": "{% $states.context.Execution.Name %}"
           },
           "task_date": {
-            "S": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}"
+            "S": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
           },
           "status": {
             "S": "failed"
@@ -295,7 +295,7 @@
               "TimeoutSeconds": 86400,
               "Arguments": {
                 "StateMachineArn": "${wrapper_arn}",
-                "Name": "{% $substring('remote_task-' & ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
+                "Name": "{% $substring('remote_task-' & (($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
                 "Input": {
                   "task_name": "remote_task",
                   "task_arn": "arn:aws:states:us-east-1:999:stateMachine:remote",
@@ -309,9 +309,9 @@
                   "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
                   "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
                   "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}",
-                  "date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
-                  "current_date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
-                  "PARTITION_ARG": "{% $exists($states.input.variables.PARTITION_ARG) ? $states.input.variables.PARTITION_ARG : ($exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')))) %}",
+                  "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
+                  "current_date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
+                  "PARTITION_ARG": "{% $states.input.variables.PARTITION_ARG ? $states.input.variables.PARTITION_ARG : ($states.input.PARTITION_ARG ? $states.input.PARTITION_ARG : ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) %}",
                   "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
                   "orchestration_timeout": 86400,
                   "wait_before": 0,

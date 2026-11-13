@@ -105,7 +105,6 @@ class Limits:
     SLA_DAYS = 14
     PARALLEL_DATE_QUERIES = 14      # Worker cap when fanning date queries out one-per-day
     TTL_DAYS = 30
-    TTL_QUEUED_DAYS = 7             # TTL for queued_asset_events
     MAX_NOTIFICATION_HOURS = 168    # Max 7 days for notifications
     
     # String limits

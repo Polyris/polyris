@@ -32,28 +32,40 @@ from .partitions import MAX_PARTITION_KEY_LENGTH
 # =============================================================================
 # JSONata Expression Constants
 # =============================================================================
-# Used in task and step inputs for date/partition resolution.
-# Fallback chain: variables.current_date → input.current_date → $now() today
+# Used in task and step inputs for date/partition resolution (ADR #133).
 #
-# NOTE: Define_Inputs state (orchestrator level) uses a DIFFERENT fallback
-# chain (→ null, not → $now()). Do NOT use these constants for Define_Inputs.
+# A run has one date, the same for every task: the date it was started for
+# (current_date: the console, a backfill, an asset trigger), else the UTC day its
+# schedule fired it for (SCHEDULED_TIME_FIELD, filled in by EventBridge
+# Scheduler), else the UTC day the execution started. Never $now(): each task
+# builds its input at its own moment, so a run crossing midnight would get two
+# dates, and a run scheduled at 23:59 that starts at 00:01 the next day's.
+# Values are tested, not presence: Define_Inputs passes absent fields on as null,
+# and $exists(null) is true.
+
+#: The field of a scheduled run's input that holds the time its schedule fired it
+#: for. deploy.py puts EventBridge Scheduler's <aws.scheduler.scheduled-time> there.
+SCHEDULED_TIME_FIELD = "scheduled_time"
+
+_RUN_DATE = (
+    "($states.input.current_date ? $states.input.current_date "
+    f": ($states.input.{SCHEDULED_TIME_FIELD} ? $substringBefore($states.input.{SCHEDULED_TIME_FIELD}, 'T') "
+    ": $substringBefore($states.context.Execution.StartTime, 'T')))"
+)
 
 _DATE_FALLBACK = (
-    "$exists($states.input.variables.current_date) "
-    "? $states.input.variables.current_date "
-    ": ($exists($states.input.current_date) "
-    "? $states.input.current_date "
-    ": $substringBefore($now(), 'T'))"
+    "($states.input.variables.current_date ? $states.input.variables.current_date "
+    f": {_RUN_DATE})"
 )
 
 JSONATA_DATE = f"{{% {_DATE_FALLBACK} %}}"
 
 JSONATA_PARTITION = (
-    "{% $exists($states.input.variables.PARTITION_ARG) "
+    "{% $states.input.variables.PARTITION_ARG "
     "? $states.input.variables.PARTITION_ARG "
-    ": ($exists($states.input.PARTITION_ARG) "
+    ": ($states.input.PARTITION_ARG "
     "? $states.input.PARTITION_ARG "
-    f": ({_DATE_FALLBACK})) %}}"
+    f": {_DATE_FALLBACK}) %}}"
 )
 
 _EXEC_NAME_SUFFIX = (
@@ -1357,8 +1369,10 @@ def _build_registration_chain(
                 "register_only": JSONATA_REGISTER_ONLY,
                 "_suppress_asset_event": JSONATA_SUPPRESS_ASSET_EVENT,
                 "cascade_all": JSONATA_CASCADE_ALL,
-                "current_date": "{% $exists($states.input.current_date) ? $states.input.current_date : null %}",
-                "PARTITION_ARG": "{% $exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.current_date) ? $states.input.current_date : null) %}"
+                # The Output replaces the whole input: every field a task reads must be passed on here.
+                "triggered_by": JSONATA_TRIGGERED_BY,
+                "current_date": f"{{% {_RUN_DATE} %}}",
+                "PARTITION_ARG": f"{{% $states.input.PARTITION_ARG ? $states.input.PARTITION_ARG : {_RUN_DATE} %}}",
             },
             "Next": "Register_Pipeline"
         }

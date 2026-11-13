@@ -170,7 +170,6 @@ glue = _LazyGlue()
 # ============================================
 TABLE_NAME = os.environ.get('DYNAMODB_TABLE', 'pipeline-executions')
 PIPELINES_TABLE = os.environ.get('PIPELINES_TABLE', 'pipeline-registry')
-SUBSCRIPTIONS_TABLE = os.environ.get('SUBSCRIPTIONS_TABLE', 'dep-subscriptions')
 ASSET_EVENTS_TABLE = os.environ.get('ASSET_EVENTS_TABLE', 'asset-events')
 # How long an asset fact lives; the same value run_task's fact writes use.
 ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))

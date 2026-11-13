@@ -16,6 +16,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
   - [CloudFront + API Gateway (Console UI)](#cloudfront--api-gateway-console-ui)
   - [CloudWatch log groups (17)](#cloudwatch-log-groups-17)
   - [IAM (11 roles + 3 managed policies)](#iam-11-roles--3-managed-policies)
+- [Tags](#tags)
 - [Where does each pipeline run's state live?](#where-does-each-pipeline-runs-state-live)
 - [Stack outputs to read after deploy](#stack-outputs-to-read-after-deploy)
 - [Step Functions definition sources](#step-functions-definition-sources)
@@ -151,6 +152,19 @@ Your workload logs (Lambdas / Glue jobs / ECS tasks that your pipelines invoke) 
 Roles the stack creates during install, all named `${Namespace}-${Stage}-polyris-*-role`. Full inventory + purpose per role in [IAM_PERMISSIONS.md#iam-roles-polyris-creates](IAM_PERMISSIONS.md#iam-roles-polyris-creates).
 
 Two managed policies the stack publishes for you to attach to YOUR workloads' execution roles: `polyris-task-read`, `polyris-task-write`. Details in [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam). The third, `polyris-reconcile`, holds the reconciler's own grants; the stack attaches it to its reconcile, asset-fanout and sweeper roles.
+
+## Tags
+
+Every resource in the stack that AWS can tag carries three tags. The resources `polyris-deploy` creates for a pipeline (its state machine, log group and scheduler role) carry four (ADR #132):
+
+| Key | Value |
+|---|---|
+| `polyris:namespace` | the stack's `Namespace` |
+| `polyris:stage` | the stack's `Stage` |
+| `polyris:component` | `platform` on this stack's resources, `pipeline` on a pipeline's |
+| `polyris:pipeline` | the pipeline's id; pipeline resources only |
+
+Resources AWS cannot tag, such as the sweeper's schedule and the IAM policies, carry none. A stack installed with `polyris-up` also has the stack tag `polyris:platform=true`, which CloudFormation copies to its resources. To split your bill by these tags, see [Track costs](../how-to/manage-the-platform.md#track-costs).
 
 ## Where does each pipeline run's state live?
 

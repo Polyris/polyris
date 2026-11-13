@@ -10,14 +10,13 @@ import json
 from datetime import timedelta
 
 import pytest
-from sfn_jsonata import NOW, evaluate, load_template
+from sfn_jsonata import LAMBDA_TRANSIENT, NOW, evaluate, load_template
 
 from polyris.coordination import attention, ownership, wake
 from polyris.coordination.times import format_utc
 
 #: A Lambda timeout (Sandbox.Timedout) or crash (Lambda.Unknown) leaves the saved row to the sweeper too.
-TRANSIENT = {"Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException",
-             "Lambda.TooManyRequestsException", "Lambda.Unknown", "Sandbox.Timedout", wake.TRANSIENT_ERROR}
+TRANSIENT = LAMBDA_TRANSIENT
 
 
 @pytest.fixture(scope="module")

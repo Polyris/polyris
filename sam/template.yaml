@@ -155,12 +155,12 @@ Globals:
   Function:
     Runtime: python3.12
     Architectures: [x86_64]
+    # Billing tags (ADR #132, Principle #54): every resource AWS can tag carries these three;
+    # tests/sdk/test_resource_tags.py checks the template after the SAM transform.
     Tags:
-      Environment: polyris
-      Stack: Data Orchestration
-      Stage: !Ref Stage
-      Namespace: !Ref Namespace
-      ManagedBy: cloudformation
+      polyris:namespace: !Ref Namespace
+      polyris:stage: !Ref Stage
+      polyris:component: platform
 
 # =============================================================================
 # Conditions
@@ -306,16 +306,12 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [EnablePitrCondition, true, false]
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
-        - Key: Name
-          Value: !Sub "${Namespace}-${Stage}-polyris-pipeline-tokens"
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   DependencySubscriptionsTable:
     Type: AWS::DynamoDB::Table
@@ -345,14 +341,12 @@ Resources:
         AttributeName: ttl
         Enabled: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   PipelineRegistryTable:
     Type: AWS::DynamoDB::Table
@@ -368,14 +362,12 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [EnablePitrCondition, true, false]
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   AssetEventsTable:
     Type: AWS::DynamoDB::Table
@@ -430,14 +422,12 @@ Resources:
         AttributeName: ttl
         Enabled: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   TaskEventsTable:
     Type: AWS::DynamoDB::Table
@@ -479,14 +469,12 @@ Resources:
         AttributeName: ttl
         Enabled: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   ApiTokensTable:
     Type: AWS::DynamoDB::Table
@@ -522,14 +510,12 @@ Resources:
         AttributeName: ttl
         Enabled: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   AssetSubscriptionsTable:
     Type: AWS::DynamoDB::Table
@@ -550,14 +536,12 @@ Resources:
         AttributeName: ttl
         Enabled: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stack
-          Value: Data Orchestration
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ---------------------------------------------------------------------------
   # S3 Bucket — polyris-deploy CloudFormation artifact storage.
@@ -584,12 +568,12 @@ Resources:
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ---------------------------------------------------------------------------
   # IAM — Shared execution role for Step Functions, API Gateway, EventBridge
@@ -618,12 +602,12 @@ Resources:
         Role assumed by orchestration when running task SFNs in same account.
         For cross-account: replace with a role in the target account.
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   CrossAccountPipelinePolicy:
     Type: AWS::IAM::Policy
@@ -750,12 +734,12 @@ Resources:
         Step Functions execution role: states + lambda invoke + sts assume-role +
         EventBridge managed rules + DynamoDB + CloudWatch logs
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   OrchestrationRolePolicy:
     Type: AWS::IAM::Policy
@@ -912,30 +896,65 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-dependency-wrapper"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   RunTaskHelperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-run-task-helper"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   RegistrationHelperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-registration-helper"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   FailureHandlerLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-failure-handler"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   NotifyDependentsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-notify-dependents"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
 
   PauseWaiterLogGroup:
@@ -943,30 +962,65 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-pause-waiter"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   RestartWrapperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-wrapper"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   RestartTaskHelperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-task-helper"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   BulkBackfillLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-bulk-backfill"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   TestSfnLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-test"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ---------------------------------------------------------------------------
   # Lambda Log Groups
@@ -977,36 +1031,78 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-notify"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   QuerySubscriptionsLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-query-subscriptions"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   ConsoleApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-console-api"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   ReconcileLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-reconcile"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   AssetFanoutLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-asset-fanout"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   SweeperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-sweeper"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ---------------------------------------------------------------------------
   # Lambda Functions
@@ -1027,10 +1123,6 @@ Resources:
       Environment:
         Variables:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   QuerySubscriptionsFunction:
     Type: AWS::Serverless::Function
@@ -1047,10 +1139,6 @@ Resources:
       Environment:
         Variables:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   ReconcileFunction:
     Type: AWS::Serverless::Function
@@ -1058,7 +1146,7 @@ Resources:
       FunctionName: !Sub "${Namespace}-${Stage}-polyris-reconcile"
       CodeUri: lambdas/coordination/
       Handler: reconcile.handler
-      # Resume handles one run's rows for at most 20 s (RESUME_BUDGET_SECONDS),
+      # Resume handles one run's rows for at most 10 s (RESUME_BUDGET_SECONDS),
       # then leaves the rest due for the sweeper.
       Timeout: 30
       # Every task wake runs through this function; CPU scales with memory,
@@ -1074,10 +1162,6 @@ Resources:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   # ADR #130 §6.1: wakes the tasks waiting on each new asset fact.
   AssetFanoutFunction:
@@ -1101,10 +1185,6 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   # ADR #130 §6.1. Retries until the record is handled (records live for the
   # stream's 24 h); a record AssetFanout cannot handle becomes a warning in
@@ -1124,6 +1204,13 @@ Resources:
       FilterCriteria:
         Filters:
           - Pattern: '{"eventName": ["INSERT"]}'
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ADR #130 §8: every 5 minutes, re-checks the waiting tasks that are due, so a
   # lost wake-up hint delays a task and never loses it.
@@ -1149,10 +1236,6 @@ Resources:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           ASSET_FANOUT_FUNCTION: !Ref AssetFanoutFunction
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   # No retry: a missed run is covered by the next one, 5 minutes later.
   SweeperSchedule:
@@ -1189,7 +1272,6 @@ Resources:
         Variables:
           DYNAMODB_TABLE: !Ref PipelineTokensTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
-          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
@@ -1234,10 +1316,6 @@ Resources:
             ApiId: !Ref ConsoleApi
             Path: /
             Method: ANY
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   # ---------------------------------------------------------------------------
   # Lambda IAM Roles
@@ -1280,6 +1358,13 @@ Resources:
                   - dynamodb:GetItem
                 Resource:
                   - !GetAtt PipelineRegistryTable.Arn
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   QuerySubscriptionsRole:
     Type: AWS::IAM::Role
@@ -1305,6 +1390,13 @@ Resources:
                 Resource:
                   - !GetAtt DependencySubscriptionsTable.Arn
                   - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   CoordinationReconcilePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -1375,6 +1467,13 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - !Ref CoordinationReconcilePolicy
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # AssetFanout runs the reconciler in-process; beyond its policy it reads
   # the asset-events stream and the asset:{name} subscriptions.
@@ -1413,12 +1512,26 @@ Resources:
                 Resource:
                   - !GetAtt DependencySubscriptionsTable.Arn
                   - !GetAtt AssetSubscriptionsTable.Arn
+              # A subscription its pipeline no longer has (asset dropped from the schedule,
+              # pipeline destroyed) is deleted, so it starts nothing (ADR #130 §6.1).
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !GetAtt AssetSubscriptionsTable.Arn
               # Push: start a consumer pipeline (deterministic name, so never twice).
               - Effect: Allow
                 Action:
                   - states:StartExecution
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # The sweeper runs the reconciler in-process; beyond its policy it reads the
   # due rows from the attention index and keeps its lease row.
@@ -1453,11 +1566,13 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt PipelineTokensTable.Arn
-              # The catch-up: the subscribed assets, and each one's push consumers.
+              # The catch-up: the subscribed assets, and each one's push consumers; a
+              # subscription its pipeline no longer has is deleted (ADR #130 §6.1).
               - Effect: Allow
                 Action:
                   - dynamodb:Scan
                   - dynamodb:Query
+                  - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt AssetSubscriptionsTable.Arn
               # Push retries and the catch-up start consumer pipelines (deterministic names).
@@ -1485,6 +1600,13 @@ Resources:
                 Action:
                   - lambda:ListEventSourceMappings
                 Resource: "*"
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   SweeperScheduleRole:
     Type: AWS::IAM::Role
@@ -1507,6 +1629,13 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt SweeperFunction.Arn
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   ConsoleApiRole:
     Type: AWS::IAM::Role
@@ -1542,8 +1671,6 @@ Resources:
                   - !Sub "${PipelineTokensTable.Arn}/index/*"
                   - !GetAtt PipelineRegistryTable.Arn
                   - !Sub "${PipelineRegistryTable.Arn}/index/*"
-                  - !GetAtt DependencySubscriptionsTable.Arn
-                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
                   - !GetAtt AssetEventsTable.Arn
                   - !Sub "${AssetEventsTable.Arn}/index/*"
                   - !GetAtt TaskEventsTable.Arn
@@ -1600,6 +1727,13 @@ Resources:
                 Resource:
                   - !GetAtt NotifyFunction.Arn
                   - !GetAtt ReconcileFunction.Arn
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ---------------------------------------------------------------------------
   # API Gateway (HTTP API)
@@ -1619,6 +1753,10 @@ Resources:
       # Auth: Cognito JWT authorizer - configured post-deploy if EnableCognitoAuth=true
       # For SAM HttpApi, auth is attached per-route or via DefinitionBody
       # Console API Lambda handles auth validation internally when COGNITO vars are set
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
 
   # ---------------------------------------------------------------------------
   # Cognito (optional)
@@ -1647,9 +1785,9 @@ Resources:
           RequireSymbols: false
       MfaConfiguration: "OFF"
       UserPoolTags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
 
   CognitoUserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -1733,6 +1871,13 @@ Resources:
             Output:
               status: completed
               message: Test task finished successfully
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   TestFailureSfn:
     Type: AWS::StepFunctions::StateMachine
@@ -1759,6 +1904,13 @@ Resources:
             Type: Fail
             Error: TestError
             Cause: This is a deliberate test failure to verify error handling
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   TestQuickSfn:
     Type: AWS::StepFunctions::StateMachine
@@ -1789,6 +1941,13 @@ Resources:
               message: Quick test finished
               data:
                 value: 42
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # ---------------------------------------------------------------------------
   # Helper Step Functions (using Fn::Sub for ARN substitution)
@@ -1812,6 +1971,10 @@ Resources:
       DefinitionSubstitutions:
         tokens_table: !Ref PipelineTokensTable
       DefinitionUri: sfn_templates/helpers/pause_waiter/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   RestartWrapperSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -1826,6 +1989,10 @@ Resources:
           - CloudWatchLogsLogGroup:
               LogGroupArn: !GetAtt RestartWrapperLogGroup.Arn
       DefinitionUri: sfn_templates/helpers/restart_wrapper/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
 
   QuerySubscriptionsPermissionFromSfn:
     Type: AWS::Lambda::Permission
@@ -1860,6 +2027,10 @@ Resources:
         query_subscriptions_lambda: !GetAtt QuerySubscriptionsFunction.Arn
         reconcile_function_arn: !GetAtt ReconcileFunction.Arn
       DefinitionUri: sfn_templates/helpers/notify_dependents/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   RegistrationHelperSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -1878,6 +2049,10 @@ Resources:
         tokens_table: !Ref PipelineTokensTable
         reconcile_function_arn: !GetAtt ReconcileFunction.Arn
       DefinitionUri: sfn_templates/helpers/registration/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   RegisterPipelineSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -1895,6 +2070,10 @@ Resources:
         registry_table: !Ref PipelineRegistryTable
         asset_subscriptions_table: !Ref AssetSubscriptionsTable
       DefinitionUri: sfn_templates/helpers/register_pipeline/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   RestartTaskHelperSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -1913,6 +2092,10 @@ Resources:
         task_events_table: !Ref TaskEventsTable
         wrapper_arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dependency-wrapper"
       DefinitionUri: sfn_templates/helpers/restart_task/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   FailureHandlerSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -1934,6 +2117,10 @@ Resources:
         notify_dependents_helper_arn: !Ref NotifyDependentsSfn
         default_slack_mentions: !Ref DefaultSlackMentions
       DefinitionUri: sfn_templates/helpers/failure_handler/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   RunTaskHelperSfn:
     Type: AWS::Serverless::StateMachine
     # A fact recorded by the new definition must find the mapping that wakes
@@ -1965,6 +2152,10 @@ Resources:
         same_account_role_arn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-default-task-role"
         aws_region: !Ref AWS::Region
       DefinitionUri: sfn_templates/helpers/run_task/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   DependencyWrapperSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -1988,6 +2179,10 @@ Resources:
         notify_function_arn: !GetAtt NotifyFunction.Arn
         default_orchestration_timeout_seconds: "86400"
       DefinitionUri: sfn_templates/dependency_wrapper/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
 
   BulkBackfillSfn:
     Type: AWS::Serverless::StateMachine
@@ -2006,6 +2201,10 @@ Resources:
         tokens_table: !Ref PipelineTokensTable
         pipeline_registry_table: !Ref PipelineRegistryTable
       DefinitionUri: sfn_templates/bulk_backfill/sfn.tpl.json
+      Tags:
+        polyris:namespace: !Ref Namespace
+        polyris:stage: !Ref Stage
+        polyris:component: platform
   # ---------------------------------------------------------------------------
   # Console UI — S3 + CloudFront (static export)
   # ---------------------------------------------------------------------------
@@ -2020,12 +2219,12 @@ Resources:
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   ConsoleUiBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -2160,12 +2359,12 @@ Resources:
             ResponsePagePath: /index.html
         PriceClass: PriceClass_100
       Tags:
-        - Key: Environment
-          Value: polyris
-        - Key: Stage
-          Value: !Ref Stage
-        - Key: Namespace
+        - Key: polyris:namespace
           Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
 
   # ---------------------------------------------------------------------------
@@ -2223,6 +2422,13 @@ Resources:
               - Effect: Allow
                 Action: cloudformation:DescribeStacks
                 Resource: !Ref AWS::StackId
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   # Declared so it is deleted with the stack; Lambda would otherwise create
   # /aws/lambda/<name> itself, and polyris-down would leave it behind
@@ -2233,6 +2439,13 @@ Resources:
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-ui-bootstrap"
       RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   UiBootstrapFunction:
     Type: AWS::Serverless::Function
@@ -2247,10 +2460,6 @@ Resources:
       LoggingConfig:
         LogFormat: Text
         LogGroup: !Ref UiBootstrapLogGroup
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   UiBootstrap:
     Type: AWS::CloudFormation::CustomResource
@@ -2316,6 +2525,13 @@ Resources:
                 Action:
                   - cloudformation:DescribeStacks
                 Resource: "*"
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
 
   BucketCleanupFunction:
     Type: AWS::Serverless::Function
@@ -2327,10 +2543,6 @@ Resources:
       Timeout: 300
       MemorySize: 256
       Role: !GetAtt BucketCleanupRole.Arn
-      Tags:
-        Environment: polyris
-        Stage: !Ref Stage
-        Namespace: !Ref Namespace
 
   BucketCleanup:
     # References both buckets so CloudFormation puts this resource *after*

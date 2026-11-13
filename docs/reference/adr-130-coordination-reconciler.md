@@ -1,8 +1,8 @@
 # ADR #130 — Coordination layer: one reconciler, facts as state, stream-driven hints
 
-> **Status:** ACCEPTED (2026-11-12), revision 5. Implementation in progress on `feat/coordination-reconciler` (target release v1.2.0).
+> **Status:** ACCEPTED (2026-11-12), revision 6 (2026-11-13: one owner per task row, by generation, §2.1). Implemented on `feat/coordination-reconciler` for v1.2.0.
 >
-> The design went through five review rounds: break, architect, developer, QA, DevOps and reliability reviews. Every finding is resolved below or listed under *Out of scope*.
+> The design went through five review rounds: break, architect, developer, QA, DevOps and reliability reviews. The implementation went through two more rounds of break, architect and reliability reviews. Every finding is resolved below or listed under *Out of scope*.
 >
 > **Maintainer decisions:**
 >
@@ -62,6 +62,7 @@ Every hang and wrong wake in this layer since ADR #122 traces to five causes.
 | B-O5 | An operator decides a task held by a pause → its pause wait, retried at the heartbeat, writes `waiting_paused` back, and the task can run |
 | B-W1 | A wrapper's claim is applied but its answer is lost (a 5xx, a timeout) → the retry fails its own condition, the wrapper ends as superseded, and the task never runs |
 | B-U2 | A consumer is deployed after facts were recorded → the hourly catch-up starts it for those older facts |
+| B-U3 | A subscription outlives what made it (an asset dropped from the schedule, a destroyed pipeline) → facts keep starting the pipeline, or write a warning every hour |
 | B-F2 | One fact that no reader can place on a partition → every task waiting on its asset fails its decision |
 | B-M2 | Mark Successful cannot record a fact → it logs and reports plain success; the tasks waiting on the asset hang with no trace in the console |
 | B-R1 | `restart_task` passes neither `wait_for` nor the other starter fields → the restarted task is not gated on assets |
@@ -115,7 +116,7 @@ The partition of a fact is the **partition of the run that produced it**:
 
 The write is conditional (`attribute_not_exists(event_time)`, retried with a fresh timestamp), so a fact is never overwritten.
 
-`cascade='none'` (ADR #57) now records the fact but starts no push consumer. Pull waiters for that partition are woken, because the data exists. A writer census test fails on any `asset-events` writer that does not use the template or the helper.
+`cascade='none'` (ADR #57) now records the fact but starts no push consumer. Pull waiters for that partition are woken, because the data exists. `tests/sdk/test_run_task_facts.py` checks that `run_task`'s JSONata writes the fact the helper writes, and `tests/sdk/test_asset_fact_writers_wiring.py` that both writers reach the same table and keep facts equally long.
 
 ### 2. Status ownership
 
@@ -127,7 +128,7 @@ The write is conditional (`attribute_not_exists(event_time)`, retried with a fre
 | `waiting` → `waiting_paused` (dependencies satisfied, pipeline paused) | reconciler (§3) |
 | `waiting`/`waiting_paused` → `deps_ready`, `skipped` (+ `skip_origin='rule'`, `skip_reason`, `finished_at`), `upstream_failed` | **the wrapper**, after it receives the signal (§6.4) |
 | → `failed` (task failures, including coordination errors) | wrapper → failure handler, which never overwrites `upstream_failed` |
-| `waiting` → `aborted` (zombie: wrapper no longer running), or → `skipped` (a pre-upgrade wrapper consumed a skip signal) | reconciler (§3, step 3) |
+| `waiting` or `waiting_paused` → `aborted` (zombie: wrapper no longer running), or `waiting` → `skipped` (a pre-upgrade wrapper consumed a skip signal) | reconciler (§3, step 3) |
 | `waiting_delay`, `waiting_decision`, `running`, terminal statuses, `pause_token` rows | wrapper / `run_task` / `pause_waiter` / console actions, as today |
 
 The party that **receives** a wake writes the status that follows it. A signal and its status therefore cannot be split by a crash, and the reconciler never has to tell a token it consumed from one that expired.
@@ -199,6 +200,7 @@ A contract test lists every write to a task row in the templates and the code, a
 3. **Dead token** (`TaskTimedOut`, `InvalidToken`, `TaskDoesNotExist`). The reconciler checks the row's `wrapper_execution_arn`.
    - If that execution is still running, the token was consumed by a concurrent wake: do nothing.
    - If it `SUCCEEDED` and the verdict was `skip`, a pre-upgrade wrapper consumed the signal and expected the sender to write the status: write `skipped` (with `skip_origin='rule'`), conditional on `T` and `S`.
+   - If it does not exist and the row registered less than 2 minutes ago, do nothing: DescribeExecution is eventually consistent, so a new wrapper may not show yet (`sweep.EXECUTION_VISIBLE_AFTER`). The sweeper checks the row again.
    - Otherwise, if it is not running and the row still holds `T` and `S`, the row is a zombie (for example, a wrapper stopped outside polyris). Set `status = aborted` with an explanatory `error`, remove it from the attention index, and write a warning. The outcome is loud, not silent.
    - Zombies are also found without a signal. A row past its liveness deadline (`started_at` + `orchestration_timeout` + 1 h, or three timeouts for a wrapper started before the upgrade, which still retries its wait) gets the same wrapper check from the sweeper.
 4. **Transient error** (throttling, 5xx, timeouts): **raise**. Nothing is written. The caller's retry or the sweeper repeats the call.
@@ -206,7 +208,7 @@ A contract test lists every write to a task row in the templates and the code, a
 6. **`noop`:** if the status is not reconcilable, remove the row from the attention index, `IF status = :read_status AND started_at = :S`. Pinning to `started_at` means a re-registered row (new `started_at`) is never touched. The update uses `attribute_exists(execution_name)`, so it never creates a phantom row.
 7. **Fail closed.** No read failure, partial result or unknown state leads to a success signal.
 
-**Output.** `{verdict, reasons, deps, assets, action, latency_ms}`, logged as one structured line and returned.
+**Output.** `{execution_name, source, verdict, reasons, deps, assets, action, latency_ms}`, plus `enabled_at` for a task it signalled (§9), logged as one structured line and returned.
 
 ### 4. Asset conditions
 
@@ -272,11 +274,12 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 | `FunctionResponseTypes` | `ReportBatchItemFailures` |
 | on-failure destination | **none** (D22) |
 
-**Per-record work, with a time budget.** Records are processed one at a time, and so is the work inside a record. Records not reached within the budget are reported as batch-item failures and redelivered; the work is idempotent. Inside a record the work stops with 5 s of the invocation left: the waiters not reached are lost hints, which the sweeper's checks recover, and the push consumers not reached wait for the hourly catch-up. One record with more waiters than fit in an invocation therefore never times the function out and blocks its shard.
+**Per-record work, with a time budget.** Records are processed one at a time, and so is the work inside a record. Records not reached within the budget are reported as batch-item failures and redelivered; the work is idempotent. Inside a record the work stops with 5 s of the invocation left: the waiters not reached are lost hints, which the sweeper's checks recover, and the push consumers not reached wait for the hourly catch-up. One record with more waiters than fit in an invocation therefore never times the function out and blocks its shard. Push runs before pull: a record's consumers are few and only the hourly catch-up replays a missed one, while its waiters may be many and the sweeper re-checks each. A fact without `fact_version = 2` was written by an older version, which started its own consumers; the stream leaves it to adoption (§8 step 5).
 - **Pull:** query the `asset:{name}` subscriptions (consistent) and call `reconcile(subscriber, known_events=[record])` for each, one at a time.
 - **Push** (unless `cascade = none`):
   - for each `asset-subscriptions` row, evaluate the consumer's registry spec for **the event's own date**, D = `partition_date`, with the same rule as pull (§4). A run therefore follows the cadence of the finest input: a daily `sales` event starts that day's run with the latest weekly `prices` (D12). If a coarse input was missing for two or more periods, the dates it blocked are not started later automatically; recovering them is a backfill. A `.within()` in a push spec is evaluated as of the triggering fact's `event_time`, not the time of evaluation, so a retry, a late record or a catch-up replay gives the same answer as the first evaluation;
-  - a consumer reacts only to facts recorded after it subscribed: a row whose `subscribed_at` is later than the fact's `event_time` is skipped. `subscribed_at` is written once, at the consumer's first registration (`if_not_exists`), so the registration that every run repeats does not move it. Rows written before the field existed have none and are not filtered (B-U2);
+  - a consumer reacts only to facts recorded after it subscribed: a row whose `subscribed_at` is later than the fact's `event_time` is skipped. `subscribed_at` is written once, at the consumer's first registration (`if_not_exists`), so the registration that every run repeats does not move it. A row an older SDK wrote has no `subscribed_at`; its `registered_at`, rewritten on every run, is the cutover instead (B-U2);
+  - a subscription its pipeline no longer has is deleted and starts nothing: the pipeline was destroyed, now runs on a cron, dropped the asset from its schedule, or its state machine is gone. The delete is conditional on the `registered_at` it read, so a pipeline that registered again meanwhile keeps its row. A schedule that cannot be read is only warned about: deleting the row would leave a pipeline that never runs again to re-register (B-U3);
   - if satisfied (or `cascade = all`), start the consumer with a deterministic name from the run-name helper (§6.6);
   - `ExecutionAlreadyExists` counts as done;
   - a permanent error (`StateMachineDoesNotExist`) drops the item and writes one warning;
@@ -285,7 +288,7 @@ A DynamoDB Stream on `AssetEventsTable` (`NEW_IMAGE`) feeds an event source mapp
 
 **Writers only write the fact.**
 - `run_task` keeps `Record_Asset_Event` and drops its two notify states.
-- `mark_success` and every other writer outside `run_task` call `asset_events_repo.write_fact`. A fact that Mark Successful cannot write does not undo the action: it becomes a `manual` warning, and the response lists it in `failed_facts`.
+- `mark_success` and every other writer outside `run_task` call `asset_events_repo.write_fact`. A fact that Mark Successful cannot write does not undo the action: it becomes a `fact` warning, and the response lists it in `failed_facts`. When the task's outlets cannot be read from the registry, the warning and `failed_facts` name `*`: no fact was recorded.
 
 #### 6.2 Task completion → `notify_dependents`
 
@@ -387,8 +390,8 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
    - the run is still paused → due again, with the same backoff;
    - otherwise send the pause callback as resume does, and write a `sweeper` warning: resume missed the task.
 3. **Push retries.** For `retry#0..f` rows that are due, retry with backoff (5 min → 1 h).
-4. **Push catch-up,** hourly. For every subscribed asset, read the facts written in the last 48 hours (consistent base-table query) and replay AssetFanout's push branch for each of them: same date, same rule, same `cascade` handling, same deterministic names. Only facts with `fact_version = 2`, written by the new code, are replayed. Facts written by the old code were already handled by the old push path, so they are never replayed and nothing starts twice. A consumer deployed after a fact is not started for it: the replay applies the `subscribed_at` rule of §6.1. A run that reaches its budget keeps its place, down to the last fact it replayed, and the next run goes on from there.
-5. **Adoption.** When the adoption generation (`sweep.ADOPTION_GENERATION`) differs from the one recorded in `_engine_health`, each run continues two resumable scans until both finish. Each scan then repeats for one more hour. A release raises the generation only when it changes what a task row or a fact must carry, so an upgrade that keeps the row shapes scans nothing. The generation and the cursors are kept in `_engine_health`. Adopted rows that have no `orchestration_timeout` use the platform default for the liveness deadline. Adopted rows that have no `starter_input` restart the way they do today, with a warning.
+4. **Push catch-up,** hourly. For every subscribed asset, read the facts written in the last 48 hours (consistent base-table query) and replay AssetFanout's push branch for each of them: same date, same rule, same `cascade` handling, same deterministic names. Only facts with `fact_version = 2`, written by the new code, are replayed. Facts written by the old code were already handled by the old push path, so they are never replayed and nothing starts twice. A fact the replay cannot read is skipped with a log line: the stream warned about it when it was recorded. A consumer deployed after a fact is not started for it: the replay applies the `subscribed_at` rule of §6.1. A run that reaches its budget keeps its place, down to the last fact it replayed, and the next run goes on from there.
+5. **Adoption.** When the adoption generation (`sweep.ADOPTION_GENERATION`) differs from the one recorded in `_engine_health`, each run continues two resumable scans until both finish. Each scan then repeats for one more hour. A scan checks the budget before each row (Principle #52) and keeps the key of the last row it handled as its cursor. A fact it cannot read stays as it is, with a `coordination` warning (Principle #51). A release raises the generation only when it changes what a task row or a fact must carry, so an upgrade that keeps the row shapes scans nothing. The generation and the cursors are kept in `_engine_health`. Adopted rows that have no `orchestration_timeout` use the platform default for the liveness deadline. Adopted rows that have no `starter_input` restart the way they do today, with a warning.
    - **Task rows.** Every reconcilable row without an `attention` key gets one: `paused#` if it holds a `pause_token`, `waiting#` otherwise. Rows registered before or during the deploy are then reconciled from their facts, whatever pointer shape they were written with. The extra hour of repeats covers registrations that the old definitions wrote while the stack update was still running.
    - **Asset facts.** Every row without `partition_date` gets `partition_key`, `partition_date` and `granularity`, derived from `execution_date` and the producer's registry entry. It does **not** get `fact_version`. These writes are `MODIFY` records, which the INSERT-only stream filter ignores, so they trigger nothing.
 6. **Engine self-check,** last:
@@ -409,12 +412,12 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
 1. **Heals itself in code.** Retries, the sweeper, push retries and catch-up, idempotent signals and starts. No human is needed.
 2. **Fails loudly in code.** Non-transient coordination errors fail the affected task with the real cause (§3 step 5; registration §6.3; a pause token `pause_waiter` cannot save fails the pause wait with `CoordinationError`, B-P4). Zombies are marked `aborted` with an explanation (§3 step 3). The user sees a failed task with its reason where they already look, and re-runs it after fixing the cause.
 3. **Engine health is shown in the console.** This covers the case where no code runs at all (schedule removed, event source mapping disabled, stream disabled).
-   - The sweeper writes `_engine_health`: last run, event source mapping state and last result, stream state, oldest overdue waiting row, push retry backlog, the steps that failed, and its adoption and catch-up progress. A coordination error reaches the bell as a warning, not this row.
+   - The sweeper writes `_engine_health`: last run, event source mapping state and last result, stream state, oldest overdue waiting row, push retry backlog, the steps that failed, and its adoption and catch-up progress. A reading it cannot take is listed with the failed steps, so the row is still written. A coordination error reaches the bell as a warning, not this row.
    - `/api/health` adds a `coordination` section. It also judges staleness itself: no sweeper run for 15 minutes means the engine is unhealthy.
    - The console shows a banner while the engine is unhealthy.
 
 **Warnings.** One helper, `records.warning_item(*, kind, execution_name, task_name, pipeline_name, pipeline_execution, task_date, error, now)`, builds the row `_notify_warn_{kind}_{execution_name}`; SFN templates and generated ASL write the same shape, pinned by contract tests:
-- `kind ∈ WarningKind`: `coordination`, `zombie`, `push`, `sweeper`, `notify`, and `manual` for a manual action that kept a task's real output;
+- `kind ∈ WarningKind`: `coordination`, `zombie`, `push`, `sweeper`, `notify`, `manual` for a manual action that kept a task's real output, and `fact` for asset facts a manual action could not record;
 - `attention = warn#{h}`, `attention_at = now`;
 - TTL 8 days.
 
@@ -510,15 +513,15 @@ Forward-fix only (D13):
 1. **No separate index deploy** (decided 2026-11-12). Both GSIs (one per table) ship in the main deploy, inside the window. CloudFormation keeps the table update in progress until a new index is `ACTIVE`, and every resource that reads an index refers to its table, so it is updated only after that. The cost is a window that lasts as long as the indexes take to build, which depends on table size; a separate release or a two-phase template parameter would have shortened it at the price of an extra upgrade step.
 2. **Window.**
    - Pause pipeline schedules.
-   - Wait until no `run_task` execution is running (a checkable list). A producer started on the old definition that finishes after the deploy calls deleted targets and fails loudly; the drain avoids that.
+   - Wait until no `run_task` execution is in flight: no task is `running`, `waiting_delay` or `waiting_decision`, and no run is paused (resume or stop paused runs first, since a task held at the start of a paused run is a `run_task` execution too). The console's Tasks view shows it; there is no separate script (D39). A producer started on the old definition that finishes after the deploy calls deleted targets and fails loudly; the drain avoids that.
    - Waiting wrappers do **not** need to finish: the sweeper adopts their rows (§8 step 5) and reconciles them from facts. A pre-upgrade wrapper that receives a skip is handled by the zombie rule (§3 step 3).
    - Existing asset facts get their partition fields during adoption, so the partition index sees them.
 3. **Main deploy.**
-   - `polyris-up --disable-rollback` (ADR #131). Its change set is checked first: a replaced or removed table stops it. A failed update keeps what it already changed, so it is fixed forward (D13), not rolled back to code that does not know the new rows.
+   - `polyris-up --disable-rollback` (ADR #131). Its change set is checked first: a replaced or removed table stops it. This upgrade removes `QueuedAssetEventsTable`, which 1.2 no longer uses, so `polyris-up` asks before going on; without a terminal it needs `--accept-data-loss`. A failed update keeps what it already changed, so it is fixed forward (D13), not rolled back to code that does not know the new rows.
    - The run_task definition is updated only after the event source mapping exists (`DependsOn`).
 4. **After.**
    - Resume schedules.
-   - Re-run the fires missed during the window (the procedure lists them).
+   - Re-run the fires missed during the window: the schedules that were paused, for the dates they would have run.
    - Check the health banner and the smoke subset.
 
 The CHANGELOG upgrade note repeats these steps.

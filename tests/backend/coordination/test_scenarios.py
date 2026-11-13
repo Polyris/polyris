@@ -184,7 +184,7 @@ def test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it(wo
     world.inject_failure("PutItem", "AssetEventsTable", "AccessDeniedException", times=1)
     response = world.mark_success(produced, "build")
     assert list(response["failed_facts"]) == [A.name]
-    assert any(w["kind"] == "manual" and f"fact of asset {A.name} was not recorded" in w["error"]
+    assert any(w["kind"] == "fact" and f"fact of asset {A.name} was not recorded" in w["error"]
                for w in world.warnings())
     consumer = world.start_run(world.deploy(waits_for("c", [A])), DATE)
     assert world.status(consumer, "consumer") == "waiting"
@@ -237,6 +237,52 @@ def test_a_consumer_deployed_after_the_facts_does_not_start_for_them(world):
     world.write_event(A, DATE)
     world.deliver_hints()
     assert [run.date for run in world.push_runs(consumer)] == [DATE]
+
+
+@defect("B-D1")
+def test_a_scheduled_run_carries_the_day_it_was_scheduled_for(world):
+    nightly = world.deploy(pipeline("nightly", [("load", {}), ("report", {})], [("load", "report")],
+                                    schedule="cron(59 23 * * ? *)", variables={"region": "eu"}))
+    world.clock.jump_to("2026-11-13T00:01:00.000Z")         # Scheduler started it two minutes late
+    run = world.fire_schedule(nightly, scheduled_time=f"{DATE}T23:59:00Z")
+    load = world.row(run, "load")
+    assert load is not None and load["date"] == DATE
+    assert load["triggered_by"] == "schedule"
+    world.complete(run, "load")
+    assert world.running_tasks(run) == ["report"]
+
+
+@defect("B-D1")
+def test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started(world):
+    plain = world.deploy(pipeline("plain", [("a", {}), ("b", {}), ("c", {})]))
+    world.clock.jump_to(f"{DATE}T23:59:59.990Z")
+    run = world.start_bare(plain)
+    assert run.date == DATE
+    assert [(world.row(run, t) or {}).get("date") for t in ("a", "b", "c")] == [DATE] * 3
+
+
+@defect("B-U3")
+def test_an_asset_dropped_from_the_schedule_no_longer_starts_the_pipeline(world):
+    world.deploy(pipeline("pushed", [("report", {})], schedule=[A & B]))
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[B]))     # redeployed without A
+    assert world.push_subscribers(A) == ["pushed"]          # registration does not remove the old subscription
+    world.write_event(B, DATE)
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    assert len(world.push_runs(consumer)) == 1              # B's fact; A's starts nothing
+    assert world.push_subscribers(A) == [] and world.push_subscribers(B) == ["pushed"]
+    assert world.warnings() == []
+
+
+@defect("B-U3")
+def test_a_pipeline_moved_to_a_cron_loses_its_push_subscription_quietly(world):
+    world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
+    consumer = world.deploy(pipeline("pushed", [("report", {})]))                  # now on a cron
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    assert world.push_runs(consumer) == []
+    assert world.push_subscribers(A) == []
+    assert world.warnings() == []
 
 
 @defect("B-X1")

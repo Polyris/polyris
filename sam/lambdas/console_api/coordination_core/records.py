@@ -8,6 +8,7 @@ through these, so the bell, the index and the evaluator see one shape.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Mapping, Optional
 
@@ -149,6 +150,16 @@ def asset_fact_item(
     }
 
 
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _iso_date(text: str) -> date:
+    """``YYYY-MM-DD`` only: ``date.fromisoformat`` also takes ``20261113``, a form no index key matches."""
+    if not _ISO_DATE.fullmatch(text):
+        raise ValueError(f"partition_date {text!r} is not YYYY-MM-DD")
+    return date.fromisoformat(text)
+
+
 def fact_from_item(item: Mapping[str, Any], *, declared_granularity: Optional[str] = None) -> Fact:
     """Read an ``asset-events`` row, old or new, as a :class:`Fact`.
 
@@ -160,7 +171,7 @@ def fact_from_item(item: Mapping[str, Any], *, declared_granularity: Optional[st
     """
     key = str(item.get("partition_key") or item.get("execution_date") or "")
     raw_date = item.get("partition_date")
-    pd = date.fromisoformat(str(raw_date)) if raw_date else partition_date(key)
+    pd = _iso_date(str(raw_date)) if raw_date else partition_date(key)
     granularity = str(item.get("granularity") or declared_granularity or detect_granularity(key))
     if granularity not in GRANULARITIES:
         raise ValueError(

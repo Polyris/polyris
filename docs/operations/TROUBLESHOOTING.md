@@ -248,7 +248,7 @@ Check *why* the upstream was skipped:
 
 ### The console shows "Task coordination needs attention"
 
-The banner lists what is wrong; `GET /api/health` returns the same list in `checks.coordination.problems`. Waiting tasks are not re-checked while it shows.
+The banner lists what is wrong; `GET /api/health` returns the same list in `checks.coordination.problems`. While it shows, tasks may start late: the rows below say which wake-ups still work.
 
 | Problem | What to do |
 |---------|------------|

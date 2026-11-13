@@ -166,7 +166,7 @@ PROBES: Tuple[Probe, ...] = (
           f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
     # Without the cutover every consumer subscribed now reacts to every fact the catch-up replays.
     Probe("B-U2", (Edit("sam/lambdas/coordination/asset_fanout.py",
-                        '            if row.get("subscribed_at") and str(fact.get("event_time", "")) < str(row["subscribed_at"]):\n',
+                        '            if subscribed and str(fact.get("event_time", "")) < str(subscribed):\n',
                         '            if False:\n'),),
           f"{SCENARIOS}::test_a_consumer_deployed_after_the_facts_does_not_start_for_them"),
     # Without the claim marker a retried claim fails its own condition and ends as superseded.
@@ -178,6 +178,31 @@ PROBES: Tuple[Probe, ...] = (
                         '        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))'
                         ' AND #s IN (:waiting, :paused)",'),),
           f"{SCENARIOS}::test_a_claim_whose_answer_is_lost_still_runs_the_task"),
+    # Define_Inputs replaces the whole input: without a computed date the run falls back to the day it started.
+    Probe("B-D1", (Edit("polyris/generators.py",
+                        '                "current_date": f"{{% {_RUN_DATE} %}}",\n',
+                        '                "current_date": None,\n'),),
+          f"{SCENARIOS}::test_a_scheduled_run_carries_the_day_it_was_scheduled_for"),
+    # Without the scheduled time in the schedule's input, a late start gets the next day.
+    Probe("B-D1", (Edit("polyris/deploy.py",
+                        '                            SCHEDULED_TIME_FIELD: "<aws.scheduler.scheduled-time>",\n',
+                        ''),),
+          f"{SCENARIOS}::test_a_scheduled_run_carries_the_day_it_was_scheduled_for"),
+    # The old fallback: each task reads the clock when its input is built.
+    Probe("B-D1", (Edit("polyris/generators.py",
+                        "    \": $substringBefore($states.context.Execution.StartTime, 'T')))\"\n",
+                        "    \": $substringBefore($now(), 'T')))\"\n"),),
+          f"{SCENARIOS}::test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started"),
+    # Without the drop, a subscription the pipeline no longer has stays and is evaluated for every fact.
+    Probe("B-U3", (Edit("sam/lambdas/coordination/asset_fanout.py",
+                        '            self._drop_subscription(row, "the pipeline is no longer scheduled on this asset")\n',
+                        '            pass\n'),),
+          f"{SCENARIOS}::test_an_asset_dropped_from_the_schedule_no_longer_starts_the_pipeline"),
+    # Registration writes "{}" for a pipeline without an asset schedule; read as unreadable, it warns on every fact.
+    Probe("B-U3", (Edit("sam/lambdas/coordination/asset_fanout.py",
+                        '            if not value:\n                return None, False\n',
+                        ''),),
+          f"{SCENARIOS}::test_a_pipeline_moved_to_a_cron_loses_its_push_subscription_quietly"),
     # A subscription time that moves on every registration hides the facts a lost stream record left behind.
     Probe("B-U2", (Edit("polyris/generators.py",
                         '"subscribed_at = if_not_exists(subscribed_at, :now)"',
