@@ -39,7 +39,7 @@ from coordination_core.statuses import RECONCILABLE, SKIPPED, WAITING_PAUSED
 from failures import CoordinationTransient, reraise_transient
 from logger import log
 from signals import ACCEPTED, Signals
-from stores import FactStore, Registry, SubscriptionStore, TaskStore
+from stores import FactStore, PauseFlag, Registry, SubscriptionStore, TaskStore
 
 #: What the wrapper's Check_Deps_Signal state routes on.
 SIGNALS = {dc.READY: wake.DEPS_READY, dc.SKIP: wake.DEPS_SKIP, dc.UPSTREAM_FAILED: wake.DEPS_BLOCKED}
@@ -123,15 +123,17 @@ class Reconciler:
         """Check every waiting row of one run, within the time budget.
 
         Rows not handled in time, or hit by a transient failure, are made due
-        now, so the next sweeper run handles them.
+        from the run's resume time, so the next sweeper run handles them and
+        does not count them as primary-path misses (ADR #130 §6.5).
         """
         deadline = self.monotonic() + self.budget_seconds
         rows = _aws(lambda: self.tasks.run_rows(pipeline_execution))
+        due = _aws(lambda: self.tasks.pause_flag(pipeline_execution)).resumed_at or self.clock()
         handled = deferred = 0
         for row in rows:
             name = str(row["execution_name"])
             if self.monotonic() >= deadline:
-                self._defer(row)
+                self._defer(row, due)
                 deferred += 1
                 continue
             try:
@@ -139,7 +141,7 @@ class Reconciler:
                 handled += 1
             except CoordinationTransient as exc:
                 log.error("reconcile_run", "transient failure; the sweeper retries", execution_name=name, error=str(exc))
-                self._defer(row)
+                self._defer(row, due)
                 deferred += 1
         result = {"pipeline_execution": pipeline_execution, "source": source, "handled": handled, "deferred": deferred}
         log.info("reconcile_run", "done", **result)
@@ -171,7 +173,11 @@ class Reconciler:
 
     def _decide(self, row: Dict[str, Any], status: str,
                 known_events: Sequence[Dict[str, Any]]) -> Tuple[dc.Decision, Optional[datetime]]:
-        """The decision, and when the facts it rests on last changed (None while it waits)."""
+        """The decision, and its enabling time (ADR #130 §9): when the task could first run.
+
+        That is the latest of when its dependencies allowed it, when its
+        assets did, its ``started_at`` and its run's last resume.
+        """
         dependencies = tuple(str(d) for d in _json_list(row.get("dependencies"), "dependencies"))
         spec = sp.parse(_json_list(row.get("wait_for"), "wait_for"))
         view = dc.TaskView(
@@ -185,17 +191,21 @@ class Reconciler:
 
         statuses: List[str] = []
         rule_skips: List[bool] = []
-        changed: List[datetime] = [parse_utc(str(row["started_at"]))] if row.get("started_at") else []
+        started = parse_utc(str(row["started_at"])) if row.get("started_at") else None
+        dependencies_enabled: Optional[datetime] = None
         if dependencies:
             short = str(row["pipeline_execution_short"])
             names = [f"{dep}-{date_key}-{short}" for dep in dependencies]
             facts = _aws(lambda: self.tasks.dependency_facts(names))
             statuses = [facts[n].status for n in names]
             rule_skips = [facts[n].status == SKIPPED and facts[n].skip_origin == "rule" for n in names]
-            changed += [parse_utc(facts[n].finished_at) for n in names if facts[n].finished_at]
+            finished = [parse_utc(facts[n].finished_at) if facts[n].finished_at else None for n in names]
+            dependencies_enabled = tr.enabled_at(view.trigger_rule, statuses, finished, rule_skips)
             if tr.evaluate(view.trigger_rule, statuses, rule_skips).verdict != tr.READY:
-                # Pending or never satisfiable: no asset read can change the outcome.
-                return dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips), _latest(changed)
+                # Pending or never satisfiable: no asset read can change the outcome. A pause
+                # never holds back a skip, so its resume time does not date one.
+                return (dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips),
+                        _latest([started, dependencies_enabled]))
 
         assets = None
         if spec.members:
@@ -206,11 +216,11 @@ class Reconciler:
             assets = evaluate_assets(spec, target=partition_date(date_key), now=now, reader=reader, known_facts=known)
 
         pipeline_execution = str(row.get("pipeline_execution") or "")
-        paused = bool(pipeline_execution) and bool(_aws(lambda: self.tasks.paused(pipeline_execution)))
-        if assets is not None:
-            changed += [a.fact.event_time for a in assets.assets if a.ready and a.fact is not None]
-        decision = dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips, assets=assets, paused=paused)
-        return decision, _latest(changed)
+        flag = _aws(lambda: self.tasks.pause_flag(pipeline_execution)) if pipeline_execution else PauseFlag(False, None)
+        decision = dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips, assets=assets,
+                             paused=flag.paused)
+        return decision, _latest([started, flag.resumed_at, dependencies_enabled,
+                                  assets.enabled_at if assets is not None else None])
 
     # ── actions ─────────────────────────────────────────────────────────
 
@@ -333,9 +343,9 @@ class Reconciler:
                 # Harmless: a leftover pointer resolves to a noop and expires by TTL.
                 log.warn("reconcile", "pointer delete failed", execution_name=name, dependency_key=key, error=str(exc))
 
-    def _defer(self, row: Dict[str, Any]) -> None:
+    def _defer(self, row: Dict[str, Any], due: datetime) -> None:
         try:
-            self.tasks.mark_due(str(row["execution_name"]), str(row.get("started_at")), self.clock())
+            self.tasks.mark_due(str(row["execution_name"]), str(row.get("started_at")), due)
         except (ClientError, BotoCoreError) as exc:
             # The sweeper still finds the row at its existing due time.
             log.error("reconcile_run", "could not make the row due now",
@@ -379,8 +389,8 @@ class Reconciler:
         return result
 
 
-def _latest(moments: List[datetime]) -> Optional[datetime]:
-    return max(moments) if moments else None
+def _latest(moments: Sequence[Optional[datetime]]) -> Optional[datetime]:
+    return max((m for m in moments if m is not None), default=None)
 
 
 _RECONCILER: Optional[Reconciler] = None

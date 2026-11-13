@@ -47,9 +47,12 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 | `complete(run, task, status=)` | finish the user's work for a task |
 | `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact; deliver its stream record separately, so tests choose the interleaving |
 | `pause`, `resume`, `restart`, `skip`, `mark_success` | operator actions through the console routes |
-| `time_out_registration`, `stop_wrapper_externally`, `inject_failure` | faults from outside |
-| `sweep()`, `clock.advance(...)` | the safety net and the passing of time |
+| `time_out_registration`, `stop_wrapper_externally`, `inject_failure`, `fail_starts`, `fail_signals`, `fail_invokes` | faults from outside: a timeout, a stop, a refused DynamoDB call, Step Functions start or callback, a Lambda that keeps failing transiently |
+| `hold(machine)`, `release(machine)` | new executions of a platform state machine wait to take a step, to order a race (B-P3) |
+| `sweep()`, `clock.advance(...)` | the safety net and the passing of time; every reading of the clock, by the stack, the Lambdas or the console, moves it on 1 ms |
 | `status`, `row`, `running_tasks`, `signals`, `warnings`, `pipeline_status`, `push_runs` | what a scenario asserts on |
+
+After every step the World checks invariants 1, 3, 4 and 5 of ADR #130 (`invariants.py`): one accepted dependency signal per wrapper; no status moving back under one wrapper execution; a waiting row keeps its pointers until its signal is accepted; a waiting row is under `waiting#` and a row held in its pause wait under `paused#`. A scenario that breaks one fails, whatever it asserts itself. `test_invariants.py` tests the check.
 
 A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
 

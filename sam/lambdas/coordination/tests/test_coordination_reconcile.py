@@ -190,6 +190,21 @@ def test_resume_wakes_a_parked_task(reconciler, tokens, sfn):
     assert reconciler.reconcile(LOAD, source="resume")["action"] == "signalled"
 
 
+def test_a_parked_task_could_run_from_the_resume_not_from_its_facts(reconciler, tokens, sfn):
+    tokens.put_item(Item={"execution_name": f"_pause_{RUN}", "paused": False,
+                          "resumed_at": "2026-11-12T05:50:00.000Z"})
+    tokens.put_item(Item=task_row("extract", status="success", finished_at="2026-11-12T05:10:00.000Z"))
+    tokens.put_item(Item=task_row("load", deps=["extract"], status="waiting_paused"))
+    assert reconciler.reconcile(LOAD, source="resume")["enabled_at"] == "2026-11-12T05:50:00.000Z"
+
+
+def test_one_success_could_run_from_its_earliest_success(reconciler, tokens, sfn):
+    tokens.put_item(Item=task_row("a", status="success", finished_at="2026-11-12T05:20:00.000Z"))
+    tokens.put_item(Item=task_row("b", status="success", finished_at="2026-11-12T05:40:00.000Z"))
+    tokens.put_item(Item=task_row("load", deps=["a", "b"], trigger_rule="one_success"))
+    assert reconciler.reconcile(LOAD, source="notify_dependents")["enabled_at"] == "2026-11-12T05:20:00.000Z"
+
+
 def test_pause_does_not_hold_back_a_skip(reconciler, tokens, sfn):
     tokens.put_item(Item={"execution_name": f"_pause_{RUN}", "paused": True})
     tokens.put_item(Item=task_row("extract", status="failed"))
@@ -379,7 +394,19 @@ def test_rows_over_the_budget_are_left_due_for_the_sweeper(ddb, sfn, tokens):
     _run_rows(tokens)
     result = Reconciler(ddb, sfn, clock=lambda: NOW, budget_seconds=0).reconcile_run(RUN, source="resume")
     assert (result["handled"], result["deferred"]) == (0, 2)
-    assert row(tokens)[att.DUE] == "2026-11-12T06:00:00.000Z"
+    assert row(tokens)[att.DUE] == "2026-11-12T06:00:00.000Z"          # never resumed: now
+
+
+def test_deferred_rows_are_due_from_the_resume_so_they_are_no_miss(ddb, sfn, tokens):
+    """Their enabling time is no earlier than the resume, so a sweeper that wakes them
+    later does not count a primary-path miss (ADR #130 §6.5, §9)."""
+    from reconcile import Reconciler
+
+    _run_rows(tokens)
+    tokens.put_item(Item={"execution_name": f"_pause_{RUN}", "paused": False,
+                          "resumed_at": "2026-11-12T05:59:30.250000+00:00"})        # as the console writes it
+    Reconciler(ddb, sfn, clock=lambda: NOW, budget_seconds=0).reconcile_run(RUN, source="resume")
+    assert row(tokens)[att.DUE] == "2026-11-12T05:59:30.250Z"
 
 
 def test_a_transient_failure_defers_only_that_row(reconciler, tokens, sfn):

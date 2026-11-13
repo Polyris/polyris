@@ -8,6 +8,7 @@ The single implementation the reconciler uses (ADR #130 §3).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Sequence
 
 from .statuses import FAILURE, SKIPPED, SUCCESS_ONLY, TERMINAL
@@ -99,6 +100,30 @@ def evaluate(
     if not rule_known:
         reason = f"unknown trigger_rule {rule!r}, evaluated as all_success: {reason}"
     return DepEvaluation(verdict, satisfied, reason, effective_rule, rule_known, counts)
+
+
+def enabled_at(
+    rule: str,
+    statuses: Sequence[str],
+    finished_at: Sequence[Optional[datetime]],
+    rule_originated_skip: Optional[Sequence[bool]] = None,
+) -> Optional[datetime]:
+    """When the dependencies first allowed the outcome ``evaluate`` gives (ADR #130 §9).
+
+    ``finished_at`` is aligned with ``statuses``; an unknown time is None.
+    ``one_success`` is ready from its earliest success. Any other outcome
+    needs every dependency settled, so it dates from the latest one. None
+    while the rule still waits, or when no time is known.
+    """
+    if len(finished_at) != len(statuses):
+        raise ValueError(f"finished_at has {len(finished_at)} entries for {len(statuses)} dependencies")
+    evaluation = evaluate(rule, statuses, rule_originated_skip)
+    if evaluation.verdict == WAIT:
+        return None
+    if evaluation.effective_rule == "one_success" and evaluation.verdict == READY:
+        times = [t for s, t in zip(statuses, finished_at) if s in SUCCESS_ONLY and t is not None]
+        return min(times, default=None)
+    return max((t for t in finished_at if t is not None), default=None)
 
 
 def _check(rule: str, c: Counts, rule_originated_skip: Sequence[bool]) -> tuple[bool, str]:

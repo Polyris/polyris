@@ -20,6 +20,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from bindings import Bindings
+from invariants import Invariants
 from platform_stack import Stack
 from sfn_runtime import ACCOUNT, REGION, Execution
 
@@ -45,9 +46,13 @@ class Clock:
     def __init__(self, start: datetime):
         self.now = start
 
-    def text(self) -> str:
+    def read(self) -> datetime:
         self.now += timedelta(milliseconds=1)
-        return self.now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{self.now.microsecond // 1000:03d}Z"
+        return self.now
+
+    def text(self) -> str:
+        now = self.read()
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
     def advance(self, **delta: float) -> None:
         self.now += timedelta(**delta)
@@ -143,7 +148,7 @@ class World:
         self.ddb = ddb_client
         self.resource = boto3.resource("dynamodb", region_name="us-east-1")
         self._run_ids = itertools.count(0xABCD0000)
-        self.bindings = Bindings(self.stack, self.resource, lambda: self.clock.now)
+        self.bindings = Bindings(self.stack, self.resource, self.clock.read)
         self.bindings.reconcile()
         self.bindings.query_subscriptions()
         self._fanout = self.bindings.asset_fanout()
@@ -151,6 +156,8 @@ class World:
         self._sweeper = self.bindings.sweeper()
         self._producers: Dict[str, Pipeline] = {}
         self._stream = StreamAdapter(self.stack)
+        #: ADR #130 invariants 1, 3, 4, 5, checked each time the stack settles (invariants.py).
+        self.invariants = Invariants(ddb_client, self.runtime, self.stack.tables)
 
     def close(self) -> None:
         self.bindings.close()
@@ -176,6 +183,7 @@ class World:
 
     def settle(self) -> None:
         self.runtime.run()
+        self.invariants.observe()
 
     # ── tasks ──────────────────────────────────────────────────────────
 
@@ -329,6 +337,34 @@ class World:
             return real(**kwargs)
 
         runtime.start_execution = start_execution
+
+    def fail_signals(self, code: str, *, times: int) -> None:
+        """The next `times` SendTaskSuccess calls, from any caller, fail with `code` (e.g. throttling)."""
+        runtime, real, left = self.runtime, self.runtime.send_task_success, [times]
+
+        def send_task_success(**kwargs: Any) -> Dict[str, Any]:
+            if left[0] > 0:
+                left[0] -= 1
+                raise ClientError({"Error": {"Code": code, "Message": f"{code} (injected)"}}, "SendTaskSuccess")
+            return real(**kwargs)
+
+        runtime.send_task_success = send_task_success
+
+    def fail_invokes(self, function: str, *, times: int) -> None:
+        """The next `times` invocations of a platform function (logical id) by a state machine
+        fail with CoordinationTransient, the error its Lambda reports for a transient failure."""
+        from failures import CoordinationTransient
+
+        name = self.stack.functions[function]
+        real, left = self.runtime.lambdas[name], [times]
+
+        def handler(event: Any, context: Any) -> Any:
+            if left[0] > 0:
+                left[0] -= 1
+                raise CoordinationTransient("throttled (injected)")
+            return real(event, context)
+
+        self.runtime.lambdas[name] = handler
 
     def hold(self, machine: str) -> None:
         """New executions of a platform state machine (logical id) wait to take a step until `release`."""

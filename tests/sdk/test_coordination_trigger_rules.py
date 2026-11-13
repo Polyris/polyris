@@ -1,5 +1,7 @@
 """Trigger rules over dependency statuses (ADR #115, #117) — the shared module."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from polyris.coordination import trigger_rules as tr
@@ -75,3 +77,34 @@ class TestAliasesAndUnknownRules:
         assert result.effective_rule == "all_success"
         assert result.verdict == tr.UPSTREAM_FAILED
         assert "unknown trigger_rule 'one_failed'" in result.reason
+
+
+class TestEnabledAt:
+    """When the dependencies first allowed the outcome (ADR #130 §9)."""
+
+    T1, T2, T3 = (datetime(2026, 11, 12, h, tzinfo=timezone.utc) for h in (1, 2, 3))
+
+    def test_one_success_dates_from_its_earliest_success(self):
+        assert tr.enabled_at("one_success", ["success", "failed", "success"], [self.T2, self.T1, self.T3]) == self.T2
+
+    def test_an_alias_of_one_success_does_too(self):
+        assert tr.enabled_at("none_failed_min_one_success", ["success", "running"], [self.T2, None]) == self.T2
+
+    @pytest.mark.parametrize("rule", ["all_success", "all_done", "none_skipped"])
+    def test_other_rules_date_from_the_latest_dependency(self, rule):
+        assert tr.enabled_at(rule, ["success", "success"], [self.T3, self.T1]) == self.T3
+
+    def test_an_outcome_that_can_never_be_met_dates_from_the_latest_dependency(self):
+        assert tr.enabled_at("one_success", ["failed", "skipped"], [self.T1, self.T2]) == self.T2
+
+    def test_a_rule_that_still_waits_has_no_time(self):
+        assert tr.enabled_at("all_success", ["success", "running"], [self.T1, None]) is None
+
+    def test_unknown_times_are_left_out(self):
+        assert tr.enabled_at("all_success", ["success", "success"], [None, self.T1]) == self.T1
+        assert tr.enabled_at("all_success", ["success"], [None]) is None
+        assert tr.enabled_at("all_success", [], []) is None
+
+    def test_times_must_align_with_statuses(self):
+        with pytest.raises(ValueError, match="finished_at has 1 entries for 2 dependencies"):
+            tr.enabled_at("all_success", ["success", "success"], [self.T1])

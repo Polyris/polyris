@@ -68,6 +68,9 @@ class AssetResult:
 class Evaluation:
     ready: bool
     assets: Tuple[AssetResult, ...]
+    #: When the spec first held (ADR #130 §9): the newest fact it needs; within
+    #: an OR group, the earliest ready member. None while it does not hold.
+    enabled_at: Optional[datetime] = None
 
 
 def evaluate(
@@ -89,8 +92,8 @@ def evaluate(
     for fact in known_facts:
         known.setdefault(fact.asset_name, []).append(fact)
     results: List[AssetResult] = []
-    ready = _evaluate_node(spec, target, now, reader, known, results)
-    return Evaluation(ready, tuple(results))
+    ready, enabled_at = _evaluate_node(spec, target, now, reader, known, results)
+    return Evaluation(ready, tuple(results), enabled_at if ready else None)
 
 
 def satisfies(fact: Fact, target: date) -> bool:
@@ -111,13 +114,18 @@ def _evaluate_node(
     reader: FactReader,
     known: Dict[str, List[Fact]],
     results: List[AssetResult],
-) -> bool:
+) -> Tuple[bool, Optional[datetime]]:
+    """Whether ``node`` holds, and since when (None when not, or when no fact dates it)."""
     if isinstance(node, AssetLeaf):
         result = _evaluate_leaf(node, target, now, reader, known.get(node.asset_name, []))
         results.append(result)
-        return result.ready
+        return result.ready, (result.fact.event_time if result.ready and result.fact is not None else None)
     outcomes = [_evaluate_node(m, target, now, reader, known, results) for m in node.members]
-    return all(outcomes) if node.operator == AND else any(outcomes)
+    if node.operator == AND:
+        ready = all(ok for ok, _ in outcomes)
+        return ready, (max((t for _, t in outcomes if t is not None), default=None) if ready else None)
+    ready = any(ok for ok, _ in outcomes)
+    return ready, min((t for ok, t in outcomes if ok and t is not None), default=None)
 
 
 def _evaluate_leaf(

@@ -3,7 +3,8 @@
 The IAM test records every DynamoDB call the reconciler makes while it walks
 each of its paths, then compares that set with the role: a call the role
 does not allow would be an AccessDenied in production, and a grant no call
-uses is privilege the function does not need.
+uses is privilege the function does not need. The same walk checks that every
+read of a fact a decision rests on is consistent (ADR #130 §3).
 """
 
 import json
@@ -32,6 +33,8 @@ import reconcile
 
 LOGICAL = {name: logical for logical, name in TABLES.values()}
 Call = Tuple[str, str, Optional[str]]   # (IAM action, table logical id, index or None)
+Read = Tuple[str, str, Optional[str], bool]   # (operation, table logical id, index or None, consistent)
+_READS = {"GetItem", "BatchGetItem", "Query", "Scan"}
 
 
 @pytest.fixture(scope="module")
@@ -54,6 +57,29 @@ def recording(ddb) -> Iterator[Set[Call]]:
         yield calls
     finally:
         events.unregister("before-parameter-build.dynamodb", unique_id="coordination-iam")
+
+
+@contextmanager
+def reading(ddb) -> Iterator[Set[Read]]:
+    """Every DynamoDB read, with whether it is consistent (per table for BatchGetItem)."""
+    reads: Set[Read] = set()
+
+    def before(params: Dict[str, Any], model: Any, **_: Any) -> None:
+        if model.name not in _READS:
+            return
+        if model.name == "BatchGetItem":
+            for table, request in params["RequestItems"].items():
+                reads.add((model.name, LOGICAL[table], None, bool(request.get("ConsistentRead"))))
+            return
+        reads.add((model.name, LOGICAL[params["TableName"]], params.get("IndexName"),
+                   bool(params.get("ConsistentRead"))))
+
+    events = ddb.meta.client.meta.events
+    events.register("before-parameter-build.dynamodb", before, unique_id="coordination-reads")
+    try:
+        yield reads
+    finally:
+        events.unregister("before-parameter-build.dynamodb", unique_id="coordination-reads")
 
 
 def _resource(value: Any) -> Tuple[str, Optional[str]]:
@@ -114,6 +140,20 @@ def _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, 
         assert reconciler.reconcile(execution_name("done"), source="sweeper")["action"] == "attention_cleared"
         reconcile.Reconciler(ddb, sfn, clock=lambda: NOW, budget_seconds=0).reconcile_run(RUN, source="resume")
     return calls | more
+
+
+def test_every_fact_a_decision_rests_on_is_read_consistently(
+        reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb):
+    """Task rows, dependency rows, the pause flag and recent asset facts come from base
+    tables with ConsistentRead; an index only finds candidates: the run's rows for resume,
+    and asset facts by partition, whose lag the consistent read of recent writes covers."""
+    with reading(ddb) as reads:
+        _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb)
+    facts = {"PipelineTokensTable", "AssetEventsTable"}
+    assert {r for r in reads if r[1] in facts and r[2] is None and not r[3]} == set()
+    assert {r[2] for r in reads if r[2] is not None} == {"pipeline-execution-index", "asset-partition-index"}
+    assert ("GetItem", "PipelineTokensTable", None, True) in reads          # the walk did read facts
+    assert ("BatchGetItem", "PipelineTokensTable", None, True) in reads
 
 
 def test_reconcile_role_allows_exactly_the_calls_the_code_makes(

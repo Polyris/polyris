@@ -142,6 +142,33 @@ class TestGroups:
         assert run(s, Reader(fact("ns/a", D), fact("ns/c", D))).ready
 
 
+class TestEnabledAt:
+    """When the spec first held: the newest fact it needs; in an OR group, the earliest ready member."""
+
+    def test_and_dates_from_its_newest_fact(self):
+        early, late = NOW - timedelta(hours=3), NOW - timedelta(hours=1)
+        result = run(spec(a, b), Reader(fact("ns/a", D, at=late), fact("ns/b", D, at=early)))
+        assert result.enabled_at == late
+
+    def test_or_dates_from_its_earliest_ready_member(self):
+        early, late = NOW - timedelta(hours=3), NOW - timedelta(hours=1)
+        result = run(spec(a | b), Reader(fact("ns/a", D, at=late), fact("ns/b", D, at=early)))
+        assert result.enabled_at == early
+
+    def test_a_mixed_spec_takes_the_newest_of_and_and_the_earliest_of_or(self):
+        t1, t2, t3 = (NOW - timedelta(hours=h) for h in (5, 3, 1))
+        result = run(spec(c, a | b), Reader(fact("ns/c", D, at=t2), fact("ns/a", D, at=t1), fact("ns/b", D, at=t3)))
+        assert result.enabled_at == t2                     # c (t2) is newer than the OR's earliest member (t1)
+
+    def test_an_unready_member_does_not_date_an_or(self):
+        result = run(spec(a | b), Reader(fact("ns/a", D, at=NOW - timedelta(hours=2)),
+                                         fact("ns/b", D - timedelta(days=1), at=NOW - timedelta(hours=9))))
+        assert result.enabled_at == NOW - timedelta(hours=2)
+
+    def test_a_spec_that_does_not_hold_has_no_time(self):
+        assert run(spec(a, b), Reader(fact("ns/a", D))).enabled_at is None
+
+
 class TestKnownFacts:
     def test_known_fact_counts_when_the_reader_lags(self):
         assert run(spec(a), Reader(), known=[fact("ns/a", D)]).ready

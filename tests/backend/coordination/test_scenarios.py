@@ -302,6 +302,20 @@ def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
     assert world.running_tasks(run) == []
 
 
+def test_a_task_resume_could_not_check_is_woken_by_the_sweeper_without_a_miss(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.pause(run)
+    world.complete(run, "extract")          # load is parked: its run is paused
+    world.clock.advance(minutes=30)
+    world.fail_signals("ThrottlingException", times=1)
+    world.resume(run)                       # the reconciler's signal to load is throttled: deferred
+    assert world.running_tasks(run) == []
+    world.clock.advance(minutes=6)
+    world.sweep()
+    assert world.running_tasks(run) == ["load"]
+    assert [w for w in world.warnings() if w["kind"] == "sweeper"] == []   # resume deferred it: no lost hint
+
+
 @defect("B-R1")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)
@@ -377,3 +391,83 @@ def test_a_warning_about_an_old_partition_reaches_the_bell(world):
     world.clock.advance(days=4)
     world.sweep()
     assert any(w["kind"] == "zombie" and w["task_date"] == "2026-10-13" for w in world.warnings())
+
+
+# ── the matrix rows of COORDINATION_DESIGN §4.2 not pinned above ─────────
+
+
+def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_it(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.skip(run, "load")                 # while load still waits for extract
+    assert world.wrapper(run, "load").status == "ABORTED"   # the console stops it
+    world.complete(run, "extract")
+    assert world.status(run, "load") == "skipped"
+    assert world.running_tasks(run) == []
+
+
+@pytest.mark.parametrize("rule,outcome,expected", [
+    ("all_success", "failed", "upstream_failed"),
+    ("all_success", "skipped", None),           # a manual skip counts as done: load runs
+    ("one_success", "failed", "upstream_failed"),
+    ("all_done", "failed", None),
+    ("all_skipped", "failed", "skipped"),
+    ("none_skipped", "skipped", "skipped"),
+])
+def test_each_trigger_rule_after_an_upstream_failure_or_skip(world, rule, outcome, expected):
+    run = world.start_run(world.deploy(pipeline("orders", [("extract", {}), ("load", {"trigger_rule": rule})],
+                                                [("extract", "load")])), DATE)
+    if outcome == "failed":
+        world.complete(run, "extract", status="failed")
+    else:
+        world.skip(run, "extract")
+    if expected is None:
+        assert world.running_tasks(run) == ["load"]
+    else:
+        assert world.status(run, "load") == expected and world.running_tasks(run) == []
+
+
+@pytest.mark.parametrize("asset_first", [True, False], ids=["asset-first", "dependency-first"])
+def test_a_task_with_a_dependency_and_an_asset_waits_for_both_in_either_order(world, asset_first):
+    run = world.start_run(world.deploy(waits_for("p", [A], deps=["extract"])), DATE)
+    if asset_first:
+        world.write_event(A, DATE)
+        world.deliver_hints()
+        assert world.running_tasks(run) == ["extract"]
+        world.complete(run, "extract")
+    else:
+        world.complete(run, "extract")
+        assert world.running_tasks(run) == []
+        world.write_event(A, DATE)
+        world.deliver_hints()
+    assert world.running_tasks(run) == ["consumer"]
+
+
+def test_two_runs_of_one_task_wake_independently(world):
+    orders = world.deploy(chain("orders", "extract", "load"))
+    first, second = world.start_run(orders, DATE), world.start_run(orders, "2026-11-13")
+    world.complete(second, "extract")
+    assert (world.running_tasks(first), world.running_tasks(second)) == (["extract"], ["load"])
+    world.complete(first, "extract")
+    assert world.running_tasks(first) == ["load"]
+
+
+def test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper(world):
+    world.write_event(A, DATE)              # the asset is there before the run starts
+    world.deliver_hints()
+    world.fail_invokes("ReconcileFunction", times=20)       # every retry of registration's call fails
+    run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
+    assert (world.status(run, "consumer"), world.running_tasks(run)) == ("waiting", [])
+    world.sweep()
+    assert world.running_tasks(run) == ["consumer"]
+
+
+def test_a_daily_and_weekly_schedule_runs_daily_with_the_latest_weekly_fact(world):
+    consumer = world.deploy(pipeline("report", [("report", {})], schedule=[A, WEEKLY]))
+    world.write_event(WEEKLY, "2026-W46")    # Monday 2026-11-09
+    world.deliver_hints()
+    assert world.push_runs(consumer) == []  # no daily fact yet
+    for day in ("2026-11-10", "2026-11-11"):
+        world.write_event(A, day)
+        world.deliver_hints()
+    world.deliver_hints()                   # a repeated delivery starts nothing more
+    assert [run.date for run in world.push_runs(consumer)] == ["2026-11-10", "2026-11-11"]

@@ -66,6 +66,13 @@ def test_a_warning_about_an_old_partition_reaches_the_bell(tokens, mocker):
     assert shown["id"] == "_notify_warn_zombie_load-2026-10-13-run"
 
 
+def test_two_kinds_of_warning_about_one_task_are_both_shown(tokens, mocker):
+    _warning(tokens, kind="notify")
+    _warning(tokens, kind="sweeper", minutes_ago=5)
+
+    assert sorted(n["kind"] for n in _bell(mocker)) == ["notify", "sweeper"]
+
+
 def test_warnings_outside_the_window_and_over_the_limit_are_left_out(tokens, mocker):
     _warning(tokens, task="old", minutes_ago=60 * 30)
     for i in range(3):

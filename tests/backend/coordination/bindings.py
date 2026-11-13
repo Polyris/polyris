@@ -53,6 +53,19 @@ class _LambdaClient:
         return {"StatusCode": 200, "Payload": io.BytesIO(json.dumps(result, default=str).encode())}
 
 
+def _clocked_datetime(clock: Callable[[], datetime]) -> type:
+    """`datetime` whose `now()` reads the stack's clock: what a console module writes, such
+    as a run's `resumed_at`, then agrees with the times the state machines and Lambdas write."""
+
+    class StackDatetime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:          # type: ignore[override]
+            moment = clock()
+            return moment.astimezone(tz) if tz is not None else moment.replace(tzinfo=None)
+
+    return StackDatetime
+
+
 class Bindings:
     def __init__(self, stack: Stack, resource: Any, clock: Callable[[], datetime]):
         self.stack = stack
@@ -106,6 +119,7 @@ class Bindings:
                               (dal.task_events_repo, "TaskEventsTable")):
             self._set(repo, "_table_name", tables[logical])
         self._set(executions, "RECONCILE_FUNCTION_ARN", self.stack.function_arn("ReconcileFunction"))
+        self._set(executions, "datetime", _clocked_datetime(self.clock))     # pause and resume times
         self._set(task_actions, "NOTIFY_DEPENDENTS_HELPER_ARN", self.stack.machine_arn("NotifyDependentsSfn"))
         self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))
         return main

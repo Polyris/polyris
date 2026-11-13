@@ -31,8 +31,8 @@ class Probe(NamedTuple):
     scenario: str      # pytest node id that must fail under the probe
 
 
-AND_AS_OR = Edit(CORE, "    return all(outcomes) if node.operator == AND else any(outcomes)",
-                 "    return any(outcomes)")
+AND_AS_OR = Edit(CORE, "        ready = all(ok for ok, _ in outcomes)\n",
+                 "        ready = any(ok for ok, _ in outcomes)\n")
 
 PROBES: Tuple[Probe, ...] = (
     Probe("B-G1", (Edit(

@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Fixed — the enabling time follows ADR #130 §9
+
+- When a task could first run, which the sweeper's primary-path miss rule and the reconcile log use, now follows the ADR: never earlier than the run's last resume; `one_success` from its earliest success, not its latest dependency; an OR group of assets from its earliest ready member, not its newest. A task held by a pause no longer counts as a miss, and a real miss on a `one_success` rule or an OR group is no longer hidden.
+- Rows that resume could not check, over its budget or after a transient failure, are due from the resume time, so the sweeper wakes them without a false `sweeper` warning.
+
 ### Fixed — tasks stuck in their pause wait (ADR #130 §8, §9, B-P3, B-P4)
 
 - A task that saved its pause token while resume ran, or whose release failed, stayed paused until its 12-hour pause heartbeat: resume reads the run's rows through an index and saw no token. `pause_waiter` now also puts the row under `paused#` in the attention index, and the sweeper releases it once its run is no longer paused, with a `sweeper` warning. `run_task` drops the entry when it continues.

@@ -21,7 +21,7 @@ from coordination_core import attention as att
 from coordination_core.asset_conditions import Fact, merge_facts
 from coordination_core.records import PARTITION_INDEX, fact_from_item
 from coordination_core.statuses import ABORTED, RECONCILABLE, SKIPPED, WAITING, WAITING_PAUSED
-from coordination_core.times import format_utc
+from coordination_core.times import format_utc, parse_utc
 from failures import CoordinationTransient, is_condition_failed
 
 NOT_FOUND = "not_found"
@@ -46,6 +46,12 @@ def _conditional(call: Callable[[], Any]) -> bool:
             return False
         raise
     return True
+
+
+class PauseFlag(NamedTuple):
+    paused: bool
+    #: When the run was last resumed; a task it held could run from then (ADR #130 §9).
+    resumed_at: Optional[datetime]
 
 
 class TaskStore:
@@ -83,13 +89,18 @@ class TaskStore:
                 raise CoordinationTransient("dependency rows stayed unprocessed after retries")
         return result
 
-    def paused(self, pipeline_execution: str) -> bool:
+    def pause_flag(self, pipeline_execution: str) -> "PauseFlag":
+        """The run's pause flag and its last resume time (the console writes both)."""
         item = self.table.get_item(
             Key={"execution_name": f"_pause_{pipeline_execution}"},
             ConsistentRead=True,
-            ProjectionExpression="paused",
-        ).get("Item")
-        return bool(item and item.get("paused"))
+            ProjectionExpression="paused, resumed_at",
+        ).get("Item") or {}
+        resumed_at = item.get("resumed_at")
+        return PauseFlag(bool(item.get("paused")), parse_utc(str(resumed_at)) if resumed_at else None)
+
+    def paused(self, pipeline_execution: str) -> bool:
+        return self.pause_flag(pipeline_execution).paused
 
     def park(self, execution_name: str, token: str, started_at: str) -> bool:
         """waiting → waiting_paused, pinned to the token and registration read."""
