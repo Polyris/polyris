@@ -51,7 +51,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-dependency-wrapper` | One execution per task in a pipeline. Waits for dependencies via `waitForTaskToken`, invokes `run-task-helper` when unblocked, records final status |
 | `polyris-run-task-helper` | Called by the wrapper. Routes to the right AWS-service integration (StartJobRun for Glue, RunTask for ECS, etc.), normalizes the result, handles retries and `xcom.push()` markers |
 | `polyris-notify-dependents` | Fires when a task completes. Queries `dep-subscriptions` DDB table, sends a `SendTaskSuccess`/`SendTaskFailure` token to each subscribed downstream wrapper |
-| `polyris-bulk-backfill` | Drives the backfill queue — walks the date range, spawns one pipeline execution per date |
+| `polyris-bulk-backfill` | Starts one pipeline execution per date of a date range |
 
 **Support helpers** — invoked when specific things happen:
 

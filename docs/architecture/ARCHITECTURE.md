@@ -10,7 +10,6 @@
 - [Trigger Rules](#trigger-rules)
 - [Task Statuses](#task-statuses)
 - [Step Functions Helpers](#step-functions-helpers)
-- [Backfill (lineage-aware)](#backfill-lineage-aware)
 - [Cost Model](#cost-model)
 - [Task Status Lifecycle](#task-status-lifecycle)
 - [UI Architecture (React Console)](#ui-architecture-react-console)
@@ -83,18 +82,16 @@ These are the load-bearing decisions the rest of the architecture follows from.
 
 3. **Asset-centric, not just task-aware.** Tasks declare the data assets they
    produce (`outlets`). Assets form a graph with lineage and partitions, and
-   that graph — not just the task DAG — drives cross-pipeline triggering, the
-   asset matrix (partition status across assets), and lineage-aware backfill.
+   that graph — not just the task DAG — drives cross-pipeline triggering.
 
 4. **Data passes through a canonical output store.** Tasks do not hand data to
    each other in-process. Each task writes its result to a stable key
    (`output#{pipeline}#{task}#{date}`) in DynamoDB; downstream tasks read their
    upstreams' outputs from there (`Read_Upstream_Outputs` → `Prepare_Task_Input`
-   in the run_task helper). This survives partial/incremental backfill — an
-   auto-skipped task's prior output is still readable — and makes "is this
-   upstream ready for this partition?" a single point lookup. Outputs carry a
-   TTL, so very deep historical backfills may find an ancestor's output expired
-   (surfaced as a backfill warning).
+   in the run_task helper). A skipped task's prior output stays readable, and
+   "is this upstream ready for this partition?" is a single point lookup.
+   Outputs carry a TTL, so a run for a very old date may find an ancestor's
+   output expired.
 
 5. **Single source of truth, generated.** Enum families and shared constants are
    defined once in `polyris/constants.py` and code-generated into every Lambda
@@ -177,7 +174,6 @@ Run_Task Helper SFN
      │
      └─ ON FAILURE:
           ├─ Save_Error_Waiting ─────► pipeline_tokens (status=waiting_decision)
-          ├─ Check_Is_Backfill ──────► if backfill: skip alerts, go to Wait_For_Decision
           ├─ Interactive_Notify ─────► notify Lambda: interactive channel with buttons (Skip/Restart/Fail)
           ├─ Send_Immediate_Alert ───► notify Lambda: immediate alert channel
           ├─ Wait_For_Decision ──────► 5h wait for human response
@@ -265,7 +261,6 @@ Task error caught by run_task
      │
      ├─ Save_Error_Waiting ──────► pipeline_tokens (status=waiting_decision)
      ├─ Get_Decision_Timeout ────► read global decision-wait timeout (registry __global_settings__)
-     ├─ Check_Is_Backfill ───────► backfill? skip alerts → Wait_For_Decision (no notifications)
      ├─ Interactive_Notify ─────► notify Lambda — interactive channel with action buttons (Skip/Restart/Mark Success/Fail)
      ├─ Send_Immediate_Alert ───► notify Lambda — non-interactive channel (fires immediately)
      └─ Wait_For_Decision ───────► decision-timeout window for human response
@@ -302,7 +297,6 @@ failure_handler SFN
 
 **Key design decisions:**
 - The immediate-alert channel fires in line 1 so on-call can act during the decision-wait window (global timeout, default 5h)
-- Backfill suppresses all alerts — results visible in UI calendar
 - upstream_failed tasks don't alert — root cause task already sent notifications
 - Line 2 sends a restart-only message (no Skip/Fail buttons on a terminal task)
 - Immediate-alert channel is not re-fired in line 2 — already triggered in line 1
@@ -360,11 +354,10 @@ Task Failure
 │                 run_task helper (Line 1)                     │
 │                                                             │
 │   1. Save_Error_Waiting (DDB: status=waiting_decision)      │
-│   2. Check_Is_Backfill → backfill? skip alerts → Wait_For_Decision │
-│   3. Interactive_Notify → notify Lambda: interactive channel (buttons)  │
-│   4. Send_Immediate_Alert → notify Lambda: immediate channel │
-│   5. Wait_For_Decision (5h timeout)                         │
-│   6. Save_Failed → Notify_Dependents → Send_Pipeline_Failure│
+│   2. Interactive_Notify → notify Lambda: interactive channel (buttons)  │
+│   3. Send_Immediate_Alert → notify Lambda: immediate channel │
+│   4. Wait_For_Decision (5h timeout)                         │
+│   5. Save_Failed → Notify_Dependents → Send_Pipeline_Failure│
 └──────────────────────────┬──────────────────────────────────┘
                            │ wrapper catches failure
                            ▼
@@ -473,45 +466,6 @@ One-line inventory — for the detailed per-helper flow diagrams see
 
 ---
 
-## Backfill (lineage-aware)
-
-Backfill re-runs a target over a range of partitions. It is a first-class
-operation with its own DynamoDB record and a dedicated **bulk-backfill Standard
-Step Function** (Standard, not Express, so the history is inspectable). The
-console API resolves the request into a plan; the SFN executes it.
-
-**Targets & partitions.** A target is a pipeline or an asset. Partitions are a
-date range (`start`/`end`) or an explicit key list. Granularity (daily, weekly,
-monthly, hourly) is inferred from the resolved pipeline's cron, with a
-declarative override and drift detection (ADR #50/#52).
-
-**Upstream (asset target, ADR #92).** Controls how much of the producer's
-*same-pipeline* lineage is rebuilt:
-- `off` (default) — only the producer (input assumed present).
-- `smart` — walk the producer's ancestors and build only those whose canonical
-  output is missing for a requested partition; the frontier stops at ancestors
-  whose output already exists (read from the store). `skip_on_backfill` tasks
-  are never re-run.
-- `force` — rebuild the full same-pipeline lineage regardless of presence.
-
-**Downstream / cascade (asset target, ADR #91).** `auto` (default) triggers
-direct consumers of the affected asset; `all` triggers the whole downstream
-subgraph; `none` triggers nothing. (`cascade` is the deprecated field alias for
-`downstream`.)
-
-**Execution shape (ADR #90).** The bulk-backfill SFN is a nested Map: an outer
-tier Map runs lineage tiers sequentially (so an upstream tier finishes before
-the tiers that depend on it), and an inner Map runs the partitions of a tier
-with `max_parallel` concurrency. Partitions whose output already exists are
-skipped; a failed/cancelled upstream tier gates the tiers below it.
-
-**Preview.** `POST /api/backfill?preview=true` returns the resolved plan —
-partition counts, reused/skipped counts, the upstream-lineage scope
-(`tasks_to_run`/`partitions`), and warnings (e.g. an ancestor output expired by
-TTL) — without starting the SFN. There is no cost estimate (removed in v0.78.2).
-
----
-
 ## Cost Model
 
 Full breakdown (per-run cost per AWS service, small-deployment total,
@@ -594,7 +548,7 @@ The web console follows a clear data separation pattern:
 
 **Store subscriptions:** All components use `useShallow` selectors from Zustand to subscribe to only the fields they need, preventing cascade re-renders when unrelated state changes.
 
-**Bundle optimization:** `TaskDetailModal` and `BackfillModal` are lazy-loaded via `React.lazy()` — they're only fetched when first opened (~50KB deferred from initial load).
+**Bundle optimization:** `TaskDetailModal` is lazy-loaded via `React.lazy()` — it's only fetched when first opened (~50KB deferred from initial load).
 
 **Testing:** 536+ tests across 35 files using Vitest + Testing Library. ReactFlow components are tested via mock renderers that output DOM-testable `<div>` elements.
 

@@ -666,6 +666,22 @@ with DAG(
 `{% ... %}` form) evaluated when the pipeline execution starts — the resolved
 values are then available to every task in the run.
 
+### Date variables
+
+Every task's `variables` also carry the run's date in several forms; a variable of yours with the same name wins. For a run dated 2025-07-25:
+
+| Variable | Value |
+|----------|-------|
+| `current_date`, `date_iso` | `"2025-07-25"` |
+| `date_compact` | `"20250725"` |
+| `date_slash` | `"2025/07/25"` |
+| `date_underscore` | `"2025_07_25"` |
+| `year`, `month`, `day` | `"2025"`, `"07"`, `"25"` |
+| `day_of_week` | `"friday"` |
+| `previous_date`, `next_date` | `"2025-07-24"`, `"2025-07-26"` |
+| `minus_7_days`, `minus_14_days`, `minus_30_days` | `"2025-07-18"`, `"2025-07-11"`, `"2025-06-25"` |
+| `minus_7_days_compact`, `minus_30_days_compact` | `"20250718"`, `"20250625"` |
+
 ---
 
 ## Complete Example
