@@ -198,7 +198,7 @@ Onboard a Console user:
 aws cognito-idp admin-create-user \
   --user-pool-id "$(aws cloudformation describe-stacks \
     --stack-name polyris \
-    --query 'Stacks[0].Outputs[?OutputKey==`UserPoolId`].OutputValue' \
+    --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' \
     --output text)" \
   --username alice@example.com \
   --user-attributes Name=email,Value=alice@example.com Name=email_verified,Value=true \

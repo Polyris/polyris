@@ -22,6 +22,11 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
 - Warnings reach the bell whatever date they are about, and the console shows a banner while task coordination is unhealthy.
 
+### Added — the coordination smoke in one command
+
+- `make e2e-coordination STACK=<platform stack> PROFILE=<profile>` deploys the smoke pipelines, signs in as a temporary console user and runs `tests/e2e/test_coordination_smoke.py`; it deletes the user afterwards.
+- The console's Cognito app client allows `ADMIN_USER_PASSWORD_AUTH`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` (ADR #65). `scripts/get-e2e-token.sh` no longer needs a manual change to the client.
+
 ### Fixed — History says which days it shows
 
 - Without a pipeline or a date, History lists only the last 14 days, but its date filter read "All dates" and an empty list said "No runs found". The filter now reads "Last 14 days", and the empty state says to pick a pipeline or a date for older runs and tasks.

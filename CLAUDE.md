@@ -81,7 +81,7 @@ mocker.patch('routes.backfill._scan_completed_partitions', return_value=set())
 **15. Smoke test happy paths before tagging a release**
 Before any `vX.Y.Z` tag:
 1. Deploy current main to a dev account
-2. Run `pytest -m smoke` against the live deployment
+2. Run `pytest -m smoke` against the live deployment; `make e2e-coordination STACK=<stack> PROFILE=<profile>` runs the coordination smoke in one command
 3. Manually exercise one happy path per new feature in the UI
 
 Tests in `tests/e2e/` marked `@pytest.mark.smoke` are skipped without `POLYRIS_API_URL`. They're the gate, not optional.

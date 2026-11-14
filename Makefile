@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes e2e-health e2e-smoke check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes e2e-health e2e-smoke e2e-coordination check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -13,6 +13,8 @@ help:
 	@echo "  make test-ui           - Run UI tests only"
 	@echo "  make e2e-health        - E2E: hit live API /health (needs POLYRIS_API_URL)"
 	@echo "  make e2e-smoke         - E2E: read-only + backfill smoke vs live AWS (needs POLYRIS_API_URL + POLYRIS_ID_TOKEN)"
+	@echo "  make e2e-coordination STACK=<platform stack> [PROFILE=…] [REGION=…] [ARGS=…]"
+	@echo "                         - E2E: deploy the coordination smoke pipelines and run them (~15 min)"
 	@echo "  make check             - Run every gate CI runs (lint, drift, guards, versions, smoke, test)"
 	@echo "  make check-no-paid     - Open-core guard: no paid ee/ code tracked here"
 	@echo "  make lint              - Check Python + JSON syntax"
@@ -119,6 +121,13 @@ e2e-health:
 	@: "$${POLYRIS_API_URL:?set POLYRIS_API_URL (e.g. https://abc.execute-api.us-east-1.amazonaws.com)}"
 	@echo "🌐 E2E health probe against $$POLYRIS_API_URL ..."
 	python3 -m pytest tests/e2e/test_health.py -v
+
+# e2e-coordination : the coordination smoke on a deployed platform, in one command:
+#   deploys tests/e2e/coordination_smoke, signs in as a temporary console user and runs
+#   test_coordination_smoke.py (tests/e2e/run_coordination_smoke.py). ARGS go to pytest.
+e2e-coordination:
+	@: "$${STACK:?usage: make e2e-coordination STACK=<platform stack> [PROFILE=…] [REGION=…] [ARGS='-k marking']}"
+	python3 tests/e2e/run_coordination_smoke.py --stack "$(STACK)" $(if $(PROFILE),--profile "$(PROFILE)") $(if $(REGION),--region "$(REGION)") $(ARGS)
 
 e2e-smoke:
 	@: "$${POLYRIS_API_URL:?set POLYRIS_API_URL}"

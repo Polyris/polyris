@@ -1798,6 +1798,9 @@ Resources:
       ExplicitAuthFlows:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
+        # Sign-in for operator tooling (scripts/get-e2e-token.sh, make e2e-coordination). It
+        # needs IAM cognito-idp:AdminInitiateAuth, so it opens no password endpoint (ADR #65).
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
       CallbackURLs:
         - http://localhost:3000
         - http://localhost:5173
