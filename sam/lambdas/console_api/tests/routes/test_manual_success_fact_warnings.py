@@ -1,4 +1,4 @@
-"""Mark Successful turns a fact it cannot record into a `manual` warning (Principle #38).
+"""Mark Successful turns a fact it cannot record into a `fact` warning (Principle #38).
 
 A fact is state, not a hint: nothing re-checks a fact that was never written,
 so the tasks waiting on it would hang silently. DynamoDB is moto with the
@@ -59,6 +59,21 @@ def test_a_fact_that_cannot_be_recorded_becomes_a_fact_warning(tables, mocker):
     assert "fact of asset lake/sales was not recorded: AccessDeniedException" in warning["error"]
     assert warning["attention"].startswith("warn#")
     assert _warning(tables, "lake/prices") is None            # recorded
+
+
+def test_the_runs_own_outlets_come_from_the_task_row(tables, mocker):
+    """A wrapper step is no node of the registry's dag: its row says it has no outlets, so nothing is
+    owed and nothing is warned; a row that names outlets is used as it is, without the registry."""
+    from routes import tasks
+
+    write_fact = mocker.patch.object(tasks.asset_events_repo, "write_fact")
+    step = {**ITEM, "execution_name": "notify_team-2026-11-12--2026-11-12-abcdef12", "outlets": "[]"}
+    assert tasks.record_manual_success_facts(step, "notify_team") == {}
+    reader = mocker.patch.object(tasks, "_read_dag_node")
+    assert tasks.record_manual_success_facts({**ITEM, "outlets": json.dumps([{"name": "lake/orders"}])}, "extract") == {}
+    reader.assert_not_called()
+    assert [c.kwargs["asset_name"] for c in write_fact.call_args_list] == ["lake/orders"]
+    assert not [i for i in tables.scan()["Items"] if i["execution_name"].startswith("_notify_warn_")]
 
 
 def test_a_row_without_a_date_warns_for_every_outlet(tables, mocker):

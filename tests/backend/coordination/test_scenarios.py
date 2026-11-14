@@ -253,6 +253,33 @@ def test_a_scheduled_run_carries_the_day_it_was_scheduled_for(world):
 
 
 @defect("B-D1")
+def test_a_pushed_run_of_a_pipeline_with_variables_carries_the_facts_partition(world):
+    consumer = world.deploy(pipeline("pushed_v", [("report", {})], schedule=[A], variables={"region": "eu"}))
+    world.clock.jump_to("2026-11-14T00:30:00.000Z")         # the fact for the 12th is recorded on the 14th
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    [run] = world.push_runs(consumer)
+    report = world.row(run, "report")
+    assert report is not None and report["date"] == DATE
+
+
+@defect("B-R2")
+def test_a_restart_never_lets_a_dependant_run_on_the_old_status(world):
+    run = world.start_run(world.deploy(chain("orders", "a", "b")), DATE)
+    world.complete(run, "a")
+    world.complete(run, "b")
+    world.hold("DependencyWrapperSfn")
+    world.restart(run, "a")                                 # a's row is handed over; its new wrapper waits
+    world.restart(run, "b")
+    world.release_newest("DependencyWrapperSfn")            # b's new wrapper registers first
+    assert world.running_tasks(run) == [] and world.status(run, "b") == "waiting"
+    world.release("DependencyWrapperSfn")
+    assert world.running_tasks(run) == ["a"]
+    world.complete(run, "a")
+    assert world.running_tasks(run) == ["b"]
+
+
+@defect("B-D1")
 def test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started(world):
     plain = world.deploy(pipeline("plain", [("a", {}), ("b", {}), ("c", {})]))
     world.clock.jump_to(f"{DATE}T23:59:59.990Z")

@@ -5,7 +5,7 @@
   "States": {
     "Save_Task_Record": {
       "Type": "Task",
-      "Comment": "Register the task row. attention/attention_at put it in the attention index (ADR #130 §7): due for a sweeper check 10 minutes from now. starter_input is the wrapper's own start input, which a restart replays. The condition keeps a row an operator resolved while this same wrapper waited (B-O1): a new wrapper (a restart) may replace any row, this one only a row still waiting. A wrapper started before ADR #130 passes neither starter_input nor orchestration_timeout: the row then holds '' (restart treats it as a legacy row) and 0 (readers use the platform default).",
+      "Comment": "Register the task row. attention/attention_at put it in the attention index (ADR #130 §7): due for a sweeper check 10 minutes from now. starter_input is the wrapper's own start input, which a restart replays. The condition lets only the row's owner register (its generation, or a row from before ADR #130), and keeps a row that moved on: a new wrapper (a restart) may replace the row, this same wrapper only a row still waiting. So a save retried after a lost answer never resets a task that started meanwhile, and a row an operator resolved while this wrapper waited stays (B-O1). A wrapper started before ADR #130 passes neither starter_input nor orchestration_timeout: the row then holds '' (restart treats it as a legacy row) and 0 (readers use the platform default).",
       "Resource": "arn:aws:states:::dynamodb:putItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -92,7 +92,7 @@
             "N": "{% $string($exists($states.input.generation) ? $states.input.generation : 0) %}"
           }
         },
-        "ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR (attribute_not_exists(generation) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",
+        "ConditionExpression": "attribute_not_exists(execution_name) OR ((generation = :g OR attribute_not_exists(generation)) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",
         "ExpressionAttributeNames": {
           "#s": "status"
         },

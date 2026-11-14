@@ -89,7 +89,7 @@
     },
     "Hand_Over_Ownership": {
       "Type": "Task",
-      "Comment": "ADR #130 §2.1: a restart ends the old wrapper's ownership. Raise the row's generation instead of deleting the row: a wrapper whose stop failed can then never write it again, not even by registering anew. The new value goes to the next wrapper. The old wrapper's tokens and attention entry no longer apply.",
+      "Comment": "ADR #130 §2.1: a restart ends the old wrapper's ownership. Raise the row's generation instead of deleting the row: a wrapper whose stop failed can then never write it again, not even by registering anew. The new value goes to the next wrapper. The old wrapper's tokens and attention entry no longer apply, and neither does its status: until the new wrapper registers, the row is stopped, which dependants count as pending (B-R2). The row must exist: an update would otherwise create one with no ttl.",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${tokens_table}",
@@ -98,13 +98,20 @@
             "S": "{% $states.input.execution_name %}"
           }
         },
-        "UpdateExpression": "SET generation = if_not_exists(generation, :zero) + :one REMOVE wait_token, pause_token, attention, attention_at",
+        "UpdateExpression": "SET generation = if_not_exists(generation, :zero) + :one, #s = :stopped REMOVE wait_token, pause_token, attention, attention_at",
+        "ConditionExpression": "attribute_exists(execution_name)",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
         "ExpressionAttributeValues": {
           ":zero": {
             "N": "0"
           },
           ":one": {
             "N": "1"
+          },
+          ":stopped": {
+            "S": "stopped"
           }
         },
         "ReturnValues": "UPDATED_NEW"

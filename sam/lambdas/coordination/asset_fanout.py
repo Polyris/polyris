@@ -33,6 +33,7 @@ from coordination_core import spec as sp
 from coordination_core.asset_conditions import evaluate as evaluate_assets
 from coordination_core.records import FACT_VERSION, fact_from_item, push_retry_item, warning_item
 from coordination_core.run_name import KIND_AND, KIND_EVENT, run_name
+from coordination_core.times import parse_utc
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient, reraise_transient
 from logger import log
 from reconcile import Reconciler
@@ -132,6 +133,13 @@ class AssetFanout:
         counts = {"consumers": 0, "started": 0}
         if fact.get("cascade") == "none":
             return counts            # a cascade='none' backfill starts no consumer (ADR #57)
+        try:
+            fact_from_item(fact, declared_granularity="daily")
+        except (KeyError, TypeError, ValueError) as exc:
+            # The stream warned about it when it was recorded; a replay skips it with a log line (Principle #51).
+            log.error("asset_fanout", "an unreadable fact starts no consumer", asset_name=str(fact.get("asset_name", "")),
+                     event_time=str(fact.get("event_time", "")), error=str(exc))
+            return counts
         asset = str(fact["asset_name"])
         for row in self._consumers(asset):
             if remaining_ms is not None and remaining_ms() < RECORD_RESERVE_MS:
@@ -142,11 +150,6 @@ class AssetFanout:
             consumer = str(row["pipeline_name"])
             if consumer == str(fact.get("source_dag", "")):
                 continue             # a pipeline never triggers itself
-            # A consumer reacts only to facts recorded after it subscribed (B-U2). A row an older SDK wrote
-            # has no subscribed_at; its registered_at, rewritten on every run, is the nearest cutover.
-            subscribed = row.get("subscribed_at") or row.get("registered_at")
-            if subscribed and str(fact.get("event_time", "")) < str(subscribed):
-                continue
             counts["consumers"] += 1
             try:
                 counts["started"] += self._push_one(fact, row)
@@ -162,9 +165,16 @@ class AssetFanout:
     def _push_one(self, fact: Dict[str, Any], row: Dict[str, Any]) -> int:
         """Start the consumer `row` names if the fact completes its schedule; 1 when this call started it."""
         asset, consumer, sfn_arn = str(fact["asset_name"]), str(row["pipeline_name"]), str(row["sfn_arn"])
+        entry = self._registry_entry(consumer)
+        # A consumer reacts only to facts recorded after it subscribed (B-U2). A row an older SDK wrote has
+        # no subscribed_at, and the registered_at its runs rewrite would move: the pipeline's last deploy,
+        # stamped in the registry by polyris-deploy, is the cutover instead.
+        cutover = row.get("subscribed_at") or (entry or {}).get("registered_at")
+        if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):
+            return 0
         registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
         evidence = registry.fact(fact)
-        schedule, scheduled = self._schedule(consumer)
+        schedule, scheduled = self._schedule(entry, consumer)
         if not scheduled or (schedule is not None and asset not in sp.asset_names(schedule)):
             # The pipeline was destroyed, switched to a cron schedule, or dropped this asset (B-U3).
             self._drop_subscription(row, "the pipeline is no longer scheduled on this asset")
@@ -188,6 +198,10 @@ class AssetFanout:
             "trigger_assets": [asset] if every_event else sorted(sp.asset_names(schedule)),
             "source_dag": str(fact.get("source_dag", "")),
             "execution_date": day,
+            # Top level as the console sends it, and under variables (ADR #133): a pipeline with variables=
+            # replaces them in Define_Inputs, and one generated before 1.2 reads only the top-level date.
+            "current_date": day,
+            "PARTITION_ARG": day,
             "variables": {"current_date": day, "PARTITION_ARG": day},
         })
         try:
@@ -225,22 +239,34 @@ class AssetFanout:
         log.info("asset_fanout", "dropped a stale subscription", asset_name=key["asset_name"],
                  pipeline_name=key["pipeline_name"], reason=reason)
 
-    def _schedule(self, consumer: str) -> Tuple[Optional[sp.AssetGroup], bool]:
-        """The consumer's asset schedule, and whether it has one at all.
-
-        ``(None, False)``: no registry entry or no asset schedule, so the
-        pipeline was destroyed or now runs on a cron; registration writes
-        ``"{}"`` for a pipeline without one. ``(None, True)``: the schedule
-        cannot be read; that is warned about, never acted on.
-        """
+    def _registry_entry(self, consumer: str) -> Optional[Dict[str, Any]]:
         try:
-            item = self.registry_table.get_item(Key={"pipeline_name": consumer}, ConsistentRead=True).get("Item")
+            item: Optional[Dict[str, Any]] = self.registry_table.get_item(
+                Key={"pipeline_name": consumer}, ConsistentRead=True).get("Item")
         except (ClientError, BotoCoreError) as exc:
             reraise_transient(exc)
             raise
-        raw = (item or {}).get("asset_schedule")
+        return item
+
+    def _schedule(self, entry: Optional[Dict[str, Any]], consumer: str) -> Tuple[Optional[sp.AssetGroup], bool]:
+        """The consumer's asset schedule, and whether it has one at all.
+
+        ``(None, False)``: no registry entry, or ``"{}"``, which registration
+        writes for a pipeline without an asset schedule: the pipeline is gone
+        or runs on a cron. ``(None, True)``: a schedule that cannot be read, or
+        none at all on a deployed pipeline, whose registration failed and
+        warned then. Either is warned about, never acted on: dropping the row
+        would lose a pipeline that never runs again to register.
+        """
+        if entry is None:
+            return None, False
+        raw = entry.get("asset_schedule")
+        if raw is None:
+            self._warn(f"push:{consumer}", f"push consumer {consumer} has no asset schedule in the registry, so "
+                                            f"its registration did not finish: deploy it again")
+            return None, True
         try:
-            value = json.loads(raw) if isinstance(raw, str) and raw else raw
+            value = json.loads(raw) if isinstance(raw, str) else raw
             if not value:
                 return None, False
             return sp.parse_schedule(value), True

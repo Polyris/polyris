@@ -1237,7 +1237,8 @@ Resources:
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           ASSET_FANOUT_FUNCTION: !Ref AssetFanoutFunction
 
-  # No retry: a missed run is covered by the next one, 5 minutes later.
+  # No Scheduler retry: a missed run is covered by the next one, 5 minutes later. Lambda may
+  # retry a failed asynchronous invoke on its own; the lease and idempotent steps make that harmless.
   SweeperSchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
@@ -1274,7 +1275,6 @@ Resources:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
-          ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           API_TOKENS_TABLE: !Ref ApiTokensTable
           # ADR #65/#66: auth enforcement follows EnableCognitoAuth — true when
           # Cognito is enabled, false otherwise. Public paths: /api/health*,
@@ -1675,7 +1675,6 @@ Resources:
                   - !Sub "${AssetEventsTable.Arn}/index/*"
                   - !GetAtt TaskEventsTable.Arn
                   - !Sub "${TaskEventsTable.Arn}/index/*"
-                  - !GetAtt AssetSubscriptionsTable.Arn
                   - !GetAtt ApiTokensTable.Arn
                   - !Sub "${ApiTokensTable.Arn}/index/*"
               - Effect: Allow

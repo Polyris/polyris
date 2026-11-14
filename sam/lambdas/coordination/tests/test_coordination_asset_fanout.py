@@ -216,7 +216,8 @@ def test_an_and_schedule_starts_once_per_date_when_complete(fanout, asset_events
     [run] = sfn.started
     assert run["arn"] == PUSHED_ARN and run["name"].startswith(f"pushed-{DATE}-and-")
     assert run["input"] == {"triggered_by": "asset", "trigger_assets": ["ns/a", "ns/b"], "source_dag": "producer",
-                            "execution_date": DATE, "variables": {"current_date": DATE, "PARTITION_ARG": DATE}}
+                            "execution_date": DATE, "current_date": DATE, "PARTITION_ARG": DATE,
+                            "variables": {"current_date": DATE, "PARTITION_ARG": DATE}}
 
 
 def test_an_or_schedule_starts_once_per_event(fanout, asset_events, pushed, sfn):
@@ -284,11 +285,10 @@ def test_a_consumer_with_an_unreadable_schedule_is_reported_and_keeps_its_subscr
 
 
 @pytest.mark.parametrize("registered", [
-    None,                                                   # destroyed: no registry entry
+    None,                                                   # its registry entry is gone
     {"pipeline_name": "pushed", "asset_schedule": "{}"},    # switched to a cron: registration writes "{}"
-    {"pipeline_name": "pushed"},                            # a registry row without the field
     {"pipeline_name": "pushed", "asset_schedule": '{"operator": "AND", "assets": ["ns/b"]}'},   # dropped ns/a
-], ids=["destroyed", "cron", "no-field", "asset-dropped"])
+], ids=["no-entry", "cron", "asset-dropped"])
 def test_a_subscription_its_pipeline_no_longer_has_starts_nothing_and_is_dropped(
         fanout, asset_events, consumers, registry, tokens, sfn, registered):
     """B-U3: a stale subscription starts nothing, warns nothing, and is deleted."""
@@ -312,14 +312,32 @@ def test_a_subscription_registered_again_meanwhile_is_kept(fanout, consumers, re
     assert consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"}).get("Item")
 
 
-def test_a_row_an_older_sdk_wrote_reacts_only_to_facts_after_its_last_registration(
-        fanout, asset_events, consumers, pushed, sfn):
-    """B-U2 for rows without subscribed_at: registered_at, rewritten on every run, is the cutover."""
-    pushed({"operator": "AND", "assets": ["ns/a"]})
-    consumers.update_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"},
-                          UpdateExpression="SET registered_at = :t", ExpressionAttributeValues={":t": "2026-11-12T05:00:00.000Z"})
-    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
+def test_a_deployed_pipeline_without_a_registry_schedule_is_reported_and_keeps_its_subscription(
+        fanout, asset_events, consumers, registry, tokens, sfn):
+    """Its registration failed (and warned then); dropping the row would lose a pipeline that never runs again."""
+    consumers.put_item(Item={"asset_name": "ns/a", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN})
+    registry.put_item(Item={"pipeline_name": "pushed", "registered_at": "2026-11-11T05:00:00+00:00"})
+    _push(fanout, asset_events, fact("ns/a", DATE))
     assert sfn.started == []
+    assert "deploy it again" in tokens.get_item(Key={"execution_name": "_notify_warn_push_push:pushed"})["Item"]["error"]
+    assert consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"}).get("Item")
+
+
+@pytest.mark.parametrize("event_time,started", [
+    ("2026-11-12T04:00:00.000Z", 0),            # before the pipeline's last deploy
+    ("2026-11-12T05:30:00.000Z", 1),            # after it, though before the run that moved the row's time
+], ids=["before-deploy", "after-deploy"])
+def test_a_row_an_older_sdk_wrote_takes_its_cutover_from_the_last_deploy(
+        fanout, asset_events, consumers, registry, pushed, sfn, event_time, started):
+    """B-U2 for rows without subscribed_at. A pipeline built before 1.2 rewrites the row's registered_at on
+    every run, so a cutover taken from it would skip a fact recorded while a run was starting."""
+    pushed({"operator": "AND", "assets": ["ns/a"]})
+    registry.update_item(Key={"pipeline_name": "pushed"}, UpdateExpression="SET registered_at = :t",
+                         ExpressionAttributeValues={":t": "2026-11-12T05:00:00.123456+00:00"})   # polyris-deploy's stamp
+    consumers.update_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"},
+                          UpdateExpression="SET registered_at = :t", ExpressionAttributeValues={":t": "2026-11-12T06:00:00.000Z"})
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time=event_time))
+    assert len(sfn.started) == started
 
 
 @pytest.mark.parametrize("code,outcome", [
@@ -378,10 +396,10 @@ def test_consumer_pages_and_registry_errors(fanout, mocker):
     assert query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
     mocker.patch.object(fanout.registry_table, "get_item", side_effect=client_error("ThrottlingException"))
     with pytest.raises(CoordinationTransient):
-        fanout._schedule("p")
+        fanout._registry_entry("p")
     mocker.patch.object(fanout.registry_table, "get_item", side_effect=client_error("AccessDeniedException"))
     with pytest.raises(Exception, match="AccessDenied"):
-        fanout._schedule("p")
+        fanout._registry_entry("p")
 
 
 

@@ -150,11 +150,3 @@ def test_a_tag_change_never_replaces_a_resource():
                       and f"/properties/{prop}" in _schema(t).get("createOnlyProperties", []))
     assert not replaced, f"changing the tags of these types replaces the resource: {replaced}"
 
-
-def test_pipeline_tags_are_the_set():
-    assert resource_tags.pipeline_tags("acme", "prod", "orders") == [
-        {"Key": "polyris:namespace", "Value": "acme"},
-        {"Key": "polyris:stage", "Value": "prod"},
-        {"Key": "polyris:component", "Value": "pipeline"},
-        {"Key": "polyris:pipeline", "Value": "orders"},
-    ]

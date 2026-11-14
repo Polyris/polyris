@@ -7,9 +7,9 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 1. **Before.** Disable your pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`). Resume or stop paused runs, then wait until no task is `running`, `waiting_delay` or `waiting_decision` (the console's Tasks view). Keep the schedules off until the upgrade succeeds. Tasks still waiting for dependencies or assets can stay: the new version adopts them and checks them from their facts.
 2. **Upgrade.** Run `polyris-up --profile <profile> --disable-rollback`. The same update adds two DynamoDB indexes and lasts as long as they take to build: minutes on small tables, longer on large ones. It also removes `QueuedAssetEventsTable`, which 1.2 no longer uses, so `polyris-up` lists it and asks before going on; without a terminal (CI), add `--accept-data-loss`. If the update fails, the stack keeps what it already changed instead of rolling back to 1.1: fix the cause its events name, then run the same command again.
 3. **After.** Enable the schedules again and start, from the console, the runs whose schedule fired during the window. Within about 5 minutes the sweeper reports for the first time; until then the console shows "The sweeper has not reported yet". After that, no banner means task coordination is healthy.
-4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline, the naming of long task ids and the run date of scheduled runs (ADR #133). A scheduled pipeline with `variables=` needs the redeploy to run at all.
-5. **Tags.** Resources lose their old tags (`Environment`, `Stack`, `Namespace`, `Stage`, `ManagedBy`, and on a pipeline's resources `Pipeline` and `Name`) and get the `polyris:` set instead (ADR #132): the platform's during the upgrade, a pipeline's at its next `polyris-deploy`. Before you upgrade, move IAM conditions and cost reports that use the old keys to the new ones.
-6. **Runs in flight.** A run that was waiting during the upgrade goes on, more slowly: each of its tasks starts at the sweeper's next check of it, up to about 40 minutes after its dependencies finished. A pipeline scheduled on several assets (`schedule=[a, b]`) that the old version started for a date is started again for that date if one of those assets records a new fact for it after the upgrade: the new version names its runs differently.
+4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline, the naming of long task ids and the run date of scheduled runs (ADR #133). A scheduled pipeline with `variables=` needs the redeploy to run at all. Until a pipeline scheduled on assets is redeployed, the time of its last deploy stands in for the time it subscribed: it is not started for facts recorded before it.
+5. **Tags.** Resources lose their old tags (`Environment`, `Stack`, `Namespace`, `Stage`, `ManagedBy`, and on a pipeline's resources `Pipeline` and `Name`) and get the `polyris:` set instead (ADR #132): the platform's during the upgrade, a pipeline's at its next `polyris-deploy`. Before you upgrade, move IAM conditions and cost reports that use the old keys to the new ones. A least-privilege installer role needs each service's tag, untag and list-tags actions ([IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md#least-privilege-alternative)).
+6. **Runs in flight.** A run that was waiting during the upgrade goes on, more slowly: each of its tasks starts at the sweeper's next check of it, up to about 40 minutes after its dependencies finished, and leaves a `sweeper` warning in the bell: the old version's pointers do not reach the new code. Facts the old version records during the window start no pipeline a second time. A pipeline scheduled on several assets (`schedule=[a, b]`) that the old version started for a date is started again for that date if one of those assets records a new fact for it after the upgrade: the new version names its runs differently.
 
 ### Changed — what you notice after upgrading (ADR #130)
 
@@ -24,7 +24,7 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 
 ### Fixed — a run's date (ADR #133, B-D1)
 
-- A scheduled run of a pipeline with `variables=` gave its tasks no date and failed, and showed `triggered_by` as `unknown`.
+- A scheduled or asset-triggered run of a pipeline with `variables=` gave its tasks no date and failed; a scheduled one also showed `triggered_by` as `unknown`.
 - A scheduled run now gets the UTC day its schedule fired it for, even when it starts after midnight: a run scheduled at 23:59 that started at 00:01 got the next day before. Every task of a run gets the same date; before, each task took the day its input was built, so a run crossing midnight could get two. Redeploy scheduled pipelines with `polyris-deploy` to pick this up.
 
 ### Changed — billing tags on every resource (ADR #132)
@@ -41,48 +41,27 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 
 ### Changed — coordination under load and failure (ADR #130)
 
-- One step of the sweeper that fails no longer skips the others or its self-check; the banner names the step. The banner also reports when asset-fanout's last call failed.
-- An asset event with more waiting tasks than one invocation can check no longer blocks the stream: it starts the pipelines scheduled on the asset first, and the tasks not reached start at the sweeper's next check. The catch-up finishes an asset with many facts over several runs.
-- A waiting task whose check changes nothing, for example one that warns, is checked again 10, 20, then every 30 minutes, instead of every 5 minutes with a new warning each time and the "behind" banner. A task whose decision fails and whose wrapper is gone is closed as `aborted`, with a `zombie` warning.
-- Registration leaves a task to the sweeper when the reconciler times out or crashes, instead of failing it, and retries what it sends to the task's wrapper.
-- The coordination functions' AWS calls give up within their timeouts (three attempts, a 2 s connect and a 5 s read timeout), and any AWS server error counts as transient.
-- After an upgrade, older asset facts get their partition fields for one hour, not only once, like waiting tasks.
-- Resume checks a run's waiting tasks for 10 seconds, down from 20, so the console's call answers within the API's 30-second limit; the sweeper checks the rest on its next run.
-- A network failure on an AWS call (SSL, proxy, a broken response) is retried like a throttle instead of failing the task. A finished task's dependants are looked up again when the lookup fails, instead of being left to the sweeper with no trace, and a coordination function that times out or crashes is called again.
-- A wrapper that Step Functions does not show yet, in its first 2 minutes, is no longer taken for gone and aborted.
-- Asset facts an older version wrote during the upgrade no longer start asset-scheduled pipelines a second time.
-- One unreadable asset fact no longer fails the console's view of its asset, and the hourly catch-up skips it instead of warning for each pipeline scheduled on it.
-
+- A finished task's dependants are looked up again when the lookup fails, instead of waiting until their timeout with no trace; the sweeper wakes any it still misses.
+- A network failure on an AWS call (SSL, proxy, a broken response) is retried like a throttle instead of failing the task.
 ### Fixed — one owner per task row (ADR #130 §2.1, B-O2…B-O5)
 
 - When the console could not stop a task's wrapper (a throttled or denied StopExecution), that wrapper could still write the task's row. After a restart it took the row back and the task ran twice. A wrapper started before the upgrade ran a task an operator had decided. `run_task` wrote `running` over a skip or a success and ran the task. A pause wait retried at its heartbeat put a decided task back on hold.
 - Every task row now carries a generation. Operator decisions, restarts and the reconciler's closes raise it, and every write made for a wrapper checks it, so an old wrapper ends without writing, notifying or running anything.
 - A restart keeps the task's row and hands it to the new wrapper; it no longer deletes it.
 
-### Fixed — findings of the coordination review (ADR #130, B-W1, B-U2, B-F2, B-M2)
+### Fixed — Mark Successful and its asset facts (B-M2)
 
-- A wrapper whose status write was applied but whose answer was lost (a 5xx or a timeout) retried the write, failed its own condition and ended as superseded: the task never ran. The claim now accepts its own target status under its own generation (see below), so the retry passes.
-- The hourly push catch-up started a newly deployed asset-scheduled pipeline for facts recorded before its first deploy. A pipeline now reacts only to facts recorded after it subscribed. The subscription time is set at the first registration and kept by the registration every run repeats; for a pipeline last deployed with an older polyris, its latest registration counts. Redeploy asset-scheduled pipelines with this version to record the exact time.
-- An asset dropped from a pipeline's schedule kept starting it, and a destroyed or rescheduled pipeline left a warning for every fact. Such a subscription is now deleted the first time a fact reaches it (B-U3).
-- One fact that no reader could place on a partition, for example an older version's fact for a run date such as `latest`, failed every task waiting on its asset. It now counts for no task, and the bell shows a `coordination` warning.
 - When Mark Successful could not record an outlet's fact, it logged the error and reported plain success, and the tasks waiting on the asset waited with no trace in the console. The task still becomes successful; the bell now shows a `fact` warning ("Asset fact not recorded"), and the response lists the asset in `failed_facts` (`*` when the task's outlets could not be read from the registry). Restart the task to record the fact.
-- A task whose wrapper started before the upgrade failed when its dependency wait timed out and it registered again: the old wrapper sends no `starter_input` or `orchestration_timeout`. Registration now stores empty values, which restart and the liveness deadline treat like those of an adopted row.
 
 ### Fixed — an operator's decision survives a wrapper the console could not stop (ADR #130 §6.3, B-O1)
 
 - When an operator skips, fails or marks a waiting task, the console stops its wrapper. If that stop failed, the wrapper kept waiting, registered again when its dependency wait timed out, and the unconditional write put the row back to `waiting`: the task then ran, although its dependants had already been told otherwise. Registration now writes the row only if it is new, belongs to another wrapper, or still waits; otherwise it keeps the row and wakes the wrapper, which ends without running the task.
-
-### Fixed — the enabling time follows ADR #130 §9
-
-- When a task could first run, which the sweeper's primary-path miss rule and the reconcile log use, now follows the ADR: never earlier than the run's last resume; `one_success` from its earliest success, not its latest dependency; an OR group of assets from its earliest ready member, not its newest. A task held by a pause no longer counts as a miss, and a real miss on a `one_success` rule or an OR group is no longer hidden.
-- Rows that resume could not check, over its budget or after a transient failure, are due from the resume time, so the sweeper wakes them without a false `sweeper` warning.
 
 ### Fixed — tasks stuck in their pause wait (ADR #130 §8, §9, B-P3, B-P4)
 
 - A task that saved its pause token while resume ran, or whose release failed, stayed paused until its 12-hour pause heartbeat: resume reads the run's rows through an index and saw no token. `pause_waiter` now also puts the row under `paused#` in the attention index, and the sweeper releases it once its run is no longer paused, with a `sweeper` warning. `run_task` drops the entry when it continues.
 - Resume counts a release whose token is already dead as done, not as a failed task.
 - If `pause_waiter` cannot save the pause token, it fails the pause wait with `CoordinationError` and the cause, so the task fails visibly. Before, nothing could release it, and after its 12-hour heartbeat it ran, paused or not (B-P4).
-- Adoption puts a row held in its pause wait under `paused#`, not `waiting#`, where the reconciler could not move it and it counted as overdue on every run.
 
 ### Added — engine health and warnings in the console (ADR #130 §9)
 
@@ -96,12 +75,14 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 
 - A new function, `polyris-sweeper`, runs every 5 minutes (EventBridge Scheduler, no retries) and re-checks every waiting task whose due time has come, from its facts. A wake-up hint lost on any path now delays a task; it no longer loses it. A task that still waits is due again in 10, 20, then every 30 minutes.
 - When the sweeper wakes a task that could run before its due time, it writes a `sweeper` warning to the bell: the primary path missed it.
-- A waiting task past its liveness deadline (`started_at` + 3 × `orchestration_timeout` + 1 hour) gets its wrapper checked; if the wrapper is gone, for example stopped outside polyris, the task is marked `aborted` with the reason and a `zombie` warning.
+- A waiting task past its liveness deadline (`started_at` + `orchestration_timeout` + 1 hour; three timeouts for a task whose wrapper started before the upgrade) gets its wrapper checked; if the wrapper is gone, for example stopped outside polyris, the task is marked `aborted` with the reason and a `zombie` warning.
 - One run at a time holds a lease row; a run that dies frees it within 270 seconds.
 - A push start that failed transiently is retried by the sweeper, from 5 minutes up to every hour; after 24 hours it gives up with a `push` warning. A permanent failure is a `push` warning at once.
 - Once an hour the sweeper replays the push of every fact written in the last 48 hours, so a lost stream record cannot lose a push start either. Run names are deterministic, so nothing starts twice.
 - Each run ends with a self-check written to the `_engine_health` row: whether the asset-events stream and its mapping are enabled, the oldest overdue waiting task, and the push retry backlog. `/api/health` reads it.
-- After an upgrade, the sweeper adopts what the old version wrote: waiting tasks get an attention entry, due at once, and are reconciled from their facts; old facts get their partition fields. The task scan repeats for an hour, to catch tasks registered during the stack update.
+- After an upgrade, the sweeper adopts what the old version wrote: waiting tasks get an attention entry, due at once, and are reconciled from their facts; old facts get their partition fields. Both scans repeat for an hour, to catch what the old definitions write during the stack update.
+- A step that fails does not stop the others or the self-check; the banner names it.
+- The hourly catch-up does not start a pipeline for facts recorded before it subscribed (its first registration with 1.2, or its last deploy before that).
 
 ### Fixed — pause, resume and restart (ADR #130 §6.5)
 

@@ -166,8 +166,8 @@ PROBES: Tuple[Probe, ...] = (
           f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
     # Without the cutover every consumer subscribed now reacts to every fact the catch-up replays.
     Probe("B-U2", (Edit("sam/lambdas/coordination/asset_fanout.py",
-                        '            if subscribed and str(fact.get("event_time", "")) < str(subscribed):\n',
-                        '            if False:\n'),),
+                        '        if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):\n',
+                        '        if False:\n'),),
           f"{SCENARIOS}::test_a_consumer_deployed_after_the_facts_does_not_start_for_them"),
     # Without the claim marker a retried claim fails its own condition and ends as superseded.
     Probe("B-W1", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
@@ -180,7 +180,7 @@ PROBES: Tuple[Probe, ...] = (
           f"{SCENARIOS}::test_a_claim_whose_answer_is_lost_still_runs_the_task"),
     # Define_Inputs replaces the whole input: without a computed date the run falls back to the day it started.
     Probe("B-D1", (Edit("polyris/generators.py",
-                        '                "current_date": f"{{% {_RUN_DATE} %}}",\n',
+                        '                "current_date": JSONATA_DATE,\n',
                         '                "current_date": None,\n'),),
           f"{SCENARIOS}::test_a_scheduled_run_carries_the_day_it_was_scheduled_for"),
     # Without the scheduled time in the schedule's input, a late start gets the next day.
@@ -193,6 +193,19 @@ PROBES: Tuple[Probe, ...] = (
                         "    \": $substringBefore($states.context.Execution.StartTime, 'T')))\"\n",
                         "    \": $substringBefore($now(), 'T')))\"\n"),),
           f"{SCENARIOS}::test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started"),
+    # Without the top-level date in the push input and the full chain in Define_Inputs, a pushed run of a
+    # pipeline with variables= gets the day it started.
+    Probe("B-D1", (Edit("sam/lambdas/coordination/asset_fanout.py",
+                        '            "current_date": day,\n            "PARTITION_ARG": day,\n', ''),
+                   Edit("polyris/generators.py",
+                        '                "current_date": JSONATA_DATE,\n',
+                        '                "current_date": f"{{% {_RUN_DATE} %}}",\n')),
+          f"{SCENARIOS}::test_a_pushed_run_of_a_pipeline_with_variables_carries_the_facts_partition"),
+    # The old hand-over kept the finished status until the new wrapper registered.
+    Probe("B-R2", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
+                        '"SET generation = if_not_exists(generation, :zero) + :one, #s = :stopped REMOVE',
+                        '"SET generation = if_not_exists(generation, :zero) + :one, #s = if_not_exists(#s, :stopped) REMOVE'),),
+          f"{SCENARIOS}::test_a_restart_never_lets_a_dependant_run_on_the_old_status"),
     # Without the drop, a subscription the pipeline no longer has stays and is evaluated for every fact.
     Probe("B-U3", (Edit("sam/lambdas/coordination/asset_fanout.py",
                         '            self._drop_subscription(row, "the pipeline is no longer scheduled on this asset")\n',
@@ -214,8 +227,8 @@ PROBES: Tuple[Probe, ...] = (
                         '"StepFunctions.ExecutionLimitExceeded",\n            "States.Timeout"\n          ],\n'
                         '          "IntervalSeconds": 5,'),
                    Edit(REGISTRATION,
-                        '"ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR '
-                        '(attribute_not_exists(generation) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",',
+                        '"ConditionExpression": "attribute_not_exists(execution_name) OR ((generation = :g OR '
+                        'attribute_not_exists(generation)) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",',
                         '"ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR '
                         'wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)",')),
           f"{SCENARIOS}::test_a_wrapper_a_restart_replaced_never_takes_the_row_back"),

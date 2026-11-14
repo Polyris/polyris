@@ -67,15 +67,6 @@ class TestHandler:
         with pytest.raises(ClientError, match='ProvisionedThroughputExceeded'):
             handler({'task_name': 'producer', 'pipeline_execution_short': 'abc123'}, None)
 
-
-def test_the_table_client_fails_inside_the_function_timeout(monkeypatch):
-    """Principle #53: botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function."""
-    import qs_dal
-    monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
-    monkeypatch.setattr(qs_dal, '_dynamodb', None)
-    config = qs_dal._resource().meta.client.meta.config
-    assert config.retries['total_max_attempts'] == 3 and config.read_timeout <= 10
-
     def test_dependency_key_format(self, mocker):
         from index import handler
         mock_list = mocker.patch(
@@ -87,6 +78,15 @@ def test_the_table_client_fails_inside_the_function_timeout(monkeypatch):
         }, None)
         # Verify the key was constructed as {task_name}-{pipeline_execution_short}
         assert mock_list.call_args.args[0] == 'producer-abc123'
+
+
+def test_the_table_client_fails_inside_the_function_timeout(monkeypatch):
+    """Principle #53: botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function."""
+    import qs_dal
+    monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+    monkeypatch.setattr(qs_dal, '_dynamodb', None)
+    config = qs_dal._resource().meta.client.meta.config
+    assert config.retries['total_max_attempts'] == 3 and config.read_timeout <= 10
 
 
 class TestSubscriptionsRepo:

@@ -513,18 +513,6 @@ await test("Save_Input_Record preserves large upstream (no _upstream_omitted)", 
   null,
   { check: (r) => { const o = JSON.parse(r); return o.upstream.big.output.length === 30000 && o.variables.year === "2026" && !o._upstream_omitted; } });
 
-// One owner per task row (ADR #130 §2.1): writes carry the owner's generation; a wrapper started
-// before the upgrade has none and counts as generation 0. Expressions copied from the templates.
-const OWNER_GENERATION = "$string($exists($states.input.generation) ? $states.input.generation : 0)";
-await test("Generation of the owner a write is made for", OWNER_GENERATION, { generation: 2 }, "2");
-await test("Generation of a wrapper started before the upgrade", OWNER_GENERATION, {}, "0");
-await test("Generation from the execution input", "$string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0)",
-  {}, "3", { extra: { context: { Execution: { Input: { generation: 3 } } } } });
-const SUPERSEDED = "$states.input.row_generation != null and $states.input.row_generation != $states.input.owner_generation";
-await test("A row raised past its owner is superseded", SUPERSEDED, { row_generation: 3, owner_generation: 2 }, true);
-await test("A row still at its owner's generation is not", SUPERSEDED, { row_generation: 2, owner_generation: 2 }, false);
-await test("A row without a generation belongs to a pre-upgrade owner", SUPERSEDED, { row_generation: null, owner_generation: 0 }, false);
-
 console.log(`\n${"=".repeat(50)}`);
   console.log(`Results: ${passed} passed, ${failed} failed`);
   console.log("=".repeat(50));

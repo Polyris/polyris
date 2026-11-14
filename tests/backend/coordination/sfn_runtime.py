@@ -254,6 +254,10 @@ class Runtime:
     def release(self, machine_arn: str) -> None:
         self.runnable.extend(self.held.pop(machine_arn, []))
 
+    def release_newest(self, machine_arn: str) -> None:
+        """Let only the newest held execution of `machine_arn` go on; the others stay held."""
+        self.runnable.append(self.held[machine_arn].pop())
+
     def time_out(self, token: str) -> None:
         """The task waiting on `token` reaches its TimeoutSeconds."""
         frame = self._take_token(token, "Timeout")

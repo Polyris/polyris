@@ -473,6 +473,11 @@ class World:
         self.runtime.release(self.stack.machine_arn(machine))
         self.settle()
 
+    def release_newest(self, machine: str) -> None:
+        """Let only the newest held execution go on and settle, to order a race; the others stay held."""
+        self.runtime.release_newest(self.stack.machine_arn(machine))
+        self.settle()
+
     # ── observations ───────────────────────────────────────────────────
 
     def signals(self, run: Run, task: str) -> List[Dict[str, Any]]:

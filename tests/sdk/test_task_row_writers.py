@@ -8,17 +8,18 @@ until it is given one of these roles.
 """
 
 import ast
-import json
-import re
 from pathlib import Path
 from typing import Dict, Iterator, Tuple
 
 import pytest
+from sfn_jsonata import load_template
 
 from polyris.coordination import ownership
 
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATES = REPO / "sam" / "sfn_templates"
+#: The tokens table's name in the loaded templates: a write to it is a write of a task row or one of its kin.
+TOKENS = "the-tokens-table"
 
 #: A key that starts with one of these is a row of its own kind, not a task row.
 OTHER_ROWS = ("_notify_warn_", "_pause_", "_retry_push_", "output#", "input#")
@@ -29,10 +30,6 @@ FIRST_WRITES = {("helpers/registration", "Save_Task_Record"), ("dependency_wrapp
 #: A key built from one of these input fields names another kind of row.
 OTHER_KEYS = ("backfill_id",)       # the bulk backfill machine's own record
 
-
-def _load(path: Path) -> dict:
-    text = re.sub(r'"\$\{[^}]+\}"', '"X"', path.read_text())
-    return json.loads(re.sub(r"\$\{[^}]+\}", "0", text))
 
 
 def _writes(states: dict) -> Iterator[Tuple[str, dict]]:
@@ -51,37 +48,16 @@ def _template_task_row_writes() -> Dict[Tuple[str, str], dict]:
     found = {}
     for path in sorted(TEMPLATES.rglob("sfn.tpl.json")):
         machine = str(path.parent.relative_to(TEMPLATES))
-        raw = path.read_text()
-        for name, state in _writes(_load(path)["States"]):
+        states = load_template(str(path.relative_to(TEMPLATES)), {"tokens_table": TOKENS})["States"]
+        for name, state in _writes(states):
             arguments = state.get("Arguments", {})
-            if "tokens_table" not in json.dumps(_raw_state(raw, name)):
+            if arguments.get("TableName") != TOKENS:
                 continue                                    # another table: facts, task events, registry, ...
             key = (arguments.get("Key") or arguments.get("Item") or {}).get("execution_name", {}).get("S", "")
             if any(prefix in key for prefix in OTHER_ROWS) or any(field in key for field in OTHER_KEYS):
                 continue
             found[(machine, name)] = arguments
     return found
-
-
-def _raw_state(raw: str, name: str) -> str:
-    """The template text of one state, placeholders intact (the parsed form loses ${tokens_table})."""
-    start = raw.index(f'"{name}": {{')
-    depth, in_string, escaped = 0, False, False
-    for index in range(raw.index("{", start), len(raw)):
-        char = raw[index]
-        if in_string:
-            escaped = char == "\\" and not escaped
-            in_string = not (char == '"' and not escaped)
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return raw[start:index + 1]
-    raise AssertionError(name)
 
 
 TEMPLATE_WRITES = _template_task_row_writes()

@@ -565,8 +565,8 @@ def test_the_catch_up_skips_an_unreadable_fact_without_a_warning_per_consumer(ma
 
     result = make().run()
 
-    assert (result["catch_up"], result["facts_replayed"]) == ("done", 1)
-    assert len(sfn.started) == 1
+    assert result["catch_up"] == "done"
+    assert len(sfn.started) == 1                    # the readable fact's run; the other starts nothing
     assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_")]
 
 
@@ -897,7 +897,9 @@ def test_a_self_check_reading_that_fails_is_reported_and_the_row_still_written(m
 
     assert run.run()["healthy"] is False
     [failure] = _row(tokens, sweep.HEALTH_KEY)["failed_steps"]
-    assert failure.startswith("self_check oldest_overdue: ClientError")
+    assert failure.startswith("self_check: the oldest overdue task could not be read: ClientError")
+    [problem] = sweep.engine_problems(_row(tokens, sweep.HEALTH_KEY), run.reconciler.clock())
+    assert problem.startswith("The sweeper could not finish its self-check on its last run: the oldest overdue task")
 
 
 def test_every_page_of_the_retry_backlog_is_counted(make, tokens, clock, mocker):

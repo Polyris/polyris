@@ -42,7 +42,6 @@ from reconcile import Reconciler, _reconciler
 from signals import DEAD
 from stores import Registry
 
-#: The reconciler's actions after which a row is still waiting and due again.
 #: A failed step's error is cut to this length in `_engine_health`; its log line keeps all of it.
 _FAILURE_CHARS = 500
 
@@ -346,25 +345,13 @@ class Sweeper:
                 if self.monotonic() >= deadline:
                     self._save_catch_up(cursor=cursor, within={"asset": asset, "after": after} if after else None)
                     return {"catch_up": "partial", "facts_replayed": replayed}
-                if fact.get("fact_version") == FACT_VERSION and self._readable(fact):
+                if fact.get("fact_version") == FACT_VERSION:
                     self.fanout.push(fact)
                     replayed += 1
                 after = event_time
             cursor = asset
         self._save_catch_up(done_at=now)
         return {"catch_up": "done", "facts_replayed": replayed}
-
-    @staticmethod
-    def _readable(fact: Dict[str, Any]) -> bool:
-        """Whether the catch-up can replay `fact`. The stream reported an unreadable one when it
-        was recorded; the hourly replay skips it with a log line, not a warning per consumer (Principle #51)."""
-        try:
-            fact_from_item(fact, declared_granularity="daily")
-            return True
-        except (KeyError, TypeError, ValueError) as exc:
-            log.warn("sweeper", "an unreadable fact; the catch-up skips it", asset_name=str(fact.get("asset_name", "")),
-                     event_time=str(fact.get("event_time", "")), error=str(exc))
-            return False
 
     def _subscribed_assets(self) -> set:
         kwargs: Dict[str, Any] = {"ProjectionExpression": "asset_name", "ConsistentRead": True}
@@ -424,6 +411,9 @@ class Sweeper:
         state = {k: str(health.get(k, "")) for k in
                  ("adopt_tasks_cursor", "adopt_tasks_until", "adopt_facts_cursor", "adopt_facts_until")}
         counts = {"tasks_adopted": 0, "facts_adopted": 0}
+        if all(not state[f"adopt_{n}_cursor"] and state[f"adopt_{n}_until"]
+               and now >= parse_utc(state[f"adopt_{n}_until"]) for n in ("tasks", "facts")):
+            return counts                       # both scans are past their hour: nothing to read or save
         self._adopt_scan(state, "tasks", now, lambda cursor: self._scan(
             self.tasks.table, ("execution_name",), self._task_filter(), cursor, self._adopt_task, counts,
             "tasks_adopted", deadline))
@@ -466,7 +456,7 @@ class Sweeper:
         the function past its timeout. The cursor is the key of the last row handled, which
         DynamoDB takes as the ExclusiveStartKey of the next run.
         """
-        kwargs: Dict[str, Any] = {**query, "Limit": sweep.ADOPTION_PAGE}
+        kwargs: Dict[str, Any] = dict(query)
         if cursor:
             kwargs["ExclusiveStartKey"] = json.loads(cursor)
         last: Optional[Dict[str, Any]] = kwargs.get("ExclusiveStartKey")
@@ -557,8 +547,8 @@ class Sweeper:
             "fanout_mapping": mapping_state,
             "fanout_result": mapping_result,
             "stream": self._stream_state(),
-            "oldest_overdue": self._reading("oldest_overdue", lambda: self._oldest_due(now), "", failed),
-            "push_retry_backlog": self._reading("push_retry_backlog", self._backlog, 0, failed),
+            "oldest_overdue": self._reading("the oldest overdue task", lambda: self._oldest_due(now), "", failed),
+            "push_retry_backlog": self._reading("the push retry backlog", self._backlog, 0, failed),
             "failed_steps": failed,
         }
         self._save_health(report)
@@ -574,7 +564,7 @@ class Sweeper:
         try:
             return read()
         except (ClientError, BotoCoreError) as exc:
-            failed.append(f"self_check {name}: {type(exc).__name__}: {exc}"[:_FAILURE_CHARS])
+            failed.append(f"{sweep.SELF_CHECK}: {name} could not be read: {type(exc).__name__}: {exc}"[:_FAILURE_CHARS])
             log.error("sweeper", "a self-check reading failed", reading=name, error=str(exc))
             return neutral
 

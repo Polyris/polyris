@@ -111,14 +111,11 @@ def test_a_lost_row_always_fails_the_task(template):
 
 
 def test_registration_writes_only_a_new_row_or_one_its_generation_owns(template):
-    """ADR #130 §2.1: a raised generation fences every older wrapper. A row written before the
-    upgrade has none and keeps the B-O1 rule: replaced only by another wrapper or while it waits."""
+    """ADR #130 §2.1: a raised generation fences every older wrapper; test_who_may_save_the_task_row
+    evaluates the condition itself. Here: its values are the ones the row and the reconciler use."""
     from polyris.constants import RECONCILABLE_STATUSES
 
     arguments = template["States"]["Save_Task_Record"]["Arguments"]
-    assert arguments["ConditionExpression"] == (
-        "attribute_not_exists(execution_name) OR generation = :g OR "
-        "(attribute_not_exists(generation) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))")
     values = arguments["ExpressionAttributeValues"]
     assert {values[":waiting"]["S"], values[":paused"]["S"]} == set(RECONCILABLE_STATUSES)
     assert _evaluate(values[":self"]["S"], {"wrapper_execution_arn": "arn:w"}) == "arn:w"
@@ -190,3 +187,38 @@ def test_a_pre_upgrade_wrapper_can_register_again(template):
     assert {name: value for name, value in item.items() if None in value.values()} == {}
     assert item["starter_input"] == {"S": ""}                 # restart treats it as a legacy row
     assert item["orchestration_timeout"] == {"N": "0"}        # unknown: readers use the platform default
+
+
+@pytest.mark.parametrize("row,allowed", [
+    ({"status": "waiting", "generation": 1, "wrapper_execution_arn": "arn:self"}, True),     # its own retry
+    ({"status": "running", "generation": 1, "wrapper_execution_arn": "arn:self"}, False),    # it moved on meanwhile
+    ({"status": "stopped", "generation": 1, "wrapper_execution_arn": "arn:old"}, True),      # a restart's new wrapper
+    ({"status": "success", "generation": 2, "wrapper_execution_arn": "arn:old"}, False),     # a newer owner holds it
+    ({"status": "waiting", "wrapper_execution_arn": "arn:self"}, True),                     # a row from before 1.2
+], ids=["retry-waiting", "retry-moved-on", "restart", "superseded", "legacy-row"])
+def test_who_may_save_the_task_row(template, row, allowed):
+    """The real condition, evaluated by DynamoDB (moto): a save retried after a lost answer must not reset
+    a task that started meanwhile (round 3), and only the row's owner may register."""
+    import boto3
+    from botocore.exceptions import ClientError
+    from moto import mock_aws
+
+    arguments = template["States"]["Save_Task_Record"]["Arguments"]
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="tokens", KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST")
+        table.put_item(Item={"execution_name": "load-2026-11-12-run", **row})
+        try:
+            table.put_item(Item={"execution_name": "load-2026-11-12-run", "status": "waiting", "generation": 1},
+                           ConditionExpression=arguments["ConditionExpression"],
+                           ExpressionAttributeNames=arguments["ExpressionAttributeNames"],
+                           ExpressionAttributeValues={":g": 1, ":self": "arn:self", ":waiting": "waiting",
+                                                      ":paused": "waiting_paused"})
+            saved = True
+        except ClientError as exc:
+            assert exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
+            saved = False
+    assert saved is allowed
+

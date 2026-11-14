@@ -24,7 +24,7 @@ BUDGET = timedelta(seconds=200)
 #: A row adopted from an older platform version may have no orchestration
 #: timeout; the SDK's default (a task's 24-hour execution timeout) stands in.
 DEFAULT_ORCHESTRATION_TIMEOUT = timedelta(hours=24)
-#: The engine's own row: catch-up progress (and, later, the self-check).
+#: The engine's own row: the self-check, catch-up progress and the adoption cursors.
 HEALTH_KEY = "_engine_health"
 #: A push start that keeps failing transiently is given up after this long, with a warning.
 PUSH_RETRY_WINDOW = timedelta(hours=24)
@@ -39,12 +39,8 @@ ADOPTION_GENERATION = 1
 ADOPTION_REPEAT = timedelta(hours=1)
 
 #: DescribeExecution is eventually consistent: a wrapper that registered less than this long ago may
-#: not be visible yet, so "does not exist" means gone only for an older row (the console waits as long).
+#: not be visible yet, so "does not exist" means gone only for an older row.
 EXECUTION_VISIBLE_AFTER = timedelta(minutes=2)
-
-#: Rows one adoption scan call reads. The budget is checked before each row (Principle #52);
-#: small pages keep the time between two checks of the page loop short too.
-ADOPTION_PAGE = 200
 #: The console calls the engine unhealthy when the sweeper has not reported for this long,
 STALE_AFTER = timedelta(minutes=15)
 #: or when a waiting task has been due for longer than the sweeper's 40-minute target.
@@ -56,6 +52,9 @@ STREAM_ENABLED = "ENABLED"
 MAPPING_PROBLEM = "PROBLEM"
 #: The steps of one sweeper run, in order, and the words the console uses for them.
 #: A step that fails is reported in `_engine_health`; the others and the self-check still run.
+#: The name a failed self-check reading is reported under, in `failed_steps`.
+SELF_CHECK = "self_check"
+
 STEPS = {
     "due_rows": "re-checking waiting tasks",
     "paused_rows": "releasing tasks held by a pause",
@@ -123,7 +122,8 @@ def engine_problems(health: Optional[Mapping[str, Any]], now: datetime) -> List[
         problems.append(f"Waiting tasks are {behind} minutes behind their checks.")
     for failure in health.get("failed_steps") or []:
         step, _, error = str(failure).partition(": ")
-        problems.append(f"The sweeper could not finish {STEPS.get(step, step)} on its last run: {error}")
+        name = "its self-check" if step == SELF_CHECK else STEPS.get(step, step)
+        problems.append(f"The sweeper could not finish {name} on its last run: {error}")
     return problems
 
 

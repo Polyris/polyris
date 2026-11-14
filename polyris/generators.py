@@ -35,8 +35,8 @@ from .partitions import MAX_PARTITION_KEY_LENGTH
 # Used in task and step inputs for date/partition resolution (ADR #133).
 #
 # A run has one date, the same for every task: the date it was started for
-# (current_date: the console, a backfill, an asset trigger), else the UTC day its
-# schedule fired it for (SCHEDULED_TIME_FIELD, filled in by EventBridge
+# (variables.current_date or current_date: the console, an asset trigger), else
+# the UTC day its schedule fired it for (SCHEDULED_TIME_FIELD, filled in by EventBridge
 # Scheduler), else the UTC day the execution started. Never $now(): each task
 # builds its input at its own moment, so a run crossing midnight would get two
 # dates, and a run scheduled at 23:59 that starts at 00:01 the next day's.
@@ -1371,8 +1371,10 @@ def _build_registration_chain(
                 "cascade_all": JSONATA_CASCADE_ALL,
                 # The Output replaces the whole input: every field a task reads must be passed on here.
                 "triggered_by": JSONATA_TRIGGERED_BY,
-                "current_date": f"{{% {_RUN_DATE} %}}",
-                "PARTITION_ARG": f"{{% $states.input.PARTITION_ARG ? $states.input.PARTITION_ARG : {_RUN_DATE} %}}",
+                # The same chains the tasks use: the declared variables replace the input's, so the
+                # input's variables.current_date is read here or never (ADR #133).
+                "current_date": JSONATA_DATE,
+                "PARTITION_ARG": JSONATA_PARTITION,
             },
             "Next": "Register_Pipeline"
         }

@@ -9282,8 +9282,8 @@ three further, real gaps — full detail in `docs/reference/SPIKE_TASK_ACTIONS_D
 
 | Key | Value |
 |---|---|
-| `polyris:namespace` | the `Namespace` parameter |
-| `polyris:stage` | the `Stage` parameter |
+| `polyris:namespace` | the `Namespace` parameter; for a pipeline, the namespace it is deployed with |
+| `polyris:stage` | the `Stage` parameter; for a pipeline, the stage it is deployed with |
 | `polyris:component` | `platform` in the platform stack, `pipeline` in a pipeline's stack |
 | `polyris:pipeline` | the pipeline's id; pipeline resources only |
 
@@ -9307,7 +9307,7 @@ The old tags are removed. The stack tag `polyris:platform=true` stays: it is how
 
 ## ADR #133 — A run has one date: the date it was started or scheduled for
 
-**Context.** A run's date (`current_date`) keys its task rows, its asset facts and every `wait_for` decision (ADR #130). A run started from the console, by a backfill or by an asset trigger carries it in its input. A scheduled run did not: EventBridge Scheduler passed only `triggered_by` and `schedule`, and each task took the day from `$now()` when the pipeline built its input. A run scheduled at 23:59 that started at 00:01 got the next day, and the tasks of a run crossing midnight could get two dates. For a pipeline with `variables=`, `Define_Inputs` passed the missing date on as `null`, which `$exists` counts as present: every task got a `null` date and the run failed. It also dropped `triggered_by`.
+**Context.** A run's date (`current_date`) keys its task rows, its asset facts and every `wait_for` decision (ADR #130). A run started from the console carries it in its input, and one started by an asset trigger carried it only under `variables`. A scheduled run did not carry it at all: EventBridge Scheduler passed only `triggered_by` and `schedule`, and each task took the day from `$now()` when the pipeline built its input. A run scheduled at 23:59 that started at 00:01 got the next day, and the tasks of a run crossing midnight could get two dates. For a pipeline with `variables=`, `Define_Inputs` passed the missing date on as `null`, which `$exists` counts as present: every task got a `null` date and the run failed. It also dropped `triggered_by`.
 
 **Decision.** A run has one date, the same for every task:
 
@@ -9315,7 +9315,7 @@ The old tags are removed. The stack tag `polyris:platform=true` stays: it is how
 2. else the UTC day its schedule fired it for: the schedule's input carries `scheduled_time`, which EventBridge Scheduler fills with `<aws.scheduler.scheduled-time>`;
 3. else the UTC day the execution started (`$states.context.Execution.StartTime`).
 
-Never `$now()`. The expressions test values, not presence, so a `null` is no date.
+Never `$now()`. The expressions test values, not presence, so a `null` is no date. `Define_Inputs`, which replaces the input's `variables` with the declared ones, reads the same chain, so a pipeline with `variables=` keeps the date its starter sent. AssetFanout sends the date at the top level as well, as the console does, so a pipeline generated before 1.2 gets it without a redeploy.
 
 **Key design choices.**
 

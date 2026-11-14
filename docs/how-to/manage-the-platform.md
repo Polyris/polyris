@@ -54,7 +54,7 @@ With several platforms in one region, name the one you mean: `polyris-up --stack
 
 ## Track costs
 
-Every resource polyris creates carries `polyris:` tags ([list](../deployment/INFRASTRUCTURE.md#tags)). To split your AWS bill by them:
+Every resource in a polyris stack carries `polyris:` tags ([list](../deployment/INFRASTRUCTURE.md#tags)). To split your AWS bill by them:
 
 1. Sign in to the account that pays the bill: the management account, if you use AWS Organizations.
 2. In the Billing and Cost Management console, open **Cost allocation tags**, select the `polyris:` keys and choose **Activate**. A key is listed once a resource carries it, which can take AWS up to 24 hours.

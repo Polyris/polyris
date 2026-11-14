@@ -50,7 +50,7 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Comment": "The status write below is fenced by the generation too, so going on is safe.",
+          "Comment": "The status write below is fenced by the generation too, so it changes nothing for a superseded owner; the notifications and the token failure after it still run, which only this read prevents.",
           "Output": "{% $states.input %}",
           "Next": "Update_Status_Failed"
         }

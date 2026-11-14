@@ -18,9 +18,10 @@ Update it when something moves. Paths here are checked by
   facts and asset-scheduled pipelines are wired to them. The old coordination Lambdas, the
   push state machine and the AND-queue table are gone. Pause, resume and restart decide from
   facts; the sweeper re-checks, retries, catches up and reports. The console shows engine
-  health and reads warnings by write time, and the docs describe the new model. Two review
-  rounds are done; next: fix the round 2 findings, then a live deploy and an upgrade
-  rehearsal (Principle #15).
+  health and reads warnings by write time, and the docs describe the new model. Three review
+  rounds are done and their blockers fixed; next: a live deploy and an upgrade rehearsal
+  (Principle #15). The upgrade-only code (adoption, the generation's branches for old rows,
+  the frozen v1.1.4 wrapper) goes in 1.3: ADR #130 *Out of scope* lists it.
 
 ## Decided, not done
 

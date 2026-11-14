@@ -94,6 +94,11 @@ jobs:
       - name: Verify pipeline definitions
         run: make smoke-pipelines
 
+      # Last: the probes edit source files while they run. Each puts a fixed coordination
+      # defect back and expects the scenario that pins it to fail (tests/backend/coordination).
+      - name: Coordination mutation probes
+        run: make test-probes
+
   # ============================================
   # Lambda Tests
   # ============================================

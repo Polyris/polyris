@@ -379,7 +379,7 @@ A run's name is derived from the consumer, the date and the kind of trigger, so 
 
 A consumer reacts only to facts recorded after its first deploy. Deploying a new consumer does not start it for facts that already exist; its first run starts with the next fact.
 
-Remove an asset from a consumer's `schedule` and redeploy, and that asset no longer starts it. The same holds for a consumer you destroy or move to a cron schedule: its old subscription is deleted the next time the asset records a fact.
+Remove an asset from a consumer's `schedule` and redeploy, and that asset no longer starts it: the old subscription is deleted the next time the asset records a fact. The same holds for a consumer you move to a cron schedule. A consumer you destroy loses its subscription the first time a fact would start it: that start fails, and the bell shows it once.
 
 ---
 

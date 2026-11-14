@@ -14,7 +14,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
@@ -769,8 +769,7 @@ def _read_dag_node(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict], 
     """A task's node from the pipeline registry's dag_metadata, or why it cannot be read.
 
     Per ADR #119's unified node builder the node holds the outlets and, as of
-    the restart data-loss fix, task_config too. Deploy-time DAG properties like
-    these are never stored on the per-execution DynamoDB record, only here.
+    the restart data-loss fix, task_config too. Wrapper steps are not nodes.
     Returns ``(node, '')`` on success and ``(None, reason)`` otherwise.
     """
     if not pipeline_name:
@@ -801,26 +800,40 @@ def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
     return node
 
 
+def _row_outlets(item: Dict) -> Optional[List[Dict]]:
+    """The outlets the marked run was started with, which registration stores on the task row;
+    None for a row from before 1.2, which has none."""
+    raw = item.get('outlets')
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None
+    return value if isinstance(value, list) else None
+
+
 def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     """For Mark Successful specifically, record the facts of this task's
     outlets, as a normal completion would (ADR #130 §1). Every path that marks
     a task successful calls it.
 
-    Outlets are a deploy-time DAG property, read from the pipeline registry's
-    dag_metadata.nodes (ADR #119). The facts belong to the partition of the
-    marked run, the row's ``date`` — never the day the action happens (B-M1).
+    The outlets are the run's own, from the task row; a row from before 1.2
+    has none, and they come from the pipeline registry's dag_metadata.nodes
+    (ADR #119). The facts belong to the partition of the marked run, the row's
+    ``date`` — never the day the action happens (B-M1).
 
     A fact that cannot be recorded does not undo the action: it becomes a
-    `manual` warning in the bell (Principle #38), since nothing would ever
+    `fact` warning in the bell (Principle #38), since nothing would ever
     re-check a fact that does not exist. Returns ``{asset: error}``.
     """
     pipeline_name = item.get('pipeline_name', '')
-    node, reason = _read_dag_node(pipeline_name, task_name)
-    if reason:
-        # Outlets unknown: whatever facts the task had are missing, so say so (B-M2).
-        _warn_fact_not_recorded(item, task_name, '*', f'its outlets are unknown ({reason})')
-        return {'*': reason}
-    outlets = node.get('outlets') if node else None
+    outlets = _row_outlets(item)
+    if outlets is None:
+        node, reason = _read_dag_node(pipeline_name, task_name)
+        if reason:
+            # Outlets unknown: whatever facts the task had are missing, so say so (B-M2).
+            _warn_fact_not_recorded(item, task_name, '*', f'its outlets are unknown ({reason})')
+            return {'*': reason}
+        outlets = (node or {}).get('outlets') or []
     if not outlets:
         return {}
     partition_key = item.get('date')
@@ -836,7 +849,7 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
 
 
 def _warn_fact_not_recorded(item: Dict, task_name: str, asset_name: str, error: str) -> None:
-    """One `manual` warning per missing fact; asset ``*`` means the task's outlets could not be read."""
+    """One `fact` warning per missing fact; asset ``*`` means the task's outlets could not be read."""
     execution_name = str(item.get('execution_name', ''))
     what = 'no fact was recorded' if asset_name == '*' else f'the fact of asset {asset_name} was not recorded'
     try:
@@ -1080,7 +1093,7 @@ def _execute_task_action(
     resolve_pagerduty(item)
     body = {'message': success_message.format(execution_name=execution_name), 'execution_name': execution_name}
     if failed_facts:
-        body['failed_facts'] = failed_facts      # each also a `manual` warning in the bell
+        body['failed_facts'] = failed_facts      # each also a `fact` warning in the bell
     return cors_response(200, body)
 
 

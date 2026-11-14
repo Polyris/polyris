@@ -17,6 +17,8 @@ DEFECTS = {
     "B-U2": "The push catch-up starts a consumer deployed after the facts for those older facts",
     "B-D1": "A scheduled run of a pipeline with variables gets no date and fails; each task takes the day it "
             "starts, so a run crossing midnight gets two dates and a 23:59 schedule started late the next day's",
+    "B-R2": "A restart keeps the old terminal status until the new wrapper registers: a dependant restarted "
+            "meanwhile runs on the old success, or is blocked again by the old failure",
     "B-U3": "A push subscription outlives what made it: an asset dropped from the schedule, or a pipeline moved to a cron, "
             "keeps its subscription and gets a warning for every fact",
     "B-O2": "A wrapper a restart replaced registers again and takes the row back: the task runs twice",

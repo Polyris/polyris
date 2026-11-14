@@ -59,16 +59,36 @@ def _nightly() -> DAG:
     return dag
 
 
-def test_define_inputs_passes_on_the_run_date_and_the_trigger():
-    """Its Output replaces the whole input: a field it drops is lost for every task."""
+def _define_inputs() -> Dict[str, Any]:
     asl = json.loads(generate_step_function_json(
         _nightly(), wrapper_arn=ARN, registry_table="registry", tokens_table="tokens",
         asset_subscriptions_table="asset-subs"))
-    output = asl["States"]["Define_Inputs"]["Output"]
-    run_input = {"triggered_by": "schedule", SCHEDULED_TIME_FIELD: FIRED_FOR}
-    assert _evaluate(output["current_date"], run_input) == "2026-11-13"
-    assert _evaluate(output["PARTITION_ARG"], run_input) == "2026-11-13"
-    assert _evaluate(output["triggered_by"], run_input) == "schedule"
+    output: Dict[str, Any] = asl["States"]["Define_Inputs"]["Output"]
+    return output
+
+
+#: Each starter's run input, as it builds it, and the date the run must get.
+STARTERS = {
+    "schedule": ({"triggered_by": "schedule", SCHEDULED_TIME_FIELD: FIRED_FOR}, "2026-11-13"),
+    "asset push": ({"triggered_by": "asset", "current_date": "2026-11-05", "PARTITION_ARG": "2026-11-05",
+                    "variables": {"current_date": "2026-11-05", "PARTITION_ARG": "2026-11-05"}}, "2026-11-05"),
+    "asset push before 1.2": ({"triggered_by": "asset",
+                               "variables": {"current_date": "2026-11-05", "PARTITION_ARG": "2026-11-05"}}, "2026-11-05"),
+    "console": ({"triggered_by": "console_run", "current_date": "2026-11-07", "PARTITION_ARG": "2026-11-07",
+                 "variables": {"current_date": "2026-11-07", "PARTITION_ARG": "2026-11-07"}}, "2026-11-07"),
+}
+
+
+@pytest.mark.parametrize("starter", sorted(STARTERS))
+def test_define_inputs_gives_each_starters_run_its_date(starter):
+    """Its Output replaces the whole input, the declared variables included: a field it drops is lost
+    for every task (B-D1). sam/lambdas/coordination/asset_fanout.py and routes/pipelines_actions.py
+    build the push and console inputs; deploy.py the schedule's."""
+    run_input, expected = STARTERS[starter]
+    output = _define_inputs()
+    assert _evaluate(output["current_date"], run_input) == expected
+    assert _evaluate(output["PARTITION_ARG"], run_input) == expected
+    assert _evaluate(output["triggered_by"], run_input) == run_input["triggered_by"]
 
 
 def test_the_schedule_hands_each_run_the_time_it_fired_it_for():

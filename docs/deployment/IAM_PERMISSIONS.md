@@ -44,24 +44,26 @@ If your org requires enumerated permissions, the installer role needs these serv
 
 | AWS service | Actions | Why |
 |-------------|---------|-----|
-| `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources` | `polyris-up` / SAM build the change set and execute it |
+| `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources`; `CreateChangeSet` also on `arn:aws:cloudformation:<region>:aws:transform/Serverless-2016-10-31` | `polyris-up` / SAM build the change set and execute it |
 | `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
-| `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `TagRole`, `UntagRole`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions` | 11 roles + 3 managed policies |
-| `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `UpdateContinuousBackups`, `UpdateTimeToLive` | 7 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
-| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `TagResource`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, query-subscriptions, notify, etc.) and the mapping that feeds the asset-events stream to asset-fanout |
-| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource` | 13 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
+| `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `UpdateAssumeRolePolicy`, `TagRole`, `UntagRole`, `ListRoleTags`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions`, `GetPolicyVersion`, `ListEntitiesForPolicy` | 11 roles + 3 managed policies |
+| `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `ListTagsOfResource`, `UpdateContinuousBackups`, `DescribeContinuousBackups`, `UpdateTimeToLive`, `DescribeTimeToLive`, `DescribeContributorInsights`, `DescribeKinesisStreamingDestination` | 7 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
+| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `GetPolicy`, `InvokeFunction`, `TagResource`, `UntagResource`, `ListTags`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, query-subscriptions, notify, etc.) and the mapping that feeds the asset-events stream to asset-fanout |
+| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource`, `UntagResource`, `ListTagsForResource` | 13 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
 | `scheduler` | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule`, `GetSchedule` | The sweeper's 5-minute schedule |
-| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `DescribeLogGroups` | 17 log groups |
-| `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutEncryptionConfiguration`, `PutBucketTagging`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket`, `ListBucketVersions`, `DeleteObjectVersion` | Console UI bucket, results bucket, and the artifacts bucket `polyris-up` uploads release code to |
-| `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig`, `AdminCreateUser`, `AdminDeleteUser`, `AdminGetUser` | Console API auth; the first console admin when `AdminEmail` is set |
-| `cloudfront` | `CreateDistribution`, `UpdateDistribution`, `DeleteDistribution`, `GetDistribution`, `CreateOriginAccessControl`, `DeleteOriginAccessControl`, `CreateResponseHeadersPolicy`, `DeleteResponseHeadersPolicy`, `CreateFunction`, `DeleteFunction`, `PublishFunction`, `UpdateFunction` | Console UI hosting |
-| `apigateway` | `POST`, `GET`, `PUT`, `DELETE`, `PATCH` on `/v2/apis/*` and `/tags/*` | Console API HTTP endpoint |
+| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `UntagResource`, `ListTagsForResource`, `DescribeLogGroups` | 17 log groups |
+| `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutEncryptionConfiguration`, `GetBucketPolicy`, `DeleteBucketPolicy`, `PutBucketTagging`, `GetBucketTagging`, `TagResource`, `UntagResource`, `ListTagsForResource`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket`, `ListBucketVersions`, `DeleteObjectVersion` | Console UI bucket, results bucket, and the artifacts bucket `polyris-up` uploads release code to |
+| `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig`, `GetUserPoolMfaConfig`, `AdminCreateUser`, `AdminDeleteUser`, `AdminGetUser`, `TagResource`, `UntagResource`, `ListTagsForResource` | Console API auth; the first console admin when `AdminEmail` is set |
+| `cloudfront` | `CreateDistribution`, `CreateDistributionWithTags`, `UpdateDistribution`, `GetDistributionConfig`, `GetOriginAccessControl`, `GetResponseHeadersPolicy`, `DescribeFunction`, `DeleteDistribution`, `GetDistribution`, `CreateOriginAccessControl`, `DeleteOriginAccessControl`, `CreateResponseHeadersPolicy`, `DeleteResponseHeadersPolicy`, `CreateFunction`, `DeleteFunction`, `PublishFunction`, `UpdateFunction`, `TagResource`, `UntagResource`, `ListTagsForResource` | Console UI hosting |
+| `apigateway` | `POST`, `GET`, `PUT`, `DELETE`, `PATCH` on `/apis/*` and `/tags/*`; `TagResource`, `UntagResource` | Console API HTTP endpoint |
+
+Every resource in a polyris stack carries its billing tags ([INFRASTRUCTURE.md#tags](INFRASTRUCTURE.md#tags)), so each service also needs its tag, untag and list-tags actions: an upgrade that changes tags fails without them. The lists follow the permissions CloudFormation's resource handlers declare; if a call is still denied, add the action the error names.
 
 Scope all `Resource` fields to your polyris stack's namespace where the service supports it (e.g. `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*`). CloudFormation itself cannot be scoped tighter than the stack name.
 
 ## Deploy — per-pipeline `polyris-deploy`
 
-After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${pipeline}-${stage}`) containing the pipeline's dependency-wrapper state machines. After the stack deploys, `polyris-deploy` writes the pipeline's metadata to the `pipeline-registry` DDB table directly.
+After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${stage}-polyris-${pipeline}`) containing the pipeline's dependency-wrapper state machines. After the stack deploys, `polyris-deploy` writes the pipeline's metadata to the `pipeline-registry` DDB table directly.
 
 Minimum permissions for the developer/CI role:
 
@@ -88,6 +90,18 @@ Minimum permissions for the developer/CI role:
       "Resource": "arn:aws:cloudformation:*:*:stack/*-polyris-*/*"
     },
     {
+      "Sid": "LargeTemplates",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::*-polyris-results/cfn-pipeline-templates/*"
+    },
+    {
+      "Sid": "ReadThePlatformStack",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": "*"
+    },
+    {
       "Sid": "StateMachineManagement",
       "Effect": "Allow",
       "Action": [
@@ -96,7 +110,9 @@ Minimum permissions for the developer/CI role:
         "states:DeleteStateMachine",
         "states:DescribeStateMachine",
         "states:StartExecution",
-        "states:TagResource"
+        "states:TagResource",
+        "states:UntagResource",
+        "states:ListTagsForResource"
       ],
       "Resource": "*"
     },
@@ -119,9 +135,48 @@ Minimum permissions for the developer/CI role:
         "logs:CreateLogGroup",
         "logs:DeleteLogGroup",
         "logs:PutRetentionPolicy",
-        "logs:DescribeLogGroups"
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:ListTagsForResource"
       ],
-      "Resource": "arn:aws:logs:*:*:log-group:/aws/vendedlogs/states/*-polyris-*"
+      "Resource": "arn:aws:logs:*:*:log-group:/*/*/polyris/*"
+    },
+    {
+      "Sid": "ListLogGroups",
+      "Effect": "Allow",
+      "Action": "logs:DescribeLogGroups",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PipelineSchedule",
+      "Effect": "Allow",
+      "Action": [
+        "scheduler:CreateSchedule",
+        "scheduler:UpdateSchedule",
+        "scheduler:DeleteSchedule",
+        "scheduler:GetSchedule"
+      ],
+      "Resource": "arn:aws:scheduler:*:*:schedule/default/*-polyris-*-schedule"
+    },
+    {
+      "Sid": "PipelineScheduleRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListRoleTags",
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/*-polyris-*-scheduler-role"
     }
   ]
 }

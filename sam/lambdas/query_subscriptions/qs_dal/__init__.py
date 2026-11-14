@@ -1,7 +1,7 @@
 """
 DAL for query_subscriptions Lambda (v0.79.3, ADR #75).
 
-Single repo — reads asset-subscriptions table with pagination.
+Single repo — reads the dependency-subscriptions table with pagination.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _resource():
 
 
 class SubscriptionsRepo:
-    """asset-subscriptions table: dependency_key + subscriber composite."""
+    """dependency-subscriptions table: dependency_key + subscriber composite."""
 
     def __init__(self, table_name: Optional[str] = None):
         # NOTE: this Lambda reads the table_name from env at call time

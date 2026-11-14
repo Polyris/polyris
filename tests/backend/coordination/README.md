@@ -44,13 +44,14 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 | World verb | What it does |
 |---|---|
 | `deploy(dag, before_upgrade=)`, `start_run(pipeline, date, **inputs)` | generate the pipeline's ASL and start a run; `before_upgrade=True` starts its tasks on the v1.1.4 wrapper (`legacy/`), as runs in flight across the upgrade do |
+| `fire_schedule(pipeline, scheduled_time)`, `start_bare(pipeline)` | start a run as EventBridge Scheduler does, with the input `polyris-deploy` gives the schedule; or with an empty input |
 | `complete(run, task, status=)` | finish the user's work for a task |
 | `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact, by `run_task` or as an older version stored it (`writer="older version"`); deliver its stream record separately, so tests choose the interleaving |
 | `pause`, `resume`, `restart`, `skip`, `mark_success` | operator actions through the console routes |
 | `time_out_registration`, `time_out_pause_wait`, `stop_wrapper_externally`, `inject_failure`, `fail_starts`, `fail_signals`, `fail_invokes` | faults from outside: a timeout, a stop, a refused DynamoDB call (or, with `after=True`, an applied call whose answer is lost), a Step Functions start or callback, a Lambda that keeps failing (transiently, or with `error="Sandbox.Timedout"` as a timeout) |
-| `hold(machine)`, `release(machine)` | new executions of a platform state machine wait to take a step, to order a race (B-P3) |
-| `sweep()`, `clock.advance(...)` | the safety net and the passing of time; every reading of the clock, by the stack, the Lambdas or the console, moves it on 1 ms |
-| `status`, `row`, `running_tasks`, `task_runs`, `signals`, `warnings`, `pipeline_status`, `push_runs` | what a scenario asserts on |
+| `hold(machine)`, `release(machine)`, `release_newest(machine)` | new executions of a platform state machine wait to take a step, to order a race (B-P3, B-R2) |
+| `sweep()`, `clock.advance(...)`, `clock.jump_to(when)` | the safety net and the passing of time; every reading of the clock, by the stack, the Lambdas or the console, moves it on 1 ms |
+| `status`, `row`, `running_tasks`, `task_runs`, `signals`, `warnings`, `pipeline_status`, `push_runs`, `push_subscribers` | what a scenario asserts on |
 
 After every step the World checks invariants 1, 3, 4 and 5 of ADR #130 (`invariants.py`): one accepted dependency signal per wrapper; no status moving back under one wrapper execution; a waiting row keeps its pointers until its signal is accepted; a waiting row is under `waiting#` and a row held in its pause wait under `paused#`. A scenario that breaks one fails, whatever it asserts itself. `test_invariants.py` tests the check.
 
@@ -58,7 +59,7 @@ A verb whose code path has not landed raises `NeedsBinding`. A scenario that use
 
 ## Defects and mutation probes
 
-`defects.py` lists the defects of ADR #130 by the ids in the ADR's defects table, and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect.
+`defects.py` lists the defects by the ids in ADR #130's defects table (B-D1 is ADR #133's), and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect. CI runs it after the other suites (`make test-probes`).
 
 `test_meta.py` keeps these consistent:
 - every defect has a scenario, and every scenario names a known defect;

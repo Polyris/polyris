@@ -159,12 +159,12 @@ Every resource in the stack that AWS can tag carries three tags. The resources `
 
 | Key | Value |
 |---|---|
-| `polyris:namespace` | the stack's `Namespace` |
-| `polyris:stage` | the stack's `Stage` |
+| `polyris:namespace` | the stack's `Namespace`; a pipeline's, from the config it is deployed with |
+| `polyris:stage` | the stack's `Stage`; a pipeline's, from the config it is deployed with |
 | `polyris:component` | `platform` on this stack's resources, `pipeline` on a pipeline's |
 | `polyris:pipeline` | the pipeline's id; pipeline resources only |
 
-Resources AWS cannot tag, such as the sweeper's schedule and the IAM policies, carry none. A stack installed with `polyris-up` also has the stack tag `polyris:platform=true`, which CloudFormation copies to its resources. To split your bill by these tags, see [Track costs](../how-to/manage-the-platform.md#track-costs).
+Resources AWS cannot tag, such as the sweeper's schedule and the IAM policies, carry none. A stack installed with `polyris-up` also has the stack tag `polyris:platform=true`, which CloudFormation copies to its resources. The artifacts bucket `polyris-up` creates outside the stacks, one per account and region, carries only `polyris:platform=artifacts`. To split your bill by these tags, see [Track costs](../how-to/manage-the-platform.md#track-costs).
 
 ## Where does each pipeline run's state live?
 

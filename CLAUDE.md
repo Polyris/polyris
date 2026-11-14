@@ -270,16 +270,17 @@ Anti-pattern: write only the new field because "the old one is deprecated" while
 
 Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
 
-**40. Delete a wake-up pointer only after the signal it serves was accepted — never before**
-A subscription, or any pointer that says "wake this waiter", may be deleted only after the signal it exists for was accepted. If you delete first and then fail to signal, nothing will ever re-check the waiter.
-
-In the reconciler (ADR #130 §3), a run's pointers are deleted only after an accepted signal. Leftover pointers are harmless no-ops that expire by TTL.
-
-**41. Wake-up hints may be lost; wake-up decisions may not**
-- **Hint paths** only say "check this waiter again": the asset-events stream, `notify_dependents`, registration, resume. They may fail or drop a hint, because a periodic re-check from facts (the sweeper, ADR #130 §8) recovers it.
-- **Decision and action paths** never fail silently: the reconciler, the wrapper's status write, and every write of a fact. They retry, fail the affected task with the real cause, or surface a console warning (#38). A fact is state, not a hint: nothing re-checks a fact that was never written, so Mark Successful turns a failed fact write into a `manual` warning (B-M2).
-
-Anti-pattern: a wake-up path whose loss nothing re-checks, for example a fire-and-forget invoke with no periodic re-check behind it.
+**40–52 (coordination). The coordination code follows the rules in ADR #130, *Rules for the code***
+They concern task rows, wake-ups, facts and the sweeper. The numbers stay because code and tests cite them; read the full rule in the ADR before changing that code.
+- **40.** Delete a wake-up pointer only after the signal it serves was accepted.
+- **41.** Wake-up hints may be lost; wake-up decisions, status writes and fact writes may not.
+- **43.** The receiver of a signal owns the status transition that follows it.
+- **46.** A task token handed over through a write is findable by the sweeper, and a failed write fails the token.
+- **47.** A task row has one owner at a time, named by its generation; `tests/sdk/test_task_row_writers.py` lists every writer.
+- **49.** A helper template reads an input an older caller may omit through `$exists`.
+- **50.** A time that marks a beginning is written once (`if_not_exists`).
+- **51.** A reader of shared rows skips a row it cannot parse, and says so.
+- **52.** A time budget is checked per item, and a periodic job's steps fail independently.
 
 **42. A second bug of the same class in one mechanism stops the patching — question the model first**
 When a mechanism produces a second bug of the same class (e.g. "task silently hangs until timeout"), do not patch it a third time. Stop and write down, before any code:
@@ -293,13 +294,6 @@ Then decide with the maintainer: patch now and schedule the model change, or cha
 
 **How to apply:** keep a running count per mechanism during a branch. "Same class" means the same user-visible failure, not the same line of code. This is the escalation step of Principle #5. It does not forbid shipping the patch, but the model question must be asked and answered.
 
-**43. The receiver of a signal owns the status transition that follows it**
-When component A signals component B (e.g. `SendTaskSuccess` to a waiting wrapper), B writes the resulting status, not A. If A writes it, two things break:
-- a crash between the signal and the write loses the status;
-- a consumed token cannot be told apart from an expired one.
-
-Under ADR #130 the wrapper writes `deps_ready`, `skipped` or `upstream_failed` itself, and the reconciler only signals.
-
 **44. A guard for an optional overlay import catches only that module's absence**
 `try: import ee` must catch only a `ModuleNotFoundError` whose `name` is the overlay module. If it catches every `ImportError`, a broken import inside the overlay silently removes every route the overlay provides.
 
@@ -308,31 +302,8 @@ Code computes engine health on demand and shows it in the console (ADR #130 §9)
 
 A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR.
 
-**46. A task token handed over through a write is findable by the sweeper, and a failed write fails the token**
-When a state stores its `waitForTaskToken` for another component to send (`pause_waiter` saves `pause_token` for resume):
-- the same write gives the row an attention entry (`paused#`), so the sweeper releases the task if the sender missed it. A sender that finds tokens through an index or one scan misses a token written while it ran (B-P3);
-- a failed write is caught and fails the token with the cause. Nothing else will ever hold that token, so without the catch the task waits for its heartbeat and then runs anyway (B-P4);
-- adoption and any other backfill of attention entries route a row by the same rule as its writer: a row holding a pause token goes to `paused#`, not `waiting#`.
-
-**47. A task row has one owner at a time, named by its generation**
-Every write made for an owner (the wrapper, registration, `run_task`, the pause wait, the failure handler) carries `ownership.FENCE` with the owner's generation. Every write that ends an ownership (an operator's decision, a restart, the reconciler closing a zombie) raises it with `ownership.RAISE`, in the same update that records the decision. A fenced write ends its writer quietly: no status, no notification, no work. Six bugs came from writers that checked something else or nothing (B-O1…B-O5, B-W1); see ADR #130 §2.1. `tests/sdk/test_task_row_writers.py` lists every writer of the tokens table, and a new one fails it until it has a role there.
-
-A retry after a lost answer must accept the row it already moved: a claim accepts its own target status under its own generation (B-W1). Test such a write by applying it twice.
-
 **48. A value an ADR defines clause by clause is one pure function with a test per clause**
 The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
-
-**49. A helper template reads an input an older caller may omit through `$exists`**
-During an upgrade, wrappers started on the old definitions keep calling the new helpers until they finish. `$string()` of a missing field fails the state, and with it the task: a pre-upgrade wrapper registering again failed on `starter_input`. Default such a field to a value its readers already treat as absent (`''`, `0`), and pin it with a test that runs the helper on the old caller's input (`PRE_UPGRADE_WRAPPER_INPUT` in `tests/sdk/test_registration_template.py`).
-
-**50. A time that marks a beginning is written once**
-When the writer runs again, as registration does on every run, write the field with `if_not_exists`. Otherwise it moves forward and silently narrows whatever it gates: `subscribed_at` decides which facts a push consumer reacts to, and a moving one would hide the facts a lost stream record left for the catch-up (B-U2).
-
-**51. A reader of shared rows skips a row it cannot parse, and says so**
-One malformed row must not fail every decision that reads the table. Catch the parse error per row, count the row for nothing, and write a warning. `FactStore.read` does this for asset facts (B-F2).
-
-**52. A time budget is checked per item, and a periodic job's steps fail independently**
-A budget checked only between batches lets one large item run the function into its timeout: AssetFanout checked it between records, so a record with many waiters was retried for 24 hours and blocked its shard, and the catch-up checked it between assets, so an asset with many facts never finished. Check the deadline before each item, give up the rest as lost hints where a re-check exists (#41), and keep a cursor inside the item's group (`catchup_within`). A periodic job runs each step in its own `try`: a failing step must not skip the later steps or the self-check, and the health report names it (`sweep.STEPS`, `failed_steps`).
 
 **53. A Lambda's AWS calls fail inside the Lambda's timeout**
 botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function, and a function that times out cannot report its own transient error, so the caller sees `Sandbox.Timedout`. Build clients with a short retry and timeout config (`env._config` in the coordination Lambdas), and let the caller's `Retry`/`Catch` treat the platform's own failures (`Sandbox.Timedout`, `Lambda.Unknown`) and any HTTP 5xx as transient.
