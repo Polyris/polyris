@@ -7,6 +7,7 @@ import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
 import { HistoryChrome } from './HistoryChrome';
 import { DatePicker } from './DatePicker';
+import { historyDatePlaceholder, historyEmptyState, isHistoryWindowed } from '../utils/historyWindow';
 import { SortableHeader } from './SortableHeader';
 import { useAppStore } from '@/stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -191,7 +192,7 @@ export function AllTasksView({
             <DatePicker
                 value={filter.date}
                 onChange={d => onFilterChange({ ...filter, date: d })}
-                placeholder="All dates"
+                placeholder={historyDatePlaceholder(isHistoryWindowed(filter))}
                 ariaLabel="Filter by date"
             />
 
@@ -238,10 +239,8 @@ export function AllTasksView({
                 ) : total === 0 ? (
                     <EmptyState
                         icon={hasActiveFilters || search ? Search : Inbox}
-                        title={hasActiveFilters || search ? 'No matching tasks' : 'No tasks found'}
-                        description={hasActiveFilters || search
-                            ? 'Try adjusting your filters or search'
-                            : 'Task instances will appear here when pipelines run'}
+                        title={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed(filter)).title}
+                        description={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed(filter)).description}
                     />
                 ) : (
                     <table className="table-full" aria-label="Task executions">

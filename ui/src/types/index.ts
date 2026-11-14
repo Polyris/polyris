@@ -48,7 +48,7 @@ export interface Task {
   pipeline_execution_short?: string;
   pipeline_execution?: string;
   dependencies?: string[];
-  wait_for?: string | WaitForAsset[];
+  wait_for?: string | WaitForEntry[];
   wait_before?: number;
   wait_delay_until_ms?: number;
   wait_delay_started_ms?: number;
@@ -88,7 +88,18 @@ export interface TaskError {
 export interface WaitForAsset {
   asset_name?: string;
   name?: string;
+  freshness_hours?: number | null;
+  consecutive_days?: number;
 }
+
+/** `wait_for=[a | b]` (OR) or `[a & b]` (AND) as one entry; groups nest
+ *  (polyris/generators.py `_serialize_wait_for`). */
+export interface WaitForGroup {
+  operator: 'AND' | 'OR';
+  assets: WaitForEntry[];
+}
+
+export type WaitForEntry = WaitForAsset | WaitForGroup;
 
 export interface AssetScheduleInfo {
   operator: 'AND' | 'OR';

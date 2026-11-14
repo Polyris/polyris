@@ -602,6 +602,8 @@ from dal import executions_repo, pipelines_repo
 # Never: repo.table.get_item(...)  — use repo.get(key)
 ```
 
+**A ProjectionExpression on a GSI names only what that index projects.** DynamoDB rejects the whole query otherwise (`… does not project [...]`); moto does not, so unit tests pass. Read the index without a projection, or with its keys and `NonKeyAttributes` only, and fetch the rest with `batch_get_run_meta`. `tests/sdk/test_console_index_projections.py` checks every index read against `sam/template.yaml`; `/api/tasks` failed with a 500 on every filter until the 1.2.0 live smoke.
+
 One deliberate exception: `notify/registry.py` has no `dal/` and one table accessor — `registry_table()` is the accessor. A DAL for a single function would be over-engineering.
 
 **GSI INCLUDE projections:** when a field is absent from `NonKeyAttributes`, fetch from base table with `executions_repo.batch_get_run_meta` (projects `triggered_by`, `attempt`, `retry_attempt`, `task_config`; chunks at 100, retries `UnprocessedKeys`). Never loop N individual `GetItem` calls.

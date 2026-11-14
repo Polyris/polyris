@@ -203,15 +203,14 @@ def _reconcile_orphaned_tasks(tasks):
     return tasks
 
 
-# triggered_by, attempt, retry_attempt, task_config are listed here for base-table reads
-# (consistent read paths). GSI reads (date-pipeline-index, pipeline-date-index) silently
-# omit them because they are not in NonKeyAttributes — batch_get_run_meta fills them
-# post-query. retry_attempt (ADR #125) tracks in-SFN auto-retries within one wrapper;
-# `attempt` tracks manual-restart generations across wrappers.
-_TASKS_PROJECTION = ('execution_name, task_name, pipeline_name, #s, #d, started_at, '
-                     'running_at, finished_at, dependencies, pipeline_execution, wait_for, '
-                     'wrapper_execution_arn, triggered_by, #attempt, retry_attempt, task_config')
-_TASKS_EXPR_NAMES = {'#s': 'status', '#d': 'date', '#attempt': 'attempt'}
+# The feed reads date-pipeline-index or pipeline-date-index. Each projects only part of
+# a row (sam/template.yaml), and DynamoDB rejects a query whose ProjectionExpression names
+# an attribute the index does not project. So the index reads take no projection, and the
+# fields that either index lacks are read from the base table for the returned page.
+# retry_attempt (ADR #125) counts in-SFN auto-retries within one wrapper; `attempt`
+# counts manual-restart generations across wrappers.
+_TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', 'wrapper_execution_arn',
+                   *executions_repo.RUN_META_FIELDS)
 
 
 def _format_task_row(item: Dict) -> Dict:
@@ -304,8 +303,6 @@ def get_all_tasks(event: Dict) -> Dict:
                 min_rows=Limits.TASKS_MIN_ROWS_PER_DATE,
                 key_condition=key_cond,
                 filter_expr=status_expr,
-                projection=_TASKS_PROJECTION,
-                expr_names=_TASKS_EXPR_NAMES,
             )
         elif pipeline_filter:
             # One pipeline, no date: pipeline-date-index, no window (ADR #108) — the
@@ -315,8 +312,6 @@ def get_all_tasks(event: Dict) -> Dict:
             items = pipeline_rows_before(
                 pipeline_filter, before, limit,
                 count_fn=lambda rows: sum(1 for r in rows if _keeps(r)),
-                projection=_TASKS_PROJECTION,
-                expr_names=_TASKS_EXPR_NAMES,
             )
             # The index read takes no FilterExpression — its whole-date accounting
             # counts returned rows — so status is applied here instead.
@@ -330,8 +325,6 @@ def get_all_tasks(event: Dict) -> Dict:
                         date_str,
                         min_rows=Limits.FEED_MIN_ROWS_PER_DAY,
                         filter_expr=status_expr,
-                        projection=_TASKS_PROJECTION,
-                        expr_names=_TASKS_EXPR_NAMES,
                     ))
                 except Exception as e:
                     log.error("get_all_tasks", "Error querying date", error=str(e), date_str=date_str)
@@ -343,17 +336,16 @@ def get_all_tasks(event: Dict) -> Dict:
 
         page, next_cursor = page_by_started_at(rows, before, limit)
 
-        # triggered_by, attempt, task_config are not in the GSI NonKeyAttributes so
-        # they are absent from every GSI read.  Back-fill from the base table for the
+        # Fields the index read lacks (_TASKS_BACKFILL), from the base table for the
         # current page only (bounded cost: ≤ limit rows = ≤ 5 BatchGetItem calls).
         try:
             names = [r['execution_name'] for r in page if r.get('execution_name')]
             if names:
-                meta = executions_repo.batch_get_run_meta(names)
+                meta = executions_repo.batch_get_run_meta(names, _TASKS_BACKFILL)
                 for r in page:
                     m = meta.get(r.get('execution_name', ''))
                     if m:
-                        for field in ('triggered_by', 'attempt', 'retry_attempt', 'task_config'):
+                        for field in _TASKS_BACKFILL:
                             if r.get(field) is None:
                                 r[field] = m.get(field)
         except (ClientError, BotoCoreError) as e:

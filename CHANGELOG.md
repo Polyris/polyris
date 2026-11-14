@@ -22,6 +22,22 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
 - Warnings reach the bell whatever date they are about, and the console shows a banner while task coordination is unhealthy.
 
+### Fixed — History says which days it shows
+
+- Without a pipeline or a date, History lists only the last 14 days, but its date filter read "All dates" and an empty list said "No runs found". The filter now reads "Last 14 days", and the empty state says to pick a pipeline or a date for older runs and tasks.
+
+### Fixed — asset groups in the task view
+
+- A task that waits for `wait_for=[a | b]` (or `[a & b]`) showed "unknown" under Asset Dependencies, and the waiting tooltip left the group out. Both now name the group, for example `smoke/a | smoke/b`.
+
+### Fixed — the History tasks feed (`/api/tasks`)
+
+- `/api/tasks` asked `date-pipeline-index` and `pipeline-date-index` for fields they do not project, and DynamoDB rejected every such query: the feed answered 500 for any filter. It now reads the indexes without a projection and takes the missing fields from the table for the returned page. `tests/sdk/test_console_index_projections.py` checks every index read in the console against the projections in `sam/template.yaml`.
+
+### Fixed — `polyris-deploy --stage` reads config.py
+
+- With `--stage` on the command line, `polyris-deploy` ignored `config.py` unless the pipeline file itself read the config. It then deployed with the default AWS credentials, chose the platform stack by tag instead of `stack_name`, and named the pipeline stack with the default namespace. The stage's settings now always come from `config.py`.
+
 ### Fixed — a run's date (ADR #133, B-D1)
 
 - A scheduled or asset-triggered run of a pipeline with `variables=` gave its tasks no date and failed; a scheduled one also showed `triggered_by` as `unknown`.

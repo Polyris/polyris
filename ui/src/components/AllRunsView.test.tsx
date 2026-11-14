@@ -112,7 +112,8 @@ describe('AllRunsView', () => {
         it('shows empty state when no runs', () => {
             setup({ runs: [] });
             render(<AllRunsView {...defaultProps} />);
-            expect(screen.getByText('No runs found')).toBeInTheDocument();
+            expect(screen.getByText('No runs in the last 14 days')).toBeInTheDocument();
+            expect(screen.getByText('Last 14 days')).toBeInTheDocument();   // the empty date filter says so too
         });
 
         it('table has aria-label', () => {
@@ -248,6 +249,13 @@ describe('AllRunsView', () => {
     });
 
     describe('inline date picker', () => {
+        it('says "All dates" once a pipeline is chosen: that read has no window', () => {
+            useAppStore.getState().setRunFilter({ status: '', pipeline: 'sales', date: '' });
+            render(<AllRunsView {...defaultProps} />);
+            expect(screen.getByText('All dates')).toBeInTheDocument();
+            expect(screen.queryByText('Last 14 days')).not.toBeInTheDocument();
+        });
+
         it('renders an inline date picker showing the current date (mirrors All Tasks)', () => {
             // Driven by this workspace's own filter, exactly like All Tasks (ADR #106) —
             // it used to read the Pipeline page's global scope instead.

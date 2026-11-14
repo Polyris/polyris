@@ -168,8 +168,9 @@ def test_marking_a_producer_successful_records_its_fact(console):
     run = console.start("smoke-wait-a", day)
     eventually(lambda: console.status("smoke-wait-a", day, "use_a", run) == "waiting", "use_a to wait")
     producer = console.start("smoke-produce-a-by-hand", day)
-    eventually(lambda: console.status("smoke-produce-a-by-hand", day, "make_a_by_hand", producer) == "failed",
-               "the producer to fail")
+    # A failed task waits for a decision (waiting_decision) until the decision timeout, then fails.
+    eventually(lambda: console.status("smoke-produce-a-by-hand", day, "make_a_by_hand", producer)
+               in ("waiting_decision", "failed"), "the producer to fail")
     console.act("success", "make_a_by_hand", day, producer)
     eventually(lambda: console.status("smoke-wait-a", day, "use_a", run) == "success", "use_a to run")
 

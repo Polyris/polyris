@@ -303,6 +303,8 @@ class _StageConfig:
         self._stage = stage
 
     def _env_config(self) -> Dict[str, Any]:
+        # polyris-deploy --stage reads only this view; nothing else may have loaded config.py yet.
+        self._parent._ensure_loaded()
         envs = self._parent._environments
         if envs and self._stage not in envs:
             configured = sorted(envs.keys())

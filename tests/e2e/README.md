@@ -83,6 +83,8 @@ POLYRIS_API_URL=https://... POLYRIS_ID_TOKEN=plrs_... pytest tests/e2e/test_coor
 
 It takes about 15 minutes. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
 
+A task that fails waits in `waiting_decision` until the decision timeout, and only then becomes `failed`; a scenario that needs a failed task accepts either status.
+
 ## Getting a Cognito Token (fallback — prefer a PAT, see above)
 
 ```bash

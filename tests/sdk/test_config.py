@@ -180,3 +180,24 @@ def test_reload_sets_loaded_flag(tmp_path, monkeypatch):
     c.reset()  # _loaded = False
     c.reload()
     assert PolyrisConfig._loaded is True
+
+
+def test_stage_view_loads_config_py_on_its_first_read(tmp_path, monkeypatch):
+    """With --stage given, polyris-deploy reads config.py only through for_stage().
+
+    A view that read the environments before anything had loaded config.py saw
+    none: the deploy used the default AWS credentials and searched for the
+    platform instead of using stack_name.
+    """
+    from polyris.config import PolyrisConfig
+    cfg = tmp_path / "config.py"
+    cfg.write_text('ENVIRONMENTS = {"dev": {"stack_name": "plat-dev", "profile": "dev-profile", "namespace": "ns"}}\n')
+    monkeypatch.setenv("POLYRIS_CONFIG", str(cfg))
+    c = PolyrisConfig()
+    monkeypatch.setattr(c, "_environments", {})
+    monkeypatch.setattr(c, "_default_stage", "dev")
+    monkeypatch.setattr(PolyrisConfig, "_loaded", False)
+
+    view = c.for_stage("dev")
+
+    assert (view.stack_name, view.profile, view.namespace) == ("plat-dev", "dev-profile", "ns")
