@@ -7,4 +7,4 @@
 # To deploy a checkout from source, point it at the checkout instead
 # (`polyris @ file:///absolute/path/to/polyris`) and do not commit that.
 #
-polyris @ git+https://github.com/Polyris/polyris@v1.1.4
+polyris @ git+https://github.com/Polyris/polyris@v1.2.0
