@@ -94,6 +94,8 @@ Per field, in order:
 2. **Environment variables** — `POLYRIS_STAGE`, `POLYRIS_STACK`, `POLYRIS_REGION`, `POLYRIS_PROFILE`, `AWS_REGION`, `AWS_PROFILE`
 3. **config.py** — `ENVIRONMENTS[stage]`
 
+`polyris-deploy` reads the `config.py` that `POLYRIS_CONFIG` names, or else the first `config.py` with `ENVIRONMENTS` from the current directory up to the project root (`.git` or `pyproject.toml`). If it cannot use a config you pointed it at, it stops with the reason before any AWS call (ADR #134). That happens when `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse, and when a `config.py` it found does not parse or fails when run.
+
 CLI arguments that override config values print a loud warning:
 
 ```
@@ -106,10 +108,12 @@ Every deploy also prints a resolved-target summary before the first AWS write:
 ── Deploy target ──────────────────────────────────────────────────
    dag:             daily_orders
    stage:           dev
+   config:          /home/me/pipelines/config.py
    sam stack:       mycompany-dev    ← reads CloudFormation outputs from here
    namespace:       mycompany
    region:          us-east-1
    profile:         my-dev-profile
+   account:         123456789012
    pipeline stack:  mycompany-dev-polyris-daily_orders
 ───────────────────────────────────────────────────────────────────
 ```
@@ -183,6 +187,7 @@ For GitHub Actions or other CI systems:
 - name: Deploy
   env:
     POLYRIS_STACK: mycompany-prod   # or POLYRIS_STAGE + a config.py
+    # POLYRIS_CONFIG: ci/config.py  # a config.py elsewhere; it must exist
     POLYRIS_REGION: us-east-1
     AWS_PROFILE: prod
   run: polyris-deploy

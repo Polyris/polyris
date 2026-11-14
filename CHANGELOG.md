@@ -32,6 +32,11 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - `make e2e-coordination-clean STACK=… PROFILE=…` removes the smoke pipelines again; `polyris-down` refuses a platform that still has pipelines.
 - The console's Cognito app client allows `ADMIN_USER_PASSWORD_AUTH`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` (ADR #65). `scripts/get-e2e-token.sh` no longer needs a manual change to the client.
 
+### Changed — `polyris-deploy` stops on a config it cannot use (ADR #134)
+
+- If `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse, or a `config.py` it found does not parse or fails when run, `polyris-deploy` stops with the reason before any AWS call. Before, it went on without the config: with the default AWS credentials, so a deploy could reach another account.
+- The deploy target shows the config file it used and the AWS account the credentials reach.
+
 ### Fixed — a run ends when a task fails before it starts
 
 - When a task's wait for its dependencies timed out, or coordination failed it, the task became `failed` but its run never heard: the failure handler skipped the run's callback whenever the input had no `helper_failed` field, which is every path but one. The console showed the run failed while its Step Functions execution stayed `RUNNING`, and a pipeline stack with such runs could not be deleted. The run now ends `FAILED`.

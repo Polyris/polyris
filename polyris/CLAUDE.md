@@ -97,6 +97,10 @@ nodes into one, making one task disappear from the execution graph.
 
 `PolyrisConfig` loads `config.py` on first use (`_ensure_loaded()`). Every accessor that reads `_environments` or `_default_stage` — on `PolyrisConfig` and on the `_StageConfig` view — calls `_ensure_loaded()` first. The view once read `_environments` directly; `polyris-deploy --stage dev` reads only the view, so a pipeline file that never touched `config` deployed with the default AWS credentials and without `stack_name`. `test_stage_view_loads_config_py_on_its_first_read` pins it.
 
+## A config the user names is used, or the command stops (ADR #134)
+
+Any way `polyris.config` fails to use a config the user pointed at — `POLYRIS_CONFIG` naming a missing file, a file without `ENVIRONMENTS`, a `config.py` that does not parse or fails when run — raises `ConfigError`; `polyris-deploy` prints it and exits before any AWS call. Never turn such a failure into "no config": without one the deploy uses the default credentials and reaches another account. This class happened twice in the 1.2.0 rehearsal (F5, F17); the deploy target now also names the config file and the account.
+
 ## A plan shows what this run will install, read from what it installs
 
 A CLI's summary before acting (`polyris-up`'s `(update, A → B)`) takes each value from the input it acts on, never from the tool's own constants. `polyris-up --archive` printed `__version__` while it installed the archive's version, so a branch build read like a rollback. `test_up_names_the_version_the_archive_installs` pins it.

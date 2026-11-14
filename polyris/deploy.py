@@ -71,6 +71,7 @@ from .platform import (
     parameters_of,
     select_platform_stack,
 )
+from .config import ConfigError
 from .config import config as polyris_config
 from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN
 from .resource_check import (
@@ -446,26 +447,32 @@ def _print_deploy_summary(
     *,
     dag_id: str,
     stage: str,
+    config_file: Optional[Path],
     stack_name: str,
     namespace: str,
     region: str,
     profile: Optional[str],
+    account: str,
     pipeline_stack: str,
 ) -> None:
     """Print the resolved deploy target before the first AWS write.
 
     Shown once per deploy so the operator sees, at a glance, exactly what will
-    happen. Consistent field ordering (dag → stage → stack → namespace → region
-    → profile → pipeline stack) so tests can pin the exact format.
+    happen — including which config.py applied and which account the credentials
+    reach (ADR #134). Consistent field ordering (dag → stage → config → stack →
+    namespace → region → profile → account → pipeline stack) so tests can pin
+    the exact format.
     """
     print("")
     print(_c("── Deploy target ──────────────────────────────────────────────────", BOLD))
     print(f"   dag:             {_c(dag_id, CYAN)}")
     print(f"   stage:           {_c(stage, CYAN)}")
+    print(f"   config:          {_c(str(config_file) if config_file else 'none', CYAN)}")
     print(f"   sam stack:       {_c(stack_name, CYAN)}    ← reads CloudFormation outputs from here")
     print(f"   namespace:       {_c(namespace, CYAN)}")
     print(f"   region:          {_c(region, CYAN)}")
     print(f"   profile:         {_c(profile or '(default)', CYAN)}")
+    print(f"   account:         {_c(account, CYAN)}")
     print(f"   pipeline stack:  {_c(pipeline_stack, CYAN)}")
     print(_c("───────────────────────────────────────────────────────────────────", BOLD))
 
@@ -673,7 +680,8 @@ def deploy_pipeline(
     # already exists under it.
     from polyris.config import _find_project_config
 
-    adopt_platform_naming = _find_project_config() is None
+    config_file = _find_project_config()
+    adopt_platform_naming = config_file is None
 
     # IAM name guards — skipped on destroy (stack deletion needs only dag_id for
     # the stack name; no IAM roles are created, so length checks are irrelevant).
@@ -749,10 +757,12 @@ def deploy_pipeline(
     _print_deploy_summary(
         dag_id=dag.dag_id,
         stage=stage,
+        config_file=config_file,
         stack_name=sam_stack_name,
         namespace=namespace,
         region=region,
         profile=profile,
+        account=caller_identity["Account"],
         pipeline_stack=pipeline_stack,
     )
 
@@ -1188,6 +1198,15 @@ Examples:
     colorize_parser(parser)
     args = parser.parse_args()
     destroy = args.destroy or force_destroy
+    try:
+        _dispatch(args, destroy)
+    except ConfigError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+
+
+def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
+    """Deploy or destroy what the arguments name: the listed directories, or one pipeline file."""
 
     if args.all or args.only:
         if args.file is not None:

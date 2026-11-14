@@ -154,10 +154,12 @@ class TestPrintDeploySummary:
         deploy_mod._print_deploy_summary(
             dag_id="daily_orders",
             stage="dev",
+            config_file=None,
             stack_name="acme-dev",
             namespace="acme",
             region="us-east-1",
             profile="my-dev",
+            account="123456789012",
             pipeline_stack="acme-dev-polyris-daily_orders",
         )
         out = capsys.readouterr().out
@@ -171,14 +173,53 @@ class TestPrintDeploySummary:
         assert "my-dev" in out
         assert "acme-dev-polyris-daily_orders" in out
 
+    def test_names_the_config_file_and_the_account(self, capsys, tmp_path):
+        """ADR #134: which config.py applied, and which account the credentials reach,
+        are on screen before the first write — a fall-back to defaults is visible."""
+        cfg = tmp_path / "config.py"
+        deploy_mod._print_deploy_summary(
+            dag_id="x", stage="dev", config_file=cfg, stack_name="acme-dev", namespace="acme",
+            region="us-east-1", profile="my-dev", account="944861944755", pipeline_stack="acme-dev-polyris-x",
+        )
+        out = capsys.readouterr().out
+        assert f"config:          {cfg}" in out and "account:         944861944755" in out
+        deploy_mod._print_deploy_summary(
+            dag_id="x", stage="dev", config_file=None, stack_name="acme-dev", namespace="acme",
+            region="us-east-1", profile=None, account="902743479182", pipeline_stack="acme-dev-polyris-x",
+        )
+        assert "config:          none" in capsys.readouterr().out
+
+    def test_a_named_config_that_cannot_be_used_stops_polyris_deploy_before_aws(self, monkeypatch, mocker, capsys, tmp_path):
+        """F17: POLYRIS_CONFIG left pointing at a deleted file; the deploy went on to the
+        default account. It stops now, before any AWS call."""
+        session = mocker.patch.object(deploy_mod.boto3, "Session")
+        (tmp_path / "dag.py").write_text(
+            "from polyris import DAG, task\n"
+            "with DAG('f17-named-config-guard', schedule=None) as dag:\n"
+            "    @task.sfn(arn='arn:aws:states:us-east-1:123456789012:stateMachine:s')\n"
+            "    def t():\n"
+            "        pass\n"
+            "    t()\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_CONFIG", str(tmp_path / "gone" / "config.py"))
+        monkeypatch.setattr("sys.argv", ["polyris-deploy", "--stage", "dev"])
+        deploy_mod.polyris_config.reset()
+        with pytest.raises(SystemExit) as exit_info:
+            deploy_mod.main()
+        assert exit_info.value.code == 1
+        assert "does not exist" in capsys.readouterr().out
+        session.assert_not_called()
+
     def test_shows_default_placeholder_when_profile_none(self, capsys):
         deploy_mod._print_deploy_summary(
             dag_id="x",
             stage="dev",
+            config_file=None,
             stack_name="acme-dev",
             namespace="acme",
             region="us-east-1",
             profile=None,
+            account="123456789012",
             pipeline_stack="acme-dev-polyris-x",
         )
         assert "(default)" in capsys.readouterr().out
@@ -195,10 +236,12 @@ class TestPrintDeploySummary:
         deploy_mod._print_deploy_summary(
             dag_id="daily_orders",
             stage="prod",
+            config_file=None,
             stack_name="acme-prod",
             namespace="acme",
             region="us-east-1",
             profile="my-prod",
+            account="123456789012",
             pipeline_stack="acme-prod-polyris-daily_orders",
         )
         out = capsys.readouterr().out
@@ -214,8 +257,8 @@ class TestPrintDeploySummary:
         """CI logs, pipes, redirect-to-file must stay plain-text."""
         mocker.patch("sys.stdout.isatty", return_value=False)
         deploy_mod._print_deploy_summary(
-            dag_id="x", stage="dev", stack_name="s", namespace="n",
-            region="r", profile="p", pipeline_stack="ps",
+            dag_id="x", stage="dev", config_file=None, stack_name="s", namespace="n",
+            region="r", profile="p", account="123456789012", pipeline_stack="ps",
         )
         assert "\x1b[" not in capsys.readouterr().out
 

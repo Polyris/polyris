@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_103 rows indexed (77 inline, 26 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_104 rows indexed (78 inline, 26 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|
@@ -113,3 +113,4 @@ _103 rows indexed (77 inline, 26 standalone). Actual ADR count is higher — ADR
 | 131 | `polyris-up` / `polyris-down`: install the platform from prebuilt release assets | [`adr-131-polyris-up.md`](adr-131-polyris-up.md) |
 | 132 | Billing tags: one `polyris:` set on every resource AWS can tag | inline |
 | 133 | A run has one date: the date it was started or scheduled for | inline |
+| 134 | A config the user names is used, or the command stops | inline |
