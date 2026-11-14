@@ -274,6 +274,13 @@ def fetch_release(version: str) -> Path:
     return archive
 
 
+def _open_local_archive(archive: Path) -> Tuple[Path, Manifest]:
+    """A release archive given with --archive, extracted: (root, manifest)."""
+    if not archive.is_file():
+        raise UpError(f"Archive not found: {archive}")
+    return extract_archive(archive)
+
+
 def extract_archive(archive: Path) -> Tuple[Path, Manifest]:
     """Extract into the cache (once) and return (root, manifest).
 
@@ -493,6 +500,9 @@ def run_up(args: argparse.Namespace) -> None:
         overrides = parse_param_overrides(args.param or [])
     except ValueError as e:
         raise UpError(str(e))
+    # A local archive installs its own version, which may differ from this polyris's.
+    local_archive = _open_local_archive(Path(args.archive)) if args.archive else None
+    installing = local_archive[1].version if local_archive else __version__
     args.namespace_from_flags = bool(args.namespace or args.stage)
     if args.stack:
         stack_name, existing = find_platform_stack(cfn, args.stack)
@@ -535,7 +545,7 @@ def run_up(args: argparse.Namespace) -> None:
     deployed: Optional[str] = None
     if existing:
         deployed = version_from_description(existing.get("Description"))
-        print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {__version__})")
+        print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {installing})")
         if existing.get("StackStatus", "").endswith("_IN_PROGRESS"):
             raise UpError(f"Stack {stack_name} is busy ({existing['StackStatus']}). Try again when it finishes.")
         if not is_platform_shaped(existing):
@@ -577,18 +587,12 @@ def run_up(args: argparse.Namespace) -> None:
                 required=False)
             if email:
                 values[PARAM_ADMIN_EMAIL] = email
-        print(f"   stack:    {_c(stack_name, CYAN)} (create, v{__version__})")
+        print(f"   stack:    {_c(stack_name, CYAN)} (create, v{installing})")
     if args.admin_email is not None and existing:
         values[PARAM_ADMIN_EMAIL] = args.admin_email
 
     _header("Release artifacts")
-    if args.archive:
-        archive = Path(args.archive)
-        if not archive.is_file():
-            raise UpError(f"Archive not found: {archive}")
-    else:
-        archive = fetch_release(__version__)
-    root, manifest = extract_archive(archive)
+    root, manifest = local_archive or extract_archive(fetch_release(__version__))
     if manifest.version != __version__ and not args.archive:
         raise UpError(f"Release archive is v{manifest.version}, installed polyris is v{__version__}.")
     if is_downgrade(deployed, manifest.version) and not args.allow_downgrade:

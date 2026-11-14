@@ -2,13 +2,17 @@
 """Run the coordination smoke against a deployed platform in one command.
 
     make e2e-coordination STACK=<platform stack> [PROFILE=<aws profile>] [REGION=<region>] [ARGS='-k marking']
-    python3 tests/e2e/run_coordination_smoke.py --stack <platform stack> [--profile …] [--region …] [pytest args …]
+    make e2e-coordination-clean STACK=<platform stack> [PROFILE=…] [REGION=…]
+    python3 tests/e2e/run_coordination_smoke.py --stack <platform stack> [--profile …] [--region …] [--clean] [pytest args …]
 
 It reads the console API URL, the Cognito pool and the platform's test state
 machines from the stack's outputs; deploys the pipelines of
 coordination_smoke/dag.py with polyris-deploy, named after the platform; signs
 in as a temporary console user, which it deletes again at the end; and runs
-test_coordination_smoke.py. The caller's AWS credentials need
+test_coordination_smoke.py. The pipelines stay, so a second run only updates
+them; --clean removes them (polyris-down refuses a platform that still has
+pipelines). Run data needs no clean-up: every scenario uses its own date in the
+1900s, and the rows expire with the tables' TTL. The caller's AWS credentials need
 cloudformation:DescribeStacks, what polyris-deploy needs
 (docs/deployment/IAM_PERMISSIONS.md), and cognito-idp:AdminCreateUser,
 AdminSetUserPassword, AdminInitiateAuth and AdminDeleteUser on the pool.
@@ -55,13 +59,13 @@ def sfn_prefix(test_quick_arn: str) -> str:
     return test_quick_arn[: -len(TEST_QUICK_SUFFIX)]
 
 
-def deploy_pipelines(stack: str, profile: Optional[str], region: str, prefix: str) -> None:
-    """Deploy (or update) the smoke pipelines on `stack`, named after the platform."""
+def deploy_pipelines(stack: str, profile: Optional[str], region: str, prefix: str, *, destroy: bool = False) -> None:
+    """Deploy (or update) the smoke pipelines on `stack`, named after the platform; or remove them."""
     # Without POLYRIS_CONFIG the pipelines always take the platform's namespace and stage,
-    # so a second run reuses the stacks of the first instead of adding a copy.
+    # so a second run reuses the stacks of the first, and --clean finds them.
     env = {k: v for k, v in os.environ.items() if k != "POLYRIS_CONFIG"}
     env["POLYRIS_SMOKE_SFN_PREFIX"] = prefix
-    command = ["polyris-deploy", "--stack", stack, "--region", region]
+    command = ["polyris-destroy" if destroy else "polyris-deploy", "--stack", stack, "--region", region]
     if profile:
         command += ["--profile", profile]
     subprocess.run(command, cwd=SMOKE_PIPELINES, env=env, check=True)
@@ -102,6 +106,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--stack", required=True, help="The platform stack to test")
     parser.add_argument("--profile", help="AWS profile (default: the standard credential chain)")
     parser.add_argument("--region", help="AWS region (default: the profile's)")
+    parser.add_argument("--clean", action="store_true", help="Remove the smoke pipelines instead of running the smoke")
     args, pytest_args = parser.parse_known_args(argv)
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
@@ -110,6 +115,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.exit("❌ No AWS region: pass --region (make: REGION=…).")
     outputs = stack_outputs(session, args.stack)
 
+    if args.clean:
+        print(f"→ Removing the smoke pipelines from {args.stack}")
+        deploy_pipelines(args.stack, args.profile, region, sfn_prefix(outputs["TestQuickSfnArn"]), destroy=True)
+        return 0
     print(f"→ Deploying the smoke pipelines to {args.stack}")
     deploy_pipelines(args.stack, args.profile, region, sfn_prefix(outputs["TestQuickSfnArn"]))
 

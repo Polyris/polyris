@@ -404,6 +404,26 @@ def test_up_new_install(fake_cfn, s3, tmp_path, capsys):
     assert body["Resources"]["ConsoleApiFunction"]["Properties"]["CodeUri"]["Bucket"] == params["ArtifactsBucket"]
 
 
+def test_up_names_the_version_the_archive_installs(fake_cfn, s3, tmp_path, capsys):
+    """An --archive of another version (a branch build) is the version installed, and the
+    plan says so: it printed this polyris's own version, which read like a rollback."""
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v9.0.0",
+                                         Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])])
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="9.1.0")))
+
+    assert up._run(up.run_up, args) == 0
+
+    assert "(update, 9.0.0 → 9.1.0)" in capsys.readouterr().out
+
+
+def test_up_new_install_names_the_archive_version(fake_cfn, s3, tmp_path, capsys):
+    args = _up_args(namespace="acme", stage="dev", admin_email="", archive=str(_write_archive(tmp_path / "a.zip", version="9.1.0")))
+
+    assert up._run(up.run_up, args) == 0
+
+    assert "(create, v9.1.0)" in capsys.readouterr().out
+
+
 def test_up_update_keeps_previous_parameters(fake_cfn, s3, tmp_path):
     fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v1.0.0",
                                          Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"},
@@ -494,9 +514,15 @@ def test_up_refuses_taken_bucket_name_before_touching_anything(fake_cfn, s3, tmp
 
 
 def test_up_validates_namespace(fake_cfn, tmp_path, capsys):
-    args = _up_args(namespace="Acme_Corp", stage="dev", archive=str(tmp_path / "unused.zip"))
+    args = _up_args(namespace="Acme_Corp", stage="dev", archive=str(_write_archive(tmp_path / "a.zip")))
     assert up._run(up.run_up, args) == 1
     assert "lowercase" in capsys.readouterr().err
+
+
+def test_up_checks_the_archive_before_asking_anything(fake_cfn, tmp_path, capsys):
+    args = _up_args(namespace="acme", stage="dev", archive=str(tmp_path / "missing.zip"))
+    assert up._run(up.run_up, args) == 1
+    assert "Archive not found" in capsys.readouterr().err
 
 
 def test_up_without_tty_needs_namespace(fake_cfn, capsys):

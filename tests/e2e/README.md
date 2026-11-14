@@ -70,7 +70,13 @@ make e2e-coordination STACK=<platform stack> PROFILE=<aws profile>
 
 `tests/e2e/run_coordination_smoke.py` reads the console URL, the Cognito pool and the platform's test state machines from the stack's outputs. It deploys the pipelines of `coordination_smoke/dag.py` with `polyris-deploy`, named after the platform, so they run the platform's `-test-quick`, `-test-success` and `-test-failure` state machines. It signs in as a temporary console user, runs the test and deletes the user again. Your AWS credentials need `cloudformation:DescribeStacks`, what `polyris-deploy` needs ([IAM_PERMISSIONS.md](../../docs/deployment/IAM_PERMISSIONS.md)), and `cognito-idp:AdminCreateUser`, `AdminSetUserPassword`, `AdminInitiateAuth` and `AdminDeleteUser`. `ARGS` go to pytest: `ARGS='-k marking'` reruns one scenario.
 
-It takes about 15 minutes. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
+It takes about 15 minutes. The pipelines stay on the platform, so the next run only updates them; they have no schedule and cost nothing between runs. Remove them before `polyris-down`, which refuses a platform that still has pipelines:
+
+```bash
+make e2e-coordination-clean STACK=<platform stack> PROFILE=<aws profile>
+```
+
+Run data needs no clean-up: each scenario uses its own date in the 1900s, and the rows expire with the tables' TTL. Run the smoke on a test platform, not on one people use: it adds nine pipelines to the console. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
 
 A task that fails waits in `waiting_decision` until the decision timeout, and only then becomes `failed`; a scenario that needs a failed task accepts either status.
 

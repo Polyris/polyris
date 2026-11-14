@@ -22,9 +22,14 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
 - Warnings reach the bell whatever date they are about, and the console shows a banner while task coordination is unhealthy.
 
+### Fixed — `polyris-up --archive` names the version it installs
+
+- With `--archive`, the plan showed the version of the installed polyris instead of the archive's, so updating with a branch build read like a rollback (`1.2.0 → 1.1.4`). It now shows the archive's version, and a missing archive is reported before any question.
+
 ### Added — the coordination smoke in one command
 
 - `make e2e-coordination STACK=<platform stack> PROFILE=<profile>` deploys the smoke pipelines, signs in as a temporary console user and runs `tests/e2e/test_coordination_smoke.py`; it deletes the user afterwards.
+- `make e2e-coordination-clean STACK=… PROFILE=…` removes the smoke pipelines again; `polyris-down` refuses a platform that still has pipelines.
 - The console's Cognito app client allows `ADMIN_USER_PASSWORD_AUTH`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` (ADR #65). `scripts/get-e2e-token.sh` no longer needs a manual change to the client.
 
 ### Fixed — History says which days it shows

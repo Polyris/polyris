@@ -94,3 +94,21 @@ def test_the_temporary_user_signs_in_with_the_admin_flow_and_is_deleted(mocker):
     assert cognito.admin_initiate_auth.call_args.kwargs["AuthFlow"] == "ADMIN_USER_PASSWORD_AUTH"
     created = cognito.admin_create_user.call_args.kwargs["Username"]
     cognito.admin_delete_user.assert_called_once_with(UserPoolId="pool", Username=created)
+
+
+def test_clean_removes_the_pipelines_and_runs_no_test(mocker):
+    runner = _runner()
+    session = mocker.MagicMock(region_name="us-east-1")
+    session.client.return_value.describe_stacks.return_value = {"Stacks": [{"Outputs": [
+        {"OutputKey": "ConsoleApiUrl", "OutputValue": "https://api.example/dev"},
+        {"OutputKey": "TestQuickSfnArn", "OutputValue": "arn:aws:states:us-east-1:1:stateMachine:acme-dev-polyris-test-quick"},
+    ]}]}
+    mocker.patch.object(runner.boto3, "Session", return_value=session)
+    run = mocker.patch.object(runner.subprocess, "run")
+
+    assert runner.main(["--stack", "acme-dev", "--clean"]) == 0
+
+    [call] = run.call_args_list
+    assert call.args[0][:3] == ["polyris-destroy", "--stack", "acme-dev"]
+    assert call.kwargs["env"]["POLYRIS_SMOKE_SFN_PREFIX"] == "arn:aws:states:us-east-1:1:stateMachine:acme-dev-polyris"
+    assert "POLYRIS_CONFIG" not in call.kwargs["env"]

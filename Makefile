@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes e2e-health e2e-smoke e2e-coordination check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes e2e-health e2e-smoke e2e-coordination e2e-coordination-clean check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -15,6 +15,8 @@ help:
 	@echo "  make e2e-smoke         - E2E: read-only + backfill smoke vs live AWS (needs POLYRIS_API_URL + POLYRIS_ID_TOKEN)"
 	@echo "  make e2e-coordination STACK=<platform stack> [PROFILE=…] [REGION=…] [ARGS=…]"
 	@echo "                         - E2E: deploy the coordination smoke pipelines and run them (~15 min)"
+	@echo "  make e2e-coordination-clean STACK=<platform stack> [PROFILE=…] [REGION=…]"
+	@echo "                         - E2E: remove the coordination smoke pipelines"
 	@echo "  make check             - Run every gate CI runs (lint, drift, guards, versions, smoke, test)"
 	@echo "  make check-no-paid     - Open-core guard: no paid ee/ code tracked here"
 	@echo "  make lint              - Check Python + JSON syntax"
@@ -128,6 +130,10 @@ e2e-health:
 e2e-coordination:
 	@: "$${STACK:?usage: make e2e-coordination STACK=<platform stack> [PROFILE=…] [REGION=…] [ARGS='-k marking']}"
 	python3 tests/e2e/run_coordination_smoke.py --stack "$(STACK)" $(if $(PROFILE),--profile "$(PROFILE)") $(if $(REGION),--region "$(REGION)") $(ARGS)
+
+e2e-coordination-clean:
+	@: "$${STACK:?usage: make e2e-coordination-clean STACK=<platform stack> [PROFILE=…] [REGION=…]}"
+	python3 tests/e2e/run_coordination_smoke.py --stack "$(STACK)" $(if $(PROFILE),--profile "$(PROFILE)") $(if $(REGION),--region "$(REGION)") --clean
 
 e2e-smoke:
 	@: "$${POLYRIS_API_URL:?set POLYRIS_API_URL}"
