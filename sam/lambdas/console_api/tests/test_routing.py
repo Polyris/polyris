@@ -36,9 +36,18 @@ def test_health_module_registers_its_routes():
     health.register(r)
     assert set(r.table.keys()) == {
         ("GET", "/api/health"),
-        ("GET", "/api/health/simple"),
+        ("GET", "/api/health/live"),
         ("GET", "/api/metrics"),
     }
     assert r.get("GET", "/api/health") == (health.health_check, None)
-    assert r.get("GET", "/api/health/simple") == (health.health_check_simple, None)
+    assert r.get("GET", "/api/health/live") == (health.health_check_live, None)
     assert r.get("GET", "/api/metrics") == (health.get_metrics, None)
+
+
+def test_the_old_liveness_path_is_no_longer_routed():
+    """/api/health/simple became /api/health/live, without an alias."""
+    import main
+
+    assert ("GET", "/api/health/simple") not in main.ROUTES
+    event = {"rawPath": "/api/health/simple", "requestContext": {"http": {"method": "GET"}, "stage": "$default"}}
+    assert main.handler(event, None)["statusCode"] == 404

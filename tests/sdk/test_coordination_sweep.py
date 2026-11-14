@@ -1,0 +1,322 @@
+"""The sweeper's pure rules (ADR #130 §3, §8, §9)."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from polyris.coordination import sweep
+from polyris.coordination.times import format_utc
+
+STARTED = datetime(2026, 11, 12, 5, 0, tzinfo=timezone.utc)
+
+
+def test_the_liveness_deadline_covers_one_orchestration_timeout_and_an_hour():
+    """D41: a wrapper waits for its dependencies once; it no longer retries the wait."""
+    assert sweep.liveness_deadline(STARTED, 3600) == STARTED + timedelta(hours=2)
+
+
+def test_a_pre_upgrade_wrapper_still_retries_its_wait_twice():
+    assert sweep.liveness_deadline(STARTED, 3600, legacy=True) == STARTED + timedelta(hours=4)
+
+
+def test_a_row_without_an_orchestration_timeout_uses_the_sdk_default():
+    assert sweep.liveness_deadline(STARTED, None) == STARTED + timedelta(hours=25)
+    assert sweep.liveness_deadline(STARTED, 0, legacy=True) == STARTED + timedelta(hours=73)
+
+
+def test_a_wake_is_a_primary_path_miss_only_when_the_task_could_run_before_its_due_time():
+    due = STARTED + timedelta(minutes=10)
+    assert sweep.primary_path_missed(due - timedelta(seconds=1), due)
+    assert not sweep.primary_path_missed(due, due)
+    assert not sweep.primary_path_missed(None, due)
+
+
+def test_push_retries_back_off_from_5_minutes_to_an_hour():
+    delays = [sweep.next_push_retry(STARTED, n) - STARTED for n in range(6)]
+    assert delays == [timedelta(minutes=m) for m in (5, 10, 20, 40, 60, 60)]
+
+
+def test_the_catch_up_runs_hourly_and_at_once_when_it_never_ran():
+    assert sweep.catch_up_due(STARTED, None)
+    assert sweep.catch_up_due(STARTED, STARTED - timedelta(hours=1))
+    assert not sweep.catch_up_due(STARTED, STARTED - timedelta(minutes=59))
+
+
+# ── engine findings (ADR #130 §9): what the console's System status shows ──
+
+#: The names the sweeper writes into its report, as a deployed stack has them.
+NAMES = {"sweeper_function": "acme-dev-polyris-sweeper", "fanout_function": "acme-dev-polyris-asset-fanout",
+         "events_table": "acme-dev-polyris-asset-events",
+         "fanout_mapping_uuid": "48529b7b-abda-4306-8550-8d3bbc1391c3", "region": "eu-west-1"}
+SWEEPER_LOGS = "aws logs tail /aws/lambda/acme-dev-polyris-sweeper --region eu-west-1 --since 1h"
+FANOUT_LOGS = "aws logs tail /aws/lambda/acme-dev-polyris-asset-fanout --region eu-west-1 --since 1h"
+LATE = ("Tasks that wait for an asset start up to 40 minutes late, and pipelines scheduled on an asset "
+        "up to an hour late.")
+NOT_STARTING = ("Tasks that wait for an asset, and pipelines scheduled on an asset, do not start while the "
+                "periodic re-check is also not running.")
+SILENT = "2026-11-12T04:40:00.000Z"          # 20 minutes before STARTED: past STALE_AFTER
+BEHIND = "2026-11-12T03:00:00.000Z"          # 2 hours before STARTED: past BEHIND_AFTER
+
+
+def _report(**fields):
+    """A fresh report of a healthy engine, as the sweeper writes it, with `fields` changed."""
+    base = {"checked_at": "2026-11-12T04:58:00.000Z", "fanout_mapping": "Enabled", "fanout_result": "OK",
+            "stream": "ENABLED", "oldest_overdue": "", "failed_steps": [], **NAMES}
+    return {**base, **fields}
+
+
+def _without(report, *fields):
+    return {k: v for k, v in report.items() if k not in fields}
+
+
+@pytest.mark.parametrize("delta,said", [
+    (timedelta(minutes=15, seconds=59), "15 min ago"),
+    (timedelta(minutes=119, seconds=59), "119 min ago"),
+    (timedelta(minutes=120), "2 h ago"),
+    (timedelta(hours=47, minutes=59), "47 h ago"),
+    (timedelta(hours=48), "2 days ago"),
+    (timedelta(days=9, hours=23), "9 days ago"),
+])
+def test_ago_says_minutes_then_hours_then_days_each_floored(delta, said):
+    assert sweep.ago(delta) == said
+
+
+def test_a_fresh_report_with_everything_enabled_has_no_findings():
+    assert sweep.engine_findings(_report(), STARTED) == []
+    for result in ("OK", "No records processed", ""):
+        assert sweep.engine_findings(_report(fanout_result=result), STARTED) == []
+    # The limits themselves are not past.
+    assert sweep.engine_findings(_report(checked_at=format_utc(STARTED - sweep.STALE_AFTER)), STARTED) == []
+    assert sweep.engine_findings(_report(oldest_overdue=format_utc(STARTED - sweep.BEHIND_AFTER)), STARTED) == []
+
+
+def test_1_without_a_report_only_no_check_yet_applies():
+    expected = [{
+        "title": "No check has run yet",
+        "impact": "Waiting tasks are not re-checked until the periodic re-check runs. "
+                  "It first runs within 5 minutes of an install or upgrade.",
+        "fix": "If this stays for more than 10 minutes, check in EventBridge Scheduler that the schedule "
+               "whose name ends in -polyris-sweeper is enabled.",
+    }]
+    assert sweep.engine_findings(None, STARTED) == expected
+    assert sweep.engine_findings({}, STARTED) == expected
+    # Whatever else a report without a check time says.
+    assert sweep.engine_findings(_report(checked_at="", fanout_mapping="Disabled", stream="DISABLED",
+                                         failed_steps=["catch_up: ClientError: x"]), STARTED) == expected
+
+
+def test_2_a_silent_re_check_names_its_last_run_and_both_commands():
+    assert sweep.engine_findings(_report(checked_at=SILENT), STARTED) == [{
+        "title": "The periodic re-check is not running",
+        "resource": "The last run of acme-dev-polyris-sweeper was 20 min ago. It runs every 5 minutes.",
+        "impact": "Tasks still start from their signals. A task that missed its signal is not re-checked "
+                  "and waits until it times out.",
+        "fix": "Check that its schedule in EventBridge Scheduler is enabled. If it is, read the function's logs.",
+        "command": "aws scheduler get-schedule --name acme-dev-polyris-sweeper --region eu-west-1 --query State\n"
+                   + SWEEPER_LOGS,
+    }]
+
+
+def test_3_a_mapping_that_is_off_names_its_state_when_it_changed_and_the_command():
+    report = _report(fanout_mapping="Disabled", fanout_mapping_changed_at="2026-11-12T04:22:00.000Z")
+    assert sweep.engine_findings(report, STARTED) == [{
+        "title": "Asset event delivery is off",
+        "resource": "The stream mapping of acme-dev-polyris-asset-fanout is Disabled.",
+        "changed_at": "2026-11-12T04:22:00.000Z",
+        "impact": LATE,
+        "fix": "Re-enable the mapping: in the Lambda console, open acme-dev-polyris-asset-fanout, "
+               "then Configuration → Triggers.",
+        "command": "aws lambda update-event-source-mapping --uuid 48529b7b-abda-4306-8550-8d3bbc1391c3 --enabled "
+                   "--region eu-west-1",
+    }]
+
+
+@pytest.mark.parametrize("state", ["Disabling", "Enabling", "Updating", "unknown"])
+def test_3_any_mapping_state_but_enabled_missing_or_unknown_with_a_detail_is_off(state):
+    [finding] = sweep.engine_findings(_report(fanout_mapping=state), STARTED)
+    assert finding["title"] == "Asset event delivery is off"
+    assert finding["resource"] == f"The stream mapping of acme-dev-polyris-asset-fanout is {state}."
+    assert "changed_at" not in finding                      # a report without the time AWS changed it
+    assert "command" not in finding                         # AWS enables only a mapping that is Disabled
+
+
+@pytest.mark.parametrize("state", sorted(sweep.MAPPING_SETTLING))
+def test_3_a_mapping_a_deploy_is_changing_is_not_off_until_it_stays_so(state):
+    """Creating, Enabling and Updating last seconds during a deploy; past STALE_AFTER they are stuck."""
+    recent = _report(fanout_mapping=state, fanout_mapping_changed_at="2026-11-12T04:50:00.000Z")   # 10 min before
+    stuck = _report(fanout_mapping=state, fanout_mapping_changed_at=SILENT)                         # 20 min before
+    assert sweep.engine_findings(recent, STARTED) == []
+    assert [f["title"] for f in sweep.engine_findings(stuck, STARTED)] == ["Asset event delivery is off"]
+
+
+@pytest.mark.parametrize("report", [
+    _report(fanout_mapping=sweep.MAPPING_MISSING),
+    _report(fanout_mapping=""),                             # an empty state reads as no mapping
+    _without(_report(), "fanout_mapping"),
+])
+def test_3b_a_missing_mapping_is_not_set_up_and_has_no_command(report):
+    assert sweep.engine_findings(report, STARTED) == [{
+        "title": "Asset event delivery is not set up",
+        "resource": "There is no stream mapping for acme-dev-polyris-asset-fanout.",
+        "impact": LATE,
+        "fix": "Recreate the trigger as the platform template defines it: in the Lambda console, open "
+               "acme-dev-polyris-asset-fanout, then Add trigger → DynamoDB → the stream of acme-dev-polyris-asset-events, "
+               "starting position Trim horizon, batch size 10, filter {\"eventName\": [\"INSERT\"]}. Deploying the same "
+               "version again does not restore it.",
+    }]
+
+
+@pytest.mark.parametrize("mapping,title", [("Disabled", "Asset event delivery is off"),
+                                           (sweep.MAPPING_MISSING, "Asset event delivery is not set up")])
+def test_3_and_3b_with_the_re_check_silent_too_say_that_tasks_do_not_start(mapping, title):
+    findings = sweep.engine_findings(_report(checked_at=SILENT, fanout_mapping=mapping), STARTED)
+    assert [f["title"] for f in findings] == ["The periodic re-check is not running", title]
+    assert findings[1]["impact"] == NOT_STARTING
+
+
+def test_3c_a_mapping_that_could_not_be_read_does_not_claim_that_delivery_is_off():
+    report = _report(fanout_mapping=sweep.unknown_state("AccessDeniedException"))
+    assert sweep.engine_findings(report, STARTED) == [{
+        "title": "Asset event delivery could not be checked",
+        "resource": "Reading the stream mapping of acme-dev-polyris-asset-fanout failed (AccessDeniedException).",
+        "impact": "If delivery is off, tasks that wait for an asset start late.",
+        "fix": "Check that the sweeper's role may call lambda:ListEventSourceMappings, then read the re-check's logs.",
+        "command": SWEEPER_LOGS,
+    }]
+    # Not even while the re-check is silent.
+    findings = sweep.engine_findings({**report, "checked_at": SILENT}, STARTED)
+    assert findings[1]["impact"] == "If delivery is off, tasks that wait for an asset start late."
+
+
+def test_4_a_mapping_whose_last_call_failed_names_the_result_and_the_fanout_logs():
+    assert sweep.engine_findings(_report(fanout_result="PROBLEM: Function call failed"), STARTED) == [{
+        "title": "Asset event delivery is failing",
+        "resource": "The last call of the stream mapping of acme-dev-polyris-asset-fanout failed: "
+                    "PROBLEM: Function call failed.",
+        "impact": "Tasks that wait for an asset start up to 40 minutes late. The failed records are retried "
+                  "until they succeed or expire after 24 hours.",
+        "fix": "Read the logs of acme-dev-polyris-asset-fanout: the error there names the cause.",
+        "command": FANOUT_LOGS,
+    }]
+
+
+@pytest.mark.parametrize("stream,shown", [("DISABLED", "DISABLED"), ("", "missing")])
+def test_5_a_stream_that_is_off_is_named_without_a_command(stream, shown):
+    assert sweep.engine_findings(_report(stream=stream), STARTED) == [{
+        "title": "Asset events are not recorded for delivery",
+        "resource": f"The stream of acme-dev-polyris-asset-events is {shown}.",
+        "impact": "New facts wake no waiting task. The periodic re-check still starts them, up to 40 minutes late.",
+        "fix": "Turn the stream on again (view type NEW_IMAGE). That makes a new stream: add a trigger on it to "
+               "acme-dev-polyris-asset-fanout, then delete the trigger on the old one.",
+    }]
+
+
+def test_5c_a_stream_that_could_not_be_read_is_named_as_not_checked():
+    report = _report(stream=sweep.unknown_state("ResourceNotFoundException"))
+    assert sweep.engine_findings(report, STARTED) == [{
+        "title": "Asset event recording could not be checked",
+        "resource": "Reading the stream of acme-dev-polyris-asset-events failed (ResourceNotFoundException).",
+        "impact": "If the stream is off, tasks that wait for an asset start late.",
+        "fix": "Check that the sweeper's role may call dynamodb:DescribeTable, then read the re-check's logs.",
+        "command": SWEEPER_LOGS,
+    }]
+
+
+def test_6_waiting_tasks_behind_their_checks_name_how_long_ago_the_oldest_was_due():
+    assert sweep.engine_findings(_report(oldest_overdue=BEHIND), STARTED) == [{
+        "title": "Waiting tasks are behind their checks",
+        "resource": "The oldest check was due 2 h ago.",
+        "impact": "Tasks that could run start late.",
+        "fix": "Read the re-check's logs: it cannot keep up, or it fails on some rows.",
+        "command": SWEEPER_LOGS,
+    }]
+
+
+def test_7_each_failed_step_is_one_finding_named_in_words():
+    failed = ["catch_up: ClientError: throttled",
+              "self_check: the push retry backlog could not be read: ClientError: x",
+              "a_later_step: KeyError: 'k'"]
+    findings = sweep.engine_findings(_report(failed_steps=failed), STARTED)
+    assert [(f["title"], f["resource"]) for f in findings] == [
+        ("The periodic re-check could not finish the hourly push catch-up", "ClientError: throttled"),
+        ("The periodic re-check could not finish its self-check",
+         "the push retry backlog could not be read: ClientError: x"),
+        ("The periodic re-check could not finish a_later_step", "KeyError: 'k'"),   # a step it has no words for
+    ]
+    assert all(f["impact"] == "The other steps still ran. The next run, within 5 minutes, tries again."
+               and f["fix"] == "If this stays, the error names the cause; the re-check's logs have the full message."
+               and f["command"] == SWEEPER_LOGS for f in findings)
+
+
+def test_findings_come_in_the_order_of_the_clauses():
+    report = _report(checked_at=SILENT, fanout_mapping="Disabled", fanout_result="PROBLEM: x", stream="DISABLED",
+                     oldest_overdue=BEHIND, failed_steps=["adopt: KeyError: 'k'"])
+    assert [f["title"] for f in sweep.engine_findings(report, STARTED)] == [
+        "The periodic re-check is not running",
+        "Asset event delivery is off",
+        "Asset event delivery is failing",
+        "Asset events are not recorded for delivery",
+        "Waiting tasks are behind their checks",
+        "The periodic re-check could not finish adopting rows an older version wrote",
+    ]
+
+
+def test_without_the_sweeper_name_it_reads_the_sweeper_function():
+    [finding] = sweep.engine_findings(_without(_report(checked_at=SILENT), "sweeper_function"), STARTED)
+    assert finding["resource"] == "The last run of the sweeper function was 20 min ago. It runs every 5 minutes."
+
+
+@pytest.mark.parametrize("fields,field,text", [
+    ({"fanout_mapping": "Disabled"}, "resource", "The stream mapping of the asset-fanout function is Disabled."),
+    ({"fanout_mapping": "Disabled"}, "fix",
+     "Re-enable the mapping: in the Lambda console, open the asset-fanout function, then Configuration → Triggers."),
+    ({"fanout_mapping": "missing"}, "resource", "There is no stream mapping for the asset-fanout function."),
+    ({"fanout_mapping": "unknown (Throttling)"}, "resource",
+     "Reading the stream mapping of the asset-fanout function failed (Throttling)."),
+    ({"fanout_result": "PROBLEM: x"}, "resource", "The last call of the stream mapping of the asset-fanout function "
+                                                  "failed: PROBLEM: x."),
+    ({"fanout_result": "PROBLEM: x"}, "fix", "Read the logs of the asset-fanout function: the error there names "
+                                             "the cause."),
+    ({"stream": "DISABLED"}, "fix", "Turn the stream on again (view type NEW_IMAGE). That makes a new stream: add a "
+                                    "trigger on it to the asset-fanout function, then delete the trigger on the old one."),
+])
+def test_without_the_fanout_name_it_reads_the_asset_fanout_function(fields, field, text):
+    [finding] = sweep.engine_findings(_without(_report(**fields), "fanout_function"), STARTED)
+    assert finding[field] == text
+
+
+@pytest.mark.parametrize("stream,text", [
+    ("DISABLED", "The stream of the asset-events table is DISABLED."),
+    ("unknown (AccessDeniedException)", "Reading the stream of the asset-events table failed (AccessDeniedException)."),
+])
+def test_without_the_table_name_it_reads_the_asset_events_table(stream, text):
+    [finding] = sweep.engine_findings(_without(_report(stream=stream), "events_table"), STARTED)
+    assert finding["resource"] == text
+
+
+#: A report with one finding that has a command, and the report fields that command names.
+COMMANDS = [
+    ({"checked_at": SILENT}, {"sweeper_function", "region"}),
+    ({"fanout_mapping": "Disabled"}, {"fanout_mapping_uuid", "region"}),
+    ({"fanout_mapping": "unknown (Throttling)"}, {"sweeper_function", "region"}),
+    ({"fanout_result": "PROBLEM: x"}, {"fanout_function", "region"}),
+    ({"stream": "unknown (Throttling)"}, {"sweeper_function", "region"}),
+    ({"oldest_overdue": BEHIND}, {"sweeper_function", "region"}),
+    ({"failed_steps": ["adopt: x"]}, {"sweeper_function", "region"}),
+]
+
+
+@pytest.mark.parametrize("fields,names", COMMANDS)
+def test_a_command_is_there_only_when_every_name_it_uses_is_known(fields, names):
+    [finding] = sweep.engine_findings(_report(**fields), STARTED)
+    assert all(NAMES[name] in finding["command"] for name in names)
+    for name in NAMES:
+        for unknown in (_without(_report(**fields), name), _report(**fields, **{name: ""})):
+            [shown] = sweep.engine_findings(unknown, STARTED)
+            assert ("command" in shown) is (name not in names), name
+            if name not in names:
+                assert shown["command"] == finding["command"]
+
+
+def test_the_lease_outlives_a_run_but_not_the_schedule():
+    assert sweep.BUDGET < sweep.LEASE < timedelta(minutes=5)

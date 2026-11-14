@@ -206,3 +206,44 @@ def test_start_child_uses_per_item_pipeline(template):
     sel = _inner_map(template)["ItemSelector"]
     assert "$states.context.Map.Item.Value.sfn_arn" in sel["target_pipeline_sfn_arn"]
     assert "$states.context.Map.Item.Value.pipeline" in sel["target_pipeline"]
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Child run names (ADR #130 §6.6, B-X1)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("pipeline,partition,backfill_id,tier", [
+    ("orders_daily", "2026-11-12", "bf-0a1b2c3d4e5f", 0),
+    ("orders.daily v2", "2026-W46", "bf-ffff", 3),
+    ("p" * 90, "2026-11-12T06", "bf-1", 1),
+    ("monthly", "2026-11", "bf-2", 2),
+])
+def test_child_names_are_run_name(pipeline, partition, backfill_id, tier):
+    """The JSONata name equals polyris.coordination.run_name, which keeps the
+    hash of (pipeline, partition, 'bf', backfill id and tier) as the last 8 characters."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from sfn_jsonata import evaluate, find_state, load_template
+
+    from polyris.coordination.run_name import run_name
+
+    start = find_state(load_template("bulk_backfill/sfn.tpl.json")["States"], "StartChildSFN")
+    name = evaluate(start["Arguments"]["Name"], input={"target_pipeline": pipeline, "partition_key": partition,
+                                                       "backfill_id": backfill_id, "tier_index": tier})
+    assert name == run_name(pipeline, partition, "bf", f"{backfill_id}:{tier}")
+    assert len(name) <= 80
+
+
+def test_the_tier_index_reaches_the_partition_items():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from sfn_jsonata import find_state, load_template
+
+    states = load_template("bulk_backfill/sfn.tpl.json")["States"]
+    assert states["TierMap"]["ItemSelector"]["tier_index"] == "{% $states.context.Map.Item.Index %}"
+    assert find_state(states, "PartitionMap")["ItemSelector"]["tier_index"] == "{% $states.input.tier_index %}"

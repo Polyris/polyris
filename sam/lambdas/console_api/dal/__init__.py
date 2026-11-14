@@ -15,8 +15,7 @@ Benefits:
 
 from dal.executions_repo import executions_repo
 from dal.pipelines_repo import pipelines_repo
-from dal.assets_repo import asset_events_repo, queued_events_repo
-from dal.subscriptions_repo import dep_subscriptions_repo
+from dal.assets_repo import asset_events_repo
 from dal.task_events_repo import task_events_repo
 from dal.circuit_breakers_repo import circuit_breakers_repo
 from dal.backfills_repo import backfills_repo
@@ -26,8 +25,6 @@ __all__ = [
     'executions_repo',
     'pipelines_repo',
     'asset_events_repo',
-    'queued_events_repo',
-    'dep_subscriptions_repo',
     'task_events_repo',
     'circuit_breakers_repo',
     'backfills_repo',

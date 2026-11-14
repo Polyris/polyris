@@ -1,232 +1,224 @@
-"""
-Contract tests for the registration_helper SFN template.
+"""Contract tests for the registration helper (ADR #130 §6.3).
 
-The registration helper resolves the "all deps already terminal at registration
-time, trigger rule cannot fire" edge case (bug #1) by extending Eval_Task_Deps
-with a $verdict field and routing skip/blocked outcomes through their own
-Signal + Update pair, instead of falling to Wait_For_Signal (which would hang
-until orchestration_timeout because notify_dependents already fired for those
-terminal upstreams and will never fire again).
-
-These tests pin the structure so a future edit can't silently regress the fix
-by dropping the branch, the payload shape, or the dynamic status write.
+Registration saves the task row, signals a root task at once, and otherwise
+writes the run's subscriptions and asks the reconciler. Its expressions are
+evaluated here with jsonata-python and compared with the Python code they
+must agree with. tests/backend/coordination runs the whole template.
 """
 
 import json
-import re
-from pathlib import Path
+from datetime import timedelta
 
 import pytest
+from sfn_jsonata import LAMBDA_TRANSIENT, NOW, evaluate, load_template
 
-TEMPLATE_PATH = (
-    Path(__file__).parent.parent.parent
-    / "sam" / "sfn_templates" / "helpers" / "registration" / "sfn.tpl.json"
-)
+from polyris.coordination import attention, ownership, wake
+from polyris.coordination.times import format_utc
+
+#: A Lambda timeout (Sandbox.Timedout) or crash (Lambda.Unknown) leaves the saved row to the sweeper too.
+TRANSIENT = LAMBDA_TRANSIENT
 
 
 @pytest.fixture(scope="module")
 def template() -> dict:
-    raw = TEMPLATE_PATH.read_text()
-    clean = re.sub(r"\$\{[^}]+\}", "0", raw)
-    return json.loads(clean)
+    return load_template("helpers/registration/sfn.tpl.json")
 
 
-def test_route_combined_check_has_skip_blocked_branch(template):
-    """Route_Combined_Check must route verdict='skip' and verdict='blocked' to
-    Signal_Deps_Not_Ready. Without this branch, the task falls to
-    Wait_For_Signal and hangs forever (notify_dependents already fired for the
-    terminal upstreams and will never fire again)."""
-    route = template["States"]["Route_Combined_Check"]
-    assert route["Type"] == "Choice"
-    conditions = [c["Condition"] for c in route["Choices"]]
-    # Combined skip+blocked branch exists
-    skip_branch = [c for c in route["Choices"] if "task_verdict" in c["Condition"]]
-    assert skip_branch, (
-        f"Route_Combined_Check must have a branch on task_verdict "
-        f"(skip/blocked); got Choices: {conditions}"
-    )
-    assert skip_branch[0]["Next"] == "Signal_Deps_Not_Ready"
-    assert "'skip'" in skip_branch[0]["Condition"]
-    assert "'blocked'" in skip_branch[0]["Condition"]
-
-
-def test_skip_blocked_branch_ignores_asset_readiness(template):
-    """The skip/blocked branch must NOT require asset_deps_ready=true. A task
-    whose task_deps cannot be satisfied can never succeed regardless of assets,
-    so waiting for assets is wasted time — and worse, if the asset then
-    arrives, check_assets signals deps_ready and the wrapper tries to run a
-    task with genuinely blocked task_deps. Skipping early on task-deps-blocked
-    dodges that entire class of bug."""
-    route = template["States"]["Route_Combined_Check"]
-    skip_branch = [c for c in route["Choices"] if "task_verdict" in c["Condition"]][0]
-    assert "asset_deps_ready" not in skip_branch["Condition"], (
-        "Skip/blocked branch must NOT gate on asset_deps_ready; a blocked task "
-        f"has to be resolved regardless of assets. Got: {skip_branch['Condition']}"
-    )
-
-
-def test_signal_deps_not_ready_sends_dynamic_signal(template):
-    """Signal_Deps_Not_Ready must send a JSONata-computed signal payload with
-    'deps_skip' or 'deps_blocked' — matching what dependency_wrapper's
-    Wait_For_Dependencies extracts into $callback_signal for routing to
-    Emit_Deps_Skip / Emit_Deps_Blocked."""
-    state = template["States"]["Signal_Deps_Not_Ready"]
-    assert state["Resource"] == "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess"
-    assert state["Arguments"]["TaskToken"] == "{% $states.input.wait_token %}"
-    output = state["Arguments"]["Output"]
-    # Dynamic signal — must reference task_verdict, not a hardcoded 'deps_ready'
-    assert "task_verdict" in output, (
-        f"Signal_Deps_Not_Ready must build the signal from task_verdict; got: {output}"
-    )
-    assert "'deps_ready'" not in output, (
-        "Signal_Deps_Not_Ready must NOT hardcode deps_ready — that's what "
-        "Signal_Ready_Immediately is for."
-    )
-
-
-def test_signal_deps_not_ready_catches_token_errors(template):
-    """A sendTaskSuccess on an expired/stale token must fall through to the
-    status write, not fault the whole registration SFN. Mirrors
-    Signal_Ready_Immediately's catch."""
-    state = template["States"]["Signal_Deps_Not_Ready"]
-    catches = state.get("Catch", [])
-    assert catches, "Signal_Deps_Not_Ready must have a Catch for token errors"
-    assert catches[0]["Next"] == "Update_Status_Not_Ready"
-
-
-def test_update_status_not_ready_writes_dynamic_status(template):
-    """Update_Status_Not_Ready must write 'skipped' for skip verdict and
-    'upstream_failed' for blocked verdict — a hardcoded value would silently
-    mis-report one of the two outcomes."""
-    state = template["States"]["Update_Status_Not_Ready"]
-    assert state["Resource"] == "arn:aws:states:::dynamodb:updateItem"
-    status_val = state["Arguments"]["ExpressionAttributeValues"][":status"]["S"]
-    assert "task_verdict" in status_val, (
-        f"Update_Status_Not_Ready :status must be computed from task_verdict; got: {status_val}"
-    )
-    assert "'skipped'" in status_val
-    assert "'upstream_failed'" in status_val
-
-
-def test_eval_task_deps_carries_removed_rule_aliases(template):
-    """The JSONata $ready computation must map the 3 removed alias rules
-    (none_failed, one_done, none_failed_min_one_success) to their canonical
-    equivalents, mirroring evaluate_deps/index.py. Without this, a pre-trim
-    pipeline hitting the registration fast-path with `none_failed` would fall
-    through to all_success semantics and diverge from the Python-side verdict
-    (which now aliases none_failed → all_done via Fix #3)."""
-    branches = template["States"]["Check_Dependencies_And_Assets"]["Branches"]
-    expr = branches[0]["States"]["Eval_Task_Deps"]["Output"]
-    for alias in ("none_failed", "one_done", "none_failed_min_one_success"):
-        assert alias in expr, (
-            f"Alias {alias!r} missing from Eval_Task_Deps JSONata — pre-trim "
-            f"pipelines will diverge from the Python-side semantics"
-        )
-
-
-def test_eval_task_deps_emits_verdict_field(template):
-    """The JSONata in Eval_Task_Deps must emit a 'verdict' field alongside
-    'ready' — the routing above reads it via task_verdict. If verdict is
-    dropped, Route_Combined_Check falls to Wait_For_Signal even in the
-    edge case (bug #1 regression)."""
-    branches = template["States"]["Check_Dependencies_And_Assets"]["Branches"]
-    task_deps_branch = branches[0]  # first branch is task deps
-    eval_state = task_deps_branch["States"]["Eval_Task_Deps"]
-    output_expr = eval_state["Output"]
-    assert "'verdict'" in output_expr, (
-        "Eval_Task_Deps must emit a 'verdict' field for the skip/blocked "
-        f"routing path; got: {output_expr[:200]}..."
-    )
-    assert "$verdict" in output_expr
-
-
-def test_parallel_output_propagates_task_verdict(template):
-    """The Parallel state's Output must lift task_verdict from the task-deps
-    branch result into the top-level state so Route_Combined_Check can read
-    it. Missing this = the whole verdict computation is dead code."""
-    parallel = template["States"]["Check_Dependencies_And_Assets"]
-    output_expr = parallel["Output"]
-    assert "task_verdict" in output_expr, (
-        f"Parallel Output must lift task_verdict; got: {output_expr}"
-    )
+def _evaluate(expression: str, states_input: dict):
+    return evaluate(expression, input=states_input)
 
 
 def test_no_orphan_states(template):
-    """All declared states must be reachable from StartAt. Catches typos in
-    Next/Default that would create dead code or unreachable branches."""
-    states = template["States"]
-    reachable = set()
+    """Every state is reachable from StartAt."""
+    states, reachable = template["States"], set()
 
     def walk(name):
         if name in reachable or name not in states:
             return
         reachable.add(name)
-        s = states[name]
-        for k in ("Next", "Default"):
-            if k in s and isinstance(s[k], str):
-                walk(s[k])
-        for c in s.get("Choices", []):
-            if isinstance(c.get("Next"), str):
-                walk(c["Next"])
-        for c in s.get("Catch", []):
-            if isinstance(c.get("Next"), str):
-                walk(c["Next"])
+        state = states[name]
+        for target in [state.get("Next"), state.get("Default"), *[c.get("Next") for c in state.get("Choices", [])],
+                       *[c.get("Next") for c in state.get("Catch", [])]]:
+            if isinstance(target, str):
+                walk(target)
 
     walk(template["StartAt"])
-    orphans = set(states.keys()) - reachable
-    assert not orphans, f"Unreachable top-level states: {orphans}"
+    assert set(states) == reachable
 
 
-# ---------------------------------------------------------------------------
-# End-to-end JSONata evaluation — verifies the $verdict expression itself
-# returns the right value for each (rule, dep_statuses) combination.
-# Skipped when jsonata-python isn't installed; the structural tests above
-# still catch the most common regressions.
-# ---------------------------------------------------------------------------
+def test_the_row_carries_what_the_reconciler_sweeper_and_restart_read(template):
+    item = template["States"]["Save_Task_Record"]["Arguments"]["Item"]
+    for field in ("status", "dependencies", "wait_for", "trigger_rule", "date", "started_at", "wait_token",
+                  "wrapper_execution_arn", "pipeline_execution", "pipeline_execution_short",
+                  "starter_input", "orchestration_timeout", attention.KEY, attention.DUE):
+        assert field in item, field
+    assert item["status"] == {"S": "waiting"}
 
 
-def _run_eval_task_deps(template, dep_statuses, trigger_rule, skip_origins=None):
-    """Evaluate Eval_Task_Deps' JSONata against a synthetic dep_results list."""
-    jsonata = pytest.importorskip("jsonata")
-    branches = template["States"]["Check_Dependencies_And_Assets"]["Branches"]
-    expr_body = branches[0]["States"]["Eval_Task_Deps"]["Output"]
-    expr = expr_body[2:-2].strip()
-    origins = skip_origins or [""] * len(dep_statuses)
-    dep_results = [
-        {"dep": f"d{i}", "status": s, "skip_origin": o}
-        for i, (s, o) in enumerate(zip(dep_statuses, origins))
+@pytest.mark.parametrize("name", ["load-2026-11-12--2026-11-12-abcdef12", "a", "x" * 200])
+def test_the_attention_shard_matches_python(template, name):
+    expression = template["States"]["Save_Task_Record"]["Arguments"]["Item"][attention.KEY]["S"]
+    assert _evaluate(expression, {"execution_name": name}) == attention.attention(attention.WAITING, name)
+
+
+def test_the_first_due_time_matches_python(template):
+    expression = template["States"]["Save_Task_Record"]["Arguments"]["Item"][attention.DUE]["S"]
+    assert _evaluate(expression, {}) == format_utc(NOW + attention.FIRST_DUE)
+
+
+def test_subscriptions_are_per_run_pointers_without_tokens(template):
+    items = _evaluate(template["States"]["Save_Subscriptions"]["Items"], {
+        "execution_name": "load-2026-11-12--S", "pipeline_execution_short": "-S", "ttl": 9,
+        "dependencies": ["extract"],
+        "wait_for": [{"asset_name": "ns/a", "freshness_hours": None},
+                     {"operator": "OR", "assets": [{"asset_name": "ns/b"}, {"asset_name": "ns/a"}]}],
+    })
+    assert items == [
+        {"dependency_key": "extract--S", "subscriber": "load-2026-11-12--S", "ttl": 9},
+        {"dependency_key": "asset:ns/a", "subscriber": "load-2026-11-12--S", "ttl": 9},
+        {"dependency_key": "asset:ns/b", "subscriber": "load-2026-11-12--S", "ttl": 9},
     ]
-    j = jsonata.Jsonata(expr)
-    j.assign("states", {"input": {"dep_results": dep_results, "trigger_rule": trigger_rule}})
-    return j.evaluate({})
+    written = template["States"]["Save_Subscriptions"]["ItemProcessor"]["States"]["Save_Subscription"]
+    assert set(written["Arguments"]["Item"]) == {"dependency_key", "subscriber", "ttl"}
 
 
-@pytest.mark.parametrize("rule,statuses,expected_verdict", [
-    ("all_success", ["success", "success"], "ready"),
-    ("all_success", ["success", "failed"], "blocked"),        # failure_averse + failed
-    ("all_success", ["success", "waiting"], "wait"),          # still pending
-    ("all_success", ["skipped", "skipped"], "ready"),         # skip_origin="" → not rule-originated → treated as OK
-    ("one_success", ["failed", "success"], "ready"),
-    ("one_success", ["failed", "failed"], "blocked"),         # failure_averse + all failed
-    ("one_success", ["skipped", "skipped"], "skip"),          # no success, no failure
-    ("all_done", ["success", "failed"], "ready"),             # all_done fires anyway
-    ("all_done", ["success", "waiting"], "wait"),
-    ("all_skipped", ["skipped", "skipped"], "ready"),
-    ("all_skipped", ["skipped", "success"], "skip"),          # not failure_averse, no failures
-    ("none_skipped", ["success", "success"], "ready"),
-    ("none_skipped", ["success", "skipped"], "skip"),         # skip present, not failure_averse
-    # Removed-rule aliases must match their canonical target's semantics
-    ("none_failed", ["success", "failed"], "ready"),          # aliased to all_done → fires
-    ("none_failed", ["success", "waiting"], "wait"),          # aliased to all_done → waits
-    ("one_done", ["success", "failed"], "ready"),             # aliased to all_done
-    ("none_failed_min_one_success", ["success", "failed"], "ready"),  # aliased to one_success
-])
-def test_verdict_matches_python_semantics(template, rule, statuses, expected_verdict):
-    """The JSONata $verdict must produce the same outcome as the Python-side
-    verdict logic in evaluate_deps/index.py — otherwise the registration
-    fast-path diverges from the notify_dependents path for the same inputs."""
-    result = _run_eval_task_deps(template, statuses, rule)
-    assert result["verdict"] == expected_verdict, (
-        f"rule={rule} statuses={statuses}: expected verdict={expected_verdict!r}, "
-        f"got {result['verdict']!r} (ready={result['ready']}, counts={result['counts']})"
-    )
+def test_a_root_task_is_signalled_at_once_with_the_ready_signal(template):
+    signal = template["States"]["Signal_Root_Task"]["Arguments"]["Output"]
+    assert json.loads(signal)["signal"] == wake.DEPS_READY
+
+
+def test_everything_else_asks_the_reconciler(template):
+    reconcile = template["States"]["Reconcile"]
+    assert reconcile["Arguments"]["Payload"] == {"execution_name": "{% $states.input.execution_name %}",
+                                                 "source": "registration"}
+    assert set(reconcile["Retry"][0]["ErrorEquals"]) == TRANSIENT
+
+
+def test_transient_failures_defer_to_the_sweeper_and_others_fail_the_task(template):
+    states = template["States"]
+    for name in ("Save_Subscriptions", "Reconcile"):
+        first, last = states[name]["Catch"][0], states[name]["Catch"][-1]
+        assert first["Next"] == "Defer_To_Sweeper", name
+        assert (last["ErrorEquals"], last["Next"]) == (["States.ALL"], "Fail_Task"), name
+    assert set(states["Reconcile"]["Catch"][0]["ErrorEquals"]) == TRANSIENT
+
+
+def test_a_lost_row_always_fails_the_task(template):
+    """B-G1: with no row there is nothing for the sweeper to find."""
+    kept, lost = template["States"]["Save_Task_Record"]["Catch"]
+    assert (kept["ErrorEquals"], kept["Next"]) == (["DynamoDB.ConditionalCheckFailedException"], "Signal_Superseded")
+    assert (lost["ErrorEquals"], lost["Next"]) == (["States.ALL"], "Fail_Task")
+
+
+def test_registration_writes_only_a_new_row_or_one_its_generation_owns(template):
+    """ADR #130 §2.1: a raised generation fences every older wrapper; test_who_may_save_the_task_row
+    evaluates the condition itself. Here: its values are the ones the row and the reconciler use."""
+    from polyris.constants import RECONCILABLE_STATUSES
+
+    arguments = template["States"]["Save_Task_Record"]["Arguments"]
+    values = arguments["ExpressionAttributeValues"]
+    assert {values[":waiting"]["S"], values[":paused"]["S"]} == set(RECONCILABLE_STATUSES)
+    assert _evaluate(values[":self"]["S"], {"wrapper_execution_arn": "arn:w"}) == "arn:w"
+    assert arguments["Item"]["wrapper_execution_arn"] == values[":self"]   # the row names the same wrapper
+    assert arguments["Item"][ownership.FIELD] == values[":g"]               # and the owner's generation
+    assert _evaluate(values[":g"]["N"], {"generation": 3}) == "3"
+    assert _evaluate(values[":g"]["N"], {}) == str(ownership.LEGACY)         # a pre-upgrade wrapper
+
+
+def test_a_kept_row_answers_the_wrapper_superseded(template):
+    """A current wrapper routes Superseded to its quiet end; a pre-upgrade one fails into a failure
+    handler that finds the row raised (ADR #130 §2.1)."""
+    signal = template["States"]["Signal_Superseded"]
+    assert signal["Resource"].endswith(":sfn:sendTaskFailure")
+    assert _evaluate(signal["Arguments"]["TaskToken"], {"wait_token": "T"}) == "T"
+    assert signal["Arguments"]["Error"] == "Superseded"
+
+
+def test_the_task_fails_with_the_coordination_error(template):
+    fail = template["States"]["Fail_Task"]
+    assert fail["Resource"].endswith(":sfn:sendTaskFailure")
+    assert fail["Arguments"]["Error"] == wake.COORDINATION_ERROR
+
+
+def test_every_send_to_the_wrapper_is_retried_before_it_gives_up(template):
+    """A throttled send is not a lost signal: after a lost row, Fail_Task is all that can reach the wrapper."""
+    sends = {name: state for name, state in template["States"].items()
+             if state.get("Resource", "").endswith((":sfn:sendTaskSuccess", ":sfn:sendTaskFailure"))}
+    assert set(sends) == {"Signal_Root_Task", "Signal_Superseded", "Fail_Task"}
+    for name, state in sends.items():
+        assert any("States.ALL" in retry["ErrorEquals"] for retry in state.get("Retry", [])), name
+
+
+def test_every_task_state_catches_everything(template):
+    for name, state in template["States"].items():
+        if state["Type"] in ("Task", "Map"):
+            assert any("States.ALL" in c["ErrorEquals"] for c in state.get("Catch", [])), name
+
+
+def test_due_now_is_pinned_to_the_token_and_a_waiting_status(template):
+    defer = template["States"]["Defer_To_Sweeper"]["Arguments"]
+    assert defer["ConditionExpression"] == f"wait_token = :token AND #s IN (:waiting, :paused) AND {ownership.FENCE}"
+    assert defer["UpdateExpression"] == f"SET {attention.DUE} = :now"
+
+
+def test_due_time_constants_are_what_the_template_uses():
+    assert attention.FIRST_DUE == timedelta(minutes=10)
+
+
+#: The input a v1.1.x wrapper passes to the registration helper. Such a wrapper, in
+#: flight during the upgrade, registers again when its dependency wait times out,
+#: and by then the helper runs the new definition (ADR #130 Migration).
+PRE_UPGRADE_WRAPPER_INPUT = {
+    "cross_account_role": "", "current_date": "2026-11-12", "date": "2026-11-12", "dependencies": ["extract"],
+    "execution_name": "load-2026-11-12--2026-11-12-abcdef12", "orchestration_token": "orch",
+    "outlets": [], "pipeline_execution": "orders-run-2026-11-12-abcdef12",
+    "pipeline_execution_short": "-2026-11-12-abcdef12", "pipeline_name": "orders",
+    "task_arn": "arn:aws:states:us-east-1:123456789012:stateMachine:load", "task_config": {},
+    "task_name": "load", "task_type": "sfn", "trigger_rule": "all_success", "triggered_by": "schedule",
+    "ttl": 1800000000, "wait_before": 0, "wait_for": [], "wait_token": "T",
+    "wrapper_execution_arn": "arn:aws:states:us-east-1:123456789012:execution:wrapper:load",
+}
+
+
+def test_a_pre_upgrade_wrapper_can_register_again(template):
+    """Every field of the row evaluates for the old input; an undefined value fails
+    the state in AWS (States.QueryEvaluationError) and with it the task."""
+    item = evaluate(template["States"]["Save_Task_Record"]["Arguments"]["Item"], input=PRE_UPGRADE_WRAPPER_INPUT)
+    assert {name: value for name, value in item.items() if None in value.values()} == {}
+    assert item["starter_input"] == {"S": ""}                 # restart treats it as a legacy row
+    assert item["orchestration_timeout"] == {"N": "0"}        # unknown: readers use the platform default
+
+
+@pytest.mark.parametrize("row,allowed", [
+    ({"status": "waiting", "generation": 1, "wrapper_execution_arn": "arn:self"}, True),     # its own retry
+    ({"status": "running", "generation": 1, "wrapper_execution_arn": "arn:self"}, False),    # it moved on meanwhile
+    ({"status": "stopped", "generation": 1, "wrapper_execution_arn": "arn:old"}, True),      # a restart's new wrapper
+    ({"status": "success", "generation": 2, "wrapper_execution_arn": "arn:old"}, False),     # a newer owner holds it
+    ({"status": "waiting", "wrapper_execution_arn": "arn:self"}, True),                     # a row from before 1.2
+], ids=["retry-waiting", "retry-moved-on", "restart", "superseded", "legacy-row"])
+def test_who_may_save_the_task_row(template, row, allowed):
+    """The real condition, evaluated by DynamoDB (moto): a save retried after a lost answer must not reset
+    a task that started meanwhile (round 3), and only the row's owner may register."""
+    import boto3
+    from botocore.exceptions import ClientError
+    from moto import mock_aws
+
+    arguments = template["States"]["Save_Task_Record"]["Arguments"]
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="tokens", KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST")
+        table.put_item(Item={"execution_name": "load-2026-11-12-run", **row})
+        try:
+            table.put_item(Item={"execution_name": "load-2026-11-12-run", "status": "waiting", "generation": 1},
+                           ConditionExpression=arguments["ConditionExpression"],
+                           ExpressionAttributeNames=arguments["ExpressionAttributeNames"],
+                           ExpressionAttributeValues={":g": 1, ":self": "arn:self", ":waiting": "waiting",
+                                                      ":paused": "waiting_paused"})
+            saved = True
+        except ClientError as exc:
+            assert exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
+            saved = False
+    assert saved is allowed
+

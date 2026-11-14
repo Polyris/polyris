@@ -136,7 +136,7 @@ def test_only_the_documented_routes_are_public():
     """Guard against a future route accidentally becoming public.
 
     is_public_path() matches by PREFIX (path.startswith), not exact path —
-    correct for /api/health/simple and /api/action/{skip,fail,...}, but it
+    correct for /api/health/live and /api/action/{skip,fail,...}, but it
     means any NEW route registered under one of these prefixes silently
     bypasses auth too, with no error or warning. This test walks every
     currently-registered route in main.ROUTES and asserts that any route
@@ -148,7 +148,7 @@ def test_only_the_documented_routes_are_public():
 
     EXPECTED_PUBLIC_ROUTES = {
         ('GET', '/api/health'),
-        ('GET', '/api/health/simple'),
+        ('GET', '/api/health/live'),
         ('GET', '/api/metrics'),
         ('GET', '/api/action/skip'),
         ('GET', '/api/action/fail'),

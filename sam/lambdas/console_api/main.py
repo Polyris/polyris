@@ -35,16 +35,18 @@ ROUTE_MODULES = [
 ]
 
 # Proprietary route modules (Team tier) live in console_api/ee/ and ship inside
-# this Lambda's CodeUri. The OSS build strips ee/ (ADR #98) → ImportError → free
-# routes only. The AttributeError guard covers the case where a *different*
-# top-level `ee` (e.g. the SDK's `ee` package) is on the path without our
-# MODULES: treat that as "no backend ee" rather than crashing. In the Lambda only
-# console_api/ee is present, so this resolves to our package.
+# this Lambda's CodeUri. The OSS build strips ee/ (ADR #98): `import ee` then
+# fails for `ee` itself, and only the free routes load. Any other import error
+# comes from inside a present overlay — a broken build — and must fail the
+# Lambda loudly; swallowing it would silently drop every paid route
+# (Principle #44).
 try:
     import ee
+except ModuleNotFoundError as exc:
+    if exc.name != "ee":
+        raise
+else:
     ROUTE_MODULES += ee.MODULES
-except (ImportError, AttributeError):
-    pass
 
 
 # =============================================================================
@@ -60,6 +62,9 @@ router = Router()
 for _module in ROUTE_MODULES:
     _module.register(router)
 ROUTES = router.table
+
+#: What an unexpected failure of a public route tells its caller; the log has the error (CLAUDE.md, Auth).
+INTERNAL_ERROR_MESSAGE = 'Internal error; the console API logs have the details.'
 
 
 def handler(event: Dict, context) -> Dict:
@@ -113,4 +118,6 @@ def handler(event: Dict, context) -> Dict:
     except Exception as e:
         import traceback
         log.error("handler", str(e), path=path, method=method, traceback=traceback.format_exc())
-        return error_response(500, 'INTERNAL_ERROR', str(e), request_id=request_id)
+        # A public route shows an anonymous caller no error text (CLAUDE.md, Auth): the log above has it.
+        message = INTERNAL_ERROR_MESSAGE if is_public_path(path) else str(e)
+        return error_response(500, 'INTERNAL_ERROR', message, request_id=request_id)

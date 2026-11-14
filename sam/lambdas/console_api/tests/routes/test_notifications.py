@@ -35,9 +35,10 @@ def _call(mocker, rows, hours='24', limit='10'):
     from routes import notifications
     mocker.patch.object(notifications.executions_repo, 'query_by_date_raw',
                         return_value=_ddb_response(rows))
-    # Isolate from backfill notifications (tested separately).
+    # Isolate from backfill notifications and coordination warnings (tested separately).
     mocker.patch.object(notifications, '_backfill_terminal_notifications',
                         return_value=[])
+    mocker.patch.object(notifications.executions_repo, 'recent_warnings', return_value=[])
     event = {'queryStringParameters': {'hours': hours, 'limit': limit}}
     resp = notifications.get_notifications(event)
     return resp, json.loads(resp['body'])

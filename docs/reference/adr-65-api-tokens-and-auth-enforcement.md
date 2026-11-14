@@ -239,3 +239,21 @@ log. `GET /api/tokens` filters revoked tokens out of the response — the list i
 for *usable* credentials; revocation **history** belongs in the audit log (a
 planned Pro feature), not in the active list. A `?include_revoked` view can be
 added with that feature if ever needed.
+
+## Update — v1.2.0: operator sign-in without a browser
+
+The console's Cognito app client also allows `ALLOW_ADMIN_USER_PASSWORD_AUTH`. That flow is reached only through `AdminInitiateAuth`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` on the pool, so it opens no password endpoint to the internet; `ALLOW_USER_PASSWORD_AUTH` stays off. Operator tooling uses it: `scripts/get-e2e-token.sh`, and `make e2e-coordination`, which signs in as a temporary console user and deletes it after the run. `tests/sdk/test_coordination_smoke_runner.py` pins both flows on the client.
+
+## Update — v1.2.0: `/api/health` shows its details only to a verified caller
+
+`/api/health*` stays public in the gate, so probes and monitors work without a token. The handler decides how much to show:
+- **Verified caller.** With a valid token, or with `AUTH_ENABLED=false`, the answer carries everything: messages, the sweeper's report, and the `findings` the console's System status shows.
+- **Anyone else.** Only `status`, `timestamp`, `response_time_ms`, `detail` and each check's status word, built from an allowlist.
+
+A missing, bad, expired or revoked token, or a token check that fails, gets the short answer, never a 401, because a monitor usually has no token.
+
+Before this, every check returned the raw text of a failed AWS call to anyone, and such a text can name the account and its roles. `/api/metrics` no longer returns error texts either.
+
+One path whose content depends on the caller follows Spring Boot Actuator's `show-details: when-authorized`. A second, private path would have answered 401 to every monitor that already reads `/api/health`.
+
+The liveness route was renamed from `/api/health/simple` to `/api/health/live`, without an alias.

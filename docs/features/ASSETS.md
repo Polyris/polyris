@@ -1,28 +1,16 @@
 # Asset-Based Orchestration
 
-> **⚠️ Experimental (v0.93.0).** Assets are an experimental feature. The API
-> (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may
-> change, and the coordination layer has known bugs — see
-> [Known limitations](#known-experimental-limitations) below. Not recommended
-> for production pipelines. Silence the runtime warning with
-> `warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)`.
+> **⚠️ Experimental (v0.93.0).** Assets are an experimental feature: the API (`Asset`, `outlets`, `inlets`, `wait_for`, asset-triggered `schedule`) may change. See [Known limitations](#known-experimental-limitations) below. Not recommended for production pipelines. Silence the runtime warning with `warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)`.
 > <!-- EXPERIMENTAL-ASSETS: remove this banner when assets graduate to stable. -->
 
 
 ## Known experimental limitations
 
-These are current gaps in the asset coordination layer. Each is a known
-issue, not undiscovered behavior. Progress is tracked in
-[`CHANGELOG.md`](../../CHANGELOG.md).
-
 | Area | Current behavior |
 |------|------------------|
-| Partition identity | A run's partition is the UTC date of `current_date` (approximately the scheduler fire time). The scheduler does not pass an explicit partition key, so hourly schedules collapse multiple runs onto one partition. |
-| `wait_for=[a, b]` AND semantics | Fires on the first of two events, not when both arrive (currently matches OR). |
-| `wait_for` freshness | Checks the latest event for the asset, not the event for the consumer's partition. A backfill of a past date can pass freshness based on today's producer event. |
-| Subscription key collisions | Subscription key `(asset, task_name)` does not include pipeline or execution. Parallel backfills of the same consumer can overwrite each other's subscription rows. |
-| Push AND trigger loss | If the `Trigger_AND` state fails between counter bump and execution start, subsequent events on the same date are filtered out and the day's trigger is lost. |
-| Restart inconsistency | Re-running an asset-producing task restarts OR consumers (time-based execution name) but not AND consumers (deterministic name). |
+| Partitions below a day | A run's partition is its date. Runs more often than daily share their day's partition, and an hourly asset's facts count for the whole day. |
+| Failures of older dates | A task failure shows in the notification bell only while its run's date is within the bell's window: a failed run for an older date shows in that run, not in the bell. |
+| Wake-up after a lost hint | A task normally starts within seconds of its last condition. If its wake-up hint is lost, the sweeper starts it at its next check, at most about 40 minutes later, and the bell shows a `sweeper` warning. |
 
 
 ## Overview
@@ -35,15 +23,15 @@ without hardcoded references between pipelines.
 - **Producer** — task that creates an asset (via `outlets=[...]`)
 - **Consumer** — DAG that triggers when asset is ready (via `schedule=[...]`)
 
-Inspect lineage from the CLI with `polyris-output --graph`.
+`polyris-output --assets` prints every asset with the tasks that produce and consume it.
 
 ## Contents
 
-- [Defining Assets](#defining-assets) — naming, minimal example, schema declaration (schema is optional; skip on first read)
+- [Defining Assets](#defining-assets) — naming, [granularity](#granularity), schema declaration (schema is optional; skip on first read)
 - [Producer Tasks (`outlets`)](#producer-tasks-outlets)
 - [Consumer DAGs (`schedule`)](#consumer-dags-schedule) — AND / OR / mixed logic
 - [Inlets](#inlets-documentation), [pull-based dependencies (`wait_for`)](#pull-based-dependencies-wait_for)
-- [Asset events](#asset-events), [queue management](#queue-management), [lineage graph](#asset-lineage-graph)
+- [Asset events](#asset-events), [lineage](#asset-lineage)
 - [Complete example](#complete-example), [best practices](#best-practices)
 
 ---
@@ -62,7 +50,7 @@ processed = Asset(
     uri="s3://my-bucket/processed/acme/"
 )
 
-# Asset with group (for UI organization)
+# Asset with a group
 processed = Asset(
     name="processed/acme",
     uri="s3://my-bucket/processed/acme/",
@@ -78,12 +66,31 @@ processed = Asset(
 {source}/{stage}       # e.g., api/raw, api/cleaned
 ```
 
+### Granularity
+
+`granularity` says how often the asset gets a new partition: `"hourly"`, `"daily"` (the default), `"weekly"` or `"monthly"`.
+
+```python
+from polyris import Asset
+
+prices = Asset("pricing/prices", granularity="weekly")
+```
+
+Each successful producer run records a fact of the asset, dated by the run's date. A consumer run for date D, through `wait_for` or `schedule`, accepts a fact dated F by the asset's granularity:
+
+| Granularity | A fact dated F serves the runs for |
+|---|---|
+| `hourly`, `daily` | D = F |
+| `weekly` | D from F to the end of the week after F's week |
+| `monthly` | D from F to the end of the month after F's month |
+
+A daily consumer of a weekly asset therefore uses the latest version from this week or the last one, and a run for a past date waits for a fact of its own date, never today's (ADR #130).
+
+A run's date is a day, such as `2026-01-12`; facts of hourly, weekly and monthly assets come from such runs too. A `wait_for` task in a run dated otherwise, for example `20260112`, fails with `CoordinationError` and the cause.
+
 ### Schema Declaration
 
-Declare a column schema directly in the asset definition. The schema is
-displayed on the Asset Detail Page (Schema tab) and is the source of truth
-for downstream features (drift detection, Glue sync, DDL generation —
-on the roadmap).
+Declare a column schema directly in the asset definition. The schema is stored with the asset in the pipeline registry.
 
 **Recommended form: `Column` + `types`.**
 
@@ -204,9 +211,6 @@ orders = Asset(
 )
 ```
 
-If both `glue_table` and `schema` are set, the Schema tab compares them
-and shows drift; see "Glue Catalog Sync" below.
-
 #### Note on Amazon Athena's data sources
 
 Athena's query editor shows a four-level hierarchy (Data source → Catalog
@@ -228,7 +232,7 @@ What is **not** covered:
 
 ### Ownership
 
-Assign an owner to an asset for visibility in the UI.
+Record the team that owns an asset.
 
 ```python
 orders = Asset(
@@ -236,80 +240,6 @@ orders = Asset(
     owner="data-team",
 )
 ```
-
-### Glue Catalog Sync (on-demand)
-
-When an asset declares both `schema=[...]` and `glue_table="db.table"`, the
-Asset Detail Page Schema tab fetches the actual schema from AWS Glue
-Catalog and shows a side-by-side diff against the declared schema.
-
-The fetch is **on-demand**: it fires when you open the Schema tab, not on
-a schedule. There is no cron, no separate Lambda, no extra DDB table.
-Result is cached in the browser for 5 minutes; a refresh button forces a
-fresh call.
-
-The diff surfaces three categories:
-
-| Category | Meaning |
-|---|---|
-| Declared but missing from Glue | Column declared in code; Glue table does not have it. Either the table needs `ALTER TABLE ADD COLUMN`, or the declaration is stale. |
-| Present in Glue but not declared | Column exists in Glue (added by another tool, manual `ALTER`, or a different ETL); not declared in code. |
-| Type mismatches | Same column name on both sides, but different types (e.g. declared `decimal(10,2)`, Glue `decimal(12,4)`). |
-
-If Glue is unreachable (IAM, VPC, throttling, table-not-found) the panel
-shows a structured error with the Glue error code and message; the declared
-schema is still rendered alongside.
-
-**Constraint fields** (`nullable`, `primary_key`, `partition_key`, `unique`)
-are polyris-only metadata and are not included in the diff — Glue Catalog
-does not represent them, so they cannot drift.
-
-**Cross-account Glue access — IAM checklist:**
-
-The default SAM template grants `glue:GetTable` on `Resource: "*"`, which
-covers same-account access in any region. **Cross-account requires an
-explicit ARN expansion** in the Console API Lambda's IAM policy:
-
-```yaml
-# sam/template.yaml — extend for cross-account
-- Effect: Allow
-  Action: ["glue:GetTable", "glue:GetDatabase"]
-  Resource:
-    - !Sub "arn:aws:glue:*:${AWS::AccountId}:catalog"           # local
-    - !Sub "arn:aws:glue:*:${AWS::AccountId}:database/*"
-    - !Sub "arn:aws:glue:*:${AWS::AccountId}:table/*/*"
-    - "arn:aws:glue:*:222222222222:catalog"                     # peer account
-    - "arn:aws:glue:*:222222222222:database/*"
-    - "arn:aws:glue:*:222222222222:table/*/*"
-```
-
-The catalog account must **also** grant access — either via a Glue
-resource policy (IAM-only) or via Lake Formation (if the catalog is
-managed by LF). See [Granting cross-account access — AWS Glue docs](https://docs.aws.amazon.com/glue/latest/dg/cross-account-access.html).
-
-**Lake Formation interaction:** If the target catalog is managed by Lake
-Formation, IAM permissions alone are insufficient — Lake Formation's
-GRANT/REVOKE permissions model gates access independently. Without an
-LF GRANT to the Console API Lambda's role, drift detection returns
-`AccessDeniedException` even when IAM is correct. Check by running:
-
-```bash
-aws glue get-table --database-name <db> --name <table> \
-  --query 'Table.IsRegisteredWithLakeFormation'
-```
-
-If `true` — coordinate with the catalog owner to add an LF data permission.
-
-**Cross-region:** `glue_region` is independent of `glue_catalog` — the
-two fields combine to address any (region, account) tuple. AWS Glue Data
-Catalog itself is per-region; there is no automatic cross-region
-replication. Polyris does not provide multi-region drift comparison —
-each asset points at exactly one (region, account, database, table).
-
-ADR #43 covers the on-demand fetch design. ADR #45 covers the
-cross-account / cross-region field design.
-
----
 
 ### Constructing Assets from Existing Schema Sources
 
@@ -396,15 +326,7 @@ orders = Asset.from_glue_table(
 )
 ```
 
-The Glue `glue_table` field is automatically set on the resulting
-asset, so the runtime drift check (Phase 2, ADR #43) works on it
-without further configuration. Cross-account: pass
-`catalog_id="<account-id>"`.
-
-This is different from the runtime drift detection in the UI: this
-constructor runs on your local machine at deploy time as a one-shot
-schema import. The two share the same parser, but the runtime path
-hits the API; this path hits Glue directly via your local credentials.
+The constructor sets `glue_table` on the resulting asset. It runs on your machine at deploy time, as a one-shot schema import, and reads Glue with your local credentials. Cross-account: pass `catalog_id="<account-id>"`.
 
 ---
 
@@ -423,8 +345,8 @@ with DAG("etl", schedule="@daily") as dag:
 
 **What happens:**
 1. Task completes successfully
-2. `run_task_helper` records asset event in DynamoDB
-3. `notify_asset_consumers` SFN is invoked to trigger subscribed pipelines
+2. `run_task_helper` records a fact for each outlet, for the run's partition
+3. The `asset-events` stream hands the fact to `AssetFanout`, which wakes the tasks waiting on the asset and starts the pipelines scheduled on it
 
 ---
 
@@ -449,10 +371,15 @@ with DAG(
 ```
 
 **What happens:**
-1. Task with `outlets` completes successfully
-2. `run_task_helper` invokes `notify_asset_consumers` SFN (async)
-3. SFN checks if all required assets are ready
-4. If ready → starts the consumer DAG (via StartExecution)
+1. A task with `outlets` completes and records its fact for its run's partition
+2. `AssetFanout` evaluates the consumer's whole `schedule` for that partition, with the same rule as `wait_for` (`.within(...)` is judged as of the fact's time)
+3. If it is satisfied, `AssetFanout` starts the consumer for that date
+
+A run's name is derived from the consumer, the date and the kind of trigger, so a repeated event never starts a second run. A failure to start one consumer never affects the producer or other consumers: a transient one is retried, anything else shows up as a warning.
+
+A consumer reacts only to facts recorded after its first deploy. Deploying a new consumer does not start it for facts that already exist; its first run starts with the next fact.
+
+Remove an asset from a consumer's `schedule` and redeploy, and that asset no longer starts it: the old subscription is deleted the next time the asset records a fact. The same holds for a consumer you move to a cron schedule. A consumer you destroy loses its subscription the first time a fact would start it: that start fails, and the bell shows it once.
 
 ---
 
@@ -473,17 +400,19 @@ with DAG(
 ```
 
 **How it works:**
-1. Each asset event is recorded in DynamoDB with atomic counter
-2. `notify_asset_consumers` SFN checks: "Are all required assets present?"
-3. Only triggers DAG when ALL assets are ready for the same date
-4. Uses distributed lock to prevent duplicate triggers
+1. Every fact re-evaluates the schedule from the recorded facts for that fact's date — nothing is counted, so a lost or repeated event changes nothing
+2. The DAG starts once every asset has a fact that serves the date
+3. One run per DAG and date: a later event for the same date starts nothing
 
 **Example timeline:**
 ```
-10:00 - asset_a arrives → counter=1, wait
-10:15 - asset_b arrives → counter=2, wait
-10:30 - asset_c arrives → counter=3 → all present → TRIGGER DAG
+10:00 - asset_a arrives → b and c missing for the date, wait
+10:15 - asset_b arrives → c missing, wait
+10:30 - asset_c arrives → all present → START the DAG for the date
+10:45 - asset_c arrives again → the date's run exists, nothing happens
 ```
+
+Facts of different granularities combine: with `schedule=[daily_sales, weekly_prices]`, each day's sales fact starts that day's run once the current or previous week's prices fact exists.
 
 ---
 
@@ -548,24 +477,21 @@ individual task until the asset condition holds.
 
 ### `wait_for` patterns
 
-> **⚠️ Multi-asset `wait_for` is currently broken** — the patterns marked AND
-> below are documented as AND but behave as OR (first event wins). See
-> [Known limitations](#known-experimental-limitations) at the top of this
-> doc. Single-asset `wait_for=[a]` works as documented.
-
 | Pattern | Meaning |
 |---------|---------|
-| `wait_for=[asset_x]` | Latest materialization — no freshness check |
-| `wait_for=[asset_x.within(hours=6)]` | Latest event must be ≤ 6 hours old |
-| `wait_for=[asset_x.within(days=1)]` | ≤ 1 day old |
-| `wait_for=[asset_x.within(weeks=2)]` | ≤ 2 weeks old |
-| `wait_for=[asset_x.within(days=1, hours=12)]` | ≤ 36 hours old (combined units) |
-| `wait_for=[asset_x.consecutive(days=7)]` | 7 consecutive daily events required |
-| `wait_for=[a, b]` | AND — wait for both `a` and `b` ⚠️ currently fires on first |
-| `wait_for=[a \| b]` | OR — wait for either `a` or `b` |
-| `wait_for=[a & b]` | AND (explicit form; equivalent to the list form) ⚠️ currently fires on first |
-| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | Mixed: AND across a 7-day run and a fresh event ⚠️ currently fires on first |
-| `wait_for=[a.consecutive(days=7) \| manual_override]` | 7-day run OR manual override |
+| `wait_for=[asset_x]` | A fact of `asset_x` that serves the run's date ([granularity](#granularity)) |
+| `wait_for=[asset_x.within(hours=6)]` | The newest fact of the latest partition up to the run's date is at most 6 hours old |
+| `wait_for=[asset_x.within(days=1)]` | … at most 1 day old |
+| `wait_for=[asset_x.within(weeks=2)]` | … at most 2 weeks old |
+| `wait_for=[asset_x.within(days=1, hours=12)]` | … at most 36 hours old (units combine) |
+| `wait_for=[asset_x.consecutive(days=7)]` | A fact for each of the 7 days that end on the run's date |
+| `wait_for=[a, b]` | AND: both `a` and `b` |
+| `wait_for=[a \| b]` | OR: either `a` or `b` |
+| `wait_for=[a & b]` | AND, the explicit form of the list |
+| `wait_for=[a.consecutive(days=7), b.within(hours=24)]` | AND of a 7-day run and a fresh fact |
+| `wait_for=[a.consecutive(days=7) \| manual_override]` | a 7-day run, or the override |
+
+A task checks its conditions when it registers and again whenever a fact of one of its assets arrives, so it starts as soon as the last condition holds.
 
 ### Full example — producer + consumer
 
@@ -583,21 +509,39 @@ with DAG("producer", schedule="@daily") as pipeline:
 
 # Consumer pipeline — runs hourly, but individual tasks block on the asset.
 with DAG("consumer", schedule="@hourly") as pipeline:
-    # Latest inventory event, no freshness check.
+    # The inventory fact for this run's date.
     @task.sfn(arn="${process_arn}", wait_for=[inventory])
     def process():
         pass
 
-    # Latest catalog event must be within 24 hours.
+    # The latest catalog partition up to this run's date, at most 24 hours old.
     @task.sfn(arn="${report_arn}", wait_for=[catalog.within(hours=24)])
     def report():
         pass
 ```
 
+### Timeout for cross-pipeline dependencies
+
+When a task waits for assets from another pipeline, you may want a longer timeout than the default 24h:
+
+```python
+from datetime import timedelta
+
+@task.sfn(
+    arn=...,
+    wait_for=[weekly_report],
+    orchestration_timeout=timedelta(days=3),  # Wait up to 3 days for deps
+    execution_timeout=timedelta(hours=2),      # Task itself runs in 2h
+)
+def depends_on_weekly():
+    pass
+```
+
+If `orchestration_timeout` is not set, it defaults to `execution_timeout` (24h).
+
 ### In the Console
 
-A task with `wait_for` appears as a consumer of the asset in the lineage
-view. The Task Detail modal shows asset dependencies as a labelled
+The Task Detail modal shows a task's `wait_for` assets as a labelled
 section, with the freshness constraint as a badge:
 
 ```
@@ -616,21 +560,13 @@ Consumer task starts
         │
         ▼
 Registration helper
-        │
-        ├── Check task dependencies (existing)
-        └── Check asset dependencies
-            │
-            ▼
-        CheckAssets Lambda
-            │
-            ├── Query asset-events table (latest event per asset)
-            ├── Check freshness (if `.within(...)` was specified)
-            └── If not ready → save subscription to dep-subscriptions
-                              (key: "asset:<name>" + task identifier)
-        │
-        ▼
-If ready → signal wrapper → task continues
-If not  → wait for signal (waitForTaskToken)
+        ├── Save the task row
+        ├── Save one pointer per asset: "asset:<name>" → this run's task
+        └── reconcile Lambda
+                ├── Read asset-events for this run's partition
+                │   (and `.within(...)` freshness, `.consecutive(...)` days)
+                ├── If ready → signal the wrapper → task continues
+                └── If not   → the task waits; the pointer brings the next fact
 ```
 
 Producer side (a task with `outlets=[...]`):
@@ -639,149 +575,62 @@ Producer side (a task with `outlets=[...]`):
 Producer task completes with outlets
         │
         ▼
-RunTask helper
-        │
-        ├── Emit EventBridge events (existing push path)
-        ├── Record asset event in asset-events table
-        └── NotifyAssetSubscribers Lambda
-            │
-            ├── Query subscribers for each outlet
-            └── sendTaskSuccess to each waiting task
+RunTask helper ── records one fact per outlet in asset-events
+        │          (partition = the producer run's date)
+        ▼
+asset-events stream ──► AssetFanout Lambda
+                            ├── Find the tasks waiting on the asset ("asset:<name>")
+                            └── reconcile Lambda for each: wake it if a fact
+                                serves its run's partition
 ```
 
-The two DynamoDB tables involved:
+A task is woken only by a fact for its own run's partition: a run for an old date never starts on today's fact. Weekly and monthly facts also serve the rest of their period and the next one.
+
+The DynamoDB tables involved:
 
 | Table | Purpose |
 |-------|---------|
-| `asset-events` | Every asset materialization (PK: `asset_name`, SK: `event_time`) |
-| `asset-subscriptions` | Cross-pipeline triggers waiting on an asset (PK: `asset_name`, SK: `pipeline_name`) |
+| `asset-events` | Every fact (PK: `asset_name`, SK: `event_time`), with the partition it belongs to; the `asset-partition-index` finds facts by partition date |
+| `dependency-subscriptions` | Per-run pointers: `asset:<name>` → each waiting task of a run whose `wait_for` names the asset |
+| `asset-subscriptions` | Pipelines scheduled on an asset (PK: `asset_name`, SK: `pipeline_name`) |
 
 Everything is created by `polyris-up` (or a from-source `sam deploy`) — no manual steps.
 
 ---
 
-## Asset Events
+## Asset events
 
-### Automatic (from outlets)
+A producer task records one fact per outlet when it succeeds, in the `asset-events` table:
 
-When a task with outlets completes:
-```json
-{
-  "source": "pipeline.assets",
-  "detail-type": "Asset.Materialized",
-  "detail": {
-    "asset_name": "processed/acme",
-    "asset_uri": "s3://bucket/processed/acme/",
-    "date": "2026-01-12",
-    "source_pipeline": "acme-daily",
-    "source_task": "process_data",
-    "metadata": {}
-  }
-}
-```
+| Field | Example | Meaning |
+|---|---|---|
+| `asset_name` | `processed/acme` | the asset |
+| `event_time` | `2026-01-12T06:41:07.123Z` | when the fact was recorded |
+| `partition_key` | `2026-01-12` | the producer run's date |
+| `partition_date` | `2026-01-12` | the first day of that partition |
+| `granularity` | `daily` | the asset's declared [granularity](#granularity) |
+| `source_dag`, `source_task` | `acme-daily`, `process_data` | the producer |
 
-### Manual Trigger
+Marking a producer task successful in the console records its outlets' facts too, dated by the task's run, not by the day you mark it, with the run's cascade: a task of a `cascade='none'` backfill starts no pipeline this way either. If a fact cannot be recorded, the task still becomes successful, and the bell shows a warning for that asset; tasks waiting on it keep waiting until you restart the task. When a task succeeds on its own but its facts cannot be recorded, the bell shows a `fact` warning that names the assets and the cause, and the run ends `FAILED`, since it did not deliver its assets; the task itself stays successful. Restart it once the cause is fixed.
 
-Via API:
-```bash
-POST /api/asset/processed%2Facme/trigger
-Content-Type: application/json
-
-{
-  "date": "2026-01-12",
-  "metadata": {"source": "manual", "reason": "backfill"}
-}
-```
-
-Via UI:
-1. Go to Assets view
-2. Find asset
-3. Click "Trigger"
-4. Enter date
+A fact that no reader can place on a partition (for example, one recorded by an older version for a run date such as `latest`) counts for no task, and the bell shows a warning for it.
 
 ---
 
-## Queue Management
+## Asset lineage
 
-### View Queued Assets
-
-Assets waiting for AND conditions:
+`polyris-output --assets` prints every asset with its producers and consumers, and the asset schedule of each pipeline:
 
 ```bash
-GET /api/assets/queued
+cd pipelines/acme && polyris-output --assets
 ```
 
-### Skip Asset in Queue
-
-Skip waiting for a specific asset:
-
-```bash
-POST /api/assets/skip-in-queue
-{
-  "dag_id": "feeds",
-  "asset_name": "processed/acme",
-  "date": "2026-01-12"
-}
-```
-
-### Clear Queue
-
-Clear all queued assets for a DAG (today's queue):
-
-```bash
-POST /api/assets/clear-queue
-{
-  "dag_id": "feeds",
-  "date": "2026-01-12"
-}
-```
-
----
-
-## Asset Lineage Graph
-
-The UI shows a visual lineage graph:
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Task A    │────▶│  Asset X    │────▶│   DAG B     │
-│  (producer) │     │             │     │ (consumer)  │
-└─────────────┘     └─────────────┘     └─────────────┘
-```
-
-Access via: **📦 Assets** tab → **Lineage** view
-
-### Relationships Shown
-
-| Source | Relationship | Shows on Lineage |
-|--------|--------------|------------------|
-| `outlets` | Task produces asset | ✅ Task → Asset |
-| `inlets` | Task consumes asset | ✅ Asset → Task |
-| `wait_for` | Task waits for asset freshness | ✅ Asset → Task |
-| `schedule=[asset]` | DAG triggered by asset | ✅ Asset → DAG |
-
-**Note:** Both `inlets` and `wait_for` show the task as a consumer of the asset on the lineage graph. The difference is:
-- `inlets` — documentation only (no runtime effect)
-- `wait_for` — runtime dependency (task waits for fresh asset)
-
-### Timeout for Cross-Pipeline Dependencies
-
-When a task waits for assets from another pipeline, you may want a longer timeout than the default 24h:
-
-```python
-from datetime import timedelta
-
-@task.sfn(
-    arn=...,
-    wait_for=[weekly_report],
-    orchestration_timeout=timedelta(days=3),  # Wait up to 3 days for deps
-    execution_timeout=timedelta(hours=2),      # Task itself runs in 2h
-)
-def depends_on_weekly():
-    pass
-```
-
-If `orchestration_timeout` is not set, it defaults to `execution_timeout` (24h).
+| Declaration | Lineage |
+|--------------|---------|
+| `outlets` | the task produces the asset |
+| `inlets` | the task consumes the asset (documentation only, no runtime effect) |
+| `wait_for` | the task consumes the asset and waits for it |
+| `schedule=[asset]` | the pipeline is triggered by the asset |
 
 ---
 
@@ -870,90 +719,8 @@ with DAG(
 
 1. **Use consistent naming**: `{group}/{type}` or `{domain}/{entity}`
 2. **Add URIs**: Helps with lineage tracking and debugging
-3. **Group related assets**: Use `group` parameter for UI organization
+3. **Group related assets** with the `group` parameter
 4. **Document inlets**: Even if not used for triggering
-5. **Monitor queues**: Check queued assets in UI
-6. **Use date-based materialization**: Assets are keyed by date
+5. **Use date-based materialization**: a fact belongs to the partition of the run that produced it
 
 ---
-
-## Matrix view (v0.76.0)
-
-The Matrix tab in the Assets view shows assets × dates as a 2D grid —
-useful for answering *"what's broken, and when did it start?"* at a
-glance across the whole platform.
-
-**How to read it.** Rows are assets (grouped by `group`); columns
-are dates ending with today. Each cell carries the asset's status on
-that date:
-
-  - 🟢 Materialized — producer task succeeded that day
-  - 🔴 Failed — producer task failed (hover for the error message)
-  - 🟡 Running — producer task is currently running for that date
-  - 🟠 Queued — no producer record yet, but at least one consumer DAG awaits this asset
-  - ⚪ Missing — no producer record and no consumer waiting
-
-Hover any cell for a tooltip showing the timestamp, source task and DAG,
-and — for failed cells — the actual error message. No need to click
-through to task detail to see *why* something failed.
-
-The 🟠 Queued cell is the one to scan for during incidents — it shows
-which assets are blocking downstream pipelines right now. Operators
-can click queued (or missing, or failed) cells to backfill that
-(asset, date) directly.
-
-**Click-to-backfill.** Missing, failed, and queued cells are
-actionable — clicking opens the Backfill modal pre-filled with that
-asset and date. Keyboard equivalent: focus the cell and press Enter
-or Space.
-
-**Date range.** Default range adapts to viewport: 14 days on desktop,
-7 days on tablet (≤768 px), 5 days on mobile (≤480 px). Adjust via the
-Range dropdown — supported values are 5, 7, 14, 30, and 60 days.
-Backend caps requests at 60 days.
-
-**Partition granularity (v0.77, ADR #50).** Assets can partition at
-different cadences. Each asset declares one granularity (daily by
-default); Glue-backed assets get an advisory auto-detected suggestion
-from the catalog's partition keys, and a drift badge flags when the
-declared granularity disagrees with what Glue reports. The matrix
-shows one granularity at a time (a filter), rather than mixing
-cadences in a single grid — multi-dimensional and dynamic partitions,
-and a unified multi-granularity view, are explicit non-goals of ADR
-#50. Backfill is granularity-aware: the inferred/declared granularity
-determines how the requested range expands into partitions.
-
-**Refresh cadence.** The matrix polls every 30 seconds (same cadence
-as the Catalog tab). The pause-when-tab-hidden behavior is automatic
-via React Query; nothing fetches when you switch tabs.
-
-**Regenerate semantics.** When a date is backfilled, `pipeline-tokens`
-ends up with multiple records for the same (task, date). The matrix
-picks the latest reality: a currently-running backfill wins; otherwise
-the record with the newest `finished_at`. So an originally-successful
-day that fails on backfill correctly turns 🔴 — the cell reflects the
-latest attempt, not the first.
-
-**Where the data comes from.** The matrix is a *derived view* — nothing
-is stored specifically for it. Cell colors are computed at read time
-from:
-
-  - `pipeline-tokens.date-pipeline-index` for task status by date
-  - `pipeline_registry` for task→outlet mapping and consumer
-    `asset_schedule`
-
-This is intentional: see ADR #49 for the design rationale (short
-version: task status is already canonical in `pipeline-tokens`, so
-storing it again as asset events would duplicate state and cost real
-money at scale).
-
-**View assets and static tables.** Athena views (`extra={"type":
-"athena_view"}`) and static tables are excluded from the matrix by
-default because they don't materialize. They remain visible in the
-Catalog tab. A future release may add a toggle to surface them with a
-fixed "external" indicator.
-
-**What you won't see.** Staleness is a "now" concept — the matrix
-shows historical truth at each date, so an asset materialized two days
-ago appears 🟢 on that day even if today's freshness check would mark
-it stale. Use the Catalog tab for current staleness.

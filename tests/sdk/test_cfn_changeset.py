@@ -170,6 +170,13 @@ def test_execute_waits_with_matching_waiter(cs_type, waiter):
     assert cfn.calls == [("execute_change_set", {"StackName": "s", "ChangeSetName": "cs"}), ("wait", waiter)]
 
 
+def test_execute_can_keep_a_failed_update_instead_of_rolling_back():
+    cfn = FakeCfn()
+    C.execute_change_set(cfn, stack_name="s", change_set={"ChangeSetName": "cs", "ChangeSetType": "UPDATE"},
+                         disable_rollback=True)
+    assert cfn.calls[0] == ("execute_change_set", {"StackName": "s", "ChangeSetName": "cs", "DisableRollback": True})
+
+
 def test_execute_failure_raises():
     cfn = FakeCfn(waiter_error=True)
     with pytest.raises(C.ChangeSetError, match="did not finish"):

@@ -13,6 +13,7 @@ import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
 import { HistoryChrome } from './HistoryChrome';
 import { DatePicker } from './DatePicker';
+import { historyDatePlaceholder, historyEmptyState, isHistoryWindowed } from '../utils/historyWindow';
 import { SortableHeader } from './SortableHeader';
 import { useAppStore } from '@/stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -202,7 +203,7 @@ export function AllRunsView({
             <DatePicker
                 value={filter.date}
                 onChange={d => onFilterChange({ ...filter, date: d })}
-                placeholder="All dates"
+                placeholder={historyDatePlaceholder(isHistoryWindowed(filter))}
                 ariaLabel="Filter by date"
             />
 
@@ -248,10 +249,8 @@ export function AllRunsView({
                 ) : total === 0 ? (
                     <EmptyState
                         icon={hasActiveFilters || search ? Search : Inbox}
-                        title={hasActiveFilters || search ? 'No matching runs' : 'No runs found'}
-                        description={hasActiveFilters || search
-                            ? 'Try adjusting your filters or search'
-                            : 'Pipeline runs will appear here when executions complete'}
+                        title={historyEmptyState('runs', !!(hasActiveFilters || search), isHistoryWindowed(filter)).title}
+                        description={historyEmptyState('runs', !!(hasActiveFilters || search), isHistoryWindowed(filter)).description}
                     />
                 ) : (
                     <table className="table-full" aria-label="Pipeline executions">

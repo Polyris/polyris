@@ -79,13 +79,22 @@
                 "StateMachineArn": "${pause_waiter_arn}",
                 "Input": {
                     "execution_name": "{% $states.input.execution_name %}",
-                    "pause_token": "{% $states.context.Task.Token %}"
+                    "pause_token": "{% $states.context.Task.Token %}",
+                    "generation": "{% $exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0 %}"
                 }
             },
             "HeartbeatSeconds": ${pause_heartbeat_seconds},
             "Output": "{% $states.input %}",
             "Next": "Update_Status_Running",
             "Catch": [
+                {
+                    "ErrorEquals": [
+                        "Superseded"
+                    ],
+                    "Comment": "The pause wait found the row owned by a newer generation (ADR #130 §2.1): end quietly.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
                 {
                     "ErrorEquals": [
                         "States.Timeout",
@@ -110,7 +119,7 @@
         },
         "Update_Status_Running": {
             "Type": "Task",
-            "Comment": "Update DynamoDB: status = running, record running_at timestamp and run_task_helper_arn. ConditionExpression guards against a ghost (prior-attempt) execution overwriting run_task_helper_arn or resetting the attempt counter for the current attempt. Uses <= (not strict <) for idempotency: same-attempt retries on DDB throttle can safely re-write the same values.",
+            "Comment": "Update DynamoDB: status = running, record running_at timestamp and run_task_helper_arn, and drop a pause_token a resume or the sweeper released, with its attention entry (the receiver of that signal writes the status after it, Principle #43). ConditionExpression guards against a ghost (prior-attempt) execution overwriting run_task_helper_arn or resetting the attempt counter for the current attempt. Uses <= (not strict <) for idempotency: same-attempt retries on DDB throttle can safely re-write the same values.",
             "Resource": "arn:aws:states:::dynamodb:updateItem",
             "Arguments": {
                 "TableName": "${tokens_table}",
@@ -119,12 +128,15 @@
                         "S": "{% $states.input.execution_name %}"
                     }
                 },
-                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, retry_attempt = :ra0, task_arn = :task_arn, task_type = :task_type REMOVE wait_delay_until_ms, wait_delay_started_ms",
-                "ConditionExpression": "attribute_not_exists(attempt) OR attempt <= :expectedAttempt",
+                "UpdateExpression": "SET #s = :status, running_at = :running_at, run_task_helper_arn = :helper_arn, task_run_id = :task_run_id, attempt = :attempt, retry_attempt = :ra0, task_arn = :task_arn, task_type = :task_type REMOVE wait_delay_until_ms, wait_delay_started_ms, pause_token, attention, attention_at",
+                "ConditionExpression": "(attribute_not_exists(attempt) OR attempt <= :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "running"
                     },
@@ -707,7 +719,11 @@
                     }
                 },
                 "UpdateExpression": "SET wait_delay_started_ms = :started_ms, wait_delay_until_ms = :until_ms",
+                "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":started_ms": {
                         "N": "{% $string($millis()) %}"
                     },
@@ -733,6 +749,14 @@
                 }
             ],
             "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer generation owns the row (ADR #130 §2.1): end quietly.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
                 {
                     "ErrorEquals": [
                         "States.ALL"
@@ -770,8 +794,11 @@
                     }
                 },
                 "UpdateExpression": "SET retry_attempt = :ra REMOVE wait_delay_until_ms, wait_delay_started_ms",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":ra": {
                         "N": "{% $string($retry_attempt) %}"
                     },
@@ -902,12 +929,15 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, #e = :error, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status",
                     "#e": "error"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "waiting_decision"
                     },
@@ -1024,11 +1054,14 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, finished_at = :finished, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "success"
                     },
@@ -1145,12 +1178,15 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, #r = :result, finished_at = :finished, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status",
                     "#r": "result"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "success"
                     },
@@ -1378,18 +1414,93 @@
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "Notify failed after retries - fail the task (visible error)",
-                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'NotifyDependentsFailed', 'Cause': $string($states.errorOutput)}} | %}",
-                    "Next": "Notify_Dependents_Failed"
+                    "Comment": "ADR #130 §6.2: a lost hint never fails the producer. The warning reaches the bell; the sweeper re-checks the dependants.",
+                    "Assign": {
+                        "notify_error": "{% $states.errorOutput %}"
+                    },
+                    "Output": "{% $states.input %}",
+                    "Next": "Warn_Notify_Dependents_Failed"
+                }
+            ]
+        },
+        "Warn_Notify_Dependents_Failed": {
+            "Type": "Task",
+            "Comment": "The row shape of polyris.coordination.records.warning_item (kind 'notify'); a contract test compares them.",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                    "execution_name": {
+                        "S": "{% '_notify_warn_notify_' & $states.input.execution_name %}"
+                    },
+                    "kind": {
+                        "S": "notify"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "pipeline_name": {
+                        "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+                    },
+                    "pipeline_execution": {
+                        "S": "{% $states.input.pipeline_execution %}"
+                    },
+                    "task_date": {
+                        "S": "{% $states.input.date %}"
+                    },
+                    "status": {
+                        "S": "failed"
+                    },
+                    "error": {
+                        "S": "{% $substring('notify_dependents failed: ' & $string($notify_error), 0, 32000) %}"
+                    },
+                    "finished_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "attention": {
+                        "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+                    },
+                    "attention_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Check_Has_Outlets",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Not even the warning could be written: still finish the producer; the sweeper covers the dependants.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Check_Has_Outlets"
                 }
             ]
         },
         "Check_Has_Outlets": {
             "Type": "Choice",
-            "Comment": "Emit asset events only if (a) task has outlets AND (b) caller did NOT set _suppress_asset_event=true. Suppression is used by cascade='none' backfills (ADR #57) to run an isolated backfill without triggering downstream consumers.",
+            "Comment": "Record a fact for every outlet. A cascade='none' backfill (ADR #57) records it too, with cascade 'none': AssetFanout starts no push consumer for it, but pull consumers of that partition see it (ADR #130 §6.1).",
             "Choices": [
                 {
-                    "Condition": "{% $exists($states.input.outlets) and $count($states.input.outlets) > 0 and ($exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event != true : true) %}",
+                    "Condition": "{% $exists($states.input.outlets) and $count($states.input.outlets) > 0 %}",
                     "Next": "Emit_Asset_Events"
                 }
             ],
@@ -1397,8 +1508,8 @@
         },
         "Emit_Asset_Events": {
             "Type": "Map",
-            "Comment": "Record asset events and notify consumers via SFN",
-            "Items": "{% $append([], $map($states.input.outlets, function($o) { {'name': $o.name, 'uri': $exists($o.uri) ? $o.uri : ''} })) %}",
+            "Comment": "Record one fact per outlet (ADR #130 §1). The asset-events stream does the rest: AssetFanout wakes waiting tasks and starts push consumers, so no consumer can fail this task.",
+            "Items": "{% ( $suppressed := $exists($states.input._suppress_asset_event) and $states.input._suppress_asset_event = true; $all := $exists($states.input.cascade_all) and $states.input.cascade_all = true; $cascade := $suppressed ? 'none' : ($all ? 'all' : 'auto'); $append([], $map($states.input.outlets, function($o) { {'name': $o.name, 'uri': $exists($o.uri) ? $o.uri : '', 'granularity': $exists($o.granularity) ? $o.granularity : '', 'cascade': $cascade} })) ) %}",
             "MaxConcurrency": 5,
             "ItemProcessor": {
                 "ProcessorConfig": {
@@ -1408,7 +1519,7 @@
                 "States": {
                     "Record_Asset_Event": {
                         "Type": "Task",
-                        "Comment": "Record asset event in DynamoDB for UI staleness and pull-based consumers",
+                        "Comment": "The fact, as polyris.coordination.records.asset_fact_item shapes it; contract tests compare the two. Its partition is the run's date (ADR #130 §1); execution_date keeps the raw key for older readers.",
                         "Resource": "arn:aws:states:::dynamodb:putItem",
                         "Arguments": {
                             "TableName": "${asset_events_table}",
@@ -1431,96 +1542,65 @@
                                 "execution_date": {
                                     "S": "{% $states.context.Execution.Input.date %}"
                                 },
+                                "partition_key": {
+                                    "S": "{% $states.context.Execution.Input.date %}"
+                                },
+                                "partition_date": {
+                                    "S": "{% ( $k := $states.context.Execution.Input.date; $day := 86400000; $contains($k, 'T') ? $substring($k, 0, 10) : $contains($k, '-W') ? ( $y := $number($substring($k, 0, 4)); $w := $number($substring($k, 6)); $jan4 := $toMillis($string($y) & '-01-04T00:00:00.000Z'); $dow := (($floor($jan4 / $day) + 3) % 7) + 1; $substring($fromMillis($jan4 - ($dow - 1) * $day + ($w - 1) * 7 * $day), 0, 10) ) : $length($k) = 7 ? $k & '-01' : $k ) %}"
+                                },
+                                "granularity": {
+                                    "S": "{% ( $k := $states.context.Execution.Input.date; $states.input.granularity != '' ? $states.input.granularity : $contains($k, 'T') ? 'hourly' : $contains($k, '-W') ? 'weekly' : $length($k) = 7 ? 'monthly' : 'daily' ) %}"
+                                },
+                                "cascade": {
+                                    "S": "{% $states.input.cascade %}"
+                                },
+                                "fact_version": {
+                                    "N": "2"
+                                },
                                 "ttl": {
                                     "N": "{% $string($floor($toMillis($now()) / 1000) + (${asset_event_ttl_days} * 24 * 60 * 60)) %}"
                                 }
-                            }
+                            },
+                            "ConditionExpression": "attribute_not_exists(event_time)"
                         },
                         "Output": "{% $states.input %}",
-                        "Next": "Notify_Asset_Consumers_SFN",
-                        "Retry": [
-                            {
-                                "ErrorEquals": [
-                                    "DynamoDB.ProvisionedThroughputExceededException"
-                                ],
-                                "IntervalSeconds": 1,
-                                "MaxAttempts": 3,
-                                "BackoffRate": 2
-                            }
-                        ]
-                    },
-                    "Notify_Asset_Consumers_SFN": {
-                        "Type": "Task",
-                        "Comment": "Notify pipelines subscribed to this asset (sync - ensure delivery). Uses aws-sdk:sfn:startSyncExecution because NotifyAssetConsumersSfn is EXPRESS — startExecution.sync:2 fails silently on Express SFN per CLAUDE.md.",
-                        "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
-                        "Arguments": {
-                            "StateMachineArn": "${notify_asset_consumers_sfn_arn}",
-                            "Input": "{% $string({'asset_name': $states.input.name, 'execution_date': $states.context.Execution.Input.date, 'source_task': $states.context.Execution.Input.task_name, 'source_dag': $states.context.Execution.Input.pipeline_name, 'cascade_all': $exists($states.context.Execution.Input.cascade_all) ? $states.context.Execution.Input.cascade_all : false}) %}"
-                        },
                         "End": true,
                         "Retry": [
                             {
                                 "ErrorEquals": [
-                                    "StepFunctions.ServiceException",
-                                    "StepFunctions.TooManyRequests",
+                                    "DynamoDB.ConditionalCheckFailedException"
+                                ],
+                                "Comment": "Another fact of this asset has the same event_time (same millisecond). Never overwrite it: retry, and $now() gives a later time.",
+                                "IntervalSeconds": 1,
+                                "MaxAttempts": 3,
+                                "JitterStrategy": "FULL"
+                            },
+                            {
+                                "ErrorEquals": [
+                                    "DynamoDB.ProvisionedThroughputExceededException",
+                                    "DynamoDB.ThrottlingException",
+                                    "DynamoDB.InternalServerError",
                                     "States.Timeout"
                                 ],
-                                "IntervalSeconds": 2,
-                                "MaxAttempts": 5,
-                                "BackoffRate": 2
+                                "IntervalSeconds": 1,
+                                "MaxAttempts": 3,
+                                "BackoffRate": 2,
+                                "JitterStrategy": "FULL"
                             }
                         ]
                     }
                 }
             },
             "Output": "{% $states.input %}",
-            "Next": "Notify_Asset_Subscribers",
-            "Catch": [
-                {
-                    "ErrorEquals": [
-                        "States.ALL"
-                    ],
-                    "Comment": "Asset event emission failed - fail the task",
-                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'EmitAssetEventsFailed', 'Cause': $string($states.errorOutput)}} | %}",
-                    "Next": "Notify_Dependents_Failed"
-                }
-            ]
-        },
-        "Notify_Asset_Subscribers": {
-            "Type": "Task",
-            "Comment": "Notify tasks waiting for these assets (pull-based, sync)",
-            "Resource": "arn:aws:states:::lambda:invoke",
-            "Arguments": {
-                "FunctionName": "${notify_asset_subscribers_lambda_arn}",
-                "Payload": {
-                    "outlets": "{% $states.input.outlets %}",
-                    "source_task": "{% $states.input.task_name %}",
-                    "source_dag": "{% $states.input.pipeline_name %}",
-                    "event_time": "{% $now() %}"
-                }
-            },
-            "Output": "{% $states.input %}",
             "Next": "Check_Orchestration_Token_Success",
-            "Retry": [
-                {
-                    "ErrorEquals": [
-                        "Lambda.ServiceException",
-                        "Lambda.TooManyRequestsException",
-                        "States.Timeout"
-                    ],
-                    "IntervalSeconds": 2,
-                    "MaxAttempts": 5,
-                    "BackoffRate": 2
-                }
-            ],
             "Catch": [
                 {
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "Asset notify failed - fail the task",
-                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'NotifyAssetSubscribersFailed', 'Cause': $string($states.errorOutput)}} | %}",
-                    "Next": "Notify_Dependents_Failed"
+                    "Comment": "A fact could not be recorded: warn, then end the run failed, because it did not deliver its assets. The task's row stays success (maintainer decision, 2026-11-14).",
+                    "Output": "{% $states.input ~> |$| {'error': {'Error': 'EmitAssetEventsFailed', 'Cause': $string($states.errorOutput)}} | %}",
+                    "Next": "Warn_Facts_Not_Recorded"
                 }
             ]
         },
@@ -1535,6 +1615,77 @@
             ],
             "Default": "Done"
         },
+        "Warn_Run_Left_Running": {
+            "Type": "Task",
+            "Comment": "Telling the run failed, and not because its token is closed: the run stays RUNNING, so the bell says so (ADR #135, Principle #38). The row shape of polyris.coordination.records.warning_item (kind 'coordination'); a contract test compares them.",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                    "execution_name": {
+                        "S": "{% '_notify_warn_coordination_' & $states.input.execution_name %}"
+                    },
+                    "kind": {
+                        "S": "coordination"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "pipeline_name": {
+                        "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+                    },
+                    "pipeline_execution": {
+                        "S": "{% $states.input.pipeline_execution %}"
+                    },
+                    "task_date": {
+                        "S": "{% $states.input.date %}"
+                    },
+                    "status": {
+                        "S": "failed"
+                    },
+                    "error": {
+                        "S": "{% $substring('The task succeeded, but its run could not be told, so it stays RUNNING until you stop it or it times out waiting for this task: ' & $string($states.input.callback_error), 0, 32000) %}"
+                    },
+                    "finished_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "attention": {
+                        "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+                    },
+                    "attention_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Done",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% $states.input %}",
+                    "Next": "Done"
+                }
+            ]
+        },
         "Send_Pipeline_Success": {
             "Type": "Task",
             "Comment": "Callback to pipeline: sendTaskSuccess with orchestration_token",
@@ -1547,15 +1698,34 @@
             "Catch": [
                 {
                     "ErrorEquals": [
-                        "States.ALL"
+                        "Sfn.TaskTimedOutException",
+                        "Sfn.InvalidTokenException",
+                        "Sfn.TaskDoesNotExistException"
                     ],
-                    "Comment": "Token expired, invalid, or already used - continue anyway",
+                    "Comment": "The token is closed: the run ended, or a restart's run moved on. The codes are polyris.coordination.wake.DEAD_TOKEN_CODES; a parity test compares them.",
                     "Output": "{% $states.input %}",
                     "Next": "Done"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Any other error leaves the run RUNNING: say so in the bell.",
+                    "Output": "{% $states.input ~> |$| {'callback_error': $states.errorOutput} | %}",
+                    "Next": "Warn_Run_Left_Running"
                 }
             ],
             "Next": "Done",
             "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Sfn.TaskTimedOutException",
+                        "Sfn.InvalidTokenException",
+                        "Sfn.TaskDoesNotExistException"
+                    ],
+                    "Comment": "A closed token is final: no retry.",
+                    "MaxAttempts": 0
+                },
                 {
                     "ErrorEquals": [
                         "States.TaskFailed",
@@ -1625,13 +1795,25 @@
                     }
                 },
                 "UpdateExpression": "SET notification_failed = :nf",
+                "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":nf": {
                         "BOOL": true
                     }
                 }
             },
             "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ConditionalCheckFailedException"
+                    ],
+                    "Comment": "A newer generation owns the row (ADR #130 §2.1): end quietly.",
+                    "Output": "{% $states.input %}",
+                    "Next": "Stale_Attempt_Superseded"
+                },
                 {
                     "ErrorEquals": [
                         "States.ALL"
@@ -1661,12 +1843,15 @@
                     }
                 },
                 "UpdateExpression": "SET #s = :status, #e = :error, finished_at = :finished, task_execution_arn = :taskArn",
-                "ConditionExpression": "attempt = :expectedAttempt",
+                "ConditionExpression": "(attempt = :expectedAttempt) AND (generation = :g OR attribute_not_exists(generation))",
                 "ExpressionAttributeNames": {
                     "#s": "status",
                     "#e": "error"
                 },
                 "ExpressionAttributeValues": {
+                    ":g": {
+                        "N": "{% $string($exists($states.context.Execution.Input.generation) ? $states.context.Execution.Input.generation : 0) %}"
+                    },
                     ":status": {
                         "S": "failed"
                     },
@@ -1794,6 +1979,77 @@
                 }
             ]
         },
+        "Warn_Facts_Not_Recorded": {
+            "Type": "Task",
+            "Comment": "The task succeeded but its facts are not recorded, so no task that waits for them will start: the bell says so (Principle #38). The row stays success and the run ends failed; a restart records them. The row shape of polyris.coordination.records.warning_item (kind 'fact'); a contract test compares them.",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                    "execution_name": {
+                        "S": "{% '_notify_warn_fact_' & $states.input.execution_name %}"
+                    },
+                    "kind": {
+                        "S": "fact"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "pipeline_name": {
+                        "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+                    },
+                    "pipeline_execution": {
+                        "S": "{% $states.input.pipeline_execution %}"
+                    },
+                    "task_date": {
+                        "S": "{% $states.input.date %}"
+                    },
+                    "status": {
+                        "S": "failed"
+                    },
+                    "error": {
+                        "S": "{% $substring('The task succeeded, but it could not record all of its asset facts (' & $join($states.input.outlets.name, ', ') & '), so tasks that wait for them may never start. Fix the cause, then restart the task to record them: ' & $states.input.error.Cause, 0, 32000) %}"
+                    },
+                    "finished_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "attention": {
+                        "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+                    },
+                    "attention_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Notify_Dependents_Failed",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% $states.input %}",
+                    "Next": "Notify_Dependents_Failed"
+                }
+            ]
+        },
         "Notify_Dependents_Failed": {
             "Type": "Task",
             "Comment": "Notify waiting tasks of failure (critical for trigger_rules like all_done)",
@@ -1848,7 +2104,7 @@
         },
         "Send_Pipeline_Failure": {
             "Type": "Task",
-            "Comment": "Callback to pipeline: sendTaskFailure",
+            "Comment": "Callback to pipeline: sendTaskFailure. The run gets run_task's own error and cause first; the failure handler answers again after Fail_State, refused as closed, or warns when no answer got through (ADR #135).",
             "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
             "Arguments": {
                 "TaskToken": "{% $states.input.orchestration_token %}",
@@ -1860,13 +2116,22 @@
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "Token expired, invalid, or already used - continue to fail state",
+                    "Comment": "A closed token, or any other error: the failure handler answers the run after Fail_State.",
                     "Output": "{% $states.input %}",
                     "Next": "Fail_State"
                 }
             ],
             "Next": "Fail_State",
             "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Sfn.TaskTimedOutException",
+                        "Sfn.InvalidTokenException",
+                        "Sfn.TaskDoesNotExistException"
+                    ],
+                    "Comment": "A closed token is final: no retry.",
+                    "MaxAttempts": 0
+                },
                 {
                     "ErrorEquals": [
                         "States.TaskFailed",
@@ -1892,7 +2157,7 @@
         },
         "Get_Decision_Timeout": {
             "Type": "Task",
-            "Comment": "Read the global decision-wait timeout from the reserved __global_settings__ registry record (ADR #103 1b). One value for the whole deployment; the Team UI can edit it, the free tier shows it read-only. Degrades to the 18000s (5h) default on any miss so the wait always has a value.",
+            "Comment": "Read the global decision-wait timeout from the reserved __global_settings__ registry record (ADR #103 1b). One value for the whole deployment. Degrades to the 18000s (5h) default on any miss so the wait always has a value.",
             "Resource": "arn:aws:states:::dynamodb:getItem",
             "Arguments": {
                 "TableName": "${pipeline_registry_table}",

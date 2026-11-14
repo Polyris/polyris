@@ -341,13 +341,13 @@ setting:
 
 | Path | Why public |
 |------|-----------|
-| `GET /api/health` and `GET /api/health/simple` | Load-balancer liveness probes; must work without credentials |
+| `GET /api/health` and `GET /api/health/live` | Probes and monitors must work without credentials. Without a valid token, `/api/health` answers the status words only; its details (messages, resource names, `findings`) need one |
 | `GET /api/metrics` | Ops metrics endpoint; scraped by monitoring agents |
 | `GET /api/action/*` | Link-button callbacks (skip / fail / restart) — delivered without a bearer token; the mutations they allow are documented in [ADR #66](../reference/adr-66-per-token-scopes.md) |
 
 ### Everything else requires a Cognito bearer token (or a PAT)
 
-All other routes — pipelines, tasks, executions, backfill, settings, notifications
+All other routes — pipelines, tasks, executions, settings, notifications
 — require `Authorization: Bearer <cognito-access-token>`. PAT (Personal Access
 Token) support is available; see [ADR #65](../reference/adr-65-api-tokens-and-auth-enforcement.md).
 

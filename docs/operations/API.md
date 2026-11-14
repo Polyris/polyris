@@ -226,7 +226,7 @@ children are not embedded.
 ### Execution Actions
 
 ```http
-POST /api/execution-stop?id={execution_arn}
+POST /api/execution-stop?pipeline_execution={pipeline_execution}
 POST /api/execution-pause?id={pipeline_execution}
 POST /api/execution-resume?id={pipeline_execution}
 POST /api/execution-extend?id={pipeline_execution}   # +12h pause timeout
@@ -247,6 +247,10 @@ GET /api/execution-parent?id={execution_name}
 GET /api/notifications?limit=20&hours=4
 ```
 
+Task failures, tasks waiting for a decision and warnings, newest first. A warning
+(`"type": "warning"`) carries a `kind` from `WarningKind` and is listed by the time
+it was written, whatever the date of the task it is about.
+
 ---
 
 ## Settings
@@ -263,10 +267,34 @@ applies (ADR #114).
 ## Health
 
 ```http
-GET /api/health          # Full check (DDB, SFN, circuit breaker)
-GET /api/health/simple   # Liveness check
+GET /api/health          # Checks DynamoDB, Step Functions, failures, circuit breakers, coordination
+GET /api/health/live     # Liveness: {"status": "ok"}, no downstream call
 GET /api/metrics         # System metrics
 ```
+
+`/api/health` answers 200 while its status is `healthy` or `degraded`, and 503 when DynamoDB or Step Functions cannot be reached. Task coordination that needs attention, judged from the sweeper's last self-check, makes it `degraded`. To monitor coordination, read `checks.coordination.status`: `healthy` or `unhealthy`.
+
+How much it shows depends on the caller. Without a valid token while auth is on, you get the status words only:
+
+```json
+{"status": "degraded", "timestamp": "2026-11-14T17:40:02.118123+00:00", "response_time_ms": 41.2, "detail": "minimal",
+ "checks": {"dynamodb": {"status": "healthy"}, "stepfunctions": {"status": "healthy"},
+            "recent_failures": {"status": "healthy"}, "circuit_breakers": {"status": "healthy"},
+            "coordination": {"status": "unhealthy"}}}
+```
+
+With a valid token, or with `AUTH_ENABLED=false`, you get `"detail": "full"`, each check's details, and `findings`. These are the problems the console's System status shows:
+
+```json
+"findings": [{"title": "Asset event delivery is off",
+              "resource": "The stream mapping of polyris-dev-polyris-asset-fanout is Disabled.",
+              "changed_at": "2026-11-14T17:18:00.000Z",
+              "impact": "Tasks that wait for an asset start up to 40 minutes late, and pipelines scheduled on an asset up to an hour late.",
+              "fix": "Re-enable the mapping: in the Lambda console, open polyris-dev-polyris-asset-fanout, then Configuration → Triggers.",
+              "command": "aws lambda update-event-source-mapping --uuid 48529b7b-abda-4306-8550-8d3bbc1391c3 --enabled --region us-east-1"}]
+```
+
+Every finding has a `title`; the other fields appear only when they apply. `changed_at` is when AWS last changed the resource.
 
 ---
 

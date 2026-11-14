@@ -63,18 +63,19 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 **Symptoms:** Pipeline shows running but no tasks are active.
 
 **Check:**
-1. Step Functions execution status:
+1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended. The run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
+2. Step Functions execution status:
    ```bash
    aws stepfunctions list-executions \
      --state-machine-arn "arn:aws:states:..." \
      --status-filter RUNNING
    ```
 
-2. Check for orphaned executions in DynamoDB.
+3. Check for orphaned executions in DynamoDB.
 
 **Fix:** Stop the stuck execution via Console UI or API:
 ```bash
-curl -X POST ${API_URL}/api/execution-stop?id={arn} \
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -84,34 +85,24 @@ curl -X POST ${API_URL}/api/execution-stop?id={arn} \
 
 ### Task stuck in "waiting"
 
-**Symptoms:** Task shows "waiting" but dependencies are complete.
+**Symptoms:** a task shows "waiting" although you expect its dependencies or assets to be in place.
 
 **Check:**
-1. **Dependencies tab** in task modal — are all upstreams success/skipped?
-
-2. **Subscription exists** in DynamoDB:
+1. **Why it waits.** Each check of the task logs one line with its `verdict` and `reasons`, such as `waiting for 1 dependencies` or the asset dates still missing:
    ```bash
-   aws dynamodb scan \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-dep-subscriptions \
-     --filter-expression "contains(subscriber_name, :task)" \
-     --expression-attribute-values '{":task": {"S": "your-task"}}'
+   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-reconcile --since 2h \
+     --filter-pattern '"<execution_name>"'
    ```
+   The execution name is in the task modal: `{task}-{date}-{run suffix}`.
+2. **Dependencies tab** in the task modal: are the upstream tasks finished, in a state the trigger rule accepts?
+3. **Assets:** a `wait_for` asset needs a fact that serves the run's date (see [ASSETS.md § Granularity](../features/ASSETS.md#granularity)). A fact for another date, today's for instance, does not count.
+4. **Engine health:** an amber **System** pill in the console's header, or `checks.coordination.status` = `unhealthy` in `GET /api/health`, means waiting tasks may not be re-checked; see [The System pill says "needs attention"](#the-system-pill-says-needs-attention).
+5. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
 
-3. **notify_dependents_helper** executed:
-   - Open upstream task's wrapper execution in Step Functions Console
-   - Check if "NotifyDependents" state ran successfully
-
-4. **Wait token is valid** — tokens expire after 1 year, but executions timeout sooner.
-
-**Fix:** 
-- If subscription missing: restart the pipeline for this date
-- If notify didn't run: check upstream task's failure handler
-- Emergency: manually send task token:
-  ```bash
-  aws stepfunctions send-task-success \
-    --task-token "aqc..." \
-    --task-output '{"status": "success"}'
-  ```
+**Fix:**
+- A dependency or asset is missing: run its producer for that date, or mark the upstream task successful in the console; its facts are dated by its own run.
+- Everything is in place: the sweeper re-checks a waiting task 10, 20, then every 30 minutes and starts it at the next check. A `sweeper` warning in the bell says the regular wake-up was lost on the way.
+- The task should not wait at all: skip it or mark it successful from the task modal.
 
 ---
 
@@ -241,28 +232,41 @@ Check *why* the upstream was skipped:
      --limit 5
    ```
 
-3. **For AND triggers** — check queued events:
+3. **The fan-out handled the event** — asset-fanout logs every fact it reads and every pipeline it starts:
    ```bash
-   aws dynamodb query \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-queued-asset-events \
-     --key-condition-expression "dag_id_date = :key" \
-     --expression-attribute-values '{":key": {"S": "your-dag#2026-01-15"}}'
+   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-asset-fanout --since 1h \
+     --filter-pattern '"your-asset"'
    ```
 
 **Fix:**
 - If subscription missing: re-deploy consumer pipeline
-- If event missing: manually trigger asset or re-run producer
-- If AND queue incomplete: trigger missing assets or skip in queue
+- If event missing: re-run the producer. A `fact` warning in the bell means the producer succeeded but its fact was not recorded; fix the cause it names, then restart the producer task
+- If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
 
 ---
 
-### Asset shows stale in UI
+## Coordination Issues
 
-**Symptoms:** Asset materialized recently but UI shows old timestamp.
+### The System pill says "needs attention"
 
-**Check:** Asset events table has the latest event.
+The **System** pill in the console's header turns amber when task coordination or the console's own checks need attention, and a toast names each new problem once. Click the pill: the **System status** panel lists every problem with the resource it concerns, its impact, its fix and a command you can copy. After a fix, the sweeper's next check clears it within 5 minutes; reopen the panel to see it at once. With a valid token, or with auth off, `GET /api/health` returns the same list in `findings`, commands included, for an operator without the console.
 
-**Fix:** Asset events are eventually consistent. Wait 30s or refresh. If persists, check `notify_asset_consumers` SFN execution history and `asset-events` DynamoDB table.
+While a problem shows, tasks may start late. The panel tells you what to do; the table says what still works.
+
+| Problem | What still works, and what else to know |
+|---------|-----------------------------------------|
+| No check has run yet | Normal for the first 5 minutes after an install or upgrade. Tasks still start from their signals |
+| The periodic re-check is not running | Tasks still start from their signals. Only a task that missed its signal waits until its timeout. A sweeper that fails on every run shows its error in its logs |
+| Asset event delivery is off, or is not set up | The sweeper still starts waiting tasks at their checks, up to 40 minutes late, and its hourly catch-up starts asset-scheduled pipelines. A mapping that a deploy is creating or updating counts only once it stays so for 15 minutes. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
+| Asset event delivery is failing | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Records wait in the stream for 24 hours, and the sweeper still wakes waiting tasks at their checks |
+| Asset events are not recorded for delivery | The stream of the asset-events table was turned off outside polyris. Turning it on again makes a new stream, so asset-fanout needs a new trigger on it, and the old trigger goes |
+| Asset event delivery, or asset event recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
+| Waiting tasks are behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
+| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step |
+| The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
+| The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
+
+A grey **System · status unknown** means the console could not read `/api/health` at all; the console retries every 2 minutes, and a "Connection lost" banner usually shows too.
 
 ---
 
@@ -358,21 +362,6 @@ aws cloudformation list-stacks \
 
 ## Lambda Issues
 
-### evaluate_deps timeout
-
-**Symptoms:** Dependency evaluation takes too long.
-
-**Check:**
-1. Number of dependencies — large fan-in can be slow
-2. DynamoDB throttling — check CloudWatch metrics
-
-**Fix:** 
-- Increase Lambda timeout (default 30s)
-- Enable DynamoDB auto-scaling
-- Reduce dependency fan-in if possible
-
----
-
 ### console_api 502 errors
 
 **Symptoms:** API returns 502 Bad Gateway.
@@ -394,7 +383,7 @@ aws cloudformation list-stacks \
 # Via Console UI: Stop button
 
 # Via API:
-curl -X POST ${API_URL}/api/execution-stop?id={arn} \
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 
 # Via AWS CLI:

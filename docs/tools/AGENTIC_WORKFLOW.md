@@ -101,11 +101,24 @@ common path at seconds, which is the difference between a gate that runs and one
 that gets skipped "this once". `--full` forces everything; outside a git
 checkout it runs full, because it cannot scope safely.
 
+`--hook` is the light mode the Stop hook uses, because every session in the
+checkout runs it at every stop:
+
+- It does nothing when the checkout is unchanged since the last green run, from
+  any session or mode. Without that, a second session re-ran the whole gate on
+  the first session's unchanged work at each of its stops.
+- It runs pytest without the coverage floor, and leaves out the UI build. Run
+  the script without flags (or `make test-cov`) before you commit; CI runs both.
+
+Every mode waits for a run already going on the same checkout instead of
+starting a second one (where `flock` exists), then usually finds that run's
+green result.
+
 ### `.claude/settings.json`
 
-- **Stop** — runs `verify-changed.sh` when the agent finishes a turn. Reporting
-  work as done on red gates stops being possible rather than discouraged. This is
-  CLAUDE.md #21 and #23 enforced instead of trusted.
+- **Stop** — runs `verify-changed.sh --hook` when the agent finishes a turn.
+  Reporting work as done on red gates stops being possible rather than
+  discouraged. This is CLAUDE.md #21 and #23 enforced instead of trusted.
 - **PreToolUse (Bash)** — runs `scripts/guard-destructive.sh` before every shell
   command.
 

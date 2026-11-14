@@ -10,6 +10,12 @@ You need the AWS SAM CLI, Node.js 20.19+, Python 3.11+ and AWS credentials.
 git clone https://github.com/Polyris/polyris.git && cd polyris
 pip install -e .
 
+# The console and coordination Lambdas install polyris from their requirements.txt,
+# pinned to the last release: point both at this checkout. Don't commit this change;
+# undo it with `git checkout -- sam/lambdas/*/requirements.txt` before you commit.
+sed -i "s|^polyris @ .*|polyris @ file://$PWD|" \
+  sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+
 cd sam
 cp samconfig.toml.example samconfig.toml   # set stack_name, Namespace, Stage, profile
 sam build && sam deploy
@@ -21,7 +27,7 @@ npm ci && npm run build
 
 `ui/deploy.sh` reads the stack outputs and writes `config.js`. A stack deployed this way isn't tagged as a `polyris-up` platform, so set `stack_name` in `pipelines/config.py` (or pass `--stack`) when you deploy pipelines to it ([CONFIGURATION.md](../reference/CONFIGURATION.md)).
 
-Namespace + Stage may be at most 25 characters (IAM role names are capped at 64).
+Namespace + Stage may be at most 30 characters (IAM role names are capped at 64).
 
 ## Test the release path
 

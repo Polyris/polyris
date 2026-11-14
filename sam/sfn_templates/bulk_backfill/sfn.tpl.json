@@ -65,6 +65,7 @@
       "MaxConcurrency": 1,
       "ItemSelector": {
         "tier": "{% $states.context.Map.Item.Value %}",
+        "tier_index": "{% $states.context.Map.Item.Index %}",
         "backfill_id": "{% $states.input.backfill_id %}",
         "options": "{% $states.input.options %}",
         "skip_task_ids": "{% $exists($states.input.skip_task_ids) ? $states.input.skip_task_ids : [] %}",
@@ -112,6 +113,7 @@
             "MaxConcurrency": "{% $exists($states.input.options.max_parallel) ? $number($states.input.options.max_parallel) : 5 %}",
             "ItemSelector": {
               "backfill_id": "{% $states.input.backfill_id %}",
+              "tier_index": "{% $states.input.tier_index %}",
               "partition_key": "{% $states.context.Map.Item.Value.partition_key %}",
               "target_pipeline_sfn_arn": "{% $states.context.Map.Item.Value.sfn_arn %}",
               "target_pipeline": "{% $states.context.Map.Item.Value.pipeline %}",
@@ -173,10 +175,10 @@
                 "StartChildSFN": {
                   "Type": "Task",
                   "Resource": "arn:aws:states:::states:startExecution.sync:2",
-                  "Comment": "Start child pipeline execution for this item. .sync2 waits for terminal state and returns Output.Status. Pipeline + ARN come from the item, so cross-pipeline upstream runs against its own state machine.",
+                  "Comment": "Start child pipeline execution for this item. .sync2 waits for terminal state and returns Output.Status. Pipeline + ARN come from the item, so cross-pipeline upstream runs against its own state machine. The name is polyris.coordination.run_name(pipeline, partition, 'bf', backfill_id:tier): its last 8 characters hash all of them, so the task executions of different pipelines, tiers and backfills never share a name (B-X1).",
                   "Arguments": {
                     "StateMachineArn": "{% $states.input.target_pipeline_sfn_arn %}",
-                    "Name": "{% $states.input.target_pipeline & '-' & $states.input.partition_key & '-bf-' & $substring($states.input.backfill_id, 3, 8) %}",
+                    "Name": "{% ( $p := $states.input.target_pipeline; $d := $states.input.partition_key; $k := 'bf'; $disc := $states.input.backfill_id & ':' & $string($states.input.tier_index); $clean := function($v) { $replace($replace($v, /[^A-Za-z0-9_-]+/, '-'), /^-+|-+$/, '') }; $digest := $substring($hash($join([$p, $d, $k, $disc], '\\u001f'), 'SHA-256'), 0, 8); $tail := '-' & $clean($d) & '-' & $k & '-' & $digest; $replace($substring($clean($p), 0, 80 - $length($tail)), /-+$/, '') & $tail ) %}",
                     "Input": {
                       "backfill_id": "{% $states.input.backfill_id %}",
                       "partition_key": "{% $states.input.partition_key %}",

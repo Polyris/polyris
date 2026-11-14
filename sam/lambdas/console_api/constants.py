@@ -102,10 +102,9 @@ class Limits:
     FEED_MIN_ROWS_PER_DAY = 500      # either feed, per day of the fan-out
 
     # Time limits
-    SLA_DAYS = 14
+    SLA_DAYS = 14  # the History window the UI names: ui/src/utils/historyWindow.ts (parity test there)
     PARALLEL_DATE_QUERIES = 14      # Worker cap when fanning date queries out one-per-day
     TTL_DAYS = 30
-    TTL_QUEUED_DAYS = 7             # TTL for queued_asset_events
     MAX_NOTIFICATION_HOURS = 168    # Max 7 days for notifications
     
     # String limits

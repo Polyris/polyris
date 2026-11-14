@@ -176,3 +176,34 @@ class TestBatchMode:
         out = index.handler({'pipeline_name': 'acme-daily', 'failure': failure}, None)
         assert out['delivered'] is True
         assert out['channels'] == []
+
+
+class TestOverlayImportGuard:
+    """notifiers.py's optional `ee` import (Principle #44): only the overlay's own absence is the free build."""
+
+    @staticmethod
+    def _load(monkeypatch, tmp_path, init=None):
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        for name in [m for m in sys.modules if m == "ee" or m.startswith("ee.")]:
+            monkeypatch.delitem(sys.modules, name)
+        if init is None:
+            monkeypatch.setitem(sys.modules, "ee", None)        # `import ee` -> ModuleNotFoundError(name='ee')
+        else:
+            (tmp_path / "ee").mkdir()
+            (tmp_path / "ee" / "__init__.py").write_text(init)
+            monkeypatch.syspath_prepend(str(tmp_path))
+        spec = importlib.util.spec_from_file_location("notifiers_guard_probe",
+                                                      Path(__file__).resolve().parent / "notifiers.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_without_the_overlay_the_free_channels_load(self, monkeypatch, tmp_path):
+        assert "webhook" in self._load(monkeypatch, tmp_path).NOTIFIERS
+
+    def test_a_broken_overlay_fails_loudly(self, monkeypatch, tmp_path):
+        with pytest.raises(ModuleNotFoundError, match="slack_sdk"):
+            self._load(monkeypatch, tmp_path, init="import slack_sdk_missing_for_the_test as slack_sdk\n")

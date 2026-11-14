@@ -246,3 +246,80 @@ describe('formatFreshnessWindowLong', () => {
         expect(formatFreshnessWindowLong(48)).toBe('2 days');
     });
 });
+
+
+import { formatWaitForEntry } from './formatters';
+import { getWaitingReason } from './constants';
+
+// wait_for=[a | b] exactly as a live pipeline-tokens row stored it (polyris-cr7-dev, 2026-11-14).
+const LIVE_OR_GROUP = "[{\"operator\":\"OR\",\"assets\":[{\"asset_name\":\"smoke/a\",\"freshness_hours\":null},{\"asset_name\":\"smoke/b\",\"freshness_hours\":null}]}]";
+
+describe('formatWaitForEntry', () => {
+    it('names a plain asset', () => {
+        expect(formatWaitForEntry({ asset_name: 'orders', freshness_hours: 24 })).toBe('orders');
+    });
+
+    it('joins an OR group with | and an AND group with &', () => {
+        const [group] = JSON.parse(LIVE_OR_GROUP);
+        expect(formatWaitForEntry(group)).toBe('smoke/a | smoke/b');
+        expect(formatWaitForEntry({ operator: 'AND', assets: [{ asset_name: 'a' }, { asset_name: 'b' }] })).toBe('a & b');
+    });
+
+    it('parenthesises a nested group', () => {
+        const entry = { operator: 'OR' as const, assets: [{ asset_name: 'a' }, { operator: 'AND' as const, assets: [{ asset_name: 'b' }, { asset_name: 'c' }] }] };
+        expect(formatWaitForEntry(entry)).toBe('a | (b & c)');
+    });
+
+    it('gives an empty label to an entry without a name', () => {
+        expect(formatWaitForEntry({})).toBe('');
+    });
+});
+
+describe('getWaitingReason with a wait_for group', () => {
+    it('names the group\'s assets', () => {
+        expect(getWaitingReason({ status: 'waiting', wait_for: LIVE_OR_GROUP })).toBe('Waiting for assets: smoke/a | smoke/b');
+    });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// formatAgo — the System status panel's own relative times. formatAgo
+// keeps the tiers of the backend's ago(), which writes the findings' texts.
+// ────────────────────────────────────────────────────────────────────────────
+
+import { formatAgo } from './formatters';
+
+describe('formatAgo', () => {
+    const now = Date.parse('2026-11-14T12:00:00Z');
+
+    it('counts minutes under 120 minutes', () => {
+        expect(formatAgo('2026-11-14T11:59:30Z', now)).toBe('0 min ago');
+        expect(formatAgo('2026-11-14T11:38:00Z', now)).toBe('22 min ago');
+        expect(formatAgo('2026-11-14T10:00:01Z', now)).toBe('119 min ago');
+    });
+
+    it('counts hours under 48 hours', () => {
+        expect(formatAgo('2026-11-14T10:00:00Z', now)).toBe('2 h ago');
+        expect(formatAgo('2026-11-12T12:00:01Z', now)).toBe('47 h ago');
+    });
+
+    it('counts whole days from 48 hours', () => {
+        expect(formatAgo('2026-11-12T12:00:00Z', now)).toBe('2 days ago');
+        expect(formatAgo('2026-11-09T11:00:00Z', now)).toBe('5 days ago');
+    });
+
+    it('reads a future time (clock skew) as 0 min ago', () => {
+        expect(formatAgo('2026-11-14T12:05:00Z', now)).toBe('0 min ago');
+    });
+
+    it('is null for a missing or unparseable time', () => {
+        expect(formatAgo(null, now)).toBeNull();
+        expect(formatAgo(undefined, now)).toBeNull();
+        expect(formatAgo('', now)).toBeNull();
+        expect(formatAgo('not-a-date', now)).toBeNull();
+    });
+
+    it('measures from the current time by default', () => {
+        // The file's fake clock stands at 2026-05-08T14:00:00Z.
+        expect(formatAgo('2026-05-08T13:15:00Z')).toBe('45 min ago');
+    });
+});

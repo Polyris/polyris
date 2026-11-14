@@ -29,17 +29,18 @@ class PipelineTokens:
     """Fields on the pipeline-tokens DDB table.
 
     PK: execution_name (S)
-    GSIs:
-      - backfill-id-index (backfill_id, HASH)
-      - date-pipeline-index (date HASH, pipeline_name RANGE)
+    GSIs (sam/template.yaml is the source):
       - pipeline-execution-index (pipeline_execution HASH)
-      - parent-execution-index (parent_execution_id HASH)
+      - date-pipeline-index (date HASH, pipeline_name RANGE)
+      - pipeline-date-index (pipeline_name HASH, date RANGE)
+      - backfill-id-index (backfill_id HASH; sparse)
+      - attention-index (attention HASH, attention_at RANGE; sparse, ADR #130)
     """
     # ── Identity / keys ────────────────────────────────────────────────────
     EXECUTION_NAME = 'execution_name'  # PK
     BACKFILL_ID = 'backfill_id'  # GSI key (sparse — only on Backfill records)
     PIPELINE_EXECUTION = 'pipeline_execution'  # GSI key — pipeline-level execution UUID
-    PARENT_EXECUTION_ID = 'parent_execution_id'  # GSI key — parent SFN execution (was run_id)
+    PARENT_EXECUTION_ID = 'parent_execution_id'  # parent SFN execution (was run_id); no index
     DATE = 'date'  # GSI partition key
     PIPELINE_NAME = 'pipeline_name'  # GSI sort key
     TASK_NAME = 'task_name'

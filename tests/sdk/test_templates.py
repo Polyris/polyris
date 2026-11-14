@@ -288,10 +288,10 @@ def test_backfill_orchestrator_template_removed():
 def test_route_table_completeness():
     """Free (open-core) routes are always registered.
 
-    Runs in both the full build (63 routes) and the OSS-stripped build
-    (27 free routes), so it asserts the *free subset* is present rather than an
-    exact count. The full 63-route surface (incl. Team routes) is pinned by
-    ee/team/tests/test_route_table_ee.py, which only runs when `ee` is present.
+    Runs in both the full build and the OSS-stripped build, so it asserts the
+    *free subset* is present rather than an exact count. The full surface
+    (incl. Team routes) is checked by ee/team/tests/test_route_table_ee.py,
+    which only runs when `ee` is present.
     The asset console route `GET /api/assets` moved to Team (ADR #105); task
     intervention (skip/fail/success/stop/restart[/retry]) and execution control
     (stop/pause/resume/extend) are free (ADR #110). See ADR #98.

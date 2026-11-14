@@ -1,8 +1,6 @@
 # ADR #128 — `mark_success` wakes `wait_for` subscribers via direct Lambda invoke
 
-> **Status:** ACCEPTED — extends the natural-completion wake-up path to cover
-> the manual-intervention path, so human `mark_success` and automatic task
-> success behave identically for downstream pull-waiters.
+> **Superseded by [ADR #130](adr-130-coordination-reconciler.md).** `mark_success` now only writes the asset fact; the asset-events stream wakes every consumer, so no writer invokes a notifier directly. Do not use as reference. Kept for git-history readability only.
 
 ## Context
 

@@ -4,7 +4,7 @@
 
 polyris pipelines must be registered in DynamoDB tables for:
 - **UI discovery** - Console shows pipelines from `pipeline_registry`
-- **Asset triggers** - `notify_asset_consumers` SFN queries `asset_subscriptions`
+- **Asset triggers** - the asset-fanout function queries `asset_subscriptions`
 
 Registration happens automatically in three ways:
 

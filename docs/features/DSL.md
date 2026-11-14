@@ -146,23 +146,20 @@ from polyris.assets import AssetAny
 asset_a = Asset("processed/acme")
 asset_b = Asset("processed/ulta")
 
-# Single asset — AND-of-one: any ONE materialization satisfies it, but the
-# trigger itself is deduplicated per calendar day (a producer that
-# materializes asset_a more than once on the same day only triggers this
-# consumer once — see docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md).
+# Single asset: one run per date. A producer that materializes asset_a
+# twice for the same date starts this consumer once, for that date.
 DAG(schedule=asset_a)
 
-# Multiple assets - ALL required (AND, also day-deduplicated)
+# Multiple assets, ALL required (AND): one run per date, once every asset
+# has a fact that serves it (see ASSETS.md, Granularity).
 DAG(schedule=[asset_a & asset_b])
 
-# Multiple assets - ANY triggers (OR) — fires on every materialization of
-# either asset, no day-scoped dedup at all.
+# Multiple assets, ANY triggers (OR): one run per materialization of either.
 DAG(schedule=[asset_a | asset_b])
 
-# Single asset, but fire on EVERY materialization (no day-scoped dedup) —
-# explicit AssetAny with one item, rather than the bare-asset shorthand
-# above. Use this for a producer that runs more than once a day by design
-# (hourly, etc.) where every run should recompute the consumer.
+# Single asset, but one run per materialization: an explicit AssetAny of one
+# item. Use it for a producer that runs more than once a day by design,
+# where every run should recompute the consumer.
 DAG(schedule=AssetAny([asset_a]))
 ```
 
@@ -376,7 +373,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `task_id` | str | (inferred from function name) | Override the auto-inferred task id |
+| `task_id` | str | (inferred from function name) | Override the auto-inferred task id. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
 | `execution_timeout` | timedelta | 24 hours | Max task execution time |
 | `orchestration_timeout` | timedelta | same as `execution_timeout` | Max time waiting for dependencies |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
@@ -389,7 +386,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `role` | str | `"same"` | Cross-account role key from `config.py` roles dict (`'acq'`, `'etl'`, `'processing'`, `'orchestration'`, `'same'`) |
 | `outlets` | list[Asset] | `[]` | Assets produced by this task |
 | `inlets` | list[Asset] | `[]` | Assets consumed by this task |
-| `wait_for` | list[Asset] | `[]` | Assets to wait for before running: `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
+| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
 
 ```python
 from datetime import timedelta
@@ -604,11 +601,14 @@ processed = Asset(
     uri="s3://bucket/processed/acme/"
 )
 
-# Asset with group (for UI organization)
+# Asset with a group
 processed = Asset(
     name="processed/acme",
     group="acme"
 )
+
+# Asset with a weekly partition (default: daily)
+prices = Asset(name="pricing/prices", granularity="weekly")
 ```
 
 ### Producer Task (outlets)
@@ -655,7 +655,7 @@ DATA the task processes, use `variables`.
 with DAG(
     "my-pipeline",
     variables={
-        "current_date": "{% $substringBefore($now(), 'T') %}",
+        "run_id": "{% $states.context.Execution.Name %}",
         "environment": "prod",
     }
 ) as dag:
@@ -665,6 +665,24 @@ with DAG(
 `variables` values may be static strings/numbers, or JSONata expressions (the
 `{% ... %}` form) evaluated when the pipeline execution starts — the resolved
 values are then available to every task in the run.
+
+### Date variables
+
+A run has one date, the same for every task (ADR #133). It is the date the run was started for: the one you pick in the console, or, for a run an asset started, the date of that asset's fact. A run its schedule started gets the UTC day the schedule fired it for, even if it started after midnight; a run started any other way gets the UTC day it started.
+
+Every task's `variables` also carry the run's date in several forms; a variable of yours with the same name wins. For a run dated 2025-07-25:
+
+| Variable | Value |
+|----------|-------|
+| `current_date`, `date_iso` | `"2025-07-25"` |
+| `date_compact` | `"20250725"` |
+| `date_slash` | `"2025/07/25"` |
+| `date_underscore` | `"2025_07_25"` |
+| `year`, `month`, `day` | `"2025"`, `"07"`, `"25"` |
+| `day_of_week` | `"friday"` |
+| `previous_date`, `next_date` | `"2025-07-24"`, `"2025-07-26"` |
+| `minus_7_days`, `minus_14_days`, `minus_30_days` | `"2025-07-18"`, `"2025-07-11"`, `"2025-06-25"` |
+| `minus_7_days_compact`, `minus_30_days_compact` | `"20250718"`, `"20250625"` |
 
 ---
 

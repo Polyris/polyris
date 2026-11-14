@@ -1,16 +1,26 @@
 """Health Check routes for Console API.
 
-Provides system health status for monitoring and alerting.
+Provides system health status for monitoring and alerting. The routes are
+public (auth.PUBLIC_PATH_PREFIXES), so probes and monitors need no
+credentials. GET /api/health shows each caller what it may see:
+    * a caller with a valid token, or any caller while auth is off, gets every
+      check's details and the findings the console's System status shows
+      (detail "full");
+    * anyone else gets each check's status word only (detail "minimal"): the
+      details hold AWS error text, resource names and the account ID.
+The status code is the same in both: 200 healthy or degraded, 503 unhealthy.
 """
 from datetime import datetime, timezone, timedelta
-from typing import Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from botocore.exceptions import ClientError, BotoCoreError
 from boto3.dynamodb.conditions import Key, Attr
 
+from auth import is_auth_enabled, optional_principal
 from config import sfn
 from constants import Limits
-from dal import executions_repo, pipelines_repo, circuit_breakers_repo
+from polyris.coordination import sweep
+from dal import api_tokens_repo, executions_repo, pipelines_repo, circuit_breakers_repo
 from response import cors_response
 from logger import log
 from utils import should_skip_token_row
@@ -20,6 +30,20 @@ from utils import should_skip_token_row
 HEALTHY = 'healthy'
 DEGRADED = 'degraded'
 UNHEALTHY = 'unhealthy'
+
+# How much of /api/health the caller sees (module docstring).
+FULL = 'full'
+MINIMAL = 'minimal'
+
+#: The console's own findings for an AWS service it cannot reach: (check, title, impact).
+_UNREACHABLE = (
+    ('dynamodb', 'The console cannot reach DynamoDB', 'The console cannot read or change pipelines and tasks.'),
+    ('stepfunctions', 'The console cannot reach Step Functions', 'The console cannot start or stop runs.'),
+)
+_UNREACHABLE_FIX = "Check the console API's role and the AWS Health Dashboard, then read the console API's logs."
+
+#: What the public /api/metrics says for a figure it could not compute; the error itself goes to the log.
+METRICS_UNAVAILABLE = 'Not available: the console API logs have the error.'
 
 
 def health_check(event: Dict) -> Dict:
@@ -31,9 +55,11 @@ def health_check(event: Dict) -> Dict:
     - Step Functions API availability
     - Recent pipeline execution status
     - Circuit breaker states
-    
+    - The coordination engine (the sweeper's last report)
+
     Returns:
-        200 if healthy, 503 if unhealthy
+        200 if healthy or degraded, 503 if unhealthy; with every detail and the
+        findings, or each check's status word only (module docstring)
     """
     checks = {}
     overall_status = HEALTHY
@@ -62,27 +88,38 @@ def health_check(event: Dict) -> Dict:
     checks['circuit_breakers'] = _check_circuit_breakers()
     if checks['circuit_breakers']['status'] == UNHEALTHY:
         overall_status = DEGRADED
-    
+
+    # 5. The coordination engine (ADR #130 §9). The console's System status shows its findings
+    # while it is unhealthy; the API itself still serves, so the answer stays degraded, not 503.
+    checks['coordination'], unreadable, engine = _check_coordination()
+    if checks['coordination']['status'] != HEALTHY and overall_status == HEALTHY:
+        overall_status = DEGRADED
+
     # Calculate total check time
     elapsed_ms = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
-    
+
     response_body = {
         'status': overall_status,
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'checks': checks,
         'response_time_ms': round(elapsed_ms, 2)
     }
-    
+
     status_code = 200 if overall_status in (HEALTHY, DEGRADED) else 503
-    
+
+    if not _shows_details(event):
+        return cors_response(status_code, _minimal(response_body))
+    response_body['detail'] = FULL
+    # The console's own findings first, then the engine's.
+    response_body['findings'] = ([unreadable] if unreadable else []) + _unreachable(checks) + engine
     return cors_response(status_code, response_body)
 
 
-def health_check_simple(event: Dict) -> Dict:
+def health_check_live(event: Dict) -> Dict:
     """
-    Simple health check for load balancer probes.
+    Liveness probe for load balancers and monitors.
 
-    Checks if Lambda can respond — minimal latency, no downstream calls.
+    Answers as soon as the Lambda runs: no downstream call, nothing to hide.
 
     Returns:
         200 with {"status": "ok"}
@@ -91,6 +128,74 @@ def health_check_simple(event: Dict) -> Dict:
         'status': 'ok',
         'timestamp': datetime.now(timezone.utc).isoformat()
     })
+
+
+def _shows_details(event: Dict) -> bool:
+    """Whether the caller may see the details: auth is off, or it sent a valid token.
+
+    A token that is missing, invalid or cannot be verified shows the minimal body
+    (auth.optional_principal fails closed); it is never a 401 on this public route.
+    """
+    return not is_auth_enabled() or optional_principal(event, api_tokens_repo) is not None
+
+
+def _minimal(body: Dict) -> Dict:
+    """The body for a caller without a valid token, built from an allowlist: each check's
+    status word, and nothing a check says (messages, the report, names, AWS error text)."""
+    return {
+        'status': body['status'],
+        'timestamp': body['timestamp'],
+        'response_time_ms': body['response_time_ms'],
+        'detail': MINIMAL,
+        'checks': {name: {'status': check['status']} for name, check in body['checks'].items()},
+    }
+
+
+def _unreachable(checks: Dict) -> List[Dict[str, str]]:
+    """A finding for each AWS service the console cannot reach, naming the check's message."""
+    findings = []
+    for name, title, impact in _UNREACHABLE:
+        if checks[name]['status'] == UNHEALTHY:
+            finding = {'title': title, 'resource': str(checks[name].get('message', '')), 'impact': impact,
+                       'fix': _UNREACHABLE_FIX}
+            findings.append({k: v for k, v in finding.items() if v})
+    return findings
+
+
+def _unreadable(e: Exception) -> Dict[str, str]:
+    """The console's finding when the engine health row cannot be read or judged."""
+    return {
+        'title': 'The coordination status cannot be read',
+        'resource': f'{type(e).__name__}: {e}',
+        'impact': 'The console cannot tell whether waiting tasks are re-checked.',
+        'fix': "Check the console API's access to the pipeline-tokens table, then read the console API's logs.",
+    }
+
+
+def _check_coordination() -> Tuple[Dict, Optional[Dict[str, str]], List[Dict[str, str]]]:
+    """The sweeper's last report, judged by the same rule the sweeper uses (sweep.engine_findings).
+
+    Returns the check, the console's own finding when the row cannot be read or
+    judged, and the engine's findings. Staleness is judged here, from the
+    report's own time: a sweeper that stopped running cannot report that it stopped.
+    """
+    try:
+        report = executions_repo.get(sweep.HEALTH_KEY)
+    except (ClientError, BotoCoreError) as e:
+        log.error("health", "Could not read the engine health row", error=str(e))
+        return {'status': UNHEALTHY, 'report': {}}, _unreadable(e), []
+    try:
+        findings = sweep.engine_findings(report, datetime.now(timezone.utc))
+        shown = {k: report[k] for k in ('checked_at', 'fanout_mapping', 'fanout_result', 'stream', 'oldest_overdue',
+                                        'failed_steps') if report and k in report}
+        if report and 'push_retry_backlog' in report:
+            shown['push_retry_backlog'] = int(report['push_retry_backlog'])     # a DynamoDB Decimal
+    except (AttributeError, TypeError, ValueError) as e:
+        # A row no writer produces, edited by hand or written by a bug: name it, as for a row that cannot be
+        # read. A 500 here would fail all of /api/health, so the console could not show what is wrong (Principle #51).
+        log.error("health", "The engine health row cannot be judged", error=str(e))
+        return {'status': UNHEALTHY, 'report': {}}, _unreadable(e), []
+    return {'status': UNHEALTHY if findings else HEALTHY, 'report': shown}, None, findings
 
 
 def _check_dynamodb() -> Dict:
@@ -253,7 +358,7 @@ def get_metrics(event: Dict) -> Dict:
     Returns:
         Current system metrics and statistics
     """
-    metrics = {}
+    metrics: Dict[str, Dict[str, Any]] = {}
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     
     try:
@@ -269,7 +374,7 @@ def get_metrics(event: Dict) -> Dict:
 
         # Filter out internal records once, then count
         real_items = [i for i in items if not should_skip_token_row(i)]
-        status_counts = {}
+        status_counts: Dict[str, int] = {}
         for item in real_items:
             status = item.get('status', 'unknown')
             status_counts[status] = status_counts.get(status, 0) + 1
@@ -289,8 +394,9 @@ def get_metrics(event: Dict) -> Dict:
         }
 
     except Exception as e:
+        # A public route: the error text names AWS resources and the account, so it stays in the log.
         log.error("get_metrics", "Failed to compute task metrics", error=str(e))
-        metrics['tasks'] = {'error': str(e)}
+        metrics['tasks'] = {'error': METRICS_UNAVAILABLE}
 
     # Pipeline registry count
     try:
@@ -299,7 +405,7 @@ def get_metrics(event: Dict) -> Dict:
         }
     except Exception as e:
         log.error("get_metrics", "Failed to count registered pipelines", error=str(e))
-        metrics['pipelines'] = {'error': str(e)}
+        metrics['pipelines'] = {'error': METRICS_UNAVAILABLE}
     
     return cors_response(200, {
         'date': today,
@@ -315,5 +421,5 @@ def register(router) -> None:
     paths are public (auth gate excludes them via ``is_public_path``).
     """
     router.add('GET', '/api/health', health_check)
-    router.add('GET', '/api/health/simple', health_check_simple)
+    router.add('GET', '/api/health/live', health_check_live)
     router.add('GET', '/api/metrics', get_metrics)

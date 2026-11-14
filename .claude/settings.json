@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/verify-changed.sh",
+            "command": "bash scripts/verify-changed.sh --hook",
             "timeout": 600
           }
         ]

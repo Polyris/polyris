@@ -640,3 +640,13 @@ def test_is_internal_record_still_catches_underscore_prefixed():
     from utils import is_internal_record
     assert is_internal_record("_pause_sales-run-2026-07-08-abc") is True
     assert is_internal_record("_notify_warn_extract-2026-07-08") is True
+
+
+def test_is_internal_record_catches_the_dag_snapshot():
+    """The snapshot shares its run's pipeline_execution, so a run query returns it: unfiltered it
+    showed as a task without a status, and /api/execution-children returned [] for every run
+    (external review, round 2). The generator writes the same prefix (records.DAG_SNAPSHOT_PREFIX)."""
+    from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
+    from utils import is_internal_record
+
+    assert is_internal_record(f"{DAG_SNAPSHOT_PREFIX}orders-run-2026-11-12-abcd1234") is True

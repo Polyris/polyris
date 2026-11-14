@@ -23,25 +23,19 @@ POLYRIS_API_URL=https://... pytest tests/e2e/test_health.py -v
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `POLYRIS_API_URL` | ✅ | Console API endpoint (no trailing slash) |
-| `POLYRIS_ID_TOKEN` | Only if auth enabled | Bearer credential — a polyris **PAT** (recommended) or a Cognito token |
+| `POLYRIS_ID_TOKEN` | Only if auth enabled | A Cognito token of a console user of this deployment |
 
-## Authentication (PAT recommended)
+## Authentication
 
-When `AUTH_ENABLED=true`, write/`smoke` tests need a bearer credential in
-`POLYRIS_ID_TOKEN`. The gate accepts either a polyris Personal Access Token
-(`plrs_…`) or a Cognito token — **a PAT is simpler** and needs no Cognito dance:
+When the platform has Cognito auth, write and `smoke` tests need a token in `POLYRIS_ID_TOKEN`. The console's app client allows `ADMIN_USER_PASSWORD_AUTH`, which works only with AWS credentials allowed `cognito-idp:AdminInitiateAuth`. `scripts/get-e2e-token.sh` signs in a console user that has a permanent password:
 
 ```bash
-# Generate a PAT once (Console → avatar → API Tokens, or while AUTH is still off):
-curl -X POST "$POLYRIS_API_URL/api/tokens" \
-  -H "Content-Type: application/json" -d '{"name":"e2e","expires_in_days":90}'
-# -> copy the "token" field (shown once)
-
-export POLYRIS_ID_TOKEN=plrs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-pytest tests/e2e/ -v -m smoke
+export COGNITO_USER_POOL_ID=us-east-1_xxxxx COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+export E2E_USERNAME=you@example.com E2E_PASSWORD='…'
+export POLYRIS_ID_TOKEN="$(scripts/get-e2e-token.sh)"
 ```
 
-Store the PAT as a CI secret. See `docs/features/api-tokens.md`.
+The pool and client ids are the platform stack's `CognitoUserPoolId` and `CognitoClientId` outputs. A token lasts an hour. The coordination smoke below needs none of this: it signs in by itself.
 
 ## Test Organization
 
@@ -49,8 +43,9 @@ Store the PAT as a CI secret. See `docs/features/api-tokens.md`.
 |------|-------|-------------|
 | `test_health.py` | Health & metrics | None (read-only) |
 | `test_pipelines.py` | Pipeline CRUD | Write tests marked `@pytest.mark.write` |
-| `test_assets.py` | Asset queries | None (read-only) |
 | `test_routes.py` | Tasks, runs, notifications, error handling | None (read-only) |
+| `test_retries.py` | `retry_attempt` on task rows and retry events (ADR #125) | None (read-only) |
+| `test_coordination_smoke.py` | Task coordination end to end: `wait_for`, Mark Successful, restart, asset-scheduled runs | Starts runs of the smoke pipelines (`write`, `smoke`) |
 
 ## Markers
 
@@ -65,18 +60,25 @@ pytest tests/e2e/ -m "not write"
 pytest tests/e2e/ -m write
 ```
 
-## Getting a Cognito Token (fallback — prefer a PAT, see above)
+## Coordination smoke (release gate)
+
+`test_coordination_smoke.py` drives real runs on a dev platform: tasks waiting on assets, Mark Successful, a restart, and pipelines scheduled on assets (ADR #130). One command runs it, from the repository root:
 
 ```bash
-# admin-initiate-auth is the reliable admin path (polyris uses SRP +
-# admin-only users, so USER_PASSWORD_AUTH is usually not enabled on the client):
-aws cognito-idp admin-initiate-auth \
-  --user-pool-id YOUR_POOL_ID \
-  --client-id YOUR_CLIENT_ID \
-  --auth-flow ADMIN_USER_PASSWORD_AUTH \
-  --auth-parameters USERNAME=you@example.com,PASSWORD=yourpass \
-  --query 'AuthenticationResult.AccessToken' --output text
+make e2e-coordination STACK=<platform stack> PROFILE=<aws profile>
 ```
+
+`tests/e2e/run_coordination_smoke.py` reads the console URL, the Cognito pool and the platform's test state machines from the stack's outputs. It deploys the pipelines of `coordination_smoke/dag.py` with `polyris-deploy`, named after the platform, so they run the platform's `-test-quick`, `-test-success` and `-test-failure` state machines. It signs in as a temporary console user, runs the test and deletes the user again. Your AWS credentials need `cloudformation:DescribeStacks`, what `polyris-deploy` needs ([IAM_PERMISSIONS.md](../../docs/deployment/IAM_PERMISSIONS.md)), and `cognito-idp:AdminCreateUser`, `AdminSetUserPassword`, `AdminInitiateAuth` and `AdminDeleteUser`. `ARGS` go to pytest: `ARGS='-k marking'` reruns one scenario.
+
+It takes about 15 minutes. The pipelines stay on the platform, so the next run only updates them; they have no schedule and cost nothing between runs. Remove them before `polyris-down`, which refuses a platform that still has pipelines:
+
+```bash
+make e2e-coordination-clean STACK=<platform stack> PROFILE=<aws profile>
+```
+
+Run data needs no clean-up: each scenario uses its own date in the 1900s, and the rows expire with the tables' TTL. Run the smoke on a test platform, not on one people use: it adds nine pipelines to the console. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
+
+A task that fails waits in `waiting_decision` until the decision timeout, and only then becomes `failed`; a scenario that needs a failed task accepts either status.
 
 ## CI Integration
 

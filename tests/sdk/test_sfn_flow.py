@@ -233,16 +233,9 @@ def test_task_states_have_error_handling(name, path):
     data = load_template(path)
     task_states = collect_task_states(data["States"])
 
-    # Known gaps: inner states covered by wrapper-level States.ALL catch.
-    # TODO: Add Catch/Retry to registration Parallel for clearer error messages.
-    KNOWN_GAPS = {
-        "Check_Dependencies_And_Assets/Save_Task_Subscriptions/Save_One_Task_Sub",
-        "Check_Dependencies_And_Assets/Check_Task_Deps_Status/Get_Task_Dep_Status",
-    }
-
     missing = [
         n for n, s, covered in task_states
-        if "Catch" not in s and "Retry" not in s and not covered and n not in KNOWN_GAPS
+        if "Catch" not in s and "Retry" not in s and not covered
     ]
     assert not missing, f"Task states without Catch/Retry (not covered by parent): {missing}"
 

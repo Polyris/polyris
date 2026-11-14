@@ -49,6 +49,8 @@ export const queryKeys = {
     assetDrift: () => ['assets', 'drift'] as const,
     
     notifications: (limit: number, hours: number) => ['notifications', limit, hours] as const,
+    // /api/health, read by the System status in the header.
+    systemStatus: ['system', 'status'] as const,
     
     globalStats: ['global', 'stats'] as const,
 

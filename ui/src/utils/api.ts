@@ -14,14 +14,18 @@ const wrapResult = <T = unknown>(data: T) => ({ ok: true as const, data });
 const wrapError = (message: string, status?: number) => ({ ok: false as const, error: message, status });
 
 /**
- * Parse error message from response
+ * Parse a non-2xx response: its error message and, when it is JSON, its body.
+ *
+ * The body is kept because some error answers carry data: /api/health answers 503
+ * with the checks and findings the System status shows. A caller that reads only
+ * `error` sees the same message as before.
  */
-const parseError = async (res: Response): Promise<string> => {
+const parseError = async (res: Response): Promise<{ message: string; body?: unknown }> => {
     try {
         const body = await res.json();
-        return body.error || body.message || `HTTP ${res.status}`;
+        return { message: body.error || body.message || `HTTP ${res.status}`, body };
     } catch {
-        return `HTTP ${res.status}`;
+        return { message: `HTTP ${res.status}` };
     }
 };
 
@@ -104,8 +108,9 @@ const _request = async (method: string, path: string, options: RequestOptions = 
 
             if (!res.ok) {
                 handleAuthError(res.status);
-                const errorMsg = await parseError(res);
-                return wrapError(errorMsg, res.status);
+                const { message, body: errorBody } = await parseError(res);
+                const failed = wrapError(message, res.status);
+                return errorBody === undefined ? failed : { ...failed, body: errorBody };
             }
 
             const data = await res.json();

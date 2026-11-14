@@ -26,8 +26,9 @@ DESIGN_DECISIONS = ADR_DIR / "DESIGN_DECISIONS.md"
 # Matches `ADR 123`, `ADR #123`, `ADR-123`, `ADR-#123`, `adr-123-slug`.
 _ADR_REF_RE = re.compile(r"(?:ADR[\s#-]+#?|adr-)(\d+)")
 # Heading form in DESIGN_DECISIONS.md — earlier ADRs use `### 42. Title`,
-# later ones (90+) dropped the dot: `### 90 Upstream...`. Accept both.
-_DD_HEADING_RE = re.compile(r"^#{2,4}\s+(\d+)(?:\.|\s)", re.MULTILINE)
+# later ones (90+) dropped the dot: `### 90 Upstream...`, and the latest
+# name it: `## ADR #126 — Title`. Accept all three.
+_DD_HEADING_RE = re.compile(r"^#{2,4}\s+(?:ADR\s+#)?(\d+)(?:\.|\s)", re.MULTILINE)
 
 
 def _load_adr_numbers() -> set[int]:

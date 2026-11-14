@@ -17,8 +17,8 @@
 #   export POLYRIS_API_URL=https://abc123.execute-api.us-east-1.amazonaws.com
 #   make e2e-smoke
 #
-# Requirements on the Cognito side (one-time, see ci/README):
-#   - app client must allow ADMIN_USER_PASSWORD_AUTH in ExplicitAuthFlows
+# Requirements on the Cognito side:
+#   - the app client allows ADMIN_USER_PASSWORD_AUTH (sam/template.yaml does)
 #   - the E2E user must have a PERMANENT password (admin-set-user-password
 #     --permanent) and MFA disabled, so no auth challenge is returned
 #

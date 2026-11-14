@@ -17,7 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTEXT = ROOT / ".claude" / "CONTEXT.md"
-STATE = ROOT / "STATE.md"
+STATE = ROOT / "docs" / "reference" / "STATE.md"
 
 # Terms that are deliberately vocabulary-only: they name a discipline or an
 # absence, so there is no identifier to find. Each needs a reason.
@@ -109,8 +109,7 @@ def test_exemptions_all_carry_a_reason():
 def test_state_md_references_only_paths_that_exist():
     """STATE.md points at work in flight. A path that has moved makes it a map to
     nowhere, which is how a status file quietly becomes fiction."""
-    if not STATE.exists():
-        pytest.skip("STATE.md not present")
+    assert STATE.exists(), f"{STATE} moved; point this test at it instead of skipping"
     text = STATE.read_text(encoding="utf-8")
     # backtick-quoted things that look like repo paths
     paths = re.findall(r"`([A-Za-z0-9_./-]+\.(?:py|ts|tsx|md|sh|json|yaml|yml))`", text)

@@ -42,6 +42,7 @@ dev = [
     "pydantic>=2.0.0",     # for adapter tests (polyris.adapters.pydantic_)
     "jsonata-python>=0.5.0",  # evaluate SFN template JSONata in CI (ADR #85)
     "rsa>=4.9",            # console_api auth.py imports rsa (Cognito JWT verify, ADR #65)
+    "cfn-lint==1.48.1",    # the template gate; test_resource_tags.py reads its schemas, so bump on purpose (ADR #132)
 ]
 # Schema bridge to the pyarrow ecosystem (Iceberg, Parquet, BigQuery, ...).
 # Required to use Asset.from_pyarrow / Asset.from_parquet helpers.
@@ -158,7 +159,6 @@ omit = [
     # check-sfn-templates / check-backfill-parity in ci.yml) against the real
     # tree, which is the check that actually matters.
     "polyris/codegen/check_sfn_templates.py",
-    "polyris/codegen/check_shared_constants.py",
     "polyris/codegen/check_backfill_status_parity.py",
     "polyris/__init__.py",
     "polyris/*/__init__.py",

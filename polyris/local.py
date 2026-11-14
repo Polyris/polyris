@@ -482,13 +482,14 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
 def _evaluate_trigger_rule(task: Task, previous_results: List[TaskResult]) -> tuple:
     """Evaluate if task should run based on trigger rule.
 
-    Mirrors the 11 rules evaluate_deps implements for the real deployed
-    pipeline (docs/features/DSL.md#trigger-rules), adapted to this mock
+    Mirrors the rules the reconciler applies for the real deployed
+    pipeline (polyris/coordination/trigger_rules.py,
+    docs/features/DSL.md#trigger-rules), adapted to this mock
     runner's synchronous execution model: `run()` processes tasks in
     topological order, so every dependency of `task` has already produced a
     terminal TaskResult (success/failed/skipped) by the time this function is
-    called — there is no 'pending'/'wait' case here, unlike evaluate_deps'
-    async DDB-polling model. This mock also has no skip_origin concept (no
+    called — there is no 'pending'/'wait' case here, unlike the
+    reconciler, which also sees upstreams that have not finished. This mock also has no skip_origin concept (no
     manual-vs-rule distinction — see ADR #115): every skip here comes from a
     trigger_rule not being satisfied, so `all_success` correctly treats ANY
     skipped upstream as blocking (no cascade nuance needed).
@@ -535,7 +536,7 @@ def _evaluate_trigger_rule(task: Task, previous_results: List[TaskResult]) -> tu
         return False, f"{skipped_count} skipped"
 
     # Unknown rule name (including any of ADR #117's 6 removed names): default
-    # to all_success's semantics, matching evaluate_deps' fallback for
+    # to all_success's semantics, matching the reconciler's fallback for
     # consistency (ADR #115) rather than silently letting an unrecognized
     # rule always run. validate_asl_from_dag catches removed/unknown rules
     # earlier with a specific message — this is a defensive fallback, not

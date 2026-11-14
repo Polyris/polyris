@@ -146,7 +146,7 @@ with DAG(
   - Neither chip appears when the task is on its first attempt with no auto-retries.
 - Console → **Tasks** view → **Status** column shows the same chips inline for at-a-glance visibility across all tasks.
 - The **Status** cell also shows a countdown timer while the wrapper is sleeping between retries — the same timer used for `wait_before` delays.
-- CloudWatch log group `/aws/vendedlogs/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt` state entries).
+- CloudWatch log group `/aws/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt` state entries).
 
 ## Related
 

@@ -4,7 +4,7 @@ import React, { lazy, Suspense, useEffect } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import { Button } from '@/components/ui/button';
 import { AlertTriangle, Loader2 } from './utils/icons';
-import { 
+import {
     HelpModal,
     ErrorBoundary,
     CommandPalette,
@@ -115,7 +115,7 @@ function App() {
         <div className="app-shell">
             <Header
                 apiConnected={apiConnected}
-                onNotificationNavigate={(name, execId) => navigateToExecution(name, execId)}
+                onNotificationNavigate={(name, execId, date) => navigateToExecution(name, execId, date)}
                 onNotificationNavigateBackfill={(backfillId) => router.push(`/backfills/${backfillId}/`)}
             />
             <div className="app-body">
@@ -129,7 +129,7 @@ function App() {
                     <Button size="sm" variant="secondary" onClick={() => window.location.reload()}>Retry Now</Button>
                 </div>
             )}
-            
+
             <main className="main" id="main-content">
                 {mainView === 'pipelines' ? (
                     <div className="main-top">

@@ -75,9 +75,10 @@ class TestBatchGetRunMeta:
         mock_ddb.batch_get_item.return_value = _resp(table, [])
         repo.batch_get_run_meta(['task-a'])
         call_kwargs = mock_ddb.batch_get_item.call_args[1]['RequestItems'][table]
-        assert '#attempt' in call_kwargs['ProjectionExpression']
-        assert call_kwargs['ExpressionAttributeNames']['#attempt'] == 'attempt'
-        assert 'retry_attempt' in call_kwargs['ProjectionExpression']
+        tokens = [t.strip() for t in call_kwargs['ProjectionExpression'].split(',')]
+        names = call_kwargs['ExpressionAttributeNames']
+        assert 'attempt' not in tokens                      # never bare
+        assert {'attempt', 'retry_attempt'} <= {names.get(t, t) for t in tokens}
 
     def test_retries_unprocessed_keys_until_empty(self, repo_setup):
         repo, mock_ddb, table = repo_setup

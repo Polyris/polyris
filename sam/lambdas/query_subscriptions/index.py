@@ -17,7 +17,8 @@ def handler(event, context):
     Query subscriptions table for tasks waiting on the completed task.
 
     Input: {task_name, pipeline_execution_short}
-    Output: {subscribers: [{subscriber, wait_token, ...}]}
+    Output: {subscribers: [{dependency_key, subscriber, ttl}]} — subscriber is
+    the waiting task's execution_name (ADR #130 §5: pointers carry no token).
     """
     try:
         task_name = event.get('task_name')
@@ -44,10 +45,7 @@ def handler(event, context):
         return {'subscribers': subscribers}
 
     except Exception as e:
-        err_str = str(e)
-        log.error("handler", "Query failed", error=err_str)
-        # Re-raise permission errors so SFN Retry can catch them.
-        # Silently returning [] would make notify_dependents skip real subscribers.
-        if 'AccessDenied' in err_str or 'AccessDeniedException' in err_str:
-            raise
-        return {'subscribers': [], 'error': err_str}
+        # Never an empty answer: notify_dependents would skip real subscribers in silence. Its
+        # Query_Subscriptions state retries the failure; after that the sweeper re-checks them (Principle #41).
+        log.error("handler", "Query failed", error=str(e))
+        raise

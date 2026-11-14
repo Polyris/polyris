@@ -89,6 +89,40 @@ describe('Notifications', () => {
             expect(screen.getByText('No new notifications')).toBeInTheDocument();
         });
 
+        it('names a coordination warning by its kind, with its error on hover', () => {
+            mockQueryData.current = [createNotification({
+                id: 'w1', type: 'warning', kind: 'zombie', pipeline_name: 'orders', task_name: 'load',
+                time_ago: '2m ago', error: 'the wrapper execution is ABORTED',
+            })];
+            render(<Notifications onNavigate={onNavigate} />);
+
+            fireEvent.click(screen.getByTitle('1 notifications'));
+            const subtitle = screen.getByText('Task can no longer be woken • load • 2m ago');
+            expect(subtitle).toHaveAttribute('title', 'the wrapper execution is ABORTED');
+            expect(screen.getByLabelText('View orders warning')).toBeInTheDocument();
+        });
+
+        it('opens a warning on the partition date of its task', () => {
+            mockQueryData.current = [createNotification({
+                id: 'w3', type: 'warning', kind: 'zombie', pipeline_name: 'orders',
+                pipeline_execution: 'orders-run-2026-10-13-ab', date: '2026-10-13',
+            })];
+            render(<Notifications onNavigate={onNavigate} />);
+
+            fireEvent.click(screen.getByTitle('1 notifications'));
+            fireEvent.click(screen.getByLabelText('View orders warning'));
+            expect(onNavigate).toHaveBeenCalledWith('orders', 'orders-run-2026-10-13-ab', '2026-10-13');
+        });
+
+        it('shows a warning that names no pipeline under task coordination', () => {
+            mockQueryData.current = [createNotification({ id: 'w2', type: 'warning', kind: 'unknown-kind', pipeline_name: '', task_name: '' })];
+            render(<Notifications onNavigate={onNavigate} />);
+
+            fireEvent.click(screen.getByTitle('1 notifications'));
+            expect(screen.getByText('Task coordination')).toBeInTheDocument();
+            expect(screen.getByText(/^Coordination warning/)).toBeInTheDocument();
+        });
+
         it('shows notification items in dropdown', () => {
             mockQueryData.current = [createNotification({ id: 'n1', pipeline_name: 'acme-daily', task_name: 'extract', time_ago: '3m ago' })];
             render(<Notifications onNavigate={onNavigate} />);
@@ -170,7 +204,7 @@ describe('Notifications', () => {
             const viewBtns = screen.getAllByText('View');
             fireEvent.click(viewBtns[0]);
 
-            expect(onNavigate).toHaveBeenCalledWith('acme-daily', 'exec-123');
+            expect(onNavigate).toHaveBeenCalledWith('acme-daily', 'exec-123', undefined);
         });
     });
 

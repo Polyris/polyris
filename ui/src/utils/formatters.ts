@@ -1,3 +1,5 @@
+import type { WaitForEntry, WaitForGroup } from '@/types';
+
 // Format duration in human readable format
 export const formatDuration = (ms: number | null | undefined): string => {
     if (!ms && ms !== 0) return '-';
@@ -247,6 +249,27 @@ export const formatRelativeTime = (iso: string | null | undefined): string => {
     return iso.slice(0, 10);
 };
 
+/**
+ * formatAgo — how long ago an ISO time was, in the tiers the backend's `ago()` uses
+ * for the texts of System status findings, so the times the panel adds read like the
+ * ones in the findings it shows:
+ *   - under 120 minutes →  "N min ago"
+ *   - under 48 hours    →  "N h ago"
+ *   - otherwise         →  "N days ago" (floored)
+ *
+ * A future time (clock skew) reads "0 min ago". Null for a missing or unparseable time.
+ */
+export const formatAgo = (iso: string | null | undefined, now: number = Date.now()): string | null => {
+    if (!iso) return null;
+    const then = Date.parse(iso);
+    if (Number.isNaN(then)) return null;
+    const minutes = Math.floor(Math.max(0, now - then) / 60000);
+    if (minutes < 120) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours} h ago`;
+    return `${Math.floor(hours / 24)} days ago`;
+};
+
 const TRIGGER_SOURCE_LABELS: Record<string, string> = {
     console_run: 'Manual',
     schedule: 'Scheduled',
@@ -304,6 +327,22 @@ export function formatSchedule(
 
     // Fallback: show raw but truncated
     return schedule.length > 20 ? schedule.substring(0, 20) + '…' : schedule;
+}
+
+export const isWaitForGroup = (entry: WaitForEntry): entry is WaitForGroup =>
+    'operator' in entry && Array.isArray(entry.assets);
+
+/** One wait_for entry as text: an asset's name, or a group's members joined by
+ *  ` | ` (OR) or ` & ` (AND); a nested group is parenthesised. '' when it has no name. */
+export function formatWaitForEntry(entry: WaitForEntry, nested = false): string {
+    if (isWaitForGroup(entry)) {
+        const label = entry.assets
+            .map(member => formatWaitForEntry(member, true))
+            .filter(Boolean)
+            .join(entry.operator === 'OR' ? ' | ' : ' & ');
+        return nested && label ? `(${label})` : label;
+    }
+    return entry.asset_name || entry.name || '';
 }
 
 // Human-readable freshness window for an asset dependency (wait_for's

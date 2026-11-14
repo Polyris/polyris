@@ -2,7 +2,7 @@
 
 Regression tests for a real bug found in a code-review pass:
 _format_task_row's output dict silently dropped 'wrapper_execution_arn' —
-even though it's fetched from DynamoDB (it's part of _TASKS_PROJECTION) and
+even though get_all_tasks reads it from DynamoDB (index or _TASKS_BACKFILL) and
 get_all_tasks feeds _format_task_row's OUTPUT straight into
 _reconcile_orphaned_tasks, which needs that exact field to tell "genuinely
 orphaned" apart from "task was restarted, its new wrapper is still running".

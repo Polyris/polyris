@@ -1,6 +1,7 @@
 import React from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import Notifications from './Notifications';
+import { SystemStatus } from './SystemStatus';
 import { viewFromPathname } from '../utils';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -13,8 +14,9 @@ import {
 } from 'lucide-react';
 
 interface HeaderProps {
+    /** False while the console cannot reach its API; the System status then reads unknown. */
     apiConnected: boolean;
-    onNotificationNavigate: (pipelineName: string, executionId?: string) => void;
+    onNotificationNavigate: (pipelineName: string, executionId?: string, date?: string) => void;
     /** ADR #68 — navigate to backfill detail from backfill notification. */
     onNotificationNavigateBackfill?: (backfillId: string) => void;
 }
@@ -23,7 +25,7 @@ interface HeaderProps {
  * Header — the app-shell topbar: contextual breadcrumbs and global controls.
  *
  * Primary navigation lives in the left rail (AppNav); this topbar carries location
- * (breadcrumbs) and global controls (API status, auto-refresh, notifications).
+ * (breadcrumbs) and global controls (System status, auto-refresh, notifications).
  * The theme toggle and account menu live in the left rail's account menu (AppNav). Top-level view is read from the pathname; other state from Zustand.
  */
 export function Header({ apiConnected, onNotificationNavigate, onNotificationNavigateBackfill }: HeaderProps) {
@@ -52,16 +54,7 @@ export function Header({ apiConnected, onNotificationNavigate, onNotificationNav
 
             {/* Header Controls */}
             <div className="hdr-header-controls">
-                {/* API Status */}
-                <div
-                    className="hdr-status-badge"
-                    title={apiConnected ? 'API connected' : 'API disconnected'}
-                    role="status"
-                    aria-label={apiConnected ? 'API connected' : 'API disconnected'}
-                >
-                    <div className={`status-dot ${apiConnected ? 'connected' : 'disconnected'}`} />
-                    API
-                </div>
+                <SystemStatus apiConnected={apiConnected} />
 
                 {/* Live Mode Toggle */}
                 <div
@@ -123,6 +116,7 @@ function Breadcrumbs() {
     return (
         <div className="hdr-nav-left">
             <span className="hdr-brand">
+                {/* eslint-disable-next-line @next/next/no-img-element -- static export (output: 'export') has no image optimizer for next/image; a fixed-size decorative logo */}
                 <span className="hdr-brand-logo"><img src="/logo-icon.png" alt="" aria-hidden="true" width="26" height="26" /></span>
                 polyris
             </span>

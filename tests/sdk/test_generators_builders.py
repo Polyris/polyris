@@ -152,7 +152,7 @@ class TestRichGeneration:
         asl = json.loads(generate_step_function_json(dag))
         sub_state = asl["States"]["Register_Asset_Subscriptions"]
         write_state = sub_state["ItemProcessor"]["States"]["WriteSubscription"]
-        assets_json = write_state["Arguments"]["Item"]["assets"]["S"]
+        assets_json = write_state["Arguments"]["ExpressionAttributeValues"][":assets"]["S"]
         stored = json.loads(assets_json)
         assert all(isinstance(name, str) for name in stored), (
             f"assets.S contains non-string items: {stored!r}"

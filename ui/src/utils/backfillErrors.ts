@@ -127,10 +127,6 @@ const BACKFILL_ERROR_MAP: Record<string, BackfillErrorInfo> = {
         title: 'Backfill not eligible for this action',
         hint: 'The backfill\'s current state doesn\'t allow this operation.',
     },
-    child_name_too_long: {
-        title: 'Generated execution name too long',
-        hint: 'The pipeline/partition combination exceeds the Step Functions name limit. Use a shorter pipeline name or narrower range.',
-    },
     already_terminal: {
         title: 'Backfill already finished',
         hint: 'Can\'t cancel a backfill that\'s already completed, failed, or canceled.',

@@ -1150,9 +1150,9 @@ class AssetAny:
     Single-item AssetAny (deliberate pattern, not a typo): `schedule=AssetAny([x])`
     triggers on EVERY materialization of `x`, with no day-scoped deduplication —
     unlike `schedule=x` or `schedule=[x]`, which are AND-of-one (same net effect
-    of "one required asset", but the notify_asset_consumers path dedupes by
-    calendar day, so a producer that materializes `x` more than once on the same
-    day only triggers this consumer once). Use `AssetAny([x])` when the consumer
+    of "one required asset", but an AND schedule starts one run per date, so a
+    producer that materializes `x` more than once for the same date only
+    triggers this consumer once). Use `AssetAny([x])` when the consumer
     should react to every update, e.g. an hourly producer, or a deliberate
     re-run whose downstream should recompute too. See
     docs/reference/SPIKE_ASSET_TRIGGER_GRANULARITY.md for the full analysis.
@@ -1414,26 +1414,12 @@ def normalize_asset_schedule(schedule: Optional[AssetSchedule]) -> Union[AssetAl
     return None
 
 
-def is_asset_triggered(dag: 'DAG') -> bool:
-    """Check if DAG is triggered by assets (not time-based)."""
-    schedule = getattr(dag, 'schedule', None)
-    if schedule is None:
-        return False
-    
-    # String schedule = time-based
-    if isinstance(schedule, str):
-        return False
-    
-    # Asset-based
-    return isinstance(schedule, (Asset, AssetAll, AssetAny, list))
-
-
 def _flatten_asset_names(node: Any) -> List[str]:
-    """Recursively collect all leaf asset names for EventBridge pattern matching.
+    """Recursively collect every leaf asset name of an asset schedule.
 
     Unlike ``asset_names``, which formats nested groups as display strings like
-    ``'(ns/b | ns/c)'``, this function returns only plain name strings — the only
-    form EventBridge event patterns can match against.
+    ``'(ns/b | ns/c)'``, this returns only plain names: what a subscription row
+    is keyed by, and what an exact-match lookup can find.
     """
     if isinstance(node, (AssetAll, AssetAny)):
         result: List[str] = []
@@ -1441,176 +1427,6 @@ def _flatten_asset_names(node: Any) -> List[str]:
             result.extend(_flatten_asset_names(child))
         return result
     return [node.name]
-
-
-def get_asset_schedule_info(dag: 'DAG') -> Optional[Dict[str, Any]]:
-    """
-    Get asset schedule information for a DAG.
-    
-    Returns:
-        {
-            "operator": "AND" | "OR",
-            "assets": ["raw/inventory", "raw/catalog", ...],
-            "eventbridge_rule_pattern": {...}
-        }
-    """
-    schedule = getattr(dag, 'schedule', None)
-    normalized = normalize_asset_schedule(schedule)
-    
-    if normalized is None:
-        return None
-    
-    result = normalized.to_dict()
-    
-    # Add EventBridge pattern. Both AND and OR logic need a flat list of leaf
-    # asset names — EventBridge event patterns match on exact string values, so
-    # any display-format strings like '(ns/b | ns/c)' would never match a real
-    # event. _flatten_asset_names recurses through all nested AND/OR groups.
-    result["eventbridge_rule_pattern"] = {
-        "source": ["polyris.assets"],
-        "detail-type": ["Asset Materialized"],
-        "detail": {
-            "asset_name": _flatten_asset_names(normalized)
-        }
-    }
-    
-    return result
-
-
-# ============================================
-# Watcher - External Event Source
-# ============================================
-# FUTURE FEATURE: Backend ready, UI not implemented yet.
-# Use case: Trigger pipelines from external systems (S3, webhooks, etc.) via SQS.
-
-@dataclass
-class Watcher:
-    """
-    [FUTURE FEATURE] Watcher for external events that produce assets.
-    
-    Watches an SQS queue for messages and triggers asset materialization events.
-    Use this for external systems that don't directly emit to EventBridge.
-    
-    Args:
-        asset: The Asset this watcher produces
-        sqs_queue_arn: ARN of the SQS queue to watch
-        message_filter: Optional JMESPath filter for messages
-        transform: Optional mapping from message fields to metadata
-    
-    Example:
-        # Watch SQS queue for S3 notifications
-        inventory_watcher = Watcher(
-            asset=inventory,
-            sqs_queue_arn="${inventory_queue_arn}",
-            message_filter="Records[?eventSource=='aws:s3']",
-            transform={
-                "bucket": "Records[0].s3.bucket.name",
-                "key": "Records[0].s3.object.key"
-            }
-        )
-        
-        # Or watch for custom application events
-        order_watcher = Watcher(
-            asset=orders_asset,
-            sqs_queue_arn="${orders_queue_arn}",
-            transform={
-                "order_count": "body.count",
-                "region": "body.region"
-            }
-        )
-    
-    Backend Implementation:
-        - Lambda triggered by SQS
-        - Parses message, applies filter/transform
-        - Emits "Asset Materialized" event to EventBridge
-    """
-    asset: Asset
-    sqs_queue_arn: str
-    message_filter: str = ""
-    transform: Dict[str, str] = field(default_factory=dict)
-    batch_size: int = 10
-    enabled: bool = True
-    
-    def __post_init__(self):
-        # Register watcher with asset
-        if not hasattr(self.asset, '_watchers'):
-            self.asset._watchers = []
-        self.asset._watchers.append(self)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize for backend configuration."""
-        return {
-            "asset_name": self.asset.name,
-            "sqs_queue_arn": self.sqs_queue_arn,
-            "message_filter": self.message_filter,
-            "transform": self.transform,
-            "batch_size": self.batch_size,
-            "enabled": self.enabled
-        }
-
-
-def generate_watchers_config(watchers: List[Watcher]) -> Dict[str, Any]:
-    """
-    Generate configuration for SQS watcher Lambdas.
-    
-    Returns configuration for creating:
-    - Lambda function (shared)
-    - SQS event source mappings
-    - IAM permissions
-    
-    Args:
-        watchers: List of Watcher instances
-    
-    Returns:
-        {
-            "lambda_config": {...},
-            "event_source_mappings": [...],
-            "iam_statements": [...]
-        }
-    """
-    if not watchers:
-        return {"lambda_config": None, "event_source_mappings": [], "iam_statements": []}
-    
-    # Group by queue ARN to avoid duplicate event sources
-    queue_watchers: Dict[str, List[Any]] = {}
-    for w in watchers:
-        if w.sqs_queue_arn not in queue_watchers:
-            queue_watchers[w.sqs_queue_arn] = []
-        queue_watchers[w.sqs_queue_arn].append(w)
-    
-    event_source_mappings = []
-    for queue_arn, queue_watchers_list in queue_watchers.items():
-        # Use max batch_size from watchers for this queue
-        batch_size = max(w.batch_size for w in queue_watchers_list)
-        event_source_mappings.append({
-            "event_source_arn": queue_arn,
-            "batch_size": batch_size,
-            "watchers": [w.to_dict() for w in queue_watchers_list]
-        })
-    
-    iam_statements = [
-        {
-            "effect": "Allow",
-            "actions": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
-            "resources": list(queue_watchers.keys())
-        },
-        {
-            "effect": "Allow",
-            "actions": ["events:PutEvents"],
-            "resources": ["*"]  # EventBridge default bus
-        }
-    ]
-    
-    return {
-        "lambda_config": {
-            "handler": "watcher.handler",
-            "runtime": "python3.11",
-            "timeout": 30,
-            "memory_size": 256
-        },
-        "event_source_mappings": event_source_mappings,
-        "iam_statements": iam_statements
-    }
 
 
 # ─── DDL renderers ──────────────────────────────────────────────────────────

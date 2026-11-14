@@ -3,7 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount } from '../../utils';
-import { formatFreshnessWindow, formatFreshnessWindowLong } from '../../utils/formatters';
+import { formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
 import { logger } from '../../utils/logger';
 import { useKeyboardShortcuts } from '../../hooks';
 import { useTaskOutput } from '../../hooks/useTaskOutput';
@@ -474,14 +474,16 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                             <div className="detail-label"><Database size={12} /> Asset Dependencies</div>
                                             <div className="td-deps-list">
                                                 {waitFor.map((asset, idx) => {
-                                                    const name = asset.asset_name || asset.name || 'unknown';
+                                                    const name = formatWaitForEntry(asset) || 'unknown';
                                                     const freshness = asset.freshness_hours;
                                                     const consecutive = asset.consecutive_days;
-                                                    const title = consecutive 
-                                                        ? `Requires ${consecutive} consecutive days of data`
-                                                        : freshness 
-                                                            ? `Must be fresh within ${formatFreshnessWindowLong(freshness)}` 
-                                                            : 'Latest available';
+                                                    const title = isWaitForGroup(asset)
+                                                        ? (asset.operator === 'OR' ? 'Any one of these assets' : 'All of these assets')
+                                                        : consecutive
+                                                            ? `Requires ${consecutive} consecutive days of data`
+                                                            : freshness
+                                                                ? `Must be fresh within ${formatFreshnessWindowLong(freshness)}`
+                                                                : 'Latest available';
                                                     return (
                                                         <span 
                                                             key={idx} 

@@ -145,8 +145,11 @@ def register(channel: str, notifier_cls: type) -> None:
 # fails and the surface is webhook-only. Mirrors console_api/main.py's `import ee`.
 try:
     import ee  # noqa: F401  (registers paid notifiers as an import side effect)
-except ImportError:
-    pass
+except ModuleNotFoundError as exc:
+    # Only the overlay's own absence is the OSS build; an import error inside a present
+    # overlay is a broken build and must fail loudly (Principle #44).
+    if exc.name != "ee":
+        raise
 
 
 def get_notifier(channel: str, config: Dict[str, Any]) -> Optional[Notifier]:

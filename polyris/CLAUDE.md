@@ -93,6 +93,18 @@ nodes into one, making one task disappear from the execution graph.
 `TaskGroup` must run the duplicate check **after** applying the group prefix
 (`group_id.task_id`), not on the bare `task_id`.
 
+## A lazily loaded config is loaded by every reader
+
+`PolyrisConfig` loads `config.py` on first use (`_ensure_loaded()`). Every accessor that reads `_environments` or `_default_stage` — on `PolyrisConfig` and on the `_StageConfig` view — calls `_ensure_loaded()` first. The view once read `_environments` directly; `polyris-deploy --stage dev` reads only the view, so a pipeline file that never touched `config` deployed with the default AWS credentials and without `stack_name`. `test_stage_view_loads_config_py_on_its_first_read` pins it.
+
+## A config the user names is used, or the command stops (ADR #134)
+
+Any way `polyris.config` fails to use a config the user pointed at — `POLYRIS_CONFIG` naming a missing file, a file without `ENVIRONMENTS`, a `config.py` that does not parse or fails when run — raises `ConfigError`; `polyris-deploy` prints it and exits before any AWS call. Never turn such a failure into "no config": without one the deploy uses the default credentials and reaches another account. This class happened twice in the 1.2.0 rehearsal (F5, F17); the deploy target now also names the config file and the account.
+
+## A plan shows what this run will install, read from what it installs
+
+A CLI's summary before acting (`polyris-up`'s `(update, A → B)`) takes each value from the input it acts on, never from the tool's own constants. `polyris-up --archive` printed `__version__` while it installed the archive's version, so a branch build read like a rollback. `test_up_names_the_version_the_archive_installs` pins it.
+
 ## `assert` is not validation — use `raise`
 
 `assert name is not None` is stripped by `python -O`. Any check that guards a
@@ -213,15 +225,15 @@ Why: `AssetAlias` semantics are OR — the pipeline triggers when ANY member fir
 the operator: `[alias, a]` becomes `AssetAll([b, c, a])` instead of
 `AssetAll([AssetAny([b, c]), a])`.
 
-## EventBridge patterns use `_flatten_asset_names`, never `asset_names`
+## Flat lists of asset names use `_flatten_asset_names`, never `asset_names`
 
 `AssetAll.asset_names` formats nested `AssetAny` groups as display strings like
-`"(ns/b | ns/c)"`. EventBridge event pattern matching requires exact string
-values — those display strings will never match a real `asset_name` field.
+`"(ns/b | ns/c)"`. A subscription row is keyed by one plain `asset_name`, so such
+a string never matches a real asset.
 
 Use `_flatten_asset_names(node)` (from `polyris/assets.py`) wherever a flat list
-of leaf asset name strings is needed: EventBridge patterns, SFN Map `Items` for
-subscription registration. `asset_names` is for display/repr only.
+of leaf asset names is needed: the SFN Map `Items` of the asset-subscription
+registration and the `assets` field it writes. `asset_names` is for display/repr only.
 
 ## `_create_task` parameters that support `default_args` must default to `None`
 

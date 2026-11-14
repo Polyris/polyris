@@ -57,6 +57,14 @@ describe('TaskDetailModal', () => {
     // ─── Rendering ───────────────────────────────────────────────────────
 
     describe('rendering', () => {
+        it('shows an OR group of wait_for assets by name, not as unknown', () => {
+            // wait_for=[a | b] exactly as a live pipeline-tokens row stored it (polyris-cr7-dev, 2026-11-14).
+            const task = createTask({ wait_for: "[{\"operator\":\"OR\",\"assets\":[{\"asset_name\":\"smoke/a\",\"freshness_hours\":null},{\"asset_name\":\"smoke/b\",\"freshness_hours\":null}]}]" });
+            render(<TaskDetailModal {...defaultProps} task={task} />);
+            expect(screen.getByText('smoke/a | smoke/b')).toBeTruthy();
+            expect(screen.queryByText('unknown')).toBeNull();
+        });
+
         it('renders nothing when task is null', () => {
             const { container } = render(<TaskDetailModal {...defaultProps} task={null} />);
             expect(container.innerHTML).toBe('');

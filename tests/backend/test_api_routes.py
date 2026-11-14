@@ -112,12 +112,6 @@ class MockRepo:
                  if i.get('pipeline_execution') == pipeline_execution]
         return items[:limit] if limit else items
 
-    def get_sfn_arn(self, pipeline_name):
-        item = self.get(pipeline_name)
-        if not item:
-            return None
-        return item.get('sfn_arn', '') or item.get('arn')
-
     @property
     def conditional_check_exception(self):
         return ClientError

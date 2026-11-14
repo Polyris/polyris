@@ -325,6 +325,25 @@ def authenticate(event: dict, repo) -> Principal:
     return verify_cognito_token(token)
 
 
+def optional_principal(event: dict, repo) -> Optional[Principal]:
+    """The caller's principal when it sends a valid token, else None. Never raises.
+
+    For a public route that shows a signed-in caller more (GET /api/health): no
+    token, a token that fails verification, and a verification that cannot
+    finish (the JWKS fetch, the token table, anything else) all mean anonymous.
+    """
+    try:
+        return authenticate(event, repo)
+    except AuthError:
+        return None                                     # no token, or not a valid one
+    except Exception as e:
+        # Fail closed: a token that could not be verified grants nothing, and the public route
+        # still answers, with less, instead of failing for every caller while a dependency is down.
+        log.error("optional_principal", "the token could not be verified; answering as to an anonymous caller",
+                  error=str(e), error_type=type(e).__name__)
+        return None
+
+
 def authorize(principal: Principal, method: str, path: str) -> None:
     """Scope check (ADR #66). Runs in the gate AFTER authenticate(), so identity
     is established. Raises AuthzError (-> 403) if the principal's scope is below

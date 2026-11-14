@@ -123,7 +123,7 @@ describe('AllTasksView', () => {
         it('shows empty state when no tasks', () => {
             setup({ tasks: [] });
             render(<AllTasksView {...defaultProps} />);
-            expect(screen.getByText('No tasks found')).toBeInTheDocument();
+            expect(screen.getByText('No tasks in the last 14 days')).toBeInTheDocument();
         });
 
         it('table has aria-label', () => {

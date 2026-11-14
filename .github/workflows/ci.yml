@@ -57,6 +57,9 @@ jobs:
       - name: Run integration tests
         run: make test-integration
 
+      - name: Run docs drift tests
+        run: make test-docs
+
       - name: Core coverage floor (Principle #22)
         run: make test-cov
 
@@ -88,6 +91,11 @@ jobs:
       - name: Verify pipeline definitions
         run: make smoke-pipelines
 
+      # Last: the probes edit source files while they run. Each puts a fixed coordination
+      # defect back and expects the scenario that pins it to fail (tests/backend/coordination).
+      - name: Coordination mutation probes
+        run: make test-probes
+
   # ============================================
   # Lambda Tests
   # ============================================
@@ -110,7 +118,7 @@ jobs:
           # boto3 calls rather than mocking them (Principle #14) — e.g.
           # console_api/tests/routes/test_reconcile_sfn_status.py against a real
           # Step Functions backend.
-          pip install pytest pytest-mock boto3 "rsa>=4.9" "moto>=4.0.0"
+          pip install pytest pytest-mock boto3 "rsa>=4.9" "moto>=4.0.0" pyyaml
           # console_api/routes/backfill.py imports polyris.partitions /
           # polyris.granularity. In the deployed Lambda the polyris package is
           # bundled via Makefile; for CI install it editable so imports match runtime.
@@ -125,27 +133,12 @@ jobs:
           done
           echo "✅ All Lambda handlers valid"
 
-      - name: Verify constants sync
-        run: make sync-constants
-
       - name: Verify Lambda loggers sync
         run: make sync-loggers
-
-      - name: Run evaluate_deps tests
-        run: |
-          cd sam/lambdas/evaluate_deps && PYTHONPATH=. python -m pytest test_evaluate_deps.py -v
 
       - name: Run notify tests
         run: |
           cd sam/lambdas/notify && PYTHONPATH=. python -m pytest test_notify.py -v
-
-      - name: Run notify_asset_subscribers tests
-        run: |
-          cd sam/lambdas/notify_asset_subscribers && PYTHONPATH=. python -m pytest test_notify_asset_subscribers.py -v
-
-      - name: Run check_assets tests
-        run: |
-          cd sam/lambdas/check_assets && PYTHONPATH=. python -m pytest test_check_assets.py -v
 
       - name: Run console_api tests
         run: |
@@ -153,6 +146,20 @@ jobs:
           # Lambda's own modules (config, routes, dal, …) importable.
           # ee/team/tests live in the private polyris-ee repo (stripped here).
           cd sam/lambdas/console_api && PYTHONPATH=. python -m pytest tests/ -v
+
+      - name: Run coordination tests
+        run: |
+          # moto tables are built from sam/template.yaml (pyyaml); Step
+          # Functions is a fake at the boto3 boundary.
+          cd sam/lambdas/coordination && PYTHONPATH=. python -m pytest tests/ -v
+
+      - name: Run query_subscriptions tests
+        run: |
+          cd sam/lambdas/query_subscriptions && PYTHONPATH=. python -m pytest test_query_subscriptions.py -v
+
+      - name: Run bucket_cleanup tests
+        run: |
+          cd sam/lambdas/bucket_cleanup && PYTHONPATH=. python -m pytest test_bucket_cleanup.py -v
 
   # ============================================
   # Step Function Templates
@@ -266,9 +273,26 @@ jobs:
       - name: Install build tools
         run: pip install aws-sam-cli pyyaml boto3 cfn-lint
 
+      # The committed pins name the last release, which can predate this branch's SDK; the
+      # trial archive carries the checkout's polyris instead (scripts/release.sh moves the pins).
+      - name: Point the Lambdas at this checkout's SDK
+        run: >-
+          sed -i "s|^polyris @ git+.*|polyris @ file://${GITHUB_WORKSPACE}|"
+          sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+
       - name: Build Lambdas (sam build)
         working-directory: sam
         run: sam build --build-dir ../build/sam
+
+      # Each function's package must import with only what sam build put in it.
+      - name: Import the built functions
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          for fn in ReconcileFunction AssetFanoutFunction SweeperFunction; do
+            (cd "build/sam/$fn" && python -c "import reconcile, asset_fanout, sweeper")
+          done
+          (cd build/sam/ConsoleApiFunction && python -c "import main")
 
       - name: Assemble archive
         run: |

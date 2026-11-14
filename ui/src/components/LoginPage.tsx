@@ -592,6 +592,7 @@ export function LoginPage() {
             <div className="lp-login-container">
                 <div className="lp-login-header">
                     <div className="lp-login-logo">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- static export (output: 'export') has no image optimizer for next/image; a fixed-size decorative logo */}
                         <img src="/logo-icon.png" alt="" aria-hidden="true" className="lp-login-logo-icon" />
                         <span className="lp-login-logo-text">polyris</span>
                     </div>
