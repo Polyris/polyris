@@ -11,9 +11,9 @@ import pytest
 from coordination_testkit import NOW, RUN, execution_name, fact, task_row
 
 import sweeper
-from coordination_core import attention as att
-from coordination_core import sweep
-from coordination_core.times import format_utc
+from polyris.coordination import attention as att
+from polyris.coordination import sweep
+from polyris.coordination.times import format_utc
 from failures import CoordinationTransient
 from reconcile import Reconciler
 
@@ -420,7 +420,7 @@ RUN_NAME = "pushed-2026-11-12-and-0a1b2c3d"
 
 
 def _retry_row(tokens, clock, *, failed_hours_ago: float = 1, attempts: int = 0) -> str:
-    from coordination_core.records import push_retry_item
+    from polyris.coordination.records import push_retry_item
 
     item = push_retry_item(run_name=RUN_NAME, consumer="pushed", sfn_arn=PUSHED_ARN,
                            run_input='{"triggered_by": "asset"}', error="ThrottlingException",
@@ -788,7 +788,7 @@ def test_other_adoption_write_errors_fail_the_run(make, tokens, asset_events, mo
 
 
 def test_the_self_check_reports_what_the_console_reads(make, tokens, clock):
-    from coordination_core.records import push_retry_item
+    from polyris.coordination.records import push_retry_item
 
     _waiting(tokens, "load", due=clock.now + timedelta(minutes=5))
     tokens.put_item(Item=push_retry_item(run_name="r", consumer="c", sfn_arn="arn", run_input="{}",
@@ -903,7 +903,7 @@ def test_a_self_check_reading_that_fails_is_reported_and_the_row_still_written(m
 
 
 def test_every_page_of_the_retry_backlog_is_counted(make, tokens, clock, mocker):
-    from coordination_core.records import push_retry_item
+    from polyris.coordination.records import push_retry_item
 
     for i in range(3):
         item = push_retry_item(run_name=f"r{i}", consumer="c", sfn_arn="arn", run_input="{}", error="x", now=clock.now)

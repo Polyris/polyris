@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from coordination_core.wake import COORDINATION_ERROR
+from polyris.coordination.wake import COORDINATION_ERROR
 from failures import is_dead_token, reraise_transient
 
 ACCEPTED = "accepted"

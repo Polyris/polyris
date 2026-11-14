@@ -121,12 +121,25 @@ polyris/
 
 ### Generated Lambda code
 
-Some Lambda code is generated from the SDK, so every platform release carries the same logic. Never edit the copies:
+`python -m polyris.codegen.sync_enums` writes `console_api/constants_generated.py` and `ui/src/generated/enums.ts` from `polyris/constants.py`. Never edit them; CI fails on drift (`make check-generate-enums`).
 
-- `python -m polyris.codegen.sync_enums` writes `console_api/constants_generated.py` and `ui/src/generated/enums.ts` from `polyris/constants.py`.
-- `python -m polyris.codegen.sync_coordination` copies `polyris/coordination/` into `sam/lambdas/coordination/coordination_core/` and `sam/lambdas/console_api/coordination_core/`.
+### Deploy your branch to a dev account
 
-CI fails on drift (`make check-generate-enums`, `make check-generate-coordination`).
+Your tests always run your checkout: `pip install -e .` makes `import polyris` read this folder. A deploy does not: `sam build` installs polyris into the console and coordination Lambdas from their `requirements.txt`, which pin the last release. Before you deploy a branch, point both pins at your checkout:
+
+```bash
+sed -i "s|^polyris @ .*|polyris @ file://$PWD|" \
+  sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+cd sam && sam build && sam deploy
+```
+
+Never commit that change: the path exists only on your machine, so CI and everyone else would fail to build. While it is in place `tests/sdk/test_lambda_sdk_pins.py` fails, as a reminder. Undo it before you commit:
+
+```bash
+git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+```
+
+`scripts/release.sh` moves both pins to the new tag when it cuts a release. [FROM_SOURCE.md](docs/deployment/FROM_SOURCE.md) has the whole deploy.
 
 ### Testing Strategy
 
@@ -179,7 +192,7 @@ PYTHONPATH=. pytest tests/test_coordination_reconcile.py -v
 ### Adding a New Task Status
 
 1. Add the member to `TaskStatus` in `polyris/constants.py`, and to every status set it belongs to
-2. Run `python -m polyris.codegen.sync_enums` and `python -m polyris.codegen.sync_coordination`
+2. Run `python -m polyris.codegen.sync_enums`
 3. Add a parity test if another artifact (an SFN template, the UI) reads the value (CLAUDE.md Principle #28)
 
 ### Adding a New API Endpoint
@@ -234,7 +247,7 @@ To find your key ID: `gpg --list-secret-keys --keyid-format=long`
 
 - [ ] Commits GPG-signed — see [GPG signing](#sign-your-commits-gpg)
 - [ ] Tests pass locally (`make test`)
-- [ ] Generated code in sync (`make check-generate-enums check-generate-coordination`)
+- [ ] Generated code in sync (`make check-generate-enums`)
 - [ ] No lint errors (`make lint`)
 - [ ] CHANGELOG.md updated
 - [ ] Documentation updated (if API changed)

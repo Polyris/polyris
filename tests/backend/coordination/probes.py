@@ -5,15 +5,15 @@ that must occur once in its file), and the scenario that must then fail.
 Some defects are stopped by two guards; their probe removes both. The runner
 (`python tests/backend/coordination/run_probes.py`) applies each probe, runs
 its scenario, expects it to fail and restores the files. Probes target the
-code the harness runs: the templates and the Lambdas' generated
-coordination_core. test_meta.py requires one for every defect whose
+code the harness runs: the templates, the Lambdas and the coordination core
+(polyris/coordination), which the Lambdas import. test_meta.py requires one for every defect whose
 scenario runs.
 """
 
 from typing import NamedTuple, Tuple
 
 SCENARIOS = "tests/backend/coordination/test_scenarios.py"
-CORE = "sam/lambdas/coordination/coordination_core/asset_conditions.py"
+CORE = "polyris/coordination/asset_conditions.py"
 REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
 TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
 EXECUTIONS_ROUTE = "sam/lambdas/console_api/routes/executions.py"
@@ -83,7 +83,7 @@ PROBES: Tuple[Probe, ...] = (
                         "        every_event = True"),),
           f"{SCENARIOS}::test_push_and_starts_exactly_one_run_for_the_day"),
     # The old AND run names ended in the constant `-asset-and`.
-    Probe("B-X1", (Edit("sam/lambdas/coordination/coordination_core/run_name.py",
+    Probe("B-X1", (Edit("polyris/coordination/run_name.py",
                         '    tail = f"-{_clean(date)}-{kind}-{_digest(pipeline, date, kind, discriminator, length=8)}"',
                         '    tail = f"-{_clean(date)}-asset-and"'),),
           f"{SCENARIOS}::test_two_push_consumers_with_the_same_task_id_on_one_day_both_run"),
@@ -113,7 +113,7 @@ PROBES: Tuple[Probe, ...] = (
     # nothing without asking it. The old code parked any task whose deps finished during the
     # pause and signalled every parked task deps_ready through its wait_token; the probe does both.
     Probe("B-P2", (
-        Edit("sam/lambdas/coordination/coordination_core/decide.py",
+        Edit("polyris/coordination/decide.py",
              "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"
              "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n",
              "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n"
@@ -157,12 +157,9 @@ PROBES: Tuple[Probe, ...] = (
                         ""),),
           f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
     # The old registration replaced the row whatever it held.
-    Probe("B-O1", (Edit("sam/lambdas/console_api/coordination_core/ownership.py",
+    Probe("B-O1", (Edit("polyris/coordination/ownership.py",
                         'RAISE = "generation = if_not_exists(generation, :zero) + :one"',
-                        'RAISE = "generation = if_not_exists(generation, :one) + :zero"'),
-                   Edit("sam/lambdas/coordination/coordination_core/ownership.py",
-                        'RAISE = "generation = if_not_exists(generation, :zero) + :one"',
-                        'RAISE = "generation = if_not_exists(generation, :one) + :zero"')),
+                        'RAISE = "generation = if_not_exists(generation, :one) + :zero"'),),
           f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
     # Without the cutover every consumer subscribed now reacts to every fact the catch-up replays.
     Probe("B-U2", (Edit("sam/lambdas/coordination/asset_fanout.py",
@@ -271,7 +268,7 @@ PROBES: Tuple[Probe, ...] = (
                         "            return self.registry.fact(item)\n        except ValueError as exc:\n",
                         "            return self.registry.fact(item)\n        except KeyError as exc:\n"),),
           f"{SCENARIOS}::test_an_unreadable_fact_fails_no_waiting_task"),
-    Probe("B-N1", (Edit("sam/lambdas/coordination/coordination_core/records.py",
+    Probe("B-N1", (Edit("polyris/coordination/records.py",
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),
           f"{SCENARIOS}::test_a_warning_about_an_old_partition_reaches_the_bell"),

@@ -12,7 +12,7 @@ Table schema:
 
 from boto3.dynamodb.conditions import Key
 
-from coordination_core import attention as att
+from polyris.coordination import attention as att
 from config import dynamodb, TABLE_NAME
 from utils import scan_all, query_all
 

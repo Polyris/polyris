@@ -1,6 +1,6 @@
 # ADR #130 — Coordination layer: one reconciler, facts as state, stream-driven hints
 
-> **Status:** ACCEPTED (2026-11-12), revision 6 (2026-11-13: one owner per task row, by generation, §2.1). Implemented on `feat/coordination-reconciler` for v1.2.0.
+> **Status:** ACCEPTED (2026-11-12), revision 7 (2026-11-13: one owner per task row, by generation, §2.1; 2026-11-14: the Lambdas import the coordination package from the SDK, §10). Implemented on `feat/coordination-reconciler` for v1.2.0.
 >
 > The design went through five review rounds: break, architect, developer, QA, DevOps and reliability reviews. The implementation went through two more rounds of break, architect and reliability reviews. Every finding is resolved below or listed under *Out of scope*.
 >
@@ -440,7 +440,7 @@ Targets: primary path p99 ≤ 30 s; through the sweeper ≤ 40 min.
 ### 10. Packaging
 
 - `decide`, `asset_conditions`, `trigger_rules` and `partition_date` live in `polyris/coordination/`, under the 100% pure-logic coverage floor. `polyris/local.py` uses the same `trigger_rules`.
-- `python -m polyris.codegen.sync_coordination` emits them into `sam/lambdas/coordination/coordination_core/` **and** `sam/lambdas/console_api/coordination_core/`, with a `--check` gate in CI. The console and the Lambdas therefore always run the same code from the same platform release, independent of the SDK version pinned in `requirements.txt`.
+- The coordination Lambdas and the console import them from the polyris release their `requirements.txt` pins, as ADR #102 set up for the console (revision 7, 2026-11-14). A copy of the package in each Lambda kept them apart from that pin; it is no longer needed, because `main` moves only with a release, `scripts/release.sh` moves both pins with the version, and a deploy from source points both at the checkout. `tests/sdk/test_lambda_sdk_pins.py` checks that both pins name the repository's version and that the release script moves both, and the CI trial archive builds with the checkout's SDK and imports every function.
 - One CodeUri, `sam/lambdas/coordination/`, holds three functions (`Reconcile`, `AssetFanout`, `Sweeper`), each with its own role. What the reconciler needs is one managed policy (`polyris-reconcile`) that every role running it attaches; each role adds only its own needs. A test records every call the code makes and compares it with the roles.
 
 **Removed:**

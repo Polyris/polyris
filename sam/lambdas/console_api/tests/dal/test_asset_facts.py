@@ -11,8 +11,8 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from coordination_core.asset_conditions import evaluate
-from coordination_core.spec import parse_schedule
+from polyris.coordination.asset_conditions import evaluate
+from polyris.coordination.spec import parse_schedule
 
 _KIT_PATH = Path(__file__).resolve().parents[3] / "coordination" / "tests" / "coordination_testkit.py"
 _spec = importlib.util.spec_from_file_location("coordination_testkit", _KIT_PATH)

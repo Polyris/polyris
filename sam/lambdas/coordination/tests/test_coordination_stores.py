@@ -9,7 +9,7 @@ from coordination_testkit import NOW, STARTED_AT, TABLES, FakeSfn, client_error,
 
 import env
 import failures
-from coordination_core import attention as att
+from polyris.coordination import attention as att
 from failures import CoordinationTransient
 from signals import ACCEPTED, DEAD, Signals
 from stores import NOT_FOUND, FactStore, Registry, TaskStore
@@ -220,7 +220,7 @@ def test_transient_classification(exc, transient):
 
 
 def test_the_transient_error_keeps_the_name_the_state_machines_retry_on():
-    from coordination_core import wake
+    from polyris.coordination import wake
 
     assert failures.CoordinationTransient.__name__ == wake.TRANSIENT_ERROR
 

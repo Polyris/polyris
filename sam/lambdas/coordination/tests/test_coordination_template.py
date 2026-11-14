@@ -194,8 +194,8 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
     from datetime import timedelta
 
     import sweeper
-    from coordination_core import attention as att
-    from coordination_core.times import format_utc
+    from polyris.coordination import attention as att
+    from polyris.coordination.times import format_utc
     from coordination_testkit import fact
 
     clock = NOW + timedelta(hours=74)
@@ -218,7 +218,7 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
     consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})  # destroyed
     registry.put_item(Item={"pipeline_name": "pushed",
                             "asset_schedule": json.dumps({"operator": "AND", "assets": ["ns/orders"]})})
-    from coordination_core.records import push_retry_item
+    from polyris.coordination.records import push_retry_item
     retry = push_retry_item(run_name="pushed-retry", consumer="pushed", sfn_arn="arn:pushed", run_input="{}",
                             error="ThrottlingException", now=clock - timedelta(hours=1))
     retry[att.DUE] = format_utc(clock - timedelta(minutes=1))
@@ -329,7 +329,7 @@ def test_time_budgets_fit_their_timeouts(resources):
     assert asset_fanout.RESERVE_MS / 1000 < resources["AssetFanoutFunction"]["Properties"]["Timeout"]
     # The sweeper works within its budget, and its lease outlives a run that dies at the timeout
     # but not the next scheduled run (ADR #130 §8).
-    from coordination_core import sweep
+    from polyris.coordination import sweep
 
     timeout = resources["SweeperFunction"]["Properties"]["Timeout"]
     assert sweep.BUDGET.total_seconds() + 30 <= timeout < sweep.LEASE.total_seconds() < 5 * 60

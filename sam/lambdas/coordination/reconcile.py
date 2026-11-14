@@ -26,17 +26,17 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from botocore.exceptions import BotoCoreError, ClientError
 
 import env
-from coordination_core import decide as dc
-from coordination_core import ownership
-from coordination_core import spec as sp
-from coordination_core import sweep
-from coordination_core import trigger_rules as tr
-from coordination_core import wake
-from coordination_core.asset_conditions import evaluate as evaluate_assets
-from coordination_core.partition import partition_date
-from coordination_core.records import warning_item
-from coordination_core.times import format_utc, parse_utc
-from coordination_core.statuses import RECONCILABLE, SKIPPED, WAITING_PAUSED
+from polyris.coordination import decide as dc
+from polyris.coordination import ownership
+from polyris.coordination import spec as sp
+from polyris.coordination import sweep
+from polyris.coordination import trigger_rules as tr
+from polyris.coordination import wake
+from polyris.coordination.asset_conditions import evaluate as evaluate_assets
+from polyris.coordination.partition import partition_date
+from polyris.coordination.records import warning_item
+from polyris.coordination.times import format_utc, parse_utc
+from polyris.coordination.statuses import RECONCILABLE, SKIPPED, WAITING_PAUSED
 from failures import CoordinationTransient, reraise_transient
 from logger import log
 from signals import ACCEPTED, Signals

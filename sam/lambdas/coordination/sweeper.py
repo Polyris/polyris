@@ -28,12 +28,12 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from coordination_core import attention as att
-from coordination_core import sweep
-from coordination_core.partition import partition_date
-from coordination_core.records import FACT_VERSION, fact_from_item, warning_item
-from coordination_core.statuses import RECONCILABLE, WAITING_PAUSED
-from coordination_core.times import format_utc, parse_utc
+from polyris.coordination import attention as att
+from polyris.coordination import sweep
+from polyris.coordination.partition import partition_date
+from polyris.coordination.records import FACT_VERSION, fact_from_item, warning_item
+from polyris.coordination.statuses import RECONCILABLE, WAITING_PAUSED
+from polyris.coordination.times import format_utc, parse_utc
 import env
 from asset_fanout import AssetFanout
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient

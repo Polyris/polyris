@@ -18,8 +18,8 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import RECONCILE_FUNCTION_ARN, lambda_client, sfn
-from coordination_core import ownership
-from coordination_core.wake import DEAD_TOKEN_CODES
+from polyris.coordination import ownership
+from polyris.coordination.wake import DEAD_TOKEN_CODES
 from dal import executions_repo, pipelines_repo, backfills_repo
 from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
 from constants import Limits, TASK_SETTLED_STATUSES, derive_execution_status

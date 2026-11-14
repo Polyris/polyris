@@ -10,7 +10,7 @@ from boto3.dynamodb.conditions import Key, Attr
 
 from config import sfn
 from constants import Limits
-from coordination_core import sweep
+from polyris.coordination import sweep
 from dal import executions_repo, pipelines_repo, circuit_breakers_repo
 from response import cors_response
 from logger import log

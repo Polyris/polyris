@@ -401,7 +401,9 @@ tests/
 polyris-up --profile <profile>                 # install / upgrade the platform
 polyris-down --profile <profile>               # remove it
 
-# Contributors: from a checkout
+# Contributors: from a checkout. sam build packs polyris from the Lambdas' requirements.txt (the last release):
+# point both pins at the checkout first, never commit that, undo it before a commit (CONTRIBUTING.md)
+sed -i "s|^polyris @ .*|polyris @ file://$PWD|" sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
 cd sam && sam build && sam deploy --profile <profile>
 cd ui && npm ci && npm run build && ./deploy.sh <stack> <region> --profile <profile>
 
@@ -425,10 +427,11 @@ Both checks: run on `--dry-run` too; skipped on `--destroy` (no pipeline resourc
 
 ### Lambda packaging: `polyris` SDK comes from `requirements.txt` (ADR #102)
 
-The console Lambda declares the SDK in `sam/lambdas/console_api/requirements.txt`:
+The console Lambda and the coordination Lambdas declare the SDK in `sam/lambdas/console_api/requirements.txt` and `sam/lambdas/coordination/requirements.txt`, and import `polyris.coordination` and `polyris.partitions` from it (ADR #130 §10):
 ```
 polyris @ git+https://<PUBLIC_REPO_URL>@vX.Y.Z
 ```
+Both pins name the repository's version; `scripts/release.sh` moves both (`tests/sdk/test_lambda_sdk_pins.py`). To deploy a checkout from source, point both at it (`polyris @ file:///absolute/path`) and never commit that.
 
 **Things Claude must NOT propose:**
 - ❌ Re-adding a `console_api/polyris` symlink. No repo-root `polyris/` exists after the split.
@@ -567,7 +570,7 @@ WAITING_STATUSES = {WAITING, DEPS_READY, WAITING_DELAY, WAITING_PAUSED, WAITING_
 RECONCILABLE_STATUSES = {WAITING, WAITING_PAUSED}  # the only rows the reconciler acts on (ADR #130)
 ```
 
-After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums` and `python -m polyris.codegen.sync_coordination` (Principle #27).
+After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums` (Principle #27). The coordination Lambdas import `polyris.constants` from the SDK itself.
 
 ---
 
@@ -645,7 +648,7 @@ Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
 
 **`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI, ADR #130 §9). Build every warning row with `records.warning_item` — never by hand:
 ```python
-from coordination_core.records import warning_item
+from polyris.coordination.records import warning_item
 
 executions_repo.put(warning_item(
     kind="notify",                      # a WarningKind; add a member there for a new kind

@@ -70,9 +70,6 @@ jobs:
       - name: Check generated enums in sync
         run: make check-generate-enums
 
-      - name: Check generated coordination copies in sync
-        run: make check-generate-coordination
-
       - name: Check generated run_task $dateVars in sync
         run: make check-generate-variables
 
@@ -276,9 +273,26 @@ jobs:
       - name: Install build tools
         run: pip install aws-sam-cli pyyaml boto3 cfn-lint
 
+      # The committed pins name the last release, which can predate this branch's SDK; the
+      # trial archive carries the checkout's polyris instead (scripts/release.sh moves the pins).
+      - name: Point the Lambdas at this checkout's SDK
+        run: >-
+          sed -i "s|^polyris @ git+.*|polyris @ file://${GITHUB_WORKSPACE}|"
+          sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+
       - name: Build Lambdas (sam build)
         working-directory: sam
         run: sam build --build-dir ../build/sam
+
+      # Each function's package must import with only what sam build put in it.
+      - name: Import the built functions
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          for fn in ReconcileFunction AssetFanoutFunction SweeperFunction; do
+            (cd "build/sam/$fn" && python -c "import reconcile, asset_fanout, sweeper")
+          done
+          (cd build/sam/ConsoleApiFunction && python -c "import main")
 
       - name: Assemble archive
         run: |

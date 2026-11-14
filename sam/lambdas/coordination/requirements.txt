@@ -1,0 +1,10 @@
+# Coordination Lambdas (reconcile, asset-fanout, sweeper): runtime dependencies,
+# packaged by `sam build` from this CodeUri. boto3 comes with the Lambda runtime.
+#
+# polyris SDK core: the coordination logic (polyris.coordination) and
+# polyris.partitions, from the same release as the platform (ADR #102,
+# ADR #130 §10). scripts/release.sh moves this pin with the console's.
+# To deploy a checkout from source, point it at the checkout instead
+# (`polyris @ file:///absolute/path/to/polyris`) and do not commit that.
+#
+polyris @ git+https://github.com/Polyris/polyris@v1.1.4

@@ -162,8 +162,8 @@ def task_row(task: str, *, deps: Optional[List[str]] = None, wait_for: Optional[
 
 def fact(asset: str, key: str, *, event_time: str = "2026-11-12T04:00:00.000Z", **extra: Any) -> Dict[str, Any]:
     """An asset-events row as an ADR #130 writer stores it."""
-    from coordination_core.partition import partition_date
-    from coordination_core.partitions import detect_granularity
+    from polyris.coordination.partition import partition_date
+    from polyris.partitions import detect_granularity
 
     item: Dict[str, Any] = {
         "asset_name": asset,

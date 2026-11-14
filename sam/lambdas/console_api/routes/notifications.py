@@ -18,7 +18,7 @@ from constants import Limits
 from response import cors_response
 from logger import log
 from utils import safe_param_int
-from coordination_core.times import format_utc
+from polyris.coordination.times import format_utc
 
 
 def get_notifications(event: Dict) -> Dict:

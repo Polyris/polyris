@@ -1,8 +1,6 @@
 """Task status sets used by the coordination logic (ADR #130 §2, §3).
 
-Derived from :mod:`polyris.constants`, the single source of truth. The Lambda
-copy of this package gets a literal version of this module from
-``python -m polyris.codegen.sync_coordination``.
+Derived from :mod:`polyris.constants`, the single source of truth.
 """
 
 from ..constants import (

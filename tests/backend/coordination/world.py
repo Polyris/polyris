@@ -488,7 +488,7 @@ class World:
 
     def warnings(self) -> List[Dict[str, Any]]:
         """Coordination warnings as the bell reads them: through the attention index."""
-        from coordination_core import attention as att
+        from polyris.coordination import attention as att
 
         found: List[Dict[str, Any]] = []
         for partition in att.partitions(att.WARN):

@@ -14,9 +14,9 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from config import dynamodb, ASSET_EVENTS_TABLE
 from constants import Limits
-from coordination_core.asset_conditions import Fact
-from coordination_core.partitions import detect_granularity
-from coordination_core.records import PARTITION_INDEX, asset_fact_item, fact_from_item
+from polyris.coordination.asset_conditions import Fact
+from polyris.partitions import detect_granularity
+from polyris.coordination.records import PARTITION_INDEX, asset_fact_item, fact_from_item
 from logger import log
 from utils import scan_all, query_all
 

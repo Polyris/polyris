@@ -234,7 +234,7 @@ def _write(repo, now):
 
 def test_write_fact_writes_the_shared_shape_and_never_overwrites(mocker):
     from datetime import datetime, timezone
-    from coordination_core.records import asset_fact_item
+    from polyris.coordination.records import asset_fact_item
     table = mocker.MagicMock()
     repo = _make_repo_with_table(mocker, table)
     now = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)

@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from boto3.dynamodb.types import TypeDeserializer
 
-from coordination_core import spec as sp
-from coordination_core.statuses import RECONCILABLE, WAITING_PAUSED
+from polyris.coordination import spec as sp
+from polyris.coordination.statuses import RECONCILABLE, WAITING_PAUSED
 
 #: The dependency wait of the dependency wrapper: where its token is signalled.
 WAIT_STATE = "Wait_For_Dependencies"

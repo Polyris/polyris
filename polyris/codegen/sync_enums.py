@@ -8,8 +8,8 @@ inheritance) and writes:
   1. sam/lambdas/console_api/constants_generated.py  (Lambda console_api)
   2. ui/src/generated/enums.ts                        (Frontend TypeScript)
 
-The coordination Lambdas get their constants from polyris/coordination
-through sync_coordination instead.
+The coordination Lambdas import polyris itself (from their requirements.txt),
+so they read polyris.constants directly.
 
 Why Python-import the source rather than regex-parse: it lets us
 inherit existing logic (TaskStatus is an Enum subclass; PipelineStatus

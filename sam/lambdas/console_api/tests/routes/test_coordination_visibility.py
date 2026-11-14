@@ -13,9 +13,9 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from coordination_core import sweep
-from coordination_core.records import warning_item
-from coordination_core.times import format_utc
+from polyris.coordination import sweep
+from polyris.coordination.records import warning_item
+from polyris.coordination.times import format_utc
 
 _KIT_PATH = Path(__file__).resolve().parents[3] / "coordination" / "tests" / "coordination_testkit.py"
 _spec = importlib.util.spec_from_file_location("coordination_testkit", _KIT_PATH)

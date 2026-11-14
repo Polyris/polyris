@@ -19,8 +19,8 @@ from coordination_testkit import (
 
 import env
 import reconcile
-from coordination_core import attention as att
-from coordination_core import decide as dc
+from polyris.coordination import attention as att
+from polyris.coordination import decide as dc
 from failures import CoordinationTransient
 
 LOAD = execution_name("load")
@@ -257,7 +257,7 @@ def test_a_wrapper_that_is_not_visible_yet_is_not_taken_for_gone(reconciler, tok
     """DescribeExecution is eventually consistent: a row that registered moments ago keeps its task."""
     from datetime import timedelta
 
-    from coordination_core.times import format_utc
+    from polyris.coordination.times import format_utc
     from coordination_testkit import NOW
 
     _dead(tokens, sfn, None, started_at=format_utc(NOW - timedelta(seconds=30)))
@@ -575,7 +575,7 @@ def test_a_claim_retried_after_its_write_applied_passes_and_no_other_owner_does(
     from boto3.dynamodb.types import TypeDeserializer
     from botocore.exceptions import ClientError
 
-    from coordination_core import ownership
+    from polyris.coordination import ownership
 
     args = _state(_sfn("dependency_wrapper/sfn.tpl.json")["States"], claim)["Arguments"]
 

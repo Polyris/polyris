@@ -17,12 +17,12 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 import env
-from coordination_core import attention as att
-from coordination_core import ownership
-from coordination_core.asset_conditions import Fact, merge_facts
-from coordination_core.records import PARTITION_INDEX, fact_from_item
-from coordination_core.statuses import ABORTED, RECONCILABLE, SKIPPED, WAITING, WAITING_PAUSED
-from coordination_core.times import format_utc, parse_utc
+from polyris.coordination import attention as att
+from polyris.coordination import ownership
+from polyris.coordination.asset_conditions import Fact, merge_facts
+from polyris.coordination.records import PARTITION_INDEX, fact_from_item
+from polyris.coordination.statuses import ABORTED, RECONCILABLE, SKIPPED, WAITING, WAITING_PAUSED
+from polyris.coordination.times import format_utc, parse_utc
 from failures import CoordinationTransient, is_condition_failed
 
 NOT_FOUND = "not_found"

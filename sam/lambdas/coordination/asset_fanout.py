@@ -29,11 +29,11 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 import env
-from coordination_core import spec as sp
-from coordination_core.asset_conditions import evaluate as evaluate_assets
-from coordination_core.records import FACT_VERSION, fact_from_item, push_retry_item, warning_item
-from coordination_core.run_name import KIND_AND, KIND_EVENT, run_name
-from coordination_core.times import parse_utc
+from polyris.coordination import spec as sp
+from polyris.coordination.asset_conditions import evaluate as evaluate_assets
+from polyris.coordination.records import FACT_VERSION, fact_from_item, push_retry_item, warning_item
+from polyris.coordination.run_name import KIND_AND, KIND_EVENT, run_name
+from polyris.coordination.times import parse_utc
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient, reraise_transient
 from logger import log
 from reconcile import Reconciler

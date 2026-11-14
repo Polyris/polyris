@@ -11,7 +11,7 @@
 from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
 from botocore.exceptions import ConnectionError as BotoConnectionError
 
-from coordination_core.wake import DEAD_TOKEN_CODES
+from polyris.coordination.wake import DEAD_TOKEN_CODES
 
 TRANSIENT_CODES = frozenset({
     "ThrottlingException",
@@ -38,7 +38,7 @@ class CoordinationTransient(Exception):
     """A transient failure. Nothing was written; the caller should retry.
 
     Lambda reports it under its class name, which the state machines' Retry
-    matches: the name must stay equal to coordination_core.wake.TRANSIENT_ERROR.
+    matches: the name must stay equal to polyris.coordination.wake.TRANSIENT_ERROR.
     """
 
 
