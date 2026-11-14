@@ -236,3 +236,59 @@ export const createNotification = (overrides = {}) => ({
     time_ago: '5 minutes ago',
     ...overrides,
 });
+
+// ─── /api/health (System status) ─────────────────────────────────────────────
+// The shapes routes/health.py answers, and what api.get makes of them.
+
+type HealthWords = { dynamodb?: unknown; stepfunctions?: unknown; coordination?: unknown };
+
+export const HEALTH_CHECKED_AT = '2026-11-14T11:58:00.123Z';
+
+/** A finding as the backend writes it (contract §2, clause 3). */
+export const createFinding = (overrides = {}) => ({
+    title: 'Asset event delivery is off',
+    resource: 'The stream mapping of polyris-dev-polyris-asset-fanout is Disabled.',
+    changed_at: '2026-11-14T11:20:00.000Z',
+    impact: 'Tasks that wait for an asset start up to 40 minutes late, and pipelines scheduled on an asset up to an hour late.',
+    fix: 'Re-enable the mapping: in the Lambda console, open polyris-dev-polyris-asset-fanout, then Configuration → Triggers.',
+    command: 'aws lambda update-event-source-mapping --uuid 48529b7b-abda-4306-8550-8d3bbc1391c3 --enabled --region us-east-1',
+    ...overrides,
+});
+
+/** The full body: a caller with a valid token, or any caller while auth is off. */
+export const createHealthBody = (words: HealthWords = {}, findings: unknown[] = []) => ({
+    status: 'healthy',
+    timestamp: '2026-11-14T12:00:00.000Z',
+    response_time_ms: 41.2,
+    detail: 'full',
+    checks: {
+        dynamodb: { status: words.dynamodb ?? 'healthy', latency_ms: 12.5 },
+        stepfunctions: { status: words.stepfunctions ?? 'healthy', latency_ms: 80.1 },
+        recent_failures: { status: 'healthy', failures_last_hour: 0 },
+        circuit_breakers: { status: 'healthy', message: 'Circuit breakers not configured' },
+        coordination: { status: words.coordination ?? 'healthy', report: { checked_at: HEALTH_CHECKED_AT, fanout_mapping: 'Enabled' } },
+    },
+    findings,
+});
+
+/** The minimal body: anyone else gets the status words only. */
+export const createMinimalHealthBody = (words: HealthWords = {}) => ({
+    status: 'healthy',
+    timestamp: '2026-11-14T12:00:00.000Z',
+    response_time_ms: 41.2,
+    detail: 'minimal',
+    checks: {
+        dynamodb: { status: words.dynamodb ?? 'healthy' },
+        stepfunctions: { status: words.stepfunctions ?? 'healthy' },
+        recent_failures: { status: 'healthy' },
+        circuit_breakers: { status: 'healthy' },
+        coordination: { status: words.coordination ?? 'healthy' },
+    },
+});
+
+/** api.get's result for a 2xx: the body under `data`, and spread. */
+export const apiAnswered = (body: object) => ({ ok: true, data: body, ...body });
+
+/** api.get's result for a failure; `body` only when the answer had a JSON one. */
+export const apiFailed = (error: string, status?: number, body?: unknown) =>
+    ({ ok: false, error, status, ...(body === undefined ? {} : { body }) });

@@ -280,3 +280,46 @@ describe('getWaitingReason with a wait_for group', () => {
         expect(getWaitingReason({ status: 'waiting', wait_for: LIVE_OR_GROUP })).toBe('Waiting for assets: smoke/a | smoke/b');
     });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// formatAgo — the System status panel's own relative times. formatAgo
+// keeps the tiers of the backend's ago(), which writes the findings' texts.
+// ────────────────────────────────────────────────────────────────────────────
+
+import { formatAgo } from './formatters';
+
+describe('formatAgo', () => {
+    const now = Date.parse('2026-11-14T12:00:00Z');
+
+    it('counts minutes under 120 minutes', () => {
+        expect(formatAgo('2026-11-14T11:59:30Z', now)).toBe('0 min ago');
+        expect(formatAgo('2026-11-14T11:38:00Z', now)).toBe('22 min ago');
+        expect(formatAgo('2026-11-14T10:00:01Z', now)).toBe('119 min ago');
+    });
+
+    it('counts hours under 48 hours', () => {
+        expect(formatAgo('2026-11-14T10:00:00Z', now)).toBe('2 h ago');
+        expect(formatAgo('2026-11-12T12:00:01Z', now)).toBe('47 h ago');
+    });
+
+    it('counts whole days from 48 hours', () => {
+        expect(formatAgo('2026-11-12T12:00:00Z', now)).toBe('2 days ago');
+        expect(formatAgo('2026-11-09T11:00:00Z', now)).toBe('5 days ago');
+    });
+
+    it('reads a future time (clock skew) as 0 min ago', () => {
+        expect(formatAgo('2026-11-14T12:05:00Z', now)).toBe('0 min ago');
+    });
+
+    it('is null for a missing or unparseable time', () => {
+        expect(formatAgo(null, now)).toBeNull();
+        expect(formatAgo(undefined, now)).toBeNull();
+        expect(formatAgo('', now)).toBeNull();
+        expect(formatAgo('not-a-date', now)).toBeNull();
+    });
+
+    it('measures from the current time by default', () => {
+        // The file's fake clock stands at 2026-05-08T14:00:00Z.
+        expect(formatAgo('2026-05-08T13:15:00Z')).toBe('45 min ago');
+    });
+});

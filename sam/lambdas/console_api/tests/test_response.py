@@ -135,3 +135,14 @@ class TestValidationAndNotFoundErrors:
         assert resp['statusCode'] == 404
         assert 'my-pipeline' in body['message']
         assert body['details'] == {'resource_type': 'pipeline', 'resource_id': 'my-pipeline'}
+
+
+def test_an_html_page_escapes_what_it_echoes():
+    """The action pages echo the execution name from the link; markup in it must not run (reflected XSS)."""
+    from response import html_response
+
+    page = html_response(404, "Task not found", 'Task not found: <img src=x onerror=alert(1)>', "❌", False)["body"]
+
+    assert "<img src=x onerror=alert(1)>" not in page
+    assert "Task not found: &lt;img src=x onerror=alert(1)&gt;" in page
+    assert "❌" in page                          # an emoji icon passes through unchanged

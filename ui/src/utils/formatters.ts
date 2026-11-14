@@ -249,6 +249,27 @@ export const formatRelativeTime = (iso: string | null | undefined): string => {
     return iso.slice(0, 10);
 };
 
+/**
+ * formatAgo — how long ago an ISO time was, in the tiers the backend's `ago()` uses
+ * for the texts of System status findings, so the times the panel adds read like the
+ * ones in the findings it shows:
+ *   - under 120 minutes →  "N min ago"
+ *   - under 48 hours    →  "N h ago"
+ *   - otherwise         →  "N days ago" (floored)
+ *
+ * A future time (clock skew) reads "0 min ago". Null for a missing or unparseable time.
+ */
+export const formatAgo = (iso: string | null | undefined, now: number = Date.now()): string | null => {
+    if (!iso) return null;
+    const then = Date.parse(iso);
+    if (Number.isNaN(then)) return null;
+    const minutes = Math.floor(Math.max(0, now - then) / 60000);
+    if (minutes < 120) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `${hours} h ago`;
+    return `${Math.floor(hours / 24)} days ago`;
+};
+
 const TRIGGER_SOURCE_LABELS: Record<string, string> = {
     console_run: 'Manual',
     schedule: 'Scheduled',

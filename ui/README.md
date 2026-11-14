@@ -61,6 +61,7 @@ ui/
 │   │   │   ├── usePipelineQueries.ts   # Pipelines, detail, executions, metrics
 │   │   │   ├── useAssetQueries.ts      # Assets, events, triggers, backfill
 │   │   │   ├── useGlobalQueries.ts     # All-tasks, all-runs, consecutive progress
+│   │   │   ├── useSystemStatusQuery.ts # /api/health as the System pill's state
 │   │   │   └── index.ts
 │   │   ├── usePipelineActions.tsx   # Pipeline action handlers (run, stop, etc.)
 │   │   ├── usePipelineData.ts      # Pipeline data aggregation

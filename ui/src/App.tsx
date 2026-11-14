@@ -4,8 +4,7 @@ import React, { lazy, Suspense, useEffect } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import { Button } from '@/components/ui/button';
 import { AlertTriangle, Loader2 } from './utils/icons';
-import EngineHealthBanner from './components/EngineHealthBanner';
-import { 
+import {
     HelpModal,
     ErrorBoundary,
     CommandPalette,
@@ -130,8 +129,6 @@ function App() {
                     <Button size="sm" variant="secondary" onClick={() => window.location.reload()}>Retry Now</Button>
                 </div>
             )}
-            
-            <EngineHealthBanner />
 
             <main className="main" id="main-content">
                 {mainView === 'pipelines' ? (

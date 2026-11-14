@@ -612,8 +612,11 @@ def reconcile_sfn_status(execution_name, sfn_arn):
         all_resolved = False
         if sfn_status in ('failed', 'timed_out'):
             try:
-                task_items = executions_repo.query_by_pipeline_execution(
-                    execution_name, projection='#s', expr_names={'#s': 'status'})
+                # execution_name lets should_skip_token_row drop the internal rows that share the run:
+                # warnings (status failed), the pause record and the DAG snapshot (no status).
+                items = executions_repo.query_by_pipeline_execution(
+                    execution_name, projection='execution_name, #s', expr_names={'#s': 'status'})
+                task_items = [i for i in items if not should_skip_token_row(i)]
                 all_resolved = bool(task_items) and all(
                     i.get('status') in TASK_SUCCESS_STATUSES for i in task_items)
             except (ClientError, BotoCoreError) as e:

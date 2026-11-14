@@ -68,7 +68,7 @@ class TestPatPrimitives:
     def test_is_public_path(self):
         from auth import is_public_path
         assert is_public_path("/api/health")
-        assert is_public_path("/api/health/simple")
+        assert is_public_path("/api/health/live")
         assert is_public_path("/api/metrics")
         assert not is_public_path("/api/pipelines")
         assert not is_public_path("/api/tokens")

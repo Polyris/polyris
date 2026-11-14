@@ -780,9 +780,9 @@ function ApiReferenceTab() {
                     <ApiEndpointDetail method="GET" path="/api/notifications?hours=24" desc="Get recent failures & alerts"
                         example={`curl "${BASE}/api/notifications?hours=24"`}
                     />
-                    <ApiEndpointDetail method="GET" path="/api/health" desc="Health check"
+                    <ApiEndpointDetail method="GET" path="/api/health" desc="System status: each check and the findings; without a valid token, the status words only (503 when DynamoDB or Step Functions is unhealthy)"
                         example={`curl "${BASE}/api/health"`}
-                        response={`{"status": "ok"}`}
+                        response={`{"status": "degraded", "detail": "full", "checks": {"dynamodb": {"status": "healthy", ...}, "stepfunctions": {"status": "healthy", ...}, "coordination": {"status": "unhealthy", "report": {...}}, ...}, "findings": [{"title": "Asset event delivery is off", "resource": "...", "impact": "...", "fix": "...", "command": "..."}]}`}
                     />
                 </div>
             </div>

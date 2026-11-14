@@ -35,7 +35,7 @@ from .pipelines_actions import (
     run_pipeline, register_pipeline
 )
 from .pipelines_info import get_pipeline_dag
-from .health import health_check, health_check_simple, get_metrics
+from .health import health_check, health_check_live, get_metrics
 
 __all__ = [
     # executions
@@ -65,6 +65,6 @@ __all__ = [
     'get_pipeline_dag',
     # health
     'health_check',
-    'health_check_simple',
+    'health_check_live',
     'get_metrics',
 ]

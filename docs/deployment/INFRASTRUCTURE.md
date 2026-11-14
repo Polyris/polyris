@@ -180,7 +180,7 @@ A common admin/developer question during an incident. Table maps concepts to con
 | "Why did the Console API return 500?" | `/aws/lambda/polyris-console-api` log group, filter by request ID from the browser response |
 | "Which tasks depend on this one?" | `polyris-dep-subscriptions` DDB (GSI: `subscriber-index`) |
 | "Why is this task still waiting?" | `/aws/lambda/polyris-reconcile` log group, filter by the task's execution name: each line has the `verdict` and its `reasons` |
-| "Is task coordination healthy?" | The Console's engine banner, or `GET /api/health` → `checks.coordination.problems` |
+| "Is task coordination healthy?" | The **System** pill in the Console header, or `GET /api/health` → `checks.coordination.status` |
 | "When did this task last transition to `failed`?" | `polyris-task-events` DDB, query by `task_run_id` |
 | "Did Cognito reject the login?" | CloudTrail → filter EventSource `cognito-idp.amazonaws.com` |
 

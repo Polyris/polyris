@@ -4,7 +4,7 @@ DynamoDB is moto with the tables of sam/template.yaml; Step Functions is the
 FakeSfn of the test kit. The reconciler runs for real, in-process.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 import pytest
@@ -33,6 +33,10 @@ def clock() -> Clock:
     return Clock(NOW + timedelta(minutes=30))
 
 
+MAPPING_UUID = "48529b7b-abda-4306-8550-8d3bbc1391c3"
+MAPPING_CHANGED = datetime(2026, 11, 12, 5, 40, tzinfo=timezone.utc)
+
+
 class FakeLambda:
     """The Lambda call of the self-check: the asset-fanout function's event source mappings."""
 
@@ -43,7 +47,8 @@ class FakeLambda:
         if self.state == "error":
             from coordination_testkit import client_error
             raise client_error("AccessDeniedException", "ListEventSourceMappings")
-        mapping = {"State": self.state, "LastProcessingResult": self.result}
+        mapping = {"State": self.state, "LastProcessingResult": self.result, "UUID": MAPPING_UUID,
+                   "LastModified": MAPPING_CHANGED}
         return {"EventSourceMappings": [] if self.state == "missing" else [mapping]}
 
 
@@ -139,7 +144,7 @@ def test_due_rows_are_checked_and_due_again_with_backoff(make, tokens, clock):
 
 
 def test_a_row_whose_check_changed_nothing_backs_off_too(make, tokens, clock):
-    """A warned row is re-checked with the same backoff, not every run, and does not hold the "behind" banner."""
+    """A warned row is re-checked with the same backoff, not every run, and does not hold the "behind" finding."""
     name = _waiting(tokens, "load", due=clock.now - timedelta(minutes=50))
     tokens.update_item(Key={"execution_name": name}, UpdateExpression="REMOVE wait_token")   # can never be signalled
 
@@ -814,7 +819,15 @@ def test_other_adoption_write_errors_fail_the_run(make, tokens, asset_events, mo
 # ── the self-check ──────────────────────────────────────────────────────
 
 
-def test_the_self_check_reports_what_the_console_reads(make, tokens, clock):
+@pytest.fixture
+def lambda_env(monkeypatch):
+    """What the Lambda runtime sets for the sweeper: its own name and its region."""
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "acme-dev-polyris-sweeper")
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+
+
+def test_the_self_check_reports_what_the_console_reads(make, tokens, clock, lambda_env):
+    import env
     from polyris.coordination.records import push_retry_item
 
     _waiting(tokens, "load", due=clock.now + timedelta(minutes=5))
@@ -827,14 +840,29 @@ def test_the_self_check_reports_what_the_console_reads(make, tokens, clock):
     assert (health["checked_at"], health["fanout_mapping"], health["stream"]) == (format_utc(clock.now), "Enabled", "ENABLED")
     assert (health["fanout_result"], health["failed_steps"]) == ("OK", [])
     assert (health["oldest_overdue"], health["push_retry_backlog"]) == ("", 1)
-    assert sweep.engine_problems(health, clock.now) == []
+    assert sweep.engine_findings(health, clock.now) == []
+    # The names the console's findings put in their text and commands, and when AWS last changed the mapping:
+    # a string, because DynamoDB rejects a datetime and with it the whole health row.
+    assert (health["fanout_mapping_uuid"], health["fanout_mapping_changed_at"]) == (MAPPING_UUID, format_utc(MAPPING_CHANGED))
+    assert (health["fanout_function"], health["events_table"]) == (env.ASSET_FANOUT_FUNCTION, env.ASSET_EVENTS_TABLE)
+    assert (health["sweeper_function"], health["region"]) == ("acme-dev-polyris-sweeper", "eu-west-1")
 
 
-def test_a_mapping_whose_last_call_failed_is_reported(make, tokens, clock):
+def test_an_unhealthy_engine_logs_the_titles_of_its_findings(make, tokens, clock, lambda_env, capsys):
+    import json
+
+    import env
+
     assert make(lambda_client=FakeLambda(result="PROBLEM: Function call failed")).run()["healthy"] is False
-    health = _row(tokens, sweep.HEALTH_KEY)
-    assert sweep.engine_problems(health, clock.now) == [
-        "Asset events are not delivered: the stream mapping's last call failed (PROBLEM: Function call failed)."]
+
+    [finding] = sweep.engine_findings(_row(tokens, sweep.HEALTH_KEY), clock.now)
+    assert (finding["title"], finding["resource"]) == (
+        "Asset event delivery is failing",
+        f"The last call of the stream mapping of {env.ASSET_FANOUT_FUNCTION} failed: PROBLEM: Function call failed.")
+    assert finding["command"] == f"aws logs tail /aws/lambda/{env.ASSET_FANOUT_FUNCTION} --region eu-west-1 --since 1h"
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    [logged] = [line for line in lines if line["msg"] == "the coordination engine is unhealthy"]
+    assert (logged["level"], logged["findings"]) == ("ERROR", ["Asset event delivery is failing"])
 
 
 def test_every_step_of_a_run_is_a_method():
@@ -842,7 +870,7 @@ def test_every_step_of_a_run_is_a_method():
 
 
 def test_a_failing_step_skips_neither_the_others_nor_the_self_check(make, tokens, clock, mocker):
-    """Principle #38: the failure reaches the banner, and the next run tries the step again."""
+    """Principle #38: the failure reaches the console's findings, and the next run tries the step again."""
     from coordination_testkit import client_error
 
     run = make()
@@ -855,9 +883,9 @@ def test_a_failing_step_skips_neither_the_others_nor_the_self_check(make, tokens
     health = _row(tokens, sweep.HEALTH_KEY)
     assert health["checked_at"] == format_utc(clock.now)
     assert [s.split(": ")[0] for s in health["failed_steps"]] == ["catch_up"]
-    [problem] = sweep.engine_problems(health, clock.now)
-    assert problem.startswith("The sweeper could not finish the hourly push catch-up on its last run: ClientError:")
-    assert "ThrottlingException" in problem
+    [finding] = sweep.engine_findings(health, clock.now)
+    assert finding["title"] == "The periodic re-check could not finish the hourly push catch-up"
+    assert finding["resource"].startswith("ClientError:") and "ThrottlingException" in finding["resource"]
     assert "Item" not in tokens.get_item(Key={"execution_name": sweep.LEASE_KEY})     # released
 
 
@@ -872,29 +900,40 @@ def test_an_overdue_row_is_reported(make, tokens, clock, mocker, kind):
     assert _row(tokens, sweep.HEALTH_KEY)["oldest_overdue"] == format_utc(clock.now - timedelta(minutes=50))
 
 
-@pytest.mark.parametrize("state,shown", [("Disabled", "Disabled"), ("missing", "missing"),
-                                         ("error", "unknown (AccessDeniedException)")])
-def test_a_mapping_that_does_not_deliver_is_reported(make, tokens, state, shown):
+@pytest.mark.parametrize("state,shown,title", [
+    ("Disabled", "Disabled", "Asset event delivery is off"),
+    ("missing", "missing", "Asset event delivery is not set up"),
+    ("error", "unknown (AccessDeniedException)", "Asset event delivery could not be checked"),
+    (None, "unknown (no State)", "Asset event delivery could not be checked"),     # a listing without a State
+])
+def test_a_mapping_that_does_not_deliver_is_reported(make, tokens, clock, state, shown, title):
+    """The state the sweeper writes is the one the findings tell apart (contract §2, clauses 3, 3b, 3c)."""
     assert make(lambda_client=FakeLambda(state)).run()["healthy"] is False
-    assert _row(tokens, sweep.HEALTH_KEY)["fanout_mapping"] == shown
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert health["fanout_mapping"] == shown
+    assert [f["title"] for f in sweep.engine_findings(health, clock.now)] == [title]
 
 
-def test_a_stream_that_cannot_be_read_is_reported(make, tokens, mocker):
+def test_a_stream_that_cannot_be_read_is_reported(make, tokens, clock, mocker):
     from coordination_testkit import client_error
 
     run = make()
     mocker.patch.object(run.reconciler.resource.meta.client, "describe_table",
                         side_effect=client_error("AccessDeniedException", "DescribeTable"))
     assert run.run()["healthy"] is False
-    assert _row(tokens, sweep.HEALTH_KEY)["stream"] == "unknown (AccessDeniedException)"
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert health["stream"] == "unknown (AccessDeniedException)"
+    assert [f["title"] for f in sweep.engine_findings(health, clock.now)] == ["Asset event recording could not be checked"]
 
 
-def test_a_disabled_stream_is_reported(make, tokens, mocker):
+def test_a_disabled_stream_is_reported(make, tokens, clock, mocker):
     run = make()
     mocker.patch.object(run.reconciler.resource.meta.client, "describe_table",
                         return_value={"Table": {"StreamSpecification": {"StreamEnabled": False}}})
     run.run()
-    assert _row(tokens, sweep.HEALTH_KEY)["stream"] == "DISABLED"
+    health = _row(tokens, sweep.HEALTH_KEY)
+    assert health["stream"] == "DISABLED"
+    assert [f["title"] for f in sweep.engine_findings(health, clock.now)] == ["Asset events are not recorded for delivery"]
 
 
 def test_a_health_row_that_cannot_be_written_does_not_fail_the_run(make, tokens, mocker):
@@ -925,8 +964,9 @@ def test_a_self_check_reading_that_fails_is_reported_and_the_row_still_written(m
     assert run.run()["healthy"] is False
     [failure] = _row(tokens, sweep.HEALTH_KEY)["failed_steps"]
     assert failure.startswith("self_check: the oldest overdue task could not be read: ClientError")
-    [problem] = sweep.engine_problems(_row(tokens, sweep.HEALTH_KEY), run.reconciler.clock())
-    assert problem.startswith("The sweeper could not finish its self-check on its last run: the oldest overdue task")
+    [finding] = sweep.engine_findings(_row(tokens, sweep.HEALTH_KEY), run.reconciler.clock())
+    assert finding["title"] == "The periodic re-check could not finish its self-check"
+    assert finding["resource"].startswith("the oldest overdue task could not be read: ClientError")
 
 
 def test_every_page_of_the_retry_backlog_is_counted(make, tokens, clock, mocker):

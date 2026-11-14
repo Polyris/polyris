@@ -108,20 +108,25 @@ def test_a_fresh_engine_report_is_healthy(tokens, mocker):
 
     status, body = _health(mocker, tokens)
 
-    assert (status, body["status"]) == (200, "healthy")
+    assert (status, body["status"], body["detail"], body["findings"]) == (200, "healthy", "full", [])
     coordination = body["checks"]["coordination"]
-    assert (coordination["status"], coordination["problems"]) == ("healthy", [])
+    assert (coordination["status"], set(coordination)) == ("healthy", {"status", "report"})
     assert coordination["report"]["push_retry_backlog"] == 3
 
 
-def test_a_stale_report_degrades_the_api_and_names_the_problem(tokens, mocker):
+def test_a_stale_report_degrades_the_api_and_names_the_finding(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=30)),
                           "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""})
 
     status, body = _health(mocker, tokens)
 
-    assert (status, body["status"]) == (200, "degraded")             # the API serves; the console shows a banner
-    assert body["checks"]["coordination"]["problems"][0].startswith("The sweeper last reported 30 minutes ago")
+    assert (status, body["status"]) == (200, "degraded")             # the API serves; the console shows the finding
+    assert body["checks"]["coordination"]["status"] == "unhealthy"
+    [finding] = body["findings"]
+    assert finding["title"] == "The periodic re-check is not running"
+    # A report written before the names were added: the name reads in words, and no command is given.
+    assert finding["resource"] == "The last run of the sweeper function was 30 min ago. It runs every 5 minutes."
+    assert "command" not in finding
 
 
 def test_a_failed_sweeper_step_degrades_the_api_and_is_shown(tokens, mocker):
@@ -131,17 +136,17 @@ def test_a_failed_sweeper_step_degrades_the_api_and_is_shown(tokens, mocker):
 
     _, body = _health(mocker, tokens)
 
+    assert [(f["title"], f["resource"]) for f in body["findings"]] == [
+        ("The periodic re-check could not finish the hourly push catch-up", "ClientError: throttled")]
     coordination = body["checks"]["coordination"]
-    assert coordination["problems"] == [
-        "The sweeper could not finish the hourly push catch-up on its last run: ClientError: throttled"]
     assert (coordination["report"]["fanout_result"], coordination["report"]["failed_steps"]) == (
         "OK", ["catch_up: ClientError: throttled"])
 
 
 def test_no_report_yet_is_named_too(tokens, mocker):
     _, body = _health(mocker, tokens)
-    assert body["checks"]["coordination"]["problems"] == [
-        "The sweeper has not reported yet: waiting tasks are not re-checked until it does."]
+    assert [f["title"] for f in body["findings"]] == ["No check has run yet"]
+    assert body["checks"]["coordination"]["status"] == "unhealthy"
 
 
 def test_a_report_that_cannot_be_read_is_unhealthy(tokens, mocker):
@@ -151,18 +156,25 @@ def test_a_report_that_cannot_be_read_is_unhealthy(tokens, mocker):
     mocker.patch.object(health.executions_repo, "get",
                         side_effect=ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "GetItem"))
     _, body = _health(mocker, tokens)
-    assert body["checks"]["coordination"]["status"] == "unhealthy"
+    assert body["checks"]["coordination"] == {"status": "unhealthy", "report": {}}
+    [finding] = body["findings"]
+    assert finding == {
+        "title": "The coordination status cannot be read",
+        "resource": "ClientError: An error occurred (AccessDeniedException) when calling the GetItem operation: no",
+        "impact": "The console cannot tell whether waiting tasks are re-checked.",
+        "fix": "Check the console API's access to the pipeline-tokens table, then read the console API's logs.",
+    }
 
 
-@pytest.mark.parametrize("field,value", [
-    ("checked_at", "yesterday"),
-    ("checked_at", "2026-11-12T05:58:00"),          # no timezone
-    ("oldest_overdue", "soon"),
-    ("push_retry_backlog", "many"),
-    ("failed_steps", 5),
+@pytest.mark.parametrize("field,value,error", [
+    ("checked_at", "yesterday", "ValueError"),
+    ("checked_at", "2026-11-12T05:58:00", "ValueError"),          # no timezone
+    ("oldest_overdue", "soon", "ValueError"),
+    ("push_retry_backlog", "many", "ValueError"),
+    ("failed_steps", 5, "TypeError"),
 ])
-def test_a_report_that_cannot_be_judged_is_unhealthy_and_the_api_still_answers(tokens, mocker, field, value):
-    """Each of these failed all of /api/health with a 500, which the console reads as no problems
+def test_a_report_that_cannot_be_judged_is_unhealthy_and_the_api_still_answers(tokens, mocker, field, value, error):
+    """Each of these failed all of /api/health with a 500, so the console could not show what is wrong
     (external review, round 2)."""
     report = {"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
               "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""}
@@ -171,6 +183,7 @@ def test_a_report_that_cannot_be_judged_is_unhealthy_and_the_api_still_answers(t
     status, body = _health(mocker, tokens)
 
     assert (status, body["status"]) == (200, "degraded")
-    coordination = body["checks"]["coordination"]
-    assert coordination["status"] == "unhealthy"
-    assert coordination["problems"][0].startswith("The engine health row cannot be read")
+    assert body["checks"]["coordination"] == {"status": "unhealthy", "report": {}}
+    [finding] = body["findings"]
+    assert finding["title"] == "The coordination status cannot be read"
+    assert finding["resource"].startswith(f"{error}: ")

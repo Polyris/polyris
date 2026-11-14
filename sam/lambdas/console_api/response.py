@@ -7,6 +7,7 @@ Response formatting utilities for API Gateway:
 - html_response: HTML response for Slack button callbacks
 """
 
+import html as _html
 import json
 from typing import Dict, Any
 
@@ -173,6 +174,9 @@ def html_response(status_code: int, title: str, message: str, icon: str = "✅",
     """
     bg_color = "#f0fdf4" if success else "#fef2f2"
     text_color = "#166534" if success else "#991b1b"
+    # The page echoes what the link carried, such as the execution name: escape it, or the link can
+    # put a script on the API's origin (reflected XSS, found in the 1.2.0 review).
+    title, message, icon = (_html.escape(str(v)) for v in (title, message, icon))
     
     html = f"""<!DOCTYPE html>
 <html>

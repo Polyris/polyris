@@ -233,7 +233,8 @@ export interface StalenessResult {
 
 export type ApiResult<T = unknown> =
   | { ok: true; data: T; [key: string]: unknown }
-  | { ok: false; error: string; status?: number };
+  /** `body` is the parsed JSON of a non-2xx answer, when it had one (a 503 from /api/health carries its checks). */
+  | { ok: false; error: string; status?: number; body?: unknown };
 
 export interface Notification {
   id: string;

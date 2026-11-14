@@ -63,6 +63,9 @@ for _module in ROUTE_MODULES:
     _module.register(router)
 ROUTES = router.table
 
+#: What an unexpected failure of a public route tells its caller; the log has the error (CLAUDE.md, Auth).
+INTERNAL_ERROR_MESSAGE = 'Internal error; the console API logs have the details.'
+
 
 def handler(event: Dict, context) -> Dict:
     """Main Lambda handler - routes requests to appropriate function."""
@@ -115,4 +118,6 @@ def handler(event: Dict, context) -> Dict:
     except Exception as e:
         import traceback
         log.error("handler", str(e), path=path, method=method, traceback=traceback.format_exc())
-        return error_response(500, 'INTERNAL_ERROR', str(e), request_id=request_id)
+        # A public route shows an anonymous caller no error text (CLAUDE.md, Auth): the log above has it.
+        message = INTERNAL_ERROR_MESSAGE if is_public_path(path) else str(e)
+        return error_response(500, 'INTERNAL_ERROR', message, request_id=request_id)

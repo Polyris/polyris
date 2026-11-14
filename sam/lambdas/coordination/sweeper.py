@@ -20,6 +20,7 @@ start either.
 
 import heapq
 import json
+import os
 import time
 import uuid
 from datetime import datetime
@@ -74,7 +75,7 @@ class Sweeper:
             for step in sweep.STEPS:
                 try:
                     result.update(getattr(self, step)(deadline=deadline))
-                except Exception as exc:  # noqa: BLE001 — Principle #38: the failure reaches the console banner
+                except Exception as exc:  # noqa: BLE001 — Principle #38: the failure reaches the console's findings
                     # One failing step must not skip the others or the self-check; the next run tries it again.
                     failed.append(f"{step}: {type(exc).__name__}: {exc}"[:_FAILURE_CHARS])
                     log.error("sweeper", "a step failed; the next run tries it again", step=step, error=str(exc))
@@ -137,7 +138,7 @@ class Sweeper:
                     counts["missed"] += 1
             else:
                 # Still waiting, or an outcome that changed nothing (a warning, a consumed token): the next check
-                # backs off, so the row is not re-warned every run and does not hold the "behind" banner. For a
+                # backs off, so the row is not re-warned every run and does not hold the "behind" finding. For a
                 # row that left the index meanwhile, the conditional write is a no-op.
                 self._due_again(row, now)
         return counts
@@ -561,26 +562,35 @@ class Sweeper:
         """Write what the console's health check reads into `_engine_health` (ADR #130 §9)."""
         now = self.reconciler.clock()
         failed = list(failed_steps)
-        mapping_state, mapping_result = self._mapping()
+        mapping = self._mapping()
         report = {
             "checked_at": format_utc(now),
-            "fanout_mapping": mapping_state,
-            "fanout_result": mapping_result,
+            "fanout_mapping": mapping["state"],
+            "fanout_result": mapping["result"],
+            # What the console names in its details, and when the mapping last changed state: the
+            # time it was disabled, kept by AWS, so "since" needs no state of our own.
+            "fanout_mapping_uuid": mapping["uuid"],
+            "fanout_mapping_changed_at": mapping["changed_at"],
+            "fanout_function": self.fanout_function,
+            "sweeper_function": os.environ.get("AWS_LAMBDA_FUNCTION_NAME", ""),
+            "events_table": self.reconciler.asset_events_table,
+            # The region the console's commands pass as --region; the Lambda runtime sets it.
+            "region": os.environ.get("AWS_REGION", ""),
             "stream": self._stream_state(),
             "oldest_overdue": self._reading("the oldest overdue task", lambda: self._oldest_due(now), "", failed),
             "push_retry_backlog": self._reading("the push retry backlog", self._backlog, 0, failed),
             "failed_steps": failed,
         }
         self._save_health(report)
-        problems = sweep.engine_problems(report, now)
-        if problems:
-            log.error("sweeper", "the coordination engine is unhealthy", problems=problems)
-        return {"healthy": not problems}
+        findings = sweep.engine_findings(report, now)
+        if findings:
+            log.error("sweeper", "the coordination engine is unhealthy", findings=[f["title"] for f in findings])
+        return {"healthy": not findings}
 
     @staticmethod
     def _reading(name: str, read: Callable[[], Any], neutral: Any, failed: List[str]) -> Any:
         """One reading of the self-check. A failed one goes to `failed_steps`, so the health row
-        is still written and the banner names it."""
+        is still written and the console's findings name it."""
         try:
             return read()
         except (ClientError, BotoCoreError) as exc:
@@ -588,23 +598,29 @@ class Sweeper:
             log.error("sweeper", "a self-check reading failed", reading=name, error=str(exc))
             return neutral
 
-    def _mapping(self) -> Tuple[str, str]:
-        """The stream mapping's State and LastProcessingResult."""
+    def _mapping(self) -> Dict[str, str]:
+        """The stream mapping: its State, LastProcessingResult, UUID, and when it last changed
+        (LastModified, which AWS moves when the mapping is disabled or enabled)."""
         client = self.lambda_client or env.lambda_()
+        found = {"state": sweep.MAPPING_MISSING, "result": "", "uuid": "", "changed_at": ""}
         try:
             mappings = client.list_event_source_mappings(FunctionName=self.fanout_function)["EventSourceMappings"]
         except (ClientError, BotoCoreError) as exc:
-            return f"unknown ({error_code(exc) or type(exc).__name__})", ""
+            return {**found, "state": sweep.unknown_state(error_code(exc) or type(exc).__name__)}
         if not mappings:
-            return "missing", ""
-        return str(mappings[0].get("State", "unknown")), str(mappings[0].get("LastProcessingResult", ""))
+            return found
+        mapping = mappings[0]
+        changed = mapping.get("LastModified")
+        return {"state": str(mapping.get("State") or sweep.unknown_state("no State")), "result": str(mapping.get("LastProcessingResult", "")),
+                "uuid": str(mapping.get("UUID", "")),
+                "changed_at": format_utc(changed) if isinstance(changed, datetime) else ""}
 
     def _stream_state(self) -> str:
         try:
             table = self.reconciler.resource.meta.client.describe_table(
                 TableName=self.reconciler.asset_events_table)["Table"]
         except (ClientError, BotoCoreError) as exc:
-            return f"unknown ({error_code(exc) or type(exc).__name__})"
+            return sweep.unknown_state(error_code(exc) or type(exc).__name__)
         return sweep.STREAM_ENABLED if table.get("StreamSpecification", {}).get("StreamEnabled") else "DISABLED"
 
     def _oldest_due(self, now: datetime) -> str:

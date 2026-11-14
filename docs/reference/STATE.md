@@ -19,9 +19,11 @@ Update it when something moves. Paths here are checked by
   push state machine and the AND-queue table are gone. Pause, resume and restart decide from
   facts; the sweeper re-checks, retries, catches up and reports. The console shows engine
   health and reads warnings by write time, and the docs describe the new model. Three review
-  rounds are done and their blockers fixed; next: a live deploy and an upgrade rehearsal
-  (Principle #15). The upgrade-only code (adoption, the generation's branches for old rows,
-  the frozen v1.1.4 wrapper) goes in 1.3: ADR #130 *Out of scope* lists it.
+  rounds are done and their blockers fixed. The live run (Principle #15) is under way: the
+  1.1.4 → 1.2.0 upgrade rehearsal and the coordination smoke pass on a dev stack, and an
+  external review's findings are fixed and checked live (ADR #135). Left: the last game-day
+  faults, then the release. The upgrade-only code (adoption, the generation's branches for
+  old rows, the frozen v1.1.4 wrapper) goes in 1.3: ADR #130 *Out of scope* lists it.
 
 ## Decided, not done
 

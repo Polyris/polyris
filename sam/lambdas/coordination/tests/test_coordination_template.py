@@ -245,6 +245,27 @@ def test_the_sweeper_runs_every_5_minutes_without_retries(resources):
     assert (statement["Action"], statement["Resource"]) == (["lambda:InvokeFunction"], [{"!GetAtt": "SweeperFunction.Arn"}])
 
 
+def test_the_sweeper_schedule_is_named_after_its_function(resources):
+    """The console's finding runs `aws scheduler get-schedule --name <sweeper>` with the function name the
+    sweeper reports: the same name, in the default group. The no-report finding names its suffix."""
+    from polyris.coordination import sweep
+
+    name = resources["SweeperFunction"]["Properties"]["FunctionName"]
+    schedule = resources["SweeperSchedule"]["Properties"]
+    assert schedule["Name"] == name and "GroupName" not in schedule
+    [no_report] = sweep.engine_findings(None, NOW)
+    assert name["!Sub"].endswith("-polyris-sweeper") and "-polyris-sweeper" in no_report["fix"]
+
+
+@pytest.mark.parametrize("function,log_group", [("SweeperFunction", "SweeperLogGroup"),
+                                                ("AssetFanoutFunction", "AssetFanoutLogGroup")])
+def test_a_function_logs_to_the_group_the_console_commands_tail(resources, function, log_group):
+    """`aws logs tail /aws/lambda/<name>` in the console's findings reads the function's own log group."""
+    props = resources[function]["Properties"]
+    assert props["LoggingConfig"]["LogGroup"] == {"!Ref": log_group}
+    assert resources[log_group]["Properties"]["LogGroupName"] == {"!Sub": "/aws/lambda/" + props["FunctionName"]["!Sub"]}
+
+
 def _serialize(value):
     from boto3.dynamodb.types import TypeSerializer
 

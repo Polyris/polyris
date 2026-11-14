@@ -256,7 +256,7 @@ Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON mus
 Every infrastructure failure ends in one of three ways (ADR #130 §9):
 - it is retried automatically until it succeeds;
 - it fails the affected task with the real cause, visible in the console;
-- it surfaces in the console as a warning (bell) or as the engine-health banner.
+- it surfaces in the console as a warning (bell) or in the System status in the header.
 
 It is always logged with `error=str(e)`. See the [Error Visibility section](#error-visibility-adr-38) for the `_notify_warn_` pattern.
 
@@ -583,7 +583,9 @@ Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `re
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
-**Auth (ADR #65, #66):** `authenticate()` → `authorize()` at top of `handler()`. Accepts Cognito JWT or PAT (`plrs_…`). Scopes: `read` ⊂ `write` ⊂ `admin`. `AUTH_ENABLED` env (default `false`). Public paths: `/api/health*`, `/api/metrics`, `/api/action/*`.
+**Auth (ADR #65, #66):** `authenticate()` → `authorize()` at top of `handler()`. Accepts Cognito JWT or PAT (`plrs_…`). Scopes: `read` ⊂ `write` ⊂ `admin`. `AUTH_ENABLED` env: the template sets it from `EnableCognitoAuth`, on by default; unset, it is off. Public paths: `/api/health*`, `/api/metrics`, `/api/action/*`.
+
+**A public route shows an anonymous caller no error text and no resource name.** Build its body from an allowlist. Until 1.2.0 every check of `/api/health` returned the raw AWS error text, account and role names included, to anyone. It now shows its details only to a verified caller (`auth.optional_principal`, ADR #65 v1.2.0 update). `sam/lambdas/console_api/tests/routes/test_health_detail.py` plants such names in failing checks and asserts that none reaches the anonymous answer. `main.handler`'s catch-all answers a public route's unexpected failure with `INTERNAL_ERROR_MESSAGE`, and the paid overlay's action pages show no error text. `response.html_response` escapes what a page echoes, such as the execution name from the link.
 
 When adding an endpoint:
 1. **Decide the tier.** Free → `routes/<mod>.py`. Team → `ee/team/<mod>.py`. OSS must never import `ee`.

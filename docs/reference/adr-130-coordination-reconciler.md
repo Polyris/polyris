@@ -1,6 +1,6 @@
 # ADR #130 — Coordination layer: one reconciler, facts as state, stream-driven hints
 
-> **Status:** ACCEPTED (2026-11-12), revision 8 (2026-11-13: one owner per task row, by generation, §2.1; 2026-11-14: the Lambdas import the coordination package from the SDK, §10; 2026-11-14, after an external review: a push is judged as of its fact, §4, §6.1, Rule 55; a zombie's run is told, §3 step 3, ADR #135; invariant 10). Implemented on `feat/coordination-reconciler` for v1.2.0.
+> **Status:** ACCEPTED (2026-11-12), revision 9 (2026-11-13: one owner per task row, by generation, §2.1; 2026-11-14: the Lambdas import the coordination package from the SDK, §10; 2026-11-14, after an external review: a push is judged as of its fact, §4, §6.1, Rule 55; a zombie's run is told, §3 step 3, ADR #135; invariant 10; 2026-11-14: engine health is a System pill with findings, not a banner, and `/api/health` shows its details only to a verified caller, §9). Implemented on `feat/coordination-reconciler` for v1.2.0.
 >
 > The design went through five review rounds: break, architect, developer, QA, DevOps and reliability reviews. The implementation went through two more rounds of break, architect and reliability reviews. Every finding is resolved below or listed under *Out of scope*.
 >
@@ -418,9 +418,12 @@ An EventBridge Scheduler runs it at `rate(5 minutes)` with no scheduler retry. T
 1. **Heals itself in code.** Retries, the sweeper, push retries and catch-up, idempotent signals and starts. No human is needed.
 2. **Fails loudly in code.** Non-transient coordination errors fail the affected task with the real cause (§3 step 5; registration §6.3; a pause token `pause_waiter` cannot save fails the pause wait with `CoordinationError`, B-P4). Zombies are marked `aborted` with an explanation (§3 step 3), and their run is told (ADR #135). The user sees a failed task with its reason where they already look, and re-runs it after fixing the cause.
 3. **Engine health is shown in the console.** This covers the case where no code runs at all (schedule removed, event source mapping disabled, stream disabled).
-   - The sweeper writes `_engine_health`: last run, event source mapping state and last result, stream state, oldest overdue waiting row, push retry backlog, the steps that failed, and its adoption and catch-up progress. A reading it cannot take is listed with the failed steps, so the row is still written. A coordination error reaches the bell as a warning, not this row.
+   - The sweeper writes `_engine_health`: last run, event source mapping state, last result and last change, stream state, oldest overdue waiting row, push retry backlog, the steps that failed, its adoption and catch-up progress, and the names of the resources it checked (with the region). A reading it cannot take is listed with the failed steps, so the row is still written. A coordination error reaches the bell as a warning, not this row.
    - `/api/health` adds a `coordination` section. It also judges staleness itself: no sweeper run for 15 minutes means the engine is unhealthy.
-   - The console shows a banner while the engine is unhealthy.
+   - One pure function, `sweep.engine_findings`, turns the report into findings. Each finding has a title, the resource it concerns, its impact, its fix and, when every name is known, a command; the sweeper writes the names into the report. `/api/health` returns them to a verified caller, and anyone else gets the status words only (ADR #65, v1.2.0 update).
+   - The console shows a **System** pill in its header, in place of its API pill: green, amber "needs attention" with one toast per new problem, or grey "status unknown" when it cannot read the answer. Its panel lists the findings.
+   - The rules that keep it honest: the core writes the final English and the UI never branches on the kind of finding; the pill takes its level from the status words, never from the length of a list that the short answer leaves out; DynamoDB latency (`degraded`) and task failures do not colour it, because task failures belong to the bell; a mapping that a deploy is creating or updating counts only after 15 minutes in that state; the anonymous answer is built from an allowlist.
+   - A banner on every page came first (revision 9 replaced it). It alarmed without saying what it concerned or what to do, and it was a second health signal next to the API pill. "Since when" is shown only where AWS keeps the time, the stream mapping's `LastModified`; no state is kept across runs for it.
 
 **Warnings.** One helper, `records.warning_item(*, kind, execution_name, task_name, pipeline_name, pipeline_execution, task_date, error, now)`, builds the row `_notify_warn_{kind}_{execution_name}`; SFN templates and generated ASL write the same shape, pinned by contract tests:
 - `kind ∈ WarningKind`: `coordination`, `zombie`, `push`, `sweeper`, `notify`, `manual` for a manual action that kept a task's real output, and `fact` for asset facts a task or a manual action could not record;
@@ -517,7 +520,7 @@ Each has a test (`tests/backend/coordination/README.md`).
 
 Forward-fix only (D13):
 
-1. **No separate index deploy** (decided 2026-11-12). Both GSIs (one per table) ship in the main deploy, inside the window. CloudFormation can report the update complete before a new index is `ACTIVE` (seen in the 1.2.0 upgrade rehearsal): its backfill goes on after the stack update, which therefore takes no longer on a large table. Until the index is built, a read of it fails with `ValidationException` "Cannot read from backfilling global secondary index". The reconciler and the sweeper treat that as transient (§3 step 4): a task that waits for assets waits instead of starting, and the console's banner names the sweeper steps that cannot read the index yet. Both clear by themselves once the index is built. A separate release or a two-phase template parameter would have avoided that window at the price of an extra upgrade step.
+1. **No separate index deploy** (decided 2026-11-12). Both GSIs (one per table) ship in the main deploy, inside the window. CloudFormation can report the update complete before a new index is `ACTIVE` (seen in the 1.2.0 upgrade rehearsal): its backfill goes on after the stack update, which therefore takes no longer on a large table. Until the index is built, a read of it fails with `ValidationException` "Cannot read from backfilling global secondary index". The reconciler and the sweeper treat that as transient (§3 step 4): a task that waits for assets waits instead of starting, and the console's System status names the sweeper steps that cannot read the index yet. Both clear by themselves once the index is built. A separate release or a two-phase template parameter would have avoided that window at the price of an extra upgrade step.
 2. **Window.**
    - Pause pipeline schedules.
    - Wait until no `run_task` execution is in flight: no task is `running`, `waiting_delay` or `waiting_decision`, and no run is paused (resume or stop paused runs first, since a task held at the start of a paused run is a `run_task` execution too). The console's Tasks view shows it; there is no separate script (D39). A producer started on the old definition that finishes after the deploy calls deleted targets and fails loudly; the drain avoids that.
@@ -529,7 +532,7 @@ Forward-fix only (D13):
 4. **After.**
    - Resume schedules.
    - Re-run the fires missed during the window: the schedules that were paused, for the dates they would have run.
-   - Check the health banner and the smoke subset.
+   - Check the System pill and the smoke subset.
 
 The CHANGELOG upgrade note repeats these steps.
 

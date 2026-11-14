@@ -15,9 +15,11 @@ export {
     useAllRunsQuery,
     useTaskEventsQuery,
     useNotificationsQuery,
-    useEngineHealthQuery,
 } from './useGlobalQueries';
-export type { EngineHealth } from './useGlobalQueries';
+
+// /api/health as the System status in the header.
+export { useSystemStatusQuery, SYSTEM_STATUS_POLL_MINUTES } from './useSystemStatusQuery';
+export type { SystemFinding, SystemStatusState } from './useSystemStatusQuery';
 
 // Asset queries/types moved to src/ee/team/hooks/queries (Team-tier) — ADR #99.
 

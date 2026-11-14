@@ -27,7 +27,7 @@ A warning shows by the time it was written, so a warning about a run for an old 
 
 ## When coordination itself is unhealthy
 
-A banner under the Console header lists the problems while task coordination is unhealthy: the sweeper has not reported for 15 minutes or could not finish one of its steps, asset events are not delivered, or waiting tasks are more than 40 minutes behind their checks. Waiting tasks may not start until it clears. `GET /api/health` reports the same problems in `checks.coordination.problems`.
+The **System** pill in the Console header turns amber while task coordination or the console's own checks need attention. For example, the sweeper has not reported for 15 minutes or could not finish one of its steps, asset events are not delivered, waiting tasks are more than 40 minutes behind their checks, or the console cannot reach DynamoDB. Waiting tasks may start late until it clears. The console shows a toast once for each new problem; click the pill for each problem's impact and fix ([TROUBLESHOOTING](../operations/TROUBLESHOOTING.md#the-system-pill-says-needs-attention)). Monitors read `checks.coordination.status` from `GET /api/health`.
 
 ## What to do with one
 

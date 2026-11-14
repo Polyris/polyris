@@ -87,6 +87,20 @@ class TestReconcileSfnStatusAgainstRealSfn:
 
         assert reconcile_sfn_status('run-3', sm_arn) == 'recovered'
 
+    def test_the_run_s_internal_rows_are_not_counted_as_its_tasks(
+            self, sfn_execution, failing_executions, mocker):
+        """A warning row has status failed, and the DAG snapshot none: counted as tasks, they kept a
+        run whose tasks all resolved from recovering (CLAUDE.md: console loops skip internal rows)."""
+        sm_arn, start = sfn_execution
+        start('run-4')
+        mocker.patch('routes.pipelines_list.executions_repo.query_by_pipeline_execution', return_value=[
+            {'execution_name': 'extract-2026-11-12-run-4', 'status': 'success'},
+            {'execution_name': '_notify_warn_fact_extract-2026-11-12-run-4', 'status': 'failed'},
+            {'execution_name': 'dag_snapshot::run-4'},
+        ])
+
+        assert reconcile_sfn_status('run-4', sm_arn) == 'recovered'
+
     def test_no_arn_short_circuits_without_calling_sfn(self):
         assert reconcile_sfn_status('run-x', '') is None
 

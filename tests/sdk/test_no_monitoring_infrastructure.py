@@ -1,7 +1,7 @@
 """The platform template ships no custom metrics, alarms, SNS topics or DLQs (CLAUDE.md Principle #45).
 
 Failures heal in code, fail the affected task loudly, or show in the console
-as a warning or the engine-health banner (ADR #130 §9). Monitoring
+as a warning or in the System status (ADR #130 §9). Monitoring
 infrastructure costs every user money and needs someone to watch it; adding
 any needs an explicit maintainer decision recorded in an ADR.
 """

@@ -63,7 +63,7 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 **Symptoms:** Pipeline shows running but no tasks are active.
 
 **Check:**
-1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended: the run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
+1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended. The run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
 2. Step Functions execution status:
    ```bash
    aws stepfunctions list-executions \
@@ -96,7 +96,7 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
    The execution name is in the task modal: `{task}-{date}-{run suffix}`.
 2. **Dependencies tab** in the task modal: are the upstream tasks finished, in a state the trigger rule accepts?
 3. **Assets:** a `wait_for` asset needs a fact that serves the run's date (see [ASSETS.md § Granularity](../features/ASSETS.md#granularity)). A fact for another date, today's for instance, does not count.
-4. **Engine health:** a banner in the console, or `GET /api/health` → `checks.coordination.problems`, means waiting tasks are not being re-checked; see [The console shows "Task coordination needs attention"](#the-console-shows-task-coordination-needs-attention).
+4. **Engine health:** an amber **System** pill in the console's header, or `checks.coordination.status` = `unhealthy` in `GET /api/health`, means waiting tasks may not be re-checked; see [The System pill says "needs attention"](#the-system-pill-says-needs-attention).
 5. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
 
 **Fix:**
@@ -247,19 +247,26 @@ Check *why* the upstream was skipped:
 
 ## Coordination Issues
 
-### The console shows "Task coordination needs attention"
+### The System pill says "needs attention"
 
-The banner lists what is wrong; `GET /api/health` returns the same list in `checks.coordination.problems`. While it shows, tasks may start late: the rows below say which wake-ups still work.
+The **System** pill in the console's header turns amber when task coordination or the console's own checks need attention, and a toast names each new problem once. Click the pill: the **System status** panel lists every problem with the resource it concerns, its impact, its fix and a command you can copy. After a fix, the sweeper's next check clears it within 5 minutes; reopen the panel to see it at once. With a valid token, or with auth off, `GET /api/health` returns the same list in `findings`, commands included, for an operator without the console.
 
-| Problem | What to do |
-|---------|------------|
-| The sweeper has not reported yet | Normal for the first 5 minutes after an install or upgrade. If it stays, check that the EventBridge schedule `${NAMESPACE}-${STAGE}-polyris-sweeper` exists and is enabled |
-| The sweeper last reported N minutes ago | Read the sweeper's logs: `aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-sweeper --since 1h`. A run that fails on every attempt shows its error there |
-| Asset events are not delivered: the stream mapping is … | Enable the event source mapping of `${NAMESPACE}-${STAGE}-polyris-asset-fanout` (Lambda console → the function → Configuration → Triggers) |
-| Asset events are not delivered: the stream mapping's last call failed (…) | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Read its logs: `aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-asset-fanout --since 1h`. Records wait in the stream for 24 hours; the sweeper still wakes waiting tasks at their checks |
-| The sweeper could not finish … on its last run: … | One step of the sweeper failed; the other steps still ran. The next run, 5 minutes later, tries it again, and the problem clears once a run finishes the step. If it stays, the error names the cause; the sweeper's logs have the full message |
-| Asset events are not recorded for delivery: the table stream is … | The stream of `${NAMESPACE}-${STAGE}-polyris-asset-events` was turned off outside polyris. Turn it on again (view type `NEW_IMAGE`) and point asset-fanout's trigger at the new stream. Meanwhile the sweeper still wakes waiting tasks at their checks, and its hourly catch-up starts asset-scheduled pipelines |
-| Waiting tasks are N minutes behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
+While a problem shows, tasks may start late. The panel tells you what to do; the table says what still works.
+
+| Problem | What still works, and what else to know |
+|---------|-----------------------------------------|
+| No check has run yet | Normal for the first 5 minutes after an install or upgrade. Tasks still start from their signals |
+| The periodic re-check is not running | Tasks still start from their signals. Only a task that missed its signal waits until its timeout. A sweeper that fails on every run shows its error in its logs |
+| Asset event delivery is off, or is not set up | The sweeper still starts waiting tasks at their checks, up to 40 minutes late, and its hourly catch-up starts asset-scheduled pipelines. A mapping that a deploy is creating or updating counts only once it stays so for 15 minutes. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
+| Asset event delivery is failing | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Records wait in the stream for 24 hours, and the sweeper still wakes waiting tasks at their checks |
+| Asset events are not recorded for delivery | The stream of the asset-events table was turned off outside polyris. Turning it on again makes a new stream, so asset-fanout needs a new trigger on it, and the old trigger goes |
+| Asset event delivery, or asset event recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
+| Waiting tasks are behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
+| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step |
+| The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
+| The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
+
+A grey **System · status unknown** means the console could not read `/api/health` at all; the console retries every 2 minutes, and a "Connection lost" banner usually shows too.
 
 ---
 

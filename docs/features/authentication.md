@@ -341,7 +341,7 @@ setting:
 
 | Path | Why public |
 |------|-----------|
-| `GET /api/health` and `GET /api/health/simple` | Load-balancer liveness probes; must work without credentials |
+| `GET /api/health` and `GET /api/health/live` | Probes and monitors must work without credentials. Without a valid token, `/api/health` answers the status words only; its details (messages, resource names, `findings`) need one |
 | `GET /api/metrics` | Ops metrics endpoint; scraped by monitoring agents |
 | `GET /api/action/*` | Link-button callbacks (skip / fail / restart) — delivered without a bearer token; the mutations they allow are documented in [ADR #66](../reference/adr-66-per-token-scopes.md) |
 

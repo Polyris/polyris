@@ -187,6 +187,10 @@ The SDK writes each `wait_for` entry either as an asset (`{asset_name, freshness
 
 When the API answers from a window or a limit, the label and the empty state name it, from a constant pinned to the backend's by a parity test. History read only the last 14 days without a pipeline or a date (`Limits.SLA_DAYS`, ADR #108) while its date filter said "All dates" and an empty list said "No runs found". `utils/historyWindow.ts` holds the window, and its test reads `SLA_DAYS` from `console_api/constants.py`.
 
+## A status read from the API is never green by default
+
+A hook that turns an API answer into a status returns a tagged state, and its default branch is "unknown", never "healthy". Green needs a positive answer: the words the rule needs, present and recognised. The coordination banner read a failed `/api/health`, and then a 503, as "no problems" (1.2.0 review). The System pill (`components/SystemStatus.tsx`) shows grey "status unknown" for a failed request, a lost connection or an answer it cannot read. It takes its level from the status words, never from the length of a list that a shorter answer leaves out.
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

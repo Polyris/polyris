@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAppStore } from '../stores/useAppStore';
 import type { PipelineWithUI } from '../types';
+import { apiAnswered, createHealthBody } from '../test/factories';
 
 // Mock next/navigation — must come before Header import
 const pushMock = vi.fn();
@@ -11,16 +13,17 @@ vi.mock('@/hooks/useClientRoute', () => ({
 }));
 
 vi.mock('lucide-react', () => ({ Activity: () => null, AlertCircle: () => null, ArrowLeft: () => null, Check: () => null, CheckCircle: () => null, ChevronDown: () => null, ChevronRight: () => null, ChevronUp: () => null, Circle: () => null, Eye: () => null, EyeOff: () => null, HelpCircle: () => null, History: () => null, KeyRound: () => null, ListTodo: () => null, Loader2: () => null, Lock: () => null, LogOut: () => null, Mail: () => null, Menu: () => null, Moon: () => null, Package: () => null, Pause: () => null, RefreshCw: () => null, Shield: () => null, Sun: () => null, User: () => null, Users: () => null, Workflow: () => null, Rocket: () => null, X: () => null, Zap: () => null }));
-vi.mock('@/utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, Copy: () => null, Database: () => null, Download: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, Minus: () => null, Moon: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, Trash2: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, Zap: () => null }));
-vi.mock('../utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, Copy: () => null, Database: () => null, Download: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, Minus: () => null, Moon: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, Trash2: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, Zap: () => null }));
+vi.mock('@/utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDashed: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, Copy: () => null, Database: () => null, Download: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, Minus: () => null, Moon: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, Trash2: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, Zap: () => null }));
+vi.mock('../utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDashed: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, Copy: () => null, Database: () => null, Download: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, Minus: () => null, Moon: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, Trash2: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, Zap: () => null }));
 vi.mock('@/components/ui/button', () => ({
     Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string}>{props.children as React.ReactNode}</button>,
 }));
 vi.mock('./Notifications', () => ({ default: () => <div data-testid="notifications" /> }));
 vi.mock('./UserMenu', () => ({ UserMenu: () => <div data-testid="user-menu" /> }));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
-vi.mock('../utils/api', () => ({ api: { get: vi.fn(), post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
-vi.mock('@/utils/api', () => ({ api: { get: vi.fn(), post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
+const { mockGet } = vi.hoisted(() => ({ mockGet: vi.fn() }));
+vi.mock('../utils/api', () => ({ api: { get: mockGet, post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
+vi.mock('@/utils/api', () => ({ api: { get: mockGet, post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
 vi.mock('../utils/storage', () => ({ getFromStorage: vi.fn(), saveToStorage: vi.fn() }));
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ isSignedIn: true, user: { email: 'test@test.com' }, signOut: vi.fn() }), AUTH_STATE: { SIGNED_IN: 'signedIn', SIGNED_OUT: 'signedOut' } }));
 
@@ -28,6 +31,12 @@ import { Header } from './Header';
 
 function setPathname(p: string) {
     currentPathname = p;
+}
+
+/** The header's System pill reads /api/health through React Query. */
+function renderWithQuery(ui: React.ReactElement) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
 function resetStore(overrides: Record<string, unknown> = {}) {
@@ -49,23 +58,24 @@ describe('Header', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        mockGet.mockResolvedValue(apiAnswered(createHealthBody()));
         setPathname('/pipelines/');
         resetStore();
     });
 
     describe('rendering', () => {
         it('renders Notifications', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByTestId('notifications')).toBeInTheDocument();
         });
 
         it('no longer renders the user menu in the header (moved to the rail)', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByTestId('user-menu')).not.toBeInTheDocument();
         });
 
         it('renders the polyris home breadcrumb', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText('polyris')).toBeInTheDocument();
         });
     });
@@ -76,49 +86,54 @@ describe('Header', () => {
         // date picker. So the header should show no date picker in any view.
         it('shows no date picker in the header (runs)', () => {
             setPathname('/runs/');
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByText('Today')).not.toBeInTheDocument();
             expect(screen.queryByDisplayValue('2024-01-15')).not.toBeInTheDocument();
         });
 
         it('shows no date picker in the header (pipelines)', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByText('Today')).not.toBeInTheDocument();
         });
 
         it('shows no date picker in the header (tasks)', () => {
             setPathname('/tasks/');
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByText('Today')).not.toBeInTheDocument();
         });
     });
 
-    describe('API status', () => {
-        it('shows connected', () => {
-            render(<Header {...props} apiConnected={true} />);
-            expect(screen.getByTitle('API connected')).toBeInTheDocument();
+    describe('System status', () => {
+        // One System pill replaces the API badge (and the coordination banner); its states and
+        // panel are covered in SystemStatus.test.tsx.
+        it('shows the System pill, read from /api/health, where the API badge was', async () => {
+            renderWithQuery(<Header {...props} apiConnected={true} />);
+            const pill = screen.getByRole('button', { name: /^System/ });
+            await waitFor(() => expect(pill).toHaveAccessibleName('System, all checks pass'));
+            expect(mockGet).toHaveBeenCalledWith('/health');
+            expect(screen.queryByTitle(/^API (connected|disconnected)$/)).not.toBeInTheDocument();
         });
 
-        it('shows disconnected', () => {
-            render(<Header {...props} apiConnected={false} />);
-            expect(screen.getByTitle('API disconnected')).toBeInTheDocument();
+        it('reads the status as unknown while the API cannot be reached', () => {
+            renderWithQuery(<Header {...props} apiConnected={false} />);
+            expect(screen.getByRole('button', { name: 'System · status unknown' })).toBeInTheDocument();
         });
     });
 
     describe('live mode', () => {
         it('shows Auto when enabled', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText('Auto')).toBeInTheDocument();
         });
 
         it('shows Paused when disabled', () => {
             resetStore({ liveMode: false });
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText('Paused')).toBeInTheDocument();
         });
 
         it('toggles store on click', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             fireEvent.click(screen.getByTitle(/auto-refresh/i));
             expect(useAppStore.getState().liveMode).toBe(false);
         });
@@ -126,26 +141,26 @@ describe('Header', () => {
 
     describe('theme toggle', () => {
         it('no longer lives in the header — it moved into the account menu', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByTitle(/Switch to/)).not.toBeInTheDocument();
         });
     });
 
     describe('help button', () => {
         it('no longer lives in the header — it moved into the UserMenu dropdown', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByTitle('Help & Documentation')).not.toBeInTheDocument();
         });
     });
 
     describe('mobile hamburger', () => {
         it('renders in pipelines view', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByTitle('Toggle sidebar')).toBeInTheDocument();
         });
 
         it('toggles sidebar in store', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             fireEvent.click(screen.getByTitle('Toggle sidebar'));
             expect(useAppStore.getState().sidebarOpen).toBe(true);
         });
@@ -154,18 +169,18 @@ describe('Header', () => {
     describe('breadcrumbs', () => {
         it('shows pipeline name when selected', () => {
             resetStore({ selectedPipeline: { name: 'acme-daily' } as PipelineWithUI });
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText('acme-daily')).toBeInTheDocument();
         });
 
         it('hides pipeline name when not selected', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.queryByText('acme-daily')).not.toBeInTheDocument();
         });
 
         it('starts the trail with the section name', () => {
             resetStore({ selectedPipeline: { name: 'acme-daily' } as PipelineWithUI });
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText('Pipelines')).toBeInTheDocument();
         });
 
@@ -174,7 +189,7 @@ describe('Header', () => {
                 selectedPipeline: { name: 'acme-daily' } as PipelineWithUI,
                 selectedExecution: { execution_short: 'abc12345' } as unknown,
             });
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText((_c, el) => el?.textContent === 'Run abc12345')).toBeInTheDocument();
         });
 
@@ -183,13 +198,13 @@ describe('Header', () => {
                 selectedPipeline: { name: 'acme-daily' } as PipelineWithUI,
                 selectedExecution: { execution_short: 'abc12345', auto_selected: true } as unknown,
             });
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText((_c, el) => el?.textContent === 'Run abc12345')).toBeInTheDocument();
         });
 
         it('navigates to the section when the section crumb is clicked', () => {
             resetStore({ selectedPipeline: { name: 'acme-daily' } as PipelineWithUI });
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             fireEvent.click(screen.getByText('Pipelines'));
             expect(pushMock).toHaveBeenCalledWith('/pipelines/');
         });
@@ -199,7 +214,7 @@ describe('Header', () => {
             // through to the raw pathname-derived string "backfills"
             // instead of matching every other section's Title Case label.
             setPathname('/backfills/');
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             expect(screen.getByText('Backfills')).toBeInTheDocument();
             expect(screen.queryByText('backfills')).not.toBeInTheDocument();
         });
@@ -209,7 +224,7 @@ describe('Header', () => {
         const props = { apiConnected: true, onNotificationNavigate: vi.fn() };
 
         it('does not render a Backfills tab in the OSS build (empty paid surface)', () => {
-            render(<Header {...props} />);
+            renderWithQuery(<Header {...props} />);
             // OSS paidSurface is an empty stub (ADR #99): BackfillNavTab is undefined
             // and there is no static fallback — Backfills is a paid-only surface.
             expect(screen.queryByText('Backfills')).not.toBeInTheDocument();

@@ -246,13 +246,13 @@ Server data and UI state are deliberately separated:
 
 | Layer | Tool | What it holds |
 |-------|------|--------------|
-| **Server state** | React Query 5 | Pipeline list, task details, metrics, notifications, engine health. Caching, background refetch, optimistic updates. |
+| **Server state** | React Query 5 | Pipeline list, task details, metrics, notifications, system status. Caching, background refetch, optimistic updates. |
 | **UI state** | Zustand 5 (`useAppStore`) | Selected pipeline, date, view mode, theme, modal visibility, filters (27 fields total). |
 | **URL state** | `useStoreInit` | Bidirectional URL ↔ store sync (`?pipeline=x&date=2025-01-15&view=dag`). |
 
 **Performance pattern:** All components use `useShallow` selectors to subscribe to only the specific store fields they need, preventing unnecessary re-renders when unrelated state changes.
 
-React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useGlobalQueries.ts` (all-tasks, all-runs, notifications, engine health, consecutive progress).
+React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useGlobalQueries.ts` (all-tasks, all-runs, notifications, consecutive progress), `useSystemStatusQuery.ts` (the System pill: `/api/health` as a tagged state).
 
 ---
 
@@ -261,7 +261,7 @@ React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipeline
 ```
 App.tsx
 ├── PipelinesSidebar     — pipeline list, groups, search, sparklines, schedule
-├── Header               — date picker, view mode tabs, theme toggle, modals
+├── Header               — date picker, view mode tabs, System status pill, theme toggle, modals
 ├── Notifications        — real-time notification panel
 ├── CommandPalette       — ⌘K fuzzy search across pipelines + actions
 └── Main content (switches on mainView)

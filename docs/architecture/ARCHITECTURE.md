@@ -334,7 +334,7 @@ CloudFormation delete_stack
 | Task stuck in `waiting` | reconcile logs for the task's `execution_name`: `verdict` and `reasons` | `dependency_subscriptions` — pointers; `asset_events` — a fact for the run's date? |
 | Task never becomes `deps_ready` | reconcile logs; the upstream's notify_dependents execution | `pipeline_tokens` — dependency statuses; the task's `attention_at` (next sweeper check) |
 | Task `deps_ready` but not running | run_task helper execution: held in its pause wait? | `pipeline_tokens` — `_pause_{run}` and the row's `pause_token` |
-| Engine banner in the console | `GET /api/health` → `checks.coordination.problems`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
+| The **System** pill in the console header is amber | its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
 | `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
 | Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
@@ -563,7 +563,7 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 ### Task stuck in "waiting"
 
 1. Check the **Dependencies** tab in the task modal — are the upstreams complete?
-2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting. The sweeper re-checks a waiting task 10, 20, then every 30 minutes; if the console shows the engine banner, that check is not happening.
+2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting. The sweeper re-checks a waiting task 10, 20, then every 30 minutes; if the console's System status says the periodic re-check is not running, that check is not happening.
 3. Check `dependency_subscriptions`: one row per dependency, key `{upstream}-{pipeline_execution_short}`, subscriber = the task's `execution_name`.
 4. Check the upstream's **notify_dependents** execution — did it run?
 

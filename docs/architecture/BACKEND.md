@@ -259,7 +259,7 @@ and by asset-fanout.
 - Parks the task as `waiting_paused` when its run is paused
 - Signals the wrapper: `deps_ready`, `deps_skip` or `deps_blocked`; the wrapper writes the status
 - Deletes the task's subscription pointers once the signal is accepted
-- Closing a zombie tells its run, since no wrapper is left to (ADR #135), and raises the row's generation: each task row has one owner at a time, named by its generation, and the wrapper, `run_task`, the pause wait and the failure handler write only under their own (ADR #130 §2.1). Operator decisions and restarts raise it too.
+- Closing a zombie tells its run, since no wrapper is left to (ADR #135), and raises the row's generation. Each task row has one owner at a time, named by its generation, and the wrapper, `run_task`, the pause wait and the failure handler write only under their own (ADR #130 §2.1). Operator decisions and restarts raise it too.
 
 ### 3. query_subscriptions
 
@@ -289,7 +289,7 @@ An EventBridge schedule runs it every 5 minutes (ADR #130 §8). One run at a tim
 - Retries the push starts that failed transiently (`retry#` rows), from 5 minutes up to every hour; gives up after 24 h with a `push` warning
 - Hourly, replays the push branch for every fact of the last 48 h (a lost stream record); `_engine_health` keeps its progress
 - Adopts rows an older version wrote (waiting tasks without an attention entry, under `paused#` when they hold a pause token; facts without partition fields), resumably, once per adoption generation
-- Ends with a self-check in `_engine_health`: stream and mapping state, the oldest overdue waiting or paused task, the push retry backlog. `GET /api/health` judges it (`checks.coordination`), and the console shows a banner while there is a problem
+- Ends with a self-check in `_engine_health`: stream and mapping state, when the mapping last changed, the oldest overdue waiting or paused task, and the push retry backlog. It also records the names the console's findings use: its own function, asset-fanout and its mapping, the asset-events table, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
 
 ---
 
