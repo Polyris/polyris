@@ -299,6 +299,28 @@ def test_transient_failures_raise_and_write_nothing(reconciler, tokens, sfn, moc
     assert row(tokens) == task_row("load", deps=["extract"])
 
 
+def test_reading_facts_from_an_index_still_being_built_is_transient(reconciler, tokens, sfn, mocker):
+    """An upgrade that adds asset-partition-index reaches reconcile before the index is built:
+    DynamoDB rejects the read with a ValidationException (seen live, 1.2.0 upgrade). The task
+    must wait for a later check, not fail with CoordinationError."""
+    from botocore.exceptions import ClientError
+    tokens.put_item(Item=task_row("load", wait_for=ORDERS))
+    building = ClientError({"Error": {"Code": "ValidationException",
+                                      "Message": "Cannot read from backfilling global secondary index: asset-partition-index"},
+                            "ResponseMetadata": {"HTTPStatusCode": 400}}, "Query")
+    mocker.patch.object(reconciler.resource.meta.client, "query", side_effect=building)
+    with pytest.raises(CoordinationTransient):
+        reconciler.reconcile(LOAD, source="registration")
+    assert not sfn.succeeded and not sfn.failed
+
+
+def test_another_validation_error_still_fails_the_task(reconciler, tokens, sfn, mocker):
+    tokens.put_item(Item=task_row("load", wait_for=ORDERS))
+    mocker.patch.object(reconciler.resource.meta.client, "query", side_effect=client_error("ValidationException", "Query"))
+    reconciler.reconcile(LOAD, source="registration")
+    assert sfn.failed[0]["error"] == "CoordinationError"
+
+
 def test_a_transient_failure_reading_the_row_raises(reconciler, mocker):
     mocker.patch.object(reconciler.tasks.table, "get_item", side_effect=client_error("ThrottlingException"))
     with pytest.raises(CoordinationTransient):

@@ -15,6 +15,7 @@ run. A new aggregating surface on the capped read fails this test on arrival.
 """
 
 import ast
+import json
 import pathlib
 
 import pytest
@@ -144,3 +145,41 @@ def test_list_pipelines_uses_the_shared_window_not_a_reinvented_one():
                 f"({ast.unparse(node)[:80]}…) — this is the duplicate feed_dates('') "
                 f"replaced; a second implementation drifts from the shared one silently."
             )
+
+
+def test_the_card_shows_the_latest_run_of_a_date_with_several(mocker):
+    """Two runs on one date: the card's status and the sparkline follow when they started.
+
+    Seen live (1.2.0 upgrade rehearsal): a failed 14:14 run and a successful 14:30 run of
+    the same day, and the card said "failed" — runs of one date came in index order.
+    """
+    from datetime import datetime, timezone
+    import feed
+    from routes import pipelines_list
+
+    frozen = datetime(2026, 11, 14, 13, 0, 0, tzinfo=timezone.utc)
+    mocker.patch.object(feed, 'datetime', mocker.Mock(now=lambda tz=None: frozen))
+    mocker.patch.object(pipelines_list.pipelines_repo, 'list_all',
+                        return_value=[{'pipeline_name': 'consumer', 'sfn_arn': 'arn:x'}])
+    mocker.patch.object(pipelines_list.executions_repo, 'scan_raw', return_value={'Items': []})
+
+    def row(run, task, status, started):
+        return {'execution_name': f'{task}-2026-11-14--{run}', 'pipeline_name': 'consumer',
+                'pipeline_execution': f'consumer-run-2026-11-14-{run}', 'status': status, 'started_at': started}
+
+    today = [  # index order, as live: the earlier, failed run first
+        row('3793baa1', 'wait_for_a', 'failed', '2026-11-14T12:14:14Z'),
+        row('3793baa1', 'wait_for_both', 'failed', '2026-11-14T12:14:15Z'),
+        row('a1223ca1', 'wait_for_a', 'success', '2026-11-14T12:30:04Z'),
+        row('a1223ca1', 'wait_for_both', 'success', '2026-11-14T12:30:05Z'),
+        {'execution_name': '_notify_warn_sweeper_x', 'pipeline_name': 'consumer',
+         'pipeline_execution': 'consumer-run-2026-11-14-ffffffff', 'status': 'failed', 'started_at': '2026-11-14T12:59:00Z'},
+    ]
+    mocker.patch.object(pipelines_list.executions_repo, 'query_runs_by_date',
+                        side_effect=lambda day, **_: today if day == '2026-11-14' else [])
+
+    body = json.loads(pipelines_list.list_pipelines({'queryStringParameters': {'stats': 'true'}})['body'])
+    [card] = body['pipelines']
+
+    assert card['status'] == 'success'
+    assert [r['exec'] for r in card['recent_runs']] == ['a1223ca1', '3793baa1']

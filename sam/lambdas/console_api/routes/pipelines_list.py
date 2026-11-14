@@ -107,7 +107,7 @@ def list_pipelines(event: Dict) -> Dict:
     # Uses date-pipeline-index GSI (hash=date) instead of full table scan.
     # 14 targeted queries (1 per SLA day) vs scanning entire table.
     if include_stats and pipelines:
-        pipeline_runs = {}  # {pipeline_name: {execution_id: {statuses: set(), date: str}}}
+        pipeline_runs = {}  # {pipeline_name: {execution_id: {statuses: set(), date: str, started_at: str}}}
         pipeline_today = {}  # {pipeline_name: {success: 0, failed: 0, running: 0, waiting: 0, total: 0}}
         
         try:
@@ -121,7 +121,9 @@ def list_pipelines(event: Dict) -> Dict:
                     items = executions_repo.query_runs_by_date(
                         query_date,
                         min_rows=Limits.MAX_STATS_ITEMS,
-                        projection='pipeline_name, pipeline_execution, #s',
+                        # execution_name lets should_skip_token_row see internal rows; started_at
+                        # orders runs that share a date.
+                        projection='execution_name, pipeline_name, pipeline_execution, #s, started_at',
                         expr_names={'#s': 'status'}
                     )
                 except (ClientError, BotoCoreError) as e:
@@ -144,8 +146,13 @@ def list_pipelines(event: Dict) -> Dict:
                         if name not in pipeline_runs:
                             pipeline_runs[name] = {}
                         if exec_id not in pipeline_runs[name]:
-                            pipeline_runs[name][exec_id] = {'statuses': set(), 'date': query_date}
-                        pipeline_runs[name][exec_id]['statuses'].add(task_status)
+                            pipeline_runs[name][exec_id] = {'statuses': set(), 'date': query_date, 'started_at': ''}
+                        run = pipeline_runs[name][exec_id]
+                        run['statuses'].add(task_status)
+                        # A run starts when its first task does.
+                        task_started = item.get('started_at') or ''
+                        if task_started and (not run['started_at'] or task_started < run['started_at']):
+                            run['started_at'] = task_started
                     
                     # Collect today's task stats for progress
                     if query_date == today:
@@ -183,6 +190,7 @@ def list_pipelines(event: Dict) -> Dict:
                     run_status = derive_execution_status(data['statuses'])
                     run_results.append({
                         'date': data.get('date', ''),
+                        'started_at': data.get('started_at', ''),
                         'exec': exec_id[-8:] if len(exec_id) > 8 else exec_id,
                         'status': run_status,
                     })
@@ -194,8 +202,9 @@ def list_pipelines(event: Dict) -> Dict:
                 if total_completed_runs > 0:
                     pipelines[name]['sla'] = round(succeeded_runs / total_completed_runs * 100)
 
-                # Recent runs (newest first): sparkline + the card's status.
-                run_results.sort(key=lambda r: r['date'], reverse=True)
+                # Recent runs (newest first): sparkline + the card's status. Runs of one date
+                # are ordered by when they started; the date alone left their order to the index.
+                run_results.sort(key=lambda r: (r['date'], r['started_at']), reverse=True)
                 pipelines[name]['recent_runs'] = run_results[:10]
                 # Card status reflects the LAST run's canonical status (ADR #112) — the
                 # "is this pipeline healthy?" signal, consistent with the sparkline. The

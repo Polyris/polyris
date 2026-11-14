@@ -29,6 +29,11 @@ TRANSIENT_CODES = frozenset({
 })
 CONDITION_FAILED = "ConditionalCheckFailedException"
 
+#: DynamoDB answers a read of a global secondary index that is still being built with a
+#: ValidationException carrying this message. An upgrade that adds an index (1.2.0 adds two)
+#: reaches the Lambdas before the index is built, and the same read succeeds once it is.
+BACKFILLING_INDEX_MESSAGE = "Cannot read from backfilling global secondary index"
+
 #: The network failures botocore's standard retry mode retries: every connection error (endpoint, connect
 #: timeout, SSL, proxy) and every HTTP client error (closed connection, read timeout, broken response stream).
 _TRANSIENT_NETWORK = (BotoConnectionError, HTTPClientError)
@@ -49,10 +54,13 @@ def error_code(exc: BaseException) -> str:
 
 
 def is_transient(exc: BaseException) -> bool:
-    """A listed code, or any server-side failure (HTTP 5xx) whose code the list does not know yet."""
+    """A listed code, any server-side failure (HTTP 5xx) whose code the list does not know yet,
+    or a read of an index that is still being built."""
     if isinstance(exc, ClientError):
         status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        return error_code(exc) in TRANSIENT_CODES or (isinstance(status, int) and status >= 500)
+        message = str(exc.response.get("Error", {}).get("Message", ""))
+        return (error_code(exc) in TRANSIENT_CODES or (isinstance(status, int) and status >= 500)
+                or (error_code(exc) == "ValidationException" and BACKFILLING_INDEX_MESSAGE in message))
     return isinstance(exc, _TRANSIENT_NETWORK)
 
 

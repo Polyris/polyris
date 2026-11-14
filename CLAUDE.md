@@ -306,7 +306,7 @@ A template test enforces this rule. Adding any of them needs an explicit maintai
 The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
 
 **53. A Lambda's AWS calls fail inside the Lambda's timeout**
-botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function, and a function that times out cannot report its own transient error, so the caller sees `Sandbox.Timedout`. Build clients with a short retry and timeout config (`env._config` in the coordination Lambdas), and let the caller's `Retry`/`Catch` treat the platform's own failures (`Sandbox.Timedout`, `Lambda.Unknown`) and any HTTP 5xx as transient.
+botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function, and a function that times out cannot report its own transient error, so the caller sees `Sandbox.Timedout`. A read of an index that is still being built answers `ValidationException` "Cannot read from backfilling global secondary index"; `failures.is_transient` counts it as transient, because an upgrade that adds an index reaches the Lambdas first (the 1.2.0 upgrade rehearsal failed a `wait_for` task on it). Build clients with a short retry and timeout config (`env._config` in the coordination Lambdas), and let the caller's `Retry`/`Catch` treat the platform's own failures (`Sandbox.Timedout`, `Lambda.Unknown`) and any HTTP 5xx as transient.
 
 **54. Every resource AWS can tag carries the billing tags**
 The tags are `polyris:namespace`, `polyris:stage` and `polyris:component` (`platform` or `pipeline`), plus `polyris:pipeline` on a pipeline's resources (ADR #132). No other keys. In `sam/template.yaml` the Lambda functions take them from `Globals`, and every other resource spells them; `polyris-deploy` uses `resource_tags.pipeline_tags`. A resource without them is missing from every cost report and IAM condition that selects by them. `tests/sdk/test_resource_tags.py` learns from cfn-lint's resource schemas which types AWS can tag and checks every resource after the SAM transform, so a new resource fails it until it is tagged.
@@ -601,6 +601,8 @@ from dal import executions_repo, pipelines_repo
 # Never: boto3.resource('dynamodb').Table('...')
 # Never: repo.table.get_item(...)  — use repo.get(key)
 ```
+
+**"Latest" and "newest first" sort on a key unique in time.** Sort runs and tasks by date *and* `started_at`, never by the date alone: rows that share a date come back in index order, and the sidebar card showed a failed run of the morning over a successful one of the afternoon (1.2.0 upgrade rehearsal; `test_the_card_shows_the_latest_run_of_a_date_with_several`).
 
 **A ProjectionExpression on a GSI names only what that index projects.** DynamoDB rejects the whole query otherwise (`… does not project [...]`); moto does not, so unit tests pass. Read the index without a projection, or with its keys and `NonKeyAttributes` only, and fetch the rest with `batch_get_run_meta`. `tests/sdk/test_console_index_projections.py` checks every index read against `sam/template.yaml`; `/api/tasks` failed with a 500 on every filter until the 1.2.0 live smoke.
 
