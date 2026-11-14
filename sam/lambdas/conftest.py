@@ -42,7 +42,7 @@ _LAMBDAS_ROOT = Path(__file__).parent.resolve()
 
 
 def _lambda_root_for(test_path: Path) -> Path | None:
-    """Return the Lambda's own directory (e.g. sam/lambdas/evaluate_deps) that
+    """Return the Lambda's own directory (e.g. sam/lambdas/query_subscriptions) that
     a test file belongs to, or None if the test isn't nested under one, or if
     the Lambda uses a full package layout (like ``console_api`` with its own
     ``main.py`` + ``dal/`` subpackage). Full-package Lambdas don't hit the

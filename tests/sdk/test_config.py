@@ -6,24 +6,32 @@ config stays quiet and a valid one loads.
 """
 from __future__ import annotations
 
-from polyris.config import _load_project_config, _find_project_config, _has_environments_assignment
+import pytest
+
+from polyris.config import ConfigError, _load_project_config, _find_project_config, _has_environments_assignment
 
 
-def test_broken_config_is_surfaced_not_silently_swallowed(tmp_path, monkeypatch, capsys):
-    # A config.py that exists but fails to import must not silently fall back
-    # to an empty config — the user gets a visible warning naming the file.
+def test_a_broken_config_py_stops_the_command(tmp_path, monkeypatch):
+    # A config.py that exists but does not parse must not fall back to an empty
+    # config: that deploys with the default credentials elsewhere (ADR #134).
     (tmp_path / "config.py").write_text(
         "ENVIRONMENTS = {\n"          # deliberately broken: unterminated dict
         "    'dev': {'stage': 'dev'\n"
     )
     monkeypatch.chdir(tmp_path)
 
-    result = _load_project_config()
+    with pytest.raises(ConfigError, match="config.py does not parse"):
+        _load_project_config()
 
-    assert result == {}                      # resilient: CLI doesn't crash
-    err = capsys.readouterr().out
-    assert "config.py" in err                # but the failure is visible
-    assert "Failed to load" in err or "Skipping" in err
+
+def test_a_config_py_that_fails_when_run_stops_the_command(tmp_path, monkeypatch):
+    """It parses and assigns ENVIRONMENTS, so discovery accepts it; running it fails."""
+    (tmp_path / "config.py").write_text("ENVIRONMENTS = {'dev': {}}\nimport polyris_no_such_module\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ConfigError, match="failed to load: ModuleNotFoundError"):
+        _load_project_config()
 
 
 def test_valid_config_loads(tmp_path, monkeypatch):
@@ -134,43 +142,41 @@ def test_has_environments_assignment_ignores_attribute_target(tmp_path):
     assert _has_environments_assignment(f) is False
 
 
-def test_polyris_config_env_var_nonexistent_returns_none(tmp_path, monkeypatch):
+def test_a_polyris_config_that_does_not_exist_stops_the_command(tmp_path, monkeypatch):
+    """ADR #134 (F17, 1.2.0 rehearsal): POLYRIS_CONFIG left pointing at a deleted file
+    made polyris-deploy go on with no config, to the default AWS account."""
     monkeypatch.setenv("POLYRIS_CONFIG", str(tmp_path / "does_not_exist.py"))
-    assert _find_project_config() is None
+    with pytest.raises(ConfigError, match="does not exist"):
+        _find_project_config()
 
 
-def test_polyris_config_env_var_syntax_error_surfaced(tmp_path, monkeypatch, capsys):
+def test_a_polyris_config_that_does_not_parse_stops_the_command(tmp_path, monkeypatch):
     cfg = tmp_path / "bad_config.py"
     cfg.write_text("ENVIRONMENTS = {\n")  # unterminated
     monkeypatch.setenv("POLYRIS_CONFIG", str(cfg))
 
-    result = _find_project_config()
-
-    assert result is None
-    assert "Skipping" in capsys.readouterr().out
+    with pytest.raises(ConfigError, match="does not parse"):
+        _find_project_config()
 
 
-def test_syntax_error_config_is_surfaced(tmp_path, monkeypatch, capsys):
+def test_a_config_py_on_the_walk_that_does_not_parse_stops_the_command(tmp_path, monkeypatch):
+    """Skipping it would go on with a parent's config, or none."""
     (tmp_path / "config.py").write_text("ENVIRONMENTS = {\n")  # unterminated
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     monkeypatch.chdir(tmp_path)
 
-    result = _find_project_config()
-
-    assert result is None
-    assert "Skipping" in capsys.readouterr().out
+    with pytest.raises(ConfigError, match="does not parse"):
+        _find_project_config()
 
 
-def test_polyris_config_env_var_without_environments_is_skipped(tmp_path, monkeypatch, capsys):
+def test_a_polyris_config_without_environments_stops_the_command_unexecuted(tmp_path, monkeypatch):
     # POLYRIS_CONFIG pointing to a file with no ENVIRONMENTS must not be executed
     cfg = tmp_path / "not_a_config.py"
     cfg.write_text("raise RuntimeError('should not be executed')\n")
     monkeypatch.setenv("POLYRIS_CONFIG", str(cfg))
 
-    result = _find_project_config()
-
-    assert result is None
-    assert "POLYRIS_CONFIG" in capsys.readouterr().out
+    with pytest.raises(ConfigError, match="assigns no ENVIRONMENTS"):
+        _find_project_config()
 
 
 def test_reload_sets_loaded_flag(tmp_path, monkeypatch):
@@ -180,3 +186,24 @@ def test_reload_sets_loaded_flag(tmp_path, monkeypatch):
     c.reset()  # _loaded = False
     c.reload()
     assert PolyrisConfig._loaded is True
+
+
+def test_stage_view_loads_config_py_on_its_first_read(tmp_path, monkeypatch):
+    """With --stage given, polyris-deploy reads config.py only through for_stage().
+
+    A view that read the environments before anything had loaded config.py saw
+    none: the deploy used the default AWS credentials and searched for the
+    platform instead of using stack_name.
+    """
+    from polyris.config import PolyrisConfig
+    cfg = tmp_path / "config.py"
+    cfg.write_text('ENVIRONMENTS = {"dev": {"stack_name": "plat-dev", "profile": "dev-profile", "namespace": "ns"}}\n')
+    monkeypatch.setenv("POLYRIS_CONFIG", str(cfg))
+    c = PolyrisConfig()
+    monkeypatch.setattr(c, "_environments", {})
+    monkeypatch.setattr(c, "_default_stage", "dev")
+    monkeypatch.setattr(PolyrisConfig, "_loaded", False)
+
+    view = c.for_stage("dev")
+
+    assert (view.stack_name, view.profile, view.namespace) == ("plat-dev", "dev-profile", "ns")

@@ -1,3 +1,5 @@
+import type { WaitForEntry, WaitForGroup } from '@/types';
+
 // Format duration in human readable format
 export const formatDuration = (ms: number | null | undefined): string => {
     if (!ms && ms !== 0) return '-';
@@ -304,6 +306,22 @@ export function formatSchedule(
 
     // Fallback: show raw but truncated
     return schedule.length > 20 ? schedule.substring(0, 20) + '…' : schedule;
+}
+
+export const isWaitForGroup = (entry: WaitForEntry): entry is WaitForGroup =>
+    'operator' in entry && Array.isArray(entry.assets);
+
+/** One wait_for entry as text: an asset's name, or a group's members joined by
+ *  ` | ` (OR) or ` & ` (AND); a nested group is parenthesised. '' when it has no name. */
+export function formatWaitForEntry(entry: WaitForEntry, nested = false): string {
+    if (isWaitForGroup(entry)) {
+        const label = entry.assets
+            .map(member => formatWaitForEntry(member, true))
+            .filter(Boolean)
+            .join(entry.operator === 'OR' ? ' | ' : ' & ');
+        return nested && label ? `(${label})` : label;
+    }
+    return entry.asset_name || entry.name || '';
 }
 
 // Human-readable freshness window for an asset dependency (wait_for's

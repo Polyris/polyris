@@ -50,6 +50,8 @@ export const VIEW_MODES = {
 // Re-exported here so existing importers keep working; this file no longer
 // hand-maintains the status vocabulary (ADR #93).
 import { TASK_STATUS, TASK_TERMINAL_STATUSES } from '@/generated/enums';
+import type { WaitForEntry } from '@/types';
+import { formatWaitForEntry } from './formatters';
 export { TASK_STATUS };
 
 // Terminal statuses - task is done, won't change
@@ -63,20 +65,20 @@ export const TERMINAL_STATUSES = new Set<string>(TASK_TERMINAL_STATUSES);
 export const isTerminalStatus = (status: string) => TERMINAL_STATUSES.has(status);
 
 // "Why waiting" reasons for tooltip
-export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | Array<{ asset_name?: string; name?: string }>; wait_before?: number; wait_delay_until_ms?: number } | null): string | null => {
+export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | WaitForEntry[]; wait_before?: number; wait_delay_until_ms?: number } | null): string | null => {
     if (!task) return null;
     
     const status = task.status;
     
     // Parse wait_for if present
-    let waitForAssets = [];
+    let waitForAssets: string[] = [];
     if (task.wait_for) {
         try {
             const parsed = typeof task.wait_for === 'string' 
                 ? JSON.parse(task.wait_for) 
                 : task.wait_for;
             if (Array.isArray(parsed)) {
-                waitForAssets = parsed.map(a => a.asset_name || a.name).filter(Boolean);
+                waitForAssets = parsed.map(entry => formatWaitForEntry(entry)).filter(Boolean);
             }
         } catch {
             // ignore parse errors

@@ -93,6 +93,7 @@
     
     /* Connection banner */
     .connection-banner { font-size: 0.75rem; padding: 0.375rem 0.75rem; }
+    .engine-health-banner { font-size: 0.75rem; padding: 0.375rem 0.75rem; }
     
     /* Sidebar as drawer */
     .main-top {

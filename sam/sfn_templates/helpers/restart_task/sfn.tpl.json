@@ -81,21 +81,121 @@
           ],
           "Comment": "Ignore errors - inner wrapper may already be stopped or ARN missing",
           "Output": "{% $states.input %}",
-          "Next": "Delete_Old_Record"
+          "Next": "Hand_Over_Ownership"
         }
       ],
       "Output": "{% $states.input %}",
-      "Next": "Delete_Old_Record"
+      "Next": "Hand_Over_Ownership"
     },
-    "Delete_Old_Record": {
+    "Hand_Over_Ownership": {
       "Type": "Task",
-      "Comment": "Delete old execution record to avoid conflicts",
-      "Resource": "arn:aws:states:::dynamodb:deleteItem",
+      "Comment": "ADR #130 §2.1: a restart ends the old wrapper's ownership. Raise the row's generation instead of deleting the row: a wrapper whose stop failed can then never write it again, not even by registering anew. The new value goes to the next wrapper. The old wrapper's tokens and attention entry no longer apply, and neither does its status: until the new wrapper registers, the row is stopped, which dependants count as pending (B-R2). The row must exist: an update would otherwise create one with no ttl.",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
       "Arguments": {
         "TableName": "${tokens_table}",
         "Key": {
           "execution_name": {
             "S": "{% $states.input.execution_name %}"
+          }
+        },
+        "UpdateExpression": "SET generation = if_not_exists(generation, :zero) + :one, #s = :stopped REMOVE wait_token, pause_token, attention, attention_at",
+        "ConditionExpression": "attribute_exists(execution_name)",
+        "ExpressionAttributeNames": {
+          "#s": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":zero": {
+            "N": "0"
+          },
+          ":one": {
+            "N": "1"
+          },
+          ":stopped": {
+            "S": "stopped"
+          }
+        },
+        "ReturnValues": "UPDATED_NEW"
+      },
+      "Output": "{% $states.input ~> |$| {'generation': $number($states.result.Attributes.generation.N)} | %}",
+      "Next": "Check_Starter_Input",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "The restart did not happen: say so in the bell, then fail.",
+          "Output": "{% $states.input ~> |$| {'restart_error': $states.errorOutput} | %}",
+          "Next": "Warn_Restart_Failed"
+        }
+      ]
+    },
+    "Check_Starter_Input": {
+      "Type": "Choice",
+      "Comment": "A row registered before the platform saved starter_input restarts from its saved fields, with a warning.",
+      "Choices": [
+        {
+          "Condition": "{% $exists($states.input.item.starter_input.S) and $states.input.item.starter_input.S != '' %}",
+          "Next": "Start_New_Wrapper"
+        }
+      ],
+      "Default": "Warn_Restart_Without_Starter_Input"
+    },
+    "Warn_Restart_Without_Starter_Input": {
+      "Type": "Task",
+      "Comment": "The row shape of polyris.coordination.records.warning_item (kind 'coordination'); a contract test compares them.",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Item": {
+          "execution_name": {
+            "S": "{% '_notify_warn_coordination_' & $states.input.execution_name %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "{% $states.input.item.task_name.S %}"
+          },
+          "pipeline_name": {
+            "S": "{% $exists($states.input.item.pipeline_name.S) ? $states.input.item.pipeline_name.S : 'unknown' %}"
+          },
+          "pipeline_execution": {
+            "S": "{% $exists($states.input.item.pipeline_execution.S) ? $states.input.item.pipeline_execution.S : 'unknown' %}"
+          },
+          "task_date": {
+            "S": "{% $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T') %}"
+          },
+          "status": {
+            "S": "failed"
+          },
+          "error": {
+            "S": "Restarted from its saved fields: the task was registered before the platform kept its start input, so its variables and other start fields may be missing."
+          },
+          "finished_at": {
+            "S": "{% $now() %}"
+          },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
+          "ttl": {
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
           }
         }
       },
@@ -114,35 +214,26 @@
           "BackoffRate": 2,
           "JitterStrategy": "FULL"
         }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "The restart matters more than its warning.",
+          "Output": "{% $states.input %}",
+          "Next": "Start_New_Wrapper"
+        }
       ]
     },
     "Start_New_Wrapper": {
       "Type": "Task",
-      "Comment": "Start new dependency wrapper with ALL original inputs from DynamoDB",
+      "Comment": "Start a new wrapper with the input the task was first started with: its starter_input, saved by registration (ADR #130 §6.5, B-R1), so wait_for, the trigger rule and the variables survive. Restart-specific fields are replaced; task_config and outlets come from the current deploy when the console found them. A row registered before starter_input existed restarts from its saved fields.",
       "Resource": "arn:aws:states:::states:startExecution",
       "Arguments": {
         "StateMachineArn": "${wrapper_arn}",
         "Name": "{% $substring('restart-' & $string($millis()) & '-' & $states.input.item.task_name.S, 0, 80) %}",
-        "Input": {
-          "task_name": "{% $states.input.item.task_name.S %}",
-          "task_arn": "{% $states.input.item.task_arn.S %}",
-          "dependencies": "{% $exists($states.input.item.dependencies.S) ? $parse($states.input.item.dependencies.S) : [] %}",
-          "cross_account_role": "{% $exists($states.input.item.cross_account_role.S) ? $states.input.item.cross_account_role.S : 'same' %}",
-          "pipeline_name": "{% $exists($states.input.item.pipeline_name.S) ? $states.input.item.pipeline_name.S : 'unknown' %}",
-          "pipeline_execution": "{% $exists($states.input.item.pipeline_execution.S) ? $states.input.item.pipeline_execution.S : 'unknown' %}",
-          "pipeline_execution_short": "{% $exists($states.input.item.pipeline_execution_short.S) ? $states.input.item.pipeline_execution_short.S : 'unknown' %}",
-          "token": "{% $exists($states.input.item.orchestration_token.S) ? $states.input.item.orchestration_token.S : '' %}",
-          "execution_name_override": "{% $states.input.execution_name %}",
-          "current_date": "{% $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T') %}",
-          "date": "{% $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T') %}",
-          "trigger_rule": "{% $exists($states.input.item.trigger_rule.S) ? $states.input.item.trigger_rule.S : 'all_success' %}",
-          "wait_before": "{% $exists($states.input.item.wait_before.N) ? $number($states.input.item.wait_before.N) : 0 %}",
-          "task_type": "{% $exists($states.input.item.task_type.S) ? $states.input.item.task_type.S : 'sfn' %}",
-          "task_config": "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}",
-          "outlets": "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}",
-          "task_run_id": "{% $exists($states.input.item.task_run_id.S) ? $states.input.item.task_run_id.S : $states.input.execution_name %}",
-          "attempt": "{% ($exists($states.input.item.attempt.N) ? $number($states.input.item.attempt.N) : 1) + 1 %}"
-        }
+        "Input": "{% ( $item := $states.input.item; $start := ($exists($item.starter_input.S) and $item.starter_input.S != '') ? $parse($item.starter_input.S) : { 'task_name': $states.input.item.task_name.S, 'task_arn': $states.input.item.task_arn.S, 'dependencies': $exists($states.input.item.dependencies.S) ? $parse($states.input.item.dependencies.S) : [], 'wait_for': ($exists($states.input.item.wait_for.S) and $states.input.item.wait_for.S != '') ? $parse($states.input.item.wait_for.S) : [], 'cross_account_role': $exists($states.input.item.cross_account_role.S) ? $states.input.item.cross_account_role.S : 'same', 'pipeline_name': $exists($states.input.item.pipeline_name.S) ? $states.input.item.pipeline_name.S : 'unknown', 'pipeline_execution': $exists($states.input.item.pipeline_execution.S) ? $states.input.item.pipeline_execution.S : 'unknown', 'pipeline_execution_short': $exists($states.input.item.pipeline_execution_short.S) ? $states.input.item.pipeline_execution_short.S : 'unknown', 'current_date': $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T'), 'date': $exists($states.input.item.date.S) ? $states.input.item.date.S : $substringBefore($now(), 'T'), 'trigger_rule': $exists($states.input.item.trigger_rule.S) ? $states.input.item.trigger_rule.S : 'all_success', 'wait_before': $exists($states.input.item.wait_before.N) ? $number($states.input.item.wait_before.N) : 0, 'task_type': $exists($states.input.item.task_type.S) ? $states.input.item.task_type.S : 'sfn' }; $start ~> |$| { 'generation': $states.input.generation, 'token': $exists($item.orchestration_token.S) ? $item.orchestration_token.S : ($exists($start.token) ? $start.token : ''), 'execution_name_override': $states.input.execution_name, 'task_run_id': $exists($item.task_run_id.S) ? $item.task_run_id.S : $states.input.execution_name, 'attempt': ($exists($item.attempt.N) ? $number($item.attempt.N) : 1) + 1, 'task_config': $count($keys($states.input.task_config)) > 0 ? $states.input.task_config : ($exists($start.task_config) ? $start.task_config : {}), 'outlets': $count($states.input.outlets) > 0 ? $states.input.outlets : ($exists($start.outlets) ? $start.outlets : []) } | ) %}"
       },
       "Output": {
         "status": "restarted",
@@ -162,7 +253,94 @@
           "BackoffRate": 2,
           "JitterStrategy": "FULL"
         }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "The restart did not happen: say so in the bell, then fail.",
+          "Output": "{% $states.input ~> |$| {'restart_error': $states.errorOutput} | %}",
+          "Next": "Warn_Restart_Failed"
+        }
       ]
+    },
+    "Warn_Restart_Failed": {
+      "Type": "Task",
+      "Comment": "The restart failed after it stopped the old wrapper, or after it took the row over: the task does not run, and the console had said it was restarted (external review). The row is stopped, or still as it was, and both can be restarted again. The row shape of polyris.coordination.records.warning_item (kind 'coordination'); a contract test compares them.",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Item": {
+          "execution_name": {
+            "S": "{% '_notify_warn_coordination_' & $states.input.execution_name %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "{% $states.input.item.task_name.S %}"
+          },
+          "pipeline_name": {
+            "S": "{% $exists($states.input.item.pipeline_name.S) ? $states.input.item.pipeline_name.S : 'unknown' %}"
+          },
+          "pipeline_execution": {
+            "S": "{% $exists($states.input.item.pipeline_execution.S) ? $states.input.item.pipeline_execution.S : 'unknown' %}"
+          },
+          "task_date": {
+            "S": "{% $exists($states.input.item.date.S) ? $states.input.item.date.S : '' %}"
+          },
+          "status": {
+            "S": "failed"
+          },
+          "error": {
+            "S": "{% $substring('The restart could not start the task, so it does not run: ' & $string($states.input.restart_error) & '. Restart it again once the cause is fixed.', 0, 32000) %}"
+          },
+          "finished_at": {
+            "S": "{% $now() %}"
+          },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
+          "ttl": {
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Restart_Failed",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Output": "{% $states.input %}",
+          "Next": "Restart_Failed"
+        }
+      ]
+    },
+    "Restart_Failed": {
+      "Type": "Fail",
+      "Comment": "The restart helper ends failed; the warning carries the cause.",
+      "Error": "RestartFailed",
+      "Cause": "The restart could not start the task; the coordination warning in the console names the cause"
     },
     "Task_Not_Found": {
       "Type": "Fail",

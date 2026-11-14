@@ -1,4 +1,4 @@
-.PHONY: test test-sdk test-backend test-integration test-lambdas test-ui test-sfn-jsonata e2e-health e2e-smoke check lint sync-constants sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
+.PHONY: test test-sdk test-backend test-integration test-docs test-lambdas test-ui test-sfn-jsonata test-probes e2e-health e2e-smoke e2e-coordination e2e-coordination-clean check lint sync-loggers check-generate-enums check-generate-variables check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck check-versions smoke-pipelines help
 
 # Default target
 help:
@@ -13,16 +13,19 @@ help:
 	@echo "  make test-ui           - Run UI tests only"
 	@echo "  make e2e-health        - E2E: hit live API /health (needs POLYRIS_API_URL)"
 	@echo "  make e2e-smoke         - E2E: read-only + backfill smoke vs live AWS (needs POLYRIS_API_URL + POLYRIS_ID_TOKEN)"
+	@echo "  make e2e-coordination STACK=<platform stack> [PROFILE=…] [REGION=…] [ARGS=…]"
+	@echo "                         - E2E: deploy the coordination smoke pipelines and run them (~15 min)"
+	@echo "  make e2e-coordination-clean STACK=<platform stack> [PROFILE=…] [REGION=…]"
+	@echo "                         - E2E: remove the coordination smoke pipelines"
 	@echo "  make check             - Run every gate CI runs (lint, drift, guards, versions, smoke, test)"
 	@echo "  make check-no-paid     - Open-core guard: no paid ee/ code tracked here"
 	@echo "  make lint              - Check Python + JSON syntax"
-	@echo "  make sync-constants    - Verify Lambda constants in sync"
 	@echo "  make check-versions    - Verify version consistency across files"
 	@echo "  make smoke-pipelines   - Verify all pipelines import cleanly"
 	@echo ""
 
 # Run all tests
-test: test-sdk test-backend test-integration test-lambdas test-sfn-jsonata test-ui
+test: test-sdk test-backend test-integration test-docs test-lambdas test-sfn-jsonata test-ui
 
 # SDK tests (smoke + trigger rules + SFN flow + ASL snapshots)
 test-sdk:
@@ -48,6 +51,11 @@ test-integration:
 	@echo "🧪 Running Integration tests..."
 	python3 -m pytest tests/integration/ -v
 
+# Docs drift tests (resource counts and inventories, CLI flags, ADR refs, entry points)
+test-docs:
+	@echo "🧪 Running docs drift tests..."
+	python3 -m pytest tests/docs/ -v
+
 # Pure-logic core coverage with floor enforcement (Principle #22).
 # fail_under + the AWS/CLI omit list live in pyproject.toml [tool.coverage].
 # Ratchet the floor up as debt closes; omit-ed modules are covered by e2e/smoke.
@@ -56,26 +64,34 @@ test-cov:
 	python3 -m pytest tests/sdk/ tests/backend/ tests/integration/ \
 		--cov=polyris --cov-report=term-missing
 
+# Mutation probes of the coordination harness: each puts a fixed defect back and expects its
+# scenario to fail. They edit source files while they run (and restore them), so run them alone,
+# never next to another suite. CI runs them last, on its throwaway checkout; `make test` does not.
+test-probes:
+	@echo "🧬 Coordination mutation probes..."
+	python3 tests/backend/coordination/run_probes.py
+
 # Lambda tests
+# Lambda suites run with no AWS profile, region or credentials, as in CI: a suite
+# that needs one must set it itself, so a local run cannot hide what CI will hit.
+HERMETIC_AWS = env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_ACCESS_KEY_ID \
+	-u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
+
 test-lambdas:
 	@echo "🧪 Running Lambda tests..."
-	cd sam/lambdas/evaluate_deps && PYTHONPATH=. python3 -m pytest test_evaluate_deps.py -v
 	@if [ -f sam/lambdas/notify/test_notify.py ]; then \
 		echo "  Running notify tests..."; \
-		cd sam/lambdas/notify && PYTHONPATH=. python3 -m pytest test_notify.py -v; \
-	fi
-	@if [ -d sam/lambdas/notify_asset_subscribers ] && [ -f sam/lambdas/notify_asset_subscribers/test_notify_asset_subscribers.py ]; then \
-		cd sam/lambdas/notify_asset_subscribers && PYTHONPATH=. python3 -m pytest test_notify_asset_subscribers.py -v; \
-	fi
-	@if [ -f sam/lambdas/check_assets/test_check_assets.py ]; then \
-		echo "  Running check_assets tests..."; \
-		cd sam/lambdas/check_assets && PYTHONPATH=. python3 -m pytest test_check_assets.py -v; \
+		cd sam/lambdas/notify && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_notify.py -v; \
 	fi
 	@if [ -d sam/lambdas/console_api/tests ]; then \
 		echo "  Running console_api tests (requires boto3, pytest-mock)..."; \
-		cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -v 2>/dev/null || \
-			echo "  ⚠️  console_api tests skipped (run: pip install -e '.[dev]')"; \
+		cd sam/lambdas/console_api && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest tests/ -v || \
+			{ echo "  ❌ console_api tests failed (run: pip install -e '.[dev]')"; exit 1; }; \
 	fi
+	@echo "  Running coordination tests (moto, tables from sam/template.yaml)..."
+	cd sam/lambdas/coordination && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest tests/ -v
+	cd sam/lambdas/query_subscriptions && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_query_subscriptions.py -v
+	cd sam/lambdas/bucket_cleanup && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_bucket_cleanup.py -v
 
 # SFN JSONata expression tests (requires Node.js)
 test-sfn-jsonata:
@@ -108,6 +124,17 @@ e2e-health:
 	@echo "🌐 E2E health probe against $$POLYRIS_API_URL ..."
 	python3 -m pytest tests/e2e/test_health.py -v
 
+# e2e-coordination : the coordination smoke on a deployed platform, in one command:
+#   deploys tests/e2e/coordination_smoke, signs in as a temporary console user and runs
+#   test_coordination_smoke.py (tests/e2e/run_coordination_smoke.py). ARGS go to pytest.
+e2e-coordination:
+	@: "$${STACK:?usage: make e2e-coordination STACK=<platform stack> [PROFILE=…] [REGION=…] [ARGS='-k marking']}"
+	python3 tests/e2e/run_coordination_smoke.py --stack "$(STACK)" $(if $(PROFILE),--profile "$(PROFILE)") $(if $(REGION),--region "$(REGION)") $(ARGS)
+
+e2e-coordination-clean:
+	@: "$${STACK:?usage: make e2e-coordination-clean STACK=<platform stack> [PROFILE=…] [REGION=…]}"
+	python3 tests/e2e/run_coordination_smoke.py --stack "$(STACK)" $(if $(PROFILE),--profile "$(PROFILE)") $(if $(REGION),--region "$(REGION)") --clean
+
 e2e-smoke:
 	@: "$${POLYRIS_API_URL:?set POLYRIS_API_URL}"
 	@: "$${POLYRIS_ID_TOKEN:?set POLYRIS_ID_TOKEN (use scripts/get-e2e-token.sh)}"
@@ -117,7 +144,7 @@ e2e-smoke:
 	python3 -m pytest tests/e2e/ -v -m smoke
 
 # All checks before commit
-check: lint sync-constants sync-loggers check-generate-enums check-generate-variables \
+check: lint sync-loggers check-generate-enums check-generate-variables \
        check-sfn-templates check-backfill-parity check-no-paid check-oss-purity typecheck \
        check-versions smoke-pipelines test
 	@echo "✅ All checks passed!"
@@ -158,7 +185,6 @@ json.loads(src)" 2>&1 || (echo "❌ Invalid JSON: $$f" && exit 1); \
 
 # Generate enum mirrors from polyris/constants.py (ADR #72, v0.79.0)
 # Writes:
-#   - sam/lambdas/_shared/constants_generated.py
 #   - sam/lambdas/console_api/constants_generated.py
 #   - ui/src/generated/enums.ts
 generate-enums:
@@ -194,7 +220,7 @@ check-backfill-parity:
 # Sync logger.py from _shared/ to each Lambda (v0.79.4, ADR #76)
 sync-loggers:
 	@echo "🔄 Syncing Lambda loggers..."
-	@for lambda in evaluate_deps notify_asset_subscribers check_assets query_subscriptions console_api; do \
+	@for lambda in query_subscriptions console_api coordination; do \
 		if ! diff -q sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py > /dev/null 2>&1; then \
 			echo "❌ $$lambda/logger.py out of sync!"; \
 			echo "   Run: cp sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py"; \
@@ -204,19 +230,6 @@ sync-loggers:
 	@echo "✅ All Lambda loggers in sync"
 
 # Validate Lambda constants are in sync
-sync-constants:
-	@echo "🔄 Checking Lambda constants..."
-	@diff -q sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py > /dev/null 2>&1 || \
-		(echo "❌ evaluate_deps/constants.py out of sync!" && \
-		 echo "   Run: cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py" && exit 1)
-	@python3 -m polyris.codegen.check_shared_constants
-	@for d in console_api check_assets evaluate_deps notify_asset_subscribers query_subscriptions; do \
-		diff -q sam/lambdas/_shared/logger.py sam/lambdas/$$d/logger.py > /dev/null 2>&1 || \
-		(echo "❌ sam/lambdas/$$d/logger.py drifted from _shared/logger.py!" && \
-		 echo "   Run: cp sam/lambdas/_shared/logger.py sam/lambdas/$$d/logger.py" && exit 1); \
-	done
-	@echo "✅ Constants + logger in sync"
-
 # Type check the shipped library. The wheel ships py.typed, so annotations are
 # a public contract — this is blocking, matching CI.
 typecheck:

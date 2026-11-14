@@ -25,33 +25,48 @@ from .steps import (
 )
 from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
+from .coordination.records import DAG_SNAPSHOT_PREFIX
+from .coordination.run_name import MAX_NAME, fit_task_id
+from .partitions import MAX_PARTITION_KEY_LENGTH
 
 
 # =============================================================================
 # JSONata Expression Constants
 # =============================================================================
-# Used in task and step inputs for date/partition resolution.
-# Fallback chain: variables.current_date → input.current_date → $now() today
+# Used in task and step inputs for date/partition resolution (ADR #133).
 #
-# NOTE: Define_Inputs state (orchestrator level) uses a DIFFERENT fallback
-# chain (→ null, not → $now()). Do NOT use these constants for Define_Inputs.
+# A run has one date, the same for every task: the date it was started for
+# (variables.current_date or current_date: the console, an asset trigger), else
+# the UTC day its schedule fired it for (SCHEDULED_TIME_FIELD, filled in by EventBridge
+# Scheduler), else the UTC day the execution started. Never $now(): each task
+# builds its input at its own moment, so a run crossing midnight would get two
+# dates, and a run scheduled at 23:59 that starts at 00:01 the next day's.
+# Values are tested, not presence: Define_Inputs passes absent fields on as null,
+# and $exists(null) is true.
+
+#: The field of a scheduled run's input that holds the time its schedule fired it
+#: for. deploy.py puts EventBridge Scheduler's <aws.scheduler.scheduled-time> there.
+SCHEDULED_TIME_FIELD = "scheduled_time"
+
+_RUN_DATE = (
+    "($states.input.current_date ? $states.input.current_date "
+    f": ($states.input.{SCHEDULED_TIME_FIELD} ? $substringBefore($states.input.{SCHEDULED_TIME_FIELD}, 'T') "
+    ": $substringBefore($states.context.Execution.StartTime, 'T')))"
+)
 
 _DATE_FALLBACK = (
-    "$exists($states.input.variables.current_date) "
-    "? $states.input.variables.current_date "
-    ": ($exists($states.input.current_date) "
-    "? $states.input.current_date "
-    ": $substringBefore($now(), 'T'))"
+    "($states.input.variables.current_date ? $states.input.variables.current_date "
+    f": {_RUN_DATE})"
 )
 
 JSONATA_DATE = f"{{% {_DATE_FALLBACK} %}}"
 
 JSONATA_PARTITION = (
-    "{% $exists($states.input.variables.PARTITION_ARG) "
+    "{% $states.input.variables.PARTITION_ARG "
     "? $states.input.variables.PARTITION_ARG "
-    ": ($exists($states.input.PARTITION_ARG) "
+    ": ($states.input.PARTITION_ARG "
     "? $states.input.PARTITION_ARG "
-    f": ({_DATE_FALLBACK})) %}}"
+    f": {_DATE_FALLBACK}) %}}"
 )
 
 _EXEC_NAME_SUFFIX = (
@@ -111,17 +126,68 @@ _STANDARD_DYNAMODB_RETRY: Dict[str, Any] = {
 }
 
 
+# A wrapper execution is named "{task id}-{date}-{run suffix}". The date is a
+# partition key and the run suffix the run name's last 8 characters; the task
+# id gets what is left of the 80 characters, so the date and the suffix are
+# never cut (ADR #130 §6.6).
+_WRAPPER_NAME_TAIL = 1 + MAX_PARTITION_KEY_LENGTH + 1 + 8
+_TASK_ID_BUDGET = MAX_NAME - _WRAPPER_NAME_TAIL
+
+
+def _wrapper_name_part(node_id: str) -> str:
+    """The task-id part of a wrapper execution name: the id, or a prefix and a hash of it."""
+    return fit_task_id(node_id, _TASK_ID_BUDGET)
+
+
+def _warning_item(subject: str, task_name: str, dag_id: str, error: str) -> Dict[str, Any]:
+    """A DynamoDB-typed `coordination` warning row, the shape of records.warning_item (ADR #130 §9).
+
+    `subject` and `error` are JSONata fragments. The row carries no `date`:
+    the bell finds it through the attention index by write time, whatever the
+    partition date of the run (B-N1). A contract test compares the two shapes.
+    """
+    return {
+        "execution_name": {"S": f"{{% '_notify_warn_coordination_' & {subject} %}}"},
+        "kind": {"S": "coordination"},
+        "task_name": {"S": task_name},
+        "pipeline_name": {"S": dag_id},
+        "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
+        "task_date": {"S": JSONATA_DATE},
+        "status": {"S": "failed"},
+        "error": {"S": f"{{% {error} %}}"},
+        "finished_at": {"S": JSONATA_NOW},
+        "attention": {"S": f"{{% 'warn#' & $substring($hash({subject}, 'SHA-256'), 0, 1) %}}"},
+        "attention_at": {"S": JSONATA_NOW},
+        "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"},
+    }
+
+
 def _make_execution_name_expr(task_id: str) -> str:
-    """Build JSONata expression for deterministic SFN child execution Name.
-    
-    Format: {task_id}-{date}-{exec_suffix} truncated to 80 chars.
-    Used for wrapper/step SFN startExecution.waitForTaskToken calls.
+    """JSONata for a wrapper execution's Name: {task id part}-{date}-{run suffix}.
+
+    Used for wrapper/step SFN startExecution.waitForTaskToken calls. Two runs
+    of a task never share a name, whatever the length of its id. The final
+    $substring only guards a date longer than any partition key.
     """
     return (
-        f"{{% $substring('{task_id}-' "
+        f"{{% $substring('{_wrapper_name_part(task_id)}-' "
         f"& ({_DATE_FALLBACK}) "
-        f"& '-' & {_EXEC_NAME_SUFFIX}, 0, 80) %}}"
+        f"& '-' & {_EXEC_NAME_SUFFIX}, 0, {MAX_NAME}) %}}"
     )
+
+
+def _check_wrapper_names(dag: DAG) -> None:
+    """Fail when two nodes of ``dag`` would start wrappers under the same name."""
+    seen: Dict[str, str] = {}
+    nodes = [t.task_id for t in dag.tasks] + [s.step_id for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES]
+    for node_id in nodes:
+        part = _wrapper_name_part(node_id)
+        first = seen.setdefault(part, node_id)
+        if first != node_id:
+            raise ValueError(
+                f"DAG '{dag.dag_id}': tasks '{first}' and '{node_id}' would start their wrappers under "
+                f"the same name ('{part}-<date>-<run>'). Rename one of them."
+            )
 
 
 def _serialize_wait_for(wait_for: List[Any]) -> List[Dict[str, Any]]:
@@ -1279,10 +1345,10 @@ def _build_registration_chain(
         registry_table: DynamoDB table name for pipeline registry
         tokens_table: DynamoDB table name for tokens/snapshots
         asset_subscriptions_table: DynamoDB table name for asset subscriptions
-            (consumed by the platform's notify_asset_consumers SFN — must match
-            its own ${asset_subscriptions_table} substitution, both ultimately
-            sourced from the SAM stack's AssetSubscriptionsTable output that
-            polyris-deploy reads via describe_stacks)
+            (read by the platform's asset-fanout function — must be the table
+            in its ASSET_SUBSCRIPTIONS_TABLE, both sourced from the SAM stack's
+            AssetSubscriptionsTable output that polyris-deploy reads via
+            describe_stacks)
     
     Returns:
         Tuple of (states_dict, start_at_state_name)
@@ -1304,8 +1370,12 @@ def _build_registration_chain(
                 "register_only": JSONATA_REGISTER_ONLY,
                 "_suppress_asset_event": JSONATA_SUPPRESS_ASSET_EVENT,
                 "cascade_all": JSONATA_CASCADE_ALL,
-                "current_date": "{% $exists($states.input.current_date) ? $states.input.current_date : null %}",
-                "PARTITION_ARG": "{% $exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.current_date) ? $states.input.current_date : null) %}"
+                # The Output replaces the whole input: every field a task reads must be passed on here.
+                "triggered_by": JSONATA_TRIGGERED_BY,
+                # The same chains the tasks use: the declared variables replace the input's, so the
+                # input's variables.current_date is read here or never (ADR #133).
+                "current_date": JSONATA_DATE,
+                "PARTITION_ARG": JSONATA_PARTITION,
             },
             "Next": "Register_Pipeline"
         }
@@ -1378,17 +1448,8 @@ def _build_registration_chain(
         "Resource": "arn:aws:states:::dynamodb:putItem",
         "Arguments": {
             "TableName": tokens_table,
-            "Item": {
-                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-register_pipeline' %}"},
-                "pipeline_name": {"S": dag.dag_id},
-                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                "task_name": {"S": "Register_Pipeline"},
-                "date": {"S": JSONATA_DATE},
-                "status": {"S": "failed"},
-                "error": {"S": "{% 'Register_Pipeline failed: ' & $string($states.input._registration_error) %}"},
-                "finished_at": {"S": JSONATA_NOW},
-                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
-            }
+            "Item": _warning_item("$states.context.Execution.Name & '-register_pipeline'", "Register_Pipeline",
+                                  dag.dag_id, "'Register_Pipeline failed: ' & $string($states.input._registration_error)")
         },
         "Output": "{% $sift($states.input, function($v, $k) { $k != '_registration_error' }) %}",
         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1409,7 +1470,7 @@ def _build_registration_chain(
         "Arguments": {
             "TableName": tokens_table,
             "Item": {
-                "execution_name": {"S": "{% 'dag_snapshot::' & $states.context.Execution.Name %}"},
+                "execution_name": {"S": f"{{% '{DAG_SNAPSHOT_PREFIX}' & $states.context.Execution.Name %}}"},
                 "pipeline_name": {"S": dag.dag_id},
                 "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
                 "dag": {"S": json.dumps(dag_metadata)},
@@ -1434,17 +1495,8 @@ def _build_registration_chain(
         "Resource": "arn:aws:states:::dynamodb:putItem",
         "Arguments": {
             "TableName": tokens_table,
-            "Item": {
-                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"},
-                "pipeline_name": {"S": dag.dag_id},
-                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                "task_name": {"S": "Save_DAG_Snapshot"},
-                "date": {"S": JSONATA_DATE},
-                "status": {"S": "failed"},
-                "error": {"S": "{% 'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error) %}"},
-                "finished_at": {"S": JSONATA_NOW},
-                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
-            }
+            "Item": _warning_item("$states.context.Execution.Name & '-save_dag_snapshot'", "Save_DAG_Snapshot",
+                                  dag.dag_id, "'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error)")
         },
         "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1469,17 +1521,23 @@ def _build_registration_chain(
                 "States": {
                     "WriteSubscription": {
                         "Type": "Task",
-                        "Resource": "arn:aws:states:::dynamodb:putItem",
+                        "Comment": "subscribed_at is written once: a consumer reacts only to facts recorded after it subscribed (ADR #130 §6.1)",
+                        "Resource": "arn:aws:states:::dynamodb:updateItem",
                         "Arguments": {
                             "TableName": asset_subscriptions_table,
-                            "Item": {
+                            "Key": {
                                 "asset_name": {"S": "{% $states.input %}"},
                                 "pipeline_name": {"S": dag.dag_id},
-                                "sfn_arn": {"S": JSONATA_SFN_ARN},
-                                "operator": {"S": asset_schedule.get("operator", "AND")},
-                                "assets": {"S": json.dumps(_flatten_asset_names(dag._asset_schedule))},
-                                "registered_at": {"S": JSONATA_NOW}
-                            }
+                            },
+                            "UpdateExpression": ("SET sfn_arn = :arn, #op = :op, #assets = :assets, registered_at = :now, "
+                                                 "subscribed_at = if_not_exists(subscribed_at, :now)"),
+                            "ExpressionAttributeNames": {"#op": "operator", "#assets": "assets"},
+                            "ExpressionAttributeValues": {
+                                ":arn": {"S": JSONATA_SFN_ARN},
+                                ":op": {"S": asset_schedule.get("operator", "AND")},
+                                ":assets": {"S": json.dumps(_flatten_asset_names(dag._asset_schedule))},
+                                ":now": {"S": JSONATA_NOW},
+                            },
                         },
                         "Output": "{% null %}",
                         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1496,17 +1554,11 @@ def _build_registration_chain(
                         "Resource": "arn:aws:states:::dynamodb:putItem",
                         "Arguments": {
                             "TableName": tokens_table,
-                            "Item": {
-                                "execution_name": {"S": "{% '_notify_warn_' & $states.context.Execution.Name & '-write_subscription-' & $string($states.input._asset_name) %}"},
-                                "pipeline_name": {"S": dag.dag_id},
-                                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                                "task_name": {"S": "WriteSubscription"},
-                                "date": {"S": JSONATA_DATE},
-                                "status": {"S": "failed"},
-                                "error": {"S": "{% 'WriteSubscription failed for ' & $string($states.input._asset_name) & ': ' & $string($states.input._subscription_error) %}"},
-                                "finished_at": {"S": JSONATA_NOW},
-                                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"}
-                            }
+                            "Item": _warning_item(
+                                "$states.context.Execution.Name & '-write_subscription-' & $string($states.input._asset_name)",
+                                "WriteSubscription", dag.dag_id,
+                                "'WriteSubscription failed for ' & $string($states.input._asset_name) & ': ' "
+                                "& $string($states.input._subscription_error)")
                         },
                         "Output": "{% null %}",
                         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1587,6 +1639,7 @@ def generate_step_function_json(
     _asset_subscriptions_table = asset_subscriptions_table or "${asset_subscriptions_table}"
     
     # 1. Build parallel branches (one per task/step)
+    _check_wrapper_names(dag)
     branches = []
     for item in list(dag.tasks) + list(dag.steps):
         if isinstance(item, Task):

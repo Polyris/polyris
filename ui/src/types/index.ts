@@ -9,6 +9,7 @@
 // file re-exports them for backward-compatible import paths. Don't edit
 // the unions here — edit polyris/constants.py and re-run codegen.
 
+import type { WarningKind } from '@/generated/enums';
 import type {
     TaskStatus,
     TriggerRule,
@@ -47,7 +48,7 @@ export interface Task {
   pipeline_execution_short?: string;
   pipeline_execution?: string;
   dependencies?: string[];
-  wait_for?: string | WaitForAsset[];
+  wait_for?: string | WaitForEntry[];
   wait_before?: number;
   wait_delay_until_ms?: number;
   wait_delay_started_ms?: number;
@@ -87,7 +88,18 @@ export interface TaskError {
 export interface WaitForAsset {
   asset_name?: string;
   name?: string;
+  freshness_hours?: number | null;
+  consecutive_days?: number;
 }
+
+/** `wait_for=[a | b]` (OR) or `[a & b]` (AND) as one entry; groups nest
+ *  (polyris/generators.py `_serialize_wait_for`). */
+export interface WaitForGroup {
+  operator: 'AND' | 'OR';
+  assets: WaitForEntry[];
+}
+
+export type WaitForEntry = WaitForAsset | WaitForGroup;
 
 export interface AssetScheduleInfo {
   operator: 'AND' | 'OR';
@@ -233,6 +245,12 @@ export interface Notification {
   timestamp?: string;
   time_ago?: string;
   acknowledged?: boolean;
+  /** ADR #130 §9 — what a coordination warning is about. Populated when type='warning'. */
+  kind?: WarningKind;
+  /** The failure or warning text. */
+  error?: string;
+  /** The partition date of the task a warning is about. */
+  date?: string;
   /** ADR #68 — backfill terminal notifications. Populated when type='backfill'. */
   backfill_status?: 'completed' | 'failed' | 'partial' | 'canceled';
   backfill_id?: string;

@@ -5,10 +5,11 @@ Canonical source: polyris/constants.py defines 8 enum families. This
 script reads them via Python imports (NOT regex; safer + handles
 inheritance) and writes:
 
-  1. sam/lambdas/_shared/constants.py        (Lambda shared)
-  2. sam/lambdas/console_api/constants.py    (Lambda console_api)
-  3. sam/lambdas/evaluate_deps/constants.py  (Lambda evaluate_deps; copied from _shared)
-  4. ui/src/generated/enums.ts                (Frontend TypeScript)
+  1. sam/lambdas/console_api/constants_generated.py  (Lambda console_api)
+  2. ui/src/generated/enums.ts                        (Frontend TypeScript)
+
+The coordination Lambdas import polyris itself (from their requirements.txt),
+so they read polyris.constants directly.
 
 Why Python-import the source rather than regex-parse: it lets us
 inherit existing logic (TaskStatus is an Enum subclass; PipelineStatus
@@ -28,6 +29,7 @@ import argparse
 import hashlib
 import inspect
 import sys
+import textwrap
 from pathlib import Path
 from typing import Iterable
 
@@ -76,7 +78,14 @@ def _ts_header() -> str:
 
 def _enum_class_py(name: str, doc: str, members: Iterable[tuple[str, str]]) -> str:
     """Plain Python class (NOT enum.Enum — Lambda code expects bare strings)."""
-    lines = [f"class {name}:", f'    """{doc}"""']
+    if '\n' in doc:
+        # Multi-line: indent continuation lines so the generated class body is
+        # properly formatted. textwrap.indent skips blank lines by default.
+        indented = textwrap.indent(doc, '    ').lstrip()
+        docstring = f'    """{indented}\n    """'
+    else:
+        docstring = f'    """{doc}"""'
+    lines = [f"class {name}:", docstring]
     for attr, val in members:
         lines.append(f'    {attr} = {val!r}')
     return "\n".join(lines) + "\n"
@@ -126,6 +135,15 @@ def _render_python_body() -> str:
     ))
     parts.append("\n")
 
+    # WarningKind — the `kind` of a coordination warning row; the UI bell shows it.
+    parts.append(_enum_class_py(
+        "WarningKind",
+        "What a warning in the console bell is about (ADR #130 §9).",
+        [(n, getattr(src.WarningKind, n))
+         for n in vars(src.WarningKind) if not n.startswith("_")],
+    ))
+    parts.append("\n")
+
     # PipelineStatus, ExecutionStatus, BackfillStatus, etc.
     for cls in (src.PipelineStatus, src.ExecutionStatus,
                 src.BackfillStatus, src.BackfillCascade,
@@ -135,7 +153,7 @@ def _render_python_body() -> str:
         members = [(n, getattr(cls, n))
                    for n in vars(cls) if not n.startswith("_")]
         parts.append(_enum_class_py(cls.__name__,
-                                    cls.__doc__ or cls.__name__,
+                                    inspect.cleandoc(cls.__doc__) if cls.__doc__ else cls.__name__,
                                     members))
         parts.append("\n")
 
@@ -284,6 +302,15 @@ def _render_ts_body() -> str:
     ))
     parts.append("\n")
 
+    parts.append(_ts_union(
+        "WarningKind",
+        "What a warning in the console bell is about (ADR #130 §9). "
+        "See polyris/constants.py::WarningKind.",
+        [getattr(src.WarningKind, n) for n in vars(src.WarningKind)
+         if not n.startswith("_")],
+    ))
+    parts.append("\n")
+
     for cls in (src.PipelineStatus, src.ExecutionStatus,
                 src.BackfillStatus, src.BackfillCascade,
                 src.BackfillUpstream,
@@ -339,12 +366,7 @@ def _render_ts_body() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 PY_TARGETS = [
-    REPO_ROOT / "sam" / "lambdas" / "_shared" / "constants_generated.py",
     REPO_ROOT / "sam" / "lambdas" / "console_api" / "constants_generated.py",
-    # v0.79.5 (ADR #77) — evaluate_deps imports the generated module-level
-    # status sets (TASK_TERMINAL_STATUSES etc.) from its constants.py copy.
-    # The Lambda needs constants_generated.py in its deploy artifact.
-    REPO_ROOT / "sam" / "lambdas" / "evaluate_deps" / "constants_generated.py",
 ]
 
 TS_TARGET = REPO_ROOT / "ui" / "src" / "generated" / "enums.ts"

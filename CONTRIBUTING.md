@@ -49,7 +49,7 @@ make test
 
 # Or by area:
 make test-sdk           # pytest tests/sdk/
-make test-lambdas       # evaluate_deps, check_assets, notify_asset_subscribers, console_api
+make test-lambdas       # every Lambda suite: console_api, coordination, query_subscriptions, …
 make test-sfn-jsonata   # JSONata expression tests (requires Node.js)
 make test-ui            # vitest (requires npm install in ui/)
 ```
@@ -57,11 +57,7 @@ make test-ui            # vitest (requires npm install in ui/)
 ### 3. Before Committing
 
 ```bash
-make check   # Runs: lint, sync-constants, test
-
-# Or manually:
-make sync-constants
-make lint
+make check   # lint, generated-code drift, typecheck, tests
 ```
 
 ---
@@ -101,12 +97,10 @@ polyris/
 │
 ├── sam/     # AWS Infrastructure
 │   ├── lambdas/          # Lambda function code
-│   │   ├── console_api/  # REST API (27 free endpoints)
-│   │   ├── evaluate_deps/# Dependency evaluation
-│   │   ├── check_assets/ # Asset freshness checks
-│   │   ├── notify_asset_subscribers/ # Asset event notification
+│   │   ├── console_api/  # REST API (28 free endpoints)
+│   │   ├── coordination/ # Reconciler and asset fan-out (ADR #130)
 │   │   ├── query_subscriptions/     # Downstream subscriber lookup
-│   │   └── _shared/      # Shared constants (SOURCE OF TRUTH)
+│   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
 │   ├── sfn_templates/    # Step Functions ASL templates
 │   └── template.yaml    # SAM template
 │
@@ -125,19 +119,27 @@ polyris/
 
 ## Key Concepts
 
-### Lambda Constants Sync
+### Generated Lambda code
 
-Lambdas can't share code, so `TaskStatus` is duplicated. Keep in sync manually:
+`python -m polyris.codegen.sync_enums` writes `console_api/constants_generated.py` and `ui/src/generated/enums.ts` from `polyris/constants.py`. Never edit them; CI fails on drift (`make check-generate-enums`).
+
+### Deploy your branch to a dev account
+
+Your tests always run your checkout: `pip install -e .` makes `import polyris` read this folder. A deploy does not: `sam build` installs polyris into the console and coordination Lambdas from their `requirements.txt`, which pin the last release. Before you deploy a branch, point both pins at your checkout:
 
 ```bash
-# Check if in sync
-make sync-constants
-
-# Fix by copying source of truth
-cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
+sed -i "s|^polyris @ .*|polyris @ file://$PWD|" \
+  sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+cd sam && sam build && sam deploy
 ```
 
-**Source of truth:** `sam/lambdas/_shared/constants.py`
+Never commit that change: the path exists only on your machine, so CI and everyone else would fail to build. While it is in place `tests/sdk/test_lambda_sdk_pins.py` fails, as a reminder. Undo it before you commit:
+
+```bash
+git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+```
+
+`scripts/release.sh` moves both pins to the new tag when it cuts a release. [FROM_SOURCE.md](docs/deployment/FROM_SOURCE.md) has the whole deploy.
 
 ### Testing Strategy
 
@@ -146,13 +148,12 @@ cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
 | SDK core (DAG, tasks, DSL) | `tests/sdk/test_smoke.py` | `pytest tests/sdk/` | DAG structure, dependencies, ASL generation, constants |
 | ASL snapshots | `tests/sdk/test_asl_snapshots.py` | `pytest tests/sdk/` | Golden file comparison of generated Step Functions JSON |
 | Template features | `tests/sdk/test_templates.py` | `pytest tests/sdk/` | orchestration_timeout, route table, run_task resilience |
-| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 27 free console_api routes registered and callable |
-| Trigger rules | `tests/sdk/test_trigger_rules.py` | `pytest tests/sdk/` | 5 trigger rules: Python ↔ JSONata logic sync |
+| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 28 free console_api routes registered and callable |
+| Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The 5 trigger rules, their aliases and the unknown-rule fallback |
 | SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for all 13 templates |
 | JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, 550 expressions compile |
-| evaluate_deps Lambda | `sam/lambdas/evaluate_deps/` | `PYTHONPATH=. pytest` | BatchGetItem, trigger_rule evaluation, paused check |
-| check_assets Lambda | `sam/lambdas/check_assets/` | `PYTHONPATH=. pytest` | Asset freshness, wait_for logic |
-| notify_asset_subscribers | `sam/lambdas/notify_asset_subscribers/` | `PYTHONPATH=. pytest` | Asset event publishing, subscriber notification |
+| coordination Lambdas | `sam/lambdas/coordination/tests/` | `PYTHONPATH=. pytest tests/` | reconcile, asset-fanout, IAM grants against recorded calls |
+| Coordination scenarios | `tests/backend/coordination/` | `pytest tests/backend/coordination/` | Whole runs through the real SFN templates and Lambdas on moto |
 | console_api Lambda | `sam/lambdas/console_api/tests/` | `PYTHONPATH=. pytest` | API routes, query/scan pagination, validation |
 | UI hooks | `ui/src/hooks/*.test.{js,jsx}` | `npm test` | React hooks, state management |
 
@@ -161,13 +162,13 @@ cp sam/lambdas/_shared/constants.py sam/lambdas/evaluate_deps/constants.py
 ### Local Lambda Development
 
 ```bash
-cd sam/lambdas/evaluate_deps
+cd sam/lambdas/coordination
 
-# Run tests with mocked DynamoDB
-PYTHONPATH=. pytest test_evaluate_deps.py -v
+# Run tests against moto tables built from sam/template.yaml
+PYTHONPATH=. pytest tests/ -v
 
-# Test specific function
-PYTHONPATH=. pytest test_evaluate_deps.py::TestCheckTriggerRule -v
+# One file
+PYTHONPATH=. pytest tests/test_coordination_reconcile.py -v
 ```
 
 ---
@@ -190,11 +191,9 @@ PYTHONPATH=. pytest test_evaluate_deps.py::TestCheckTriggerRule -v
 
 ### Adding a New Task Status
 
-1. Add to `_shared/constants.py`
-2. Copy to `evaluate_deps/constants.py`
-3. Update `console_api/constants.py` manually if needed
-4. Update UI constants in `ui/src/utils/constants.js`
-5. Run `make sync-constants` to verify
+1. Add the member to `TaskStatus` in `polyris/constants.py`, and to every status set it belongs to
+2. Run `python -m polyris.codegen.sync_enums`
+3. Add a parity test if another artifact (an SFN template, the UI) reads the value (CLAUDE.md Principle #28)
 
 ### Adding a New API Endpoint
 
@@ -248,7 +247,7 @@ To find your key ID: `gpg --list-secret-keys --keyid-format=long`
 
 - [ ] Commits GPG-signed — see [GPG signing](#sign-your-commits-gpg)
 - [ ] Tests pass locally (`make test`)
-- [ ] Constants synced (`make sync-constants`)
+- [ ] Generated code in sync (`make check-generate-enums`)
 - [ ] No lint errors (`make lint`)
 - [ ] CHANGELOG.md updated
 - [ ] Documentation updated (if API changed)

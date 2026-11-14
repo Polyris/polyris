@@ -624,7 +624,7 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
 
         # trigger_rule is a Literal (type-checker-only) not runtime-enforced —
         # an unrecognized string silently passes through construction and only
-        # surfaces at evaluate_deps' "Unknown trigger_rule; defaulting to
+        # surfaces at the reconciler's "unknown trigger_rule, evaluated as
         # all_success" fallback (ADR #117). Catch it here with a specific
         # suggestion instead of a silent behavior change.
         valid_rules = set(get_args(TriggerRuleLiteral))

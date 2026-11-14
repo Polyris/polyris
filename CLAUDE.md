@@ -9,7 +9,7 @@ Read this fully before writing any code. When in doubt, `grep` first.
 
 - **Never add proprietary/paid code here.** Paid code lives only in `polyris-ee`. `polyris._ee*` is excluded from the wheel; no `ee/` directory in this checkout.
 - **The seam is enforced.** Free UI reaches paid surface only through the generated `@/ee-active.generated` stub (empty in OSS). `ui/scripts/check-oss-build.sh` CI gate strips `src/ee/` and asserts the build still typechecks.
-- **Self-contained build/test:** `pip install -e ".[dev]"` then `python -m pytest tests/sdk tests/backend tests/integration`; for the UI, `cd ui && npm ci && npm run typecheck && npm test -- --run && npm run build`.
+- **Self-contained build/test:** `pip install -e ".[dev]"` then `python -m pytest tests/sdk tests/backend tests/integration` and `make test-docs` (its own session: in one session with `tests/backend`, `tests` resolves to console_api's test package); for the UI, `cd ui && npm ci && npm run typecheck && npm test -- --run && npm run build`.
 
 Adding a feature? Decide the tier first: authoring + basic read → free (here); operations / observability / governance → paid (private repo).
 
@@ -81,7 +81,7 @@ mocker.patch('routes.backfill._scan_completed_partitions', return_value=set())
 **15. Smoke test happy paths before tagging a release**
 Before any `vX.Y.Z` tag:
 1. Deploy current main to a dev account
-2. Run `pytest -m smoke` against the live deployment
+2. Run `pytest -m smoke` against the live deployment; `make e2e-coordination STACK=<stack> PROFILE=<profile>` runs the coordination smoke in one command
 3. Manually exercise one happy path per new feature in the UI
 
 Tests in `tests/e2e/` marked `@pytest.mark.smoke` are skipped without `POLYRIS_API_URL`. They're the gate, not optional.
@@ -252,6 +252,66 @@ events: List[Dict[str, Any]] = raw
 
 Rule: `cast()` on an AWS API field, user-supplied dict, or deserialized JSON must be preceded by an `isinstance` check that raises with context.
 
+**38. Error visibility: no infrastructure failure may be silent**
+Every infrastructure failure ends in one of three ways (ADR #130 §9):
+- it is retried automatically until it succeeds;
+- it fails the affected task with the real cause, visible in the console;
+- it surfaces in the console as a warning (bell) or as the engine-health banner.
+
+It is always logged with `error=str(e)`. See the [Error Visibility section](#error-visibility-adr-38) for the `_notify_warn_` pattern.
+
+Production code and tests cite "Principle #38" for error visibility. Never renumber this entry.
+
+**39. When a new field replaces an old one in a multi-reader contract, keep writing the old field until every reader is migrated**
+If code A introduces a field that supersedes an old one while code B still falls back to the old field, A must write both. Stopping the old write silently breaks B's fallback, often only in one timing window.
+
+Correct: write both until every reader is updated and deployed. If every reader is replaced in the same deploy, nothing is left to fall back.
+Anti-pattern: write only the new field because "the old one is deprecated" while B still reads it.
+
+Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
+
+**40–52, 55 (coordination). The coordination code follows the rules in ADR #130, *Rules for the code***
+They concern task rows, wake-ups, facts and the sweeper. The numbers stay because code and tests cite them; read the full rule in the ADR before changing that code.
+- **40.** Delete a wake-up pointer only after the signal it serves was accepted.
+- **41.** Wake-up hints may be lost; wake-up decisions, status writes and fact writes may not.
+- **43.** The receiver of a signal owns the status transition that follows it.
+- **46.** A task token handed over through a write is findable by the sweeper, and a failed write fails the token.
+- **47.** A task row has one owner at a time, named by its generation; `tests/sdk/test_task_row_writers.py` lists every writer.
+- **49.** A helper template reads an input an older caller may omit through `$exists`.
+- **50.** A time that marks a beginning is written once (`if_not_exists`).
+- **51.** A reader of shared rows skips a row it cannot parse, and says so.
+- **52.** A time budget is checked per item, and a periodic job's steps fail independently.
+- **55.** An evaluation as of a time reads only what was recorded by then (`asset_conditions.evaluate(recorded_by=)`).
+
+**42. A second bug of the same class in one mechanism stops the patching — question the model first**
+When a mechanism produces a second bug of the same class (e.g. "task silently hangs until timeout"), do not patch it a third time. Stop and write down, before any code:
+- what the bug class is;
+- why the current model keeps producing it;
+- what model would make it impossible.
+
+Then decide with the maintainer: patch now and schedule the model change, or change the model now. Record the decision in an ADR.
+
+**Why:** a flag-based AND gate drafted on an unmerged branch (superseded by ADR #130) produced four separate silent-hang bugs, each fixed locally. The root cause was the model: readiness was accumulated from events instead of evaluated from facts. Each local fix looked like an isolated oversight; together they were a signal.
+
+**How to apply:** keep a running count per mechanism during a branch. "Same class" means the same user-visible failure, not the same line of code. This is the escalation step of Principle #5. It does not forbid shipping the patch, but the model question must be asked and answered.
+
+**44. A guard for an optional overlay import catches only that module's absence**
+`try: import ee` must catch only a `ModuleNotFoundError` whose `name` is the overlay module. If it catches every `ImportError`, a broken import inside the overlay silently removes every route the overlay provides.
+
+**45. No custom CloudWatch metrics, alarms, SNS topics or DLQs in the platform template**
+Code computes engine health on demand and shows it in the console (ADR #130 §9). Failures follow #38 and #41. Custom metrics, alarms, topics and queues cost every user money and need someone to watch them.
+
+A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR.
+
+**48. A value an ADR defines clause by clause is one pure function with a test per clause**
+The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
+
+**53. A Lambda's AWS calls fail inside the Lambda's timeout**
+botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function, and a function that times out cannot report its own transient error, so the caller sees `Sandbox.Timedout`. A read of an index that is still being built answers `ValidationException` "Cannot read from backfilling global secondary index"; `failures.is_transient` counts it as transient, because an upgrade that adds an index reaches the Lambdas first (the 1.2.0 upgrade rehearsal failed a `wait_for` task on it). Build clients with a short retry and timeout config (`env._config` in the coordination Lambdas), and let the caller's `Retry`/`Catch` treat the platform's own failures (`Sandbox.Timedout`, `Lambda.Unknown`) and any HTTP 5xx as transient.
+
+**54. Every resource AWS can tag carries the billing tags**
+The tags are `polyris:namespace`, `polyris:stage` and `polyris:component` (`platform` or `pipeline`), plus `polyris:pipeline` on a pipeline's resources (ADR #132). No other keys. In `sam/template.yaml` the Lambda functions take them from `Globals`, and every other resource spells them; `polyris-deploy` uses `resource_tags.pipeline_tags`. A resource without them is missing from every cost report and IAM condition that selects by them. `tests/sdk/test_resource_tags.py` learns from cfn-lint's resource schemas which types AWS can tag and checks every resource after the SAM transform, so a new resource fails it until it is tagged.
+
 ---
 
 ## Date picker is per-workspace, not global (ADR #106)
@@ -319,13 +379,10 @@ sam/
       restart_task/sfn.tpl.json
       restart_wrapper/sfn.tpl.json
       pause_waiter/sfn.tpl.json
-      notify_asset_consumers/sfn.tpl.json
   lambdas/
-    console_api/      # REST API (63 routes full build, 27 free), DAL repos, route handlers
-    evaluate_deps/    # Evaluates trigger rules (all_success, all_done, etc.)
+    console_api/      # REST API (28 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
+    coordination/     # reconcile, asset-fanout, sweeper (ADR #130): decide readiness, signal wrappers, start push consumers, re-check
     query_subscriptions/  # Finds downstream subscribers for a completed task
-    check_assets/     # Validates asset freshness for wait_for
-    notify_asset_subscribers/  # Triggers asset-based pipelines
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
 tests/
   sdk/                # ASL snapshot tests, template tests, SFN flow tests
@@ -345,7 +402,9 @@ tests/
 polyris-up --profile <profile>                 # install / upgrade the platform
 polyris-down --profile <profile>               # remove it
 
-# Contributors: from a checkout
+# Contributors: from a checkout. sam build packs polyris from the Lambdas' requirements.txt (the last release):
+# point both pins at the checkout first, never commit that, undo it before a commit (CONTRIBUTING.md)
+sed -i "s|^polyris @ .*|polyris @ file://$PWD|" sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
 cd sam && sam build && sam deploy --profile <profile>
 cd ui && npm ci && npm run build && ./deploy.sh <stack> <region> --profile <profile>
 
@@ -369,10 +428,11 @@ Both checks: run on `--dry-run` too; skipped on `--destroy` (no pipeline resourc
 
 ### Lambda packaging: `polyris` SDK comes from `requirements.txt` (ADR #102)
 
-The console Lambda declares the SDK in `sam/lambdas/console_api/requirements.txt`:
+The console Lambda and the coordination Lambdas declare the SDK in `sam/lambdas/console_api/requirements.txt` and `sam/lambdas/coordination/requirements.txt`, and import `polyris.coordination` and `polyris.partitions` from it (ADR #130 §10):
 ```
 polyris @ git+https://<PUBLIC_REPO_URL>@vX.Y.Z
 ```
+Both pins name the repository's version; `scripts/release.sh` moves both (`tests/sdk/test_lambda_sdk_pins.py`). To deploy a checkout from source, point both at it (`polyris @ file:///absolute/path`) and never commit that.
 
 **Things Claude must NOT propose:**
 - ❌ Re-adding a `console_api/polyris` symlink. No repo-root `polyris/` exists after the split.
@@ -391,18 +451,17 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 
 | Repo | Table suffix | PK | SK | GSIs |
 |------|-------------|----|----|------|
-| `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index` |
-| `dep_subscriptions_repo` | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
+| `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130) |
+| `subscriptions_repo` (query_subscriptions `qs_dal`) | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
-| `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index` |
-| `queued_events_repo` | `queued-asset-events` | `dag_date` | `asset_name` | — |
+| `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index`, `asset-partition-index` (sparse, ADR #130) |
 | `task_events_repo` | `task-events` | `task_run_id` | `event_time` | `run-index`, `execution-name-index` |
 | `asset_subscriptions_repo` | `asset-subscriptions` | `asset_name` | `pipeline_name` | — |
 | `api_tokens_repo` | `api-tokens` | `token_id` | — | `hash-index`, `owner-index` |
 
 **Two separate subscription tables, split by semantics (not by consumer):**
-- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Holds BOTH task-to-task deps within a pipeline (`dependency_key = "{upstream}-{pipeline_exec_short}"`) AND `wait_for=[asset]` subscriptions (`dependency_key = "asset:{name}"`, `subscriber = "{task}"`). One schema, one semantic shape ("X is waiting on Y"). Readers: `query_subscriptions`, `notify_asset_subscribers`, `check_assets`. Writers: `registration` SFN (task deps), `check_assets` Lambda (writes `wait_for` subscriptions), `notify_asset_subscribers` Lambda (deletes rows after `SendTaskSuccess`).
-- `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Holds push-trigger subscriptions only (`schedule=[asset]`). One subscription per (asset, consumer pipeline). Reader: `notify_asset_consumers` SFN's `Query_Subscriptions` state. Writer: `polyris-deploy` (deploy-time registration).
+- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5): a task dependency (`dependency_key = "{upstream}-{pipeline_execution_short}"`) or a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name` and no token. Writer: the registration SFN. Readers: `query_subscriptions` (for `notify_dependents`) and `AssetFanout`, both consistent. The reconciler deletes a task's pointers after its signal was accepted (Principle #40).
+- `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Push consumers only (`schedule=[asset]`): one row per (asset, consumer pipeline). Writer: the pipeline's own registration chain (`Register_Asset_Subscriptions`, at deploy and on every run). Reader: `AssetFanout`, which evaluates the consumer's schedule from its registry entry (ADR #130 §6.1).
 
 The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while dep/wait_for subscriptions are per-(upstream, subscriber-task-execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
 
@@ -415,6 +474,7 @@ The two tables exist because push-trigger subscriptions are per-(asset, pipeline
 - `task_execution_arn` — ARN of run_task SFN execution
 - `orchestration_token` — `.waitForTaskToken` for signaling deps ready
 - `wait_token` — token for notify_dependents to signal ready
+- `generation` — the owner's generation (ADR #130 §2.1): writes made for an owner are fenced by it; decisions and restarts raise it
 
 **dependency_key format:** `{upstream_task_name}-{pipeline_execution_short}` — must match exactly between writer (registration) and reader (query_subscriptions).
 
@@ -449,7 +509,7 @@ Symptom: "click X → ends up at default state Y", URL flickers to correct param
 
 ## Step Functions
 
-### 14 State Machines (11 orchestration + 3 test)
+### 13 State Machines (10 orchestration + 3 test)
 
 | Name | Type | Purpose |
 |------|------|---------|
@@ -462,7 +522,6 @@ Symptom: "click X → ends up at default state Y", URL flickers to correct param
 | `polyris-notify-dependents` | EXPRESS | Finds and signals downstream tasks when upstream completes |
 | `polyris-restart-task-helper` | EXPRESS | Stops wrapper + restarts task |
 | `polyris-restart-wrapper` | EXPRESS | Starts new dependency_wrapper for restart |
-| `polyris-notify-asset-consumers` | EXPRESS | Triggers asset-based pipelines |
 | `polyris-register-pipeline` | EXPRESS | Deployed but orphaned — not called by any current code path; superseded by the inline `Register_Pipeline` state in each generated pipeline SFN |
 | `polyris-test-quick` | STANDARD | Demo/test task (fast) |
 | `polyris-test-success` | STANDARD | Demo/test task (always succeeds) |
@@ -492,26 +551,27 @@ In `template.yaml`, always verify:
 |----------|---------|-------------|
 | `console-api` | All REST API endpoints | `TOKENS_TABLE`, `REGISTRY_TABLE`, etc. |
 | `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
-| `evaluate-deps` | Evaluate trigger rules | `TOKENS_TABLE` |
-| `check-assets` | Asset freshness checks + `wait_for` subscription writes | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
-| `notify-asset-subscribers` | Wake `wait_for` tasks on asset events | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
+| `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
+| `asset-fanout` | Read the `asset-events` stream (INSERT only) and reconcile every task waiting on the new fact's asset (ADR #130 §6.1) | the same as `reconcile` |
+| `sweeper` | Every 5 minutes (EventBridge Scheduler): re-check the waiting tasks that are due, warn about lost hints, abort zombies past their liveness deadline, release tasks a resume missed from their pause wait, retry failed push starts, hourly push catch-up, adopt rows an older version wrote, write the engine self-check to `_engine_health` (ADR #130 §8) | the same as `asset-fanout`, plus `ASSET_FANOUT_FUNCTION` |
 | `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
-**Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `evaluate_deps`, `notify_asset_subscribers`, `check_assets`, `query_subscriptions`, `ui_bootstrap` still use bare `print()` — migrate opportunistically.
+**Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `ui_bootstrap` still uses bare `print()` — migrate opportunistically.
 
 ---
 
-## Task Status Constants (`_shared/constants.py`)
+## Task Status Constants (`polyris/constants.py`)
 
 ```python
-TaskStatus.TERMINAL = {SUCCESS, FAILED, SKIPPED, UPSTREAM_FAILED, ABORTED}
+TERMINAL_STATUSES = {SUCCESS, SUCCEEDED, FAILED, SKIPPED, ABORTED, UPSTREAM_FAILED}
 # NOTE: STOPPED is NOT terminal — task can be restarted
-TaskStatus.SUCCESS_STATES = {SUCCESS, SKIPPED}
-TaskStatus.FAILURE_STATES = {FAILED, UPSTREAM_FAILED, ABORTED}
-TaskStatus.WAITING_STATES = {WAITING, WAITING_PAUSED, WAITING_DELAY, DEPS_READY, WAITING_DECISION}
+SUCCESS_STATUSES = {SUCCESS, SUCCEEDED, SKIPPED}
+FAILURE_STATUSES = {FAILED, UPSTREAM_FAILED, ABORTED}
+WAITING_STATUSES = {WAITING, DEPS_READY, WAITING_DELAY, WAITING_PAUSED, WAITING_DECISION}
+RECONCILABLE_STATUSES = {WAITING, WAITING_PAUSED}  # the only rows the reconciler acts on (ADR #130)
 ```
 
-After changing `_shared/constants.py`: run `make sync-constants` to copy to evaluate_deps.
+After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums` (Principle #27). The coordination Lambdas import `polyris.constants` from the SDK itself.
 
 ---
 
@@ -519,7 +579,7 @@ After changing `_shared/constants.py`: run `make sync-constants` to copy to eval
 
 Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `register(router)`; `main.py` exposes the assembled `ROUTES` table `(METHOD, '/api/path') → (handler_fn, 'param_key')`.
 
-**Surface (ADR #98, #110):** 27 free routes in OSS build, 63 in full. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
+**Surface (ADR #98, #110):** 28 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
@@ -530,7 +590,7 @@ When adding an endpoint:
 2. Add handler to module, register in `register(router)`.
 3. New module? Add to `main.py`'s `ROUTE_MODULES` (free) or `ee/__init__.py`'s `MODULES` (Team). Existing module needs no `main.py` change.
 4. Free handlers also go in `routes/__init__.py` barrel; Team handlers don't.
-5. Tests follow tier. Update route-count guards: free-subset in `tests/sdk/test_templates.py`, full-63 in `ee/team/tests/test_route_table_ee.py`.
+5. Tests follow tier. `tests/sdk/test_templates.py` asserts the free subset; `tests/docs/test_resource_inventory.py` checks the free-route count these docs state; the tier split in `ee/team/tests/test_route_table_ee.py` is derived.
 
 ---
 
@@ -542,6 +602,10 @@ from dal import executions_repo, pipelines_repo
 # Never: boto3.resource('dynamodb').Table('...')
 # Never: repo.table.get_item(...)  — use repo.get(key)
 ```
+
+**"Latest" and "newest first" sort on a key unique in time.** Sort runs and tasks by date *and* `started_at`, never by the date alone: rows that share a date come back in index order, and the sidebar card showed a failed run of the morning over a successful one of the afternoon (1.2.0 upgrade rehearsal; `test_the_card_shows_the_latest_run_of_a_date_with_several`).
+
+**A ProjectionExpression on a GSI names only what that index projects.** DynamoDB rejects the whole query otherwise (`… does not project [...]`); moto does not, so unit tests pass. Read the index without a projection, or with its keys and `NonKeyAttributes` only, and fetch the rest with `batch_get_run_meta`. `tests/sdk/test_console_index_projections.py` checks every index read against `sam/template.yaml`; `/api/tasks` failed with a 500 on every filter until the 1.2.0 live smoke.
 
 One deliberate exception: `notify/registry.py` has no `dal/` and one table accessor — `registry_table()` is the accessor. A DAL for a single function would be over-engineering.
 
@@ -587,34 +651,32 @@ Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
 - If an error blocks downstream tasks → write `_notify_warn_` record to `pipeline-tokens`
 - A catch on a wake-up path (subscription write/query, `send_task_success`, a fail-open fallback) logs at `log.error`, never `log.warn` — a swallowed WARN is what hid the historical `wait_for` subscription-table schema mismatch for months (DAL wrote `dependency_key`/`subscriber`, env var pointed at `AssetSubscriptionsTable` which keyed on `asset_name`/`pipeline_name`); the ValidationException was caught and logged as warning
 
-**`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI):
+**`_notify_warn_` pattern** (infrastructure errors → Notifications bell in UI, ADR #130 §9). Build every warning row with `records.warning_item` — never by hand:
 ```python
-executions_repo.put({
-    'execution_name': f'_notify_warn_{execution_name}',
-    'task_name': task_name,
-    'pipeline_execution': pipeline_execution,
-    'pipeline_name': pipeline_name,
-    'date': date,
-    'status': 'failed',
-    'error': f'Context: {error}',
-    'finished_at': datetime.now(timezone.utc).isoformat(),
-    'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400
-})
+from polyris.coordination.records import warning_item
+
+executions_repo.put(warning_item(
+    kind="notify",                      # a WarningKind; add a member there for a new kind
+    execution_name=execution_name, task_name=task_name, pipeline_name=pipeline_name,
+    pipeline_execution=pipeline_execution, task_date=date,
+    error=f'Context: {error}', now=datetime.now(timezone.utc),
+))
 ```
+The row carries no `date`: the bell reads it from `attention-index` (`warn#{h}`) by write time, so a warning about an old partition still shows. A row with a `date` and no `attention` reaches the bell only while that date is in its window — the B-N1 bug. SFN templates and generated ASL write the same shape; a contract test compares each with `warning_item`.
 
 **Special prefixes in `pipeline-tokens`** — internal records:
 - `_pause_{pipeline_execution}` — pause state
-- `_notify_warn_{execution_name}` — infrastructure warning
+- `_notify_warn_{kind}_{execution_name}` — infrastructure warning (`records.warning_item`)
 
-**CRITICAL:** All loops iterating `pipeline-tokens` items MUST filter `_` prefixed records:
+**CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The coordination store reads only rows in a reconcilable status, which no internal row has.)
 ```python
 for item in items:
-    if item.get('execution_name', '').startswith('_'):
+    if should_skip_token_row(item):
         continue
 ```
-Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs.
+Internal rows are `_`-prefixed (`_pause_`, `_notify_warn_`, `_retry_push_`), the stores `output#` and `input#`, and the run's DAG snapshot `dag_snapshot::{run}`. Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs. A `_`-only check let the snapshot, which shares the run's `pipeline_execution`, through: a task without a status, and an empty `/api/execution-children` for every run.
 
-**SFN templates:** `Catch` blocks must preserve `$states.errorOutput` in Output.
+**SFN templates:** `Catch` blocks must preserve `$states.errorOutput` in Output. A state after a point of no return has a Catch that reaches the bell: restart stops the old wrapper first, so a failed hand-over or wrapper start left the task dead while the console said "Task restarted" (`Warn_Restart_Failed`). A catch on a write of the task's facts, or on its run's callback, after the task's own success writes a warning row: the row already says `success`, so nothing else shows the failure. A fact `run_task` could not record once left its consumers waiting with no trace (`Warn_Facts_Not_Recorded`).
 
 ---
 
@@ -662,12 +724,12 @@ python -m pytest tests/sdk/test_asl_snapshots.py  # verify
 
 ```bash
 # Before every delivery — must all pass
-python3 -m pytest tests/sdk/ tests/backend/ -q    # ~1310 tests
+python3 -m pytest tests/sdk/ tests/backend/ tests/integration/ -q
+make test-docs                                     # own session (see Repository context)
 cfn-lint sam/template.yaml                         # 0 errors
 
-# Full suite
-python3 -m pytest tests/ -q
-cd ui && npx vitest run
+# Full suite: every pytest dir, the Lambda suites, JSONata and the UI
+make test
 
 # Core coverage floor
 make test-cov
@@ -682,8 +744,11 @@ make test-cov
 
 **Test rules:**
 - pytest-mock (`mocker` fixture) everywhere — no `unittest.mock` import at all, including `MagicMock` as a bare object factory (use `mocker.MagicMock`)
+- Every repository method the console calls exists on the repository. The Stop route called `pipelines_repo.get_sfn_arn`, which only a test fake defined; no test called the route, and every Stop answered 500. `sam/lambdas/console_api/tests/test_repository_calls.py` reads the code of the console and of the paid overlay, so a route no test reaches is covered too.
 - SDK tests are hermetic: `tests/sdk/conftest.py` clears `AWS_*` / `POLYRIS_*` variables and points the AWS config files at an empty place before every test. A test that needs a profile, region or stage sets it with `monkeypatch`. Never rely on the developer's shell or `~/.aws` — the v1.1.4 release gate failed on a leftover `AWS_PROFILE`.
 - Backend tests in `tests/backend/`, SDK tests in `tests/sdk/`
+- **Lambda suites are hermetic too.** `make test-lambdas` runs them with no AWS profile, region or credentials (`HERMETIC_AWS`), as CI does. A suite whose module builds a boto3 client at import sets `AWS_DEFAULT_REGION` (and fake credentials for moto) before importing it; `bucket_cleanup` passed locally and failed in CI on `NoRegionError`.
+- **Every Lambda test suite runs in CI.** The `lambdas` job in `ci.yml` lists each suite as its own step, and `make test-lambdas` runs the same suites locally. A Lambda with `tests/` or `test_*.py` needs both, or its tests silently never run; `tests/sdk/test_ci_runs_every_suite.py` fails until it has them, and also until every `testpaths` directory in `pyproject.toml` runs from a make target that `ci.yml` calls and `make test` includes.
 - Coverage floor is a ratchet — raise the floor when you raise coverage (#22)
 - **`dal/__init__.py` submodule shadowing:** `from dal.executions_repo import executions_repo` replaces the submodule attribute on the `dal` package with the singleton instance. Tests patching module-level globals on a `dal` submodule must use `importlib.import_module('dal.executions_repo')` to get the actual module object.
 
@@ -696,6 +761,8 @@ make test-cov
 3. **DefinitionUri vs inline** — always edit `sfn_templates/`, never inline in `template.yaml`.
 4. **pipeline_execution_short** — last 20 chars of `pipeline_execution`, with `.` and `:` stripped. Format: `-{date}-{hex8}`.
 5. **dependency_key** — `{task_name}-{pipeline_execution_short}`. Must match exactly between writer (registration) and reader (query_subscriptions).
+6. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`).
+7. **Whoever ends a task answers its run, and a closed token is fine (ADR #135).** Never skip the answer because a flag says another state machine gave it. `helper_failed` claimed that `run_task` had answered, and twice it had not: F16, and a pause token that could not be saved. A zombie that the reconciler closed had no answer at all, and the wrapper's skip answer and the console's task actions swallowed a failed one. Retry nothing on the closed-token codes (`DEAD_TOKEN_CODES`), and turn any other error into a warning (`Warn_Run_Left_Running` in a template, `routes.tasks.answer_run` in the console). The one exception is a superseded owner: a restart handed its token on, and the new owner answers. `tests/sdk/test_run_answers.py` fails until a new template answer has a role, and harness invariant 10 fails a scenario that leaves a run `RUNNING` after its tasks have finished.
 
 ---
 
@@ -705,6 +772,7 @@ After significant changes:
 - `CHANGELOG.md` — new version entry
 - `docs/reference/DESIGN_DECISIONS.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
+- A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/docs/test_resource_counts.py` and `tests/docs/test_resource_inventory.py` derive every number and name from `sam/template.yaml` (and the free route count from the console) and fail until the docs agree. Run `make test-docs`.
 
 ---
 

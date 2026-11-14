@@ -239,3 +239,7 @@ log. `GET /api/tokens` filters revoked tokens out of the response — the list i
 for *usable* credentials; revocation **history** belongs in the audit log (a
 planned Pro feature), not in the active list. A `?include_revoked` view can be
 added with that feature if ever needed.
+
+## Update — v1.2.0: operator sign-in without a browser
+
+The console's Cognito app client also allows `ALLOW_ADMIN_USER_PASSWORD_AUTH`. That flow is reached only through `AdminInitiateAuth`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` on the pool, so it opens no password endpoint to the internet; `ALLOW_USER_PASSWORD_AUTH` stays off. Operator tooling uses it: `scripts/get-e2e-token.sh`, and `make e2e-coordination`, which signs in as a temporary console user and deletes it after the run. `tests/sdk/test_coordination_smoke_runner.py` pins both flows on the client.

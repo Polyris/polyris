@@ -17,7 +17,7 @@ from datetime import datetime
 def test_notify_dependents_trigger_rules():
     """Test trigger rule evaluation logic from notify_dependents."""
     
-    # Terminal status sets (must match production evaluate_deps/index.py)
+    # Terminal status sets (polyris/coordination/statuses.py is the source of truth)
     TERMINAL_SUCCESS = {'success', 'skipped'}
     TERMINAL_FAILURE = {'failed', 'upstream_failed', 'aborted'}
     TERMINAL_STATUSES = TERMINAL_SUCCESS | TERMINAL_FAILURE

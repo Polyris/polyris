@@ -63,18 +63,19 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 **Symptoms:** Pipeline shows running but no tasks are active.
 
 **Check:**
-1. Step Functions execution status:
+1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended: the run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
+2. Step Functions execution status:
    ```bash
    aws stepfunctions list-executions \
      --state-machine-arn "arn:aws:states:..." \
      --status-filter RUNNING
    ```
 
-2. Check for orphaned executions in DynamoDB.
+3. Check for orphaned executions in DynamoDB.
 
 **Fix:** Stop the stuck execution via Console UI or API:
 ```bash
-curl -X POST ${API_URL}/api/execution-stop?id={arn} \
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -84,34 +85,24 @@ curl -X POST ${API_URL}/api/execution-stop?id={arn} \
 
 ### Task stuck in "waiting"
 
-**Symptoms:** Task shows "waiting" but dependencies are complete.
+**Symptoms:** a task shows "waiting" although you expect its dependencies or assets to be in place.
 
 **Check:**
-1. **Dependencies tab** in task modal — are all upstreams success/skipped?
-
-2. **Subscription exists** in DynamoDB:
+1. **Why it waits.** Each check of the task logs one line with its `verdict` and `reasons`, such as `waiting for 1 dependencies` or the asset dates still missing:
    ```bash
-   aws dynamodb scan \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-dep-subscriptions \
-     --filter-expression "contains(subscriber_name, :task)" \
-     --expression-attribute-values '{":task": {"S": "your-task"}}'
+   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-reconcile --since 2h \
+     --filter-pattern '"<execution_name>"'
    ```
+   The execution name is in the task modal: `{task}-{date}-{run suffix}`.
+2. **Dependencies tab** in the task modal: are the upstream tasks finished, in a state the trigger rule accepts?
+3. **Assets:** a `wait_for` asset needs a fact that serves the run's date (see [ASSETS.md § Granularity](../features/ASSETS.md#granularity)). A fact for another date, today's for instance, does not count.
+4. **Engine health:** a banner in the console, or `GET /api/health` → `checks.coordination.problems`, means waiting tasks are not being re-checked; see [The console shows "Task coordination needs attention"](#the-console-shows-task-coordination-needs-attention).
+5. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
 
-3. **notify_dependents_helper** executed:
-   - Open upstream task's wrapper execution in Step Functions Console
-   - Check if "NotifyDependents" state ran successfully
-
-4. **Wait token is valid** — tokens expire after 1 year, but executions timeout sooner.
-
-**Fix:** 
-- If subscription missing: restart the pipeline for this date
-- If notify didn't run: check upstream task's failure handler
-- Emergency: manually send task token:
-  ```bash
-  aws stepfunctions send-task-success \
-    --task-token "aqc..." \
-    --task-output '{"status": "success"}'
-  ```
+**Fix:**
+- A dependency or asset is missing: run its producer for that date, or mark the upstream task successful in the console; its facts are dated by its own run.
+- Everything is in place: the sweeper re-checks a waiting task 10, 20, then every 30 minutes and starts it at the next check. A `sweeper` warning in the bell says the regular wake-up was lost on the way.
+- The task should not wait at all: skip it or mark it successful from the task modal.
 
 ---
 
@@ -241,28 +232,34 @@ Check *why* the upstream was skipped:
      --limit 5
    ```
 
-3. **For AND triggers** — check queued events:
+3. **The fan-out handled the event** — asset-fanout logs every fact it reads and every pipeline it starts:
    ```bash
-   aws dynamodb query \
-     --table-name ${NAMESPACE}-${STAGE}-polyris-queued-asset-events \
-     --key-condition-expression "dag_id_date = :key" \
-     --expression-attribute-values '{":key": {"S": "your-dag#2026-01-15"}}'
+   aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-asset-fanout --since 1h \
+     --filter-pattern '"your-asset"'
    ```
 
 **Fix:**
 - If subscription missing: re-deploy consumer pipeline
-- If event missing: manually trigger asset or re-run producer
-- If AND queue incomplete: trigger missing assets or skip in queue
+- If event missing: re-run the producer. A `fact` warning in the bell means the producer succeeded but its fact was not recorded; fix the cause it names, then restart the producer task
+- If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
 
 ---
 
-### Asset shows stale in UI
+## Coordination Issues
 
-**Symptoms:** Asset materialized recently but UI shows old timestamp.
+### The console shows "Task coordination needs attention"
 
-**Check:** Asset events table has the latest event.
+The banner lists what is wrong; `GET /api/health` returns the same list in `checks.coordination.problems`. While it shows, tasks may start late: the rows below say which wake-ups still work.
 
-**Fix:** Asset events are eventually consistent. Wait 30s or refresh. If persists, check `notify_asset_consumers` SFN execution history and `asset-events` DynamoDB table.
+| Problem | What to do |
+|---------|------------|
+| The sweeper has not reported yet | Normal for the first 5 minutes after an install or upgrade. If it stays, check that the EventBridge schedule `${NAMESPACE}-${STAGE}-polyris-sweeper` exists and is enabled |
+| The sweeper last reported N minutes ago | Read the sweeper's logs: `aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-sweeper --since 1h`. A run that fails on every attempt shows its error there |
+| Asset events are not delivered: the stream mapping is … | Enable the event source mapping of `${NAMESPACE}-${STAGE}-polyris-asset-fanout` (Lambda console → the function → Configuration → Triggers) |
+| Asset events are not delivered: the stream mapping's last call failed (…) | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Read its logs: `aws logs tail /aws/lambda/${NAMESPACE}-${STAGE}-polyris-asset-fanout --since 1h`. Records wait in the stream for 24 hours; the sweeper still wakes waiting tasks at their checks |
+| The sweeper could not finish … on its last run: … | One step of the sweeper failed; the other steps still ran. The next run, 5 minutes later, tries it again, and the problem clears once a run finishes the step. If it stays, the error names the cause; the sweeper's logs have the full message |
+| Asset events are not recorded for delivery: the table stream is … | The stream of `${NAMESPACE}-${STAGE}-polyris-asset-events` was turned off outside polyris. Turn it on again (view type `NEW_IMAGE`) and point asset-fanout's trigger at the new stream. Meanwhile the sweeper still wakes waiting tasks at their checks, and its hourly catch-up starts asset-scheduled pipelines |
+| Waiting tasks are N minutes behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
 
 ---
 
@@ -358,21 +355,6 @@ aws cloudformation list-stacks \
 
 ## Lambda Issues
 
-### evaluate_deps timeout
-
-**Symptoms:** Dependency evaluation takes too long.
-
-**Check:**
-1. Number of dependencies — large fan-in can be slow
-2. DynamoDB throttling — check CloudWatch metrics
-
-**Fix:** 
-- Increase Lambda timeout (default 30s)
-- Enable DynamoDB auto-scaling
-- Reduce dependency fan-in if possible
-
----
-
 ### console_api 502 errors
 
 **Symptoms:** API returns 502 Bad Gateway.
@@ -394,7 +376,7 @@ aws cloudformation list-stacks \
 # Via Console UI: Stop button
 
 # Via API:
-curl -X POST ${API_URL}/api/execution-stop?id={arn} \
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 
 # Via AWS CLI:

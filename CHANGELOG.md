@@ -1,5 +1,241 @@
 ## Unreleased
 
+### Upgrading to 1.2.0 (ADR #130, ADR #132)
+
+The coordination layer changes under running pipelines, so upgrade in a quiet window:
+
+1. **Before.** Disable your pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`). Resume or stop paused runs, then wait until no task is `running`, `waiting_delay` or `waiting_decision` (the console's Tasks view). Keep the schedules off until the upgrade succeeds. Tasks still waiting for dependencies or assets can stay: the new version adopts them and checks them from their facts.
+2. **Upgrade.** Run `polyris-up --profile <profile> --disable-rollback`. The same update adds two DynamoDB indexes, and CloudFormation can report it complete before they are built: minutes on small tables, longer on large ones. Until they are, a task that waits for assets waits instead of starting, and the console's banner names the sweeper steps that cannot read `attention-index` yet; both clear by themselves once the indexes are built. To see where they are: `aws dynamodb describe-table --table-name <namespace>-<stage>-polyris-pipeline-tokens --query "Table.GlobalSecondaryIndexes[].[IndexName,IndexStatus]"`. It also removes `QueuedAssetEventsTable`, which 1.2 no longer uses, so `polyris-up` lists it and asks before going on; without a terminal (CI), add `--accept-data-loss`. If the update fails, the stack keeps what it already changed instead of rolling back to 1.1: fix the cause its events name, then run the same command again.
+3. **After.** Enable the schedules again and start, from the console, the runs whose schedule fired during the window. Within about 5 minutes the sweeper reports for the first time; until then the console shows "The sweeper has not reported yet". After that, no banner means task coordination is healthy.
+4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline, the naming of long task ids and the run date of scheduled runs (ADR #133). A scheduled pipeline with `variables=` needs the redeploy to run at all. Until a pipeline scheduled on assets is redeployed, the time of its last deploy stands in for the time it subscribed: it is not started for facts recorded before it.
+5. **Tags.** Resources lose their old tags (`Environment`, `Stack`, `Namespace`, `Stage`, `ManagedBy`, and on a pipeline's resources `Pipeline` and `Name`) and get the `polyris:` set instead (ADR #132): the platform's during the upgrade, a pipeline's at its next `polyris-deploy`. Before you upgrade, move IAM conditions and cost reports that use the old keys to the new ones. A least-privilege installer role needs each service's tag, untag and list-tags actions ([IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md#least-privilege-alternative)).
+6. **Runs in flight.** A run that was waiting during the upgrade goes on, more slowly: each of its tasks starts at the sweeper's next check of it, up to about 40 minutes after its dependencies finished, and leaves a `sweeper` warning in the bell: the old version's pointers do not reach the new code. Facts the old version records during the window start no pipeline a second time. A pipeline scheduled on several assets (`schedule=[a, b]`) that the old version started for a date is started again for that date if one of those assets records a new fact for it after the upgrade: the new version names its runs differently.
+
+### Changed — what you notice after upgrading (ADR #130)
+
+- `wait_for` is partition-aware: a task waits for a fact that serves its run's date, so a run for a past date never starts on today's fact, and `wait_for=[a, b]` waits for both. Weekly and monthly assets serve a daily run with their latest version from the current or the previous week or month.
+- `.within(...)` judges the latest partition up to the run's date.
+- `orchestration_timeout` is the real maximum time a task waits for its dependencies. Before, the wait was repeated twice, so a task could wait three times as long. Raise `orchestration_timeout` if a pipeline relied on that.
+- A task with `wait_for` needs its run's date to be a day (`YYYY-MM-DD`). In a run dated otherwise, for example `20261113`, the task fails with `CoordinationError` and the cause.
+- Marking a task successful records its outlets' facts for the task's own date, not the day you mark it.
+- A pipeline scheduled on assets of different cadences runs at the finest one, for example daily with the latest weekly input. Before, it ran only on dates when every input had a fact.
+- A lost wake-up delays a task by at most about 40 minutes, with a `sweeper` warning in the bell, instead of leaving it waiting until its timeout.
+- Warnings reach the bell whatever date they are about, and the console shows a banner while task coordination is unhealthy.
+
+### Fixed — `polyris-up --archive` names the version it installs
+
+- With `--archive`, the plan showed the version of the installed polyris instead of the archive's, so updating with a branch build read like a rollback (`1.2.0 → 1.1.4`). It now shows the archive's version, and a missing archive is reported before any question.
+
+### Added — the coordination smoke in one command
+
+- `make e2e-coordination STACK=<platform stack> PROFILE=<profile>` deploys the smoke pipelines, signs in as a temporary console user and runs `tests/e2e/test_coordination_smoke.py`; it deletes the user afterwards.
+- `make e2e-coordination-clean STACK=… PROFILE=…` removes the smoke pipelines again; `polyris-down` refuses a platform that still has pipelines.
+- The console's Cognito app client allows `ADMIN_USER_PASSWORD_AUTH`, which needs AWS credentials with `cognito-idp:AdminInitiateAuth` (ADR #65). `scripts/get-e2e-token.sh` no longer needs a manual change to the client.
+
+### Changed — `polyris-deploy` stops on a config it cannot use (ADR #134)
+
+- If `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse, or a `config.py` it found does not parse or fails when run, `polyris-deploy` stops with the reason before any AWS call. Before, it went on without the config: with the default AWS credentials, so a deploy could reach another account.
+- The deploy target shows the config file it used and the AWS account the credentials reach.
+
+### Fixed — a run ends when its task ends (ADR #135)
+
+- A task could end without its run hearing of it. The console then showed the task ended while the run's Step Functions execution stayed `RUNNING` until it timed out waiting for that task, and a pipeline stack with such runs could not be deleted. It happened when:
+  - a task's wait for its dependencies timed out, or coordination failed the task;
+  - a paused task's pause could not be saved;
+  - a waiting task's wrapper was stopped in the AWS console;
+  - the run could not be told of a skip, by the wrapper or from the console, or of a console Fail, Mark Successful or Stop.
+
+  Whoever ends a task now answers its run: the failure handler whenever the wrapper fails, the reconciler when it closes a task whose wrapper is gone, the wrapper when it skips a task, the console when you act on one. If the run cannot be told, a `coordination` warning in the bell says so. A console action whose run cannot be told still succeeds; before, Skip, Fail and Mark Successful answered 500 although the task's status had changed.
+
+### Fixed — a fact that cannot be recorded reaches the bell
+
+- A task could succeed while its outlets' facts were not recorded, for example under an IAM policy without `dynamodb:PutItem` on `asset-events`. The tasks waiting for those assets then never started, and nothing said why. A `fact` warning now names the assets and the cause. The task stays successful, since its work is done, and its run ends `FAILED`, since it did not deliver its assets. Once you fix the cause, restart the task to record them.
+
+### Fixed — the hourly catch-up starts nothing that a `cascade='none'` backfill completed
+
+- The hourly catch-up could start a pipeline scheduled on several assets when the last of them came from a backfill with `cascade='none'` (ADR #57). A push now counts only the facts recorded by the time of the fact that triggered it, so the catch-up gives the same answer as the stream.
+
+### Fixed — Mark Successful keeps a backfill's cascade
+
+- Marking a task of a `cascade='none'` or `cascade='all'` backfill successful recorded its facts with `cascade='auto'`, which could start the pipelines scheduled on them. The facts now get the run's own cascade.
+
+### Fixed — Stop ends the run
+
+- The console's Stop marked a run's tasks `stopped`, but `/api/execution-stop` answered 500 and stopped nothing else, so the run's Step Functions execution went on `RUNNING`. The route now stops the execution, its wrappers and its tasks, and the console shows an error when a stop does not complete. The API reference, TROUBLESHOOTING and the console's API help named the wrong parameters: Stop takes `pipeline_execution`, and pause, resume and the run's tasks take the run's ID, not an ARN.
+
+### Fixed — a restart that cannot start says so
+
+- When a restart stopped the old wrapper and then failed to take the row over or to start the new wrapper, the console still said "Task restarted", the task did not run, and nothing said why. A `coordination` warning now names the cause; restart the task again once it is fixed.
+- Restarting a task registered before 1.2 keeps its `wait_for` from the task row. Before, such a task started at once, without waiting for its assets.
+
+### Fixed — `/api/health` and the run's task list
+
+- An engine health row that cannot be judged (a value no writer produces) failed all of `/api/health` with a 500. The check now reports the row as unreadable.
+- The console's coordination banner read a failed `/api/health`, including the 503 it answers when DynamoDB or Step Functions is unhealthy, as "no problems". It now says that coordination health cannot be read.
+- `/api/execution-children` returned an empty list for every run, and the pipeline status counted one task too many: the run's DAG snapshot row was read as a task. The route now answers 500 when it fails, instead of an empty list.
+
+### Fixed — an unreadable push retry stops no other
+
+- The sweeper read the push retry rows in order, and one it could not read stopped every retry behind it, on every run. Such a row is now dropped with a `push` warning, and the other retries go on.
+
+### Fixed — a pipeline's card shows its latest run
+
+- With several runs on one date, the pipeline list ordered them as the index returned them, so the card's status and the sparkline could show an earlier run: a failed run followed by a successful one read "failed". Runs of one date are now ordered by when they started.
+
+### Fixed — History says which days it shows
+
+- Without a pipeline or a date, History lists only the last 14 days, but its date filter read "All dates" and an empty list said "No runs found". The filter now reads "Last 14 days", and the empty state says to pick a pipeline or a date for older runs and tasks.
+
+### Fixed — asset groups in the task view
+
+- A task that waits for `wait_for=[a | b]` (or `[a & b]`) showed "unknown" under Asset Dependencies, and the waiting tooltip left the group out. Both now name the group, for example `smoke/a | smoke/b`.
+
+### Fixed — the History tasks feed (`/api/tasks`)
+
+- `/api/tasks` asked `date-pipeline-index` and `pipeline-date-index` for fields they do not project, and DynamoDB rejected every such query: the feed answered 500 for any filter. It now reads the indexes without a projection and takes the missing fields from the table for the returned page. `tests/sdk/test_console_index_projections.py` checks every index read in the console against the projections in `sam/template.yaml`.
+
+### Fixed — `polyris-deploy --stage` reads config.py
+
+- With `--stage` on the command line, `polyris-deploy` ignored `config.py` unless the pipeline file itself read the config. It then deployed with the default AWS credentials, chose the platform stack by tag instead of `stack_name`, and named the pipeline stack with the default namespace. The stage's settings now always come from `config.py`.
+
+### Fixed — a run's date (ADR #133, B-D1)
+
+- A scheduled or asset-triggered run of a pipeline with `variables=` gave its tasks no date and failed; a scheduled one also showed `triggered_by` as `unknown`.
+- A scheduled run now gets the UTC day its schedule fired it for, even when it starts after midnight: a run scheduled at 23:59 that started at 00:01 got the next day before. Every task of a run gets the same date; before, each task took the day its input was built, so a run crossing midnight could get two. Redeploy scheduled pipelines with `polyris-deploy` to pick this up.
+
+### Changed — billing tags on every resource (ADR #132)
+
+- Every resource that the platform stack and `polyris-deploy` create and AWS can tag carries `polyris:namespace`, `polyris:stage` and `polyris:component` (`platform` or `pipeline`); a pipeline's resources also carry `polyris:pipeline`. Before, the state machines, log groups and most IAM roles had no tags, and the rest each had their own. Activate the keys as cost allocation tags to split your bill by them: [Track costs](docs/how-to/manage-the-platform.md#track-costs).
+
+### Removed — dead asset helpers in the SDK
+
+- `polyris.assets.Watcher`, `generate_watchers_config`, `get_asset_schedule_info` and the module-level `is_asset_triggered` had no caller. The first two described an SQS watcher that was never built; the last two built an EventBridge pattern for asset events that polyris no longer publishes. `DAG.is_asset_triggered` stays.
+
+### Added — `polyris-up --disable-rollback`
+
+- A failed update keeps what it already changed (`UPDATE_FAILED`) instead of rolling back, so it can be fixed and run again. The 1.2.0 upgrade uses it.
+
+### Changed — coordination under load and failure (ADR #130)
+
+- A finished task's dependants are looked up again when the lookup fails, instead of waiting until their timeout with no trace; the sweeper wakes any it still misses.
+- A network failure on an AWS call (SSL, proxy, a broken response) is retried like a throttle instead of failing the task.
+### Fixed — one owner per task row (ADR #130 §2.1, B-O2…B-O5)
+
+- When the console could not stop a task's wrapper (a throttled or denied StopExecution), that wrapper could still write the task's row. After a restart it took the row back and the task ran twice. A wrapper started before the upgrade ran a task an operator had decided. `run_task` wrote `running` over a skip or a success and ran the task. A pause wait retried at its heartbeat put a decided task back on hold.
+- Every task row now carries a generation. Operator decisions, restarts and the reconciler's closes raise it, and every write made for a wrapper checks it, so an old wrapper ends without writing, notifying or running anything.
+- A restart keeps the task's row and hands it to the new wrapper; it no longer deletes it.
+
+### Fixed — Mark Successful and its asset facts (B-M2)
+
+- When Mark Successful could not record an outlet's fact, it logged the error and reported plain success, and the tasks waiting on the asset waited with no trace in the console. The task still becomes successful; the bell now shows a `fact` warning ("Asset fact not recorded"), and the response lists the asset in `failed_facts` (`*` when the task's outlets could not be read from the registry). Restart the task to record the fact.
+
+### Fixed — an operator's decision survives a wrapper the console could not stop (ADR #130 §6.3, B-O1)
+
+- When an operator skips, fails or marks a waiting task, the console stops its wrapper. If that stop failed, the wrapper kept waiting, registered again when its dependency wait timed out, and the unconditional write put the row back to `waiting`: the task then ran, although its dependants had already been told otherwise. Registration now writes the row only if it is new, belongs to another wrapper, or still waits; otherwise it keeps the row and wakes the wrapper, which ends without running the task.
+
+### Fixed — tasks stuck in their pause wait (ADR #130 §8, §9, B-P3, B-P4)
+
+- A task that saved its pause token while resume ran, or whose release failed, stayed paused until its 12-hour pause heartbeat: resume reads the run's rows through an index and saw no token. `pause_waiter` now also puts the row under `paused#` in the attention index, and the sweeper releases it once its run is no longer paused, with a `sweeper` warning. `run_task` drops the entry when it continues.
+- Resume counts a release whose token is already dead as done, not as a failed task.
+- If `pause_waiter` cannot save the pause token, it fails the pause wait with `CoordinationError` and the cause, so the task fails visibly. Before, nothing could release it, and after its 12-hour heartbeat it ran, paused or not (B-P4).
+
+### Added — engine health and warnings in the console (ADR #130 §9)
+
+- `GET /api/health` has a `coordination` section: the problems with task coordination, judged from the sweeper's last self-check. A sweeper that has not reported for 15 minutes, a disabled asset-events stream or mapping, and waiting tasks more than 40 minutes behind their checks are each a problem. The API then answers `degraded` with 200, not 503.
+- The console shows a banner under its header while there are problems, and lists them.
+- The bell reads warnings from the attention index by the time they were written, so a warning about a task of an old partition, a rerun of an earlier date for example, now reaches it (B-N1). Each warning is named by its kind: a task that can no longer be woken, a delayed wake-up, an asset-scheduled run that could not start, dependent tasks that were not notified, a failed registration step, a manual action that kept the real output.
+- Every warning row has one shape, `records.warning_item`, with a `kind` from `WarningKind` and an 8-day TTL. The registration warnings of a generated pipeline and the console's notify and manual-action warnings now use it too; they used to carry the task's date and a 1-day TTL.
+- A template test keeps CloudWatch alarms, dashboards, SNS topics, SQS queues, dead-letter configs and the permission to publish metrics or messages out of the platform template (Principle #45).
+
+### Added — the sweeper (ADR #130 §8)
+
+- A new function, `polyris-sweeper`, runs every 5 minutes (EventBridge Scheduler, no retries) and re-checks every waiting task whose due time has come, from its facts. A wake-up hint lost on any path now delays a task; it no longer loses it. A task that still waits is due again in 10, 20, then every 30 minutes.
+- When the sweeper wakes a task that could run before its due time, it writes a `sweeper` warning to the bell: the primary path missed it.
+- A waiting task past its liveness deadline (`started_at` + `orchestration_timeout` + 1 hour; three timeouts for a task whose wrapper started before the upgrade) gets its wrapper checked; if the wrapper is gone, for example stopped outside polyris, the task is marked `aborted` with the reason and a `zombie` warning.
+- One run at a time holds a lease row; a run that dies frees it within 270 seconds.
+- A push start that failed transiently is retried by the sweeper, from 5 minutes up to every hour; after 24 hours it gives up with a `push` warning. A permanent failure is a `push` warning at once.
+- Once an hour the sweeper replays the push of every fact written in the last 48 hours, so a lost stream record cannot lose a push start either. Run names are deterministic, so nothing starts twice.
+- Each run ends with a self-check written to the `_engine_health` row: whether the asset-events stream and its mapping are enabled, the oldest overdue waiting task, and the push retry backlog. `/api/health` reads it.
+- After an upgrade, the sweeper adopts what the old version wrote: waiting tasks get an attention entry, due at once, and are reconciled from their facts; old facts get their partition fields. Both scans repeat for an hour, to catch what the old definitions write during the stack update.
+- A step that fails does not stop the others or the self-check; the banner names it.
+- The hourly catch-up does not start a pipeline for facts recorded before it subscribed (its first registration with 1.2, or its last deploy before that).
+
+### Fixed — pause, resume and restart (ADR #130 §6.5)
+
+- Resume no longer starts a task whose assets are still missing (B-P2), and it wakes a task whose asset arrived during the pause (B-P1). It clears the pause, releases the tasks held at their start, and has the reconciler check every waiting task of the run from its facts; it signals nothing blindly. The response reports how many tasks the reconciler handled and how many it left for the sweeper.
+- Restart starts the task with the input it was first started with, so the new attempt still waits for its `wait_for` assets and keeps its trigger rule and variables (B-R1). `task_config` and outlets come from the current deploy when the console finds them. A task registered before this release restarts from its saved fields, with a warning in the bell.
+- A task released from a pause drops its pause token when it starts running.
+
+### Changed — tooling: a lighter Stop hook
+
+- The Stop hook runs `scripts/verify-changed.sh --hook`. It does nothing when the checkout is unchanged since the last green run, from any session, so a second session no longer re-runs the whole gate on the first one's work at every stop. It skips the coverage floor and the UI build; a run without flags, `--full` and CI keep both. Every mode waits for a run already going on the checkout instead of starting a second one.
+
+### Fixed — long task ids no longer collide across runs (ADR #130 §6.6)
+
+- A task's wrapper execution is named `{task id}-{date}-{run suffix}`, at most 80 characters. A task id over 57 characters used to have the date and the run suffix cut off, so its runs on different dates collided (`ExecutionAlreadyExists`), and so did two long ids that differ only at the end. Now a long id keeps a prefix plus a hash of the whole id, and the date and the suffix are always kept. Generation fails if two task ids of one pipeline would still share a name. Redeploy a pipeline to apply it.
+
+### Removed — the old coordination Lambdas, state machine and queue table (ADR #130)
+
+- The `evaluate-deps`, `check-assets` and `notify-asset-subscribers` functions are gone, with their roles, log groups and invoke permissions. The `reconcile` and `asset-fanout` functions do their work.
+- The `notify-asset-consumers` state machine and the `queued-asset-events` table are gone too: asset-fanout starts asset-scheduled pipelines from facts.
+- `sam/lambdas/_shared/constants.py` and `make sync-constants` are gone. The console gets its enums from `sync_enums`; the coordination functions import them from the polyris SDK that their `requirements.txt` pins, like the console.
+- The coordination functions install polyris from their own `requirements.txt`, pinned to the same release as the console's, and take the coordination logic from it; nothing is copied into the Lambdas any more. To deploy a checkout from source, point both pins at it ([FROM_SOURCE.md](docs/deployment/FROM_SOURCE.md)).
+- Namespace + Stage may now be up to 30 characters (was 25), because the longest IAM role name is now shorter.
+- A failure on a coordination wake-up path now always logs at ERROR; three places logged it at WARN.
+- The docs name the real state-machine log groups (`/aws/states/...`).
+
+### Changed — asset-scheduled pipelines start from facts (ADR #130 §6.1)
+
+- `asset-fanout` now also starts the pipelines scheduled on an asset (`schedule=[...]`). For each new fact it evaluates the consumer's whole schedule for the fact's partition, with the same rule as `wait_for`, as it stood when the fact was recorded: `.within(...)` is judged as of the fact's time and later facts do not count, so a late or repeated event gives the same answer.
+- As before, an AND schedule starts one run per date and an OR schedule one run per event: a producer that records several facts a day starts an AND consumer once that day, and `AssetAny([asset])` starts it for every fact. Runs get deterministic names, so a repeated event never starts a second run. A pipeline never triggers itself.
+- A consumer that cannot be started never affects the producer or the other consumers: a transient failure leaves a retry row, anything else a warning.
+- `run_task` and Mark Successful no longer start consumers themselves; Mark Successful only records the facts.
+
+### Fixed — asset triggers (ADR #130)
+
+- A failure to notify a consumer failed the producing task (B-F1).
+- An AND schedule lost its day when the start failed after the last asset arrived; every event now re-evaluates the schedule from facts (B-U1).
+- Runs started by an AND schedule all ended in `-asset-and`, so two runs' tasks with the same id collided (B-X1).
+
+### Changed — asset facts carry their partition; a stream wakes `wait_for` tasks (ADR #130)
+
+- `run_task` and Mark Successful record each outlet's fact with `partition_key` (the producing run's date), `partition_date`, `granularity` and `fact_version`. A task waiting on the asset is woken only by a fact that serves its own run's date, so a run for an old date no longer starts on today's fact.
+- A new `asset-fanout` function reads the `asset-events` stream (new facts only) and asks the reconciler about every task waiting on the fact's asset. Writers no longer call a notifier: `run_task`'s `Notify_Asset_Subscribers` step and the console's invoke of `NotifyAssetSubscribersFunction` are gone.
+- A failed `notify_dependents` no longer fails the producing task: it writes a warning, and the dependants are re-checked later.
+
+### Fixed — asset facts lost or misdated (ADR #130)
+
+- Mark Successful recorded its fact for the day of the action, or the request's date, instead of the marked run's partition (B-M1).
+- Two facts of one asset written in the same millisecond (likely when many runs finish at once) overwrote each other. Both writers now refuse to overwrite and retry with a later time.
+- Facts from Mark Successful expired after 30 days, those from `run_task` after 365; both now keep 365.
+
+### Changed — task dependencies are decided by the reconciler (ADR #130)
+
+- Registration saves the task row, signals a task without dependencies at once, and otherwise writes the run's subscriptions and calls `reconcile`. A subscription is a per-run pointer: its subscriber is the waiting task's `execution_name`, and it carries no task token.
+- The wrapper writes the status that follows a dependency signal (`deps_ready`, `skipped` with `skip_origin='rule'` and `skip_reason`, or `upstream_failed`), only while the task is still waiting for this wrapper. When someone else moved the task first, for example an operator's skip, the wrapper ends without running it.
+- `notify_dependents` asks the reconciler about each subscriber. A failed call never fails `notify_dependents` or the task that completed.
+- The failure handler records `upstream_failed` for an `UpstreamFailed` error.
+
+### Fixed — silent hangs in registration and auto-skip (ADR #130)
+
+- A failed registration now fails the task with its cause (`CoordinationError`) instead of leaving it waiting until `orchestration_timeout` (B-G1). When the task row itself could not be written, the failure handler creates it, so the failure shows in its run.
+- When a `skip_tasks` skip cannot be recorded, the task fails visibly instead of waking its dependants without a row (B-S1).
+
+### Added — coordination reconciler function and indexes (ADR #130)
+
+- The stack gains the `reconcile` function (`<namespace>-<stage>-polyris-reconcile`), its own role and its log group. It decides whether a waiting task is ready and signals its wrapper (ADR #130 §3). Its role allows exactly the DynamoDB and Step Functions calls the code makes; a test records every call and compares it with the role in both directions.
+- `pipeline-tokens` gets `attention-index` (partition `attention`, sort `attention_at`): a sparse index of task rows that may need a wake, push retries and coordination warnings, ordered by due time.
+- `asset-events` gets `asset-partition-index` (partition `asset_name`, sort `partition_date`): asset conditions read facts by partition, newest first.
+- Each table gets one new GSI, so the deploy stays within DynamoDB's one-GSI-change-per-table limit. Both indexes are additive and sparse: rows without the key attributes are not indexed.
+
+### Fixed — tooling: deterministic enum generation, `make test-lambdas` exit code, sets in API responses, Lambda suites CI never ran
+
+- `python -m polyris.codegen.sync_enums` now produces identical output on Python 3.12 and 3.13: docstrings are normalised with `inspect.cleandoc` and continuation lines are re-indented. The three `constants_generated.py` files are regenerated.
+- `make test-lambdas` now exits non-zero when the `console_api` tests fail. Before, a failure printed a warning and the target still succeeded.
+- CI and `make test-lambdas` now run the `query_subscriptions` and `bucket_cleanup` Lambda tests, which neither ran before, and the new `coordination` suite. `tests/sdk/test_ci_runs_every_lambda_suite.py` fails when a Lambda's tests are missing from either.
+- `make test-lambdas` runs every Lambda suite without the developer's AWS profile, region or credentials, as CI does. The `bucket_cleanup` suite, which only passed where a region was configured, now sets its own and passes in CI.
+- `cors_response` serialises Python `set`/`frozenset` values (DynamoDB string sets) as sorted JSON arrays, not as their Python repr, which is not valid JSON. Covered by `test_response.py`.
+
 ### Changed — CI publishes each release, assets first
 
 - `.github/workflows/release.yml` now creates the GitHub Release as a draft,

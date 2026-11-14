@@ -103,10 +103,11 @@ class TestRunTaskAlertingFlow:
         assert state['Next'] == 'Send_PagerDuty_Alert'
 
     def test_slack_failure_goes_to_pagerduty(self):
-        """Save_Slack_Failed → Send_PagerDuty_Alert (both Next and Catch)."""
+        """Save_Slack_Failed → Send_PagerDuty_Alert (Next, and Catch after the generation fence)."""
         state = self.rt['States']['Save_Slack_Failed']
         assert state['Next'] == 'Send_PagerDuty_Alert'
-        assert state['Catch'][0]['Next'] == 'Send_PagerDuty_Alert'
+        assert state['Catch'][0]['Next'] == 'Stale_Attempt_Superseded'     # ADR #130 §2.1
+        assert state['Catch'][-1]['Next'] == 'Send_PagerDuty_Alert'
 
     def test_run_task_reads_no_wrapper_alerts_field(self):
         """ADR #103 Stage 2: no state in run_task reads the deprecated wrapper `alerts` field."""
@@ -1042,14 +1043,14 @@ class TestRestartStopsBothWrapperLevels:
     def test_outer_wrapper_chains_to_inner_before_delete(self):
         """The ORDER is the entire point of this fix — outer must be fully
         attempted (success or caught failure) before inner is touched, and
-        inner must complete before Delete_Old_Record."""
+        inner must complete before Hand_Over_Ownership."""
         assert self.rt['States']['Check_Task_Exists']['Choices'][0]['Next'] == 'Stop_Old_Outer_Wrapper'
         outer = self.rt['States']['Stop_Old_Outer_Wrapper']
         assert outer['Next'] == 'Stop_Old_Inner_Wrapper'
         assert outer['Catch'][0]['Next'] == 'Stop_Old_Inner_Wrapper'
         inner = self.rt['States']['Stop_Old_Inner_Wrapper']
-        assert inner['Next'] == 'Delete_Old_Record'
-        assert inner['Catch'][0]['Next'] == 'Delete_Old_Record'
+        assert inner['Next'] == 'Hand_Over_Ownership'
+        assert inner['Catch'][0]['Next'] == 'Hand_Over_Ownership'
 
     def test_registration_helper_writes_wrapper_execution_arn_for_the_outer_wrapper(self):
         """Cross-template consistency: registration_helper's Save_Task_Record
@@ -1087,7 +1088,9 @@ class TestAttemptKeyedConditionExpression:
     @pytest.mark.parametrize('state_name', STATUS_WRITING_STATES)
     def test_has_attempt_keyed_condition_expression(self, state_name):
         state = self.rt['States'][state_name]
-        assert state['Arguments']['ConditionExpression'] == 'attempt = :expectedAttempt'
+        from polyris.coordination import ownership
+
+        assert state['Arguments']['ConditionExpression'] == f'(attempt = :expectedAttempt) AND {ownership.FENCE}'
         assert ':expectedAttempt' in state['Arguments']['ExpressionAttributeValues']
 
     @pytest.mark.parametrize('state_name', STATUS_WRITING_STATES)
@@ -1148,12 +1151,14 @@ class TestRestartTaskConfigAndOutletsThreading:
         """Must read $states.input.task_config / $states.input.outlets
         directly (as threaded through by Get_Task_Config above) — NOT
         $states.input.item.task_config.S / item.outlets.S, which was the
-        bug (those fields never existed on the stored item)."""
-        inp = self.rt['States']['Start_New_Wrapper']['Arguments']['Input']
-        assert inp['task_config'] == "{% $exists($states.input.task_config) ? $states.input.task_config : {} %}"
-        assert inp['outlets'] == "{% $exists($states.input.outlets) ? $states.input.outlets : [] %}"
-        assert 'item.task_config' not in inp['task_config']
-        assert 'item.outlets' not in inp['outlets']
+        bug (those fields never existed on the stored item). Since restart
+        replays starter_input (ADR #130 §6.5), the input is one expression;
+        tests/sdk/test_restart_task_template.py evaluates it."""
+        expr = self.rt['States']['Start_New_Wrapper']['Arguments']['Input']
+        assert '$states.input.task_config' in expr
+        assert '$states.input.outlets' in expr
+        assert 'item.task_config' not in expr
+        assert 'item.outlets' not in expr
 
 
 class TestRestartNamePrefix:

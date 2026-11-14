@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 import pytest
+from polyris.coordination import ownership
 
 TEMPLATE_PATH = Path(__file__).parent.parent.parent / "sam" / "sfn_templates" / "helpers" / "run_task" / "sfn.tpl.json"
 
@@ -86,21 +87,6 @@ def test_skip_check_default_preserves_existing_flow(template):
     )
 
 
-def test_emit_asset_events_honors_suppress_flag(template):
-    """Check_Has_Outlets must guard Emit_Asset_Events with
-    _suppress_asset_event. Regression for cascade='none' backfill
-    (ADR #57) — without this, isolated backfills would still emit
-    asset events and trigger downstream consumers."""
-    states = template["States"]
-    choice = states["Check_Has_Outlets"]
-    cond = choice["Choices"][0]["Condition"]
-    assert "_suppress_asset_event" in cond, (
-        f"Check_Has_Outlets condition must check _suppress_asset_event for cascade='none' backfill semantics: {cond}"
-    )
-    # Default must still skip to next state without emitting (existing flow)
-    assert choice["Default"] == "Check_Orchestration_Token_Success"
-
-
 def test_pause_check_still_runs_for_normal_tasks(template):
     """After the skip check, normal tasks must still hit Check_Execution_Paused
     so pause/resume semantics are preserved."""
@@ -134,6 +120,14 @@ def test_update_status_running_has_attempt_guard(template):
         "ConditionalCheckFailedException from Update_Status_Running must go to "
         f"Stale_Attempt_Superseded; catch table: {catches}"
     )
+
+
+def test_update_status_running_drops_the_pause_entry(template):
+    """A task released from its pause wait leaves the attention index as it starts:
+    run_task, the receiver of the release, owns that write (Principle #43)."""
+    expression = template["States"]["Update_Status_Running"]["Arguments"]["UpdateExpression"]
+    removed = {name.strip() for name in expression.split("REMOVE", 1)[1].split(",")}
+    assert {"pause_token", "attention", "attention_at"} <= removed
 
 
 def test_no_orphan_states(template):
@@ -1494,7 +1488,7 @@ def test_save_success_preserve_never_sets_result(template):
 def test_save_success_preserve_keeps_stale_attempt_guard(template):
     """Same attempt-based rejection as Save_Success — restart safety preserved."""
     state = template["States"]["Save_Success_Preserve"]
-    assert state["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+    assert state["Arguments"]["ConditionExpression"] == f"(attempt = :expectedAttempt) AND {ownership.FENCE}"
     catch = {e: c["Next"] for c in state["Catch"] for e in c["ErrorEquals"]}
     assert catch["DynamoDB.ConditionalCheckFailedException"] == "Stale_Attempt_Superseded"
 
@@ -1701,7 +1695,7 @@ class TestRetryVisibility:
         an old :expectedAttempt — the ConditionExpression must reject it so the
         new wrapper's state is never clobbered mid-flight (ADR #125 + ADR #107)."""
         s = self.rt["States"]["Save_Retry_Attempt"]
-        assert s["Arguments"]["ConditionExpression"] == "attempt = :expectedAttempt"
+        assert s["Arguments"]["ConditionExpression"] == f"(attempt = :expectedAttempt) AND {ownership.FENCE}"
         # And the stale-write Catch must terminate quietly, not continue the loop.
         catches = s["Catch"]
         guard_catch = next(c for c in catches if "DynamoDB.ConditionalCheckFailedException" in c["ErrorEquals"])

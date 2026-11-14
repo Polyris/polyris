@@ -1,0 +1,27 @@
+"""UTC timestamps as the coordination layer stores them (ADR #130 §1).
+
+Every new writer stores ``YYYY-MM-DDTHH:MM:SS.sssZ`` — the shape Step
+Functions' ``$now()`` produces — so string order is time order. Readers also
+accept the ``+00:00`` form older Python writers used.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+
+def format_utc(moment: datetime) -> str:
+    """``2026-11-12T06:00:00.123Z``. Naive datetimes are rejected."""
+    if moment.tzinfo is None:
+        raise ValueError("timestamps must be timezone-aware")
+    utc = moment.astimezone(timezone.utc)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
+
+
+def parse_utc(text: str) -> datetime:
+    """Parse a stored timestamp in either supported form; always timezone-aware."""
+    value = text[:-1] + "+00:00" if text.endswith("Z") else text
+    moment = datetime.fromisoformat(value)
+    if moment.tzinfo is None:
+        raise ValueError(f"timestamp {text!r} has no timezone")
+    return moment.astimezone(timezone.utc)

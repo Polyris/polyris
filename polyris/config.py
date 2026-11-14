@@ -97,6 +97,15 @@ def _exec_config_module(config_path: Path):
     return mod
 
 
+class ConfigError(Exception):
+    """A config.py the user pointed at cannot be used (ADR #134).
+
+    The command stops with the reason instead of going on without the config,
+    which would deploy with the default AWS credentials to whatever platform
+    they reach.
+    """
+
+
 def _find_project_config() -> Optional[Path]:
     """Find config.py in current directory or parents.
 
@@ -104,21 +113,22 @@ def _find_project_config() -> Optional[Path]:
     discovery.  Stops walking at a project boundary (.git, pyproject.toml) so
     unrelated config.py files above the project root are never read.
 
-    POLYRIS_CONFIG env var skips the walk but still sniffs the pointed-to file
-    so that a file without ENVIRONMENTS is never silently executed.
+    POLYRIS_CONFIG names the file instead of the walk; it must exist and assign
+    ENVIRONMENTS. A named file that cannot be used, or a config.py on the walk
+    that does not parse, raises ConfigError (ADR #134). Without either, there
+    is no config and the result is None.
     """
     env_path = os.environ.get("POLYRIS_CONFIG")
     if env_path:
         p = Path(env_path)
-        if not p.exists():
-            return None
+        if not p.is_file():
+            raise ConfigError(f"POLYRIS_CONFIG={env_path} does not exist. "
+                              "Point it at your config.py, or unset it.")
         try:
             if not _has_environments_assignment(p):
-                print(f"⚠️  POLYRIS_CONFIG={p} has no ENVIRONMENTS assignment — skipping")
-                return None
+                raise ConfigError(f"POLYRIS_CONFIG={p} assigns no ENVIRONMENTS, so it is not a polyris config.py.")
         except SyntaxError as e:
-            print(f"⚠️  Skipping {p}: syntax error ({e})")
-            return None
+            raise ConfigError(f"POLYRIS_CONFIG={p} does not parse: {e}") from e
         return p
 
     current = Path.cwd()
@@ -129,7 +139,8 @@ def _find_project_config() -> Optional[Path]:
                 if _has_environments_assignment(config_path):
                     return config_path
             except SyntaxError as e:
-                print(f"⚠️  Skipping {config_path}: syntax error ({e})")
+                raise ConfigError(f"{config_path} does not parse: {e}. Fix it, "
+                                  "or set POLYRIS_CONFIG to the config.py you mean.") from e
         # Stop at project boundary — don't read files outside this project
         if (directory / ".git").exists() or (directory / "pyproject.toml").exists():
             break
@@ -144,11 +155,10 @@ def _load_project_config() -> Dict[str, Any]:
 
     try:
         mod = _exec_config_module(config_path)
-    except Exception as e:  # pragma: no cover -- _find_project_config already imported this same file successfully, so a re-import here cannot realistically fail
-        # Surface the failure (ADR #38) instead of silently using defaults —
-        # a broken config.py otherwise produces confusing downstream errors.
-        print(f"⚠️  Failed to load config from {config_path}: {e}")
-        return {}
+    except Exception as e:
+        # _find_project_config only parsed the file; running it can still fail (an import,
+        # a NameError). Going on with defaults would deploy elsewhere (ADR #134).
+        raise ConfigError(f"{config_path} failed to load: {type(e).__name__}: {e}") from e
     return {
         "environments": getattr(mod, "ENVIRONMENTS", {}),
         "default_stage": getattr(mod, "DEFAULT_STAGE", "dev"),
@@ -303,6 +313,8 @@ class _StageConfig:
         self._stage = stage
 
     def _env_config(self) -> Dict[str, Any]:
+        # polyris-deploy --stage reads only this view; nothing else may have loaded config.py yet.
+        self._parent._ensure_loaded()
         envs = self._parent._environments
         if envs and self._stage not in envs:
             configured = sorted(envs.keys())

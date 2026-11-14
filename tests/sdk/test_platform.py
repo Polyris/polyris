@@ -137,9 +137,11 @@ def test_invalid_name_parts(namespace, stage):
 
 
 def test_namespace_stage_too_long():
-    errors = P.validate_namespace_stage("a" * 20, "b" * 6)
+    limit = P.NAMESPACE_STAGE_MAX_LEN
+    assert P.validate_namespace_stage("a" * (limit - 6), "b" * 6) == []
+    errors = P.validate_namespace_stage("a" * (limit - 5), "b" * 6)
     assert errors == [
-        "Namespace + Stage is 26 characters; the limit is 25 (IAM role names would exceed 64 characters)."
+        f"Namespace + Stage is {limit + 1} characters; the limit is {limit} (IAM role names would exceed 64 characters)."
     ]
 
 

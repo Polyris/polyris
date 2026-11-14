@@ -816,21 +816,10 @@ it lacked permissions on a table — downstream tasks hung with no signal in UI 
 1. `Catch` blocks must preserve `$states.errorOutput` in Output — do not lose context
 2. Errors in Express SFNs must either propagate via `Catch` → `failure_handler`, or be logged in CloudWatch (ALL level)
 
-**`_notify_warn_` pattern implementation:**
-```python
-# When notify_dependents_via_sfn fails → downstream tasks stuck
-executions_repo.put({
-    'execution_name': f'_notify_warn_{execution_name}',
-    'task_name': task_name,
-    'pipeline_execution': pipeline_execution,
-    'pipeline_name': pipeline_name,
-    'date': date,
-    'status': 'failed',
-    'error': f'Downstream notification failed: {error}',
-    'finished_at': datetime.now(timezone.utc).isoformat(),
-    'ttl': int(datetime.now(timezone.utc).timestamp()) + 86400
-})
-```
+**`_notify_warn_` pattern implementation:** superseded by ADR #130 §9. A warning row is built
+with `records.warning_item(kind=…)` and named `_notify_warn_{kind}_{execution_name}`; it carries
+no `date`, and the bell reads it from `attention-index` by write time. The date-keyed row this
+ADR first described reached the bell only while its date was in the bell's window.
 
 **Important:** Records with `execution_name.startswith('_')` are internal/special.
 All loops iterating `pipeline-tokens` items MUST filter such records:
@@ -843,7 +832,7 @@ This pattern is already applied throughout `console_api/routes/`.
 
 **Special prefixes in `pipeline-tokens`:**
 - `_pause_{pipeline_execution}` — pause state record
-- `_notify_warn_{execution_name}` — infrastructure warning visible in UI
+- `_notify_warn_{kind}_{execution_name}` — infrastructure warning visible in UI (ADR #130 §9)
 
 ---
 
@@ -9284,3 +9273,127 @@ three further, real gaps — full detail in `docs/reference/SPIKE_TASK_ACTIONS_D
 - `OverrideCheckResult` carries `expired_token: bool` to let the output layer distinguish credential expiry from IAM denial.
 - `OverrideCheckResult._verified` counts unique resources *successfully fetched*, not total attempts. This differs from `ResourceCheckResult._checked`, which counts total attempts including failures. The print layer gates the success tick on `_verified > 0` to avoid claiming "no issues" when no resource was actually verified. When `_verified == 0` and `_skipped > 0` (all override-checkable resources had existence failures), the print layer emits a warning rather than silence so the operator knows the override check ran but was fully skipped.
 - `_OVERRIDE_CHECKERS` completeness is enforced by `test_override_checkers_covers_all_task_types` — adding a `TaskTypeLiteral` without updating the dict fails the test immediately. The checker entries for Glue, ECS, and Batch are auto-derived from `_OVERRIDE_INFO` via a dict spread — only task types without override params (SFN, Lambda, Athena, etc.) need a manual `None` entry. The comment in `_OVERRIDE_INFO` documents the two paths explicitly.
+
+## ADR #132 — Billing tags: one `polyris:` set on every resource AWS can tag
+
+**Context.** Each kind of resource had its own tags. The Lambda functions had five (`Environment`, `Stack`, `Stage`, `Namespace`, `ManagedBy`), the tables and buckets three to five, and the 13 state machines, 17 log groups and most IAM roles none. A pipeline's resources had `Pipeline`, `Stage`, `Namespace`, `ManagedBy` and `Name`, its scheduler role only two of them. Nothing checked them, so a cost report filtered by tag missed most of the platform, and an IAM condition on `aws:ResourceTag/Namespace` matched only some resources.
+
+**Decision.** Every resource that CloudFormation can tag carries the same keys, and no others:
+
+| Key | Value |
+|---|---|
+| `polyris:namespace` | the `Namespace` parameter; for a pipeline, the namespace it is deployed with |
+| `polyris:stage` | the `Stage` parameter; for a pipeline, the stage it is deployed with |
+| `polyris:component` | `platform` in the platform stack, `pipeline` in a pipeline's stack |
+| `polyris:pipeline` | the pipeline's id; pipeline resources only |
+
+The old tags are removed. The stack tag `polyris:platform=true` stays: it is how `polyris-up` finds its stack (ADR #131), not a billing tag.
+
+**Key design choices.**
+
+*Prefixed keys.* Companies often have their own `Stage`, `Environment` or `Owner` tags. A `polyris:` key never collides with them and names its owner, so no `ManagedBy` tag is needed.
+
+*Tags in the templates, not on the stack.* CloudFormation copies stack tags to resources, but only on stacks deployed with them: `polyris-up` could set them, a `sam deploy` from a checkout would not. Tags in the templates reach every stack and can be checked before a deploy. The Lambda functions take them from `Globals`; SAM has no `Globals` tags for state machines, so every other resource spells them. `polyris/resource_tags.py` holds the keys and builds a pipeline's tags.
+
+*The rule follows AWS.* `tests/sdk/test_resource_tags.py` reads from the CloudFormation resource schemas that cfn-lint ships which types can be tagged and in which property (`tagging.taggable`, `tagging.tagProperty`). It checks every resource of the platform template after the SAM transform and of each pipeline template shape. Types AWS cannot tag, such as `AWS::Scheduler::Schedule` and `AWS::IAM::ManagedPolicy`, need no list of exceptions, and a type AWS learns to tag joins the rule when cfn-lint is updated. The test also fails if changing a type's tags would replace the resource (Principle #33).
+
+*An HTTP API takes its tags from its OpenAPI body.* SAM writes the `ConsoleApi` tags into the body (`x-amazon-apigateway-tag-value`) and onto its stage; the test reads both.
+
+**Consequences.**
+- Cost Explorer can split the bill by installation, stage and component once the keys are activated as cost allocation tags in the paying account (`docs/how-to/manage-the-platform.md`).
+- Most orchestration cost is state transitions of the platform's shared state machines (the wrapper, `run_task`), tagged `platform`. `polyris:pipeline` covers a pipeline's own state machine, log group and scheduler role, so tags cannot split the shared cost by pipeline.
+- Upgrading removes the old tags: IAM conditions and cost reports on them stop matching. A pipeline's resources keep theirs until its next `polyris-deploy`.
+- Users cannot add tags of their own through polyris; no user has asked for it.
+
+## ADR #133 — A run has one date: the date it was started or scheduled for
+
+**Context.** A run's date (`current_date`) keys its task rows, its asset facts and every `wait_for` decision (ADR #130). A run started from the console carries it in its input, and one started by an asset trigger carried it only under `variables`. A scheduled run did not carry it at all: EventBridge Scheduler passed only `triggered_by` and `schedule`, and each task took the day from `$now()` when the pipeline built its input. A run scheduled at 23:59 that started at 00:01 got the next day, and the tasks of a run crossing midnight could get two dates. For a pipeline with `variables=`, `Define_Inputs` passed the missing date on as `null`, which `$exists` counts as present: every task got a `null` date and the run failed. It also dropped `triggered_by`.
+
+**Decision.** A run has one date, the same for every task:
+
+1. the date it was started for: `current_date` in its input, or `variables.current_date`;
+2. else the UTC day its schedule fired it for: the schedule's input carries `scheduled_time`, which EventBridge Scheduler fills with `<aws.scheduler.scheduled-time>`;
+3. else the UTC day the execution started (`$states.context.Execution.StartTime`).
+
+Never `$now()`. The expressions test values, not presence, so a `null` is no date. `Define_Inputs`, which replaces the input's `variables` with the declared ones, reads the same chain, so a pipeline with `variables=` keeps the date its starter sent. AssetFanout sends the date at the top level as well, as the console does, so a pipeline generated before 1.2 gets it without a redeploy.
+
+**Key design choices.**
+
+*The day it was scheduled for, not the day before.* Airflow dates a run by the start of its data interval, so a daily run at midnight carries the previous day. polyris keeps its convention, the run's own day; only the clock that picks the day changes. Moving to data intervals would shift every date by a day.
+
+*The execution's start time, not the current time.* `StartTime` is one value for every state of a run; `$now()` differs from state to state.
+
+*One field name on both sides.* `generators.SCHEDULED_TIME_FIELD` is written by `deploy.py` into the schedule's input and read by the generated pipeline; `tests/sdk/test_run_date.py` pins the pair (Principle #28).
+
+**Consequences.**
+- Pipelines pick this up at their next `polyris-deploy`. Until then, a scheduled pipeline with `variables=` still fails.
+- The harness starts a pipeline the way Scheduler does (`World.fire_schedule`, from the generated schedule's input), so the contract runs end to end (B-D1).
+
+---
+
+## ADR #134 — A config the user names is used, or the command stops
+
+**Context.** `polyris-deploy` takes its stage settings, the AWS profile among them, from `config.py`: the file `POLYRIS_CONFIG` names, or the first `config.py` with `ENVIRONMENTS` from the working directory up to the project root. Every way of failing to use that file ended in "no config": a `POLYRIS_CONFIG` naming a missing file, a file without `ENVIRONMENTS`, one that did not parse or failed when run. Without a config the deploy uses the default AWS credentials and the platform it finds by tag, so it can act in another account. The 1.2.0 rehearsal hit the class twice (Principle #42): the stage view read the environments before anything had loaded them (F5), and a `POLYRIS_CONFIG` left pointing at a deleted file was dropped without a word (F17). Both times the deploy went to the default account and stopped only because that account refused it.
+
+**Decision.**
+
+1. A config the user pointed at loads, or the command stops with the reason: `POLYRIS_CONFIG` naming a missing file, a file without `ENVIRONMENTS` or one that does not parse; a `config.py` on the walk that does not parse; any `config.py` that fails when run. `polyris.config` raises `ConfigError`; `polyris-deploy` prints it and exits 1 before any AWS call.
+2. The deploy target names the config file (`none` without one) and the AWS account the credentials reach, before the first write.
+3. No config is still a valid choice: without `POLYRIS_CONFIG` and without a `config.py`, the deploy uses the defaults, and the target says so.
+
+**Key design choices.**
+
+*Stop rather than warn.* A warning scrolls past and the deploy goes on in the wrong account; an exit costs one rerun.
+
+*A broken `config.py` on the walk stops too.* Skipping it would go on with a parent's config or none, the same silent change of target.
+
+**Consequences.**
+- Tests: `test_config.py` (each way a named config fails), `test_deploy_summary_and_conflicts.py` (the target lines; a missing `POLYRIS_CONFIG` stops `polyris-deploy` before `boto3.Session`).
+- Rule in `polyris/CLAUDE.md`.
+
+
+## ADR #135 — A run is told how its task ended by whoever ends it
+
+**Context.** A pipeline run waits for each of its tasks on a token, the row's `orchestration_token`. Two places answered it when a task failed: `run_task` on its own failure paths, and the failure handler on every other path. Between them stood a flag, `helper_failed`, which the wrapper set when `run_task` failed and which told the failure handler that `run_task` had answered already. The flag was a guess about another state machine's paths, and in the 1.2.0 rehearsal it was wrong twice (Principle #42). When the flag was missing, the JSONata read it as set (F16: a dependency wait that timed out). When it was set, `run_task` had failed before answering (a pause token that could not be saved). Other paths had no answer, or swallowed a failed one:
+- the reconciler closing a task whose wrapper was stopped in the AWS console (Z1, found by the harness invariant below and confirmed live);
+- the wrapper's skip answer;
+- the console's task actions.
+
+Each time the console showed the task ended while its run stayed `RUNNING` until it timed out waiting for that task, and a pipeline stack with such runs could not be deleted.
+
+**Decision.**
+
+1. Whoever ends a task answers its run's token, and nothing decides not to answer because someone else may have:
+
+   | Who ends the task | Answers with | When the answer cannot get through |
+   |---|---|---|
+   | `run_task`, the task succeeded | `Send_Pipeline_Success` | `Warn_Run_Left_Running` |
+   | `run_task`, its own failure paths | `Send_Pipeline_Failure`, then ends failed | the failure handler answers again, or warns |
+   | the failure handler, whenever the wrapper fails | `Send_Task_Failure` | `Warn_Run_Left_Running` |
+   | the wrapper, a rule skip or a skip the run asked for | `Auto_Skip_Send_Success` | `Warn_Run_Left_Running` |
+   | the reconciler, a task whose wrapper is gone (ADR #130 §3 step 3) | `_tell_the_run` | a `coordination` warning |
+   | the console: Skip, Fail, Mark Successful, a Stop that aborts | `answer_run` | a `coordination` warning; the action itself stands |
+
+   The `helper_failed` flag is gone. A wrapper that no longer owns its row (a restart handed the row and its token to a new wrapper) stays quiet: its failure handler ends at `Superseded_Complete`, and the new owner answers.
+2. A closed token is not an error. `TaskTimedOut`, `InvalidToken` and `TaskDoesNotExist` (`polyris.coordination.wake.DEAD_TOKEN_CODES`) mean that the run was answered already or has ended. They are never retried.
+3. Any other error is retried twice in a template. If it persists, it reaches the bell as a `coordination` warning: the run stays `RUNNING` until someone stops it or it times out waiting for that task (the task's `execution_timeout`, 24 hours by default) (Principle #38).
+4. The coordination harness checks, after every step of every scenario, that a run whose task rows have all finished has finished too (ADR #130 invariant 10). Exempt are a run with an execution still working for it and a run the bell says could not be told. A `stopped` task does not count as finished: its run may wait for a restart.
+
+**Key design choices.**
+
+*Answer twice rather than guess.* A second answer costs one refused API call. A missed one leaves a run `RUNNING` with nothing in the console to explain it.
+
+*`run_task` keeps its own failure answer.* It answers first, so the run reports `run_task`'s error and cause; the failure handler's answer is then refused as closed. Dropping it would change what a failed run reports, and correctness does not need it.
+
+*The reconciler answers after it closes the row.* The close is conditional on the row's token and registration, so a run is never told that a task ended when its wrapper is in fact alive. A Lambda that dies between the two leaves the run to its timeout, without a warning; the window is one API call.
+
+*A console action that cannot tell the run still succeeds.* The row has changed and the action cannot be repeated, so a 500 would only tell the operator that something failed which in fact happened.
+
+**Consequences.**
+- Templates: the failure handler's `Check_Orchestration_Token`, `Send_Task_Failure` and `Warn_Run_Left_Running`; `run_task`'s `Send_Pipeline_Success`, `Send_Pipeline_Failure` and `Warn_Run_Left_Running`; the wrapper's `Auto_Skip_Send_Success` and `Warn_Run_Left_Running`; the wrapper's catch around `Run_Task` no longer sets `helper_failed`. A wrapper started before the upgrade still sets it, and the failure handler ignores it.
+- Code: the reconciler's `_tell_the_run`; the console's `routes.tasks.answer_run`.
+- Tests:
+  - `tests/sdk/test_run_answers.py` finds every template state that answers a run and requires a role for it. It also checks the token condition, that no template sets `helper_failed`, the closed-token codes against `DEAD_TOKEN_CODES`, and the warning against `warning_item`.
+  - `test_coordination_reconcile.py`: a zombie's run is told; when telling fails, a warning; when the run already ended, nothing.
+  - The harness: invariant 10, and the scenarios of the pause token, the stopped wrapper, the rule skip and each console action.
+- Rule in root `CLAUDE.md` (SFN Templates — Common Pitfalls).

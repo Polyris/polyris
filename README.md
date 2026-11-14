@@ -129,7 +129,7 @@ hello-world through assets and lineage.
 ├── sam/                          # Shared AWS infrastructure
 │   ├── template.yaml             # SAM template — all AWS resources
 │   ├── lambdas/                  # 8 Lambda functions
-│   └── sfn_templates/            # 14 SFN definitions (11 orchestration + 3 test)
+│   └── sfn_templates/            # 13 SFN definitions (10 orchestration + 3 test)
 │
 ├── polyris/                      # Python DSL library
 │   ├── dag.py                    # DAG class
@@ -159,6 +159,8 @@ no fleet to keep alive:
 for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS
 containers, Athena queries) bill separately against your existing AWS
 spend; polyris does not add a percentage on top.
+
+Every resource in a polyris stack carries `polyris:` tags, so Cost Explorer can show what polyris costs per installation and stage: see [Track costs](docs/how-to/manage-the-platform.md#track-costs).
 
 Compared to **Amazon MWAA** (managed Airflow) — the smallest `mw1.small`
 environment alone starts at ~$350/month for the environment fee before

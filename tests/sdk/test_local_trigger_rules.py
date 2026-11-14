@@ -134,7 +134,7 @@ class TestNoneSkipped:
 class TestUnknownRule:
     """An unrecognized trigger_rule string (including any of ADR #117's 6
     removed names) defaults to all_success semantics (ADR #115 consistency
-    with evaluate_deps), not an unconditional True."""
+    with the reconciler), not an unconditional True."""
 
     def test_unknown_rule_all_succeeded_runs(self):
         task = _task('not_a_real_rule', ['a', 'b'])

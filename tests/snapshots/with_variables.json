@@ -15,8 +15,9 @@
         "register_only": "{% $exists($states.input.register_only) ? $states.input.register_only : false %}",
         "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
         "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
-        "current_date": "{% $exists($states.input.current_date) ? $states.input.current_date : null %}",
-        "PARTITION_ARG": "{% $exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.current_date) ? $states.input.current_date : null) %}"
+        "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}",
+        "current_date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
+        "PARTITION_ARG": "{% $states.input.variables.PARTITION_ARG ? $states.input.variables.PARTITION_ARG : ($states.input.PARTITION_ARG ? $states.input.PARTITION_ARG : ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) %}"
       },
       "Next": "Register_Pipeline"
     },
@@ -99,7 +100,13 @@
         "TableName": "${tokens_table}",
         "Item": {
           "execution_name": {
-            "S": "{% '_notify_warn_' & $states.context.Execution.Name & '-register_pipeline' %}"
+            "S": "{% '_notify_warn_coordination_' & $states.context.Execution.Name & '-register_pipeline' %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "Register_Pipeline"
           },
           "pipeline_name": {
             "S": "with_variables"
@@ -107,11 +114,8 @@
           "pipeline_execution": {
             "S": "{% $states.context.Execution.Name %}"
           },
-          "task_name": {
-            "S": "Register_Pipeline"
-          },
-          "date": {
-            "S": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}"
+          "task_date": {
+            "S": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
           },
           "status": {
             "S": "failed"
@@ -122,8 +126,14 @@
           "finished_at": {
             "S": "{% $now() %}"
           },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-register_pipeline', 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
           "ttl": {
-            "N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
           }
         }
       },
@@ -214,7 +224,13 @@
         "TableName": "${tokens_table}",
         "Item": {
           "execution_name": {
-            "S": "{% '_notify_warn_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"
+            "S": "{% '_notify_warn_coordination_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "Save_DAG_Snapshot"
           },
           "pipeline_name": {
             "S": "with_variables"
@@ -222,11 +238,8 @@
           "pipeline_execution": {
             "S": "{% $states.context.Execution.Name %}"
           },
-          "task_name": {
-            "S": "Save_DAG_Snapshot"
-          },
-          "date": {
-            "S": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}"
+          "task_date": {
+            "S": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
           },
           "status": {
             "S": "failed"
@@ -237,8 +250,14 @@
           "finished_at": {
             "S": "{% $now() %}"
           },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-save_dag_snapshot', 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
           "ttl": {
-            "N": "{% $string($floor($toMillis($now()) / 1000) + 86400) %}"
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
           }
         }
       },
@@ -295,7 +314,7 @@
               "TimeoutSeconds": 86400,
               "Arguments": {
                 "StateMachineArn": "${wrapper_arn}",
-                "Name": "{% $substring('process-' & ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T'))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
+                "Name": "{% $substring('process-' & (($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
                 "Input": {
                   "task_name": "process",
                   "task_arn": "arn:aws:states:us-east-1:123:stateMachine:process",
@@ -309,9 +328,9 @@
                   "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
                   "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
                   "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}",
-                  "date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
-                  "current_date": "{% $exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')) %}",
-                  "PARTITION_ARG": "{% $exists($states.input.variables.PARTITION_ARG) ? $states.input.variables.PARTITION_ARG : ($exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : ($exists($states.input.variables.current_date) ? $states.input.variables.current_date : ($exists($states.input.current_date) ? $states.input.current_date : $substringBefore($now(), 'T')))) %}",
+                  "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
+                  "current_date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
+                  "PARTITION_ARG": "{% $states.input.variables.PARTITION_ARG ? $states.input.variables.PARTITION_ARG : ($states.input.PARTITION_ARG ? $states.input.PARTITION_ARG : ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) %}",
                   "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
                   "orchestration_timeout": 86400,
                   "wait_before": 0,

@@ -274,6 +274,13 @@ def fetch_release(version: str) -> Path:
     return archive
 
 
+def _open_local_archive(archive: Path) -> Tuple[Path, Manifest]:
+    """A release archive given with --archive, extracted: (root, manifest)."""
+    if not archive.is_file():
+        raise UpError(f"Archive not found: {archive}")
+    return extract_archive(archive)
+
+
 def extract_archive(archive: Path) -> Tuple[Path, Manifest]:
     """Extract into the cache (once) and return (root, manifest).
 
@@ -493,6 +500,9 @@ def run_up(args: argparse.Namespace) -> None:
         overrides = parse_param_overrides(args.param or [])
     except ValueError as e:
         raise UpError(str(e))
+    # A local archive installs its own version, which may differ from this polyris's.
+    local_archive = _open_local_archive(Path(args.archive)) if args.archive else None
+    installing = local_archive[1].version if local_archive else __version__
     args.namespace_from_flags = bool(args.namespace or args.stage)
     if args.stack:
         stack_name, existing = find_platform_stack(cfn, args.stack)
@@ -535,7 +545,7 @@ def run_up(args: argparse.Namespace) -> None:
     deployed: Optional[str] = None
     if existing:
         deployed = version_from_description(existing.get("Description"))
-        print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {__version__})")
+        print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {installing})")
         if existing.get("StackStatus", "").endswith("_IN_PROGRESS"):
             raise UpError(f"Stack {stack_name} is busy ({existing['StackStatus']}). Try again when it finishes.")
         if not is_platform_shaped(existing):
@@ -577,18 +587,12 @@ def run_up(args: argparse.Namespace) -> None:
                 required=False)
             if email:
                 values[PARAM_ADMIN_EMAIL] = email
-        print(f"   stack:    {_c(stack_name, CYAN)} (create, v{__version__})")
+        print(f"   stack:    {_c(stack_name, CYAN)} (create, v{installing})")
     if args.admin_email is not None and existing:
         values[PARAM_ADMIN_EMAIL] = args.admin_email
 
     _header("Release artifacts")
-    if args.archive:
-        archive = Path(args.archive)
-        if not archive.is_file():
-            raise UpError(f"Archive not found: {archive}")
-    else:
-        archive = fetch_release(__version__)
-    root, manifest = extract_archive(archive)
+    root, manifest = local_archive or extract_archive(fetch_release(__version__))
     if manifest.version != __version__ and not args.archive:
         raise UpError(f"Release archive is v{manifest.version}, installed polyris is v{__version__}.")
     if is_downgrade(deployed, manifest.version) and not args.allow_downgrade:
@@ -625,6 +629,13 @@ def run_up(args: argparse.Namespace) -> None:
     except ChangeSetError as e:
         raise UpError(str(e))
     if change_set is None:
+        status = str((existing or {}).get("StackStatus", ""))
+        if status.endswith("_FAILED"):
+            # A failed update kept with --disable-rollback is not "up to date": nothing new to change
+            # does not mean the resources that failed are fixed.
+            raise UpError(f"Stack {stack_name} is {status} and this release changes nothing more.",
+                          "Retry the failed update in the CloudFormation console (Retry, or Roll back), "
+                          "then run polyris-up again.")
         print(_c(f"\n✅ {stack_name} is already up to date (v{manifest.version}).", BOLD_GREEN))
         _print_outputs(existing or {})
         return
@@ -639,10 +650,15 @@ def run_up(args: argparse.Namespace) -> None:
                 raise UpError("Nothing was changed: this would delete data.",
                               "Re-run with --accept-data-loss if that is intended (--yes does not cover it).")
             _confirm_yes("Continue anyway?")
+    # A first install that fails is removed with polyris-down, so only an update keeps what it changed.
+    keep_on_failure = bool(args.disable_rollback) and existing is not None
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        execute_change_set(cfn, stack_name=stack_name, change_set=change_set)
+        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=keep_on_failure)
     except ChangeSetError as e:
+        if keep_on_failure:
+            raise UpError(str(e), "Nothing was rolled back (--disable-rollback): fix the cause, then run the "
+                                  "same polyris-up command again.")
         raise UpError(str(e))
     finally:
         stop_narration()
@@ -851,6 +867,9 @@ def build_up_parser() -> argparse.ArgumentParser:
     parser.add_argument("--accept-data-loss", action="store_true",
                         help="Allow a change that replaces or removes a table, bucket, user pool or admin user "
                              "(--yes alone never does)")
+    parser.add_argument("--disable-rollback", action="store_true",
+                        help="If the update fails, keep what it already changed instead of rolling back "
+                             "(for an upgrade whose release notes ask for it; a first install always rolls back)")
     colorize_parser(parser)
     return parser
 

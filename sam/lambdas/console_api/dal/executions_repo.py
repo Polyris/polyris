@@ -11,6 +11,8 @@ Table schema:
 """
 
 from boto3.dynamodb.conditions import Key
+
+from polyris.coordination import attention as att
 from config import dynamodb, TABLE_NAME
 from utils import scan_all, query_all
 
@@ -28,10 +30,14 @@ class ExecutionsRepo:
 
     # ── Single-item operations ────────────────────────────────────────────
 
-    def batch_get_run_meta(self, execution_names: list[str]) -> dict[str, dict]:
-        """Fetch triggered_by, attempt, retry_attempt, task_config from the base table for
-        a batch of execution_names. Used after GSI reads whose NonKeyAttributes don't
-        include these fields. Returns {execution_name: {field: value, …}}.
+    #: Run fields no task index projects (sam/template.yaml).
+    RUN_META_FIELDS = ('triggered_by', 'attempt', 'retry_attempt', 'task_config')
+
+    def batch_get_run_meta(self, execution_names: list[str],
+                           fields: tuple[str, ...] = RUN_META_FIELDS) -> dict[str, dict]:
+        """Fetch `fields` (by default triggered_by, attempt, retry_attempt, task_config)
+        from the base table for a batch of execution_names. Used after GSI reads whose
+        NonKeyAttributes don't include them. Returns {execution_name: {field: value, …}}.
 
         retry_attempt (ADR #125) is the in-SFN auto-retry index; without it in this
         projection the History feed would show 0 for every row even on actively
@@ -42,14 +48,16 @@ class ExecutionsRepo:
         unique = [n for n in set(execution_names) if n]
         if not unique:
             return {}
+        # Every field goes through a placeholder: `attempt` is a DynamoDB reserved word.
+        names = {f'#f{i}': field for i, field in enumerate(fields)}
+        projection = ', '.join(['execution_name', *names])
         result: dict[str, dict] = {}
         for i in range(0, len(unique), 100):
             pending = {
                 self._table_name: {
                     'Keys': [{'execution_name': n} for n in unique[i:i + 100]],
-                    # `attempt` is a DynamoDB reserved word — alias required.
-                    'ProjectionExpression': 'execution_name, triggered_by, #attempt, retry_attempt, task_config',
-                    'ExpressionAttributeNames': {'#attempt': 'attempt'},
+                    'ProjectionExpression': projection,
+                    'ExpressionAttributeNames': names,
                 }
             }
             while pending:
@@ -270,6 +278,25 @@ class ExecutionsRepo:
         """
         query_params.setdefault('IndexName', 'date-pipeline-index')
         return self.table.query(**query_params)
+
+    def recent_warnings(self, since: str, limit: int) -> list:
+        """Warning rows (`records.warning_item`) written since `since` (UTC, `…Z`), newest first.
+
+        Read from the attention index by write time (ADR #130 §9), across its
+        16 `warn#` shards, so a warning about a task of any partition date
+        reaches the bell (defect B-N1). The index projects what the bell shows.
+        """
+        rows: list = []
+        for partition in att.partitions(att.WARN):
+            response = self.table.query(
+                IndexName=att.INDEX,
+                KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).gte(since),
+                ScanIndexForward=False,
+                Limit=limit,
+            )
+            rows.extend(response.get('Items', []))
+        rows.sort(key=lambda r: str(r.get(att.DUE, '')), reverse=True)
+        return rows[:limit]
 
     # ── Scan operations ───────────────────────────────────────────────────
 

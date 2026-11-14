@@ -170,9 +170,9 @@ glue = _LazyGlue()
 # ============================================
 TABLE_NAME = os.environ.get('DYNAMODB_TABLE', 'pipeline-executions')
 PIPELINES_TABLE = os.environ.get('PIPELINES_TABLE', 'pipeline-registry')
-SUBSCRIPTIONS_TABLE = os.environ.get('SUBSCRIPTIONS_TABLE', 'dep-subscriptions')
 ASSET_EVENTS_TABLE = os.environ.get('ASSET_EVENTS_TABLE', 'asset-events')
-QUEUED_EVENTS_TABLE = os.environ.get('QUEUED_EVENTS_TABLE', 'queued-asset-events')
+# How long an asset fact lives; the same value run_task's fact writes use.
+ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))
 TASK_EVENTS_TABLE = os.environ.get('TASK_EVENTS_TABLE', 'task-events')
 # Personal Access Token store (ADR #65). Dedicated table, not pipeline-tokens.
 API_TOKENS_TABLE = os.environ.get('API_TOKENS_TABLE', 'api-tokens')
@@ -182,14 +182,9 @@ CIRCUIT_BREAKER_TABLE = os.environ.get('CIRCUIT_BREAKER_TABLE', '')
 RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 
 # SFN Helpers
+# The coordination reconciler; resume asks it to check a run's waiting tasks (ADR #130 §6.5).
+RECONCILE_FUNCTION_ARN = os.environ.get('RECONCILE_FUNCTION_ARN', '')
 NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
-NOTIFY_ASSET_CONSUMERS_SFN_ARN = os.environ.get('NOTIFY_ASSET_CONSUMERS_SFN_ARN', '')
-# Lambda ARN for waking `wait_for` subscribers on manual mark-success. The
-# run_task SFN invokes this Lambda on natural completion; mark-success must
-# invoke it too so pull-waiters are woken on the same event path.
-NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN = os.environ.get(
-    'NOTIFY_ASSET_SUBSCRIBERS_LAMBDA_ARN', ''
-)
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
 
 # ============================================

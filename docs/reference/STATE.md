@@ -8,11 +8,20 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 1.0.1 · **Next milestone:** consolidate paid-integration language out of OSS docs (#24)
+**Version:** 1.1.4 · **Next milestone:** v1.2.0, the coordination reconciler (ADR #130)
 
 ## In flight
 
-- Nothing. The v0.93.1 gap-closing pass is complete and green.
+- **Coordination reconciler** (`docs/reference/adr-130-coordination-reconciler.md`), on
+  `feat/coordination-reconciler`, ships as v1.2.0 in one delivery. Done: `reconcile` and
+  `asset-fanout` decide readiness from facts, and registration, `notify_dependents`, asset
+  facts and asset-scheduled pipelines are wired to them. The old coordination Lambdas, the
+  push state machine and the AND-queue table are gone. Pause, resume and restart decide from
+  facts; the sweeper re-checks, retries, catches up and reports. The console shows engine
+  health and reads warnings by write time, and the docs describe the new model. Three review
+  rounds are done and their blockers fixed; next: a live deploy and an upgrade rehearsal
+  (Principle #15). The upgrade-only code (adoption, the generation's branches for old rows,
+  the frozen v1.1.4 wrapper) goes in 1.3: ADR #130 *Out of scope* lists it.
 
 ## Decided, not done
 
@@ -25,12 +34,12 @@ Update it when something moves. Paths here are checked by
   sequential-chain fallback overrides the answer and a fan-out of independent
   tasks is unreachable. Pinned by a test that documents current behaviour;
   fixing it changes that function's contract.
+- **Coordination follow-ups after v1.2.0.** Listed with their reasons in ADR #130,
+  *Out of scope* → *Deferred after the CR-6 reviews*; the first is the next ADR on the
+  execution model (a waiting task as a row, not a process).
+
 ## Known debt, measured
 
-- **Coverage omit list is still too wide.** `polyris/register.py` only has
-  `get_sfn_client` touching boto3; the rest is pure logic sitting unmeasured behind
-  an "AWS/CLI" exemption. The fix shape is to split the AWS call out and measure the
-  remainder — as was done for `polyris/output.py`, `polyris/init.py`, and `polyris/local.py`.
 - **npm audit: 3 high, 0 critical** — `next`, `postcss`, `sharp`. All unreachable
   under `output: 'export'`; reasoning recorded in `SECURITY.md`. No patched
   `next` 16.2.x exists.

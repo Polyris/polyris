@@ -12,6 +12,7 @@ touch the buckets.
 """
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -27,6 +28,9 @@ if "cfnresponse" not in sys.modules:
 
 # Add this Lambda's dir to sys.path so `import index` works.
 sys.path.insert(0, str(Path(__file__).parent))
+# index.py builds its boto3 clients at import. The Lambda runtime always sets a
+# region; CI and a clean machine do not, so the suite must not depend on one.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 import index  # noqa: E402
 

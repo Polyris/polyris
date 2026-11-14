@@ -418,9 +418,13 @@ export function usePipelineActions({
                 !TASK_SETTLED_STATUSES.includes(t.status)
             );
             
+            // api.post answers with { ok: false, error } instead of throwing: read each answer, or a
+            // failed stop goes unseen (/execution-stop answered 500 on every run until 1.2.0).
+            const failures: string[] = [];
             for (const task of incompleteTasks) {
                 if (task.execution_name) {
-                    await api.post(`/task-stop?name=${task.execution_name}`, {});
+                    const result = await api.post(`/task-stop?name=${task.execution_name}`, {});
+                    if (result.error) failures.push(`${task.task_name ?? task.execution_name}: ${getApiErrorMessage(result)}`);
                 }
             }
             
@@ -428,11 +432,12 @@ export function usePipelineActions({
             
             const execId = currentExecution?.execution_id || selectedExecution?.execution_id;
             if (execId) {
-                try {
-                    await api.post(`/execution-stop?pipeline_execution=${encodeURIComponent(execId)}`, {});
-                } catch (e: unknown) {
-                    logger.error('actions', 'Failed to stop orchestration', e);
-                }
+                const result = await api.post(`/execution-stop?pipeline_execution=${encodeURIComponent(execId)}`, {});
+                if (result.error) failures.push(`the run: ${getApiErrorMessage(result)}`);
+            }
+            if (failures.length > 0) {
+                logger.error('actions', 'Stop did not complete', failures);
+                showToast(`Stop did not complete — ${failures.join('; ')}`, 'error');
             }
             
             setModal(prev => ({ ...prev, isOpen: false }));

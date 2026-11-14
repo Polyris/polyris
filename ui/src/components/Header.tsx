@@ -14,7 +14,7 @@ import {
 
 interface HeaderProps {
     apiConnected: boolean;
-    onNotificationNavigate: (pipelineName: string, executionId?: string) => void;
+    onNotificationNavigate: (pipelineName: string, executionId?: string, date?: string) => void;
     /** ADR #68 — navigate to backfill detail from backfill notification. */
     onNotificationNavigateBackfill?: (backfillId: string) => void;
 }
@@ -123,6 +123,7 @@ function Breadcrumbs() {
     return (
         <div className="hdr-nav-left">
             <span className="hdr-brand">
+                {/* eslint-disable-next-line @next/next/no-img-element -- static export (output: 'export') has no image optimizer for next/image; a fixed-size decorative logo */}
                 <span className="hdr-brand-logo"><img src="/logo-icon.png" alt="" aria-hidden="true" width="26" height="26" /></span>
                 polyris
             </span>

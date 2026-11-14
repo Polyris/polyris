@@ -246,3 +246,37 @@ describe('formatFreshnessWindowLong', () => {
         expect(formatFreshnessWindowLong(48)).toBe('2 days');
     });
 });
+
+
+import { formatWaitForEntry } from './formatters';
+import { getWaitingReason } from './constants';
+
+// wait_for=[a | b] exactly as a live pipeline-tokens row stored it (polyris-cr7-dev, 2026-11-14).
+const LIVE_OR_GROUP = "[{\"operator\":\"OR\",\"assets\":[{\"asset_name\":\"smoke/a\",\"freshness_hours\":null},{\"asset_name\":\"smoke/b\",\"freshness_hours\":null}]}]";
+
+describe('formatWaitForEntry', () => {
+    it('names a plain asset', () => {
+        expect(formatWaitForEntry({ asset_name: 'orders', freshness_hours: 24 })).toBe('orders');
+    });
+
+    it('joins an OR group with | and an AND group with &', () => {
+        const [group] = JSON.parse(LIVE_OR_GROUP);
+        expect(formatWaitForEntry(group)).toBe('smoke/a | smoke/b');
+        expect(formatWaitForEntry({ operator: 'AND', assets: [{ asset_name: 'a' }, { asset_name: 'b' }] })).toBe('a & b');
+    });
+
+    it('parenthesises a nested group', () => {
+        const entry = { operator: 'OR' as const, assets: [{ asset_name: 'a' }, { operator: 'AND' as const, assets: [{ asset_name: 'b' }, { asset_name: 'c' }] }] };
+        expect(formatWaitForEntry(entry)).toBe('a | (b & c)');
+    });
+
+    it('gives an empty label to an entry without a name', () => {
+        expect(formatWaitForEntry({})).toBe('');
+    });
+});
+
+describe('getWaitingReason with a wait_for group', () => {
+    it('names the group\'s assets', () => {
+        expect(getWaitingReason({ status: 'waiting', wait_for: LIVE_OR_GROUP })).toBe('Waiting for assets: smoke/a | smoke/b');
+    });
+});

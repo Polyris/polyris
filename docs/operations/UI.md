@@ -6,7 +6,6 @@
 - [Features](#features)
 - [Components](#components) — layout, sidebar, DAG viewer, task modal
 - [Task Actions](#task-actions)
-- [Backfill Modal](#backfill-modal)
 - [Auto-Refresh](#auto-refresh)
 - [Filtering](#filtering)
 - [Help Modal](#help-modal)
@@ -36,7 +35,6 @@ The polyris Web Console is a React-based single-page application for monitoring 
 | View | Description |
 |------|-------------|
 | **Pipelines** | Main view with DAG visualization |
-| **Assets** | Asset lineage and events |
 | **Tasks** | All task instances across pipelines |
 | **Runs** | Pipeline execution history |
 
@@ -104,38 +102,6 @@ Historical view:
 - Status indicators per day
 - Quick navigation
 
-### AssetLineageFlow
-
-Asset dependency graph:
-- Producers → Assets → Consumers
-- DAG triggers
-- Search and filter
-- Staleness indicators
-- `wait_for` dependencies shown as consumer relationships
-
-**Relationships shown:**
-| Source | Relationship |
-|--------|--------------|
-| `outlets` | Task → Asset (producer) |
-| `inlets` | Asset → Task (consumer) |
-| `wait_for` | Asset → Task (consumer with freshness) |
-| `schedule=[asset]` | Asset → DAG (trigger) |
-
-**Filter checkboxes:**
-| Option | Description |
-|--------|-------------|
-| **📦 Assets** | Always shown (base) |
-| **🔧 Tasks** | Show producer/consumer tasks |
-| **🚀 DAG Triggers** | Show triggered pipelines |
-
-**Legend:**
-- 🔧 Producer — Task that creates asset
-- 📦 Asset — Data artifact
-- 📥 Consumer — Task that uses asset
-- 🚀 DAG Trigger — Pipeline triggered by asset
-
----
-
 ## Task Actions
 
 ### Task Detail Modal
@@ -184,45 +150,6 @@ Click a task to open detail modal with actions:
 
 ---
 
-## Backfill Modal
-
-Run pipeline for date range:
-
-### Options
-- **Start Date** — First date to run
-- **End Date** — Last date to run
-- **Mode** — Tasks or Assets selection
-
-### Task Mode
-- Select specific tasks to run
-- Unselected tasks are skipped
-- Tasks with `skip_on_backfill=True` are unchecked by default (e.g. scrapers)
-- User can override defaults by toggling any task on/off
-
-### Asset Mode
-- Select assets to materialize
-- Pipeline runs tasks needed for those assets
-
-### Auto Variables
-When running backfill, these variables are auto-generated:
-
-| Variable | Example |
-|----------|---------|
-| `current_date` | "2025-07-25" |
-| `date_compact` | "20250725" |
-| `year` | "2025" |
-| `month` | "07" |
-| `day` | "25" |
-| `day_of_week` | "friday" |
-| `previous_date` | "2025-07-24" |
-| `is_backfill` | true |
-| `ALLOW_UNSUCCESSFUL_SPIDER_RUN` | True |
-
-### Failure Handling During Backfill
-When a task fails during backfill, the task enters `waiting_decision` status and waits up to 5 hours for a decision via the UI (skip, fail, or restart). If no action is taken, it auto-fails after timeout.
-
----
-
 ## Auto-Refresh
 
 The UI uses polling for updates:
@@ -255,26 +182,14 @@ last 14 days.
 ### Tasks View
 - **Pipeline** — Filter by pipeline name
 - **Status** — Filter by task status (the Status cell also shows compact retry chips: ↻ for manual Restart, ⭮ for auto-retry)
-- **Source** — Trigger origin: Console, Schedule, Asset, or Backfill
+- **Source** — Trigger origin: Console, Schedule or Asset
 - **Date** — Filter by execution date
 
 ### Runs View
-Unified Run/Activity feed (ADR #95): a single table of pipeline executions
-**and** Backfills. Backfill rows show partition progress in place of an
-execution id, a `bl-status-pill` in the 6-state Backfill vocabulary
-(pending/running/completed/failed/partial/canceled — `partial` shows the
-`X/Y` ratio), and link to the backfill detail page. The dedicated Backfills
-view remains for backfill-only browsing.
+A single table of pipeline executions (ADR #95).
 - **Pipeline** — Filter by pipeline name
-- **Status** — Filter by run status; the dropdown groups Run statuses
-  (succeeded/failed/running/aborted) and Backfill statuses separately
-- **Date** — Filter by date (executions by logical date; backfills by
-  partition range)
-
-### Assets View
-- **Search** — Filter by asset name
-- **Group** — Filter by asset group
-- **Staleness** — Fresh/Warning/Stale
+- **Status** — Filter by run status (succeeded/failed/running/aborted)
+- **Date** — Filter by the run's logical date
 
 ---
 
@@ -293,9 +208,8 @@ Quick reference for REST API endpoints
 ## Notifications Panel
 
 Shows recent alerts:
-- Failed tasks
-- Pipeline failures
-- Asset events
+- Failed tasks and tasks waiting for a decision
+- Coordination warnings, named by their kind (see [alerts.md](../features/alerts.md))
 
 Click notification to navigate to related task/pipeline.
 
@@ -318,7 +232,7 @@ Click notification to navigate to related task/pipeline.
 - **TypeScript** — Type safety
 - **React Query 5** (`@tanstack/react-query`) — Server state, caching, refetch
 - **Zustand 5** — UI state management (navigation, modals, filters)
-- **ReactFlow 11** — DAG and asset lineage visualization
+- **ReactFlow 11** — DAG visualization
 - **dagre** — Automatic graph layout
 - **Tailwind CSS 3 + shadcn/ui** — Styling and UI primitives
 - **CSS Modules** — Component-scoped styles, theme-aware variants
@@ -332,13 +246,13 @@ Server data and UI state are deliberately separated:
 
 | Layer | Tool | What it holds |
 |-------|------|--------------|
-| **Server state** | React Query 5 | Pipeline list, task details, metrics, assets. Caching, background refetch, optimistic updates. |
+| **Server state** | React Query 5 | Pipeline list, task details, metrics, notifications, engine health. Caching, background refetch, optimistic updates. |
 | **UI state** | Zustand 5 (`useAppStore`) | Selected pipeline, date, view mode, theme, modal visibility, filters (27 fields total). |
 | **URL state** | `useStoreInit` | Bidirectional URL ↔ store sync (`?pipeline=x&date=2025-01-15&view=dag`). |
 
 **Performance pattern:** All components use `useShallow` selectors to subscribe to only the specific store fields they need, preventing unnecessary re-renders when unrelated state changes.
 
-React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useAssetQueries.ts` (assets, events, triggers, backfill), `useGlobalQueries.ts` (all-tasks, all-runs, consecutive progress).
+React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useGlobalQueries.ts` (all-tasks, all-runs, notifications, engine health, consecutive progress).
 
 ---
 
@@ -362,14 +276,11 @@ App.tsx
     │   │   ├── ErrorDisplay     — formatted error output
     │   │   ├── LiveDuration     — real-time duration for running tasks
     │   │   └── helpers.ts       — evaluateDepStatus, trigger rule logic
-    │   └── BackfillModal        — date range + task/asset selection
     ├── AllTasksView     — cross-pipeline task table with filters
-    ├── AllRunsView      — unified Run/Activity feed (executions + backfills) with filters
-    └── AssetsView       — asset list + AssetLineageFlow graph
-        └── AssetLineageFlow — ReactFlow graph with prefix filtering + search
+    └── AllRunsView      — Run/Activity feed of pipeline executions, with filters
 ```
 
-`TaskDetailModal` and `BackfillModal` are **lazy-loaded** via `React.lazy()` + `Suspense` in PipelineDetail to reduce initial bundle (~50KB deferred).
+`TaskDetailModal` is **lazy-loaded** via `React.lazy()` + `Suspense` in PipelineDetail to reduce initial bundle (~50KB deferred).
 
 ### Modal System
 
@@ -390,7 +301,7 @@ The console implements WCAG-aligned accessibility across all interactive compone
 - **Loading skeletons**: `role="status"`, `aria-label="Loading..."`, `sr-only` text
 - **CountdownTimer**: `role="timer"`, `aria-live="polite"`, dynamic `aria-label`
 - **Error boundary**: `role="alert"` on error display
-- **Group headers** (sidebar, assets): `role="button"`, `aria-expanded`, keyboard support
+- **Group headers** (sidebar): `role="button"`, `aria-expanded`, keyboard support
 
 ---
 
@@ -411,7 +322,7 @@ npm test -- --run src/components/DAGGraphFlow.test.tsx  # Single file
 
 **Mocking patterns:**
 
-- **ReactFlow** (DAGGraphFlow, AssetLineageFlow): mock `reactflow` module to render nodes as `<div data-testid="rf-node-{id}">`, mock `dagre` for layout.
+- **ReactFlow** (DAGGraphFlow): mock `reactflow` module to render nodes as `<div data-testid="rf-node-{id}">`, mock `dagre` for layout.
 - **Modals**: mock `BaseModal` to render children directly (no portal/animation).
 - **Icons**: Proxy mock returns `<span data-testid="icon-{name}" />` for any imported icon.
 - **API**: mock `utils/api` with `vi.fn().mockResolvedValue()`.
@@ -544,19 +455,6 @@ NEXT_PUBLIC_COGNITO_REGION=us-east-1
 │    │ scrape  │────▶│ process │────▶│  merge  │         │
 │    │   ✓     │     │   ●     │     │   ○     │         │
 │    └─────────┘     └─────────┘     └─────────┘         │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Asset Lineage
-```
-┌─────────────────────────────────────────────────────────┐
-│  📦 Assets                        🔍 Search...          │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│    🔧 scrape ────▶ 📦 raw ────▶ 📥 process             │
-│                                                         │
-│    🔧 process ───▶ 📦 processed ───▶ 🚀 feeds-dag      │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```

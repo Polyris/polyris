@@ -122,6 +122,15 @@ WAITING_STATUSES: Set[str] = {
     TaskStatus.WAITING_DECISION.value,
 }
 
+# Statuses the coordination reconciler may act on (ADR #130 §2): the task is
+# still waiting for its dependencies. Deliberately narrower than
+# WAITING_STATUSES — deps_ready, waiting_delay and waiting_decision are past
+# the dependency wait and belong to the wrapper / run_task.
+RECONCILABLE_STATUSES: Set[str] = {
+    TaskStatus.WAITING.value,
+    TaskStatus.WAITING_PAUSED.value,
+}
+
 # Statuses that show countdown in UI
 COUNTDOWN_STATUSES: Set[str] = {
     TaskStatus.DEPS_READY.value,
@@ -225,6 +234,23 @@ class ManualResolution:
     SKIP = "skip"                    # Operator skips the task — downstream unblocked, no data produced
     FAIL = "fail"                    # Operator declares the task failed
     STOP = "stop"                    # Operator stopped a running task (may be restarted later)
+
+
+class WarningKind:
+    """What a warning in the console bell is about (ADR #130 §9).
+
+    Written by the coordination Lambdas, the console, the SFN templates and the
+    generated pipeline state machines as the ``kind`` of a ``_notify_warn_`` row
+    (``records.warning_item``), and shown by the UI bell. Regenerate after a
+    change (``make generate-enums``).
+    """
+    COORDINATION = "coordination"  # a wake-up path failed, registration could not finish, or a run could not be told how its task ended
+    ZOMBIE = "zombie"              # a waiting task can no longer be woken; it was aborted
+    PUSH = "push"                  # a pipeline scheduled on an asset could not be started
+    SWEEPER = "sweeper"            # the sweeper woke a task whose wake-up hint was lost
+    NOTIFY = "notify"              # notify_dependents failed after a task finished
+    MANUAL = "manual"              # a manual action kept the task's real output instead of its marker
+    FACT = "fact"                  # a task or a manual action could not record the asset facts it owed
 
 
 # =============================================================================
@@ -415,7 +441,6 @@ class BackfillUpstream:
 # generated map.
 BACKFILL_ERROR_CODES: FrozenSet[str] = frozenset({
     "already_terminal",
-    "child_name_too_long",
     "concurrent_backfill_active",
     "granularity_override_not_allowed",
     "id_space_exhausted",

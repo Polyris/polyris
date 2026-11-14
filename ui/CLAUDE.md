@@ -179,6 +179,14 @@ const text = serializeErrorForDisplay(task.error ?? null) || 'Task execution fai
 
 ---
 
+## `wait_for` entries are assets or groups — label them with `formatWaitForEntry`
+
+The SDK writes each `wait_for` entry either as an asset (`{asset_name, freshness_hours | consecutive_days}`) or, for `wait_for=[a | b]` / `[a & b]`, as a group (`{operator, assets: [...]}`) that may nest (`polyris/generators.py` `_serialize_wait_for`). A reader that looks only for `asset_name` shows a group as "unknown" or drops it: the task modal and the waiting tooltip did so until the 1.2.0 live smoke. Name entries with `formatWaitForEntry` (`utils/formatters.ts`), and narrow with `isWaitForGroup` before reading asset-only fields.
+
+## A read the backend narrows says so in the UI
+
+When the API answers from a window or a limit, the label and the empty state name it, from a constant pinned to the backend's by a parity test. History read only the last 14 days without a pipeline or a date (`Limits.SLA_DAYS`, ADR #108) while its date filter said "All dates" and an empty list said "No runs found". `utils/historyWindow.ts` holds the window, and its test reads `SLA_DAYS` from `console_api/constants.py`.
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

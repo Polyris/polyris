@@ -347,7 +347,7 @@ setting:
 
 ### Everything else requires a Cognito bearer token (or a PAT)
 
-All other routes — pipelines, tasks, executions, backfill, settings, notifications
+All other routes — pipelines, tasks, executions, settings, notifications
 — require `Authorization: Bearer <cognito-access-token>`. PAT (Personal Access
 Token) support is available; see [ADR #65](../reference/adr-65-api-tokens-and-auth-enforcement.md).
 

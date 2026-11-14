@@ -6,10 +6,11 @@
 # `sam build` works WITHOUT `--use-container`. See ADR #65.
 rsa>=4.9
 
-# polyris SDK core — provides the DSL/partition/granularity modules the console
-# imports (e.g. polyris.partitions). Previously vendored via the
-# `console_api/polyris` symlink; now pulled as a package so the repo split works
-# (ADR #102). Pin to a release tag. For local dev, `pip install -e .` from the
-# repo root shadows this with the live core.
+# polyris SDK core — provides the modules the console imports (polyris.partitions,
+# polyris.coordination). Previously vendored via the `console_api/polyris`
+# symlink; now pulled as a package so the repo split works (ADR #102). Pin to a
+# release tag; scripts/release.sh moves it with the coordination Lambdas' pin.
+# To deploy a checkout from source, point it at the checkout instead
+# (`polyris @ file:///absolute/path/to/polyris`) and do not commit that.
 #
 polyris @ git+https://github.com/Polyris/polyris@v1.1.4

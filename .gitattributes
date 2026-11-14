@@ -1,0 +1,11 @@
+# Generated copies: GitHub collapses them in pull-request diffs. Edit the source, then
+# regenerate; CI checks every copy against its source.
+
+# polyris/constants.py → `python -m polyris.codegen.sync_enums` (make check-generate-enums)
+sam/lambdas/console_api/constants_generated.py linguist-generated=true
+ui/src/generated/** linguist-generated=true
+
+# sam/lambdas/_shared/logger.py → copied into each Lambda (make sync-loggers)
+sam/lambdas/query_subscriptions/logger.py linguist-generated=true
+sam/lambdas/console_api/logger.py linguist-generated=true
+sam/lambdas/coordination/logger.py linguist-generated=true
