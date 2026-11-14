@@ -143,7 +143,10 @@ export function useEngineHealthQuery() {
         queryFn: async (): Promise<EngineHealth> => {
             const data = await api.get('/health');
             const problems = data?.checks?.coordination?.problems;
-            return { problems: Array.isArray(problems) ? problems.map(String) : [] };
+            if (Array.isArray(problems)) return { problems: problems.map(String) };
+            // No coordination section to read: say so. "No problems" here hid the banner exactly when
+            // /api/health failed or answered 503 because DynamoDB or Step Functions was unhealthy.
+            return { problems: [`Task coordination health cannot be read: ${data?.error ?? 'no coordination section in /api/health'}`] };
         },
         staleTime: 60 * 1000,
         refetchInterval: 2 * 60 * 1000,

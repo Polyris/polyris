@@ -14,6 +14,8 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
+from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
+
 from config import (
     sfn, s3, lambda_client,
     EXECUTION_NAME_PATTERN
@@ -82,12 +84,19 @@ def is_internal_record(execution_name: str) -> bool:
     a task execution row. Missing this filter would leak input# rows into
     All Tasks / Runs listings.
 
+    DAG snapshots (``dag_snapshot::{pipeline_execution}``, written by the
+    pipeline state machine when a run starts) are internal too. They carry the
+    run's ``pipeline_execution``, so every query of a run's rows returns them:
+    unfiltered, a snapshot showed as a task without a status, and the sort of
+    /api/execution-children failed on it.
+
     All loops iterating pipeline-tokens items MUST call this and skip True results.
     """
     return (
         execution_name.startswith('_')
         or execution_name.startswith('output#')
         or execution_name.startswith('input#')
+        or execution_name.startswith(DAG_SNAPSHOT_PREFIX)
     )
 
 

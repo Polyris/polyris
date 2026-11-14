@@ -430,6 +430,7 @@ def test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_
 
 
 @defect("B-P4")
+@defect("B-RN1")
 def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
     world.inject_failure("UpdateItem", "PipelineTokensTable", "AccessDeniedException",
                          when=lambda params: "pause_token = :token" in params.get("UpdateExpression", ""))
@@ -441,6 +442,9 @@ def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
     assert world.status(run, "load") == "failed"
     assert "could not enter its pause wait" in world.row(run, "load")["error"]
     assert world.running_tasks(run) == []
+    # run_task fails without answering the run; the failure handler answers it (ADR #135).
+    # The helper_failed flag once told it not to, and the run stayed RUNNING (external review, 1.2.0).
+    assert world.pipeline_status(run) == "FAILED"
 
 
 def test_a_task_resume_could_not_check_is_woken_by_the_sweeper_without_a_miss(world):
@@ -503,6 +507,125 @@ def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world)
     row = world.row(run, "consumer")
     assert row["status"] == "aborted"
     assert "can no longer be woken" in row["error"]
+    # No wrapper is left to tell the run, so the reconciler does; it stayed RUNNING before (Z1, 1.2.0 live).
+    assert world.pipeline_status(run) == "FAILED"
+
+
+@defect("B-RN2")
+def test_a_stopped_wrapper_found_by_its_signal_ends_its_run(world):
+    """A fact wakes a task whose wrapper was stopped in the AWS console: the signal finds the token dead (Z1)."""
+    run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
+    world.stop_wrapper_externally(run, "consumer")
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    assert world.status(run, "consumer") == "aborted"
+    assert world.pipeline_status(run) == "FAILED"
+
+
+@defect("B-F3")
+def test_a_fact_that_cannot_be_recorded_reaches_the_bell(world):
+    """The work is done, so the row stays success; its fact is not, so the consumer cannot
+    start, and the bell says which asset and why. Nothing said so before (external review, 1.2.0).
+    The run ends FAILED: it did not deliver its assets (maintainer decision, 2026-11-14)."""
+    world.inject_failure("PutItem", "AssetEventsTable", "AccessDeniedException")
+    producer = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), DATE)
+    consumer = world.start_run(world.deploy(waits_for("consumer-p", [A])), DATE)
+    world.complete(producer, "build")
+    assert world.status(producer, "build") == "success"
+    assert world.status(consumer, "consumer") == "waiting"
+    [warning] = [w for w in world.warnings() if w["kind"] == "fact"]
+    assert f"asset facts ({A.name})" in warning["error"] and "AccessDeniedException" in warning["error"]
+    assert world.pipeline_status(producer) == "FAILED"
+
+
+@defect("B-U4")
+def test_the_catch_up_starts_no_run_that_a_cascade_none_backfill_completed(world):
+    """A arrives without B: no run. B then comes from a cascade='none' backfill, which starts
+    no consumer (ADR #57). The hourly catch-up replays A as of A's own time, when B did not
+    exist yet; counting the later B started exactly the run ADR #57 forbids (external review, 1.2.0)."""
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A, B]))
+    world.write_event(A, DATE)
+    world.deliver_hints()
+    backfill = world.start_run(world.deploy(pipeline("backfill_b", [("build", {"outlets": [B]})])), DATE,
+                               _suppress_asset_event=True)
+    world.complete(backfill, "build")
+    world.deliver_hints()
+    assert world.push_runs(consumer) == []
+    world.clock.advance(hours=2)
+    world.sweep()                               # the hourly catch-up replays the facts of 48 hours
+    assert world.push_runs(consumer) == []
+
+
+@defect("B-S2")
+def test_stopping_a_run_ends_its_execution(world):
+    """The console's Stop: the run's execution first, then its wrappers, then the rows. The route
+    called a repository method that never existed, answered 500 and stopped nothing, so the
+    run stayed RUNNING (external review, round 2; the same in 1.1.4)."""
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    assert world.stop_run(run)["message"] == "Execution stopped"
+    assert world.pipeline_status(run) == "ABORTED"
+    assert (world.status(run, "extract"), world.status(run, "load")) == ("stopped", "stopped")
+
+
+@defect("B-R3")
+def test_a_restart_that_cannot_start_its_wrapper_says_so_and_can_be_repeated(world):
+    """The console answered "Task restarted" while nothing started, and nothing said why
+    (external review, round 2). Now the bell names the cause, and a second restart runs the task."""
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.complete(run, "extract", status="failed")
+    world.fail_starts("DependencyWrapperSfn", "StateMachineDoesNotExist", times=1)
+    world.restart(run, "extract")
+    assert world.status(run, "extract") == "stopped"
+    [warning] = [w for w in world.warnings() if "restart could not start the task" in str(w.get("error"))]
+    assert warning["kind"] == "coordination" and "StateMachineDoesNotExist" in warning["error"]
+    world.restart(run, "extract")
+    world.complete(run, "extract")
+    assert world.status(run, "extract") == "success"
+
+
+@defect("B-RN3")
+def test_a_rule_skip_whose_run_cannot_be_told_says_so(world):
+    """The wrapper's skip answer caught every error and went on: the task was skipped, its run stayed
+    RUNNING and nothing said so (architect and break review, 1.2.0)."""
+    run = world.start_run(world.deploy(pipeline("orders", [("extract", {}), ("load", {"trigger_rule": "all_skipped"})],
+                                                [("extract", "load")])), DATE)
+    world.fail_signals("AccessDeniedException", times=3,         # the skip answer and its two retries
+                       when=lambda call: '"status":"skipped"' in call.get("output", ""))
+    world.complete(run, "extract")                              # all_skipped can no longer hold: a rule skip
+    assert world.status(run, "load") == "skipped"
+    [warning] = [w for w in world.warnings() if "run could not be told" in str(w.get("error"))]
+    assert warning["kind"] == "coordination" and "AccessDeniedException" in warning["error"]
+
+
+@defect("B-RN4")
+@pytest.mark.parametrize("action,status,call", [
+    ("skip", "skipped", "send_task_success"),
+    ("mark_success", "success", "send_task_success"),
+    ("fail_task", "failed", "send_task_failure"),
+    ("stop_task", "aborted", "send_task_failure"),
+])
+def test_a_console_action_whose_run_cannot_be_told_says_so(world, action, status, call):
+    """The console answers the run itself. Stop logged a failed answer and the others answered 500
+    after the row had changed, which no retry could repeat; the run stayed RUNNING (architect review)."""
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)    # load waits for extract
+    world.fail_signals("AccessDeniedException", times=1, call=call)
+    getattr(world, action)(run, "load")
+    assert world.status(run, "load") == status
+    [warning] = [w for w in world.warnings() if "run could not be told" in str(w.get("error"))]
+    assert "AccessDeniedException" in warning["error"] and "states:SendTask" in warning["error"]
+
+
+@defect("B-M3")
+def test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers(world):
+    """A cascade='none' backfill starts no consumer of its facts (ADR #57); marking one of its tasks
+    successful recorded the facts with cascade='auto', which did (external review, 1.2.0)."""
+    consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
+    backfill = world.start_run(world.deploy(pipeline("backfill_a", [("build", {"outlets": [A]})])), DATE,
+                               _suppress_asset_event=True)
+    world.complete(backfill, "build", status="failed")
+    world.mark_success(backfill, "build")
+    world.deliver_hints()
+    assert world.push_runs(consumer) == []
 
 
 def test_a_push_start_that_failed_transiently_is_retried_by_the_sweeper(world):

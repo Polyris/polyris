@@ -611,7 +611,7 @@ A producer task records one fact per outlet when it succeeds, in the `asset-even
 | `granularity` | `daily` | the asset's declared [granularity](#granularity) |
 | `source_dag`, `source_task` | `acme-daily`, `process_data` | the producer |
 
-Marking a producer task successful in the console records its outlets' facts too, dated by the task's run, not by the day you mark it. If a fact cannot be recorded, the task still becomes successful, and the bell shows a warning for that asset; tasks waiting on it keep waiting until you restart the task.
+Marking a producer task successful in the console records its outlets' facts too, dated by the task's run, not by the day you mark it, with the run's cascade: a task of a `cascade='none'` backfill starts no pipeline this way either. If a fact cannot be recorded, the task still becomes successful, and the bell shows a warning for that asset; tasks waiting on it keep waiting until you restart the task. When a task succeeds on its own but its facts cannot be recorded, the bell shows a `fact` warning that names the assets and the cause, and the run ends `FAILED`, since it did not deliver its assets; the task itself stays successful. Restart it once the cause is fixed.
 
 A fact that no reader can place on a partition (for example, one recorded by an older version for a run date such as `latest`) counts for no task, and the bell shows a warning for it.
 

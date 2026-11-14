@@ -163,7 +163,7 @@ class World:
         self._sweeper = self.bindings.sweeper()
         self._producers: Dict[str, Pipeline] = {}
         self._stream = StreamAdapter(self.stack)
-        #: ADR #130 invariants 1, 3, 4, 5, checked each time the stack settles (invariants.py).
+        #: ADR #130 invariants 1, 3, 4, 5 and 10, checked each time the stack settles (invariants.py).
         self.invariants = Invariants(ddb_client, self.runtime, self.stack.tables)
 
     def close(self) -> None:
@@ -346,6 +346,10 @@ class World:
     def restart(self, run: Run, task: str) -> None:
         self._task_action("/api/task-restart", run, task)
 
+    def stop_run(self, run: Run) -> Dict[str, Any]:
+        """The console's Stop of a whole run."""
+        return self._call_console("/api/execution-stop", query={"pipeline_execution": run.name})
+
     def sweep(self) -> None:
         """One scheduled run of the sweeper, at the clock's current time."""
         self._sweeper({}, None)
@@ -356,6 +360,14 @@ class World:
 
     def skip(self, run: Run, task: str) -> None:
         self._task_action("/api/task-skip", run, task)
+
+    def fail_task(self, run: Run, task: str) -> None:
+        """The console's Fail of one task."""
+        self._task_action("/api/task-fail", run, task)
+
+    def stop_task(self, run: Run, task: str) -> None:
+        """The console's Stop of one task: a waiting task ends `aborted`, a running one `stopped`."""
+        self._task_action("/api/task-stop", run, task)
 
     def push_runs(self, pipeline: Pipeline) -> List[Run]:
         """Runs of `pipeline` that a fact started (AssetFanout's push), oldest first."""
@@ -405,32 +417,36 @@ class World:
                 client.meta.events.register(f"after-call.dynamodb.{operation}", fail_answer)
 
     def fail_starts(self, target: Union[Pipeline, str], code: str, *, times: int) -> None:
-        """The next `times` StartExecution calls for `target` fail with `code` (e.g. throttling).
+        """The next `times` starts of `target` fail with `code` (e.g. throttling): a Lambda's
+        StartExecution and a state machine's `states:startExecution` integration alike.
 
         `target` is a deployed pipeline, or a platform state machine's logical id.
         """
         arn = target.arn if isinstance(target, Pipeline) else self.stack.machine_arn(target)
-        runtime, real, left = self.runtime, self.runtime.start_execution, [times]
+        runtime, real, left = self.runtime, self.runtime._start, [times]
 
-        def start_execution(**kwargs: Any) -> Dict[str, Any]:
-            if kwargs.get("stateMachineArn") == arn and left[0] > 0:
+        def _start(machine_arn: str, name: Optional[str], payload: Any) -> Any:
+            if machine_arn == arn and left[0] > 0:
                 left[0] -= 1
                 raise client_error(code, "StartExecution", f"{code} (injected)")
-            return real(**kwargs)
+            return real(machine_arn, name, payload)
 
-        runtime.start_execution = start_execution
+        runtime._start = _start  # type: ignore[method-assign]
 
-    def fail_signals(self, code: str, *, times: int) -> None:
-        """The next `times` SendTaskSuccess calls, from any caller, fail with `code` (e.g. throttling)."""
-        runtime, real, left = self.runtime, self.runtime.send_task_success, [times]
+    def fail_signals(self, code: str, *, times: int, call: str = "send_task_success",
+                     when: Optional[Callable[[Dict[str, Any]], bool]] = None) -> None:
+        """The next `times` SendTaskSuccess calls (or `call="send_task_failure"`), from any caller,
+        fail with `code` (e.g. throttling); `when` narrows it to calls whose arguments match."""
+        runtime, real, left = self.runtime, getattr(self.runtime, call), [times]
+        operation = "".join(part.title() for part in call.split("_"))
 
-        def send_task_success(**kwargs: Any) -> Dict[str, Any]:
-            if left[0] > 0:
+        def send(**kwargs: Any) -> Dict[str, Any]:
+            if left[0] > 0 and (when is None or when(kwargs)):
                 left[0] -= 1
-                raise client_error(code, "SendTaskSuccess", f"{code} (injected)")
+                raise client_error(code, operation, f"{code} (injected)")
             return real(**kwargs)
 
-        runtime.send_task_success = send_task_success
+        setattr(runtime, call, send)
 
     def fail_stops(self, code: str, *, times: int) -> None:
         """The next `times` StopExecution calls fail with `code`, as a throttled stop would."""

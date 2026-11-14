@@ -152,3 +152,25 @@ def test_a_report_that_cannot_be_read_is_unhealthy(tokens, mocker):
                         side_effect=ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "GetItem"))
     _, body = _health(mocker, tokens)
     assert body["checks"]["coordination"]["status"] == "unhealthy"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("checked_at", "yesterday"),
+    ("checked_at", "2026-11-12T05:58:00"),          # no timezone
+    ("oldest_overdue", "soon"),
+    ("push_retry_backlog", "many"),
+    ("failed_steps", 5),
+])
+def test_a_report_that_cannot_be_judged_is_unhealthy_and_the_api_still_answers(tokens, mocker, field, value):
+    """Each of these failed all of /api/health with a 500, which the console reads as no problems
+    (external review, round 2)."""
+    report = {"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
+              "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""}
+    tokens.put_item(Item={**report, field: value})
+
+    status, body = _health(mocker, tokens)
+
+    assert (status, body["status"]) == (200, "degraded")
+    coordination = body["checks"]["coordination"]
+    assert coordination["status"] == "unhealthy"
+    assert coordination["problems"][0].startswith("The engine health row cannot be read")

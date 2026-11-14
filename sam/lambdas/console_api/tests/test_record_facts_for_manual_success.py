@@ -15,7 +15,7 @@ _OUTLETS = [
 
 def _call(events_repo, outlets=_OUTLETS):
     return record_facts_for_manual_success(outlets=outlets, task_name="extract", pipeline_name="orders-clean",
-                                    partition_key="2026-11-10", events_repo=events_repo)
+                                           partition_key="2026-11-10", events_repo=events_repo, cascade="auto")
 
 
 def test_records_one_fact_per_outlet_for_the_marked_partition(mocker):

@@ -35,7 +35,8 @@ class Signals:
         return ACCEPTED
 
     def fail(self, token: str, cause: str) -> str:
-        """Fail the wrapper's wait with CoordinationError. Returns ACCEPTED or DEAD."""
+        """Fail a wait with CoordinationError: a wrapper's wait for its dependencies, or a
+        run's wait for a task the reconciler closed (ADR #135). Returns ACCEPTED or DEAD."""
         try:
             self.client.send_task_failure(
                 taskToken=token, error=COORDINATION_ERROR, cause=cause[:_CAUSE_LIMIT]

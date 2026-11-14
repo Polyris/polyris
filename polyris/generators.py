@@ -25,6 +25,7 @@ from .steps import (
 )
 from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
+from .coordination.records import DAG_SNAPSHOT_PREFIX
 from .coordination.run_name import MAX_NAME, fit_task_id
 from .partitions import MAX_PARTITION_KEY_LENGTH
 
@@ -1469,7 +1470,7 @@ def _build_registration_chain(
         "Arguments": {
             "TableName": tokens_table,
             "Item": {
-                "execution_name": {"S": "{% 'dag_snapshot::' & $states.context.Execution.Name %}"},
+                "execution_name": {"S": f"{{% '{DAG_SNAPSHOT_PREFIX}' & $states.context.Execution.Name %}}"},
                 "pipeline_name": {"S": dag.dag_id},
                 "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
                 "dag": {"S": json.dumps(dag_metadata)},

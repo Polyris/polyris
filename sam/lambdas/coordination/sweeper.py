@@ -262,20 +262,28 @@ class Sweeper:
             if row is None:
                 continue                # done meanwhile
             counts["push_retried"] += 1
-            consumer, name = str(row.get("consumer", "")), str(row["run_name"])
-            if now - parse_utc(str(row["first_failed_at"])) >= sweep.PUSH_RETRY_WINDOW:
+            try:
+                consumer, name = str(row.get("consumer", "")), str(row["run_name"])
+                first_failed_at = parse_utc(str(row["first_failed_at"]))
+                sfn_arn, run_input = str(row["sfn_arn"]), str(row["run_input"])
+                attempts = int(row.get("attempts", 0))
+            except (KeyError, TypeError, ValueError) as exc:
+                # One unreadable row must not stop the retries behind it, run after run (Principle #51).
+                self._unreadable_retry(row, exc)
+                counts["push_given_up"] += 1
+                continue
+            if now - first_failed_at >= sweep.PUSH_RETRY_WINDOW:
                 self._push_warning(row, f"push consumer {consumer} could not be started for 24 hours, "
                                         f"so the sweeper gave up; last error: {row.get('error', '')}")
                 self._drop(row)
                 counts["push_given_up"] += 1
                 continue
             try:
-                self.reconciler.signals.client.start_execution(
-                    stateMachineArn=str(row["sfn_arn"]), name=name, input=str(row["run_input"]))
+                self.reconciler.signals.client.start_execution(stateMachineArn=sfn_arn, name=name, input=run_input)
             except (ClientError, BotoCoreError) as exc:
                 if error_code(exc) != "ExecutionAlreadyExists":
                     if is_transient(exc):
-                        self._retry_again(row, now, f"{type(exc).__name__}: {exc}")
+                        self._retry_again(row, now, attempts, f"{type(exc).__name__}: {exc}")
                     else:
                         self._push_warning(row, f"push consumer {consumer} could not be started: "
                                                 f"{type(exc).__name__}: {exc}")
@@ -285,8 +293,8 @@ class Sweeper:
             self._drop(row)
         return counts
 
-    def _retry_again(self, row: Dict[str, Any], now: datetime, error: str) -> None:
-        attempts = int(row.get("attempts", 0)) + 1
+    def _retry_again(self, row: Dict[str, Any], now: datetime, attempts: int, error: str) -> None:
+        attempts += 1
         try:
             self.tasks.table.update_item(
                 Key={"execution_name": row["execution_name"]},
@@ -305,7 +313,19 @@ class Sweeper:
             self.tasks.table.delete_item(Key={"execution_name": row["execution_name"]})
         except (ClientError, BotoCoreError) as exc:
             # A leftover row is retried again: its start is idempotent (deterministic name).
-            log.error("sweeper", "could not delete the push retry row", run_name=row["run_name"], error=str(exc))
+            log.error("sweeper", "could not delete the push retry row", execution_name=row["execution_name"],
+                      error=str(exc))
+
+    def _unreadable_retry(self, row: Dict[str, Any], exc: Exception) -> None:
+        """Drop a push retry row that cannot be read, and say so: it can never be retried."""
+        name = str(row["execution_name"])
+        log.error("sweeper", "a push retry row cannot be read; dropped", execution_name=name, error=str(exc))
+        self._put_warning(warning_item(
+            kind="push", execution_name=f"push:{name}", task_name="", pipeline_name=str(row.get("consumer", "")),
+            pipeline_execution="", task_date="", now=self.reconciler.clock(),
+            error=f"A failed push start ({name}) cannot be retried, because its retry row cannot be read: "
+                  f"{type(exc).__name__}: {exc}. Start the pipeline from the console if it should run."))
+        self._drop(row)
 
     def _push_warning(self, row: Dict[str, Any], error: str) -> None:
         self._put_warning(warning_item(kind="push", execution_name=f"push:{row['run_name']}", task_name="",

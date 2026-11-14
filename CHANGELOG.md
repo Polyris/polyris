@@ -37,9 +37,46 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 - If `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse, or a `config.py` it found does not parse or fails when run, `polyris-deploy` stops with the reason before any AWS call. Before, it went on without the config: with the default AWS credentials, so a deploy could reach another account.
 - The deploy target shows the config file it used and the AWS account the credentials reach.
 
-### Fixed — a run ends when a task fails before it starts
+### Fixed — a run ends when its task ends (ADR #135)
 
-- When a task's wait for its dependencies timed out, or coordination failed it, the task became `failed` but its run never heard: the failure handler skipped the run's callback whenever the input had no `helper_failed` field, which is every path but one. The console showed the run failed while its Step Functions execution stayed `RUNNING`, and a pipeline stack with such runs could not be deleted. The run now ends `FAILED`.
+- A task could end without its run hearing of it. The console then showed the task ended while the run's Step Functions execution stayed `RUNNING` until it timed out waiting for that task, and a pipeline stack with such runs could not be deleted. It happened when:
+  - a task's wait for its dependencies timed out, or coordination failed the task;
+  - a paused task's pause could not be saved;
+  - a waiting task's wrapper was stopped in the AWS console;
+  - the run could not be told of a skip, by the wrapper or from the console, or of a console Fail, Mark Successful or Stop.
+
+  Whoever ends a task now answers its run: the failure handler whenever the wrapper fails, the reconciler when it closes a task whose wrapper is gone, the wrapper when it skips a task, the console when you act on one. If the run cannot be told, a `coordination` warning in the bell says so. A console action whose run cannot be told still succeeds; before, Skip, Fail and Mark Successful answered 500 although the task's status had changed.
+
+### Fixed — a fact that cannot be recorded reaches the bell
+
+- A task could succeed while its outlets' facts were not recorded, for example under an IAM policy without `dynamodb:PutItem` on `asset-events`. The tasks waiting for those assets then never started, and nothing said why. A `fact` warning now names the assets and the cause. The task stays successful, since its work is done, and its run ends `FAILED`, since it did not deliver its assets. Once you fix the cause, restart the task to record them.
+
+### Fixed — the hourly catch-up starts nothing that a `cascade='none'` backfill completed
+
+- The hourly catch-up could start a pipeline scheduled on several assets when the last of them came from a backfill with `cascade='none'` (ADR #57). A push now counts only the facts recorded by the time of the fact that triggered it, so the catch-up gives the same answer as the stream.
+
+### Fixed — Mark Successful keeps a backfill's cascade
+
+- Marking a task of a `cascade='none'` or `cascade='all'` backfill successful recorded its facts with `cascade='auto'`, which could start the pipelines scheduled on them. The facts now get the run's own cascade.
+
+### Fixed — Stop ends the run
+
+- The console's Stop marked a run's tasks `stopped`, but `/api/execution-stop` answered 500 and stopped nothing else, so the run's Step Functions execution went on `RUNNING`. The route now stops the execution, its wrappers and its tasks, and the console shows an error when a stop does not complete. The API reference, TROUBLESHOOTING and the console's API help named the wrong parameters: Stop takes `pipeline_execution`, and pause, resume and the run's tasks take the run's ID, not an ARN.
+
+### Fixed — a restart that cannot start says so
+
+- When a restart stopped the old wrapper and then failed to take the row over or to start the new wrapper, the console still said "Task restarted", the task did not run, and nothing said why. A `coordination` warning now names the cause; restart the task again once it is fixed.
+- Restarting a task registered before 1.2 keeps its `wait_for` from the task row. Before, such a task started at once, without waiting for its assets.
+
+### Fixed — `/api/health` and the run's task list
+
+- An engine health row that cannot be judged (a value no writer produces) failed all of `/api/health` with a 500. The check now reports the row as unreadable.
+- The console's coordination banner read a failed `/api/health`, including the 503 it answers when DynamoDB or Step Functions is unhealthy, as "no problems". It now says that coordination health cannot be read.
+- `/api/execution-children` returned an empty list for every run, and the pipeline status counted one task too many: the run's DAG snapshot row was read as a task. The route now answers 500 when it fails, instead of an empty list.
+
+### Fixed — an unreadable push retry stops no other
+
+- The sweeper read the push retry rows in order, and one it could not read stopped every retry behind it, on every run. Such a row is now dropped with a `push` warning, and the other retries go on.
 
 ### Fixed — a pipeline's card shows its latest run
 
@@ -149,8 +186,8 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 
 ### Changed — asset-scheduled pipelines start from facts (ADR #130 §6.1)
 
-- `asset-fanout` now also starts the pipelines scheduled on an asset (`schedule=[...]`). For each new fact it evaluates the consumer's whole schedule for the fact's partition, with the same rule as `wait_for`; `.within(...)` is judged as of the fact's time, so a late or repeated event gives the same answer.
-- An AND schedule starts one run per date; an OR schedule one run per event. Runs get deterministic names, so a repeated event never starts a second run. A pipeline never triggers itself.
+- `asset-fanout` now also starts the pipelines scheduled on an asset (`schedule=[...]`). For each new fact it evaluates the consumer's whole schedule for the fact's partition, with the same rule as `wait_for`, as it stood when the fact was recorded: `.within(...)` is judged as of the fact's time and later facts do not count, so a late or repeated event gives the same answer.
+- As before, an AND schedule starts one run per date and an OR schedule one run per event: a producer that records several facts a day starts an AND consumer once that day, and `AssetAny([asset])` starts it for every fact. Runs get deterministic names, so a repeated event never starts a second run. A pipeline never triggers itself.
 - A consumer that cannot be started never affects the producer or the other consumers: a transient failure leaves a retry row, anything else a warning.
 - `run_task` and Mark Successful no longer start consumers themselves; Mark Successful only records the facts.
 

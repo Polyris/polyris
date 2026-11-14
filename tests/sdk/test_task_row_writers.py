@@ -111,6 +111,7 @@ CODE_WRITERS = {
     ("console_api/routes/tasks.py", "_write_notify_warning"): "warning rows",
     ("console_api/routes/tasks.py", "_emit_marker_blocked_warn"): "warning rows",
     ("console_api/routes/tasks.py", "_warn_fact_not_recorded"): "warning rows",
+    ("console_api/routes/tasks.py", "answer_run"): "warning rows",
     ("console_api/routes/tasks.py", "_write_synthetic_output_marker"): "the output# row",
 }
 

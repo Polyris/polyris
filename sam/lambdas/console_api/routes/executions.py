@@ -358,8 +358,9 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
                 'finished_at': item.get('finished_at')
             })
         
-        # Sort by started_at
-        children.sort(key=lambda x: x.get('started_at', ''))
+        # Sort by started_at; a row without one sorts first instead of failing the sort,
+        # which the catch below turned into an empty list for every run.
+        children.sort(key=lambda x: x.get('started_at') or '')
         
         return cors_response(200, {
             'pipeline_execution': execution_name,
@@ -368,12 +369,9 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
         })
     
     except Exception as e:
+        # An empty list here once hid, for every run, a row the sort could not compare.
         log.error("get_execution_children", "Error getting children", error=str(e), execution_name=execution_name)
-        return cors_response(200, {
-            'pipeline_execution': execution_name,
-            'children': [],
-            'count': 0
-        })
+        return cors_response(500, {'error': f'Failed to read the run\'s tasks: {e}'})
 
 
 def get_execution_parent(execution_name: str, event: Dict) -> Dict:
@@ -475,7 +473,8 @@ def stop_execution(pipeline_execution: str, event: Dict) -> Dict:
             None,
         )
         if pipeline_name:
-            sfn_arn = pipelines_repo.get_sfn_arn(pipeline_name)
+            # The registry row's sfn_arn, which the pipeline's own registration writes.
+            sfn_arn = (pipelines_repo.get(pipeline_name) or {}).get('sfn_arn')
             if sfn_arn:
                 pipeline_exec_arn = sfn_arn.replace(':stateMachine:', ':execution:') + ':' + pipeline_execution
                 _sfn_stop(pipeline_exec_arn, context='pipeline')
@@ -594,14 +593,11 @@ def pause_execution(pipeline_execution: str, event: Dict) -> Dict:
 
 
 def get_paused_tasks_with_token(pipeline_execution: str) -> List[Dict]:
-    """
-    Get all tasks that are waiting_paused and have ANY token (pause_token OR wait_token).
+    """The run's waiting_paused rows that hold a token, of either kind (ADR #130 §2):
 
-    There are TWO types of paused tasks:
-    1. pause_token: Task was ready to run but pipeline was paused (from pause_waiter)
-    2. wait_token: Dependencies became ready but pipeline was paused (from notify_dependents)
-
-    Both need to be resumed!
+    1. pause_token: run_task holds the task at its start, in its pause wait.
+    2. wait_token only: the task waits for its dependencies, and the reconciler
+       parked it because its run is paused; its dependency wait is still open.
     """
     all_items = executions_repo.query_by_pipeline_execution(pipeline_execution)
 
@@ -707,9 +703,10 @@ def extend_pause(pipeline_execution: str, event: Dict) -> Dict:
     """
     Extend pause timeout by 12 hours. Sends heartbeat to all paused tasks.
 
-    NOTE: Only sends heartbeat for tasks with pause_token (from pause_waiter).
-    Tasks with only wait_token (from notify_dependents) cannot receive heartbeat
-    because their Wait_For_Dependencies state has a fixed timeout.
+    Only a task held in run_task's pause wait (it has a pause_token) takes a
+    heartbeat. A task the reconciler parked while it waits for its dependencies
+    has only its wait_token: Wait_For_Dependencies has a fixed timeout and no
+    heartbeat, so it is reported as skipped.
     """
     try:
         paused_tasks = get_paused_tasks_with_token(pipeline_execution)

@@ -441,6 +441,33 @@ def test_a_due_push_retry_starts_the_run_and_drops_its_row(make, tokens, sfn, cl
     assert "Item" not in tokens.get_item(Key={"execution_name": row})
 
 
+@pytest.mark.parametrize("broken", [{"run_name": None}, {"first_failed_at": "yesterday"}, {"sfn_arn": None},
+                                    {"attempts": "many"}])
+def test_an_unreadable_retry_row_is_dropped_with_a_warning_and_the_rest_go_on(make, tokens, sfn, clock, broken):
+    """Principle #51: it was read first on every run, and its KeyError stopped every retry behind it."""
+    from polyris.coordination.records import push_retry_item
+
+    bad = push_retry_item(run_name="pushed-2026-11-11-and-00000000", consumer="pushed", sfn_arn=PUSHED_ARN,
+                          run_input="{}", error="ThrottlingException", now=clock.now - timedelta(hours=1))
+    bad[att.DUE] = format_utc(clock.now - timedelta(minutes=5))          # due before the good one
+    for field, value in broken.items():
+        if value is None:
+            del bad[field]
+        else:
+            bad[field] = value
+    tokens.put_item(Item=bad)
+    good = _retry_row(tokens, clock)
+
+    result = make().run()
+
+    assert (result["push_retried"], result["push_started"], result["push_given_up"]) == (2, 1, 1)
+    assert [s["name"] for s in sfn.started] == [RUN_NAME]
+    assert "Item" not in tokens.get_item(Key={"execution_name": bad["execution_name"]})
+    assert "Item" not in tokens.get_item(Key={"execution_name": good})
+    [warning] = _warnings(tokens, "push")
+    assert "cannot be read" in warning["error"]
+
+
 def test_a_run_started_meanwhile_counts_as_started(make, tokens, sfn, clock):
     row = _retry_row(tokens, clock)
     sfn.started.append({"arn": PUSHED_ARN, "name": RUN_NAME, "input": {}})

@@ -112,3 +112,18 @@ def test_outlets_that_cannot_be_read_are_a_warning_too(tables, mocker, registry,
     write.assert_not_called()
     warning = _warning(tables, "*")
     assert warning["error"].startswith("Marked successful, but no fact was recorded: its outlets are unknown")
+
+
+@pytest.mark.parametrize("starter_input,cascade", [
+    (json.dumps({"_suppress_asset_event": True}), "none"),    # a cascade='none' backfill (ADR #57)
+    (json.dumps({"cascade_all": True}), "all"),
+    (json.dumps({"task_name": "extract"}), "auto"),
+    ("", "auto"),                                              # a row from before 1.2
+    ("{not json", "auto"),
+])
+def test_mark_successful_records_the_facts_with_the_run_s_cascade(tables, mocker, starter_input, cascade):
+    from routes import tasks
+
+    write_fact = mocker.patch.object(tasks.asset_events_repo, "write_fact")
+    tasks.record_manual_success_facts({**ITEM, "starter_input": starter_input}, "extract")
+    assert {c.kwargs["cascade"] for c in write_fact.call_args_list} == {cascade}

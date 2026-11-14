@@ -22,6 +22,9 @@ WARNING_TTL = timedelta(days=8)
 WARNING_PREFIX = "_notify_warn_"
 
 RETRY_PUSH_PREFIX = "_retry_push_"
+#: The key prefix of a run's DAG snapshot row, which the generated pipeline state machine writes
+#: (``generators._build_registration_chain``) and the console reads; it is an internal row.
+DAG_SNAPSHOT_PREFIX = "dag_snapshot::"
 #: A push retry row lives a week; the sweeper gives up on it after a day (ADR #130 §7).
 RETRY_TTL = timedelta(days=7)
 
@@ -104,6 +107,20 @@ def push_retry_item(
         att.DUE: format_utc(next_push_retry(now, 0)),
         "ttl": int((now + RETRY_TTL).timestamp()),
     }
+
+
+def cascade_of(run_input: Mapping[str, Any]) -> str:
+    """The cascade of the facts a run records, from the flags its backfill started it with (ADR #57).
+
+    run_task's Emit_Asset_Events computes the same in JSONata, and the console
+    uses this for Mark Successful; a parity test compares them. A suppressed
+    run wins over one that cascades to all.
+    """
+    if run_input.get("_suppress_asset_event") is True:
+        return "none"
+    if run_input.get("cascade_all") is True:
+        return "all"
+    return "auto"
 
 
 def asset_fact_item(

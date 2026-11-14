@@ -251,6 +251,31 @@ def test_a_zombie_is_aborted_loudly(reconciler, tokens, sfn, wrapper_status):
     assert stored["status"] == "aborted" and att.KEY not in stored
     assert "can no longer be woken" in stored["error"]
     assert warning(tokens, "zombie")[att.KEY].startswith("warn#")
+    # No wrapper is left to tell the run, so the reconciler does (ADR #135, Z1).
+    assert [(f["token"], f["error"]) for f in sfn.failed] == [("orchestration-load", "CoordinationError")]
+    assert sfn.failed[0]["cause"].startswith("The task was aborted: the wrapper execution is")
+
+
+def test_a_zombie_whose_run_cannot_be_told_says_so(reconciler, tokens, sfn):
+    _dead(tokens, sfn, "ABORTED")
+    sfn.errors["send_task_failure"] = client_error("AccessDeniedException")
+    assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "aborted"
+    assert row(tokens)["status"] == "aborted"
+    error = warning(tokens, "coordination")["error"]
+    assert "stays RUNNING until you stop it" in error and "AccessDeniedException" in error
+
+
+def test_a_zombie_whose_run_already_ended_needs_no_warning(reconciler, tokens, sfn):
+    _dead(tokens, sfn, "ABORTED")
+    sfn.dead_tokens.add("orchestration-load")           # the run was stopped, or already told
+    assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "aborted"
+    assert warning(tokens, "coordination") is None and sfn.failed == []
+
+
+def test_a_zombie_outside_a_run_tells_no_run(reconciler, tokens, sfn):
+    _dead(tokens, sfn, "ABORTED", orchestration_token="")
+    assert reconciler.reconcile(LOAD, source="sweeper")["action"] == "aborted"
+    assert sfn.failed == [] and warning(tokens, "coordination") is None
 
 
 def test_a_wrapper_that_is_not_visible_yet_is_not_taken_for_gone(reconciler, tokens, sfn):

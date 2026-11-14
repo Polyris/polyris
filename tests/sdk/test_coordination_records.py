@@ -213,3 +213,16 @@ class TestPushRetryItem:
         args[missing] = " "
         with pytest.raises(ValueError):
             push_retry_item(**args)
+
+
+@pytest.mark.parametrize("run_input,cascade", [
+    ({}, "auto"),
+    ({"_suppress_asset_event": False, "cascade_all": False}, "auto"),
+    ({"_suppress_asset_event": True}, "none"),
+    ({"cascade_all": True}, "all"),
+    ({"_suppress_asset_event": True, "cascade_all": True}, "none"),     # suppressing wins
+    ({"_suppress_asset_event": "true"}, "auto"),                         # only a real true counts, as in JSONata
+])
+def test_the_cascade_of_a_run_follows_its_backfill_flags(run_input, cascade):
+    from polyris.coordination.records import cascade_of
+    assert cascade_of(run_input) == cascade

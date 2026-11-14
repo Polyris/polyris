@@ -1,4 +1,5 @@
-"""Defects ADR #130 fixes, by id (the ADR's Context table).
+"""Defects ADR #130 fixes, by id (the ADR's Context table); B-D1 is ADR #133's, and the ids from
+B-RN1 on come from the external review of 1.2.0 (ADR #135 and the CHANGELOG's Fixed entries).
 
 Every id needs a scenario marked `@pytest.mark.defect(id)`, and, once that
 scenario is bound, a mutation probe in probes.py that re-introduces the
@@ -6,6 +7,18 @@ defect in the new code and makes the scenario fail. test_meta.py checks both.
 """
 
 DEFECTS = {
+    "B-RN1": "A task fails before run_task answers its run (a pause token that cannot be saved): the failure "
+             "handler skips the answer on helper_failed, and the run stays RUNNING",
+    "B-RN2": "The reconciler aborts a task whose wrapper is gone without telling its run: the run stays RUNNING",
+    "B-RN3": "The wrapper's skip answer swallows a failed answer: the task is skipped, the run stays RUNNING, nothing says why",
+    "B-RN4": "A console action swallows a failed answer to the run (Stop), or answers 500 after the row has changed",
+    "B-F3": "run_task cannot record a fact after the task succeeded: the consumers hang and nothing says why",
+    "B-U4": "The hourly catch-up counts a fact recorded after the one it replays: a cascade='none' backfill "
+            "completes an AND consumer",
+    "B-S2": "The console's Stop of a run calls a repository method that does not exist: 500, and the run stays RUNNING",
+    "B-R3": "A restart that cannot take the row over or start the new wrapper leaves no trace, though the console "
+            "says the task was restarted",
+    "B-M3": "Mark Successful records a backfill's facts with cascade='auto': a cascade='none' backfill starts consumers",
     "B-P1": "Asset arrives during a pause: subscription deleted, status stays waiting, resume ignores it, hang",
     "B-P2": "Task deps finish during a pause, assets missing: resume runs the task without its assets",
     "B-P3": "A task saves its pause token while resume runs: resume misses it, it waits for its 12-hour heartbeat",

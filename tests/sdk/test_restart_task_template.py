@@ -98,15 +98,20 @@ def test_without_a_current_deploy_the_original_task_config_and_outlets_stay(rest
     assert replayed["outlets"] == starter_input["outlets"]
 
 
-def test_a_row_without_starter_input_restarts_from_its_saved_fields_with_a_warning(restart):
+def test_a_row_without_starter_input_restarts_from_its_saved_fields_with_a_warning(restart, starter_input):
     assert restart["Hand_Over_Ownership"]["Next"] == "Check_Starter_Input"
     assert restart["Check_Starter_Input"]["Default"] == "Warn_Restart_Without_Starter_Input"
     assert restart["Warn_Restart_Without_Starter_Input"]["Next"] == "Start_New_Wrapper"
     assert all(c["Next"] == "Start_New_Wrapper" for c in restart["Warn_Restart_Without_Starter_Input"]["Catch"])
 
-    replayed = _restart_input(restart, _row())
+    row = _row()
+    row["wait_for"] = {"S": json.dumps(starter_input["wait_for"])}     # 1.1.4's registration saved it too
+    replayed = _restart_input(restart, row)
 
     assert (replayed["task_name"], replayed["dependencies"], replayed["date"]) == ("load", ["extract"], "2026-11-12")
+    # Without it a restarted pre-upgrade task ran at once, without its assets (external review, round 2).
+    assert replayed["wait_for"] == starter_input["wait_for"]
+    assert _restart_input(restart, _row())["wait_for"] == []
 
 
 def test_the_restart_warning_has_the_shape_of_warning_item(restart):
@@ -126,3 +131,25 @@ def test_an_empty_starter_input_is_a_legacy_row_too(restart):
     assert evaluate(choice["Condition"], input={"item": row}) is False
     replayed = _restart_input(restart, row)
     assert (replayed["task_name"], replayed["dependencies"], replayed["date"]) == ("load", ["extract"], "2026-11-12")
+
+
+@pytest.mark.parametrize("state", ["Hand_Over_Ownership", "Start_New_Wrapper"])
+def test_a_restart_that_fails_says_so_in_the_bell_and_fails(restart, state):
+    """Both run after the old wrapper was stopped: a failure there left no trace while the console
+    answered "Task restarted" (external review, round 2)."""
+    [catch] = restart[state]["Catch"]
+    assert (catch["ErrorEquals"], catch["Next"]) == (["States.ALL"], "Warn_Restart_Failed")
+    warn = restart["Warn_Restart_Failed"]
+    assert warn["Next"] == "Restart_Failed" and all(c["Next"] == "Restart_Failed" for c in warn["Catch"])
+    assert restart["Restart_Failed"]["Type"] == "Fail"
+
+
+def test_the_failed_restart_warning_has_the_shape_of_warning_item(restart):
+    console = {"item": _row(), "execution_name": EXECUTION,
+               "restart_error": {"Error": "StepFunctions.ExecutionLimitExceeded", "Cause": "too many"}}
+    written = plain(evaluate(restart["Warn_Restart_Failed"]["Arguments"]["Item"], input=console))
+    expected = warning_item(kind="coordination", execution_name=EXECUTION, task_name="load", pipeline_name="orders",
+                            pipeline_execution=RUN, task_date="2026-11-12", error=written["error"], now=NOW)
+    assert written == expected
+    assert "restart could not start the task" in written["error"]
+    assert "StepFunctions.ExecutionLimitExceeded" in written["error"] and "Restart it again" in written["error"]

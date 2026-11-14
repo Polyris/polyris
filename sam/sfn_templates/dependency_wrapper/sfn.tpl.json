@@ -246,14 +246,117 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "Sfn.TaskTimedOutException",
+            "Sfn.InvalidTokenException",
+            "Sfn.TaskDoesNotExistException"
+          ],
+          "Comment": "The token is closed: the run ended. The codes are polyris.coordination.wake.DEAD_TOKEN_CODES; a parity test compares them.",
+          "Output": "{% $states.input %}",
+          "Next": "Done"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
-          "Comment": "Token expired or invalid - continue anyway",
+          "Comment": "Any other error leaves the run RUNNING: say so in the bell (ADR #135).",
+          "Output": "{% $states.input ~> |$| {'callback_error': $states.errorOutput} | %}",
+          "Next": "Warn_Run_Left_Running"
+        }
+      ],
+      "Next": "Done",
+      "Output": "{% $states.input %}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sfn.TaskTimedOutException",
+            "Sfn.InvalidTokenException",
+            "Sfn.TaskDoesNotExistException"
+          ],
+          "Comment": "A closed token is final: no retry.",
+          "MaxAttempts": 0
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Warn_Run_Left_Running": {
+      "Type": "Task",
+      "Comment": "Telling the run failed, and not because its token is closed: the run stays RUNNING, so the bell says so (ADR #135, Principle #38). The row shape of polyris.coordination.records.warning_item (kind 'coordination'); a contract test compares them.",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Item": {
+          "execution_name": {
+            "S": "{% '_notify_warn_coordination_' & $states.input.execution_name %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "pipeline_name": {
+            "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+          },
+          "pipeline_execution": {
+            "S": "{% $states.input.pipeline_execution %}"
+          },
+          "task_date": {
+            "S": "{% $states.input.date %}"
+          },
+          "status": {
+            "S": "failed"
+          },
+          "error": {
+            "S": "{% $substring('The task was skipped, but its run could not be told, so it stays RUNNING until you stop it or it times out waiting for this task: ' & $string($states.input.callback_error), 0, 32000) %}"
+          },
+          "finished_at": {
+            "S": "{% $now() %}"
+          },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
+          "ttl": {
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Done",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "Output": "{% $states.input %}",
           "Next": "Done"
         }
-      ],
-      "Next": "Done"
+      ]
     },
     "Wait_For_Dependencies": {
       "Type": "Task",
@@ -867,7 +970,7 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput, 'helper_failed': true} | %}",
+          "Output": "{% $states.input ~> |$| {'error': $states.errorOutput} | %}",
           "Next": "Handle_Failure"
         }
       ],

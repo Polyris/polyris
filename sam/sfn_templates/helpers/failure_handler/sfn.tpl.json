@@ -249,10 +249,10 @@
     },
     "Check_Orchestration_Token": {
       "Type": "Choice",
-      "Comment": "Send failure callback if orchestration token exists AND helper didn't already handle it",
+      "Comment": "Answer the run whenever its token is known (ADR #135): the handler never guesses whether run_task already did. A token run_task answered on its own failure path is closed, and Send_Task_Failure treats that as done.",
       "Choices": [
         {
-          "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' and $not($exists($states.input.helper_failed) and $states.input.helper_failed = true) %}",
+          "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}",
           "Next": "Send_Task_Failure"
         }
       ],
@@ -267,13 +267,116 @@
         "Error": "{% $exists($states.input.error.Error) ? $states.input.error.Error : 'TaskFailed' %}",
         "Cause": "{% $states.input.error_truncated %}"
       },
+      "Output": "{% $states.input %}",
       "Next": "Failure_Complete",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Sfn.TaskTimedOutException",
+            "Sfn.InvalidTokenException",
+            "Sfn.TaskDoesNotExistException"
+          ],
+          "Comment": "The token is closed: run_task already answered the run, or the run ended. Nothing more to tell. The codes are polyris.coordination.wake.DEAD_TOKEN_CODES; a parity test compares them.",
+          "Output": "{% $states.input %}",
+          "Next": "Failure_Complete"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Any other error leaves the run RUNNING: say so in the bell.",
+          "Output": "{% $states.input ~> |$| {'callback_error': $states.errorOutput} | %}",
+          "Next": "Warn_Run_Left_Running"
+        }
+      ],
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sfn.TaskTimedOutException",
+            "Sfn.InvalidTokenException",
+            "Sfn.TaskDoesNotExistException"
+          ],
+          "Comment": "A closed token is final: no retry.",
+          "MaxAttempts": 0
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ]
+    },
+    "Warn_Run_Left_Running": {
+      "Type": "Task",
+      "Comment": "Telling the run failed, and not because its token is closed: the run stays RUNNING, so the bell says so (ADR #135, Principle #38). The row shape of polyris.coordination.records.warning_item (kind 'coordination'); a contract test compares them.",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${tokens_table}",
+        "Item": {
+          "execution_name": {
+            "S": "{% '_notify_warn_coordination_' & $states.input.execution_name %}"
+          },
+          "kind": {
+            "S": "coordination"
+          },
+          "task_name": {
+            "S": "{% $states.input.task_name %}"
+          },
+          "pipeline_name": {
+            "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+          },
+          "pipeline_execution": {
+            "S": "{% $states.input.pipeline_execution %}"
+          },
+          "task_date": {
+            "S": "{% $states.input.date %}"
+          },
+          "status": {
+            "S": "failed"
+          },
+          "error": {
+            "S": "{% $substring('The run could not be told that this task failed, so it stays RUNNING until you stop it or it times out waiting for this task: ' & $string($states.input.callback_error), 0, 32000) %}"
+          },
+          "finished_at": {
+            "S": "{% $now() %}"
+          },
+          "attention": {
+            "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+          },
+          "attention_at": {
+            "S": "{% $now() %}"
+          },
+          "ttl": {
+            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Next": "Failure_Complete",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.ThrottlingException",
+            "DynamoDB.InternalServerError",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Comment": "Token already used, expired, or invalid - continue gracefully",
           "Output": "{% $states.input %}",
           "Next": "Failure_Complete"
         }

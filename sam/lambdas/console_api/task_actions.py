@@ -139,6 +139,8 @@ def record_facts_for_manual_success(
     pipeline_name: str,
     partition_key: str,
     events_repo,
+    *,
+    cascade: str,
     asset_event_ttl_days: int = ASSET_EVENT_TTL_DAYS,
 ) -> Dict[str, str]:
     """Record the facts of a task marked successful; returns ``{asset: error}`` for each failure.
@@ -162,6 +164,9 @@ def record_facts_for_manual_success(
         partition_key: the partition of the marked run — the task row's
             ``date`` — never the day the action happens (B-M1).
         events_repo: the asset-events DAL repo (dal.asset_events_repo).
+        cascade: the marked run's own cascade (records.cascade_of): a
+            cascade='none' backfill must not start push consumers through
+            Mark Successful either (ADR #57).
         asset_event_ttl_days: how long the facts live.
     """
     failed: Dict[str, str] = {}
@@ -174,7 +179,7 @@ def record_facts_for_manual_success(
                 asset_name=asset_name,
                 partition_key=partition_key,
                 granularity=outlet.get('granularity'),
-                cascade='auto',
+                cascade=cascade,
                 source_dag=pipeline_name,
                 source_task=task_name,
                 uri=outlet.get('uri', ''),

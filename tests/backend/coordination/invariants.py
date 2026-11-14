@@ -1,4 +1,4 @@
-"""ADR #130 invariants 1, 3, 4 and 5, checked after every step of every scenario.
+"""ADR #130 invariants 1, 3, 4, 5 and 10, checked after every step of every scenario.
 
 The World calls `observe` each time the stack settles, so a scenario that
 passes its own assertions still fails when it moved the system through a
@@ -11,7 +11,11 @@ state the ADR forbids:
 4. a waiting row keeps its subscription pointers until its wrapper accepted
    a signal;
 5. a reconcilable row without a pause token has a `waiting#` attention entry,
-   and a row held in its pause wait a `paused#` one.
+   and a row held in its pause wait a `paused#` one;
+10. a run whose task rows have all finished, and none of whose executions is
+    still running, has finished too: something told it (ADR #135), or a warning
+    in the bell says it could not be told. A run left RUNNING otherwise shows its
+    tasks ended in the console while its execution goes on (F16, B1, Z1, 1.2.0).
 """
 
 import json
@@ -20,7 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from boto3.dynamodb.types import TypeDeserializer
 
 from polyris.coordination import spec as sp
-from polyris.coordination.statuses import RECONCILABLE, WAITING_PAUSED
+from polyris.coordination.statuses import RECONCILABLE, TERMINAL, WAITING_PAUSED
 
 #: The dependency wait of the dependency wrapper: where its token is signalled.
 WAIT_STATE = "Wait_For_Dependencies"
@@ -69,16 +73,24 @@ class Invariants:
         self.ddb, self.runtime = ddb, runtime
         self.tokens, self.subscriptions = tables["PipelineTokensTable"], tables["DependencySubscriptionsTable"]
         self.violations: List[str] = []
+        #: Runs a warning in the bell says could not be told how a task ended (ADR #135).
+        self._told_it_could_not: Set[str] = set()
         #: (execution_name, wrapper_execution_arn) -> the highest rank seen, and its status
         self._seen: Dict[Tuple[str, Optional[str]], Tuple[int, str]] = {}
 
     def observe(self) -> None:
         signalled = self._accepted_signals()
         pointers = {(str(i["dependency_key"]), str(i["subscriber"])) for i in _scan(self.ddb, self.subscriptions)}
-        for row in filter(_is_task_row, _scan(self.ddb, self.tokens)):
+        items = _scan(self.ddb, self.tokens)
+        rows = list(filter(_is_task_row, items))
+        self._told_it_could_not = {str(i.get("pipeline_execution", "")) for i in items
+                                   if str(i.get("execution_name", "")).startswith("_notify_warn_coordination_")
+                                   and "stays RUNNING" in str(i.get("error", ""))}
+        for row in rows:
             self._never_backwards(row)
             self._pointers_kept(row, pointers, signalled)
             self._in_the_attention_index(row)
+        self._runs_end(rows)
         for arn, count in signalled.items():
             if count > 1:
                 self._violate(f"invariant 1: wrapper {arn} accepted {count} dependency signals")
@@ -117,6 +129,18 @@ class Invariants:
                 self._violate(f"invariant 5: {name} is held in its pause wait without a paused# entry")
         elif status in RECONCILABLE and not attention.startswith("waiting#"):
             self._violate(f"invariant 5: {name} is {status} without a waiting# entry")
+
+    def _runs_end(self, rows: List[Dict[str, Any]]) -> None:
+        by_run: Dict[str, List[str]] = {}
+        for row in rows:
+            by_run.setdefault(str(row.get("pipeline_execution", "")), []).append(str(row["status"]))
+        working = {str(e.input.get("pipeline_execution", "")) for e in self.runtime.executions.values()
+                   if e.status == "RUNNING" and isinstance(e.input, dict)}
+        for execution in self.runtime.executions.values():
+            statuses = by_run.get(execution.name)
+            if (statuses and execution.status == "RUNNING" and all(s in TERMINAL for s in statuses)
+                    and execution.name not in working and execution.name not in self._told_it_could_not):
+                self._violate(f"invariant 10: run {execution.name} is RUNNING though its tasks finished: {sorted(statuses)}")
 
     def _violate(self, message: str) -> None:
         if message not in self.violations:

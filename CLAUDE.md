@@ -270,7 +270,7 @@ Anti-pattern: write only the new field because "the old one is deprecated" while
 
 Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
 
-**40–52 (coordination). The coordination code follows the rules in ADR #130, *Rules for the code***
+**40–52, 55 (coordination). The coordination code follows the rules in ADR #130, *Rules for the code***
 They concern task rows, wake-ups, facts and the sweeper. The numbers stay because code and tests cite them; read the full rule in the ADR before changing that code.
 - **40.** Delete a wake-up pointer only after the signal it serves was accepted.
 - **41.** Wake-up hints may be lost; wake-up decisions, status writes and fact writes may not.
@@ -281,6 +281,7 @@ They concern task rows, wake-ups, facts and the sweeper. The numbers stay becaus
 - **50.** A time that marks a beginning is written once (`if_not_exists`).
 - **51.** A reader of shared rows skips a row it cannot parse, and says so.
 - **52.** A time budget is checked per item, and a periodic job's steps fail independently.
+- **55.** An evaluation as of a time reads only what was recorded by then (`asset_conditions.evaluate(recorded_by=)`).
 
 **42. A second bug of the same class in one mechanism stops the patching — question the model first**
 When a mechanism produces a second bug of the same class (e.g. "task silently hangs until timeout"), do not patch it a third time. Stop and write down, before any code:
@@ -667,15 +668,15 @@ The row carries no `date`: the bell reads it from `attention-index` (`warn#{h}`)
 - `_pause_{pipeline_execution}` — pause state
 - `_notify_warn_{kind}_{execution_name}` — infrastructure warning (`records.warning_item`)
 
-**CRITICAL:** All loops iterating `pipeline-tokens` items MUST filter `_` prefixed records:
+**CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The coordination store reads only rows in a reconcilable status, which no internal row has.)
 ```python
 for item in items:
-    if item.get('execution_name', '').startswith('_'):
+    if should_skip_token_row(item):
         continue
 ```
-Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs.
+Internal rows are `_`-prefixed (`_pause_`, `_notify_warn_`, `_retry_push_`), the stores `output#` and `input#`, and the run's DAG snapshot `dag_snapshot::{run}`. Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs. A `_`-only check let the snapshot, which shares the run's `pipeline_execution`, through: a task without a status, and an empty `/api/execution-children` for every run.
 
-**SFN templates:** `Catch` blocks must preserve `$states.errorOutput` in Output.
+**SFN templates:** `Catch` blocks must preserve `$states.errorOutput` in Output. A state after a point of no return has a Catch that reaches the bell: restart stops the old wrapper first, so a failed hand-over or wrapper start left the task dead while the console said "Task restarted" (`Warn_Restart_Failed`). A catch on a write of the task's facts, or on its run's callback, after the task's own success writes a warning row: the row already says `success`, so nothing else shows the failure. A fact `run_task` could not record once left its consumers waiting with no trace (`Warn_Facts_Not_Recorded`).
 
 ---
 
@@ -743,6 +744,7 @@ make test-cov
 
 **Test rules:**
 - pytest-mock (`mocker` fixture) everywhere — no `unittest.mock` import at all, including `MagicMock` as a bare object factory (use `mocker.MagicMock`)
+- Every repository method the console calls exists on the repository. The Stop route called `pipelines_repo.get_sfn_arn`, which only a test fake defined; no test called the route, and every Stop answered 500. `sam/lambdas/console_api/tests/test_repository_calls.py` reads the code of the console and of the paid overlay, so a route no test reaches is covered too.
 - SDK tests are hermetic: `tests/sdk/conftest.py` clears `AWS_*` / `POLYRIS_*` variables and points the AWS config files at an empty place before every test. A test that needs a profile, region or stage sets it with `monkeypatch`. Never rely on the developer's shell or `~/.aws` — the v1.1.4 release gate failed on a leftover `AWS_PROFILE`.
 - Backend tests in `tests/backend/`, SDK tests in `tests/sdk/`
 - **Lambda suites are hermetic too.** `make test-lambdas` runs them with no AWS profile, region or credentials (`HERMETIC_AWS`), as CI does. A suite whose module builds a boto3 client at import sets `AWS_DEFAULT_REGION` (and fake credentials for moto) before importing it; `bucket_cleanup` passed locally and failed in CI on `NoRegionError`.
@@ -760,6 +762,7 @@ make test-cov
 4. **pipeline_execution_short** — last 20 chars of `pipeline_execution`, with `.` and `:` stripped. Format: `-{date}-{hex8}`.
 5. **dependency_key** — `{task_name}-{pipeline_execution_short}`. Must match exactly between writer (registration) and reader (query_subscriptions).
 6. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`).
+7. **Whoever ends a task answers its run, and a closed token is fine (ADR #135).** Never skip the answer because a flag says another state machine gave it. `helper_failed` claimed that `run_task` had answered, and twice it had not: F16, and a pause token that could not be saved. A zombie that the reconciler closed had no answer at all, and the wrapper's skip answer and the console's task actions swallowed a failed one. Retry nothing on the closed-token codes (`DEAD_TOKEN_CODES`), and turn any other error into a warning (`Warn_Run_Left_Running` in a template, `routes.tasks.answer_run` in the console). The one exception is a superseded owner: a restart handed its token on, and the new owner answers. `tests/sdk/test_run_answers.py` fails until a new template answer has a role, and harness invariant 10 fails a scenario that leaves a run `RUNNING` after its tasks have finished.
 
 ---
 

@@ -5,6 +5,7 @@ like it does, straight into the tables, and asks the check about it.
 """
 
 import json
+from types import SimpleNamespace
 
 import boto3
 import pytest
@@ -14,18 +15,23 @@ from moto import mock_aws
 from invariants import WAIT_STATE, Invariants
 
 TOKENS, SUBSCRIPTIONS = "tokens", "subscriptions"
+RUN = "orders-run-2026-11-12-abcd0001"
 WRAPPER = "arn:aws:states:us-east-1:123456789012:execution:wrapper:load"
 _serializer = TypeSerializer()
 
 
 class Runtime:
-    """The runtime's record of accepted callbacks, which invariant 1 and 4 read."""
+    """The runtime's record of accepted callbacks (invariants 1 and 4) and of executions (invariant 6)."""
 
     def __init__(self):
         self.callbacks = []
+        self.executions = {}
 
     def accept(self, execution=WRAPPER, state=WAIT_STATE):
         self.callbacks.append({"execution": execution, "state": state, "outcome": {}})
+
+    def run(self, name=RUN, status="RUNNING", input=None):
+        self.executions[name] = SimpleNamespace(name=name, status=status, input=input or {})
 
 
 @pytest.fixture
@@ -139,3 +145,54 @@ def test_invariant_5_a_row_missing_its_attention_entry(ddb, check, status, extra
     _pointer(ddb)
     check.observe()
     assert check.violations == [message]
+
+
+# ── invariant 10: a run whose tasks have all finished has finished too (ADR #130, #135) ──
+
+def test_invariant_10_a_run_left_running_after_its_tasks_finished(ddb, runtime, check):
+    runtime.run()
+    _row(ddb, "failed", attention=None, pipeline_execution=RUN)
+    _row(ddb, "success", execution_name="extract", attention=None, pipeline_execution=RUN)
+    check.observe()
+    assert check.violations == [f"invariant 10: run {RUN} is RUNNING though its tasks finished: ['failed', 'success']"]
+
+
+def test_invariant_10_a_run_with_a_task_still_going_may_run(ddb, runtime, check):
+    runtime.run()
+    _row(ddb, "failed", attention=None, pipeline_execution=RUN)
+    _row(ddb, "running", execution_name="extract", attention=None, pipeline_execution=RUN)
+    check.observe()
+    assert check.violations == []
+
+
+def test_invariant_10_a_stopped_task_keeps_its_run_waiting(ddb, runtime, check):
+    """A stopped task can be restarted, so its run may wait for it."""
+    runtime.run()
+    _row(ddb, "stopped", attention=None, pipeline_execution=RUN)
+    check.observe()
+    assert check.violations == []
+
+
+def test_invariant_10_an_ended_run_passes(ddb, runtime, check):
+    runtime.run(status="FAILED")
+    _row(ddb, "failed", attention=None, pipeline_execution=RUN)
+    check.observe()
+    assert check.violations == []
+
+
+def test_invariant_10_a_run_whose_wrapper_still_works_may_run(ddb, runtime, check):
+    """A wrapper not registered yet has no row: the rows that exist may all be finished."""
+    runtime.run()
+    runtime.run(name="wrapper-of-load", input={"pipeline_execution": RUN})
+    _row(ddb, "success", attention=None, pipeline_execution=RUN)
+    check.observe()
+    assert check.violations == []
+
+
+def test_invariant_10_a_run_the_bell_says_could_not_be_told_passes(ddb, runtime, check):
+    runtime.run()
+    _row(ddb, "skipped", attention=None, pipeline_execution=RUN)
+    _put(ddb, TOKENS, execution_name="_notify_warn_coordination_load", pipeline_execution=RUN, status="failed",
+         error="The task is skipped, but its run could not be told, so it stays RUNNING until you stop it")
+    check.observe()
+    assert check.violations == []

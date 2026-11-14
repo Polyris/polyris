@@ -307,8 +307,28 @@ class Reconciler:
         closed = _aws(lambda: self.tasks.close_aborted(name, token, started_at, reason, now=now))
         if closed:
             self._warn(row, "zombie", reason)
+            self._tell_the_run(row, f"The task was aborted: {reason}")
         verdict = decision.verdict if decision is not None else ERROR
         return self._result(row, source, verdict, "aborted" if closed else "superseded", (reason,), decision)
+
+    def _tell_the_run(self, row: Dict[str, Any], cause: str) -> None:
+        """End the run's wait for a task this reconciler closed (ADR #135).
+
+        The wrapper that would have told the run is gone, so nothing else ends
+        that wait: without this the run stays RUNNING though all its tasks have
+        finished (Z1, 1.2.0). A token the run no longer waits on is fine.
+        """
+        token = str(row.get("orchestration_token") or "")
+        if not token:
+            return          # a task started outside a pipeline run has no run to tell
+        try:
+            self.signals.fail(token, cause)
+        except (CoordinationTransient, ClientError, BotoCoreError) as exc:
+            log.error("reconcile", "could not tell the run its task ended", execution_name=row["execution_name"],
+                      error=str(exc))
+            self._warn(row, "coordination", f"{cause}. Its run could not be told, so it stays RUNNING until you "
+                                            f"stop it or it times out waiting for this task: "
+                                            f"{type(exc).__name__}: {exc}")
 
     def _fail_task(self, row: Dict[str, Any], token: str, exc: BaseException, source: str) -> Dict[str, Any]:
         """ADR #130 §3 step 5: fail the task with the real cause."""

@@ -12,6 +12,7 @@ from dal import executions_repo, pipelines_repo
 from constants import Limits
 from response import cors_response
 from logger import log
+from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
 from utils import parse_wait_before, should_skip_token_row
 
 
@@ -57,7 +58,7 @@ def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
     # 1. Try DAG snapshot for this specific execution (survives redeploys)
     if pipeline_execution:
         try:
-            snapshot_key = f'dag_snapshot::{pipeline_execution}'
+            snapshot_key = f'{DAG_SNAPSHOT_PREFIX}{pipeline_execution}'
             snapshot_item = executions_repo.get(snapshot_key)
             if snapshot_item:
                 dag_str = snapshot_item.get('dag', '{}')

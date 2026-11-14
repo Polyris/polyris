@@ -63,18 +63,19 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 **Symptoms:** Pipeline shows running but no tasks are active.
 
 **Check:**
-1. Step Functions execution status:
+1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended: the run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
+2. Step Functions execution status:
    ```bash
    aws stepfunctions list-executions \
      --state-machine-arn "arn:aws:states:..." \
      --status-filter RUNNING
    ```
 
-2. Check for orphaned executions in DynamoDB.
+3. Check for orphaned executions in DynamoDB.
 
 **Fix:** Stop the stuck execution via Console UI or API:
 ```bash
-curl -X POST ${API_URL}/api/execution-stop?id={arn} \
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -239,7 +240,7 @@ Check *why* the upstream was skipped:
 
 **Fix:**
 - If subscription missing: re-deploy consumer pipeline
-- If event missing: re-run the producer
+- If event missing: re-run the producer. A `fact` warning in the bell means the producer succeeded but its fact was not recorded; fix the cause it names, then restart the producer task
 - If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
 
 ---
@@ -375,7 +376,7 @@ aws cloudformation list-stacks \
 # Via Console UI: Stop button
 
 # Via API:
-curl -X POST ${API_URL}/api/execution-stop?id={arn} \
+curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 
 # Via AWS CLI:

@@ -80,6 +80,7 @@ def evaluate(
     now: datetime,
     reader: FactReader,
     known_facts: Iterable[Fact] = (),
+    recorded_by: Optional[datetime] = None,
 ) -> Evaluation:
     """Evaluate ``spec`` for target date ``target``.
 
@@ -87,13 +88,33 @@ def evaluate(
     record that triggered the call; they are merged with what the reader
     returns, so read lag cannot hide them. Every leaf is evaluated, even
     after the outcome is known, so the result explains every asset.
+
+    With ``recorded_by``, only facts recorded no later than it count. A push
+    judges a consumer's schedule as it stood when its fact arrived, so the
+    stream, a redelivery and the hourly catch-up give one answer (ADR #130
+    §6.1, §8); counting a later fact let the catch-up start a run that a
+    cascade='none' backfill completed (ADR #57).
     """
+    if recorded_by is not None:
+        reader = _RecordedBy(reader, recorded_by)
+        known_facts = [f for f in known_facts if f.event_time <= recorded_by]
     known: Dict[str, List[Fact]] = {}
     for fact in known_facts:
         known.setdefault(fact.asset_name, []).append(fact)
     results: List[AssetResult] = []
     ready, enabled_at = _evaluate_node(spec, target, now, reader, known, results)
     return Evaluation(ready, tuple(results), enabled_at if ready else None)
+
+
+@dataclass(frozen=True)
+class _RecordedBy:
+    """A reader that hides the facts recorded after ``cutoff``; the order is kept."""
+
+    reader: FactReader
+    cutoff: datetime
+
+    def facts(self, asset_name: str, *, last: date, first: Optional[date]) -> Iterable[Fact]:
+        return (f for f in self.reader.facts(asset_name, last=last, first=first) if f.event_time <= self.cutoff)
 
 
 def satisfies(fact: Fact, target: date) -> bool:

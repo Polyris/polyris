@@ -226,7 +226,7 @@ children are not embedded.
 ### Execution Actions
 
 ```http
-POST /api/execution-stop?id={execution_arn}
+POST /api/execution-stop?pipeline_execution={pipeline_execution}
 POST /api/execution-pause?id={pipeline_execution}
 POST /api/execution-resume?id={pipeline_execution}
 POST /api/execution-extend?id={pipeline_execution}   # +12h pause timeout

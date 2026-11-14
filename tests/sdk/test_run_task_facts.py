@@ -117,6 +117,43 @@ def test_the_notify_warning_has_the_shape_of_warning_item(states):
     assert "StepFunctions.ExecutionLimitExceeded" in written["error"]
 
 
+def test_facts_that_cannot_be_recorded_reach_the_bell(states):
+    """The work is done, so the row stays success; the facts are not, so no consumer
+    will start, and the bell says which and why (external review, 1.2.0)."""
+    [catch] = states["Emit_Asset_Events"]["Catch"]
+    assert catch["Next"] == "Warn_Facts_Not_Recorded"
+    warn = states["Warn_Facts_Not_Recorded"]
+    assert warn["Next"] == "Notify_Dependents_Failed"
+    assert all(c["Next"] == "Notify_Dependents_Failed" for c in warn["Catch"])
+
+
+@pytest.mark.parametrize("names", [["ns/orders"], ["ns/orders", "ns/customers"]])
+def test_the_fact_warning_has_the_shape_of_warning_item(states, names):
+    row = {"execution_name": "build-2026-11-12--2026-11-12-abcdef12", "task_name": "build",
+           "pipeline_name": "producer", "pipeline_execution": "producer-run-2026-11-12-abcdef12",
+           "date": "2026-11-12", "outlets": [{"name": n, "uri": f"s3://bucket/{n}"} for n in names],
+           "error": {"Error": "EmitAssetEventsFailed",
+                     "Cause": '{"Error":"DynamoDB.AmazonDynamoDBException","Cause":"not authorized"}'}}
+    written = plain(evaluate(states["Warn_Facts_Not_Recorded"]["Arguments"]["Item"], input=row))
+    expected = warning_item(kind="fact", execution_name=row["execution_name"], task_name="build",
+                            pipeline_name="producer", pipeline_execution=row["pipeline_execution"],
+                            task_date="2026-11-12", error=written["error"], now=NOW)
+    assert written == expected
+    assert f"could not record all of its asset facts ({', '.join(names)})" in written["error"]
+    assert "not authorized" in written["error"] and "restart the task" in written["error"]
+
+
+@pytest.mark.parametrize("flags", [{}, {"_suppress_asset_event": True}, {"cascade_all": True},
+                                   {"_suppress_asset_event": True, "cascade_all": True},
+                                   {"_suppress_asset_event": False, "cascade_all": False}])
+def test_run_task_and_the_console_give_a_run_s_facts_one_cascade(states, flags):
+    """Mark Successful uses records.cascade_of; run_task computes the same in JSONata (ADR #57)."""
+    from polyris.coordination.records import cascade_of
+    items = evaluate(states["Emit_Asset_Events"]["Items"], input={"outlets": [{"name": "ns/orders"}], **flags})
+    [item] = items if isinstance(items, list) else [items]
+    assert item["cascade"] == cascade_of(flags)
+
+
 def test_a_fact_never_overwrites_another_of_the_same_millisecond(states):
     """The key is (asset_name, event_time): an overwrite would lose a fact and, being a
     MODIFY, never reach the INSERT-only stream mapping. A collision retries with a later $now()."""

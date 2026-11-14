@@ -248,3 +248,37 @@ class TestRuleBLeavesNoUnsatisfiableDates:
     def test_a_fact_two_periods_old_is_not_accepted(self):
         assert not ac.satisfies(ac.Fact("ns/a", date(2026, 9, 30), NOW, "monthly"), date(2026, 11, 1))
         assert not ac.satisfies(ac.Fact("ns/a", date(2026, 10, 25), NOW, "weekly"), date(2026, 11, 9))
+
+
+class TestRecordedBy:
+    """A push judges the schedule as it stood when its fact arrived (ADR #130 §6.1, §8)."""
+
+    T1 = datetime(2026, 11, 12, 7, tzinfo=UTC)
+    LATER = datetime(2026, 11, 12, 9, tzinfo=UTC)
+
+    def test_a_fact_recorded_later_does_not_count(self):
+        reader = Reader(fact("ns/a", D, at=self.T1), fact("ns/b", D, at=self.LATER))
+        assert run(spec(a, b), reader).ready
+        assert not ac.evaluate(spec(a, b), target=D, now=self.T1, reader=reader, recorded_by=self.T1).ready
+
+    def test_a_fact_recorded_at_the_same_moment_counts(self):
+        reader = Reader(fact("ns/a", D, at=self.T1), fact("ns/b", D, at=self.T1))
+        assert ac.evaluate(spec(a, b), target=D, now=self.T1, reader=reader, recorded_by=self.T1).ready
+
+    def test_a_known_fact_recorded_later_does_not_count_either(self):
+        later = fact("ns/a", D, at=self.LATER)
+        result = ac.evaluate(spec(a), target=D, now=self.T1, reader=Reader(), known_facts=[later], recorded_by=self.T1)
+        assert (result.ready, result.assets[0].reason) == (False, ac.NO_FACT)
+
+    def test_an_older_fact_of_the_same_partition_still_counts(self):
+        reader = Reader(fact("ns/a", D, at=self.T1 - timedelta(hours=1)), fact("ns/a", D, at=self.LATER))
+        result = ac.evaluate(spec(a), target=D, now=self.T1, reader=reader, recorded_by=self.T1)
+        assert result.ready and result.assets[0].fact.event_time == self.T1 - timedelta(hours=1)
+
+    def test_within_and_consecutive_see_only_what_was_recorded(self):
+        reader = Reader(fact("ns/a", D, at=self.LATER), fact("ns/b", D - timedelta(days=1), at=self.T1),
+                        fact("ns/b", D, at=self.LATER))
+        result = ac.evaluate(spec(a.within(hours=1), b.consecutive(days=2)), target=D, now=self.T1, reader=reader,
+                             recorded_by=self.T1)
+        assert [(r.condition, r.reason) for r in result.assets] == [("within", ac.NO_FACT),
+                                                                    ("consecutive", ac.MISSING_DATES)]

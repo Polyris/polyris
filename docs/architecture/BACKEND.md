@@ -156,6 +156,9 @@ Start
   │
   ├─▶ Truncate_Error (Pass — prevent DynamoDB item-size limit)
   │
+  ├─▶ Check_Ownership / Route_Ownership
+  │     └─▶ a wrapper a restart replaced ends at Superseded_Complete: the new owner answers the run
+  │
   ├─▶ Update_Status_Failed (DynamoDB updateItem)
   │
   ├─▶ Notify_Dependents (startSyncExecution → notify_dependents SFN)
@@ -167,31 +170,39 @@ Start
   │     └─▶ one call with {pipeline_name, failure}; the Lambda reads alert_config
   │         and posts to every configured alert channel
   │
-  ├─▶ Check_Orchestration_Token (Choice)
+  ├─▶ Check_Orchestration_Token (Choice: the run's token is known)
   │
-  └─▶ Send_Task_Failure (sendTaskFailure callback to the wrapper)
+  └─▶ Send_Task_Failure (sendTaskFailure to the pipeline run, ADR #135)
+        ├─▶ a closed token: the run was answered already or has ended → Failure_Complete
+        └─▶ any other error, after two retries → Warn_Run_Left_Running (a bell warning)
 ```
+
+The handler answers the run whenever it knows the run's token: it never guesses whether `run_task` answered already on its own failure path. A token answered twice is refused as closed.
 
 Collapsed from the older multi-state fan-out (per-channel states + separate
 alerter SFNs) to a single `Send_Alerts` Lambda call in the alerts consolidation.
 
 ### polyris-restart-task-helper (EXPRESS)
 
-Restarts a failed task:
+Restarts a task the console may restart (finished, `stopped` or `waiting_decision`):
 
 ```
 Start
   │
-  ├─▶ Get task info from DynamoDB
+  ├─▶ Get_Task_Config (the task row)
   │
-  ├─▶ Reset status to 'waiting'
+  ├─▶ Stop_Old_Outer_Wrapper, then Stop_Old_Inner_Wrapper (the old run_task)
   │
-  ├─▶ Re-register subscriptions
+  ├─▶ Hand_Over_Ownership: raise the row's generation, status 'stopped', drop its tokens
   │
-  ├─▶ Check dependencies again
+  ├─▶ Check_Starter_Input
+  │     └─▶ a row from before 1.2 has none: Warn_Restart_Without_Starter_Input, and the input
+  │         is rebuilt from the row's fields, wait_for included
   │
-  └─▶ If ready: trigger run_task_helper
+  └─▶ Start_New_Wrapper (the task's own start input, ADR #130 §6.5): it registers and waits again
 ```
+
+A failure to take the row over or to start the new wrapper writes a `coordination` warning (`Warn_Restart_Failed`) and ends the helper failed. The row is `stopped`, or as it was, and can be restarted again.
 
 ### polyris-restart-wrapper (EXPRESS)
 
@@ -248,7 +259,7 @@ and by asset-fanout.
 - Parks the task as `waiting_paused` when its run is paused
 - Signals the wrapper: `deps_ready`, `deps_skip` or `deps_blocked`; the wrapper writes the status
 - Deletes the task's subscription pointers once the signal is accepted
-- Closing a zombie raises the row's generation: each task row has one owner at a time, named by its generation, and the wrapper, `run_task`, the pause wait and the failure handler write only under their own (ADR #130 §2.1). Operator decisions and restarts raise it too.
+- Closing a zombie tells its run, since no wrapper is left to (ADR #135), and raises the row's generation: each task row has one owner at a time, named by its generation, and the wrapper, `run_task`, the pause wait and the failure handler write only under their own (ADR #130 §2.1). Operator decisions and restarts raise it too.
 
 ### 3. query_subscriptions
 

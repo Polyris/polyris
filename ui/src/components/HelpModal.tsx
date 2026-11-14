@@ -732,20 +732,20 @@ function ApiReferenceTab() {
                     <ApiEndpointDetail method="GET" path="/api/runs?date=Y&pipeline=Z&status=X" desc="List all runs with filters"
                         example={`curl "${BASE}/api/runs?date=2026-02-17&pipeline=acme-daily"`}
                     />
-                    <ApiEndpointDetail method="POST" path="/api/execution-stop?id=ARN" desc="Stop a running execution"
-                        example={`curl -X POST "${BASE}/api/execution-stop?id=arn:aws:states:us-east-1:123:execution:..."`}
+                    <ApiEndpointDetail method="POST" path="/api/execution-stop?pipeline_execution=RUN" desc="Stop a running execution"
+                        example={`curl -X POST "${BASE}/api/execution-stop?pipeline_execution=acme-daily-run-2026-11-12-abcd1234"`}
                     />
-                    <ApiEndpointDetail method="POST" path="/api/execution-pause?id=ARN" desc="Pause a running execution"
-                        example={`curl -X POST "${BASE}/api/execution-pause?id=arn:aws:states:us-east-1:123:execution:..."`}
+                    <ApiEndpointDetail method="POST" path="/api/execution-pause?id=RUN" desc="Pause a running execution"
+                        example={`curl -X POST "${BASE}/api/execution-pause?id=acme-daily-run-2026-11-12-abcd1234"`}
                     />
-                    <ApiEndpointDetail method="POST" path="/api/execution-resume?id=ARN" desc="Resume a paused execution"
-                        example={`curl -X POST "${BASE}/api/execution-resume?id=arn:aws:states:us-east-1:123:execution:..."`}
+                    <ApiEndpointDetail method="POST" path="/api/execution-resume?id=RUN" desc="Resume a paused execution"
+                        example={`curl -X POST "${BASE}/api/execution-resume?id=acme-daily-run-2026-11-12-abcd1234"`}
                     />
-                    <ApiEndpointDetail method="GET" path="/api/execution-children?id=ARN" desc="Get child executions (wrappers)"
-                        example={`curl "${BASE}/api/execution-children?id=arn:aws:states:us-east-1:123:execution:..."`}
+                    <ApiEndpointDetail method="GET" path="/api/execution-children?id=RUN" desc="Get the run's tasks"
+                        example={`curl "${BASE}/api/execution-children?id=acme-daily-run-2026-11-12-abcd1234"`}
                     />
-                    <ApiEndpointDetail method="GET" path="/api/execution-parent?id=ARN" desc="Get parent pipeline execution"
-                        example={`curl "${BASE}/api/execution-parent?id=arn:aws:states:us-east-1:123:execution:..."`}
+                    <ApiEndpointDetail method="GET" path="/api/execution-parent?id=TASK_EXECUTION" desc="Get a task's pipeline execution"
+                        example={`curl "${BASE}/api/execution-parent?id=extract-2026-11-12--2026-11-12-abcd1234"`}
                     />
                 </div>
             </div>

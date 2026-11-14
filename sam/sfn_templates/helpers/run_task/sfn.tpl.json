@@ -1598,9 +1598,9 @@
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "Asset event emission failed - fail the task",
+                    "Comment": "A fact could not be recorded: warn, then end the run failed, because it did not deliver its assets. The task's row stays success (maintainer decision, 2026-11-14).",
                     "Output": "{% $states.input ~> |$| {'error': {'Error': 'EmitAssetEventsFailed', 'Cause': $string($states.errorOutput)}} | %}",
-                    "Next": "Notify_Dependents_Failed"
+                    "Next": "Warn_Facts_Not_Recorded"
                 }
             ]
         },
@@ -1615,6 +1615,77 @@
             ],
             "Default": "Done"
         },
+        "Warn_Run_Left_Running": {
+            "Type": "Task",
+            "Comment": "Telling the run failed, and not because its token is closed: the run stays RUNNING, so the bell says so (ADR #135, Principle #38). The row shape of polyris.coordination.records.warning_item (kind 'coordination'); a contract test compares them.",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                    "execution_name": {
+                        "S": "{% '_notify_warn_coordination_' & $states.input.execution_name %}"
+                    },
+                    "kind": {
+                        "S": "coordination"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "pipeline_name": {
+                        "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+                    },
+                    "pipeline_execution": {
+                        "S": "{% $states.input.pipeline_execution %}"
+                    },
+                    "task_date": {
+                        "S": "{% $states.input.date %}"
+                    },
+                    "status": {
+                        "S": "failed"
+                    },
+                    "error": {
+                        "S": "{% $substring('The task succeeded, but its run could not be told, so it stays RUNNING until you stop it or it times out waiting for this task: ' & $string($states.input.callback_error), 0, 32000) %}"
+                    },
+                    "finished_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "attention": {
+                        "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+                    },
+                    "attention_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Done",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% $states.input %}",
+                    "Next": "Done"
+                }
+            ]
+        },
         "Send_Pipeline_Success": {
             "Type": "Task",
             "Comment": "Callback to pipeline: sendTaskSuccess with orchestration_token",
@@ -1627,15 +1698,34 @@
             "Catch": [
                 {
                     "ErrorEquals": [
-                        "States.ALL"
+                        "Sfn.TaskTimedOutException",
+                        "Sfn.InvalidTokenException",
+                        "Sfn.TaskDoesNotExistException"
                     ],
-                    "Comment": "Token expired, invalid, or already used - continue anyway",
+                    "Comment": "The token is closed: the run ended, or a restart's run moved on. The codes are polyris.coordination.wake.DEAD_TOKEN_CODES; a parity test compares them.",
                     "Output": "{% $states.input %}",
                     "Next": "Done"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Comment": "Any other error leaves the run RUNNING: say so in the bell.",
+                    "Output": "{% $states.input ~> |$| {'callback_error': $states.errorOutput} | %}",
+                    "Next": "Warn_Run_Left_Running"
                 }
             ],
             "Next": "Done",
             "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Sfn.TaskTimedOutException",
+                        "Sfn.InvalidTokenException",
+                        "Sfn.TaskDoesNotExistException"
+                    ],
+                    "Comment": "A closed token is final: no retry.",
+                    "MaxAttempts": 0
+                },
                 {
                     "ErrorEquals": [
                         "States.TaskFailed",
@@ -1889,6 +1979,77 @@
                 }
             ]
         },
+        "Warn_Facts_Not_Recorded": {
+            "Type": "Task",
+            "Comment": "The task succeeded but its facts are not recorded, so no task that waits for them will start: the bell says so (Principle #38). The row stays success and the run ends failed; a restart records them. The row shape of polyris.coordination.records.warning_item (kind 'fact'); a contract test compares them.",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                    "execution_name": {
+                        "S": "{% '_notify_warn_fact_' & $states.input.execution_name %}"
+                    },
+                    "kind": {
+                        "S": "fact"
+                    },
+                    "task_name": {
+                        "S": "{% $states.input.task_name %}"
+                    },
+                    "pipeline_name": {
+                        "S": "{% $exists($states.input.pipeline_name) ? $states.input.pipeline_name : 'unknown' %}"
+                    },
+                    "pipeline_execution": {
+                        "S": "{% $states.input.pipeline_execution %}"
+                    },
+                    "task_date": {
+                        "S": "{% $states.input.date %}"
+                    },
+                    "status": {
+                        "S": "failed"
+                    },
+                    "error": {
+                        "S": "{% $substring('The task succeeded, but it could not record all of its asset facts (' & $join($states.input.outlets.name, ', ') & '), so tasks that wait for them may never start. Fix the cause, then restart the task to record them: ' & $states.input.error.Cause, 0, 32000) %}"
+                    },
+                    "finished_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "attention": {
+                        "S": "{% 'warn#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}"
+                    },
+                    "attention_at": {
+                        "S": "{% $now() %}"
+                    },
+                    "ttl": {
+                        "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                    }
+                }
+            },
+            "Output": "{% $states.input %}",
+            "Next": "Notify_Dependents_Failed",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "DynamoDB.ProvisionedThroughputExceededException",
+                        "DynamoDB.ThrottlingException",
+                        "DynamoDB.InternalServerError",
+                        "States.Timeout"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2,
+                    "JitterStrategy": "FULL"
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Output": "{% $states.input %}",
+                    "Next": "Notify_Dependents_Failed"
+                }
+            ]
+        },
         "Notify_Dependents_Failed": {
             "Type": "Task",
             "Comment": "Notify waiting tasks of failure (critical for trigger_rules like all_done)",
@@ -1943,7 +2104,7 @@
         },
         "Send_Pipeline_Failure": {
             "Type": "Task",
-            "Comment": "Callback to pipeline: sendTaskFailure",
+            "Comment": "Callback to pipeline: sendTaskFailure. The run gets run_task's own error and cause first; the failure handler answers again after Fail_State, refused as closed, or warns when no answer got through (ADR #135).",
             "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
             "Arguments": {
                 "TaskToken": "{% $states.input.orchestration_token %}",
@@ -1955,13 +2116,22 @@
                     "ErrorEquals": [
                         "States.ALL"
                     ],
-                    "Comment": "Token expired, invalid, or already used - continue to fail state",
+                    "Comment": "A closed token, or any other error: the failure handler answers the run after Fail_State.",
                     "Output": "{% $states.input %}",
                     "Next": "Fail_State"
                 }
             ],
             "Next": "Fail_State",
             "Retry": [
+                {
+                    "ErrorEquals": [
+                        "Sfn.TaskTimedOutException",
+                        "Sfn.InvalidTokenException",
+                        "Sfn.TaskDoesNotExistException"
+                    ],
+                    "Comment": "A closed token is final: no retry.",
+                    "MaxAttempts": 0
+                },
                 {
                     "ErrorEquals": [
                         "States.TaskFailed",
@@ -1987,7 +2157,7 @@
         },
         "Get_Decision_Timeout": {
             "Type": "Task",
-            "Comment": "Read the global decision-wait timeout from the reserved __global_settings__ registry record (ADR #103 1b). One value for the whole deployment; the Team UI can edit it, the free tier shows it read-only. Degrades to the 18000s (5h) default on any miss so the wait always has a value.",
+            "Comment": "Read the global decision-wait timeout from the reserved __global_settings__ registry record (ADR #103 1b). One value for the whole deployment. Degrades to the 18000s (5h) default on any miss so the wait always has a value.",
             "Resource": "arn:aws:states:::dynamodb:getItem",
             "Arguments": {
                 "TableName": "${pipeline_registry_table}",

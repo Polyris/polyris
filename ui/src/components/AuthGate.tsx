@@ -25,6 +25,7 @@ function AuthLoading() {
         <div className="ag-auth-loading">
             <div className="ag-auth-loading-content">
                 <div className="ag-auth-loading-logo">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- static export (output: 'export') has no image optimizer for next/image; a fixed-size decorative logo */}
                     <img src="/logo-icon.png" alt="" aria-hidden="true" width="64" height="64" />
                 </div>
                 <Loader2 size={24} className="animate-spin" />

@@ -244,13 +244,13 @@ class WarningKind:
     (``records.warning_item``), and shown by the UI bell. Regenerate after a
     change (``make generate-enums``).
     """
-    COORDINATION = "coordination"  # a wake-up path failed, or registration could not finish
+    COORDINATION = "coordination"  # a wake-up path failed, registration could not finish, or a run could not be told how its task ended
     ZOMBIE = "zombie"              # a waiting task can no longer be woken; it was aborted
     PUSH = "push"                  # a pipeline scheduled on an asset could not be started
     SWEEPER = "sweeper"            # the sweeper woke a task whose wake-up hint was lost
     NOTIFY = "notify"              # notify_dependents failed after a task finished
     MANUAL = "manual"              # a manual action kept the task's real output instead of its marker
-    FACT = "fact"                  # a manual action could not record the asset facts it owed
+    FACT = "fact"                  # a task or a manual action could not record the asset facts it owed
 
 
 # =============================================================================

@@ -185,9 +185,10 @@ class AssetFanout:
         if fact.get("cascade") != "all":
             reader = FactStore(self.reconciler.resource, self.reconciler.asset_events_table, registry,
                                self.reconciler.clock(), on_unreadable=self.reconciler.unreadable_fact)
-            # `.within()` is judged as of the triggering fact, so a retry or a late record gives the same answer.
+            # The schedule is judged as it stood when the triggering fact arrived: `.within()` as of its time,
+            # and no fact recorded after it, so a retry, a late record or the catch-up gives the same answer.
             evaluation = evaluate_assets(schedule, target=evidence.partition_date, now=evidence.event_time,
-                                         reader=reader, known_facts=[evidence])
+                                         reader=reader, known_facts=[evidence], recorded_by=evidence.event_time)
             if not evaluation.ready:
                 return 0
         day = evidence.partition_date.isoformat()

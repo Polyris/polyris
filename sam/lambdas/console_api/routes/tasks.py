@@ -14,14 +14,15 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn
 from polyris.coordination import ownership
-from polyris.coordination.records import warning_item
+from polyris.coordination.records import cascade_of, warning_item
+from polyris.coordination.wake import DEAD_TOKEN_CODES
 from dal import asset_events_repo, executions_repo, pipelines_repo
 from dal.task_events_repo import task_events_repo
 from constants import Limits, TaskStatus, TASK_WAITING_STATUSES, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TASK_TERMINAL_STATUSES
@@ -803,6 +804,22 @@ def _row_outlets(item: Dict) -> Optional[List[Dict]]:
     return value if isinstance(value, list) else None
 
 
+def _row_cascade(item: Dict) -> str:
+    """The cascade the marked run's own facts would have had (ADR #57), from the start
+    input registration stores on the task row. A row from before 1.2 has no start
+    input, and its facts cascade as they always did, 'auto'."""
+    raw = item.get('starter_input')
+    if not raw:
+        return 'auto'
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError as e:
+        log.error("record_manual_success_facts", "the task row's starter_input is not JSON; the facts cascade 'auto'",
+                  execution_name=item.get('execution_name', ''), error=str(e))
+        return 'auto'
+    return cascade_of(value) if isinstance(value, dict) else 'auto'
+
+
 def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     """For Mark Successful specifically, record the facts of this task's
     outlets, as a normal completion would (ADR #130 §1). Every path that marks
@@ -811,7 +828,8 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     The outlets are the run's own, from the task row; a row from before 1.2
     has none, and they come from the pipeline registry's dag_metadata.nodes
     (ADR #119). The facts belong to the partition of the marked run, the row's
-    ``date`` — never the day the action happens (B-M1).
+    ``date`` — never the day the action happens (B-M1). Their cascade is the
+    run's own: a cascade='none' backfill starts no push consumer this way either.
 
     A fact that cannot be recorded does not undo the action: it becomes a
     `fact` warning in the bell (Principle #38), since nothing would ever
@@ -833,7 +851,7 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
         failed = {str(o.get('name')): 'the task row has no date' for o in outlets if o.get('name')}
     else:
         failed = record_facts_for_manual_success(
-            outlets, task_name, pipeline_name, str(partition_key), asset_events_repo,
+            outlets, task_name, pipeline_name, str(partition_key), asset_events_repo, cascade=_row_cascade(item),
         )
     for asset_name, error in failed.items():
         _warn_fact_not_recorded(item, task_name, asset_name, error)
@@ -1015,41 +1033,10 @@ def _execute_task_action(
 
     log.info(action_name, "Successfully completed", execution_name=execution_name, actual_task_name=actual_task_name)
 
-    # Send orchestration callback
+    # Tell the run how its task ended (ADR #135); the action itself is done and cannot be repeated
     if orchestration_token:
-        try:
-            callback_fn(orchestration_token, actual_task_name, reason)
-        except (sfn.exceptions.TaskTimedOut, sfn.exceptions.TaskDoesNotExist):
-            # Token expired or already consumed (e.g. mark_success/skip on waiting_decision task
-            # where orchestration_token was already consumed by notify_dependents).
-            # Expected — continue to notify_dependents so downstream unblocks.
-            log.warn(
-                action_name,
-                "Orchestration token expired/consumed — continuing to notify dependents",
-                execution_name=execution_name,
-            )
-        except sfn.exceptions.InvalidToken:
-            # Invalid token format — continue
-            log.warn(
-                action_name,
-                "Invalid orchestration token — continuing to notify dependents",
-                execution_name=execution_name,
-            )
-        except Exception as e:
-            err_str = str(e)
-            log.error(action_name, "Failed orchestration callback", execution_name=execution_name, error=err_str)
-            if 'AccessDenied' in err_str:
-                detail = 'IAM permission missing: states:SendTaskSuccess. Run sam deploy to fix.'
-            else:
-                detail = err_str
-            return cors_response(
-                500,
-                {
-                    'error': 'Failed to send orchestration callback',
-                    'detail': detail,
-                    'execution_name': execution_name,
-                },
-            )
+        answer_run(item, execution_name, target_status,
+                   lambda: callback_fn(orchestration_token, actual_task_name, reason))
     else:
         # No token means task failed before Run_Task recorded it (e.g. IAM error at startup)
         # Still notify dependents so downstream tasks can unblock
@@ -1158,6 +1145,43 @@ def mark_success(task_name: str, event: Dict) -> Dict:
     )
 
 
+def answer_run(item: Dict, execution_name: str, outcome: str, send: Callable[[], Any]) -> None:
+    """Tell the run how its task ended, after an operator ended it (ADR #135).
+
+    `outcome` is the task's new status. A closed token (`DEAD_TOKEN_CODES`) is
+    fine: the run was answered already, or it has ended. Any other error
+    leaves the run RUNNING with nothing to show for it, so the bell says so.
+    The action itself is done and cannot be repeated, so the request still
+    succeeds: a 500 here once told the operator that a skip had failed while
+    the row was already skipped.
+    """
+    try:
+        send()
+        return
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code', '') in DEAD_TOKEN_CODES:
+            log.info("answer_run", "The run's token is closed: it was answered already or has ended",
+                     execution_name=execution_name)
+            return
+        error = f'{type(e).__name__}: {e}'
+    except BotoCoreError as e:
+        error = f'{type(e).__name__}: {e}'
+    log.error("answer_run", "Could not tell the run how its task ended", execution_name=execution_name, error=error)
+    hint = (' The console API role needs states:SendTaskSuccess and states:SendTaskFailure.'
+            if 'AccessDenied' in error else '')
+    try:
+        executions_repo.put(warning_item(
+            kind='coordination', execution_name=execution_name, task_name=str(item.get('task_name', '')),
+            pipeline_name=str(item.get('pipeline_name', '')),
+            pipeline_execution=str(item.get('pipeline_execution', '')), task_date=str(item.get('date', '')),
+            error=(f'The task is {outcome}, but its run could not be told, so it stays RUNNING until you stop it '
+                   f'or it times out waiting for this task: {error}.{hint}'),
+            now=datetime.now(timezone.utc),
+        ))
+    except (ClientError, BotoCoreError) as e:
+        log.error("answer_run", "Could not write the warning row", execution_name=execution_name, error=str(e))
+
+
 def stop_task(task_name: str, event: Dict) -> Dict:
     """Stop a running task (pause) without marking as failed. Task can be resumed later.
     Also handles stopping waiting tasks by marking them as aborted.
@@ -1243,10 +1267,9 @@ def stop_task(task_name: str, event: Dict) -> Dict:
     # For aborted tasks: send orchestration callback if token exists
     # This prevents pipeline from hanging waiting for callback
     if final_status == 'aborted' and orchestration_token:
-        try:
-            sfn.send_task_failure(taskToken=orchestration_token, error='TaskAborted', cause='Task aborted via UI')
-        except Exception as e:
-            log.error("stop_task", "Failed orchestration callback", execution_name=execution_name, error=str(e))
+        answer_run(item, execution_name, final_status,
+                   lambda: sfn.send_task_failure(taskToken=orchestration_token, error='TaskAborted',
+                                                 cause='Task aborted via UI'))
 
     # Notify dependents ONLY for aborted (terminal status)
     # stopped is NOT terminal - task can be restarted, so don't notify dependents yet

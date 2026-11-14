@@ -111,11 +111,18 @@ def _check_coordination() -> Dict:
     except (ClientError, BotoCoreError) as e:
         log.error("health", "Could not read the engine health row", error=str(e))
         return {'status': UNHEALTHY, 'problems': [f'The engine health row cannot be read: {e}'], 'report': {}}
-    problems = sweep.engine_problems(report, datetime.now(timezone.utc))
-    shown = {k: report[k] for k in ('checked_at', 'fanout_mapping', 'fanout_result', 'stream', 'oldest_overdue',
-                                    'failed_steps') if report and k in report}
-    if report and 'push_retry_backlog' in report:
-        shown['push_retry_backlog'] = int(report['push_retry_backlog'])     # a DynamoDB Decimal
+    try:
+        problems = sweep.engine_problems(report, datetime.now(timezone.utc))
+        shown = {k: report[k] for k in ('checked_at', 'fanout_mapping', 'fanout_result', 'stream', 'oldest_overdue',
+                                        'failed_steps') if report and k in report}
+        if report and 'push_retry_backlog' in report:
+            shown['push_retry_backlog'] = int(report['push_retry_backlog'])     # a DynamoDB Decimal
+    except (AttributeError, TypeError, ValueError) as e:
+        # A row no writer produces, edited by hand or written by a bug: name it, as for a row that cannot be
+        # read. A 500 here would fail all of /api/health, which the console takes for "no problems" (Principle #51).
+        log.error("health", "The engine health row cannot be judged", error=str(e))
+        return {'status': UNHEALTHY, 'problems': [f'The engine health row cannot be read: {type(e).__name__}: {e}'],
+                'report': {}}
     return {'status': UNHEALTHY if problems else HEALTHY, 'problems': problems, 'report': shown}
 
 
