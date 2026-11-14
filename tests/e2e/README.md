@@ -51,6 +51,7 @@ Store the PAT as a CI secret. See `docs/features/api-tokens.md`.
 | `test_pipelines.py` | Pipeline CRUD | Write tests marked `@pytest.mark.write` |
 | `test_assets.py` | Asset queries | None (read-only) |
 | `test_routes.py` | Tasks, runs, notifications, error handling | None (read-only) |
+| `test_coordination_smoke.py` | Task coordination end to end: `wait_for`, Mark Successful, restart, asset-scheduled runs | Starts runs of the smoke pipelines (`write`, `smoke`) |
 
 ## Markers
 
@@ -64,6 +65,23 @@ pytest tests/e2e/ -m "not write"
 # Only write tests
 pytest tests/e2e/ -m write
 ```
+
+## Coordination smoke (release gate)
+
+`test_coordination_smoke.py` drives real runs on a dev platform: tasks waiting on assets, Mark Successful, a restart, and pipelines scheduled on assets (ADR #130). It needs the pipelines in `coordination_smoke/dag.py`, deployed once:
+
+```bash
+export POLYRIS_SMOKE_SFN_PREFIX=arn:aws:states:us-east-1:123456789012:stateMachine:acme-dev-polyris
+cd tests/e2e/coordination_smoke && polyris-deploy --stage dev --profile <profile>
+```
+
+The prefix names the platform's own test state machines (`<prefix>-test-quick`, `-test-success`, `-test-failure`), which the smoke tasks run. Then, from the repository root:
+
+```bash
+POLYRIS_API_URL=https://... POLYRIS_ID_TOKEN=plrs_... pytest tests/e2e/test_coordination_smoke.py -v
+```
+
+It takes about 15 minutes. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
 
 ## Getting a Cognito Token (fallback — prefer a PAT, see above)
 
