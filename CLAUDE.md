@@ -759,6 +759,7 @@ make test-cov
 3. **DefinitionUri vs inline** — always edit `sfn_templates/`, never inline in `template.yaml`.
 4. **pipeline_execution_short** — last 20 chars of `pipeline_execution`, with `.` and `:` stripped. Format: `-{date}-{hex8}`.
 5. **dependency_key** — `{task_name}-{pipeline_execution_short}`. Must match exactly between writer (registration) and reader (query_subscriptions).
+6. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`).
 
 ---
 

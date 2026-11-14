@@ -252,7 +252,7 @@
       "Comment": "Send failure callback if orchestration token exists AND helper didn't already handle it",
       "Choices": [
         {
-          "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' and $not($states.input.helper_failed) %}",
+          "Condition": "{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' and $not($exists($states.input.helper_failed) and $states.input.helper_failed = true) %}",
           "Next": "Send_Task_Failure"
         }
       ],

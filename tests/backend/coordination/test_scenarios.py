@@ -161,6 +161,9 @@ def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
     world.time_out_registration(run, "consumer")
     assert world.status(run, "consumer") == "failed"
     assert "Timed out waiting for dependencies" in str(world.row(run, "consumer")["error"])
+    # The run itself ends too: the failure handler answers the pipeline's token. It did not
+    # when the wrapper's input had no helper_failed, and the run stayed RUNNING (F16, live).
+    assert world.pipeline_status(run) == "FAILED"
     world.write_event(A, DATE)
     world.deliver_hints()
     assert world.running_tasks(run) == []
