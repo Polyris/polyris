@@ -6,6 +6,13 @@ Write tests are marked with @pytest.mark.write so you can skip them: pytest -m "
 """
 import pytest
 
+from polyris.constants import PipelineStatus, TaskStatus
+
+#: Every value a pipeline's `status` may take (ADR #112): ExecutionStatus plus idle.
+PIPELINE_STATUSES = {v for k, v in vars(PipelineStatus).items() if not k.startswith("_")}
+#: What `waiting_on` may say: the latest run waits for an operator, or nothing (ADR #136).
+WAITING_ON = {None, TaskStatus.WAITING_DECISION.value, TaskStatus.WAITING_PAUSED.value}
+
 
 # =============================================================================
 # Read-only pipeline endpoints
@@ -31,6 +38,43 @@ class TestListPipelines:
         for p in registered_pipelines:
             pipeline = p if isinstance(p, dict) else {"name": p}
             assert "name" in pipeline or isinstance(p, str)
+
+
+class TestPipelinesSidebarContract:
+    """GET /api/pipelines?stats=true — the answer the console's sidebar reads (ADR #136).
+
+    A registry that cannot be read answers 500; that path is pinned by the console's unit
+    tests (test_pipelines_list_reconcile.py), since a live stack cannot be made to fail it.
+    """
+
+    def test_answers_the_pipelines_and_whether_their_stats_are_complete(self, api):
+        resp = api.get("/api/pipelines", params={"stats": "true"})
+        assert resp["status"] == 200
+        body = resp["body"]
+        assert isinstance(body, dict), f"expected an object, got {type(body).__name__}"
+        assert isinstance(body.get("stats_incomplete"), bool)
+        assert isinstance(body.get("pipelines"), list)
+
+    def test_each_pipeline_carries_its_latest_status_runs_and_wait(self, api):
+        pipelines = api.get("/api/pipelines", params={"stats": "true"})["body"]["pipelines"]
+        if not pipelines:
+            pytest.skip("No pipelines registered")
+        for p in pipelines:
+            name = p.get("name")
+            assert isinstance(name, str) and name
+            assert p.get("status") in PIPELINE_STATUSES, f"{name}: status {p.get('status')!r}"
+            assert "waiting_on" in p and p["waiting_on"] in WAITING_ON, f"{name}: waiting_on {p.get('waiting_on')!r}"
+            assert "today_stats" not in p and "progress" not in p, f"{name}: removed fields are back"
+            runs = p.get("recent_runs")
+            if runs is None:
+                assert p["status"] == PipelineStatus.IDLE, f"{name}: no runs but status {p['status']!r}"
+                continue
+            assert isinstance(runs, list) and len(runs) <= 10, f"{name}: recent_runs {runs!r}"
+            for run in runs:
+                assert {"date", "exec", "status"} <= set(run), f"{name}: run {run!r}"
+                assert run["status"] in PIPELINE_STATUSES - {PipelineStatus.IDLE}, f"{name}: run {run!r}"
+            if runs:
+                assert p["status"] == runs[0]["status"], f"{name}: status is not the latest run's"
 
 
 class TestPipelineStatus:
