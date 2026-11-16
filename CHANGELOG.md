@@ -1,6 +1,6 @@
 ## Unreleased
 
-### Upgrading to 1.3.0 (ADR #136)
+### Upgrading to 1.2.1 (ADR #136)
 
 1. **Groups.** The console's sidebar groups pipelines by `DAG(group=)` only (see *Changed — the pipelines sidebar*). Add `group="…"` to the DAGs whose name prefix you relied on, and redeploy them with `polyris-deploy`; until then they are listed under **Ungrouped**, or flat when no pipeline sets a group.
 2. **API clients.** `/api/pipelines` no longer returns `today_stats` or `progress`, and ignores `date`. A script that read them takes a pipeline's state from `status` and `recent_runs`, or a day's tasks from `/api/tasks?date=`. The answer is still an object, `{"pipelines": [...], "stats_incomplete": …}`; `stats_incomplete` and `waiting_on` are new. A pipeline registry the API cannot read now fails the request with a 500, instead of an answer built from the tokens table without groups or schedules.
