@@ -19,6 +19,7 @@ from polyris import DAG, task
 
 with DAG(
     dag_id="daily-analytics",
+    group="features",
     schedule="cron(0 5 * * ? *)",          # 05:00 UTC every day
     description="Daily analytics: ingest → clean → aggregate → report → publish.",
     tags=["example", "analytics", "daily"],

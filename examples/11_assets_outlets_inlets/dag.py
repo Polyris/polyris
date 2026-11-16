@@ -30,6 +30,7 @@ clean_orders = Asset("clean/orders", uri="s3://polyris-example/clean/orders/", g
 
 with DAG(
     dag_id="orders-clean",
+    group="orders",
     schedule="@daily",
     description="Extract raw orders, then clean them — with asset lineage.",
 ) as dag:

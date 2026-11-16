@@ -14,6 +14,7 @@ ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:worker"
 
 with DAG(
     dag_id="direct-steps-demo",
+    group="basics",
     schedule="rate(6 hours)",
     description="Direct service steps (Wait/Pass/SNS/SQS/S3) mixed with tasks.",
     tags=["example", "direct-steps"],

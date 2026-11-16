@@ -56,6 +56,7 @@ from polyris import DAG, task
 
 with DAG(
     dag_id="xcom-showcase",
+    group="features",
     schedule="cron(0 5 * * ? *)",   # 05:00 UTC daily
     description="Every XCom reader/writer path in one pipeline (1.0.0 features).",
     tags=["example", "xcom", "reference"],

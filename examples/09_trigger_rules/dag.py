@@ -32,6 +32,7 @@ ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
 with DAG(
     dag_id="trigger-rules-reference",
+    group="features",
     schedule="@daily",
     description="One downstream marker per trigger rule, fed by two extracts.",
 ) as dag:

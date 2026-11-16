@@ -19,6 +19,7 @@ ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
 with DAG(
     dag_id="branching-demo",
+    group="basics",
     schedule="@hourly",
     description="Fan-out to parallel branches, fan back in with trigger rules.",
     tags=["example", "branching"],

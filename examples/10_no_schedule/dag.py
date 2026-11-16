@@ -17,6 +17,7 @@ ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
 with DAG(
     dag_id="manual-adhoc-load",
+    group="basics",
     # no schedule → manual / on-demand only
     description="Runs only when triggered by hand (no timer).",
 ) as dag:

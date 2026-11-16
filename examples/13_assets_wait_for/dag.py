@@ -43,6 +43,7 @@ orders_daily = Asset("analytics/orders_daily", uri="s3://polyris-example/analyti
 
 with DAG(
     dag_id="orders-report",
+    group="orders",
     schedule="@daily",  # own timer — unlike 12_assets_schedule_trigger, NOT asset-triggered
     description="Build a summary report once analytics/orders_daily is fresh (pull model).",
 ) as dag:

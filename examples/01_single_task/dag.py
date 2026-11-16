@@ -21,6 +21,7 @@ HELLO_ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn
 
 with DAG(
     dag_id="hello-world",
+    group="basics",
     schedule="@daily",                    # midnight UTC; also "@hourly", or cron(...)
     description="The smallest polyris pipeline: one task, once a day.",
 ) as dag:
