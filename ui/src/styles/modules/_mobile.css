@@ -26,6 +26,9 @@
 @media (max-width: 1024px) {
     .main-top { grid-template-columns: 270px 1fr; }
     .sidebar { min-width: 270px; }
+    /* A 270px sidebar leaves a pipeline name too little room next to the schedule;
+       the schedule stays in the row's accessible name */
+    .sb-row__schedule { display: none; }
     
     /* Hide breadcrumbs on tablet */
     .hdr-breadcrumbs { display: none; }
@@ -93,9 +96,6 @@
         padding: 6px 8px;
     }
     .nav-pills .hdr-nav-pill-label { display: none; }
-    
-    /* Connection banner */
-    .connection-banner { font-size: 0.75rem; padding: 0.375rem 0.75rem; }
     
     /* Sidebar as drawer */
     .main-top {
@@ -300,18 +300,23 @@
         bottom: 0.5rem;
     }
     
-    /* Pipeline group headers in sidebar */
-    .sb-pipeline-group-header {
-        padding: 8px 12px !important;
-        font-size: 12px !important;
+    /* Sidebar drawer: rows, groups and the search become 40px tap targets (ADR #40) */
+    .sb-row,
+    .sb-group,
+    .sb-search {
+        height: 40px;
     }
-    
-    /* Pipeline item: ensure text doesn't overflow */
-    .sb-pipeline-name {
-        font-size: 0.8rem;
+    .sb-foldall {
+        height: 36px;
     }
-    .sb-pipeline-meta {
-        font-size: 0.7rem;
+    .sb-list { scroll-padding-top: 2.75rem; }
+    /* The drawer (up to 360px) has room for the schedule the tablet sidebar hides */
+    .sb-row__schedule { display: block; }
+    /* 16px keeps iOS from zooming into the field on focus */
+    .sb-search__input { font-size: 16px; }
+    .sb-search__clear {
+        width: 36px;
+        height: 36px;
     }
 
     /* AssetDetailPage — collapse sidebar, compact header, scrollable tabs */
@@ -638,4 +643,18 @@
     .amv-refresh-btn { gap: 4px; }
     /* Hide weekday for ultra-tight rows */
     .amv-date-weekday { display: none; }
+}
+
+/* A touch screen of any width: the sidebar's rows, groups and search are 40px tap targets
+   (ADR #40), and the "/" hint, a keyboard shortcut, is not shown */
+@media (pointer: coarse) {
+    .sb-row,
+    .sb-group,
+    .sb-search {
+        height: 40px;
+    }
+    .sb-foldall { height: 36px; }
+    .sb-kbd { display: none; }
+    /* Keeps a row reached with k clear of the 40px sticky group header */
+    .sb-list { scroll-padding-top: 2.75rem; }
 }

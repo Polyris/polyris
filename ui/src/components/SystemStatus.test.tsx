@@ -43,18 +43,20 @@ const HEALTHY = apiAnswered(createHealthBody());
 const ATTENTION = apiAnswered(createHealthBody({ coordination: 'unhealthy' }, [MAPPING_OFF]));
 const toastText = (title: string) => `System needs attention: ${title}. Open System in the header for details.`;
 
+const LOST = { unreachable: true, message: 'Could not reach the API. Check your connection and that the console API URL is set correctly.' };
+
 function renderStatus({ apiConnected = true } = {}) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const tree = (connected: boolean) => (
         <QueryClientProvider client={client}>
             <ToastProvider>
                 <button type="button">Elsewhere</button>
-                <SystemStatus apiConnected={connected} />
+                <SystemStatus connectionError={connected ? null : LOST} />
             </ToastProvider>
         </QueryClientProvider>
     );
     const view = render(tree(apiConnected));
-    return { ...view, setConnected: (connected: boolean) => view.rerender(tree(connected)) };
+    return { ...view, client, setConnected: (connected: boolean) => view.rerender(tree(connected)) };
 }
 
 /** jsdom has no Clipboard API: give navigator one (or explicitly none) for a test. */
@@ -160,16 +162,17 @@ describe('the pill', () => {
         expect(mockGet).toHaveBeenCalledTimes(2);
     });
 
-    it('is unknown while the console cannot reach its API, whatever /api/health said', async () => {
+    it('is amber "no connection" while the console cannot reach its API, whatever /api/health said', async () => {
         mockGet.mockResolvedValue(HEALTHY);
         const { setConnected } = renderStatus({ apiConnected: false });
-        expect(pill()).toHaveAccessibleName('System · status unknown');
+        expect(pill()).toHaveAccessibleName('System · no connection');
+        expect(pill()).toHaveAttribute('data-level', 'connection');
         await waitFor(() => expect(mockGet).toHaveBeenCalled());
-        expect(pill()).toHaveAccessibleName('System · status unknown');
+        expect(pill()).toHaveAccessibleName('System · no connection');
         setConnected(true);
         await pillShows('System, all checks pass');
         setConnected(false);
-        expect(pill()).toHaveAccessibleName('System · status unknown');
+        expect(pill()).toHaveAccessibleName('System · no connection');
     });
 
     it('is unknown, never green, when a word the rule needs is missing', async () => {
@@ -309,11 +312,15 @@ describe('the panel', () => {
         expect(mockGet).toHaveBeenCalledTimes(3);
     });
 
-    it('names the lost connection as the reason', async () => {
+    it('names the lost connection as the reason, says why, and retries the pipelines read too', async () => {
         mockGet.mockResolvedValue(HEALTHY);
-        renderStatus({ apiConnected: false });
+        const { client } = renderStatus({ apiConnected: false });
+        const invalidate = vi.spyOn(client, 'invalidateQueries');
         const dialog = await openPanel();
-        expect(within(dialog).getByText(/^The status could not be read: the console has lost its connection to the API\./)).toBeInTheDocument();
+        expect(within(dialog).getByText(/^The console has lost its connection to the API\./)).toBeInTheDocument();
+        expect(within(dialog).getByText(LOST.message)).toBeInTheDocument();
+        fireEvent.click(within(dialog).getByRole('button', { name: /Retry now|Checking/ }));
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['pipelines'] });
     });
 });
 

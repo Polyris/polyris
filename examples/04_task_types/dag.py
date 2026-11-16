@@ -24,6 +24,7 @@ from polyris import DAG, task
 
 with DAG(
     dag_id="multi-service-etl",
+    group="features",
     schedule="cron(0 3 * * ? *)",           # 03:00 UTC daily
     description="One task per AWS service — a tour of the task types.",
     tags=["example", "reference", "multi-service"],

@@ -27,9 +27,13 @@ class DAG:
             start_date=datetime(2025, 1, 1),
             catchup=False,
             default_args={"retries": 0},
+            group="orders",
             tags=["production"],
         ) as dag:
             ...
+
+    `group` is the group the console's pipelines sidebar lists the pipeline
+    under (compared without case); without one it is listed under Ungrouped.
     
     Alerts are configured in the Console UI (Settings → Alerts), not in
     the DSL.

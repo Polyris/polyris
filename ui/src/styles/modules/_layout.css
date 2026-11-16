@@ -95,12 +95,14 @@
    do not on a light ground, so the light theme uses darker shades.
    ============================================================ */
 .sys-status,
-.sys-modal {
+.sys-modal,
+.ntf-notification-bell-container {
     --sys-ok: #15803d;
     --sys-amber: #b45309;
 }
 [data-theme="dark"] .sys-status,
-[data-theme="dark"] .sys-modal {
+[data-theme="dark"] .sys-modal,
+[data-theme="dark"] .ntf-notification-bell-container {
     --sys-ok: var(--success);
     --sys-amber: var(--warning);
 }
@@ -125,6 +127,13 @@
 /* The ground stays put on hover: a darker amber ground would drop the icon below 4.5:1. */
 .sys-pill[data-level="attention"]:hover { border-color: var(--sys-amber); box-shadow: inset 0 0 0 1px var(--sys-amber); }
 .sys-pill[data-level="attention"] .sys-pill__icon { color: var(--sys-amber); }
+/* The pipelines read fails: amber, as the bell and the sidebar show the same outage */
+.sys-pill[data-level="connection"] {
+    background: var(--warning-light);
+    border-color: color-mix(in srgb, var(--sys-amber) 45%, var(--border));
+}
+.sys-pill[data-level="connection"]:hover { border-color: var(--sys-amber); box-shadow: inset 0 0 0 1px var(--sys-amber); }
+.sys-pill[data-level="connection"] .sys-pill__icon { color: var(--sys-amber); }
 .sys-pill[data-level="unknown"] { background: var(--bg-tertiary); }
 .sys-pill[data-level="unknown"]:hover { background: var(--bg-hover); }
 
@@ -163,6 +172,12 @@
 
 .sys-panel__unknown { display: grid; justify-items: start; gap: 0.75rem; padding: 0.875rem 1rem; font-size: 0.8125rem; }
 .sys-panel__unknown p { margin: 0; }
+.sys-panel__unknown .sys-panel__detail { color: var(--text-secondary); }
+.sys-panel__connection {
+    margin: 0; padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--warning-light); font-size: 0.8125rem;
+}
 .sys-panel__retry,
 .sys-finding__copy-btn {
     display: inline-flex; align-items: center; gap: 0.375rem;
@@ -223,8 +238,7 @@
 }
 
 .sidebar-header {
-    padding: 1rem;
-    border-bottom: 1px solid var(--border);
+    padding: 1rem 1rem 0.75rem;
     display: flex; justify-content: space-between; align-items: center;
     flex-shrink: 0;
 }
@@ -232,124 +246,169 @@
     font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.05em; color: var(--text-secondary);
 }
+.sidebar-header__actions { display: flex; align-items: center; gap: 0.375rem; }
+.sb-foldall {
+    height: 22px; padding: 0 0.375rem;
+    border: 0; border-radius: 4px; background: transparent;
+    color: var(--text-secondary); font: inherit; font-size: 0.6875rem; font-weight: 500;
+    cursor: pointer; white-space: nowrap;
+}
+.sb-foldall:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 .pipeline-count {
     background: var(--bg-tertiary); color: var(--text-secondary);
     padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500;
 }
 
-.pipeline-list { flex: 1; overflow-y: auto; padding: 0.5rem; }
-
-/* Sidebar search input */
+/* Sidebar search — one 16px left edge with the header and the list rows */
 .sidebar-search {
-    padding: 0 0.75rem 0.75rem;
+    padding: 0 1rem 0.75rem;
     flex-shrink: 0;
 }
-.sidebar-search input {
-    width: 100%;
-    padding: 0.5rem 0.75rem;
+.sb-search {
+    display: flex; align-items: center; gap: 0.5rem;
+    height: 34px;
+    padding: 0 0.375rem 0 0.625rem;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: 0.85rem;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.sidebar-search input:focus {
-    outline: none;
+.sb-search:focus-within {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-light);
 }
-.sidebar-search input::placeholder {
-    color: var(--text-muted);
+.sb-search__icon { flex-shrink: 0; color: var(--text-secondary); }
+.sb-search__input {
+    flex: 1; min-width: 0;
+    border: 0; outline: none; background: transparent;
+    color: var(--text-primary); font: inherit; font-size: 0.8125rem;
 }
-
-.sb-pipeline-item {
-    display: flex; align-items: center; gap: 0.75rem;
-    padding: 0.75rem; border-radius: 8px;
-    cursor: pointer; transition: all 0.15s ease;
-    margin-bottom: 0.25rem;
-    border-left: 3px solid transparent;
-    color: var(--nav-text);
-}
-.sb-pipeline-item:hover { 
-    background: var(--nav-bg-hover); 
-    color: var(--nav-text-hover);
-}
-.sb-pipeline-item.active { 
-    background: var(--nav-bg-active); 
-    border-left-color: var(--nav-border-active);
-    color: var(--nav-text-active);
-}
-
-.sb-pipeline-icon {
-    width: 36px; height: 36px; border-radius: 8px;
+/* The placeholder is the field's only visible label: text-secondary, not the 2.5:1 muted grey */
+.sb-search__input::placeholder { color: var(--text-secondary); }
+.sb-search__clear {
     display: flex; align-items: center; justify-content: center;
-    font-size: 1rem; flex-shrink: 0;
+    width: 22px; height: 22px; padding: 0;
+    border: 0; border-radius: 4px; background: transparent;
+    color: var(--text-secondary); cursor: pointer;
 }
-.sb-pipeline-icon.running { background: var(--running-light); color: var(--running); }
-.sb-pipeline-icon.success, .sb-pipeline-icon.succeeded { background: var(--success-light); color: var(--success); }
-.sb-pipeline-icon.failed { background: var(--error-light); color: var(--error); }
-.sb-pipeline-icon.waiting { background: var(--waiting-light); color: var(--waiting); }
-.sb-pipeline-icon.idle { background: var(--bg-tertiary); color: var(--text-muted); }
-.sb-pipeline-icon.aborted { background: var(--aborted-light); color: var(--aborted); }
-.sb-pipeline-icon.timed_out { background: var(--error-light); color: var(--error); }
-.sb-pipeline-icon.recovered { background: var(--warning-light); color: var(--warning); }
-
-.sb-pipeline-info { flex: 1; min-width: 0; }
-.sb-pipeline-name { font-weight: 600; font-size: 0.875rem; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pipeline-status { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.125rem; opacity: 0.8; }
-
-/* Pipeline header with name and SLA */
-.pipeline-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.25rem;
+.sb-search__clear:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.sb-kbd {
+    display: inline-block; min-width: 0.5rem; padding: 0 0.25rem;
+    border: 1px solid var(--border-strong); border-radius: 3px;
+    background: var(--bg-secondary); color: var(--text-secondary);
+    font-family: var(--font-mono); font-size: 0.625rem; line-height: 15px; text-align: center;
 }
 
-/* Pipeline meta info (schedule, next run) */
-.sb-pipeline-meta {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-    margin-top: 0.25rem;
+/* Sidebar list: sections, groups and one-line pipeline rows */
+.sb-list {
+    flex: 1; min-height: 0; overflow-y: auto;
+    /* No top padding: a sticky group header sticks below it, and rows would show through the strip */
+    padding: 0 0.5rem 0.5rem;
+    border-top: 1px solid var(--border);
+    /* Keeps a row focused by k / ↑ clear of the sticky group header above it */
+    scroll-padding-top: 2rem;
 }
-/* Pipeline Schedule (shown after status) */
-.sb-pipeline-schedule {
-    opacity: 0.7;
-    white-space: nowrap;
+.sb-section {
+    display: flex; justify-content: space-between; align-items: center;
+    margin: 0; padding: 1rem 0.5rem 0.375rem;
+    font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--text-secondary);
+}
+.sb-section:first-child { padding-top: 0.625rem; }
+/* A first row gets the gap the list's top padding gave (a group header has its own margin) */
+.sb-list > .sb-row:first-child { margin-top: 0.25rem; }
+/* 11px text: the error colour is darkened in light mode to reach 4.5:1 on white */
+.sb-section--attention { color: color-mix(in srgb, var(--error) 70%, black); }
+[data-theme="dark"] .sb-section--attention { color: var(--error); }
+.sb-section__count { font-variant-numeric: tabular-nums; }
+/* "Needs attention" folds: its header is a button carrying the section's look */
+.sb-section__toggle {
+    display: flex; align-items: center; gap: 0.375rem;
+    width: 100%; margin: 0 -0.25rem; padding: 0.125rem 0.25rem;
+    border: 0; border-radius: 4px; background: transparent;
+    color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit;
+    cursor: pointer;
+}
+.sb-section__toggle:hover { background: var(--nav-bg-hover); }
+.sb-section__label { flex: 1; min-width: 0; text-align: left; }
+
+.sb-group {
+    position: sticky; top: 0; z-index: 1;
+    display: flex; align-items: center; gap: 0.375rem;
+    width: 100%; height: 28px; margin-top: 0.25rem; padding: 0 0.5rem;
+    border: 0; border-radius: 6px;
+    background: var(--bg-secondary); color: var(--text-primary);
+    font: inherit; font-size: 0.75rem; font-weight: 600; text-align: left;
+    cursor: pointer;
+}
+.sb-group:hover { background: var(--nav-bg-hover); }
+/* A group of search matches: a label, not a button */
+.sb-group--static { cursor: default; }
+.sb-group--static:hover { background: var(--bg-secondary); }
+/* Folded, and the open pipeline is inside */
+.sb-group--current { background: var(--nav-bg-active); color: var(--nav-text-active); }
+.sb-group svg { flex-shrink: 0; color: var(--text-secondary); }
+.sb-group__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-group__count { font-size: 0.6875rem; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+/* "N failed" on a folded group; the error colour darkened in light mode to reach 4.5:1 */
+.sb-badge {
+    padding: 1px 6px; border-radius: 9999px; font-size: 0.6875rem; font-weight: 600;
+    background: var(--error-light); color: color-mix(in srgb, var(--error) 70%, black);
+}
+[data-theme="dark"] .sb-badge { color: var(--error); }
+
+.sb-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    width: 100%; height: 30px; padding: 0 0.5rem;
+    border: 0; border-radius: 6px;
+    background: transparent; color: var(--text-primary);
+    font: inherit; text-align: left;
+    cursor: pointer; transition: background 0.15s ease;
+}
+/* Under a group: the status icon lines up with the group's label (chevron 12px + gap 6px) */
+.sb-row--indented { padding-left: 1.625rem; }
+.sb-row:hover { background: var(--nav-bg-hover); }
+.sb-row--selected { background: var(--nav-bg-active); color: var(--nav-text-active); }
+.sb-row--selected .sb-row__name { font-weight: 600; }
+.sb-row__icon { display: flex; flex-shrink: 0; align-items: center; justify-content: center; width: 14px; height: 14px; }
+.sb-row__name {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 0.8125rem; font-weight: 500;
+}
+.sb-row__schedule {
+    width: 76px; flex-shrink: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    text-align: right; font-size: 0.6875rem; color: var(--text-secondary);
 }
 
-/* Run Sparkline - mini chart of recent runs */
-.sb-run-sparkline {
-    display: flex;
-    gap: 2px;
-    margin-top: 0.375rem;
-    height: 4px;
-    align-items: stretch;
+/* Run sparkline: one full-height bar per run, oldest left; an empty slot is a faint track */
+.sb-spark { display: flex; gap: 1px; align-items: stretch; height: 12px; flex-shrink: 0; }
+.sb-spark__bar { width: 3px; border-radius: 1px; background: var(--bg-tertiary); }
+.sb-spark__bar--running { background: var(--running); animation: spark-pulse 1.5s ease-in-out infinite; }
+.sb-spark__bar--failed, .sb-spark__bar--timed_out { background: var(--error); }
+/* Light mode: a 3px bar needs 3:1 against the row, also when selected (WCAG 1.4.11);
+   the plain success, warning and orange tokens reach about 2:1 on white */
+.sb-spark__bar--success { background: color-mix(in srgb, var(--success) 70%, black); }
+.sb-spark__bar--recovered { background: color-mix(in srgb, var(--warning) 70%, black); }
+.sb-spark__bar--aborted { background: color-mix(in srgb, var(--aborted) 75%, black); }
+[data-theme="dark"] .sb-spark__bar--success { background: var(--success); }
+[data-theme="dark"] .sb-spark__bar--recovered { background: var(--warning); }
+[data-theme="dark"] .sb-spark__bar--aborted { background: var(--aborted); }
+/* No run in the window: a small hollow circle, quiet next to real statuses, still 3:1 */
+.sb-row__idle { color: color-mix(in srgb, var(--text-muted) 70%, black); }
+[data-theme="dark"] .sb-row__idle { color: var(--text-muted); }
+
+/* Some runs could not be read (`stats_incomplete`): said once, above the list */
+.sb-note {
+    display: flex; align-items: flex-start; gap: 0.5rem;
+    padding: 0.375rem 1rem;
+    background: var(--warning-light);
+    font-size: 0.75rem; color: var(--text-primary);
+    flex-shrink: 0;
 }
-.sb-run-spark {
-    flex: 1;
-    border-radius: 1px;
-    min-width: 3px;
-    max-width: 12px;
-}
-.sb-run-spark.success, .sb-run-spark.succeeded { background: var(--success); opacity: 0.7; }
-.sb-run-spark.failed { background: var(--error); opacity: 0.85; }
-.sb-run-spark.running { background: var(--running); opacity: 0.7; animation: spark-pulse 1.5s ease-in-out infinite; }
-.sb-run-spark.aborted { background: var(--aborted); opacity: 0.75; }
-.sb-run-spark.timed_out { background: var(--error); opacity: 0.6; }
-.sb-run-spark.recovered { background: var(--warning); opacity: 0.75; }
-.sb-run-spark.skipped { background: var(--skipped); opacity: 0.6; }
+.sb-note__icon { flex-shrink: 0; margin-top: 1px; color: var(--warning); }
 @keyframes spark-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-
-/* Pipeline Progress Bar — removed in v67 (replaced by run sparkline) */
-
-/* Glow effect for running pipelines */
-.sb-pipeline-item.running-glow {
-    box-shadow: 0 0 15px rgba(59, 130, 246, 0.15);
-}
 
 /* Notifications */
 .ntf-notification-bell-container {
@@ -373,6 +432,8 @@
 .ntf-notification-bell.has-notifications {
     animation: bellShake 0.5s ease-in-out;
 }
+/* A failed load: nothing new arrived, so no shake; amber, as the System pill shows an outage */
+.ntf-notification-bell.has-error { color: var(--sys-amber); }
 
 @keyframes bellShake {
     0%, 100% { transform: rotate(0); }
@@ -397,6 +458,23 @@
     justify-content: center;
     padding: 0 4px;
 }
+
+/* The notifications could not be loaded: never shown as "nothing to report" */
+/* Dark text on amber: white on --warning is about 2:1 */
+.ntf-notification-badge--warning { background: var(--warning); color: #422006; }
+.ntf-notification-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--warning-light);
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+}
+.ntf-notification-error__icon { flex-shrink: 0; margin-top: 2px; color: var(--warning); }
+.ntf-notification-error__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
+.ntf-notification-error__text span { color: var(--text-secondary); }
 
 .ntf-notification-dropdown {
     position: absolute;

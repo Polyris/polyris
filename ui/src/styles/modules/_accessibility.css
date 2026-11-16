@@ -28,14 +28,15 @@ textarea:focus:not(:focus-visible) {
 /* Tabs and clickable items */
 .nav-tab:focus-visible,
 .nav-pill:focus-visible,
-.sb-pipeline-item:focus-visible,
+.sb-row:focus-visible,
+.sb-search__clear:focus-visible,
 .cp-command-item:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
 
 /* Group headers and toggle buttons */
-.sb-pipeline-group-header:focus-visible,
+.sb-group:focus-visible,
 .hdr-status-badge[role="button"]:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -1px;
@@ -128,7 +129,7 @@ textarea:focus:not(:focus-visible) {
         animation: none !important;
     }
     
-    .running-glow {
+    .sb-spark__bar--running {
         animation: none !important;
     }
 }

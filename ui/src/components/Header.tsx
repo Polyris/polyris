@@ -1,3 +1,4 @@
+import type { ConnectionProblem } from '@/utils/api';
 import React from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import Notifications from './Notifications';
@@ -14,8 +15,8 @@ import {
 } from 'lucide-react';
 
 interface HeaderProps {
-    /** False while the console cannot reach its API; the System status then reads unknown. */
-    apiConnected: boolean;
+    /** The failed read of the pipelines list, or null. */
+    connectionError: ConnectionProblem | null;
     onNotificationNavigate: (pipelineName: string, executionId?: string, date?: string) => void;
     /** ADR #68 — navigate to backfill detail from backfill notification. */
     onNotificationNavigateBackfill?: (backfillId: string) => void;
@@ -28,7 +29,7 @@ interface HeaderProps {
  * (breadcrumbs) and global controls (System status, auto-refresh, notifications).
  * The theme toggle and account menu live in the left rail's account menu (AppNav). Top-level view is read from the pathname; other state from Zustand.
  */
-export function Header({ apiConnected, onNotificationNavigate, onNotificationNavigateBackfill }: HeaderProps) {
+export function Header({ connectionError, onNotificationNavigate, onNotificationNavigateBackfill }: HeaderProps) {
     const { pathname } = useClientRoute();
     const mainView = viewFromPathname(pathname);
 
@@ -54,7 +55,7 @@ export function Header({ apiConnected, onNotificationNavigate, onNotificationNav
 
             {/* Header Controls */}
             <div className="hdr-header-controls">
-                <SystemStatus apiConnected={apiConnected} />
+                <SystemStatus connectionError={connectionError} />
 
                 {/* Live Mode Toggle */}
                 <div

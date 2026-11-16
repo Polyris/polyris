@@ -19,14 +19,18 @@ vi.mock('./BaseModal', () => ({
 }));
 
 // Mock useNotificationsQuery hook
-const { mockQueryData } = vi.hoisted(() => ({
+const { mockQueryData, mockQueryError, mockRefetch } = vi.hoisted(() => ({
     mockQueryData: { current: [] as unknown[] },
+    mockQueryError: { current: null as Error | null },
+    mockRefetch: vi.fn(),
 }));
 vi.mock('@/hooks/queries', () => ({
     useNotificationsQuery: () => ({
         data: mockQueryData.current,
         isLoading: false,
-        error: null,
+        isError: mockQueryError.current !== null,
+        error: mockQueryError.current,
+        refetch: mockRefetch,
     }),
 }));
 
@@ -37,6 +41,8 @@ describe('Notifications', () => {
     beforeEach(() => {
         onNavigate = vi.fn();
         mockQueryData.current = [];
+        mockQueryError.current = null;
+        mockRefetch.mockReset();
         
         // Mock Notification API
         Object.defineProperty(window, 'Notification', {
@@ -87,6 +93,30 @@ describe('Notifications', () => {
             render(<Notifications onNavigate={onNavigate} />);
             fireEvent.click(screen.getByTitle('No notifications'));
             expect(screen.getByText('No new notifications')).toBeInTheDocument();
+        });
+
+        it('a failed load says so on the bell and in the panel, never "No new notifications" (Principle #38)', () => {
+            mockQueryError.current = new Error('HTTP 503');
+            render(<Notifications onNavigate={onNavigate} />);
+            fireEvent.click(screen.getByTitle("Couldn't load notifications"));
+            expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load notifications");
+            expect(screen.getByRole('alert')).toHaveTextContent('server error');
+            expect(screen.queryByText('No new notifications')).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+            expect(mockRefetch).toHaveBeenCalledTimes(1);
+        });
+
+        it('a failed refresh keeps the last list and says the refresh failed', () => {
+            mockQueryData.current = [createNotification({ id: 'n1' })];
+            mockQueryError.current = new Error('Failed to fetch');
+            render(<Notifications onNavigate={onNavigate} />);
+            const bell = screen.getByTitle("Couldn't load notifications (1 from before)");
+            expect(bell).toHaveTextContent('1');
+            expect(bell).toHaveClass('has-error');
+            expect(bell).not.toHaveClass('has-notifications');
+            fireEvent.click(bell);
+            expect(screen.getByRole('alert')).toHaveTextContent('Could not reach the API');
+            expect(document.querySelectorAll('.ntf-notification-item').length).toBe(1);
         });
 
         it('names a coordination warning by its kind, with its error on hover', () => {

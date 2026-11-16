@@ -187,6 +187,18 @@ TaskTypeLiteral = Literal[
 ]
 
 
+# AWS error codes whose fix is an IAM permission on the caller's role for the action it
+# called. The deploy's resource check names that action; the console API raises them rather
+# than folding them into "could not check" (CLAUDE.md, Error Visibility). A KMS denial is not
+# here: its fix is kms:Decrypt, not the action that was called.
+ACCESS_DENIED_CODES: frozenset[str] = frozenset({
+    "AccessDenied",
+    "AccessDeniedException",
+    "UnauthorizedAccess",
+    "AuthFailure",
+})
+
+
 # Schedule presets
 SCHEDULE_PRESETS = {
     "@once": None,

@@ -1,9 +1,8 @@
 'use client';
 
-import React, { lazy, Suspense, useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
-import { Button } from '@/components/ui/button';
-import { AlertTriangle, Loader2 } from './utils/icons';
+import { Loader2 } from './utils/icons';
 import {
     HelpModal,
     ErrorBoundary,
@@ -19,7 +18,7 @@ import { usePipelinesQuery } from './hooks/queries';
 import { useAppStore } from './stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useStoreInit } from './stores/useStoreInit';
-import { POLLING, viewFromPathname } from './utils';
+import { POLLING, viewFromPathname, connectionProblem } from './utils';
 import type { PipelineWithUI } from './types';
 import { isMainView } from './types';
 
@@ -69,8 +68,11 @@ function App() {
         error: pipelinesError,
     } = usePipelinesQuery({ refetchInterval: liveMode ? POLLING.IDLE : false });
 
-    const apiConnected = !pipelinesError;
-    const apiError = pipelinesError ? `Cannot connect to API: ${pipelinesError.message}` : null;
+    // A lost connection to the API is said in one place, the System status in the header (the
+    // sidebar shows its own empty state when it has nothing to list): the reason, in words a
+    // reader can act on.
+    // One object per failure, so the System status does not re-run its effects on every render.
+    const connectionError = useMemo(() => (pipelinesError ? connectionProblem(pipelinesError) : null), [pipelinesError]);
 
     // ========== Store Init (URL sync, pipeline restore, effects) ==========
     const { navigateToExecution } = useStoreInit({ pipelines });
@@ -114,7 +116,7 @@ function App() {
     return (
         <div className="app-shell">
             <Header
-                apiConnected={apiConnected}
+                connectionError={connectionError}
                 onNotificationNavigate={(name, execId, date) => navigateToExecution(name, execId, date)}
                 onNotificationNavigateBackfill={(backfillId) => router.push(`/backfills/${backfillId}/`)}
             />
@@ -123,19 +125,11 @@ function App() {
             <div className="app">
             <a href="#main-content" className="skip-link">Skip to main content</a>
             
-            {!apiConnected && (
-                <div className="connection-banner" role="alert">
-                    <span><AlertTriangle size={16} /> Connection lost. Retrying...</span>
-                    <Button size="sm" variant="secondary" onClick={() => window.location.reload()}>Retry Now</Button>
-                </div>
-            )}
-
             <main className="main" id="main-content">
                 {mainView === 'pipelines' ? (
                     <div className="main-top">
                         <PipelinesSidebar />
                         <PipelineDetail
-                            apiError={apiError}
                             navigateToExecution={navigateToExecution}
                         />
                     </div>

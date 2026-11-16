@@ -1,6 +1,8 @@
 /** Without a pipeline or a date, /api/runs and /api/tasks read only the last
  *  HISTORY_WINDOW_DAYS days, one date at a time (console_api `Limits.SLA_DAYS`,
- *  feed.py, ADR #108). A chosen pipeline or date has no window. */
+ *  feed.py, ADR #108). A chosen pipeline or date has no window.
+ *  /api/pipelines?stats=true reads the same window for each pipeline's `status`
+ *  and `recent_runs`, which the pipelines sidebar shows. */
 export const HISTORY_WINDOW_DAYS = 14;
 
 export const isHistoryWindowed = (filter: { pipeline?: string; date?: string }): boolean =>

@@ -153,13 +153,26 @@ describe('formatRelativeTime', () => {
     });
 });
 
-import { formatSchedule, formatFreshnessWindow, formatFreshnessWindowLong } from './formatters';
+import { formatSchedule, formatFreshnessWindow, formatFreshnessWindowLong, SCHEDULE_PRESET_LABELS } from './formatters';
+import { SCHEDULE_PRESETS } from '../generated/enums';
 
 describe('formatSchedule', () => {
-    it('returns "Manual" for empty / missing schedule (on-demand pipelines)', () => {
-        expect(formatSchedule('')).toBe('Manual');
-        expect(formatSchedule(undefined)).toBe('Manual');
-        expect(formatSchedule(null)).toBe('Manual');
+    it('returns "manual" for empty / missing schedule (on-demand pipelines)', () => {
+        expect(formatSchedule('')).toBe('manual');
+        expect(formatSchedule(undefined)).toBe('manual');
+        expect(formatSchedule(null)).toBe('manual');
+    });
+
+    it.each([
+        ['@hourly', 'hourly'], ['@daily', 'daily'], ['@weekly', 'weekly'],
+        ['@monthly', 'monthly'], ['@yearly', 'yearly'], ['@annually', 'yearly'], ['@once', 'once'],
+    ])('shows the preset %s as %j', (preset, label) => {
+        expect(formatSchedule(preset)).toBe(label);
+    });
+
+    it('has a word for every SDK schedule preset, and for nothing else (generated SCHEDULE_PRESETS)', () => {
+        expect(SCHEDULE_PRESETS.length).toBeGreaterThan(0);
+        expect(Object.keys(SCHEDULE_PRESET_LABELS).sort()).toEqual([...SCHEDULE_PRESETS].sort());
     });
 
     it('formats rate expressions', () => {
@@ -172,34 +185,46 @@ describe('formatSchedule', () => {
         expect(formatSchedule('cron(30 14 ? * MON *)')).toBe('Mon @ 14:30');
     });
 
-    it('truncates unrecognized long schedules', () => {
-        expect(formatSchedule('some-very-long-custom-expression-here')).toBe('some-very-long-custo…');
+    it('keeps an unrecognised schedule as written', () => {
+        expect(formatSchedule('some-very-long-custom-expression-here')).toBe('some-very-long-custom-expression-here');
     });
 
-    it('still returns "Manual" for a genuinely manual pipeline (no asset_schedule either)', () => {
-        expect(formatSchedule('', null)).toBe('Manual');
-        expect(formatSchedule('', undefined)).toBe('Manual');
-        expect(formatSchedule(undefined, null)).toBe('Manual');
+    it('still returns "manual" for a genuinely manual pipeline (no asset_schedule either)', () => {
+        expect(formatSchedule('', null)).toBe('manual');
+        expect(formatSchedule('', undefined)).toBe('manual');
+        expect(formatSchedule(undefined, null)).toBe('manual');
     });
 
     it('shows the trigger asset for an asset-triggered pipeline instead of "Manual"', () => {
         // This is the exact shape reported as a bug: an asset-triggered
         // pipeline's `schedule` field is empty, which previously fell
         // through to "Manual" — indistinguishable from a truly manual one.
+        // "on" keeps an asset's name from reading as a path.
         expect(formatSchedule('', { operator: 'AND', assets: ['clean/orders'] }))
-            .toBe('clean/orders');
+            .toBe('on clean/orders');
     });
 
-    it('joins multiple assets with "&" for AND and "|" for OR', () => {
-        expect(formatSchedule('', { operator: 'AND', assets: ['sales', 'inventory'] }))
-            .toBe('sales & inventory');
-        expect(formatSchedule('', { operator: 'OR', assets: ['sales', 'inventory'] }))
-            .toBe('sales | inventory');
+    it('counts several assets in a row, and names them all with "&" for AND and "|" for OR in full', () => {
+        expect(formatSchedule('', { operator: 'AND', assets: ['sales', 'inventory'] })).toBe('on 2 assets');
+        expect(formatSchedule('', { operator: 'AND', assets: ['sales', 'inventory'] }, { full: true }))
+            .toBe('on sales & inventory');
+        expect(formatSchedule('', { operator: 'OR', assets: ['sales', 'inventory'] }, { full: true }))
+            .toBe('on sales | inventory');
     });
 
-    it('truncates a long asset-schedule label the same way as a raw schedule', () => {
+    it('names an asset with a condition, and counts and nests groups, as the SDK writes them', () => {
+        // polyris/assets.py to_dict: a plain asset is its name; a.within(hours=1) is an object.
+        expect(formatSchedule('', { operator: 'AND', assets: [{ asset_name: 'orders', freshness_hours: 1 }] }))
+            .toBe('on orders');
+        const nested = { operator: 'OR' as const, assets: [{ operator: 'AND' as const, assets: ['a', 'b'] }, 'c'] };
+        expect(formatSchedule('', nested)).toBe('on 3 assets');
+        expect(formatSchedule('', nested, { full: true })).toBe('on (a & b) | c');
+    });
+
+    it('never cuts text itself: a narrow column cuts it once, with CSS', () => {
         expect(formatSchedule('', { operator: 'AND', assets: ['some/very/long/asset/name/here'] }))
-            .toBe('some/very/long/asset/nam…');
+            .toBe('on some/very/long/asset/name/here');
+        expect(formatSchedule('at(2026-12-01T09:00:00)')).toBe('at(2026-12-01T09:00:00)');
     });
 
     it('ignores asset_schedule entirely when schedule is already a real cron/rate', () => {

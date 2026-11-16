@@ -73,6 +73,7 @@ SILVER_THRESHOLD = 100
 
 with DAG(
     dag_id="all-task-types-xcom",
+    group="features",
     schedule="cron(0 6 * * ? *)",   # 06:00 UTC daily
     description="Every polyris 1.0.0 task type, each fully participating in xcom.",
     tags=["example", "xcom", "smoke", "reference"],

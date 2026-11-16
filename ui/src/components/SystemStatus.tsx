@@ -1,8 +1,12 @@
-import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useSystemStatusQuery, SYSTEM_STATUS_POLL_MINUTES } from '@/hooks/queries';
+import { queryKeys } from '@/lib/queryClient';
+import type { ConnectionProblem } from '@/utils/api';
 import type { SystemFinding, SystemStatusState } from '@/hooks/queries';
 import { useKeyboardShortcuts, SHORTCUTS } from '@/hooks/useKeyboardShortcuts';
+import { useIsMobileWidth } from '@/hooks/useIsMobileWidth';
 import { useToast } from '@/components/Toast';
 import { BaseModal, ModalHeader } from '@/components/BaseModal';
 import { asStringArray, formatAgo, formatDateTime, onClickOutside } from '@/utils/formatters';
@@ -13,6 +17,7 @@ type Kind = SystemStatusState['kind'];
 const PILL: Record<Kind, { suffix: string; Icon: typeof Circle }> = {
     loading: { suffix: '', Icon: Circle },
     unknown: { suffix: 'status unknown', Icon: CircleDashed },
+    connection: { suffix: 'no connection', Icon: AlertTriangle },
     attention: { suffix: 'needs attention', Icon: AlertTriangle },
     healthy: { suffix: '', Icon: CheckCircle2 },
 };
@@ -27,9 +32,11 @@ const HEALTHY_ROWS = [
 const AFTER_A_FIX = 'After a fix, the next check clears it within 5 minutes; reopen this panel to see it.';
 const NEEDS_SIGN_IN = 'The details need a verified sign-in. Sign in again; if that does not help, the console API logs say why.';
 
+/** The pill's word: its level's, except connection, which says whether the API is gone or erring. */
+const suffixOf = (status: SystemStatusState) => (status.kind === 'connection' ? status.pill : PILL[status.kind].suffix);
 /** The visible label; the accessible name adds ", all checks pass" when healthy. */
-const pillLabel = (kind: Kind) => (PILL[kind].suffix ? `System · ${PILL[kind].suffix}` : 'System');
-const accessibleName = (kind: Kind) => (kind === 'healthy' ? 'System, all checks pass' : pillLabel(kind));
+const pillLabel = (status: SystemStatusState) => (suffixOf(status) ? `System · ${suffixOf(status)}` : 'System');
+const accessibleName = (status: SystemStatusState) => (status.kind === 'healthy' ? 'System, all checks pass' : pillLabel(status));
 
 /** The line under the panel's title; null while there is no answer to describe. */
 function metaLine(status: SystemStatusState): string | null {
@@ -64,20 +71,6 @@ function writeToasted(titles: Set<string>): void {
         // sessionStorage may be unavailable; the in-memory set still keeps one toast per title.
     }
 }
-
-// ─── Width: below the mobile breakpoint the panel is a modal ─────────────────
-
-/** The mobile breakpoint of styles/modules/_mobile.css. */
-const MOBILE_QUERY = '(max-width: 768px)';
-
-function subscribeToWidth(onChange: () => void): () => void {
-    if (typeof window.matchMedia !== 'function') return () => {};
-    const query = window.matchMedia(MOBILE_QUERY);
-    query.addEventListener('change', onChange);
-    return () => query.removeEventListener('change', onChange);
-}
-const isMobileWidth = () => typeof window.matchMedia === 'function' && window.matchMedia(MOBILE_QUERY).matches;
-const isMobileOnServer = () => false;
 
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
@@ -155,6 +148,16 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
                     </button>
                 </div>
             );
+        case 'connection':
+            return (
+                <div className="sys-panel__unknown" role="alert">
+                    <p>{status.reason}. The console shows what it last read and retries on its own.</p>
+                    <p className="sys-panel__detail">{status.detail}</p>
+                    <button type="button" className="sys-panel__retry" onClick={onRetry}>
+                        {retrying ? 'Checking…' : 'Retry now'}
+                    </button>
+                </div>
+            );
         case 'healthy':
             return (
                 <ul className="sys-panel__rows sys-panel__rows--ok">
@@ -163,11 +166,18 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
                     ))}
                 </ul>
             );
-        case 'attention':
+        case 'attention': {
+            // The pipelines read failing too is said first: the console shows what it last read.
+            const connection = status.connection && (
+                <p className="sys-panel__connection" role="alert">
+                    The console also cannot read its pipelines: {status.connection}
+                </p>
+            );
             // A full answer always names its problems; should it name none, the checks still say what is wrong.
             if (status.detail === 'full' && status.findings.length > 0) {
                 return (
                     <>
+                        {connection}
                         <ul className="sys-findings">
                             {status.findings.map((finding, index) => (
                                 <FindingCard key={`${index}:${finding.title}`} finding={finding} />
@@ -179,6 +189,7 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
             }
             return (
                 <>
+                    {connection}
                     <ul className="sys-panel__rows sys-panel__rows--attention">
                         {status.unhealthy.map(label => (
                             <li key={label}><AlertTriangle size={16} aria-hidden="true" /><span>{label}</span></li>
@@ -189,6 +200,7 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
                     </p>
                 </>
             );
+        }
     }
 }
 
@@ -200,9 +212,14 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
  * popover that closes on Esc, on a mousedown outside and when focus leaves it; below it, a
  * modal. After Esc or ×, focus returns to the pill. Each new finding raises one toast per
  * browser session; the minimal answer (no valid token) raises none.
+ *
+ * It is also the one place that says the pipelines read fails (`connectionError`): amber
+ * "no connection" or "API error", the reason in the panel, whose Retry re-reads the pipelines
+ * as well. An answer that already needs attention keeps its level and says it there.
  */
-export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
-    const { status, refetch, isFetching } = useSystemStatusQuery(apiConnected);
+export function SystemStatus({ connectionError }: { connectionError: ConnectionProblem | null }) {
+    const { status, refetch, isFetching } = useSystemStatusQuery(connectionError);
+    const queryClient = useQueryClient();
     const toast = useToast();
     // ToastProvider builds a new toast object with each toast it shows. Read the latest from a ref,
     // so that raising a toast does not re-run the effect that raised it.
@@ -211,7 +228,8 @@ export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
         toastRef.current = toast;
     });
     const [open, setOpen] = useState(false);
-    const isMobile = useSyncExternalStore(subscribeToWidth, isMobileWidth, isMobileOnServer);
+    // Below the mobile breakpoint the panel is a modal.
+    const isMobile = useIsMobileWidth();
 
     const rootRef = useRef<HTMLDivElement>(null);
     const pillRef = useRef<HTMLButtonElement>(null);
@@ -237,6 +255,8 @@ export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
 
     const retry = () => {
         if (!isFetching) void refetch();
+        // A lost connection is the pipelines read failing: retry that read too.
+        if (connectionError !== null) void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
     };
 
     // Focus: into the popover when it opens (the modal moves it itself); back to the pill after Esc or ×.
@@ -286,10 +306,11 @@ export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
     // The live region speaks on a change between answers; the first answer after loading is not news.
     const [spoken, setSpoken] = useState<{ kind: Kind; text: string }>({ kind: status.kind, text: '' });
     if (spoken.kind !== status.kind) {
-        setSpoken({ kind: status.kind, text: spoken.kind === 'loading' ? '' : accessibleName(status.kind) });
+        setSpoken({ kind: status.kind, text: spoken.kind === 'loading' ? '' : accessibleName(status) });
     }
 
-    const { suffix, Icon } = PILL[status.kind];
+    const { Icon } = PILL[status.kind];
+    const suffix = suffixOf(status);
     const meta = metaLine(status);
     const body = <PanelBody status={status} retrying={isFetching} onRetry={retry} />;
 
@@ -300,7 +321,7 @@ export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
                 ref={pillRef}
                 className="sys-pill"
                 data-level={status.kind}
-                aria-label={accessibleName(status.kind)}
+                aria-label={accessibleName(status)}
                 aria-haspopup="dialog"
                 aria-expanded={open}
                 aria-controls={open && !isMobile ? panelId : undefined}

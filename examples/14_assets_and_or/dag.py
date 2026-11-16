@@ -49,6 +49,7 @@ inventory_daily = Asset("inventory/daily", uri="s3://polyris-example/inventory/d
 
 with DAG(
     dag_id="produce-sales",
+    group="produce",
     schedule="@daily",
     description="Produces sales/daily (upstream source #1 for the AND/OR examples).",
 ) as sales_dag:
@@ -61,6 +62,7 @@ with DAG(
 
 with DAG(
     dag_id="produce-inventory",
+    group="produce",
     schedule="@daily",
     description="Produces inventory/daily (upstream source #2 for the AND/OR examples).",
 ) as inventory_dag:
@@ -75,6 +77,7 @@ with DAG(
 
 with DAG(
     dag_id="combined-report",
+    group="produce",
     schedule=[sales_daily, inventory_daily],  # AND — waits for both
     description="Runs only once BOTH sales/daily and inventory/daily are ready.",
 ) as and_dag:
@@ -91,6 +94,7 @@ with DAG(
 
 with DAG(
     dag_id="change-log",
+    group="produce",
     schedule=[sales_daily | inventory_daily],  # OR — fires on either
     description="Fires once per update to EITHER asset (audit-trail style).",
 ) as or_dag:

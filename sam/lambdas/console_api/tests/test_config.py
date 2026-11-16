@@ -90,3 +90,24 @@ def test_default_and_specific_region_are_separate_caches(mocker):
     explicit = config.get_glue_client('us-east-1')
     assert default is not explicit
     assert client_mock.call_count == 2
+
+
+@pytest.mark.parametrize('operation', ['SendTaskSuccess', 'SendTaskFailure'])
+def test_the_console_step_functions_client_never_retries_a_closed_token(operation):
+    """ADR #135: a closed token is never retried; the client's retry mode must agree with DEAD_TOKEN_CODES."""
+    import types
+    import botocore.session
+    import config
+    from botocore.retries.standard import RetryContext, StandardRetryConditions
+    from polyris.coordination.wake import DEAD_TOKEN_CODES
+
+    assert config.SFN_CLIENT_CONFIG['retries']['mode'] == 'standard'
+    model = botocore.session.get_session().get_service_model('stepfunctions').operation_model(operation)
+
+    def retried(code):
+        return StandardRetryConditions().is_retryable(RetryContext(
+            attempt_number=1, operation_model=model, parsed_response={'Error': {'Code': code}},
+            http_response=types.SimpleNamespace(status_code=400), caught_exception=None))
+
+    assert not [code for code in DEAD_TOKEN_CODES if retried(code)]
+    assert retried('ThrottlingException')  # the check can tell a retry from none

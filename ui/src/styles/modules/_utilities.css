@@ -124,30 +124,25 @@
    Skeleton Loaders
    ============================================ */
 
-.sk-skeleton-text {
-    height: 1rem;
-    margin-bottom: 0.5rem;
-}
-.sk-skeleton-text.sm { height: 0.75rem; width: 60%; }
-.sk-skeleton-text.lg { height: 1.25rem; width: 80%; }
 
 
 
-/* Pipeline list skeleton */
+/* Pipeline list skeleton — same height and insets as a sidebar row (.sb-row) */
 .sk-skeleton-pipeline-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    border-bottom: 1px solid var(--border);
+    gap: 0.5rem;
+    height: 30px;
+    padding: 0 0.5rem;
 }
 .sk-skeleton-pipeline-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
 }
-.sk-skeleton-pipeline-info {
-    flex: 1;
+.sk-skeleton-pipeline-name {
+    width: 60%;
+    height: 0.75rem;
 }
 
 /* DAG skeleton */

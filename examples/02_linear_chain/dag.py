@@ -24,6 +24,7 @@ ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
 with DAG(
     dag_id="sales-etl",
+    group="basics",
     schedule="@daily",
     description="Extract sales, transform, then load — a classic linear ETL.",
 ) as dag:

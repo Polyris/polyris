@@ -101,9 +101,13 @@ export interface WaitForGroup {
 
 export type WaitForEntry = WaitForAsset | WaitForGroup;
 
+/** A member of an asset schedule as the registry keeps it (polyris/assets.py `to_dict`): a plain
+ *  asset's name, an asset with a condition (`a.within(hours=1)`), or a nested group (`[a, b | c]`). */
+export type AssetScheduleMember = string | WaitForAsset | AssetScheduleInfo;
+
 export interface AssetScheduleInfo {
   operator: 'AND' | 'OR';
-  assets: string[];
+  assets: AssetScheduleMember[];
 }
 
 export interface Pipeline {
@@ -111,21 +115,11 @@ export interface Pipeline {
   description?: string;
   schedule?: string;
   asset_schedule?: AssetScheduleInfo | null;
-  is_paused?: boolean;
   task_count?: number;
-  stats?: PipelineStats;
   tags?: string[] | Record<string, string>;
   /** ISO timestamp of last polyris-deploy for this pipeline. */
   registered_at?: string;
   [key: string]: unknown;
-}
-
-export interface PipelineStats {
-  success: number;
-  failed: number;
-  running: number;
-  waiting: number;
-  total: number;
 }
 
 export interface Execution {
@@ -368,21 +362,18 @@ export interface ModalProps extends BaseModalProps {
 
 // --- Pipeline Props ---
 
-export interface PipelinesSidebarProps {
-  pipelines: PipelineWithUI[];
-  selectedPipeline: Pipeline | null;
-  onSelectPipeline: (pipeline: PipelineWithUI) => void;
-  loading?: boolean;
-  search?: string;
-  onSearchChange?: (value: string) => void;
-  isOpen?: boolean;
-  onClose?: () => void;
-}
-
-export interface PipelineItemProps {
+export interface PipelineRowProps {
   pipeline: PipelineWithUI;
-  selected: boolean;
-  onClick: () => void;
+  /** The open pipeline's first shown row: highlighted and announced as `aria-current`
+   *  (a pipeline can be listed twice, pinned and in its group). */
+  current: boolean;
+  /** Under a group header. */
+  indented: boolean;
+  /** Roving tabindex: 0 for the list's one Tab stop, -1 for every other item. */
+  tabIndex: 0 | -1;
+  buttonRef: (el: HTMLButtonElement | null) => void;
+  onFocus: () => void;
+  onSelect: () => void;
 }
 
 export interface RunSparklineProps {
@@ -394,7 +385,8 @@ export interface PipelineWithUI extends Pipeline {
   group?: string;
   recent_runs?: Array<{ status: string; date?: string }>;
   arn?: string;
-  today_stats?: PipelineStats;
+  /** The latest run is running but waits for an operator: a decision or a resume. */
+  waiting_on?: Extract<TaskStatus, 'waiting_decision' | 'waiting_paused'> | null;
 }
 
 export interface PipelineDetailProps {
@@ -584,6 +576,10 @@ export interface AssetDetailModalProps {
   asset: AssetData | null;
   assetName: string;
   events: AssetEvent[];
+  /** Why `events` could not be loaded (readable); null or absent when it was. */
+  eventsError?: string | null;
+  /** Asks for the events again (the error state's Retry). */
+  onRetryEvents?: () => void;
   dagTriggers: Record<string, DagTriggerData>;
   staleness?: StalenessResult | null;
   onClose: () => void;

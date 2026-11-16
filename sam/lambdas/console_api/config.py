@@ -33,12 +33,23 @@ def _get_dynamodb():
     return _dynamodb
 
 
+#: Step Functions calls fail fast, well inside API Gateway's 29 s (Principle #53): botocore's
+#: standard retry mode with two attempts, a 2 s connect and a 4 s read timeout, so one
+#: call gives up within 12 s. Every console call is a control-plane call (describe,
+#: start, stop, send_task_*); none waits for an execution. The defaults (a 60 s read,
+#: legacy retries) let one slow call outlast the request. /api/pipelines may start a
+#: last check just before its deadline (RECONCILE_DEADLINE_SECONDS).
+SFN_CLIENT_CONFIG = {'retries': {'mode': 'standard', 'total_max_attempts': 2},
+                     'connect_timeout': 2, 'read_timeout': 4}
+
+
 def _get_sfn():
     """Lazy init Step Functions client."""
     global _sfn
     if _sfn is None:
         import boto3
-        _sfn = boto3.client('stepfunctions')
+        from botocore.config import Config
+        _sfn = boto3.client('stepfunctions', config=Config(**SFN_CLIENT_CONFIG))
     return _sfn
 
 

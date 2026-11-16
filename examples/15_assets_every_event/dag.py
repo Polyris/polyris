@@ -41,6 +41,7 @@ clean_orders = Asset("clean/orders", uri="s3://polyris-example/clean/orders/", g
 
 with DAG(
     dag_id="orders-live-feed",
+    group="orders",
     schedule=AssetAny([clean_orders]),  # fires on EVERY clean/orders update, no day dedup
     description="Reacts to every clean/orders update, unlike orders-analytics (once/day).",
 ) as dag:

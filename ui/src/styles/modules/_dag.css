@@ -341,38 +341,8 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Error */
-.pd-error-banner {
-    background: var(--error-light);
-    border: 1px solid #fecaca;
-    color: var(--error);
-    padding: 0.75rem 1rem;
-    border-radius: 8px;
-    margin: 1rem;
-    font-size: 0.875rem;
-    display: flex; align-items: center; gap: 0.5rem;
-}
 
 /* Connection Lost Banner */
-.connection-banner {
-    background: var(--warning);
-    color: #000;
-    padding: 0.5rem 1rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 1rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-    animation: slideDown 0.3s ease;
-}
-.connection-banner button {
-    margin-left: 0.5rem;
-}
-@keyframes slideDown {
-    from { transform: translateY(-100%); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
-}
-
 /* Breadcrumbs */
 .hdr-breadcrumbs {
     display: flex;

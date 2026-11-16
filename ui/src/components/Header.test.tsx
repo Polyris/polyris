@@ -52,7 +52,7 @@ function resetStore(overrides: Record<string, unknown> = {}) {
 
 describe('Header', () => {
     const props = {
-        apiConnected: true,
+        connectionError: null,
         onNotificationNavigate: vi.fn(),
     };
 
@@ -107,16 +107,16 @@ describe('Header', () => {
         // One System pill replaces the API badge (and the coordination banner); its states and
         // panel are covered in SystemStatus.test.tsx.
         it('shows the System pill, read from /api/health, where the API badge was', async () => {
-            renderWithQuery(<Header {...props} apiConnected={true} />);
+            renderWithQuery(<Header {...props} connectionError={null} />);
             const pill = screen.getByRole('button', { name: /^System/ });
             await waitFor(() => expect(pill).toHaveAccessibleName('System, all checks pass'));
             expect(mockGet).toHaveBeenCalledWith('/health');
             expect(screen.queryByTitle(/^API (connected|disconnected)$/)).not.toBeInTheDocument();
         });
 
-        it('reads the status as unknown while the API cannot be reached', () => {
-            renderWithQuery(<Header {...props} apiConnected={false} />);
-            expect(screen.getByRole('button', { name: 'System · status unknown' })).toBeInTheDocument();
+        it('says "no connection" while the API cannot be reached', () => {
+            renderWithQuery(<Header {...props} connectionError={{ unreachable: true, message: 'Could not reach the API.' }} />);
+            expect(screen.getByRole('button', { name: 'System · no connection' })).toBeInTheDocument();
         });
     });
 
@@ -221,7 +221,7 @@ describe('Header', () => {
     });
 
     describe('Backfills nav tab (paid surface)', () => {
-        const props = { apiConnected: true, onNotificationNavigate: vi.fn() };
+        const props = { connectionError: null, onNotificationNavigate: vi.fn() };
 
         it('does not render a Backfills tab in the OSS build (empty paid surface)', () => {
             renderWithQuery(<Header {...props} />);

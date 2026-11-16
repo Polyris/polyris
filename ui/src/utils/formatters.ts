@@ -1,4 +1,6 @@
-import type { WaitForEntry, WaitForGroup } from '@/types';
+import type { AssetScheduleInfo, AssetScheduleMember, WaitForEntry, WaitForGroup } from '@/types';
+import { SCHEDULE_PRESETS } from '@/generated/enums';
+import type { SchedulePreset } from '@/generated/enums';
 
 // Format duration in human readable format
 export const formatDuration = (ms: number | null | undefined): string => {
@@ -292,19 +294,60 @@ export const formatTriggerSource = (value: string | null | undefined): string | 
 // registration) but a populated asset_schedule instead. Without checking it,
 // such a pipeline is indistinguishable from a genuinely manual one — both
 // hit the `!schedule` branch below and show "Manual", which is wrong: an
-// asset-triggered pipeline runs automatically, just not on a timer.
+// asset-triggered pipeline runs automatically, just not on a timer. It reads
+// "on <asset>", so an asset's name is not taken for a path.
+//
+// `full` names every asset of an asset schedule, for a tooltip or an accessible name;
+// by default several are counted. Text is never cut here: a narrow column cuts it once,
+// with CSS.
+
+const isSchedulePreset = (schedule: string): schedule is SchedulePreset =>
+    (SCHEDULE_PRESETS as ReadonlyArray<string>).includes(schedule);
+
+/** The SDK's schedule presets as words; the registry keeps the preset itself. Keyed by the
+ *  generated SchedulePreset (sync_enums), so a new preset fails the typecheck until it has a word. */
+export const SCHEDULE_PRESET_LABELS: Readonly<Record<SchedulePreset, string>> = {
+    '@once': 'once',
+    '@hourly': 'hourly',
+    '@daily': 'daily',
+    '@weekly': 'weekly',
+    '@monthly': 'monthly',
+    '@yearly': 'yearly',
+    '@annually': 'yearly',
+};
+
+/** An asset schedule member as a wait_for entry, so one formatter names both: a plain name
+ *  becomes an asset entry, a group's members are converted in turn. */
+function asWaitForEntry(member: AssetScheduleMember): WaitForEntry {
+    if (typeof member === 'string') return { asset_name: member };
+    if (isScheduleGroup(member)) return { operator: member.operator, assets: member.assets.map(asWaitForEntry) };
+    return member;
+}
+
+const isScheduleGroup = (member: Exclude<AssetScheduleMember, string>): member is AssetScheduleInfo =>
+    'operator' in member && Array.isArray(member.assets);
+
+/** How many assets an entry names, counting each member of every nested group. */
+function countAssets(entry: WaitForEntry): number {
+    return isWaitForGroup(entry) ? entry.assets.reduce((n, member) => n + countAssets(member), 0) : 1;
+}
+
 export function formatSchedule(
     schedule: string | undefined | null,
-    assetSchedule?: { operator: 'AND' | 'OR'; assets: string[] } | null,
+    assetSchedule?: AssetScheduleInfo | null,
+    { full = false }: { full?: boolean } = {},
 ): string {
     if (!schedule) {
         if (assetSchedule && assetSchedule.assets.length > 0) {
-            const joiner = assetSchedule.operator === 'OR' ? ' | ' : ' & ';
-            const label = assetSchedule.assets.join(joiner);
-            return label.length > 24 ? label.substring(0, 24) + '…' : label;
+            const entry = asWaitForEntry(assetSchedule);
+            const count = countAssets(entry);
+            if (!full && count > 1) return `on ${count} assets`;
+            return `on ${formatWaitForEntry(entry)}`;
         }
-        return 'Manual';
+        return 'manual';
     }
+
+    if (isSchedulePreset(schedule)) return SCHEDULE_PRESET_LABELS[schedule];
 
     // Rate expressions: rate(1 hour), rate(6 hours)
     const rateMatch = schedule.match(/rate\((\d+)\s*(minute|hour|day)s?\)/i);
@@ -325,8 +368,8 @@ export function formatSchedule(
         return `@ ${time}`;
     }
 
-    // Fallback: show raw but truncated
-    return schedule.length > 20 ? schedule.substring(0, 20) + '…' : schedule;
+    // Fallback: the expression as written
+    return schedule;
 }
 
 export const isWaitForGroup = (entry: WaitForEntry): entry is WaitForGroup =>

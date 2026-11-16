@@ -1,5 +1,59 @@
 ## Unreleased
 
+### Upgrading to 1.2.1 (ADR #136)
+
+1. **Groups.** The console's sidebar groups pipelines by `DAG(group=)` only (see *Changed — the pipelines sidebar*). Add `group="…"` to the DAGs whose name prefix you relied on, and redeploy them with `polyris-deploy`; until then they are listed under **Ungrouped**, or flat when no pipeline sets a group.
+2. **API clients.** `/api/pipelines` no longer returns `today_stats` or `progress`, and ignores `date`. A script that read them takes a pipeline's state from `status` and `recent_runs`, or a day's tasks from `/api/tasks?date=`. The answer is still an object, `{"pipelines": [...], "stats_incomplete": …}`; `stats_incomplete` and `waiting_on` are new. A pipeline registry the API cannot read now fails the request with a 500, instead of an answer built from the tokens table without groups or schedules.
+
+### Changed — the pipelines sidebar
+
+- One line per pipeline: the latest run's status, the name, the last 10 runs and the schedule, all from the runs of the last 14 days. A pipeline with no run in those days shows a small hollow circle. A row's accessible name sums up its runs. Schedule presets read as words (`daily`, `hourly`), and a pipeline without a schedule reads `manual`.
+- Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top, under **Needs attention**, which you can fold. A run waiting for a decision or paused shows that icon instead of the spinner.
+- Groups come only from `DAG(group=)`, compared without case. The sidebar no longer makes a group from the part of a name before the first `-`; a pipeline without `group=` is listed under **Ungrouped**, or in a flat list when no pipeline sets a group. To keep a group you relied on, add `group="…"` to those DAGs and redeploy them; until then they are listed under **Ungrouped**.
+- Groups fold one by one or all at once, stay folded in this browser, still show how many of their pipelines need attention, and are highlighted when they hold the open pipeline.
+- Search matches pipeline names and groups, keeps the matches in their groups, and `Enter` opens the first match.
+- Keyboard: `/` focuses the search, `↓` moves into the list, and while the list has focus `J`/`K` and the arrows move through it, `Enter` opens a pipeline or folds a group, and `Esc` goes back to the search. `Esc` in the search clears it.
+- A failed load of the pipeline list says so and offers a retry. Before, it read "No pipelines registered yet". When a refresh fails, the list stays and a line above it says from when its statuses are; when some recent runs could not be read, it says a status may be out of date.
+- While the pointer or the keyboard focus is in the list, a refresh updates statuses in place but does not move rows; they follow once you leave the list. A pipeline that is gone leaves at once.
+- An asset schedule reads `on raw_orders`, or `on 3 assets` with the names on hover (`on (a & b) | c`), so it is not taken for a path; an asset with a condition, such as `a.within(hours=1)`, is named too, where it read `[object Object]`; other text is cut once, to fit the row. On a touch screen rows are 40px tall and the `/` hint is hidden; a closed phone drawer is out of the Tab order.
+
+### Added — `/api/pipelines` says what its statuses rest on
+
+- `waiting_on` (`waiting_decision`, `waiting_paused` or `null`): the latest run is running but waits for an operator.
+- `stats_incomplete`: a read the statuses rest on failed or ran out of time, or Step Functions could not confirm a running run, so some may be out of date. Before, such a failure only reached the console API's logs. A Step Functions check the console API is not allowed to make fails the request instead.
+
+### Removed — `today_stats` and `progress` from `/api/pipelines`
+
+- The console no longer reads them, so `/api/pipelines` stops computing them; its `date` parameter, which only chose their day, is gone too. A client that read them can take a pipeline's state from `status` and `recent_runs`, or a day's tasks from `/api/tasks`.
+
+### Changed — the console's Step Functions calls fail fast
+
+- The console API's Step Functions client gives up within about 12 s (two attempts, 2 s to connect, 4 s to read) instead of botocore's 60 s read, so a slow call answers inside API Gateway's 29 s.
+
+### Changed — one place says the console cannot reach its API
+
+- The "Connection lost" banner is gone, and the pipeline page no longer shows its own copy of the error. The **System** status in the header is now the one place: amber **System · no connection** when the API cannot be reached, **System · API error** when it answers the pipeline list with an error. Its panel says why, and **Retry now** retries both the status and the pipeline list. When the status already needs attention, it stays so and its panel adds that the pipeline list cannot be read. Before, the pill turned grey "status unknown", which read like "nothing to worry about".
+
+### Fixed — the bell says when it cannot load notifications
+
+- When the request for notifications failed, the bell read "No new notifications" with a green check, so a warning could go unseen. The bell now shows `!` (or the earlier unread count) in amber, and its panel says what failed and offers a retry. After a failed refresh the last list stays, with the failure above it.
+- A "not found" error now reads "That resource was not found (404)." Errors are told apart by their HTTP status, so an id that contains `404` or `500` no longer turns an error into "not found" or "server error"; a request that times out says so.
+
+### Fixed — the pipeline page says when it cannot read a date's runs
+
+- When `/api/pipeline-status` failed, the pipeline page said "No executions for {date}. This pipeline has no runs on this date." It now says the runs could not be loaded, why, and offers a retry.
+
+### Fixed — a run whose execution died no longer shows as running
+
+- The pipelines list (`/api/pipelines`) now asks Step Functions about a pipeline's latest run when its tasks still say `running`, as History already did (ADR #112). A run whose execution failed, timed out or was stopped shows that status on the sidebar and in **Needs attention**, instead of running forever. One `DescribeExecution` call per pipeline whose latest run is running, started only in the first 12 s of the request; if the call fails or comes too late, the status stays as derived and `stats_incomplete` says so. A call the console API is not allowed to make fails the request, here and in History, instead of passing for "could not check".
+
+### Fixed — the command palette (⌘K) shows each pipeline's latest run
+
+- Its status icon read only today's task counts, so a pipeline that failed yesterday, or never ran, showed a green check. It now shows the same latest-run status as the sidebar.
+- Its search matches every word of the query in any order, as the sidebar's does: `daily acme` finds `acme-orders-daily`.
+
+## v1.2.0 - 2026-11-14
+
 ### Upgrading to 1.2.0 (ADR #130, ADR #132)
 
 The coordination layer changes under running pipelines, so upgrade in a quiet window:

@@ -156,6 +156,20 @@ function KeyboardShortcutsTab() {
             ],
         },
         {
+            // Wired in PipelinesSidebar: '/' through useKeyboardShortcuts, the
+            // rest on the list itself, so they act only while it has focus.
+            title: 'Pipelines list',
+            items: [
+                { key: '/', action: 'Focus the pipeline search' },
+                { key: '↓', action: 'Move from the search into the list' },
+                { key: 'J', action: 'Next pipeline, group or section (list focused)' },
+                { key: 'K', action: 'Previous pipeline, group or section (list focused)' },
+                // One row per key: the rows are keyed by it.
+                { key: 'Enter', action: 'In the search, open the first match; in the list, open the pipeline or fold / unfold the group' },
+                { key: 'Esc', action: 'Clear the search, or go back to it from the list' },
+            ],
+        },
+        {
             title: HAS_PAID_DETAIL_PAGES
                 ? 'Detail pages (Backfill, Asset, Pipeline)'
                 : 'Detail pages (Pipeline)',

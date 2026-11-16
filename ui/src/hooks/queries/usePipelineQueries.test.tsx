@@ -8,14 +8,15 @@ import {
 } from './usePipelineQueries';
 
 // Mock api
-vi.mock('../../utils', () => ({
+vi.mock('../../utils', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../../utils')>(),
     api: {
         get: vi.fn(),
         post: vi.fn(),
     },
 }));
 
-import { api } from '../../utils';
+import { api, ApiError } from '../../utils';
 
 // Create wrapper with fresh QueryClient for each test
 const createWrapper = () => {
@@ -73,6 +74,14 @@ describe('usePipelinesQuery', () => {
         });
         
         expect(result.current.error.message).toBe('Connection failed');
+    });
+
+    it('carries the HTTP status on the error, so the System status can tell an answer from no answer', async () => {
+        api.get.mockResolvedValue({ ok: false, error: 'boom', status: 503 });
+        const { result } = renderHook(() => usePipelinesQuery(), { wrapper: createWrapper() });
+        await waitFor(() => expect(result.current.isError).toBe(true));
+        expect(result.current.error).toBeInstanceOf(ApiError);
+        expect((result.current.error as ApiError).status).toBe(503);
     });
 
     it('should return empty array when no pipelines', async () => {

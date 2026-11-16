@@ -115,5 +115,15 @@ describe('usePersistedState', () => {
       
       expect(safeLocalStorage.setItem).toHaveBeenCalledWith('test-key', 'initial');
     });
+
+    it('writes an object with the serializer it is given', () => {
+      (safeLocalStorage.getItem as ReturnType<typeof vi.fn>).mockReturnValue('{"orders":true}');
+      const { result } = renderHook(() =>
+        usePersistedState<Record<string, boolean>>('folded', {}, transforms.json, JSON.stringify));
+      expect(result.current[0]).toEqual({ orders: true });
+
+      act(() => { result.current[1]({ orders: true, sales: true }); });
+      expect(safeLocalStorage.setItem).toHaveBeenLastCalledWith('folded', '{"orders":true,"sales":true}');
+    });
   });
 });

@@ -159,9 +159,7 @@ def test_list_pipelines_stats_succeeded(mocker):
 
     p = resp['pipelines'][0]
     assert p['status'] == 'success'
-    assert p['progress'] == 100
-    assert p['today_stats']['success'] == 2
-    assert p['today_stats']['skipped'] == 1
+    assert 'today_stats' not in p and 'progress' not in p  # removed: no reader (CHANGELOG)
 
 
 def test_list_pipelines_stats_failed(mocker):
@@ -183,15 +181,13 @@ def test_list_pipelines_stats_failed(mocker):
 
     p = resp['pipelines'][0]
     assert p['status'] == 'failed'
-    assert p['today_stats']['failed'] == 1
-    assert p['today_stats']['waiting'] == 1
 
 
 def test_list_pipelines_status_is_last_run(mocker):
     """Card status reflects the MOST RECENT run, not a per-day aggregate (ADR #112 / c).
 
     An older run failed, but the latest run (a later date) succeeded — the card is
-    'success'. today_stats/progress stay day-scoped and are unaffected.
+    'success'.
     """
     yesterday = (datetime.fromisoformat(TODAY) - timedelta(days=1)).strftime('%Y-%m-%d')
     mock_pipelines = MockRepo([
@@ -229,13 +225,16 @@ def test_list_pipelines_stats_running(mocker):
 
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
+    # The latest run is still running, so list_pipelines asks Step Functions (ADR #112 §7).
+    mock_sfn = mocker.MagicMock()
+    mock_sfn.describe_execution.return_value = {'status': 'RUNNING'}
+    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
     from routes.pipelines_list import list_pipelines
     resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
 
     p = resp['pipelines'][0]
     assert p['status'] == 'running'
-    assert p['progress'] == 33
+    mock_sfn.describe_execution.assert_called_once()
 
 
 def test_list_pipelines_sla_excludes_aborted(mocker):
@@ -261,28 +260,6 @@ def test_list_pipelines_sla_excludes_aborted(mocker):
 
     p = resp['pipelines'][0]
     assert p['sla'] == 50
-
-
-def test_list_pipelines_progress_includes_skipped(mocker):
-    """Progress: skipped tasks count as complete."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'skipped', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'waiting', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'waiting', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['progress'] == 50
 
 
 def test_list_pipelines_schedule_from_registry(mocker):

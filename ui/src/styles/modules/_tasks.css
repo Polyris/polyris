@@ -677,10 +677,6 @@ details[open] .am-run-summary::before { transform: rotate(90deg); }
     flex-direction: column;
 }
 
-/* Paused pipeline style */
-.sb-pipeline-item.paused { opacity: 0.7; }
-.sb-pipeline-icon.paused { background: var(--warning-light); color: var(--warning); }
-
 /* Success rate chart */
 
 /* ─── ConsecutiveProgress (I1: inline→CSS) ───────────────────────────────── */

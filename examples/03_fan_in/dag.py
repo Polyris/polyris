@@ -20,6 +20,7 @@ ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
 with DAG(
     dag_id="multi-source-merge",
+    group="basics",
     schedule="@daily",
     description="Three parallel sources merged by an all_done marker task.",
 ) as dag:

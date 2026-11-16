@@ -334,7 +334,7 @@ CloudFormation delete_stack
 | Task stuck in `waiting` | reconcile logs for the task's `execution_name`: `verdict` and `reasons` | `dependency_subscriptions` — pointers; `asset_events` — a fact for the run's date? |
 | Task never becomes `deps_ready` | reconcile logs; the upstream's notify_dependents execution | `pipeline_tokens` — dependency statuses; the task's `attention_at` (next sweeper check) |
 | Task `deps_ready` but not running | run_task helper execution: held in its pause wait? | `pipeline_tokens` — `_pause_{run}` and the row's `pause_token` |
-| The **System** pill in the console header is amber | its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
+| The **System** pill in the console header is amber | "no connection" or "API error": its panel, and the console API's logs for `/api/pipelines`. Else its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
 | `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
 | Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
 | No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |

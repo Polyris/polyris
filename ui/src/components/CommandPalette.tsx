@@ -9,13 +9,11 @@ import {
     Moon,
     RefreshCw,
     HelpCircle,
-    Pause,
-    XCircle,
-    Loader2,
-    CheckCircle2,
-    Search
+    Search,
+    StatusIcon,
 } from '@/utils/icons';
 import { formatSchedule } from '@/utils/formatters';
+import { matchesSearch } from '@/utils/search';
 import type { PipelineWithUI } from '@/types';
 
 interface CommandItem {
@@ -90,17 +88,16 @@ export function CommandPalette({
         
         // Pipelines
         if (pipelines.length > 0) {
+            // Same matching as the sidebar's search: every word of the query, in any order.
             const filteredPipelines = q
-                ? pipelines.filter(p => p.name.toLowerCase().includes(q))
+                ? pipelines.filter(p => matchesSearch(p.name, q))
                 : pipelines.slice(0, 5);
             
             if (filteredPipelines.length > 0) {
                 items.push({ type: 'header', label: 'Pipelines' });
                 filteredPipelines.forEach(p => {
-                    const statusIcon = p.is_paused ? <Pause size={14} className="text-amber-500" /> : 
-                                      (p.today_stats?.failed ?? 0) > 0 ? <XCircle size={14} className="text-red-500" /> : 
-                                      (p.today_stats?.running ?? 0) > 0 ? <Loader2 size={14} className="text-blue-500 animate-spin" /> : 
-                                      <CheckCircle2 size={14} className="text-green-500" />;
+                    // The latest run's status, as the sidebar shows it: never green without a successful run.
+                    const statusIcon = <StatusIcon status={p.status || 'idle'} size={14} />;
                     items.push({
                         id: `pipeline-${p.name}`,
                         type: 'pipeline',

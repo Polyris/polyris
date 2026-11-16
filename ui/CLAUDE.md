@@ -179,9 +179,9 @@ const text = serializeErrorForDisplay(task.error ?? null) || 'Task execution fai
 
 ---
 
-## `wait_for` entries are assets or groups — label them with `formatWaitForEntry`
+## `wait_for` and `asset_schedule` entries are assets or groups — label them with `formatWaitForEntry`
 
-The SDK writes each `wait_for` entry either as an asset (`{asset_name, freshness_hours | consecutive_days}`) or, for `wait_for=[a | b]` / `[a & b]`, as a group (`{operator, assets: [...]}`) that may nest (`polyris/generators.py` `_serialize_wait_for`). A reader that looks only for `asset_name` shows a group as "unknown" or drops it: the task modal and the waiting tooltip did so until the 1.2.0 live smoke. Name entries with `formatWaitForEntry` (`utils/formatters.ts`), and narrow with `isWaitForGroup` before reading asset-only fields.
+The SDK writes each `wait_for` entry either as an asset (`{asset_name, freshness_hours | consecutive_days}`) or, for `wait_for=[a | b]` / `[a & b]`, as a group (`{operator, assets: [...]}`) that may nest (`polyris/generators.py` `_serialize_wait_for`). A reader that looks only for `asset_name` shows a group as "unknown" or drops it: the task modal and the waiting tooltip did so until the 1.2.0 live smoke. Name entries with `formatWaitForEntry` (`utils/formatters.ts`), and narrow with `isWaitForGroup` before reading asset-only fields. A pipeline's `asset_schedule` holds the same shapes plus plain names (`polyris/assets.py` `to_dict`): `formatSchedule` converts its members to wait_for entries. Read as a list of names, `a.within(hours=1)` showed `[object Object]` in the sidebar (1.2.1 review).
 
 ## A read the backend narrows says so in the UI
 
@@ -189,7 +189,15 @@ When the API answers from a window or a limit, the label and the empty state nam
 
 ## A status read from the API is never green by default
 
-A hook that turns an API answer into a status returns a tagged state, and its default branch is "unknown", never "healthy". Green needs a positive answer: the words the rule needs, present and recognised. The coordination banner read a failed `/api/health`, and then a 503, as "no problems" (1.2.0 review). The System pill (`components/SystemStatus.tsx`) shows grey "status unknown" for a failed request, a lost connection or an answer it cannot read. It takes its level from the status words, never from the length of a list that a shorter answer leaves out.
+A hook that turns an API answer into a status returns a tagged state, and its default branch is "unknown", never "healthy". Green needs a positive answer: the words the rule needs, present and recognised. The coordination banner read a failed `/api/health`, and then a 503, as "no problems" (1.2.0 review). The System pill (`components/SystemStatus.tsx`) shows grey "status unknown" for a failed request or an answer it cannot read, and amber "no connection" or "API error" while the pipelines read fails: a lost connection is an outage, not an unknown. It takes its level from the status words, never from the length of a list that a shorter answer leaves out.
+
+## A failed load is never shown as an empty list
+
+A list fed by a query renders its error state (what failed, and a retry) when the query failed and holds no data. React Query's `data = []` default makes a failed first load look like "nothing here": the pipelines sidebar told users to deploy their first pipeline whenever `/api/pipelines` failed. Check `isError` before the empty state, and render it with `EmptyState` and `formatApiErrorMessage` as `AllTasksView` does; `PipelinesSidebar.test.tsx` pins it.
+
+## A hold on the UI is released by every way its reason can end
+
+The pipelines sidebar keeps its rows still while the pointer or the focus is in the list. A blur releases the focus hold, but a focused row that unmounts fires no blur: when every listed pipeline was gone, the list stayed held, empty, while new pipelines arrived. Release the hold on that path too (`a held list that lost every row lets go`), and list each way the reason for a hold can end before you add one.
 
 ## Dead computed values are bugs waiting to happen
 

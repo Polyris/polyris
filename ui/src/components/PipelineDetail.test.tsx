@@ -14,7 +14,10 @@ const mockTasks = [
 const mockDag = createDAG();
 const mockExecList = [createExecution()];
 
-const mockDetailQuery = { data: { tasks: mockTasks, dag: mockDag, serverOffsetMs: 0, selectedExecution: null }, isLoading: false };
+const mockDetailQuery: {
+    data: { tasks: typeof mockTasks; dag: typeof mockDag; serverOffsetMs: number; selectedExecution: null; statusError?: string | null } | undefined;
+    isLoading: boolean; isError: boolean; error: Error | null; refetch: ReturnType<typeof vi.fn>;
+} = { data: { tasks: mockTasks, dag: mockDag, serverOffsetMs: 0, selectedExecution: null }, isLoading: false, isError: false, error: null, refetch: vi.fn() };
 const mockRunsQuery: { data: unknown; fetchNextPage: () => void; hasNextPage: boolean; isFetchingNextPage: boolean; isLoading: boolean } = {
     data: { pages: [] }, fetchNextPage: vi.fn(), hasNextPage: false,
     isFetchingNextPage: false, isLoading: false,
@@ -107,8 +110,15 @@ vi.mock('@/components/ui/button', () => ({
     Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string} aria-label={props['aria-label'] as string} data-variant={props.variant}>{props.children as React.ReactNode}</button>,
 }));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
-vi.mock('../utils/api', () => ({ api: { get: vi.fn(), post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
-vi.mock('@/utils/api', () => ({ api: { get: vi.fn(), post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
+vi.mock('../utils/api', async (importOriginal) => ({
+    // The real formatApiErrorMessage: the error states show its text.
+    ...(await importOriginal<typeof import('../utils/api')>()),
+    api: { get: vi.fn(), post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn(),
+}));
+vi.mock('@/utils/api', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/utils/api')>()),
+    api: { get: vi.fn(), post: vi.fn() }, setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn(),
+}));
 vi.mock('../utils/storage', () => ({ getFromStorage: vi.fn(), saveToStorage: vi.fn() }));
 vi.mock('@/hooks/useAuth', () => ({ AuthProvider: ({ children }: any) => children, useAuth: () => ({ isSignedIn: true, user: { email: 'test@test.com' }, signOut: vi.fn() }), useAuthHeader: () => ({}), AUTH_STATE: { SIGNED_IN: 'signedIn', SIGNED_OUT: 'signedOut' } }));
 
@@ -127,7 +137,6 @@ function setStore(overrides: Record<string, unknown> = {}) {
 }
 
 const defaultProps = {
-    apiError: null as string | null,
     navigateToExecution: vi.fn(),
 };
 
@@ -140,6 +149,8 @@ describe('PipelineDetail', () => {
         // Reset mock query data
         mockDetailQuery.data = { tasks: mockTasks, dag: mockDag, serverOffsetMs: 0, selectedExecution: null };
         mockDetailQuery.isLoading = false;
+        mockDetailQuery.isError = false;
+        mockDetailQuery.error = null;
         mockPipelinesQuery.data = [createPipeline({ recent_runs: [{ date: '2024-01-15' }] })];
     });
 
@@ -159,6 +170,23 @@ describe('PipelineDetail', () => {
             setStore({ viewMode: 'gantt' });
             render(<PipelineDetail {...defaultProps} />);
             expect(screen.getByTestId('gantt-chart')).toBeInTheDocument();
+        });
+
+        it('a run status the API could not read is said, not shown as "No executions"', () => {
+            mockDetailQuery.data = { tasks: [], dag: mockDag, serverOffsetMs: 0, selectedExecution: null, statusError: 'HTTP 500' };
+            render(<PipelineDetail {...defaultProps} />);
+            expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load the runs of");
+            expect(screen.queryByText(/No executions for/)).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+            expect(mockDetailQuery.refetch).toHaveBeenCalledTimes(1);
+        });
+
+        it('a failed request for the runs is said, not shown as "No executions"', () => {
+            mockDetailQuery.data = undefined;
+            mockDetailQuery.isError = true;
+            mockDetailQuery.error = new Error('Failed to fetch');
+            render(<PipelineDetail {...defaultProps} />);
+            expect(screen.getByRole('alert')).toHaveTextContent('Could not reach the API');
         });
 
         it('shows loading skeleton when isLoading', () => {
@@ -194,13 +222,6 @@ describe('PipelineDetail', () => {
             render(<PipelineDetail {...defaultProps} />);
             expect(screen.queryByTestId('dag-node-orphan_task')).not.toBeInTheDocument();
             expect(screen.getByTestId('dag-node-extract_data')).toBeInTheDocument();
-        });
-    });
-
-    describe('error handling', () => {
-        it('shows error message', () => {
-            render(<PipelineDetail {...defaultProps} apiError="API connection failed" />);
-            expect(screen.getByText(/API connection failed/)).toBeInTheDocument();
         });
     });
 
