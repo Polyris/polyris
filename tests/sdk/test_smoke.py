@@ -417,26 +417,6 @@ def test_pipelines_api_returns_group():
     print("✅ Pipelines API returns group field")
 
 
-def test_sla_excludes_in_progress_runs():
-    """SLA counts only completed runs and excludes aborted (user-stopped) runs (ADR #112)."""
-    api_path = os.path.join(REPO_ROOT,
-                            'sam/lambdas/console_api/routes/pipelines_list.py')
-    with open(api_path) as f:
-        content = f.read()
-
-    # SLA status is the canonical derivation, not a hand-rolled terminal check.
-    assert 'derive_execution_status' in content, "SLA should derive status via the canonical helper"
-    # In-progress (running) and aborted runs are excluded from the SLA denominator.
-    assert "in ('running', 'aborted')" in content, "SLA should exclude running and aborted runs"
-    # Must NOT count all runs indiscriminately: the denominator is the completed runs only
-    # (`_finish_runs`; the behaviour is pinned by tests/backend/test_api_routes.py
-    # test_list_pipelines_sla_excludes_aborted and console_api's test_pipelines_list_reconcile.py).
-    assert "completed = [run['status'] for _, run, _ in run_list if run['status'] not in ('running', 'aborted')]" in content, \
-        "SLA should count only completed runs"
-
-    print("✅ SLA excludes in-progress and aborted runs")
-
-
 def test_task_completed_contract():
     """
     Test that task completion events have the required fields.

@@ -154,8 +154,7 @@ describe('formatRelativeTime', () => {
 });
 
 import { formatSchedule, formatFreshnessWindow, formatFreshnessWindowLong, SCHEDULE_PRESET_LABELS } from './formatters';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { SCHEDULE_PRESETS } from '../generated/enums';
 
 describe('formatSchedule', () => {
     it('returns "manual" for empty / missing schedule (on-demand pipelines)', () => {
@@ -171,13 +170,9 @@ describe('formatSchedule', () => {
         expect(formatSchedule(preset)).toBe(label);
     });
 
-    it('has a word for every SDK schedule preset (polyris/constants.py SCHEDULE_PRESETS, Principle #28)', () => {
-        const source = readFileSync(resolve(process.cwd(), '../polyris/constants.py'), 'utf-8');
-        const block = source.match(/SCHEDULE_PRESETS = \{([\s\S]*?)\n\}/);
-        expect(block, 'SCHEDULE_PRESETS not found in polyris/constants.py').not.toBeNull();
-        const presets = [...block![1].matchAll(/"(@[a-z]+)"/g)].map(m => m[1]);
-        expect(presets.length).toBeGreaterThan(0);
-        expect(Object.keys(SCHEDULE_PRESET_LABELS).sort()).toEqual([...presets].sort());
+    it('has a word for every SDK schedule preset, and for nothing else (generated SCHEDULE_PRESETS)', () => {
+        expect(SCHEDULE_PRESETS.length).toBeGreaterThan(0);
+        expect(Object.keys(SCHEDULE_PRESET_LABELS).sort()).toEqual([...SCHEDULE_PRESETS].sort());
     });
 
     it('formats rate expressions', () => {
@@ -190,8 +185,8 @@ describe('formatSchedule', () => {
         expect(formatSchedule('cron(30 14 ? * MON *)')).toBe('Mon @ 14:30');
     });
 
-    it('truncates unrecognized long schedules', () => {
-        expect(formatSchedule('some-very-long-custom-expression-here')).toBe('some-very-long-custo…');
+    it('keeps an unrecognised schedule as written', () => {
+        expect(formatSchedule('some-very-long-custom-expression-here')).toBe('some-very-long-custom-expression-here');
     });
 
     it('still returns "manual" for a genuinely manual pipeline (no asset_schedule either)', () => {
@@ -204,20 +199,32 @@ describe('formatSchedule', () => {
         // This is the exact shape reported as a bug: an asset-triggered
         // pipeline's `schedule` field is empty, which previously fell
         // through to "Manual" — indistinguishable from a truly manual one.
+        // "on" keeps an asset's name from reading as a path.
         expect(formatSchedule('', { operator: 'AND', assets: ['clean/orders'] }))
-            .toBe('clean/orders');
+            .toBe('on clean/orders');
     });
 
-    it('joins multiple assets with "&" for AND and "|" for OR', () => {
-        expect(formatSchedule('', { operator: 'AND', assets: ['sales', 'inventory'] }))
-            .toBe('sales & inventory');
-        expect(formatSchedule('', { operator: 'OR', assets: ['sales', 'inventory'] }))
-            .toBe('sales | inventory');
+    it('counts several assets in a row, and names them all with "&" for AND and "|" for OR in full', () => {
+        expect(formatSchedule('', { operator: 'AND', assets: ['sales', 'inventory'] })).toBe('on 2 assets');
+        expect(formatSchedule('', { operator: 'AND', assets: ['sales', 'inventory'] }, { full: true }))
+            .toBe('on sales & inventory');
+        expect(formatSchedule('', { operator: 'OR', assets: ['sales', 'inventory'] }, { full: true }))
+            .toBe('on sales | inventory');
     });
 
-    it('truncates a long asset-schedule label the same way as a raw schedule', () => {
+    it('names an asset with a condition, and counts and nests groups, as the SDK writes them', () => {
+        // polyris/assets.py to_dict: a plain asset is its name; a.within(hours=1) is an object.
+        expect(formatSchedule('', { operator: 'AND', assets: [{ asset_name: 'orders', freshness_hours: 1 }] }))
+            .toBe('on orders');
+        const nested = { operator: 'OR' as const, assets: [{ operator: 'AND' as const, assets: ['a', 'b'] }, 'c'] };
+        expect(formatSchedule('', nested)).toBe('on 3 assets');
+        expect(formatSchedule('', nested, { full: true })).toBe('on (a & b) | c');
+    });
+
+    it('never cuts text itself: a narrow column cuts it once, with CSS', () => {
         expect(formatSchedule('', { operator: 'AND', assets: ['some/very/long/asset/name/here'] }))
-            .toBe('some/very/long/asset/nam…');
+            .toBe('on some/very/long/asset/name/here');
+        expect(formatSchedule('at(2026-12-01T09:00:00)')).toBe('at(2026-12-01T09:00:00)');
     });
 
     it('ignores asset_schedule entirely when schedule is already a real cron/rate', () => {

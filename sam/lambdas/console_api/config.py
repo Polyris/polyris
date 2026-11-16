@@ -38,7 +38,7 @@ def _get_dynamodb():
 #: call gives up within 12 s. Every console call is a control-plane call (describe,
 #: start, stop, send_task_*); none waits for an execution. The defaults (a 60 s read,
 #: legacy retries) let one slow call outlast the request. /api/pipelines may start a
-#: last call just before its reconcile budget ends (RECONCILE_BUDGET_SECONDS).
+#: last check just before its deadline (RECONCILE_DEADLINE_SECONDS).
 SFN_CLIENT_CONFIG = {'retries': {'mode': 'standard', 'total_max_attempts': 2},
                      'connect_timeout': 2, 'read_timeout': 4}
 

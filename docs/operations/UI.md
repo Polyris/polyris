@@ -58,13 +58,15 @@ The sidebar lists every registered pipeline, one line each. It reads the runs of
 - **Run sparkline** — up to the last 10 runs, oldest on the left, coloured by status; empty slots are a faint track, so the newest run is always the rightmost bar. Hover it, or read the row with a screen reader, for the runs spelled out
 - **Schedule** — see the table below; hidden on tablets, where the sidebar is narrow
 
-**Needs attention.** Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top. A running, paused or aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
+The row of the open pipeline is highlighted; when the pipeline is listed twice, under **Needs attention** and in its group, only the first row you can see is.
+
+**Needs attention.** Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top. A run that is running without waiting for a decision, a paused run or an aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
 
 **Groups.** Set `group=` on the `DAG` to list a pipeline under that group ([DSL reference](../features/DSL.md#dag-parameters)); groups are compared without case. Pipelines without a group go under **Ungrouped**, at the bottom. When no pipeline sets a group, the list is flat. Click a group to fold it, or use the button next to the count to fold or unfold all of them; the console remembers folded groups in this browser. A folded group still shows how many of its pipelines need attention, and is highlighted when it holds the open pipeline. A group you add shows after the pipeline's next deploy or run.
 
 **Search.** Type to filter by pipeline name or group; every word must match. While you search, the sidebar shows the matches only, in their groups, all open. Enter opens the first match. The command palette (`⌘K`) matches pipeline names the same way.
 
-While the pointer or the keyboard focus is in the list, a refresh updates statuses, sparklines and a folded group's count in place, but does not move, add or remove rows, so a row does not shift under your click. The rows follow once the pointer and the focus have left the list; opening a pipeline from the keyboard counts as leaving it. When some recent runs could not be read, a line above the list says a status may be out of date; when the console cannot reach its API at all, the **System** status in the header turns grey and its panel says why.
+While the pointer or the keyboard focus is in the list, a refresh updates statuses, sparklines and a folded group's count in place, but does not move or add rows, so a row does not shift under your click; only a pipeline that is gone leaves at once. The rows follow once the pointer and the focus have left the list; opening a pipeline from the keyboard counts as leaving it. When a refresh fails, the list stays and a line above it says from when its statuses are; when some runs could not be read or Step Functions could not confirm a running one, it says a status may be out of date. Why a refresh fails is said by the **System** status in the header: amber **no connection** or **API error**, with the reason in its panel.
 
 Schedule formatting:
 | Expression | Display |
@@ -73,7 +75,8 @@ Schedule formatting:
 | `cron(0 10 ? * MON *)` | `Mon @ 10:00` |
 | `rate(6 hours)` | `every 6h` |
 | `@daily`, `@hourly`, … (presets) | `daily`, `hourly`, … |
-| `schedule=[asset]` | the asset names, e.g. `raw_orders` |
+| Anything else | as written, cut to fit the row |
+| `schedule=[asset]` | `on` and the asset, e.g. `on raw_orders`; with several, `on 3 assets` (hover for them, e.g. `on (a & b) \| c`) |
 | No schedule | `manual` |
 
 > Schedule appears after pipelines are re-deployed so the registry gets the `schedule` field.
@@ -267,7 +270,7 @@ Server data and UI state are deliberately separated:
 
 **Performance pattern:** All components use `useShallow` selectors to subscribe to only the specific store fields they need, preventing unnecessary re-renders when unrelated state changes.
 
-React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useGlobalQueries.ts` (all-tasks, all-runs, notifications, consecutive progress), `useSystemStatusQuery.ts` (the System pill: `/api/health` as a tagged state).
+React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useGlobalQueries.ts` (all-tasks, all-runs, notifications, consecutive progress), `useSystemStatusQuery.ts` (the System pill: `/api/health` as a tagged state, and a failed pipelines read as `connection`).
 
 ---
 

@@ -153,25 +153,80 @@ export const api = {
 
 export const isOk = <T = unknown>(result: ApiResult<T>): result is { ok: true; data: T } => result.ok === true;
 
+/** A failed request thrown from a query, carrying the HTTP status when the API answered. */
+export class ApiError extends Error {
+    constructor(message: string, readonly status?: number) {
+        super(message);
+        this.name = 'ApiError';
+    }
+}
+
+/** What kind of failure an API error is. `unreachable`, `timeout` and `misconfigured` mean the
+ *  console has no API to talk to; the others are answers from it. */
+export type ApiErrorKind = 'unreachable' | 'timeout' | 'misconfigured' | 'not_found' | 'unauthorized' | 'server' | 'other';
+
+/**
+ * Classifies by the HTTP status when there is one: the request's, else the one its own
+ * `HTTP 404` wording names. A number inside an id (`run-…-a404b2c1`) is never a status.
+ * Without a status the request got no answer: the network, a timeout, or a page that is not JSON.
+ */
+export function classifyApiError(error: string | null | undefined, status?: number): ApiErrorKind {
+    const e = (error ?? '').toLowerCase();
+    const named = /\bhttp (\d{3})\b/.exec(e);
+    const code = status ?? (named ? Number(named[1]) : undefined);
+    if (code === undefined) {
+        if (e.includes('failed to fetch') || e.includes('networkerror') || e.includes('load failed')) return 'unreachable';
+        if (e.includes('request timeout')) return 'timeout';
+        if (e.includes('<!doctype') || e.includes('<html') || e.includes('unexpected token')) return 'misconfigured';
+        return 'other';
+    }
+    if (code === 404) return 'not_found';
+    if (code === 401 || code === 403) return 'unauthorized';
+    if (code >= 500) return 'server';
+    return 'other';
+}
+
 /**
  * Turn a raw API error string into a short, human-readable message for an error
  * surface (e.g. an EmptyState). Recognizes the common console failure modes —
  * unreachable API, an HTML page where JSON was expected (usually a misconfigured
  * API URL), auth, and 4xx/5xx — and otherwise returns the original text.
  */
-export function formatApiErrorMessage(error: string | null | undefined): string {
+export function formatApiErrorMessage(error: string | null | undefined, status?: number): string {
     if (!error) return 'Something went wrong. Please try again.';
-    const e = error.toLowerCase();
-    if (e.includes('failed to fetch') || e.includes('networkerror') || e.includes('load failed')) {
-        return 'Could not reach the API. Check your connection and that the console API URL is set correctly.';
+    switch (classifyApiError(error, status)) {
+        case 'unreachable':
+            return 'Could not reach the API. Check your connection and that the console API URL is set correctly.';
+        case 'timeout':
+            return 'The API did not answer in time. Check your connection and try again.';
+        case 'misconfigured':
+            return 'The API returned an HTML page instead of data — the console API URL is likely misconfigured.';
+        case 'not_found':
+            return 'That resource was not found (404).';
+        case 'unauthorized':
+            return 'You are not authorized to make this request.';
+        case 'server':
+            return 'The API hit a server error. Please try again in a moment.';
+        default:
+            return error;
     }
-    if (e.includes('<!doctype') || e.includes('<html') || e.includes('unexpected token')) {
-        return 'The API returned an HTML page instead of data — the console API URL is likely misconfigured.';
-    }
-    if (e.includes('404')) return 'That resource was not found (404).';
-    if (e.includes('401') || e.includes('403')) return 'You are not authorized to make this request.';
-    if (e.includes('500') || e.includes('502') || e.includes('503') || e.includes('504')) {
-        return 'The API hit a server error. Please try again in a moment.';
-    }
-    return error;
+}
+
+/** A failed read of the pipelines list, as the header and the sidebar show it. */
+export interface ConnectionProblem {
+    /** The console has no API to talk to (as opposed to an API that answered with an error). */
+    unreachable: boolean;
+    /** formatApiErrorMessage's words. */
+    message: string;
+}
+
+/** A query's error (an ApiError, any Error, or a message) as the header and the sidebar show it. */
+export function connectionProblem(error: unknown): ConnectionProblem {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    const status = error instanceof ApiError ? error.status : undefined;
+    const kind = classifyApiError(message, status);
+    return {
+        unreachable: kind === 'unreachable' || kind === 'timeout' || kind === 'misconfigured',
+        message: formatApiErrorMessage(message, status),
+    };
 }

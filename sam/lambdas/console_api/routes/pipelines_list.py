@@ -17,6 +17,7 @@ from typing import Dict
 
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
+from polyris.constants import ACCESS_DENIED_CODES
 
 from config import sfn
 from dal import executions_repo, pipelines_repo
@@ -37,7 +38,9 @@ def list_pipelines(event: Dict) -> Dict:
     """
     params = event.get('queryStringParameters', {}) or {}
     include_stats = params.get('stats', 'false').lower() == 'true'
-    
+    # Step Functions checks start only before this moment (RECONCILE_DEADLINE_SECONDS).
+    deadline = time.monotonic() + RECONCILE_DEADLINE_SECONDS
+
     pipelines = {}
 
     # 1. Get pipelines from registry (authoritative source, small table)
@@ -78,9 +81,12 @@ def list_pipelines(event: Dict) -> Dict:
                     'waiting_on': None,
                 }
     except (ClientError, BotoCoreError) as e:
+        # A list without the registry has no groups or schedules and misses every pipeline
+        # without a recent run: an answer that looks whole and is not (ADR #136). Fail instead.
         log.error("list_pipelines", "Error scanning registry", error=str(e))
-    
-    # If no pipelines in registry, fall back to tokens table scan (limited)
+        raise
+
+    # An empty registry (pipelines that ran but never registered): discover them from the tokens
     if not pipelines:
         try:
             scan_kwargs = {
@@ -101,8 +107,10 @@ def list_pipelines(event: Dict) -> Dict:
                         'waiting_on': None,
                     }
         except (ClientError, BotoCoreError) as e:
+            # Else an unreadable table reads "No pipelines registered yet"
             log.error("list_pipelines", "Error scanning tokens for discovery", error=str(e))
-    
+            raise
+
     # 2. Calculate stats only if requested
     # Uses date-pipeline-index GSI (hash=date) instead of full table scan.
     # 14 targeted queries (1 per SLA day) vs scanning entire table.
@@ -201,7 +209,6 @@ def list_pipelines(event: Dict) -> Dict:
 
     # 4. Finish each pipeline's runs: the latest one checked against Step Functions, then
     #    SLA, sparkline and status. After step 3, so a pipeline found only there is checked too.
-    deadline = time.monotonic() + RECONCILE_BUDGET_SECONDS
     for name, run_list in run_lists.items():
         if not _finish_runs(pipelines[name], run_list, deadline):
             stats_incomplete = True
@@ -212,12 +219,17 @@ def list_pipelines(event: Dict) -> Dict:
     })
 
 
-#: Time /api/pipelines may spend starting Step Functions checks of running runs. API
-#: Gateway answers at 29 s: this budget, plus one last call that starts just before it
-#: ends (at most 12 s, config.SFN_CLIENT_CONFIG), leaves the reads before it about 9 s.
-#: A check takes about 0.1 s, so the budget covers some 80 running pipelines; past it,
-#: the rest keep their derived status and the answer says `stats_incomplete` (#52).
-RECONCILE_BUDGET_SECONDS = 8
+#: Seconds after the request starts past which /api/pipelines starts no more Step Functions
+#: checks. API Gateway answers at 29 s; a Step Functions call that starts just before this
+#: moment gives up within 13 s (config.SFN_CLIENT_CONFIG: two attempts of 2 + 4 s and a backoff
+#: under 1 s), which leaves 4 s for a cold start and the answer. Past it, the rest keep their
+#: derived status and the answer says `stats_incomplete` (Principle #52).
+RECONCILE_DEADLINE_SECONDS = 12
+
+
+def _access_denied(e: Exception) -> bool:
+    """A missing permission, raised rather than folded into "could not check" (CLAUDE.md, Error Visibility)."""
+    return isinstance(e, ClientError) and e.response.get('Error', {}).get('Code') in ACCESS_DENIED_CODES
 
 #: A run still "running" whose tasks include one of these waits for an operator.
 _WAITING_ON_OPERATOR = (TaskStatus.WAITING_DECISION, TaskStatus.WAITING_PAUSED)
@@ -228,21 +240,30 @@ def _finish_runs(pipeline: Dict, run_list: list, deadline: float) -> bool:
 
     The latest run, when its tasks still say running, is checked against Step Functions
     (ADR #112 §7), as /runs does: a run whose execution died is no longer "running". Only
-    the latest, since the card's status and the sidebar's "Needs attention" read it: one
-    call per pipeline running now. Returns False when the check was skipped for lack of
-    time, so the status may be out of date.
+    the latest, since the card's status and the sidebar's "Needs attention" read it: one call
+    per pipeline running now. Returns False when the check could not be made (no ARN, deadline
+    passed, Step Functions failed), so the status may be out of date; a denied check raises.
     """
     checked = True
     if run_list and run_list[0][1]['status'] == 'running':
         latest_execution, latest, statuses = run_list[0]
-        if time.monotonic() < deadline:
-            reconciled = reconcile_sfn_status(latest_execution, pipeline['arn'])
-            if reconciled is not None:
-                latest['status'] = reconciled
-        else:
+        if not pipeline['arn']:
             checked = False
-            log.warn("list_pipelines", "Reconcile budget spent; status left as derived",
+            log.error("list_pipelines", "No state machine ARN; status left as derived",
+                      pipeline_name=pipeline['name'], execution_name=latest_execution)
+        elif time.monotonic() >= deadline:
+            checked = False
+            log.warn("list_pipelines", "Reconcile deadline passed; status left as derived",
                      pipeline_name=pipeline['name'], execution_name=latest_execution)
+        else:
+            try:
+                latest['status'] = check_with_sfn(latest_execution, pipeline['arn'])
+            except (ClientError, BotoCoreError) as e:
+                log.error("list_pipelines", "Step Functions check failed; status left as derived",
+                          pipeline_name=pipeline['name'], execution_name=latest_execution, error=str(e))
+                if _access_denied(e):
+                    raise
+                checked = False
         if latest['status'] == 'running':
             pipeline['waiting_on'] = next((s for s in _WAITING_ON_OPERATOR if s in statuses), None)
 
@@ -575,8 +596,9 @@ def _query_pipeline_by_date_range(pipeline_name: str, start: datetime, end: date
 def _reconcile_running(executions, pipeline_name: str):
     """For running executions, verify with SFN they're still alive.
     
-    This is the ONLY place where UI reads from SFN API — to confirm
-    running executions haven't silently failed. See DESIGN_DECISIONS.md #22.
+    The console reads Step Functions only to confirm that a run its tasks call running is
+    still alive (ADR #22, #112 §7): here, in list_pipelines for each pipeline's latest run,
+    and in the /runs feed.
     """
     running_execs = [e for e in executions if e.get('status') == 'running']
     if not running_execs:
@@ -609,39 +631,53 @@ def _reconcile_running(executions, pipeline_name: str):
             ex['status'] = new_status
 
 
-def reconcile_sfn_status(execution_name, sfn_arn):
-    """Query SFN for one execution and return its canonical status (ADR #112).
+def check_with_sfn(execution_name, sfn_arn):
+    """The canonical status of a run whose tasks say running, from Step Functions (ADR #112).
 
     Applies the recovered rule (SFN failed/timed_out but every task resolved) via the
-    canonical ``reconcile_execution_status``. Returns None when the status can't be
-    determined, so callers keep the DynamoDB-derived value. Shared by the pipeline
-    execution list and the ``/runs`` feed so both surfaces reconcile identically.
+    canonical ``reconcile_execution_status``. Raises ClientError or BotoCoreError when Step
+    Functions cannot answer; the caller decides what that means.
+    """
+    exec_arn = sfn_arn.replace(':stateMachine:', ':execution:') + ':' + execution_name
+    desc = sfn.describe_execution(executionArn=exec_arn)
+    sfn_status = normalize_execution_status(
+        desc.get('status', ''),
+        log_warn=lambda m, **ctx: log.warn("reconcile_sfn_status", m, **ctx),
+    )
+    all_resolved = False
+    if sfn_status in ('failed', 'timed_out'):
+        try:
+            # execution_name lets should_skip_token_row drop the internal rows that share the run:
+            # warnings (status failed), the pause record and the DAG snapshot (no status).
+            items = executions_repo.query_by_pipeline_execution(
+                execution_name, projection='execution_name, #s', expr_names={'#s': 'status'})
+            task_items = [i for i in items if not should_skip_token_row(i)]
+            all_resolved = bool(task_items) and all(
+                i.get('status') in TASK_SUCCESS_STATUSES for i in task_items)
+        except (ClientError, BotoCoreError) as e:
+            if _access_denied(e):
+                raise
+            # Can't verify recovery — treat as not resolved (ADR #38: still visible)
+            log.warn("reconcile_sfn_status", "Failed to check task resolution",
+                     execution_name=execution_name, error=str(e))
+    return reconcile_execution_status('running', sfn_status, all_resolved)
+
+
+def reconcile_sfn_status(execution_name, sfn_arn):
+    """check_with_sfn, or None when the status can't be determined (ADR #112).
+
+    Callers keep the DynamoDB-derived value on None. Shared by the pipeline execution list
+    and the ``/runs`` feed so both surfaces reconcile identically. A denied call is raised.
     """
     if not sfn_arn:
         return None
     try:
-        exec_arn = sfn_arn.replace(':stateMachine:', ':execution:') + ':' + execution_name
-        desc = sfn.describe_execution(executionArn=exec_arn)
-        sfn_status = normalize_execution_status(
-            desc.get('status', ''),
-            log_warn=lambda m, **ctx: log.warn("reconcile_sfn_status", m, **ctx),
-        )
-        all_resolved = False
-        if sfn_status in ('failed', 'timed_out'):
-            try:
-                # execution_name lets should_skip_token_row drop the internal rows that share the run:
-                # warnings (status failed), the pause record and the DAG snapshot (no status).
-                items = executions_repo.query_by_pipeline_execution(
-                    execution_name, projection='execution_name, #s', expr_names={'#s': 'status'})
-                task_items = [i for i in items if not should_skip_token_row(i)]
-                all_resolved = bool(task_items) and all(
-                    i.get('status') in TASK_SUCCESS_STATUSES for i in task_items)
-            except (ClientError, BotoCoreError) as e:
-                # Can't verify recovery — treat as not resolved (ADR #38: still visible)
-                log.warn("reconcile_sfn_status", "Failed to check task resolution",
-                         execution_name=execution_name, error=str(e))
-        return reconcile_execution_status('running', sfn_status, all_resolved)
+        return check_with_sfn(execution_name, sfn_arn)
     except (ClientError, BotoCoreError) as e:
+        if _access_denied(e):
+            log.error("reconcile_sfn_status", "Step Functions check denied",
+                      execution_name=execution_name, sfn_arn=sfn_arn, error=str(e))
+            raise
         log.warn("reconcile_sfn_status", "Failed to describe SFN execution",
                  execution_name=execution_name, sfn_arn=sfn_arn, error=str(e))
         return None

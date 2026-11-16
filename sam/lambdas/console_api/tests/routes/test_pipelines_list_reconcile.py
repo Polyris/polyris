@@ -89,12 +89,48 @@ def test_a_run_that_is_really_running_stays_running(stack):
     assert _card()['status'] == 'running'
 
 
-def test_a_check_that_fails_keeps_the_derived_status(stack):
-    """No such execution (ExecutionDoesNotExist): reconcile_sfn_status logs and returns None."""
+def test_a_check_that_fails_keeps_the_derived_status_and_the_answer_says_so(stack):
+    """No such execution (ExecutionDoesNotExist): the status may be out of date, and the sidebar says so."""
     _, rows, _ = stack
     rows.append(_row('gone0001', 'load', 'running', '2026-11-14T12:00:00Z'))
 
-    assert _card()['status'] == 'running'
+    body = _body()
+
+    assert body['pipelines'][0]['status'] == 'running'
+    assert body['stats_incomplete'] is True
+
+
+def test_a_check_step_functions_cannot_answer_marks_the_stats_incomplete(stack, mocker):
+    sfn, rows, start = stack
+    start('slow0002')
+    rows.append(_row('slow0002', 'load', 'running', '2026-11-14T12:00:00Z'))
+    mocker.patch.object(sfn, 'describe_execution', side_effect=ClientError(
+        {'Error': {'Code': 'ThrottlingException', 'Message': 'Rate exceeded'}}, 'DescribeExecution'))
+
+    body = _body()
+
+    assert body['pipelines'][0]['status'] == 'running'
+    assert body['stats_incomplete'] is True
+
+
+def test_a_denied_check_is_raised_never_shown_as_a_stale_status(stack, mocker):
+    """CLAUDE.md, Error Visibility: a missing permission is an error, not "could not check"."""
+    sfn, rows, start = stack
+    start('deny0001')
+    rows.append(_row('deny0001', 'load', 'running', '2026-11-14T12:00:00Z'))
+    mocker.patch.object(sfn, 'describe_execution', side_effect=ClientError(
+        {'Error': {'Code': 'AccessDeniedException', 'Message': 'not authorized'}}, 'DescribeExecution'))
+
+    with pytest.raises(ClientError, match='AccessDeniedException'):
+        _body()
+
+
+def test_a_running_run_of_a_pipeline_without_a_state_machine_is_not_called_checked(stack, mocker):
+    _, rows, _ = stack
+    mocker.patch.object(pipelines_list.pipelines_repo, 'list_all', return_value=[{'pipeline_name': 'orders'}])
+    rows.append(_row('noarn001', 'load', 'running', '2026-11-14T12:00:00Z'))
+
+    assert _body()['stats_incomplete'] is True
 
 
 def test_only_the_latest_run_is_checked(stack, mocker):
@@ -157,11 +193,11 @@ def test_a_failed_run_waits_on_nobody(stack, monkeypatch, mocker):
     assert card['waiting_on'] is None
 
 
-def test_past_the_time_budget_the_status_stays_derived_and_the_answer_says_so(stack, mocker):
+def test_past_the_deadline_the_status_stays_derived_and_the_answer_says_so(stack, mocker):
     sfn, rows, start = stack
     start('slow0001')
     rows.append(_row('slow0001', 'load', 'running', '2026-11-14T12:00:00Z'))
-    mocker.patch.object(pipelines_list, 'RECONCILE_BUDGET_SECONDS', -1)
+    mocker.patch.object(pipelines_list, 'RECONCILE_DEADLINE_SECONDS', -1)
     describe = mocker.spy(sfn, 'describe_execution')
 
     body = _body()
@@ -210,10 +246,57 @@ def test_a_recovered_run_counts_as_a_success_in_the_sla(stack, monkeypatch, mock
     assert card['sla'] == 100
 
 
+def test_the_sla_counts_only_ended_runs_that_were_not_stopped(stack, mocker):
+    """ADR #112: a running run is not counted yet, and a stop is not a failure."""
+    _, rows, start = stack
+    start('live0003')
+    mocker.patch.object(pipelines_list.executions_repo, 'query_runs_by_date', side_effect=lambda day, **_: [
+        _row('live0003', 'load', 'running', '2026-11-14T12:00:00Z'),
+        _row('stop0001', 'load', 'aborted', '2026-11-14T10:00:00Z'),
+        _row('fail0001', 'load', 'failed', '2026-11-14T09:00:00Z'),
+        _row('done0003', 'load', 'success', '2026-11-14T08:00:00Z'),
+    ] if day == TODAY else [])
+
+    assert _card()['sla'] == 50
+
+
 def test_the_console_step_functions_client_fails_inside_the_request():
-    """Principle #53: well inside API Gateway's 29 s, even with every retry."""
+    """Principle #53: a call that starts at the deadline gives up inside API Gateway's 29 s."""
     import config
     cfg = config.SFN_CLIENT_CONFIG
-    worst_call = cfg['retries']['total_max_attempts'] * (cfg['connect_timeout'] + cfg['read_timeout'])
-    reads_before = 9  # the 14 date queries and the registry read, with room to spare
-    assert pipelines_list.RECONCILE_BUDGET_SECONDS + worst_call + reads_before <= 29
+    attempts = cfg['retries']['total_max_attempts']
+    worst_call = attempts * (cfg['connect_timeout'] + cfg['read_timeout']) + (attempts - 1) * 1  # backoff < 1 s
+    assert pipelines_list.RECONCILE_DEADLINE_SECONDS + worst_call <= 29 - 4  # a cold start and the answer
+
+
+def test_a_registry_that_cannot_be_read_fails_the_request(stack, mocker):
+    """ADR #136: a list without the registry has no groups and misses idle pipelines; never a 200."""
+    mocker.patch.object(pipelines_list.pipelines_repo, 'list_all', side_effect=ClientError(
+        {'Error': {'Code': 'ProvisionedThroughputExceededException', 'Message': 'slow down'}}, 'Scan'))
+    scan = mocker.patch.object(pipelines_list.executions_repo, 'scan_raw')
+
+    with pytest.raises(ClientError, match='ProvisionedThroughputExceededException'):
+        _body()
+    scan.assert_not_called()
+
+
+def test_an_empty_registry_whose_fallback_scan_fails_fails_the_request(stack, mocker):
+    """Else an unreadable tokens table reads "No pipelines registered yet"."""
+    mocker.patch.object(pipelines_list.pipelines_repo, 'list_all', return_value=[])
+    mocker.patch.object(pipelines_list.executions_repo, 'scan_raw', side_effect=ClientError(
+        {'Error': {'Code': 'AccessDeniedException', 'Message': 'no'}}, 'Scan'))
+
+    with pytest.raises(ClientError, match='AccessDeniedException'):
+        _body()
+
+
+def test_a_denied_read_of_a_failed_run_s_tasks_is_raised(stack, monkeypatch, mocker):
+    _, rows, start = stack
+    monkeypatch.setenv('SF_EXECUTION_HISTORY_TYPE', 'FAILURE')
+    start('deny0002')
+    rows.append(_row('deny0002', 'load', 'running', '2026-11-14T12:00:00Z'))
+    mocker.patch.object(pipelines_list.executions_repo, 'query_by_pipeline_execution', side_effect=ClientError(
+        {'Error': {'Code': 'AccessDeniedException', 'Message': 'no'}}, 'Query'))
+
+    with pytest.raises(ClientError, match='AccessDeniedException'):
+        _body()

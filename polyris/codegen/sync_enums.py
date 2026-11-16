@@ -245,10 +245,10 @@ def _ts_union(name: str, doc: str, values: Iterable[str]) -> str:
     )
 
 
-def _ts_array(name: str, doc: str, values: Iterable[str]) -> str:
+def _ts_array(name: str, doc: str, values: Iterable[str], element_type: str = "string") -> str:
     return (
         f"/** {doc} */\n"
-        f"export const {name}: ReadonlyArray<string> = [\n"
+        f"export const {name}: ReadonlyArray<{element_type}> = [\n"
         + "".join(f"    '{v}',\n" for v in values)
         + "];\n"
     )
@@ -349,6 +349,20 @@ def _render_ts_body() -> str:
         "(success, succeeded alias, skipped). Single source of truth for "
         "'done successfully' counts in the UI.",
         sorted(src.SUCCESS_STATUSES),
+    ))
+    parts.append("\n")
+    parts.append(_ts_union(
+        "SchedulePreset",
+        "The schedule presets a DAG may name (polyris/constants.py SCHEDULE_PRESETS); "
+        "the registry keeps the preset itself.",
+        list(src.SCHEDULE_PRESETS),
+    ))
+    parts.append("\n")
+    parts.append(_ts_array(
+        "SCHEDULE_PRESETS",
+        "Every SchedulePreset, in the order constants.py lists them.",
+        list(src.SCHEDULE_PRESETS),
+        element_type="SchedulePreset",
     ))
     parts.append("\n")
     parts.append(_ts_array(

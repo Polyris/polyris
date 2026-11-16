@@ -4,7 +4,7 @@
  * everything else, config included, runs for real.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api, setAuthErrorCallback, formatApiErrorMessage } from './api';
+import { api, setAuthErrorCallback, formatApiErrorMessage, classifyApiError, connectionProblem, ApiError } from './api';
 
 const fetchMock = vi.mocked(global.fetch);
 
@@ -94,6 +94,25 @@ describe('formatApiErrorMessage', () => {
         ['', 'Something went wrong'],
     ])('%j reads as %j', (raw, expected) => {
         expect(formatApiErrorMessage(raw)).toContain(expected);
+    });
+
+    it('classifies by the HTTP status, never by a number inside an id', () => {
+        expect(classifyApiError('Pipeline not found', 404)).toBe('not_found');
+        expect(classifyApiError('HTTP 404')).toBe('not_found');
+        expect(classifyApiError('HTTP 503')).toBe('server');
+        expect(classifyApiError('Execution run-2026-11-14-a4041b2c not found in table')).toBe('other');
+        expect(classifyApiError('Task c500ab12 failed', 409)).toBe('other');
+        expect(classifyApiError('Failed to fetch')).toBe('unreachable');
+        expect(classifyApiError('Request timeout')).toBe('timeout');
+    });
+
+    it('a failed read is a connection problem only when there is no API to talk to', () => {
+        expect(connectionProblem(new Error('Failed to fetch'))).toMatchObject({ unreachable: true });
+        expect(connectionProblem(new Error('Request timeout'))).toMatchObject({ unreachable: true });
+        expect(connectionProblem('<!DOCTYPE html>')).toMatchObject({ unreachable: true });
+        expect(connectionProblem(new ApiError('Token expired', 401)))
+            .toEqual({ unreachable: false, message: 'You are not authorized to make this request.' });
+        expect(connectionProblem(new ApiError('boom', 500))).toMatchObject({ unreachable: false });
     });
 
     it('a 404 says what happened and nothing about other builds (Principle #24)', () => {

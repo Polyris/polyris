@@ -114,9 +114,9 @@ describe('Header', () => {
             expect(screen.queryByTitle(/^API (connected|disconnected)$/)).not.toBeInTheDocument();
         });
 
-        it('reads the status as unknown while the API cannot be reached', () => {
-            renderWithQuery(<Header {...props} connectionError="Could not reach the API." />);
-            expect(screen.getByRole('button', { name: 'System · status unknown' })).toBeInTheDocument();
+        it('says "no connection" while the API cannot be reached', () => {
+            renderWithQuery(<Header {...props} connectionError={{ unreachable: true, message: 'Could not reach the API.' }} />);
+            expect(screen.getByRole('button', { name: 'System · no connection' })).toBeInTheDocument();
         });
     });
 

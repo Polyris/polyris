@@ -1,6 +1,6 @@
 'use client';
 
-import React, { lazy, Suspense, useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import { Loader2 } from './utils/icons';
 import {
@@ -18,7 +18,7 @@ import { usePipelinesQuery } from './hooks/queries';
 import { useAppStore } from './stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useStoreInit } from './stores/useStoreInit';
-import { POLLING, viewFromPathname, formatApiErrorMessage } from './utils';
+import { POLLING, viewFromPathname, connectionProblem } from './utils';
 import type { PipelineWithUI } from './types';
 import { isMainView } from './types';
 
@@ -71,7 +71,8 @@ function App() {
     // A lost connection to the API is said in one place, the System status in the header (the
     // sidebar shows its own empty state when it has nothing to list): the reason, in words a
     // reader can act on.
-    const connectionError = pipelinesError ? formatApiErrorMessage(pipelinesError.message) : null;
+    // One object per failure, so the System status does not re-run its effects on every render.
+    const connectionError = useMemo(() => (pipelinesError ? connectionProblem(pipelinesError) : null), [pipelinesError]);
 
     // ========== Store Init (URL sync, pipeline restore, effects) ==========
     const { navigateToExecution } = useStoreInit({ pipelines });

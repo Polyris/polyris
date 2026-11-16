@@ -1,5 +1,5 @@
 import { useQuery, useInfiniteQuery, keepPreviousData } from '@tanstack/react-query';
-import { api } from '../../utils';
+import { api, ApiError } from '../../utils';
 import { queryKeys } from '../../lib/queryClient';
 import type { Task, DAG, SelectedExecution, Execution, PipelineWithUI } from '../../types';
 
@@ -24,7 +24,8 @@ interface PipelinesAnswer {
 async function fetchPipelines(): Promise<PipelinesAnswer> {
     const data = await api.get('/pipelines?stats=true');
     if (data.error) {
-        throw new Error(data.error);
+        // The status lets the System status tell an API that answered from one it cannot reach.
+        throw new ApiError(data.error, typeof data.status === 'number' ? data.status : undefined);
     }
     return { pipelines: data.pipelines || [], statsIncomplete: data.stats_incomplete === true };
 }

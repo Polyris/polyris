@@ -97,8 +97,6 @@
     }
     .nav-pills .hdr-nav-pill-label { display: none; }
     
-    /* Connection banner */
-    
     /* Sidebar as drawer */
     .main-top {
         grid-template-columns: 1fr !important;
@@ -311,6 +309,7 @@
     .sb-foldall {
         height: 36px;
     }
+    .sb-list { scroll-padding-top: 2.75rem; }
     /* The drawer (up to 360px) has room for the schedule the tablet sidebar hides */
     .sb-row__schedule { display: block; }
     /* 16px keeps iOS from zooming into the field on focus */
@@ -644,4 +643,18 @@
     .amv-refresh-btn { gap: 4px; }
     /* Hide weekday for ultra-tight rows */
     .amv-date-weekday { display: none; }
+}
+
+/* A touch screen of any width: the sidebar's rows, groups and search are 40px tap targets
+   (ADR #40), and the "/" hint, a keyboard shortcut, is not shown */
+@media (pointer: coarse) {
+    .sb-row,
+    .sb-group,
+    .sb-search {
+        height: 40px;
+    }
+    .sb-foldall { height: 36px; }
+    .sb-kbd { display: none; }
+    /* Keeps a row reached with k clear of the 40px sticky group header */
+    .sb-list { scroll-padding-top: 2.75rem; }
 }

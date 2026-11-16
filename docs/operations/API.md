@@ -70,7 +70,7 @@ Fields `recent_runs`, `sla` and `waiting_on` are filled only when `stats=true`; 
 
 - `status` is the latest run's status, `idle` when there is none in those days. When the latest run's tasks still say `running`, Step Functions is asked about it, so a run whose execution failed, timed out or was stopped shows that status.
 - `waiting_on` is `waiting_decision` or `waiting_paused` when the latest run is running but waits for an operator, else `null`.
-- `stats_incomplete` is `true` when a read the statuses rest on failed or ran out of time: some statuses may be out of date.
+- `stats_incomplete` is `true` when a read the statuses rest on did not happen: a day could not be read, or Step Functions could not confirm a running run (the call failed, or came after the first 12 s of the request). Some statuses may be out of date. A call the console API is not allowed to make fails the request with a 500 instead, and so does a pipeline registry it cannot read.
 
 ### Get Pipeline Status
 

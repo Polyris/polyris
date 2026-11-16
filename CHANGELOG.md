@@ -1,20 +1,26 @@
 ## Unreleased
 
+### Upgrading to 1.3.0 (ADR #136)
+
+1. **Groups.** The console's sidebar groups pipelines by `DAG(group=)` only (see *Changed — the pipelines sidebar*). Add `group="…"` to the DAGs whose name prefix you relied on, and redeploy them with `polyris-deploy`; until then they are listed under **Ungrouped**, or flat when no pipeline sets a group.
+2. **API clients.** `/api/pipelines` no longer returns `today_stats` or `progress`, and ignores `date`. A script that read them takes a pipeline's state from `status` and `recent_runs`, or a day's tasks from `/api/tasks?date=`. The answer is still an object, `{"pipelines": [...], "stats_incomplete": …}`; `stats_incomplete` and `waiting_on` are new. A pipeline registry the API cannot read now fails the request with a 500, instead of an answer built from the tokens table without groups or schedules.
+
 ### Changed — the pipelines sidebar
 
 - One line per pipeline: the latest run's status, the name, the last 10 runs and the schedule, all from the runs of the last 14 days. A pipeline with no run in those days shows a small hollow circle. A row's accessible name sums up its runs. Schedule presets read as words (`daily`, `hourly`), and a pipeline without a schedule reads `manual`.
 - Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top, under **Needs attention**, which you can fold. A run waiting for a decision or paused shows that icon instead of the spinner.
-- Groups come only from `DAG(group=)`, compared without case. The sidebar no longer makes a group from the part of a name before the first `-`; a pipeline without `group=` is listed under **Ungrouped**, or in a flat list when no pipeline sets a group. To keep a group you relied on, add `group="…"` to those DAGs and redeploy them; until then they are listed flat.
+- Groups come only from `DAG(group=)`, compared without case. The sidebar no longer makes a group from the part of a name before the first `-`; a pipeline without `group=` is listed under **Ungrouped**, or in a flat list when no pipeline sets a group. To keep a group you relied on, add `group="…"` to those DAGs and redeploy them; until then they are listed under **Ungrouped**.
 - Groups fold one by one or all at once, stay folded in this browser, still show how many of their pipelines need attention, and are highlighted when they hold the open pipeline.
 - Search matches pipeline names and groups, keeps the matches in their groups, and `Enter` opens the first match.
 - Keyboard: `/` focuses the search, `↓` moves into the list, and while the list has focus `J`/`K` and the arrows move through it, `Enter` opens a pipeline or folds a group, and `Esc` goes back to the search. `Esc` in the search clears it.
-- A failed load of the pipeline list says so and offers a retry. Before, it read "No pipelines registered yet". When some recent runs could not be read, a line above the list says a status may be out of date.
-- While the pointer or the keyboard focus is in the list, a refresh updates statuses in place but does not move rows; they follow once you leave the list.
+- A failed load of the pipeline list says so and offers a retry. Before, it read "No pipelines registered yet". When a refresh fails, the list stays and a line above it says from when its statuses are; when some recent runs could not be read, it says a status may be out of date.
+- While the pointer or the keyboard focus is in the list, a refresh updates statuses in place but does not move rows; they follow once you leave the list. A pipeline that is gone leaves at once.
+- An asset schedule reads `on raw_orders`, or `on 3 assets` with the names on hover (`on (a & b) | c`), so it is not taken for a path; an asset with a condition, such as `a.within(hours=1)`, is named too, where it read `[object Object]`; other text is cut once, to fit the row. On a touch screen rows are 40px tall and the `/` hint is hidden; a closed phone drawer is out of the Tab order.
 
 ### Added — `/api/pipelines` says what its statuses rest on
 
 - `waiting_on` (`waiting_decision`, `waiting_paused` or `null`): the latest run is running but waits for an operator.
-- `stats_incomplete`: a read the statuses rest on failed or ran out of time, so some may be out of date. Before, such a failure only reached the console API's logs.
+- `stats_incomplete`: a read the statuses rest on failed or ran out of time, or Step Functions could not confirm a running run, so some may be out of date. Before, such a failure only reached the console API's logs. A Step Functions check the console API is not allowed to make fails the request instead.
 
 ### Removed — `today_stats` and `progress` from `/api/pipelines`
 
@@ -26,12 +32,12 @@
 
 ### Changed — one place says the console cannot reach its API
 
-- The "Connection lost" banner is gone, and the pipeline page no longer shows its own copy of the error. The **System** status in the header, already grey in that case, is now the one place: its panel says why the API cannot be reached, and **Retry now** retries both the status and the pipeline list.
+- The "Connection lost" banner is gone, and the pipeline page no longer shows its own copy of the error. The **System** status in the header is now the one place: amber **System · no connection** when the API cannot be reached, **System · API error** when it answers the pipeline list with an error. Its panel says why, and **Retry now** retries both the status and the pipeline list. When the status already needs attention, it stays so and its panel adds that the pipeline list cannot be read. Before, the pill turned grey "status unknown", which read like "nothing to worry about".
 
 ### Fixed — the bell says when it cannot load notifications
 
 - When the request for notifications failed, the bell read "No new notifications" with a green check, so a warning could go unseen. The bell now shows `!` (or the earlier unread count) in amber, and its panel says what failed and offers a retry. After a failed refresh the last list stays, with the failure above it.
-- A "not found" error now reads "That resource was not found (404)."
+- A "not found" error now reads "That resource was not found (404)." Errors are told apart by their HTTP status, so an id that contains `404` or `500` no longer turns an error into "not found" or "server error"; a request that times out says so.
 
 ### Fixed — the pipeline page says when it cannot read a date's runs
 
@@ -39,12 +45,14 @@
 
 ### Fixed — a run whose execution died no longer shows as running
 
-- The pipelines list (`/api/pipelines`) now asks Step Functions about a pipeline's latest run when its tasks still say `running`, as History already did (ADR #112). A run whose execution failed, timed out or was stopped shows that status on the sidebar and in **Needs attention**, instead of running forever. One `DescribeExecution` call per pipeline whose latest run is running; if the call fails, the status stays as derived.
+- The pipelines list (`/api/pipelines`) now asks Step Functions about a pipeline's latest run when its tasks still say `running`, as History already did (ADR #112). A run whose execution failed, timed out or was stopped shows that status on the sidebar and in **Needs attention**, instead of running forever. One `DescribeExecution` call per pipeline whose latest run is running, started only in the first 12 s of the request; if the call fails or comes too late, the status stays as derived and `stats_incomplete` says so. A call the console API is not allowed to make fails the request, here and in History, instead of passing for "could not check".
 
 ### Fixed — the command palette (⌘K) shows each pipeline's latest run
 
 - Its status icon read only today's task counts, so a pipeline that failed yesterday, or never ran, showed a green check. It now shows the same latest-run status as the sidebar.
 - Its search matches every word of the query in any order, as the sidebar's does: `daily acme` finds `acme-orders-daily`.
+
+## v1.2.0 - 2026-11-14
 
 ### Upgrading to 1.2.0 (ADR #130, ADR #132)
 
@@ -53,7 +61,7 @@ The coordination layer changes under running pipelines, so upgrade in a quiet wi
 1. **Before.** Disable your pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`). Resume or stop paused runs, then wait until no task is `running`, `waiting_delay` or `waiting_decision` (the console's Tasks view). Keep the schedules off until the upgrade succeeds. Tasks still waiting for dependencies or assets can stay: the new version adopts them and checks them from their facts. A producer that was still running finishes on the old definitions, which call what the upgrade removes: its run can end `FAILED` and the pipelines scheduled on its assets do not start. Restart that task after the upgrade; it records its facts again.
 2. **Upgrade.** Run `polyris-up --profile <profile> --disable-rollback`. The same update adds two DynamoDB indexes, and CloudFormation can report it complete before they are built: minutes on small tables, longer on large ones. Until they are, a task that waits for assets waits instead of starting, and the console's System status names the sweeper steps that cannot read `attention-index` yet; both clear by themselves once the indexes are built. To see where they are: `aws dynamodb describe-table --table-name <namespace>-<stage>-polyris-pipeline-tokens --query "Table.GlobalSecondaryIndexes[].[IndexName,IndexStatus]"`. It also removes `QueuedAssetEventsTable`, which 1.2 no longer uses, so `polyris-up` lists it and asks before going on; without a terminal (CI), add `--accept-data-loss`. If the update fails, the stack keeps what it already changed instead of rolling back to 1.1: fix the cause its events name, then run the same command again.
 3. **After.** Enable the schedules again and start, from the console, the runs whose schedule fired during the window. Within about 5 minutes the sweeper reports for the first time; until then the **System** pill in the console's header is amber, with "No check has run yet". After that, a green pill means task coordination is healthy. A probe that called `/api/health/simple` must now call `/api/health/live`.
-4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline, the naming of long task ids and the run date of scheduled runs (ADR #133). A scheduled pipeline with `variables=` needs the redeploy to run at all. Until a pipeline scheduled on assets is redeployed, the time of its last deploy stands in for the time it subscribed: it is not started for facts recorded before it. The console's sidebar now groups pipelines by `group=` only (see *Changed — the pipelines sidebar*): add `group="…"` to the DAGs whose name prefix you relied on, and redeploy them.
+4. **Pipelines.** The new rules apply without redeploying a pipeline. A redeploy with `polyris-deploy` picks up the new warning rows of the generated pipeline, the naming of long task ids and the run date of scheduled runs (ADR #133). A scheduled pipeline with `variables=` needs the redeploy to run at all. Until a pipeline scheduled on assets is redeployed, the time of its last deploy stands in for the time it subscribed: it is not started for facts recorded before it.
 5. **Tags.** Resources lose their old tags (`Environment`, `Stack`, `Namespace`, `Stage`, `ManagedBy`, and on a pipeline's resources `Pipeline` and `Name`) and get the `polyris:` set instead (ADR #132): the platform's during the upgrade, a pipeline's at its next `polyris-deploy`. Before you upgrade, move IAM conditions and cost reports that use the old keys to the new ones. A least-privilege installer role needs each service's tag, untag and list-tags actions ([IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md#least-privilege-alternative)).
 6. **Runs in flight.** A run that was waiting during the upgrade goes on, more slowly: each of its tasks starts at the sweeper's next check of it, up to about 40 minutes after its dependencies finished, and leaves a `sweeper` warning in the bell: the old version's pointers do not reach the new code. Facts the old version records during the window start no pipeline a second time. A pipeline scheduled on several assets (`schedule=[a, b]`) that the old version started for a date is started again for that date if one of those assets records a new fact for it after the upgrade: the new version names its runs differently.
 

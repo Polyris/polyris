@@ -6,7 +6,7 @@ import {
     StatusIcon, Search, Inbox, ChevronDown, ChevronRight, Circle, X, AlertTriangle,
 } from '../utils/icons';
 import { formatSchedule } from '../utils/formatters';
-import { formatApiErrorMessage } from '../utils/api';
+import { connectionProblem } from '../utils/api';
 import { logger } from '../utils/logger';
 import { HISTORY_WINDOW_DAYS } from '../utils/historyWindow';
 import { buildSidebarLines, groupKey, isFailure, needsAttention, UNGROUPED } from '../utils/pipelineSidebar';
@@ -15,7 +15,7 @@ import config from '../lib/config';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { usePipelinesQuery, usePipelinesStatsIncomplete } from '@/hooks/queries';
-import { useKeyboardShortcuts, usePersistedState, transforms, SHORTCUTS } from '@/hooks';
+import { useIsMobileWidth, useKeyboardShortcuts, usePersistedState, transforms, SHORTCUTS } from '@/hooks';
 import type { PipelineRowProps, PipelineWithUI, RunSparklineProps } from '@/types';
 
 /** localStorage key of the groups the viewer folded: a JSON list of group keys. */
@@ -45,11 +45,13 @@ function parseFoldedGroups(stored: string): string[] {
     return [];
 }
 
-/** `/` must not pull focus out of an open dialog (a modal, ⌘K, a popover), nor into the closed drawer of a phone (`_mobile.css`). */
-function canFocusSearch(drawerOpen: boolean): boolean {
-    if (document.querySelector('[aria-modal="true"], [role="dialog"]')) return false;
-    const phone = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
-    return drawerOpen || !phone;
+/** `/` must not pull focus out of an open dialog (a modal, ⌘K, a popover). */
+const dialogOpen = () => !!document.querySelector('[aria-modal="true"], [role="dialog"]');
+
+/** The pipeline a row key (`row:<place>:<name>`) is for; null for a section or group key. */
+function rowPipelineName(key: string): string | null {
+    if (!key.startsWith('row:')) return null;
+    return key.split(':').slice(2).join(':');
 }
 
 /** "7 success, 2 failed" for the runs a sparkline draws (screen readers and the hover title). */
@@ -73,8 +75,9 @@ function describeRuns(runs: ReadonlyArray<{ status: string }>): string {
  * remove rows: one would otherwise shift under the click, or vanish with the
  * focus (a pipeline leaving "Needs attention"). Statuses, sparklines and a
  * folded group's count still update in place; the rows follow once both have
- * left, or once a pipeline is opened from the keyboard. A failed refetch is
- * the System status in the header; a partial one (`stats_incomplete`) is said here.
+ * left, or once a pipeline is opened from the keyboard. A failed refetch keeps the last
+ * list and says, above it, from when its statuses are (the System status says why); a
+ * partial one (`stats_incomplete`) is said there too.
  */
 export function PipelinesSidebar() {
     const {
@@ -86,13 +89,17 @@ export function PipelinesSidebar() {
         pipelineSearch: s.pipelineSearch, setPipelineSearch: s.setPipelineSearch,
         sidebarOpen: s.sidebarOpen, setSidebarOpen: s.setSidebarOpen,
     })));
-    const { data: fetched = [], isLoading: loading, isError, error, refetch } = usePipelinesQuery();
+    const { data: fetched = [], isLoading: loading, isError, error, refetch, dataUpdatedAt } = usePipelinesQuery();
     const statsIncomplete = usePipelinesStatsIncomplete();
     const [held, setHeld] = useState<PipelineWithUI[] | null>(null);
     const holders = useRef({ pointer: false, focus: false });
-    // Rows (which, and where) come from the held list; what a row shows is always the fetched pipeline.
-    const pipelines = held ?? fetched;
     const latest = useMemo(() => new Map(fetched.map(p => [p.name, p])), [fetched]);
+    // Rows (which, and where) come from the held list; what a row shows is always the fetched
+    // pipeline. A pipeline that is gone leaves at once: its row would open nothing.
+    const pipelines = useMemo(
+        () => (held ? held.filter(p => latest.has(p.name)) : fetched),
+        [held, fetched, latest],
+    );
     // A folded group's count is a status, so it reads the fetched data too.
     const attentionByGroup = useMemo(() => {
         const counts = new Map<string, { failed: number; total: number }>();
@@ -109,6 +116,9 @@ export function PipelinesSidebar() {
     // Focus is in the list. Not cleared when the focused row unmounts (no blur fires), which is how
     // the effect below knows to move the focus to the same pipeline's other row.
     const focusWithin = useRef(false);
+    // The effect below is moving the focus: the list's onFocus must not hold the rows again
+    // after opening a pipeline let them go.
+    const movingFocus = useRef(false);
     const hold = (who: 'pointer' | 'focus', on: boolean) => {
         holders.current[who] = on;
         const holding = holders.current.pointer || holders.current.focus;
@@ -126,7 +136,7 @@ export function PipelinesSidebar() {
         () => buildSidebarLines(pipelines, { search, folded, selected: selectedName, attentionFolded }),
         [pipelines, search, folded, selectedName, attentionFolded],
     );
-    // A pipeline can be listed twice (pinned and in its group); only its first row is announced as current.
+    // A pipeline can be listed twice (pinned and in its group); only its first shown row is marked and announced as current.
     const currentKey = lines.find(l => l.kind === 'row' && l.pipeline.name === selectedName)?.key ?? null;
     const searching = !!search.trim();
     // While searching, the count is the matches (the "Matches" section; none when nothing matches).
@@ -147,8 +157,11 @@ export function PipelinesSidebar() {
     }, [navigable, focusKey, selectedName]);
 
     const showSearch = pipelines.length > 3;
+    // On a phone the sidebar is a drawer: closed, it is out of the Tab order and out of reach of `/`.
+    const isPhone = useIsMobileWidth();
+    const drawerClosed = isPhone && !isOpen;
     useKeyboardShortcuts(
-        { [SHORTCUTS.FOCUS_FILTER]: () => { if (canFocusSearch(isOpen)) searchRef.current?.focus(); } },
+        { [SHORTCUTS.FOCUS_FILTER]: () => { if (!drawerClosed && !dialogOpen()) searchRef.current?.focus(); } },
         { enabled: showSearch },
     );
 
@@ -157,14 +170,31 @@ export function PipelinesSidebar() {
         itemRefs.current.get(key)?.focus();
     };
 
-    // The focused row left the list (its pipeline left "Needs attention"): keep the focus on the
-    // same pipeline's row in its group, rather than dropping it to <body> where j / k do nothing.
+    // The focused row left the list (its pipeline left "Needs attention", or is gone): keep the
+    // focus on the same pipeline's row in its group, else on the item now where the row was,
+    // rather than dropping it to <body> where j / k do nothing.
+    const lastNavigable = useRef<SidebarLine[]>([]);
     useEffect(() => {
+        const before = lastNavigable.current;
+        lastNavigable.current = navigable;
         if (!focusWithin.current || !focusKey || navigable.some(l => l.key === focusKey)) return;
-        const name = focusKey.slice(focusKey.lastIndexOf(':') + 1);
-        const twin = navigable.find(l => l.kind === 'row' && l.pipeline.name === name);
-        // The row's own onFocus records it as the list's Tab stop.
-        if (twin) itemRefs.current.get(twin.key)?.focus();
+        const name = rowPipelineName(focusKey);
+        const twin = name === null ? undefined : navigable.find(l => l.kind === 'row' && l.pipeline.name === name);
+        const at = Math.max(0, before.findIndex(l => l.key === focusKey));
+        const next = twin ?? navigable[Math.min(at, navigable.length - 1)];
+        const el = next && itemRefs.current.get(next.key);
+        if (el) {
+            // The item's own onFocus records it as the list's Tab stop; the hold stays as it was.
+            movingFocus.current = true;
+            el.focus();
+            movingFocus.current = false;
+        } else {
+            // Nothing left to focus: the focus is on <body>, and no blur said so. Let the rows go,
+            // or a list held with nothing in it would stay empty while pipelines arrive.
+            focusWithin.current = false;
+            holders.current.focus = false;
+            if (!holders.current.pointer) setHeld(null);
+        }
     }, [navigable, focusKey]);
     const itemRef = (key: string) => (el: HTMLButtonElement | null) => {
         if (el) itemRefs.current.set(key, el);
@@ -289,7 +319,6 @@ export function PipelinesSidebar() {
             <PipelineRow
                 key={line.key}
                 pipeline={p}
-                selected={selectedName === p.name}
                 current={line.key === currentKey}
                 indented={line.indented}
                 tabIndex={line.key === tabKey ? 0 : -1}
@@ -309,11 +338,11 @@ export function PipelinesSidebar() {
         body = (
             <EmptyState
                 icon={AlertTriangle}
-                tone="error"
+                tone="warning"
                 role="alert"
                 title="Couldn't load pipelines"
                 description={config.API_URL
-                    ? formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))
+                    ? connectionProblem(error).message
                     : 'Configure API_URL in config.js to connect to your backend.'}
                 action={config.API_URL
                     ? <Button size="sm" variant="secondary" onClick={() => { void refetch(); }}>Retry</Button>
@@ -340,7 +369,7 @@ export function PipelinesSidebar() {
         <>
         {/* Mobile overlay */}
         {isOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
-        <nav className={`sidebar ${isOpen ? 'sidebar-open' : ''}`} aria-label="Pipelines">
+        <nav className={`sidebar ${isOpen ? 'sidebar-open' : ''}`} aria-label="Pipelines" inert={drawerClosed}>
             <div className="sidebar-header">
                 <span className="sidebar-title">Pipelines</span>
                 <span className="sidebar-header__actions">
@@ -392,10 +421,14 @@ export function PipelinesSidebar() {
                 </div>
             )}
 
-            {statsIncomplete && !loading && pipelines.length > 0 && (
+            {!loading && pipelines.length > 0 && (isError || statsIncomplete) && (
                 <div className="sb-note" role="status">
                     <AlertTriangle size={14} className="sb-note__icon" aria-hidden="true" />
-                    <span>Some recent runs could not be read, so a status may be out of date.</span>
+                    <span>
+                        {isError
+                            ? `Couldn't refresh the list. Statuses as of ${new Date(dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}.`
+                            : 'Some runs could not be read or confirmed, so a status may be out of date.'}
+                    </span>
                 </div>
             )}
 
@@ -404,7 +437,10 @@ export function PipelinesSidebar() {
                 onKeyDown={onListKeyDown}
                 onMouseEnter={() => hold('pointer', true)}
                 onMouseLeave={() => hold('pointer', false)}
-                onFocus={() => { focusWithin.current = true; hold('focus', true); }}
+                onFocus={() => {
+                    focusWithin.current = true;
+                    if (!movingFocus.current) hold('focus', true);
+                }}
                 onBlur={e => {
                     if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
                     focusWithin.current = false;
@@ -421,7 +457,7 @@ export function PipelinesSidebar() {
 /**
  * PipelineRow - one pipeline: latest-run status, name, last runs, schedule.
  */
-function PipelineRow({ pipeline: p, selected, current, indented, tabIndex, buttonRef, onFocus, onSelect }: PipelineRowProps) {
+function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFocus, onSelect }: PipelineRowProps) {
     // `status` is the latest run within the window /api/pipelines reads; 'idle' means none there.
     const status = p.status || 'idle';
     const waitingOn = status === 'running' && p.waiting_on ? p.waiting_on : null;
@@ -435,7 +471,7 @@ function PipelineRow({ pipeline: p, selected, current, indented, tabIndex, butto
         <button
             ref={buttonRef}
             type="button"
-            className={`sb-row${indented ? ' sb-row--indented' : ''}${selected ? ' sb-row--selected' : ''}`}
+            className={`sb-row${indented ? ' sb-row--indented' : ''}${current ? ' sb-row--selected' : ''}`}
             aria-current={current ? 'page' : undefined}
             aria-label={`${p.name}, last run: ${lastRun}, ${describeRuns(runs)}, schedule: ${fullSchedule}`}
             title={`${p.name}\nSchedule: ${fullSchedule}`}

@@ -430,6 +430,7 @@ textarea:focus-visible {
 
 .cp-command-item-content {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
@@ -441,6 +442,7 @@ textarea:focus-visible {
 }
 
 .cp-command-item-sublabel {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 0.75rem;
     color: var(--text-muted);
 }

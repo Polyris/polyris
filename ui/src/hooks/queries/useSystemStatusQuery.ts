@@ -1,3 +1,4 @@
+import type { ConnectionProblem } from '@/utils/api';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../utils';
@@ -47,8 +48,10 @@ export const SYSTEM_FINDING_FIELDS = ['title', 'resource', 'changed_at', 'impact
 /** How often the console reads /api/health. The unknown panel names it. */
 export const SYSTEM_STATUS_POLL_MINUTES = 2;
 
-/** The unknown reason while the console cannot reach its API at all. System status is the one place that says so. */
-export const LOST_CONNECTION_REASON = 'the console has lost its connection to the API';
+/** What the connection panel says when the console has no API to talk to. System status is the one place that says so. */
+export const LOST_CONNECTION_REASON = 'The console has lost its connection to the API';
+/** What it says when the API answered the pipelines read with an error. */
+export const API_ERROR_REASON = 'The console API answered with an error';
 
 /**
  * One problem, in final English: the panel shows each field as is. Only `title` is always
@@ -62,10 +65,14 @@ export type SystemStatusDetail = typeof HEALTH_DETAILS[keyof typeof HEALTH_DETAI
 
 export type SystemStatusState =
     | { kind: 'loading' }
-    /** `reason` is a phrase without a final period, shown mid-sentence; `detail`, when set, is a full sentence (why). */
-    | { kind: 'unknown'; reason: string; detail?: string }
-    /** `unhealthy` holds the labels of the unhealthy checks; `findings` is empty in the minimal view. */
-    | { kind: 'attention'; detail: SystemStatusDetail; unhealthy: string[]; findings: SystemFinding[]; checkedAt: string | null }
+    /** `reason` is a phrase without a final period, shown mid-sentence. */
+    | { kind: 'unknown'; reason: string }
+    /** The pipelines read fails: `pill` is the pill's word, `reason` a sentence without its period,
+     *  `detail` formatApiErrorMessage's words. Amber, as the bell and the sidebar show the same outage. */
+    | { kind: 'connection'; pill: 'no connection' | 'API error'; reason: string; detail: string }
+    /** `unhealthy` holds the labels of the unhealthy checks; `findings` is empty in the minimal view;
+     *  `connection` says the pipelines read fails too, when it does. */
+    | { kind: 'attention'; detail: SystemStatusDetail; unhealthy: string[]; findings: SystemFinding[]; checkedAt: string | null; connection?: string }
     | { kind: 'healthy'; detail: SystemStatusDetail; checkedAt: string | null };
 
 const text = (value: unknown): string | undefined =>
@@ -129,13 +136,12 @@ export function readSystemStatus(result: unknown): Exclude<SystemStatusState, { 
  * reports every 5 minutes and the backend judges its staleness, so a stopped sweeper shows
  * too; polling faster would only add DynamoDB and Step Functions calls.
  *
- * `connectionError` is set (formatApiErrorMessage's words) while the console cannot reach its
- * API (any failed pipelines read), else null. It turns a green or pending state into unknown,
- * which can no longer be trusted, and is shown as the reason. An answer that names a problem
- * stays: when DynamoDB is down the pipelines read fails too, and the 503 from /api/health says
- * why (architect review, 1.2.0).
+ * `connectionError` is set while the pipelines read fails, else null. It turns a green, pending
+ * or unknown state into connection, which says why. An answer that names a problem stays, and
+ * carries the failed read along: when DynamoDB is down the pipelines read fails too, and the
+ * 503 from /api/health says why (architect review, 1.2.0).
  */
-export function useSystemStatusQuery(connectionError: string | null) {
+export function useSystemStatusQuery(connectionError: ConnectionProblem | null) {
     const { data, refetch, isFetching } = useQuery({
         queryKey: queryKeys.systemStatus,
         // api.get does not throw: a failure is a result like any other, so it replaces the answer
@@ -147,8 +153,17 @@ export function useSystemStatusQuery(connectionError: string | null) {
 
     const status = useMemo<SystemStatusState>(() => {
         const read = data === undefined ? null : readSystemStatus(data);
-        if (read?.kind === 'attention') return read;
-        if (connectionError !== null) return { kind: 'unknown', reason: LOST_CONNECTION_REASON, detail: connectionError };
+        if (read?.kind === 'attention') {
+            return connectionError === null ? read : { ...read, connection: connectionError.message };
+        }
+        if (connectionError !== null) {
+            return {
+                kind: 'connection',
+                pill: connectionError.unreachable ? 'no connection' : 'API error',
+                reason: connectionError.unreachable ? LOST_CONNECTION_REASON : API_ERROR_REASON,
+                detail: connectionError.message,
+            };
+        }
         return read ?? { kind: 'loading' };
     }, [connectionError, data]);
 

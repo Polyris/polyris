@@ -21,6 +21,7 @@ import {
     HEALTH_DETAILS,
     HEALTH_WORDS,
     LOST_CONNECTION_REASON,
+    API_ERROR_REASON,
     SYSTEM_CHECKS,
     SYSTEM_FINDING_FIELDS,
     readSystemStatus,
@@ -168,20 +169,24 @@ describe('useSystemStatusQuery', () => {
         const reach = createFinding({ title: 'The console cannot reach DynamoDB' });
         const body = { ...createHealthBody({ dynamodb: 'unhealthy' }, [reach]), status: 'unhealthy' };
         mockGet.mockResolvedValue(apiFailed('HTTP 503', 503, body));
-        const { result } = renderHook(() => useSystemStatusQuery('Could not reach the API.'), { wrapper: wrapper() });
+        const lost = { unreachable: false, message: 'The API hit a server error. Please try again in a moment.' };
+        const { result } = renderHook(() => useSystemStatusQuery(lost), { wrapper: wrapper() });
         await waitFor(() => expect(result.current.status.kind).toBe('attention'));
-        expect(result.current.status).toMatchObject({ unhealthy: ['DynamoDB'], findings: [reach] });
+        expect(result.current.status).toMatchObject({ unhealthy: ['DynamoDB'], findings: [reach], connection: lost.message });
     });
 
-    it('is unknown while the console cannot reach its API, when the last answer was green', async () => {
+    it('is a connection problem while the pipelines read fails, when the last answer was green, and says which way', async () => {
         mockGet.mockResolvedValue(apiAnswered(createHealthBody()));
-        const lost = 'Could not reach the API. Check your connection and that the console API URL is set correctly.';
+        const gone = { unreachable: true, message: 'Could not reach the API.' };
+        const erring = { unreachable: false, message: 'You are not authorized to make this request.' };
         const { result, rerender } = renderHook(({ error }) => useSystemStatusQuery(error), {
-            wrapper: wrapper(), initialProps: { error: null as string | null },
+            wrapper: wrapper(), initialProps: { error: null as typeof gone | null },
         });
         await waitFor(() => expect(result.current.status.kind).toBe('healthy'));
-        rerender({ error: lost });
-        expect(result.current.status).toEqual({ kind: 'unknown', reason: LOST_CONNECTION_REASON, detail: lost });
+        rerender({ error: gone });
+        expect(result.current.status).toEqual({ kind: 'connection', pill: 'no connection', reason: LOST_CONNECTION_REASON, detail: gone.message });
+        rerender({ error: erring });
+        expect(result.current.status).toEqual({ kind: 'connection', pill: 'API error', reason: API_ERROR_REASON, detail: erring.message });
         rerender({ error: null });
         expect(result.current.status.kind).toBe('healthy');
     });

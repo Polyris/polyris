@@ -101,9 +101,13 @@ export interface WaitForGroup {
 
 export type WaitForEntry = WaitForAsset | WaitForGroup;
 
+/** A member of an asset schedule as the registry keeps it (polyris/assets.py `to_dict`): a plain
+ *  asset's name, an asset with a condition (`a.within(hours=1)`), or a nested group (`[a, b | c]`). */
+export type AssetScheduleMember = string | WaitForAsset | AssetScheduleInfo;
+
 export interface AssetScheduleInfo {
   operator: 'AND' | 'OR';
-  assets: string[];
+  assets: AssetScheduleMember[];
 }
 
 export interface Pipeline {
@@ -360,9 +364,8 @@ export interface ModalProps extends BaseModalProps {
 
 export interface PipelineRowProps {
   pipeline: PipelineWithUI;
-  /** The open pipeline: highlighted on every row that lists it. */
-  selected: boolean;
-  /** The one row announced as `aria-current` (a pipeline can be listed twice). */
+  /** The open pipeline's first shown row: highlighted and announced as `aria-current`
+   *  (a pipeline can be listed twice, pinned and in its group). */
   current: boolean;
   /** Under a group header. */
   indented: boolean;

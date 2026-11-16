@@ -46,6 +46,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, 
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ._ansi import c as _c, BOLD_GREEN, CYAN, RED, YELLOW
+from .constants import ACCESS_DENIED_CODES
 
 if TYPE_CHECKING:
     import boto3
@@ -78,14 +79,8 @@ _CANNOT_VERIFY_CODES: frozenset[str] = frozenset(
 # Subset of _CANNOT_VERIFY_CODES: errors where the fix is "add IAM permission".
 # Used to gate the IAM hint in print_resource_check_result — throttle and
 # transient errors should never prompt the operator to change their IAM policy.
-_ACCESS_DENIED_CODES: frozenset[str] = frozenset(
-    {
-        "AccessDenied",
-        "AccessDeniedException",
-        "UnauthorizedAccess",
-        "AuthFailure",
-    }
-)
+# One set with the console API's (constants.ACCESS_DENIED_CODES).
+_ACCESS_DENIED_CODES: frozenset[str] = ACCESS_DENIED_CODES
 
 
 # ---- Result types ------------------------------------------------------------

@@ -266,7 +266,7 @@ While a problem shows, tasks may start late. The panel tells you what to do; the
 | The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
 | The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
 
-A grey **System · status unknown** means the console could not read `/api/health` at all, or cannot reach its API: the panel says which, and why. The console retries every 2 minutes; **Retry now** in the panel retries at once.
+A grey **System · status unknown** means the console could not read `/api/health`, or could not read its answer. An amber **System · no connection** means the console cannot reach its API at all: check your connection and the API URL in `config.js`. An amber **System · API error** means the API answers the pipeline list with an error, such as an expired sign-in or a 500: the panel says which. The console retries on its own; **Retry now** in the panel retries at once.
 
 ---
 

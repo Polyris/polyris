@@ -107,9 +107,9 @@ Two vocabulary questions were entangled with the derivation:
   test** (identical task sets ⇒ identical execution status from `/runs` and
   `/pipeline-executions`) that would have caught the original bug; a codegen drift test
   for the new helpers.
-- Performance: reconciliation on `/runs` is bounded to `running` executions. If a
-  deployment has many concurrent running executions, batch/cache the `describe_execution`
-  calls — noted as a later optimisation, not required for correctness.
+- Performance: reconciliation on `/runs` is bounded to `running` executions, and
+  `/api/pipelines` checks only each pipeline's latest run, within a deadline (ADR #136,
+  which also gives the quota arithmetic and why there is no cache).
 
 ## Supersedes
 

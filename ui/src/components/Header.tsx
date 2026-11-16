@@ -1,3 +1,4 @@
+import type { ConnectionProblem } from '@/utils/api';
 import React from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import Notifications from './Notifications';
@@ -14,9 +15,8 @@ import {
 } from 'lucide-react';
 
 interface HeaderProps {
-    /** False while the console cannot reach its API; the System status then reads unknown. */
-    /** Why the console cannot reach its API (formatApiErrorMessage), or null. */
-    connectionError: string | null;
+    /** The failed read of the pipelines list, or null. */
+    connectionError: ConnectionProblem | null;
     onNotificationNavigate: (pipelineName: string, executionId?: string, date?: string) => void;
     /** ADR #68 — navigate to backfill detail from backfill notification. */
     onNotificationNavigateBackfill?: (backfillId: string) => void;

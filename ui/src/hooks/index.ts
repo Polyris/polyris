@@ -4,6 +4,7 @@
 export { usePersistedState, transforms } from './usePersistedState';
 export { useKeyboardShortcuts, SHORTCUTS, KeyboardShortcutsHelp } from './useKeyboardShortcuts';
 export { useFocusTrap } from './useFocusTrap';
+export { useIsMobileWidth } from './useIsMobileWidth';
 export { useToast } from '../components/Toast';
 
 // Auth hooks

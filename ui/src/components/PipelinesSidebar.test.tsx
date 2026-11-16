@@ -371,6 +371,50 @@ describe('PipelinesSidebar', () => {
             expect(rowNames()).toEqual(['a-fail', 'b', 'c', 'd', 'e']);
         });
 
+        it('a held list drops a pipeline that is gone, since its row would open nothing', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            fireEvent.mouseEnter(list());
+            mockQuery.data = pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' }, { name: 'd' }, { name: 'e' });
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['a-fail', 'a-fail', 'b', 'd']);
+        });
+
+        it('a focused row that is gone hands the focus to the item now in its place', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            const c = screen.getAllByRole('button', { name: /^c,/ })[0];
+            act(() => c.focus());
+            mockQuery.data = pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' }, { name: 'd' });
+            rerender(<PipelinesSidebar />);
+            expect(document.activeElement?.querySelector('.sb-row__name')?.textContent).toBe('d');
+        });
+
+        it('a held list that lost every row lets go, so pipelines that arrive later show', () => {
+            mockQuery.data = pipelines({ name: 'only' });
+            const { rerender } = render(<PipelinesSidebar />);
+            act(() => list().querySelector<HTMLButtonElement>('.sb-row')!.focus());
+            mockQuery.data = [];
+            rerender(<PipelinesSidebar />);
+            mockQuery.data = pipelines({ name: 'newcomer' });
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['newcomer']);
+        });
+
+                it('handing the focus to the twin row after opening a pipeline does not hold the rows again', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            const pinned = list().querySelector<HTMLButtonElement>('.sb-row')!;
+            act(() => pinned.focus());
+            fireEvent.click(pinned);
+            mockQuery.data = after();
+            rerender(<PipelinesSidebar />);
+            expect(document.activeElement?.querySelector('.sb-row__name')?.textContent).toBe('a-fail');
+            mockQuery.data = pipelines({ name: 'a-fail', status: 'success' }, { name: 'b' }, { name: 'c' }, { name: 'd' }, { name: 'e' }, { name: 'f' });
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toContain('f');
+        });
+
         it('a pointer resting on the list during the first load still shows the list', () => {
             mockQuery.isLoading = true;
             mockQuery.data = [];
@@ -395,13 +439,19 @@ describe('PipelinesSidebar', () => {
             expect(state.sidebarOpen).toBe(false);
         });
 
-        it('highlights every row of the open pipeline and announces only the first as current', () => {
+        it('marks one row of the open pipeline, the first shown, and announces it as current', () => {
             mockQuery.data = pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' });
             useAppStore.getState().setSelectedPipeline(mockQuery.data[0]);
             render(<PipelinesSidebar />);
-            const names = (sel: string) => [...list().querySelectorAll(sel)].map(el => el.querySelector('.sb-row__name')?.textContent);
-            expect(names('.sb-row--selected')).toEqual(['a-fail', 'a-fail']);
-            expect(names('[aria-current="page"]')).toEqual(['a-fail']);
+            const marked = [...list().querySelectorAll('.sb-row--selected')];
+            expect(marked).toHaveLength(1);
+            expect(marked[0]).toHaveAttribute('aria-current', 'page');
+            expect(marked[0]).toBe(list().querySelector('.sb-row'));
+
+            // "Needs attention" folded: the row in its group is the one shown, so it is the one marked.
+            fireEvent.click(screen.getByRole('button', { name: /Needs attention/ }));
+            expect(list().querySelectorAll('.sb-row--selected')).toHaveLength(1);
+            expect(list().querySelector('.sb-row--selected .sb-row__name')?.textContent).toBe('a-fail');
         });
     });
 
@@ -475,13 +525,23 @@ describe('PipelinesSidebar', () => {
             render(<PipelinesSidebar />);
             const row = list().querySelector('.sb-row')!;
             expect(row).toHaveAccessibleName(/last 3 runs: 1 failed, 2 success/);
-            expect(row).toHaveAccessibleName(/schedule: raw_orders_from_the_warehouse & currency_rates$/);
+            expect(row).toHaveAccessibleName(/schedule: on raw_orders_from_the_warehouse & currency_rates$/);
+            expect(row.querySelector('.sb-row__schedule')).toHaveTextContent('on 2 assets');
         });
 
-        it('says when some runs could not be read', () => {
+        it('a failed refresh keeps the list and says from when its statuses are', () => {
+            mockQuery.isError = true;
+            mockQuery.error = new Error('Failed to fetch');
+            (mockQuery as { dataUpdatedAt?: number }).dataUpdatedAt = new Date(2026, 10, 16, 14, 32).getTime();
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('status')).toHaveTextContent(/Couldn't refresh the list\. Statuses as of 14:32/);
+            expect(rowNames().length).toBeGreaterThan(0);
+        });
+
+                it('says when some runs could not be read', () => {
             mockStats.incomplete = true;
             render(<PipelinesSidebar />);
-            expect(screen.getByRole('status')).toHaveTextContent('Some recent runs could not be read');
+            expect(screen.getByRole('status')).toHaveTextContent('Some runs could not be read or confirmed');
         });
 
         it('offers no retry while the console has no API URL', () => {

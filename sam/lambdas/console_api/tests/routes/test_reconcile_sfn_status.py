@@ -18,6 +18,7 @@ os.environ.setdefault('PIPELINES_TABLE', 'test-pipeline-registry')
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from routes.pipelines_list import reconcile_sfn_status
@@ -134,3 +135,15 @@ class TestReconcileSfnStatusAgainstRealSfn:
         assert result == 'failed'          # all_resolved defaulted to False, not crashed
         assert warn.call_count == 1
         assert warn.call_args.args[0] == 'reconcile_sfn_status'
+
+
+def test_a_denied_check_is_raised_for_every_caller(mocker):
+    """CLAUDE.md, Error Visibility: /runs and the execution list never fold a denial into "unknown"."""
+    sfn = mocker.Mock()
+    sfn.describe_execution.side_effect = ClientError(
+        {'Error': {'Code': 'AccessDeniedException', 'Message': 'not authorized'}}, 'DescribeExecution')
+    mocker.patch('routes.pipelines_list.sfn', sfn)
+
+    with pytest.raises(ClientError, match='AccessDeniedException'):
+        reconcile_sfn_status('p-run-2026-11-14-abc', 'arn:aws:states:us-east-1:1:stateMachine:p')
+
