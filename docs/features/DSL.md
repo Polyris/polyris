@@ -65,6 +65,7 @@ with DAG(
     dag_id="my-pipeline",
     schedule="@daily",
     description="My data pipeline",
+    group="orders",
     tags=["production", "etl"],
     variables={
         "custom_var": "value"
@@ -81,6 +82,7 @@ with DAG(
 | `schedule` | str/Asset/list | No | Schedule: cron, preset, or assets |
 | `description` | str | No | Human-readable description |
 | `tags` | list | No | Tags for organization |
+| `group` | str | No | Group the console's sidebar lists the pipeline under, e.g. `"orders"`; compared without case. Without it, the pipeline is listed under *Ungrouped*, or in a flat list when no pipeline sets a group. A change shows after the next deploy or run |
 | `variables` | dict | No | Pipeline variables |
 | `max_active_tasks` | int | No | Max concurrent tasks (default: 16) |
 | `default_args` | dict | No | Default params for all tasks (see below) |

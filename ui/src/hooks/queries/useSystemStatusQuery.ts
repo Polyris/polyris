@@ -47,7 +47,7 @@ export const SYSTEM_FINDING_FIELDS = ['title', 'resource', 'changed_at', 'impact
 /** How often the console reads /api/health. The unknown panel names it. */
 export const SYSTEM_STATUS_POLL_MINUTES = 2;
 
-/** The unknown reason while the console cannot reach its API at all (the "Connection lost" banner shows too). */
+/** The unknown reason while the console cannot reach its API at all. System status is the one place that says so. */
 export const LOST_CONNECTION_REASON = 'the console has lost its connection to the API';
 
 /**
@@ -62,8 +62,8 @@ export type SystemStatusDetail = typeof HEALTH_DETAILS[keyof typeof HEALTH_DETAI
 
 export type SystemStatusState =
     | { kind: 'loading' }
-    /** `reason` is a phrase without a final period, shown mid-sentence. */
-    | { kind: 'unknown'; reason: string }
+    /** `reason` is a phrase without a final period, shown mid-sentence; `detail`, when set, is a full sentence (why). */
+    | { kind: 'unknown'; reason: string; detail?: string }
     /** `unhealthy` holds the labels of the unhealthy checks; `findings` is empty in the minimal view. */
     | { kind: 'attention'; detail: SystemStatusDetail; unhealthy: string[]; findings: SystemFinding[]; checkedAt: string | null }
     | { kind: 'healthy'; detail: SystemStatusDetail; checkedAt: string | null };
@@ -129,12 +129,13 @@ export function readSystemStatus(result: unknown): Exclude<SystemStatusState, { 
  * reports every 5 minutes and the backend judges its staleness, so a stopped sweeper shows
  * too; polling faster would only add DynamoDB and Step Functions calls.
  *
- * `apiConnected` is false while the console cannot reach its API (any failed pipelines read).
- * It turns a green or pending state into unknown, which can no longer be trusted. An answer
- * that names a problem stays: when DynamoDB is down the pipelines read fails too, and the 503
- * from /api/health says why (architect review, 1.2.0).
+ * `connectionError` is set (formatApiErrorMessage's words) while the console cannot reach its
+ * API (any failed pipelines read), else null. It turns a green or pending state into unknown,
+ * which can no longer be trusted, and is shown as the reason. An answer that names a problem
+ * stays: when DynamoDB is down the pipelines read fails too, and the 503 from /api/health says
+ * why (architect review, 1.2.0).
  */
-export function useSystemStatusQuery(apiConnected: boolean) {
+export function useSystemStatusQuery(connectionError: string | null) {
     const { data, refetch, isFetching } = useQuery({
         queryKey: queryKeys.systemStatus,
         // api.get does not throw: a failure is a result like any other, so it replaces the answer
@@ -147,9 +148,9 @@ export function useSystemStatusQuery(apiConnected: boolean) {
     const status = useMemo<SystemStatusState>(() => {
         const read = data === undefined ? null : readSystemStatus(data);
         if (read?.kind === 'attention') return read;
-        if (!apiConnected) return { kind: 'unknown', reason: LOST_CONNECTION_REASON };
+        if (connectionError !== null) return { kind: 'unknown', reason: LOST_CONNECTION_REASON, detail: connectionError };
         return read ?? { kind: 'loading' };
-    }, [apiConnected, data]);
+    }, [connectionError, data]);
 
     return { status, refetch, isFetching };
 }

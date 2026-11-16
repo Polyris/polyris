@@ -149,7 +149,7 @@ describe('useSystemStatusQuery', () => {
 
     it('is loading until the first answer, then reads /api/health', async () => {
         mockGet.mockResolvedValue(apiAnswered(createHealthBody()));
-        const { result } = renderHook(() => useSystemStatusQuery(true), { wrapper: wrapper() });
+        const { result } = renderHook(() => useSystemStatusQuery(null), { wrapper: wrapper() });
         expect(result.current.status).toEqual({ kind: 'loading' });
         await waitFor(() => expect(result.current.status.kind).toBe('healthy'));
         expect(mockGet).toHaveBeenCalledWith('/health');
@@ -157,7 +157,7 @@ describe('useSystemStatusQuery', () => {
 
     it('shows a failure after an earlier success as unknown, not the old answer', async () => {
         mockGet.mockResolvedValueOnce(apiAnswered(createHealthBody())).mockResolvedValueOnce(apiFailed('HTTP 502', 502));
-        const { result } = renderHook(() => useSystemStatusQuery(true), { wrapper: wrapper() });
+        const { result } = renderHook(() => useSystemStatusQuery(null), { wrapper: wrapper() });
         await waitFor(() => expect(result.current.status.kind).toBe('healthy'));
         await act(async () => { await result.current.refetch(); });
         await waitFor(() => expect(result.current.status).toEqual({ kind: 'unknown', reason: 'HTTP 502' }));
@@ -168,26 +168,27 @@ describe('useSystemStatusQuery', () => {
         const reach = createFinding({ title: 'The console cannot reach DynamoDB' });
         const body = { ...createHealthBody({ dynamodb: 'unhealthy' }, [reach]), status: 'unhealthy' };
         mockGet.mockResolvedValue(apiFailed('HTTP 503', 503, body));
-        const { result } = renderHook(() => useSystemStatusQuery(false), { wrapper: wrapper() });
+        const { result } = renderHook(() => useSystemStatusQuery('Could not reach the API.'), { wrapper: wrapper() });
         await waitFor(() => expect(result.current.status.kind).toBe('attention'));
         expect(result.current.status).toMatchObject({ unhealthy: ['DynamoDB'], findings: [reach] });
     });
 
     it('is unknown while the console cannot reach its API, when the last answer was green', async () => {
         mockGet.mockResolvedValue(apiAnswered(createHealthBody()));
-        const { result, rerender } = renderHook(({ connected }) => useSystemStatusQuery(connected), {
-            wrapper: wrapper(), initialProps: { connected: true },
+        const lost = 'Could not reach the API. Check your connection and that the console API URL is set correctly.';
+        const { result, rerender } = renderHook(({ error }) => useSystemStatusQuery(error), {
+            wrapper: wrapper(), initialProps: { error: null as string | null },
         });
         await waitFor(() => expect(result.current.status.kind).toBe('healthy'));
-        rerender({ connected: false });
-        expect(result.current.status).toEqual({ kind: 'unknown', reason: LOST_CONNECTION_REASON });
-        rerender({ connected: true });
+        rerender({ error: lost });
+        expect(result.current.status).toEqual({ kind: 'unknown', reason: LOST_CONNECTION_REASON, detail: lost });
+        rerender({ error: null });
         expect(result.current.status.kind).toBe('healthy');
     });
 
     it('is unknown, not stuck loading, when the client answers nothing at all', async () => {
         mockGet.mockResolvedValue(undefined);
-        const { result } = renderHook(() => useSystemStatusQuery(true), { wrapper: wrapper() });
+        const { result } = renderHook(() => useSystemStatusQuery(null), { wrapper: wrapper() });
         await waitFor(() => expect(result.current.status).toEqual({ kind: 'unknown', reason: 'the request failed' }));
     });
 });

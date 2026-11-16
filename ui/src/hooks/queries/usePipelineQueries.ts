@@ -9,24 +9,52 @@ interface PipelineDetailData {
     dag: DAG | null;
     serverOffsetMs: number;
     selectedExecution: SelectedExecution | null;
+    /** /pipeline-status answered an error: `tasks` is empty because it could not be read,
+     *  not because the date has no run (ui/CLAUDE.md, "A failed load is never shown as an empty list"). */
+    statusError: string | null;
+}
+
+/** /api/pipelines?stats=true, as one cache entry shared by the hooks below. */
+interface PipelinesAnswer {
+    pipelines: PipelineWithUI[];
+    /** A read the statuses rest on failed or was cut short: they can be out of date. */
+    statsIncomplete: boolean;
+}
+
+async function fetchPipelines(): Promise<PipelinesAnswer> {
+    const data = await api.get('/pipelines?stats=true');
+    if (data.error) {
+        throw new Error(data.error);
+    }
+    return { pipelines: data.pipelines || [], statsIncomplete: data.stats_incomplete === true };
 }
 
 /**
  * usePipelinesQuery - Fetch all pipelines with stats
  */
 export function usePipelinesQuery(options: { refetchInterval?: number | false } = {}) {
-    return useQuery<PipelineWithUI[]>({
+    return useQuery<PipelinesAnswer, Error, PipelineWithUI[]>({
         queryKey: queryKeys.pipelines,
-        queryFn: async () => {
-            const data = await api.get('/pipelines?stats=true');
-            if (data.error) {
-                throw new Error(data.error);
-            }
-            return data.pipelines || [];
-        },
+        queryFn: fetchPipelines,
+        select: answer => answer.pipelines,
         staleTime: 10 * 1000, // Pipelines list is stable for 10 seconds
         refetchInterval: options.refetchInterval ?? false,
     });
+}
+
+/**
+ * usePipelinesStatsIncomplete - True when the last /api/pipelines answer said a read its
+ * statuses rest on failed or was cut short (`stats_incomplete`). Same cache entry as
+ * usePipelinesQuery; it does not fetch on its own schedule.
+ */
+export function usePipelinesStatsIncomplete(): boolean {
+    const { data } = useQuery<PipelinesAnswer, Error, boolean>({
+        queryKey: queryKeys.pipelines,
+        queryFn: fetchPipelines,
+        select: answer => answer.statsIncomplete,
+        staleTime: 10 * 1000,
+    });
+    return data ?? false;
 }
 
 /**
@@ -90,6 +118,7 @@ export function usePipelineDetailQuery(pipelineName: string, date: string, execu
                 dag,
                 serverOffsetMs,
                 selectedExecution,
+                statusError: statusData.error ? String(statusData.error) : null,
             };
         },
         enabled: !!pipelineName,

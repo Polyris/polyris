@@ -38,7 +38,7 @@ See [authentication.md](../features/authentication.md) for the full how-to. The
 ### List Pipelines
 
 ```http
-GET /api/pipelines?stats=true&date=2026-02-19
+GET /api/pipelines?stats=true
 ```
 
 Response (with `stats=true`):
@@ -51,22 +51,26 @@ Response (with `stats=true`):
       "description": "Daily pipeline",
       "group": "acme",
       "schedule": "cron(0 10 ? * MON *)",
-      "status": "failed",
+      "status": "running",
+      "waiting_on": "waiting_decision",
       "paused": false,
       "sla": 85,
-      "progress": 67,
-      "today_stats": { "success": 2, "failed": 1, "running": 0, "waiting": 0, "skipped": 0, "total": 3 },
       "recent_runs": [
         { "date": "2026-02-19", "exec": "a1b2c3d4", "status": "running" },
         { "date": "2026-02-18", "exec": "e5f6g7h8", "status": "failed" },
         { "date": "2026-02-17", "exec": "i9j0k1l2", "status": "success" }
       ]
     }
-  ]
+  ],
+  "stats_incomplete": false
 }
 ```
 
-Fields `schedule`, `recent_runs`, `sla`, `progress`, `today_stats` are only present when `stats=true`.
+Fields `recent_runs`, `sla` and `waiting_on` are filled only when `stats=true`; they cover the last 14 days.
+
+- `status` is the latest run's status, `idle` when there is none in those days. When the latest run's tasks still say `running`, Step Functions is asked about it, so a run whose execution failed, timed out or was stopped shows that status.
+- `waiting_on` is `waiting_decision` or `waiting_paused` when the latest run is running but waits for an operator, else `null`.
+- `stats_incomplete` is `true` when a read the statuses rest on failed or ran out of time: some statuses may be out of date.
 
 ### Get Pipeline Status
 

@@ -4,6 +4,8 @@ import { useNotificationsQuery } from '@/hooks/queries';
 import { useAuth } from '@/hooks/useAuth';
 import { Bell, BellOff, Check, Siren, AlertTriangle, ArrowRight, X, ActionIcons } from '@/utils/icons';
 import { MS } from '@/utils/constants';
+import { formatApiErrorMessage } from '@/utils/api';
+import { Button } from '@/components/ui/button';
 import { logger } from '@/utils/logger';
 import { asStringArray } from '@/utils/formatters';
 import type { Notification as NotificationType } from '@/types';
@@ -99,7 +101,13 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
     // Fetch notifications via React Query (polls every 30s). 48h window so failures from
     // overnight / previous-day runs (dated by schedule) still surface, and read items can
     // linger the full read-expiry without being dropped by the query aging them out.
-    const { data: allNotifications = [] } = useNotificationsQuery(10, 48);
+    const { data: allNotifications = [], isError, error, refetch } = useNotificationsQuery(10, 48);
+    // The bell is where infrastructure warnings surface (Principle #38): a failed load must
+    // never read as "nothing to report". React Query keeps the last good list on a failed
+    // refetch, so the list stays and the failure is said next to it.
+    const loadError = isError
+        ? formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))
+        : null;
     
     // Visible notifications: drop dismissed (Clear All) and read-then-expired ones, and
     // tag each with isRead so acknowledged ones render dimmed while they linger.
@@ -239,21 +247,30 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
     const notificationCount = notifications.length;
     // Bell badge counts only unread items — read ones linger in the list but don't glow.
     const unreadCount = notifications.filter(n => !n.isRead).length;
+    const bellLabel = !enabled ? 'Notifications off'
+        : loadError ? `Couldn't load notifications${unreadCount > 0 ? ` (${unreadCount} from before)` : ''}`
+        : unreadCount > 0 ? `${unreadCount} notifications` : 'No notifications';
     
     return (
         <>
             {/* Bell Icon in Header */}
             <div className="ntf-notification-bell-container" ref={dropdownRef}>
                 <button 
-                    className={`ntf-notification-bell ${enabled && unreadCount > 0 ? 'has-notifications' : ''}`}
+                    // A failed load is shown, not shaken: the shake is for new notifications.
+                    className={`ntf-notification-bell ${enabled && loadError ? 'has-error' : enabled && unreadCount > 0 ? 'has-notifications' : ''}`}
                     onClick={() => setShowDropdown(!showDropdown)}
-                    aria-label={!enabled ? 'Notifications off' : unreadCount > 0 ? `${unreadCount} notifications` : 'No notifications'}
+                    aria-label={bellLabel}
                     aria-expanded={showDropdown}
                     aria-haspopup="true"
-                    title={!enabled ? 'Notifications off' : unreadCount > 0 ? `${unreadCount} notifications` : 'No notifications'}
+                    title={bellLabel}
                 >
                     {enabled ? <Bell size={18} /> : <BellOff size={18} />}
-                    {enabled && unreadCount > 0 && (
+                    {enabled && loadError ? (
+                        // The last list may still hold unread items: keep their count, in the warning colour.
+                        <span className="ntf-notification-badge ntf-notification-badge--warning" aria-hidden="true">
+                            {unreadCount > 0 ? (unreadCount > 9 ? '9+' : unreadCount) : '!'}
+                        </span>
+                    ) : enabled && unreadCount > 0 && (
                         <span className="ntf-notification-badge">{unreadCount > 9 ? '9+' : unreadCount}</span>
                     )}
                 </button>
@@ -284,14 +301,24 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                             </div>
                         </div>
                         <div className="ntf-notification-dropdown-content">
-                            {notifications.length === 0 ? (
+                            {loadError && (
+                                <div className="ntf-notification-error" role="alert">
+                                    <AlertTriangle size={16} className="ntf-notification-error__icon" aria-hidden="true" />
+                                    <div className="ntf-notification-error__text">
+                                        <strong>Couldn&apos;t load notifications</strong>
+                                        <span>{loadError}</span>
+                                    </div>
+                                    <Button size="sm" variant="secondary" onClick={() => { void refetch(); }}>Retry</Button>
+                                </div>
+                            )}
+                            {notifications.length === 0 ? (loadError ? null : (
                                 <div className="ntf-notification-empty">
                                     <span className="ntf-notification-empty-icon">
                                         <Check size={18} className="text-green-500" />
                                     </span>
                                     <span>No new notifications</span>
                                 </div>
-                            ) : (
+                            )) : (
                                 notifications.map(notification => (
                                     <div 
                                         key={notification.id} 

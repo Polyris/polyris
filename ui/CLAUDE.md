@@ -191,6 +191,10 @@ When the API answers from a window or a limit, the label and the empty state nam
 
 A hook that turns an API answer into a status returns a tagged state, and its default branch is "unknown", never "healthy". Green needs a positive answer: the words the rule needs, present and recognised. The coordination banner read a failed `/api/health`, and then a 503, as "no problems" (1.2.0 review). The System pill (`components/SystemStatus.tsx`) shows grey "status unknown" for a failed request, a lost connection or an answer it cannot read. It takes its level from the status words, never from the length of a list that a shorter answer leaves out.
 
+## A failed load is never shown as an empty list
+
+A list fed by a query renders its error state (what failed, and a retry) when the query failed and holds no data. React Query's `data = []` default makes a failed first load look like "nothing here": the pipelines sidebar told users to deploy their first pipeline whenever `/api/pipelines` failed. Check `isError` before the empty state, and render it with `EmptyState` and `formatApiErrorMessage` as `AllTasksView` does; `PipelinesSidebar.test.tsx` pins it.
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

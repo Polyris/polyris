@@ -144,18 +144,6 @@ export const createTaskDetailModalProps = (overrides = {}) => ({
     ...overrides,
 });
 
-export const createPipelinesSidebarProps = (overrides = {}) => ({
-    pipelines: createPipelines(5),
-    selectedPipeline: null,
-    onSelectPipeline: vi.fn(),
-    loading: false,
-    search: '',
-    onSearchChange: vi.fn(),
-    isOpen: false,
-    onClose: vi.fn(),
-    ...overrides,
-});
-
 export const createCommandPaletteProps = (overrides = {}) => ({
     isOpen: true,
     onClose: vi.fn(),

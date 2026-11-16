@@ -65,6 +65,10 @@ export const queryKeys = {
 
     // Global decision-wait timeout (ADR #103 1b) — one value per deployment.
     decisionTimeout: ['settings', 'decision-timeout'] as const,
+
+    // Settings sections: Personal Access Tokens (ADR #66) and a pipeline's alert delivery (ADR #103).
+    apiTokens: ['settings', 'api-tokens'] as const,
+    pipelineAlerts: (pipelineName: string) => ['settings', 'pipeline-alerts', pipelineName] as const,
 };
 
 /**

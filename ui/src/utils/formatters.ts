@@ -293,15 +293,19 @@ export const formatTriggerSource = (value: string | null | undefined): string | 
 // such a pipeline is indistinguishable from a genuinely manual one — both
 // hit the `!schedule` branch below and show "Manual", which is wrong: an
 // asset-triggered pipeline runs automatically, just not on a timer.
+//
+// `full` keeps the whole text (asset names, an unrecognised expression) for a tooltip
+// or an accessible name; by default long ones are cut to fit a row.
 export function formatSchedule(
     schedule: string | undefined | null,
     assetSchedule?: { operator: 'AND' | 'OR'; assets: string[] } | null,
+    { full = false }: { full?: boolean } = {},
 ): string {
     if (!schedule) {
         if (assetSchedule && assetSchedule.assets.length > 0) {
             const joiner = assetSchedule.operator === 'OR' ? ' | ' : ' & ';
             const label = assetSchedule.assets.join(joiner);
-            return label.length > 24 ? label.substring(0, 24) + '…' : label;
+            return !full && label.length > 24 ? label.substring(0, 24) + '…' : label;
         }
         return 'Manual';
     }
@@ -325,8 +329,8 @@ export function formatSchedule(
         return `@ ${time}`;
     }
 
-    // Fallback: show raw but truncated
-    return schedule.length > 20 ? schedule.substring(0, 20) + '…' : schedule;
+    // Fallback: show raw, cut unless the whole text is asked for
+    return !full && schedule.length > 20 ? schedule.substring(0, 20) + '…' : schedule;
 }
 
 export const isWaitForGroup = (entry: WaitForEntry): entry is WaitForGroup =>

@@ -4,7 +4,7 @@
  * everything else, config included, runs for real.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api, setAuthErrorCallback } from './api';
+import { api, setAuthErrorCallback, formatApiErrorMessage } from './api';
 
 const fetchMock = vi.mocked(global.fetch);
 
@@ -82,5 +82,21 @@ describe('api.get', () => {
         expect(result).toEqual({ ok: false, error: 'Failed to fetch' });
         expect(result).not.toHaveProperty('body');
         expect(errorLog).toHaveBeenCalled();
+    });
+});
+
+describe('formatApiErrorMessage', () => {
+    it.each([
+        ['Failed to fetch', 'Could not reach the API'],
+        ['<!DOCTYPE html><html>', 'returned an HTML page'],
+        ['HTTP 401', 'not authorized'],
+        ['HTTP 503', 'server error'],
+        ['', 'Something went wrong'],
+    ])('%j reads as %j', (raw, expected) => {
+        expect(formatApiErrorMessage(raw)).toContain(expected);
+    });
+
+    it('a 404 says what happened and nothing about other builds (Principle #24)', () => {
+        expect(formatApiErrorMessage('HTTP 404')).toBe('That resource was not found (404).');
     });
 });

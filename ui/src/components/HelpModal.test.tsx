@@ -121,6 +121,7 @@ describe('HelpModal', () => {
             expect(container.textContent).toMatch(/Global/);
             expect(container.textContent).toMatch(/Top-level navigation/);
             expect(container.textContent).toMatch(/List views/);
+            expect(container.textContent).toMatch(/Pipelines list/);
             expect(container.textContent).toMatch(/Detail pages/);
             expect(container.textContent).toMatch(/Pipeline view modes/);
             expect(container.textContent).toMatch(/Task Detail modal tabs/);

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useSystemStatusQuery, SYSTEM_STATUS_POLL_MINUTES } from '@/hooks/queries';
+import { queryKeys } from '@/lib/queryClient';
 import type { SystemFinding, SystemStatusState } from '@/hooks/queries';
 import { useKeyboardShortcuts, SHORTCUTS } from '@/hooks/useKeyboardShortcuts';
 import { useToast } from '@/components/Toast';
@@ -150,6 +152,7 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
             return (
                 <div className="sys-panel__unknown">
                     <p>The status could not be read: {status.reason}. The console retries every {SYSTEM_STATUS_POLL_MINUTES} minutes.</p>
+                    {status.detail && <p className="sys-panel__detail">{status.detail}</p>}
                     <button type="button" className="sys-panel__retry" onClick={onRetry}>
                         {retrying ? 'Checking…' : 'Retry now'}
                     </button>
@@ -200,9 +203,13 @@ function PanelBody({ status, retrying, onRetry }: { status: SystemStatusState; r
  * popover that closes on Esc, on a mousedown outside and when focus leaves it; below it, a
  * modal. After Esc or ×, focus returns to the pill. Each new finding raises one toast per
  * browser session; the minimal answer (no valid token) raises none.
+ *
+ * It is also the one place that says the console cannot reach its API (`connectionError`):
+ * grey, with the reason in the panel, whose Retry re-reads the pipelines as well.
  */
-export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
-    const { status, refetch, isFetching } = useSystemStatusQuery(apiConnected);
+export function SystemStatus({ connectionError }: { connectionError: string | null }) {
+    const { status, refetch, isFetching } = useSystemStatusQuery(connectionError);
+    const queryClient = useQueryClient();
     const toast = useToast();
     // ToastProvider builds a new toast object with each toast it shows. Read the latest from a ref,
     // so that raising a toast does not re-run the effect that raised it.
@@ -237,6 +244,8 @@ export function SystemStatus({ apiConnected }: { apiConnected: boolean }) {
 
     const retry = () => {
         if (!isFetching) void refetch();
+        // A lost connection is the pipelines read failing: retry that read too.
+        if (connectionError !== null) void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
     };
 
     // Focus: into the popover when it opens (the modal moves it itself); back to the pill after Esc or ×.

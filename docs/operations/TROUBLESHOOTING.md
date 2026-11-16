@@ -266,7 +266,7 @@ While a problem shows, tasks may start late. The panel tells you what to do; the
 | The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
 | The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
 
-A grey **System · status unknown** means the console could not read `/api/health` at all; the console retries every 2 minutes, and a "Connection lost" banner usually shows too.
+A grey **System · status unknown** means the console could not read `/api/health` at all, or cannot reach its API: the panel says which, and why. The console retries every 2 minutes; **Retry now** in the panel retries at once.
 
 ---
 

@@ -50,13 +50,21 @@ The polyris Web Console is a React-based single-page application for monitoring 
 
 ## Components
 
-### Sidebar Pipeline Cards
+### Pipelines sidebar
 
-Each pipeline in the sidebar shows:
-- **Status icon** — Color-coded (running/success/failed/idle)
-- **Pipeline name** — Truncated with tooltip
-- **Status + Schedule** — e.g. `failed · Mon @ 10:00 UTC`
-- **Run sparkline** — Last 10 runs as colored mini-bars (green=success, red=failed, blue pulsing=running)
+The sidebar lists every registered pipeline, one line each. It reads the runs of the last 14 days:
+- **Status icon** — the latest run's status (success, failed, running, aborted); for a running run that waits for an operator, a question mark (a decision) or a pause sign; a dashed circle when the pipeline has no run in those 14 days. When the tasks of the latest run still say running, the console asks Step Functions, so a run whose execution died shows as failed, timed out or aborted.
+- **Pipeline name** — truncated; hover for the full name and schedule
+- **Run sparkline** — up to the last 10 runs, oldest on the left. A bar's height tells its status apart without its colour: a failure stands full height, a running run nearly so, a success at two thirds, a stop at half; an empty slot is a short stub, so the newest run is always the rightmost bar
+- **Schedule** — see the table below; hidden on tablets, where the sidebar is narrow
+
+**Needs attention.** Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top. A running, paused or aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
+
+**Groups.** Set `group=` on the `DAG` to list a pipeline under that group ([DSL reference](../features/DSL.md#dag-parameters)); groups are compared without case. Pipelines without a group go under **Ungrouped**, at the bottom. When no pipeline sets a group, the list is flat. Click a group to fold it, or use the button next to the count to fold or unfold all of them; the console remembers folded groups in this browser. A folded group still shows how many of its pipelines need attention, and is highlighted when it holds the open pipeline. A group you add shows after the pipeline's next deploy or run.
+
+**Search.** Type to filter by pipeline name or group; every word must match. While you search, the sidebar shows the matches only, in their groups, all open. Enter opens the first match. The command palette (`⌘K`) matches pipeline names the same way.
+
+While the pointer or the keyboard focus is in the list, a refresh updates statuses, sparklines and a folded group's count in place, but does not move, add or remove rows, so a row does not shift under your click. The rows follow once the pointer and the focus have left the list; opening a pipeline from the keyboard counts as leaving it. When some recent runs could not be read, a line above the list says a status may be out of date; when the console cannot reach its API at all, the **System** status in the header turns grey and its panel says why.
 
 Schedule formatting:
 | Expression | Display |
@@ -64,7 +72,8 @@ Schedule formatting:
 | `cron(0 8 * * ? *)` | `daily @ 08:00` |
 | `cron(0 10 ? * MON *)` | `Mon @ 10:00` |
 | `rate(6 hours)` | `every 6h` |
-| Asset-triggered (no cron) | *(not shown)* |
+| `schedule=[asset]` | the asset names, e.g. `raw_orders` |
+| No schedule | `Manual` |
 
 > Schedule appears after pipelines are re-deployed so the registry gets the `schedule` field.
 
@@ -217,11 +226,16 @@ Click notification to navigate to related task/pipeline.
 
 ## Keyboard Shortcuts
 
+The Help modal (`?`) lists every shortcut. The most used:
+
 | Key | Action |
 |-----|--------|
 | `?` | Open help |
+| `⌘K` | Command palette |
 | `Esc` | Close modal |
-| `r` | Refresh |
+| `⌘R` | Refresh |
+| `/` | Focus the pipeline search (Pipelines page); `Enter` there opens the first match, `↓` moves into the list |
+| `J` / `K` | Next / previous pipeline or group, while the sidebar list has focus; `Esc` goes back to the search |
 
 ---
 
@@ -294,14 +308,14 @@ The console implements WCAG-aligned accessibility across all interactive compone
 
 - **Modals**: `role="dialog"`, `aria-modal="true"`, `aria-labelledby`, focus trap, ESC close, focus restoration
 - **Tabs** (TaskDetailModal, PipelineDetail view modes): `role="tablist"` / `role="tab"`, `aria-selected`, keyboard Enter/Space navigation
-- **Sidebar**: `role="listbox"` / `role="option"`, `aria-selected`, keyboard Up/Down/Enter navigation
+- **Sidebar**: a `nav` of buttons, `aria-current="page"` on the open pipeline; the list is one Tab stop, and J/K or Up/Down move through it
 - **Status badges**: `aria-label="Task status: {status}"` for screen readers
 - **Toasts**: `role="alert"`, `aria-live="polite"`
 - **Sortable headers**: `role="columnheader"`, `aria-sort`, keyboard Enter/Space
 - **Loading skeletons**: `role="status"`, `aria-label="Loading..."`, `sr-only` text
 - **CountdownTimer**: `role="timer"`, `aria-live="polite"`, dynamic `aria-label`
 - **Error boundary**: `role="alert"` on error display
-- **Group headers** (sidebar): `role="button"`, `aria-expanded`, keyboard support
+- **Group headers** (sidebar): buttons with `aria-expanded`
 
 ---
 

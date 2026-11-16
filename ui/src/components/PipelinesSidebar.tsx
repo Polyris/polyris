@@ -1,240 +1,491 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PipelineListSkeleton } from './Skeletons';
-import { StatusIcon, Workflow, Search, Inbox, ChevronDown, ChevronRight } from '../utils/icons';
+import { Button } from '@/components/ui/button';
+import { EmptyState } from './EmptyState';
+import {
+    StatusIcon, Search, Inbox, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleDashed, X, AlertTriangle,
+} from '../utils/icons';
 import { formatSchedule } from '../utils/formatters';
+import { formatApiErrorMessage } from '../utils/api';
+import { logger } from '../utils/logger';
+import { HISTORY_WINDOW_DAYS } from '../utils/historyWindow';
+import { buildSidebarLines, groupKey, isFailure, needsAttention, UNGROUPED } from '../utils/pipelineSidebar';
+import type { SidebarLine, SidebarSection } from '../utils/pipelineSidebar';
 import config from '../lib/config';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
-import { usePipelinesQuery } from '@/hooks/queries';
-import type { PipelineItemProps, RunSparklineProps, PipelineWithUI } from '@/types';
+import { usePipelinesQuery, usePipelinesStatsIncomplete } from '@/hooks/queries';
+import { useKeyboardShortcuts, usePersistedState, transforms, SHORTCUTS } from '@/hooks';
+import type { PipelineRowProps, PipelineWithUI, RunSparklineProps } from '@/types';
+
+/** localStorage key of the groups the viewer folded: a JSON list of group keys. */
+const FOLDED_GROUPS_KEY = 'sidebarFoldedGroups';
+/** localStorage key: the viewer folded "Needs attention". */
+const ATTENTION_FOLDED_KEY = 'sidebarAttentionFolded';
+/** The sparkline always has this many slots, so its newest bar lines up across rows. */
+const SPARK_SLOTS = 10;
+const SECTION_LABELS: Record<SidebarSection, string> = {
+    attention: 'Needs attention',
+    all: 'All pipelines',
+    matches: 'Matches',
+};
+/** How a run that waits for an operator reads in a row's accessible name. */
+const WAITING_ON_LABELS = { waiting_decision: 'waiting for a decision', waiting_paused: 'paused' } as const;
+
+const pipelineCount = (n: number) => `${n} pipeline${n === 1 ? '' : 's'}`;
+
+function parseFoldedGroups(stored: string): string[] {
+    try {
+        const parsed: unknown = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed.filter((g): g is string => typeof g === 'string');
+    } catch (e) {
+        // Not JSON, so not written by this code: every group starts open.
+        logger.warn('sidebar', 'Ignoring unreadable folded-groups value', e);
+    }
+    return [];
+}
+
+/** `/` must not pull focus out of an open dialog (a modal, ⌘K, a popover), nor into the closed drawer of a phone (`_mobile.css`). */
+function canFocusSearch(drawerOpen: boolean): boolean {
+    if (document.querySelector('[aria-modal="true"], [role="dialog"]')) return false;
+    const phone = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
+    return drawerOpen || !phone;
+}
+
+/** "7 success, 2 failed" for the runs a sparkline draws (screen readers and the hover title). */
+function describeRuns(runs: ReadonlyArray<{ status: string }>): string {
+    if (runs.length === 0) return `no runs in the last ${HISTORY_WINDOW_DAYS} days`;
+    const counts = new Map<string, number>();
+    runs.forEach(r => counts.set(r.status, (counts.get(r.status) ?? 0) + 1));
+    return `last ${runs.length} run${runs.length === 1 ? '' : 's'}: ${[...counts].map(([s, n]) => `${n} ${s}`).join(', ')}`;
+}
 
 /**
- * PipelinesSidebar - Left sidebar showing list of pipelines.
- * Reads selection, search, and sidebar state from Zustand store.
- * Fetches pipelines directly via React Query.
+ * PipelinesSidebar - the pipeline list on the Pipelines page.
+ *
+ * Lines come from `buildSidebarLines` (rules and tests live there). Keyboard:
+ * `/` focuses the search, Enter there opens the first match and ↓ moves into
+ * the list; in the list `j`/`k` or the arrows move through rows, groups and
+ * the "Needs attention" header, Enter opens a pipeline or folds what it is on,
+ * Esc goes back to the search. The list is one Tab stop (roving tabindex).
+ *
+ * While the pointer or the keyboard is in the list, a refetch does not move or
+ * remove rows: one would otherwise shift under the click, or vanish with the
+ * focus (a pipeline leaving "Needs attention"). Statuses, sparklines and a
+ * folded group's count still update in place; the rows follow once both have
+ * left, or once a pipeline is opened from the keyboard. A failed refetch is
+ * the System status in the header; a partial one (`stats_incomplete`) is said here.
  */
 export function PipelinesSidebar() {
     const {
         selectedPipeline, setSelectedPipeline,
-        pipelineSearch: search, setPipelineSearch: onSearchChange,
+        pipelineSearch: search, setPipelineSearch,
         sidebarOpen: isOpen, setSidebarOpen,
     } = useAppStore(useShallow(s => ({
         selectedPipeline: s.selectedPipeline, setSelectedPipeline: s.setSelectedPipeline,
         pipelineSearch: s.pipelineSearch, setPipelineSearch: s.setPipelineSearch,
         sidebarOpen: s.sidebarOpen, setSidebarOpen: s.setSidebarOpen,
     })));
-    const { data: pipelines = [], isLoading: loading } = usePipelinesQuery();
-    // Track which groups user has manually toggled
-    const [manualToggles, setManualToggles] = useState<Record<string, boolean>>({});
-
-    // Filter and sort pipelines by search (multi-word AND logic)
-    const filteredPipelines = useMemo(() => {
-        let result = [...pipelines];
-        if (search.trim()) {
-            const searchTerms = search.toLowerCase().trim().split(/\s+/);
-            result = result.filter(p => {
-                const name = p.name.toLowerCase();
-                return searchTerms.every(term => name.includes(term));
-            });
-        }
-        // Always sort alphabetically
-        result.sort((a, b) => a.name.localeCompare(b.name));
-        return result;
-    }, [pipelines, search]);
-
-    // Group pipelines by explicit group (with prefix fallback)
-    const { groups, hasGroups } = useMemo(() => {
-        const groupMap: Record<string, PipelineWithUI[]> = {};
-        filteredPipelines.forEach(p => {
-            // Use explicit group, fallback to prefix (text before first '-')
-            let group = p.group;
-            if (!group) {
-                const dashIdx = p.name.indexOf('-');
-                group = dashIdx > 0 ? p.name.substring(0, dashIdx) : '_ungrouped';
-            }
-            if (!groupMap[group]) groupMap[group] = [];
-            groupMap[group].push(p);
+    const { data: fetched = [], isLoading: loading, isError, error, refetch } = usePipelinesQuery();
+    const statsIncomplete = usePipelinesStatsIncomplete();
+    const [held, setHeld] = useState<PipelineWithUI[] | null>(null);
+    const holders = useRef({ pointer: false, focus: false });
+    // Rows (which, and where) come from the held list; what a row shows is always the fetched pipeline.
+    const pipelines = held ?? fetched;
+    const latest = useMemo(() => new Map(fetched.map(p => [p.name, p])), [fetched]);
+    // A folded group's count is a status, so it reads the fetched data too.
+    const attentionByGroup = useMemo(() => {
+        const counts = new Map<string, { failed: number; total: number }>();
+        fetched.forEach(p => {
+            if (!needsAttention(p)) return;
+            const key = groupKey(p);
+            const c = counts.get(key) ?? { failed: 0, total: 0 };
+            c.total += 1;
+            if (isFailure(p.status)) c.failed += 1;
+            counts.set(key, c);
         });
-        return {
-            groups: groupMap,
-            hasGroups: Object.keys(groupMap).some(k => k !== '_ungrouped')
-        };
-    }, [filteredPipelines]);
-
-    // Compute which groups should be expanded (auto logic + manual overrides)
-    const expandedGroups = useMemo(() => {
-        const auto: Record<string, boolean> = {};
-        const totalPipelines = filteredPipelines.length;
-        
-        for (const [group, items] of Object.entries(groups)) {
-            // If user manually toggled, respect that
-            if (group in manualToggles) {
-                auto[group] = manualToggles[group];
-                continue;
-            }
-            // Auto-expand if: ≤12 total pipelines, or group has failing/running, or group has selected pipeline
-            const hasFailing = items.some(p => p.status === 'failed' || p.status === 'aborted' || p.status === 'running');
-            const hasSelected = items.some(p => selectedPipeline?.name === p.name);
-            auto[group] = totalPipelines <= 12 || hasFailing || hasSelected || !!search;
-        }
-        return auto;
-    }, [groups, filteredPipelines.length, manualToggles, selectedPipeline?.name, search]);
-
-    const toggleGroup = (group: string) => {
-        setManualToggles(prev => ({ ...prev, [group]: !expandedGroups[group] }));
+        return counts;
+    }, [fetched]);
+    // Focus is in the list. Not cleared when the focused row unmounts (no blur fires), which is how
+    // the effect below knows to move the focus to the same pipeline's other row.
+    const focusWithin = useRef(false);
+    const hold = (who: 'pointer' | 'focus', on: boolean) => {
+        holders.current[who] = on;
+        const holding = holders.current.pointer || holders.current.focus;
+        // Nothing to hold before the first load: an empty snapshot would hide the list once it arrives.
+        setHeld(prev => (holding ? (prev ?? (fetched.length > 0 ? fetched : null)) : null));
     };
+    const [folded, setFolded] = usePersistedState<string[]>(FOLDED_GROUPS_KEY, [], parseFoldedGroups, JSON.stringify);
+    const [attentionFolded, setAttentionFolded] = usePersistedState<boolean>(ATTENTION_FOLDED_KEY, false, transforms.boolean);
+    const [focusKey, setFocusKey] = useState<string | null>(null);
+    const searchRef = useRef<HTMLInputElement>(null);
+    const itemRefs = useRef(new Map<string, HTMLButtonElement>());
+
+    const selectedName = selectedPipeline?.name ?? null;
+    const lines = useMemo(
+        () => buildSidebarLines(pipelines, { search, folded, selected: selectedName, attentionFolded }),
+        [pipelines, search, folded, selectedName, attentionFolded],
+    );
+    // A pipeline can be listed twice (pinned and in its group); only its first row is announced as current.
+    const currentKey = lines.find(l => l.kind === 'row' && l.pipeline.name === selectedName)?.key ?? null;
+    const searching = !!search.trim();
+    // While searching, the count is the matches (the "Matches" section; none when nothing matches).
+    const shownCount = searching ? lines.find(l => l.kind === 'section')?.count ?? 0 : pipelines.length;
+    const groupKeys = useMemo(() => [...new Set(pipelines.map(groupKey))], [pipelines]);
+    const hasGroups = groupKeys.some(k => k !== UNGROUPED);
+    const allFolded = hasGroups && groupKeys.every(k => folded.includes(k));
+    // The list's keyboard stops: rows, and every header that folds.
+    const navigable = useMemo(
+        () => lines.filter(l => l.kind === 'row' || l.foldable),
+        [lines],
+    );
+    // The one item of the list in the Tab order: the last focused, else the open pipeline, else the first.
+    const tabKey = useMemo(() => {
+        if (focusKey && navigable.some(l => l.key === focusKey)) return focusKey;
+        const open = navigable.find(l => l.kind === 'row' && l.pipeline.name === selectedName);
+        return (open ?? navigable[0])?.key ?? null;
+    }, [navigable, focusKey, selectedName]);
 
     const showSearch = pipelines.length > 3;
+    useKeyboardShortcuts(
+        { [SHORTCUTS.FOCUS_FILTER]: () => { if (canFocusSearch(isOpen)) searchRef.current?.focus(); } },
+        { enabled: showSearch },
+    );
+
+    const focusItem = (key: string) => {
+        setFocusKey(key);
+        itemRefs.current.get(key)?.focus();
+    };
+
+    // The focused row left the list (its pipeline left "Needs attention"): keep the focus on the
+    // same pipeline's row in its group, rather than dropping it to <body> where j / k do nothing.
+    useEffect(() => {
+        if (!focusWithin.current || !focusKey || navigable.some(l => l.key === focusKey)) return;
+        const name = focusKey.slice(focusKey.lastIndexOf(':') + 1);
+        const twin = navigable.find(l => l.kind === 'row' && l.pipeline.name === name);
+        // The row's own onFocus records it as the list's Tab stop.
+        if (twin) itemRefs.current.get(twin.key)?.focus();
+    }, [navigable, focusKey]);
+    const itemRef = (key: string) => (el: HTMLButtonElement | null) => {
+        if (el) itemRefs.current.set(key, el);
+        else itemRefs.current.delete(key);
+    };
+
+    const openPipeline = (p: PipelineWithUI) => {
+        setSelectedPipeline(p);
+        setSidebarOpen(false);
+        // Opening a pipeline ends this use of the list: the focus stays on the row while the
+        // viewer reads the DAG, and must not keep the rows still for that long.
+        hold('focus', false);
+    };
+
+    const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === 'Escape' && showSearch) {
+            e.preventDefault();
+            searchRef.current?.focus();
+            return;
+        }
+        if (navigable.length === 0) return;
+        const step = e.key === SHORTCUTS.NEXT_TASK || e.key === 'ArrowDown' ? 1
+            : e.key === SHORTCUTS.PREV_TASK || e.key === 'ArrowUp' ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const at = navigable.findIndex(l => l.key === tabKey);
+        focusItem(navigable[Math.max(0, Math.min(navigable.length - 1, at + step))].key);
+    };
+
+    const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Escape') {
+            if (search) {
+                e.preventDefault();
+                setPipelineSearch('');
+            } else {
+                searchRef.current?.blur();
+            }
+        } else if (e.key === 'Enter' && searching) {
+            const first = lines.find(l => l.kind === 'row');
+            if (first?.kind === 'row') {
+                e.preventDefault();
+                openPipeline(latest.get(first.pipeline.name) ?? first.pipeline);
+            }
+        } else if (e.key === 'ArrowDown' && navigable.length > 0) {
+            e.preventDefault();
+            focusItem(navigable[0].key);
+        }
+    };
+
+    const toggleGroup = (group: string) => {
+        setFolded(prev => (prev.includes(group) ? prev.filter(g => g !== group) : [...prev, group]));
+    };
+
+    const renderLine = (line: SidebarLine) => {
+        if (line.kind === 'section') {
+            if (!line.foldable) {
+                return (
+                    <h3 key={line.key} className={`sb-section sb-section--${line.section}`}>
+                        <span>{SECTION_LABELS[line.section]}</span>
+                        <span className="sb-section__count">{line.count}</span>
+                    </h3>
+                );
+            }
+            return (
+                <h3 key={line.key} className={`sb-section sb-section--${line.section}`}>
+                    <button
+                        ref={itemRef(line.key)}
+                        type="button"
+                        className="sb-section__toggle"
+                        tabIndex={line.key === tabKey ? 0 : -1}
+                        aria-expanded={line.open}
+                        onClick={() => setAttentionFolded(!attentionFolded)}
+                        onFocus={() => setFocusKey(line.key)}
+                    >
+                        {line.open ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+                        <span className="sb-section__label">{SECTION_LABELS[line.section]}</span>
+                        <span className="sb-section__count">{line.count}</span>
+                    </button>
+                </h3>
+            );
+        }
+        if (line.kind === 'group') {
+            const label = line.group === UNGROUPED ? 'Ungrouped' : line.label;
+            if (!line.foldable) {
+                // A group of search matches: a label, always open.
+                return (
+                    <div key={line.key} className="sb-group sb-group--static">
+                        <span className="sb-group__label">{label}</span>
+                        <span className="sb-group__count">{line.count}</span>
+                    </div>
+                );
+            }
+            // A folded group still says when something in it needs the viewer.
+            const attention = attentionByGroup.get(line.group);
+            const badge = line.open || !attention ? null
+                : attention.failed === attention.total ? `${attention.total} failed`
+                : `${attention.total} need${attention.total === 1 ? 's' : ''} attention`;
+            // A folded group holding the open pipeline is marked, so the selection is never lost from view.
+            const holdsOpen = !line.open && line.current;
+            return (
+                <button
+                    key={line.key}
+                    ref={itemRef(line.key)}
+                    type="button"
+                    className={`sb-group${holdsOpen ? ' sb-group--current' : ''}`}
+                    tabIndex={line.key === tabKey ? 0 : -1}
+                    aria-expanded={line.open}
+                    aria-label={`${label} group, ${pipelineCount(line.count)}${badge ? `, ${badge}` : ''}${holdsOpen ? ', contains the open pipeline' : ''}`}
+                    onClick={() => toggleGroup(line.group)}
+                    onFocus={() => setFocusKey(line.key)}
+                >
+                    {line.open ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+                    <span className="sb-group__label">{label}</span>
+                    {badge && <span className="sb-badge">{badge}</span>}
+                    <span className="sb-group__count">{line.count}</span>
+                </button>
+            );
+        }
+        const p = latest.get(line.pipeline.name) ?? line.pipeline;
+        return (
+            <PipelineRow
+                key={line.key}
+                pipeline={p}
+                selected={selectedName === p.name}
+                current={line.key === currentKey}
+                indented={line.indented}
+                tabIndex={line.key === tabKey ? 0 : -1}
+                buttonRef={itemRef(line.key)}
+                onFocus={() => setFocusKey(line.key)}
+                onSelect={() => openPipeline(p)}
+            />
+        );
+    };
+
+    let body: React.ReactNode;
+    if (loading) {
+        body = <PipelineListSkeleton count={8} />;
+    } else if (isError && pipelines.length === 0) {
+        // A failed load is not an empty system: say so, and offer the retry (which cannot help
+        // while the console has no API URL).
+        body = (
+            <EmptyState
+                icon={AlertTriangle}
+                tone="error"
+                role="alert"
+                title="Couldn't load pipelines"
+                description={config.API_URL
+                    ? formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))
+                    : 'Configure API_URL in config.js to connect to your backend.'}
+                action={config.API_URL
+                    ? <Button size="sm" variant="secondary" onClick={() => { void refetch(); }}>Retry</Button>
+                    : undefined}
+            />
+        );
+    } else if (pipelines.length === 0) {
+        body = (
+            <EmptyState
+                icon={Inbox}
+                title="No pipelines"
+                description={config.API_URL
+                    ? 'No pipelines registered yet. Deploy a pipeline to see it here.'
+                    : 'Configure API_URL in config.js to connect to your backend.'}
+            />
+        );
+    } else if (lines.length === 0) {
+        body = <EmptyState icon={Search} title="No matches" description={`No pipeline name or group matches "${search.trim()}"`} />;
+    } else {
+        body = lines.map(renderLine);
+    }
 
     return (
         <>
         {/* Mobile overlay */}
         {isOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
-        <aside className={`sidebar ${isOpen ? 'sidebar-open' : ''}`} aria-label="Pipelines navigation">
-            {/* Header */}
+        <nav className={`sidebar ${isOpen ? 'sidebar-open' : ''}`} aria-label="Pipelines">
             <div className="sidebar-header">
                 <span className="sidebar-title">Pipelines</span>
-                <span className="pipeline-count" aria-label={`${filteredPipelines.length} pipelines`}>{filteredPipelines.length}</span>
+                <span className="sidebar-header__actions">
+                    {hasGroups && !searching && (
+                        <button
+                            type="button"
+                            className="sb-foldall"
+                            onClick={() => setFolded(allFolded ? [] : groupKeys)}
+                            aria-label={allFolded ? 'Unfold all groups' : 'Fold all groups'}
+                            title={allFolded ? 'Unfold all groups' : 'Fold all groups'}
+                        >
+                            {allFolded ? <ChevronsUpDown size={14} aria-hidden="true" /> : <ChevronsDownUp size={14} aria-hidden="true" />}
+                        </button>
+                    )}
+                    <span className="pipeline-count">
+                        <span aria-hidden="true">{shownCount}</span>
+                        <span className="sr-only">{pipelineCount(shownCount)}</span>
+                    </span>
+                </span>
             </div>
 
-            {/* Search */}
             {showSearch && (
                 <div className="sidebar-search">
-                    <input
-                        type="text"
-                        placeholder="Search pipelines..."
-                        aria-label="Search pipelines"
-                        value={search}
-                        onChange={e => onSearchChange?.(e.target.value)}
-                    />
+                    <div className="sb-search">
+                        <Search size={14} className="sb-search__icon" aria-hidden="true" />
+                        <input
+                            ref={searchRef}
+                            type="text"
+                            className="sb-search__input"
+                            placeholder="Search pipelines or groups"
+                            aria-label="Search pipelines or groups"
+                            value={search}
+                            onChange={e => { setPipelineSearch(e.target.value); setFocusKey(null); }}
+                            onKeyDown={onSearchKeyDown}
+                        />
+                        {search ? (
+                            <button
+                                type="button"
+                                className="sb-search__clear"
+                                aria-label="Clear search"
+                                onClick={() => { setPipelineSearch(''); searchRef.current?.focus(); }}
+                            >
+                                <X size={14} aria-hidden="true" />
+                            </button>
+                        ) : (
+                            <kbd className="sb-kbd" aria-hidden="true">/</kbd>
+                        )}
+                    </div>
                 </div>
             )}
 
-            {/* Pipeline List */}
-            <div className="pipeline-list" role="listbox" aria-label="Pipeline list">
-                {loading ? (
-                    <PipelineListSkeleton count={5} />
-                ) : filteredPipelines.length === 0 ? (
-                    <div className="empty-state">
-                        <div className="empty-state-icon">{search ? <Search size={32} /> : <Inbox size={32} />}</div>
-                        <div className="empty-state-title">
-                            {search ? 'No matches' : 'No pipelines'}
-                        </div>
-                        <div className="empty-state-text">
-                            {search
-                                ? `No pipelines matching "${search}"`
-                                : config.API_URL
-                                    ? 'No pipelines registered yet. Deploy a pipeline to see it here.'
-                                    : 'Configure API_URL in config.js to connect to your backend.'}
-                        </div>
-                    </div>
-                ) : hasGroups ? (
-                    (Object.entries(groups)).sort(([a], [b]) => a.localeCompare(b)).map(([group, items]) => (
-                        <div key={group} className="sb-pipeline-group">
-                            <div 
-                                className="sb-pipeline-group-header flex items-center gap-1 px-3 py-1.5 cursor-pointer text-[11px] font-semibold uppercase text-[var(--text-muted)] tracking-wide select-none"
-                                onClick={() => toggleGroup(group)}
-                                role="button"
-                                tabIndex={0}
-                                aria-expanded={!!expandedGroups[group]}
-                                aria-label={`${group === '_ungrouped' ? 'Other' : group} group, ${items.length} pipelines`}
-                                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(group); } }}
-                            >
-                                {!expandedGroups[group] 
-                                    ? <ChevronRight size={12} /> 
-                                    : <ChevronDown size={12} />
-                                }
-                                <span>{group === '_ungrouped' ? 'Other' : group}</span>
-                                <span className="ml-auto opacity-60">{items.length}</span>
-                            </div>
-                            {expandedGroups[group] && items.map(p => (
-                                <PipelineItem
-                                    key={p.name}
-                                    pipeline={p}
-                                    selected={selectedPipeline?.name === p.name}
-                                    onClick={() => { setSelectedPipeline(p); setSidebarOpen(false); }}
-                                />
-                            ))}
-                        </div>
-                    ))
-                ) : (
-                    filteredPipelines.map(p => (
-                        <PipelineItem
-                            key={p.name}
-                            pipeline={p}
-                            selected={selectedPipeline?.name === p.name}
-                            onClick={() => { setSelectedPipeline(p); setSidebarOpen(false); }}
-                        />
-                    ))
-                )}
+            {statsIncomplete && !loading && pipelines.length > 0 && (
+                <div className="sb-note" role="status">
+                    <AlertTriangle size={14} className="sb-note__icon" aria-hidden="true" />
+                    <span>Some recent runs could not be read, so a status may be out of date.</span>
+                </div>
+            )}
+
+            <div
+                className="sb-list"
+                onKeyDown={onListKeyDown}
+                onMouseEnter={() => hold('pointer', true)}
+                onMouseLeave={() => hold('pointer', false)}
+                onFocus={() => { focusWithin.current = true; hold('focus', true); }}
+                onBlur={e => {
+                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                    focusWithin.current = false;
+                    hold('focus', false);
+                }}
+            >
+                {body}
             </div>
-        </aside>
+
+            {!loading && lines.length > 0 && (
+                <div className="sb-footer" aria-hidden="true">
+                    {showSearch && <span><kbd className="sb-kbd">/</kbd> search</span>}
+                    {showSearch && <span><kbd className="sb-kbd">↓</kbd> list</span>}
+                    <span><kbd className="sb-kbd">j</kbd> <kbd className="sb-kbd">k</kbd> move</span>
+                    <span><kbd className="sb-kbd">↵</kbd> open</span>
+                </div>
+            )}
+        </nav>
         </>
     );
 }
 
 /**
- * PipelineItem - Single pipeline row in the sidebar
+ * PipelineRow - one pipeline: latest-run status, name, last runs, schedule.
  */
-function PipelineItem({ pipeline, selected, onClick }: PipelineItemProps) {
-    const p = pipeline;
-    
+function PipelineRow({ pipeline: p, selected, current, indented, tabIndex, buttonRef, onFocus, onSelect }: PipelineRowProps) {
+    // `status` is the latest run within the window /api/pipelines reads; 'idle' means none there.
+    const status = p.status || 'idle';
+    const waitingOn = status === 'running' && p.waiting_on ? p.waiting_on : null;
+    const lastRun = status === 'idle' ? `no run in the last ${HISTORY_WINDOW_DAYS} days`
+        : waitingOn ? `${status}, ${WAITING_ON_LABELS[waitingOn]}`
+        : status;
+    const schedule = formatSchedule(p.schedule, p.asset_schedule);
+    const fullSchedule = formatSchedule(p.schedule, p.asset_schedule, { full: true });
+    const runs = (p.recent_runs ?? []).slice(0, SPARK_SLOTS);
     return (
-        <div
-            className={`sb-pipeline-item ${selected ? 'active' : ''} ${p.status === 'running' ? 'running-glow' : ''}`}
-            onClick={onClick}
-            role="option"
-            aria-selected={selected}
-            aria-label={`${p.name}, status: ${p.status || 'idle'}`}
-            tabIndex={0}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+        <button
+            ref={buttonRef}
+            type="button"
+            className={`sb-row${indented ? ' sb-row--indented' : ''}${selected ? ' sb-row--selected' : ''}`}
+            aria-current={current ? 'page' : undefined}
+            aria-label={`${p.name}, last run: ${lastRun}, ${describeRuns(runs)}, schedule: ${fullSchedule}`}
+            title={`${p.name}\nSchedule: ${fullSchedule}`}
+            tabIndex={tabIndex}
+            onFocus={onFocus}
+            onClick={onSelect}
         >
-            {/* Icon */}
-            <div className={`sb-pipeline-icon ${p.status || 'idle'}`}>
-                {p.status ? <StatusIcon status={p.status} size={16} /> : <Workflow size={16} />}
-            </div>
-
-            {/* Info - takes all remaining space */}
-            <div className="sb-pipeline-info">
-                <div className="sb-pipeline-name" title={p.name}>{p.name}</div>
-                <div className="sb-pipeline-meta">
-                    <span>{p.status || 'idle'}</span>
-                    <span className="sb-pipeline-schedule" title={formatSchedule(p.schedule, p.asset_schedule)}>
-                        {' · '}{formatSchedule(p.schedule, p.asset_schedule)}
-                    </span>
-                </div>
-                {p.recent_runs && p.recent_runs.length > 0 && (
-                    <RunSparkline runs={p.recent_runs} />
-                )}
-            </div>
-        </div>
+            <span className="sb-row__icon" aria-hidden="true" title={`Last run: ${lastRun}`}>
+                {status === 'idle'
+                    ? <CircleDashed size={14} className="sb-row__idle" />
+                    : <StatusIcon status={waitingOn ?? status} size={14} />}
+            </span>
+            <span className="sb-row__name">{p.name}</span>
+            <RunSparkline runs={runs} />
+            <span className="sb-row__schedule">{schedule}</span>
+        </button>
     );
 }
 
 /**
- * RunSparkline - Mini bar chart of recent run results
+ * RunSparkline - the last runs within HISTORY_WINDOW_DAYS as bars, oldest on the
+ * left. Empty slots pad the left side, so the newest run is always the rightmost
+ * bar. A bar's height tells its status apart without its colour (`_layout.css`).
  */
 function RunSparkline({ runs }: RunSparklineProps) {
-    // runs come newest-first from API, reverse so oldest is on the left
-    const ordered = [...runs].reverse();
+    // The API sends runs newest first.
+    const ordered = runs.slice(0, SPARK_SLOTS).reverse();
     return (
-        <div className="sb-run-sparkline" title={`Last ${ordered.length} runs`}>
+        <span className="sb-spark" aria-hidden="true" title={describeRuns(runs)}>
+            {Array.from({ length: SPARK_SLOTS - ordered.length }, (_, i) => (
+                <span key={`empty-${i}`} className="sb-spark__bar" />
+            ))}
             {ordered.map((run, i) => (
-                <div
+                <span
                     key={i}
-                    className={`sb-run-spark ${run.status}`}
-                    title={`${run.date}: ${run.status}`}
+                    className={`sb-spark__bar sb-spark__bar--${run.status}`}
+                    title={`${run.date ?? ''}: ${run.status}`}
                 />
             ))}
-        </div>
+        </span>
     );
 }
-
-/**
- * Format cron/schedule expression to human-readable
- * e.g. "cron(0 8 * * ? *)" → "daily @ 08:00"
- *      "cron(0 10 ? * MON *)" → "Mon @ 10:00"
- *      "rate(6 hours)" → "every 6h"
- */
 
 export default PipelinesSidebar;

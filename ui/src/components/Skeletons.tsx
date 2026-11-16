@@ -15,15 +15,12 @@ import React from 'react';
 
 export function PipelineListSkeleton({ count = 5 }) {
     return (
-        <div className="pipeline-list" role="status" aria-label="Loading pipelines">
+        <div role="status" aria-label="Loading pipelines">
             <span className="sr-only">Loading…</span>
             {[...Array(count)].map((_, i) => (
                 <div key={i} className="sk-skeleton-pipeline-item" style={{ animationDelay: `${i * 50}ms` }}>
                     <div className="sk-skeleton sk-skeleton-pipeline-icon" />
-                    <div className="sk-skeleton-pipeline-info">
-                        <div className="sk-skeleton sk-skeleton-text lg" />
-                        <div className="sk-skeleton sk-skeleton-text sm" />
-                    </div>
+                    <div className="sk-skeleton sk-skeleton-pipeline-name" />
                 </div>
             ))}
         </div>

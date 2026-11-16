@@ -1,367 +1,507 @@
+import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within, act } from '@testing-library/react';
 import { PipelinesSidebar } from './PipelinesSidebar';
-import { createPipelinesSidebarProps, createPipeline } from '../test/factories';
+import { createPipeline, createPipelines } from '../test/factories';
 import { useAppStore } from '../stores/useAppStore';
 import type { PipelineWithUI } from '../types';
+import config from '../lib/config';
 
-// ─── Component mocks (all inline for vi.mock hoisting) ──────────────────────
-vi.mock('@/utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, ContextIcons: new Proxy({}, { get: () => () => null }), Copy: () => null, Database: () => null, Download: () => null, ElementIcons: () => null, ExpandIcon: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, LoadingIcon: () => null, MarkIcons: () => null, Minus: () => null, Moon: () => null, NavIcon: () => null, NavIcons: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, RefreshIcon: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, STALENESS_ICONS_COMPONENTS: () => null, STATUS_ICONS_COMPONENTS: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StalenessIcon: () => null, StatusIcon: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, ToastIcons: () => null, Trash2: () => null, UIIcons: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, XIcon: () => null, Zap: () => null }));
-vi.mock('../utils/icons', () => ({ ActionIcons: new Proxy({}, { get: () => () => null }), Activity: () => null, AlertCircle: () => null, AlertTriangle: () => null, ArrowDown: () => null, ArrowLeft: () => null, ArrowRight: () => null, ArrowUp: () => null, Ban: () => null, BarChart3: () => null, Bell: () => null, BellRing: () => null, BookOpen: () => null, Calendar: () => null, Check: () => null, CheckCircle2: () => null, ChevronDown: () => null, ChevronLeft: () => null, ChevronRight: () => null, Circle: () => null, CircleDot: () => null, CircleHelp: () => null, ClipboardList: () => null, Clock: () => null, ContextIcons: new Proxy({}, { get: () => () => null }), Copy: () => null, Database: () => null, Download: () => null, ElementIcons: () => null, ExpandIcon: () => null, ExternalLink: () => null, Eye: () => null, FileText: () => null, Filter: () => null, Gauge: () => null, GitBranch: () => null, GitMerge: () => null, Globe: () => null, HelpCircle: () => null, History: () => null, Hourglass: () => null, Inbox: () => null, Info: () => null, Keyboard: () => null, Lightbulb: () => null, Link2: () => null, ListTodo: () => null, Loader2: () => null, LoadingIcon: () => null, MarkIcons: () => null, Minus: () => null, Moon: () => null, NavIcon: () => null, NavIcons: () => null, Network: () => null, Package: () => null, Palette: () => null, Pause: () => null, Play: () => null, PlayCircle: () => null, Plug: () => null, Plus: () => null, RefreshCw: () => null, RefreshIcon: () => null, Rewind: () => null, Rocket: () => null, RotateCcw: () => null, STALENESS_ICONS_COMPONENTS: () => null, STATUS_ICONS_COMPONENTS: () => null, Search: () => null, Settings: () => null, Siren: () => null, SkipForward: () => null, Square: () => null, StalenessIcon: () => null, StatusIcon: () => null, StopCircle: () => null, Sun: () => null, Target: () => null, Terminal: () => null, Timer: () => null, ToastIcons: () => null, Trash2: () => null, UIIcons: () => null, User: () => null, Workflow: () => null, Wrench: () => null, X: () => null, XCircle: () => null, XIcon: () => null, Zap: () => null }));
-vi.mock('lucide-react', () => ({ Activity: () => null, AlertCircle: () => null, ArrowLeft: () => null, Check: () => null, CheckCircle: () => null, ChevronDown: () => null, ChevronRight: () => null, ChevronUp: () => null, Circle: () => null, Eye: () => null, EyeOff: () => null, HelpCircle: () => null, KeyRound: () => null, ListTodo: () => null, Loader2: () => null, Lock: () => null, LogOut: () => null, Mail: () => null, Menu: () => null, Moon: () => null, Package: () => null, Pause: () => null, RefreshCw: () => null, Shield: () => null, Sun: () => null, User: () => null, Users: () => null, Workflow: () => null, X: () => null, Zap: () => null }));
-vi.mock('@/components/ui/button', () => ({
-    Button: (props) => <button onClick={props.onClick} disabled={props.disabled} className={props.className} title={props.title} data-variant={props.variant}>{props.children}</button>,
-}));
-vi.mock('./BaseModal', () => ({
-    BaseModal: ({ isOpen, children, className }) => isOpen ? <div data-testid="base-modal" className={className} role="dialog">{children}</div> : null,
-    ModalHeader: ({ children, icon, onClose }) => <div data-testid="modal-header">{icon}<span>{children}</span>{onClose && <button data-testid="modal-close" onClick={onClose}>x</button>}</div>,
-    ModalBody: ({ children }) => <div data-testid="modal-body">{children}</div>,
-    ModalFooter: ({ children }) => <div data-testid="modal-footer">{children}</div>,
-}));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
-vi.mock('../utils/api', () => ({ api: { get: vi.fn().mockResolvedValue({ ok: true, data: {} }), post: vi.fn().mockResolvedValue({ ok: true, data: {} }) } }));
-vi.mock('./CountdownTimer', () => ({ CountdownTimer: ({ targetTime }) => <span data-testid="countdown">{targetTime}</span> }));
-vi.mock('./LoginPage', () => ({ LoginPage: () => <div data-testid="login-page" /> }));
-vi.mock('./Notifications', () => ({ default: () => <div data-testid="notifications" /> }));
-vi.mock('./UserMenu', () => ({ UserMenu: () => <div data-testid="user-menu" /> }));
 vi.mock('./Skeletons', () => ({ PipelineListSkeleton: () => <div data-testid="skeleton" /> }));
-vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ isSignedIn: true, user: { email: 'test@test.com' }, signOut: vi.fn() }), AUTH_STATE: { SIGNED_IN: 'signedIn', SIGNED_OUT: 'signedOut' } }));
-vi.mock('@/utils/api', () => ({ setAuthTokenGetter: vi.fn(), setAuthErrorCallback: vi.fn() }));
 
-const mockQueryData = { data: [] as PipelineWithUI[], isLoading: false };
+const refetch = vi.fn();
+const mockQuery = { data: [] as PipelineWithUI[], isLoading: false, isError: false, error: null as Error | null, refetch };
+const mockStats = { incomplete: false };
 vi.mock('@/hooks/queries', () => ({
-    usePipelinesQuery: () => mockQueryData,
+    usePipelinesQuery: () => mockQuery,
+    usePipelinesStatsIncomplete: () => mockStats.incomplete,
 }));
 
-/** Click collapsed group headers to expand them (no-op if already expanded) */
-const expandAllGroups = () => {
-    document.querySelectorAll('.sb-pipeline-group-header').forEach(h => {
-        // Only click if group is collapsed (no pipeline-item siblings visible)
-        const group = h.closest('.sb-pipeline-group');
-        if (group && !group.querySelector('.sb-pipeline-item')) {
-            fireEvent.click(h);
-        }
-    });
-};
+const pipelines = (...list: Array<Partial<PipelineWithUI> & { name: string }>) =>
+    list.map(item => createPipeline(item) as PipelineWithUI);
+
+const list = () => document.querySelector('.sb-list') as HTMLElement;
+const rowNames = () => [...list().querySelectorAll('.sb-row .sb-row__name')].map(el => el.textContent);
+const groupButton = (name: RegExp) => screen.getByRole('button', { name });
 
 describe('PipelinesSidebar', () => {
     beforeEach(() => {
-        const full = createPipelinesSidebarProps();
-        // Set query mock data instead of props
-        mockQueryData.data = full.pipelines;
-        mockQueryData.isLoading = false;
-        // Reset store
+        localStorage.clear();
+        refetch.mockReset();
+        mockQuery.data = createPipelines(5) as PipelineWithUI[];
+        mockQuery.isLoading = false;
+        mockQuery.isError = false;
+        mockQuery.error = null;
+        mockStats.incomplete = false;
         const store = useAppStore.getState();
         store.setSelectedPipeline(null);
         store.setPipelineSearch('');
         store.setSidebarOpen(false);
     });
 
-    // ─── Rendering ───────────────────────────────────────────────────────
-
-    describe('rendering', () => {
-        it('renders pipeline list', () => {
+    describe('states', () => {
+        it('shows the title and the pipeline count', () => {
             render(<PipelinesSidebar />);
             expect(screen.getByText('Pipelines')).toBeInTheDocument();
+            expect(screen.getByText('5 pipelines')).toBeInTheDocument();
         });
 
-        it('shows pipeline count', () => {
+        it('shows the skeleton while loading', () => {
+            mockQuery.isLoading = true;
+            mockQuery.data = [];
             render(<PipelinesSidebar />);
-            expect(screen.getByText('5')).toBeInTheDocument();
+            expect(screen.getByTestId('skeleton')).toBeInTheDocument();
         });
 
-        it('shows loading skeleton when loading', () => {
-            mockQueryData.isLoading = true; mockQueryData.data = [];
-            render(<PipelinesSidebar />);
-            expect(screen.queryByText('acme-daily')).not.toBeInTheDocument();
-        });
-
-        it('shows empty state when no pipelines', () => {
-            mockQueryData.data = [];
+        it('says when no pipeline is registered', () => {
+            mockQuery.data = [];
             render(<PipelinesSidebar />);
             expect(screen.getByText('No pipelines')).toBeInTheDocument();
         });
-    });
 
-    // ─── Search ──────────────────────────────────────────────────────────
-
-    describe('search', () => {
-        it('shows search input when more than 3 pipelines', () => {
+        it('a failed load says what failed and offers a retry, instead of an empty list', () => {
+            mockQuery.data = [];
+            mockQuery.isError = true;
+            mockQuery.error = new Error('HTTP 503');
             render(<PipelinesSidebar />);
-            expect(screen.getByPlaceholderText(/Search pipelines/i)).toBeInTheDocument();
-        });
-
-        it('hides search when 3 or fewer pipelines', () => {
-            const pipelines = [createPipeline({ name: 'a' }), createPipeline({ name: 'b' })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expect(screen.queryByPlaceholderText(/Search pipelines/i)).not.toBeInTheDocument();
-        });
-
-        it('calls onSearchChange when typing', () => {
-            render(<PipelinesSidebar />);
-            const input = screen.getByPlaceholderText(/Search pipelines/i);
-            fireEvent.change(input, { target: { value: 'acme' } });
-            expect(useAppStore.getState().pipelineSearch).toBe('acme');
-        });
-
-        it('shows "No matches" when search yields no results', () => {
-            useAppStore.getState().setPipelineSearch('nonexistent');
-            mockQueryData.data = [];
-            render(<PipelinesSidebar />);
-            expect(screen.getByText('No matches')).toBeInTheDocument();
-        });
-
-        it('filters pipelines by search term (multi-word AND)', () => {
-            const pipelines = [
-                createPipeline({ name: 'acme-daily' }),
-                createPipeline({ name: 'acme-weekly' }),
-                createPipeline({ name: 'shopmart-daily' }),
-            ];
-            // Set search via store before render
-            useAppStore.getState().setPipelineSearch('acme daily');
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(screen.getByText('acme-daily')).toBeInTheDocument();
-            expect(screen.queryByText('acme-weekly')).not.toBeInTheDocument();
-            expect(screen.queryByText('shopmart-daily')).not.toBeInTheDocument();
+            expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load pipelines");
+            expect(screen.getByRole('alert')).toHaveTextContent('server error');
+            expect(screen.queryByText('No pipelines')).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+            expect(refetch).toHaveBeenCalledTimes(1);
         });
     });
 
-    // ─── Grouping ────────────────────────────────────────────────────────
+    describe('rows', () => {
+        it('lists pipelines A–Z', () => {
+            mockQuery.data = pipelines({ name: 'zebra' }, { name: 'alpha' }, { name: 'middle' });
+            render(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['alpha', 'middle', 'zebra']);
+        });
 
-    describe('grouping', () => {
-        it('groups pipelines by prefix', () => {
-            const pipelines = [
-                createPipeline({ name: 'acme-daily', group: 'acme' }),
-                createPipeline({ name: 'acme-weekly', group: 'acme' }),
-                createPipeline({ name: 'shopmart-feeds', group: 'shopmart' }),
-            ];
-            mockQueryData.data = pipelines;
+        it.each([
+            ['cron(0 8 * * ? *)', 'daily @ 08:00'],
+            ['cron(0 10 ? * MON *)', 'Mon @ 10:00'],
+            ['rate(6 hours)', 'every 6h'],
+            ['', 'Manual'],
+        ])('shows schedule %j as %j', (schedule, shown) => {
+            mockQuery.data = pipelines({ name: 'one', schedule });
             const { container } = render(<PipelinesSidebar />);
-            const headers = container.querySelectorAll('.sb-pipeline-group-header');
-            const headerTexts = [...headers].map(h => h.textContent.toLowerCase());
-            expect(headerTexts.some(t => t.includes('acme'))).toBe(true);
-            expect(headerTexts.some(t => t.includes('shopmart'))).toBe(true);
+            expect(container.querySelector('.sb-row__schedule')).toHaveTextContent(shown);
         });
 
-        it('falls back to dash-prefix when no explicit group', () => {
-            const pipelines = [
-                createPipeline({ name: 'acme-daily', group: null }),
-                createPipeline({ name: 'acme-weekly', group: null }),
-            ];
-            mockQueryData.data = pipelines;
-            const { container } = render(<PipelinesSidebar />);
-            const headers = container.querySelectorAll('.sb-pipeline-group-header');
-            const headerTexts = [...headers].map(h => h.textContent.toLowerCase());
-            expect(headerTexts.some(t => t.includes('acme'))).toBe(true);
-        });
-
-        it('auto-expands a group containing an aborted pipeline', () => {
-            // Regression test: the auto-expand check previously looked for
-            // 'timed_out', a value the /api/pipelines status field can never
-            // actually hold (derive_execution_status — the only place this
-            // field is set — returns only running/success/failed/aborted;
-            // 'timed_out' is reconciliation-only, used elsewhere). Meanwhile
-            // 'aborted', a real reachable value for a user-stopped pipeline,
-            // was missing from the check entirely, so a group containing
-            // only an aborted pipeline was never auto-expanded.
-            //
-            // >12 total pipelines across two groups, so the "≤12 total"
-            // auto-expand-everything rule doesn't mask this specific check.
-            const quietGroup = Array.from({ length: 12 }, (_, i) =>
-                createPipeline({ name: `quiet-${i}`, group: 'quiet', status: 'success' }));
-            const abortedGroup = [createPipeline({ name: 'stopped-run', group: 'attention', status: 'aborted' })];
-            mockQueryData.data = [...quietGroup, ...abortedGroup];
-
-            const { container } = render(<PipelinesSidebar />);
-            const headers = [...container.querySelectorAll('.sb-pipeline-group-header')];
-            const attentionHeader = headers.find(h => h.getAttribute('aria-label')?.toLowerCase().includes('attention'));
-            const quietHeader = headers.find(h => h.getAttribute('aria-label')?.toLowerCase().includes('quiet'));
-
-            expect(attentionHeader?.getAttribute('aria-expanded')).toBe('true');
-            expect(quietHeader?.getAttribute('aria-expanded')).toBe('false');
-        });
-    });
-
-    // ─── Selection ───────────────────────────────────────────────────────
-
-    describe('selection', () => {
-        it('calls onSelectPipeline when pipeline is clicked', () => {
-            const pipelines = [createPipeline({ name: 'acme-daily' })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            fireEvent.click(screen.getByText('acme-daily'));
-            expect(useAppStore.getState().selectedPipeline).toEqual(
-                expect.objectContaining({ name: 'acme-daily' })
-            );
-        });
-
-        it('resets dagViewSource to run when a different pipeline is clicked', () => {
-            const pipelines = [createPipeline({ name: 'acme-daily' })];
-            useAppStore.getState().setDagViewSource('current');
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            fireEvent.click(screen.getByText('acme-daily'));
-            expect(useAppStore.getState().dagViewSource).toBe('run');
-        });
-
-        it('highlights the selected pipeline', () => {
-            const pipelines = [
-                createPipeline({ name: 'acme-daily' }),
-                createPipeline({ name: 'shopmart-feeds' }),
-            ];
-            useAppStore.getState().setSelectedPipeline(pipelines[0]);
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            const item = screen.getByText('acme-daily').closest('.sb-pipeline-item');
-            if (item) {
-                expect(item.className).toMatch(/active|selected/);
-            }
-        });
-    });
-
-    // ─── Mobile ──────────────────────────────────────────────────────────
-
-    describe('mobile behavior', () => {
-        it('adds sidebar-open class when isOpen is true', () => {
-            useAppStore.getState().setSidebarOpen(true);
-            const { container } = render(<PipelinesSidebar />);
-            expect(container.querySelector('.sidebar-open')).toBeInTheDocument();
-        });
-
-        it('shows overlay when isOpen is true', () => {
-            useAppStore.getState().setSidebarOpen(true);
-            const { container } = render(<PipelinesSidebar />);
-            expect(container.querySelector('.sidebar-overlay')).toBeInTheDocument();
-        });
-
-        it('calls onClose when overlay is clicked', () => {
-            useAppStore.getState().setSidebarOpen(true);
-            const { container } = render(<PipelinesSidebar />);
-            const overlay = container.querySelector('.sidebar-overlay');
-            fireEvent.click(overlay!);
-            expect(useAppStore.getState().sidebarOpen).toBe(false);
-        });
-    });
-
-    // ─── Sorting ─────────────────────────────────────────────────────────
-
-    describe('sorting', () => {
-        it('sorts pipelines alphabetically', () => {
-            const pipelines = [
-                createPipeline({ name: 'zebra-daily' }),
-                createPipeline({ name: 'alpha-daily' }),
-                createPipeline({ name: 'middle-daily' }),
-            ];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-
-            const items = screen.getAllByText(/-daily$/);
-            const names = items.map(el => el.textContent);
-            expect(names).toEqual(['alpha-daily', 'middle-daily', 'zebra-daily']);
-        });
-    });
-
-    // ─── Schedule Display ────────────────────────────────────────────────
-
-    describe('schedule display', () => {
-        it('shows formatted cron schedule after status', () => {
-            const pipelines = [createPipeline({ name: 'acme-daily', schedule: 'cron(0 8 * * ? *)' })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(screen.getByText(/daily @ 08:00/)).toBeInTheDocument();
-        });
-
-        it('shows day-of-week for weekly cron', () => {
-            const pipelines = [createPipeline({ name: 'acme-weekly', schedule: 'cron(0 10 ? * MON *)' })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(screen.getByText(/Mon @ 10:00/)).toBeInTheDocument();
-        });
-
-        it('shows rate expression as "every Nh"', () => {
-            const pipelines = [createPipeline({ name: 'acme-feeds', schedule: 'rate(6 hours)' })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(screen.getByText(/every 6h/)).toBeInTheDocument();
-        });
-
-        it('does not show schedule when empty', () => {
-            const pipelines = [createPipeline({ name: 'target-manual', schedule: '' })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(screen.queryByText(/@ /)).not.toBeInTheDocument();
-        });
-
-        it('does not show schedule when null', () => {
-            const pipelines = [createPipeline({ name: 'target-manual', schedule: null })];
-            mockQueryData.data = pipelines;
-            render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(screen.queryByText(/@ /)).not.toBeInTheDocument();
-        });
-    });
-
-    // ─── Run Sparkline ───────────────────────────────────────────────────
-
-    describe('run sparkline', () => {
-        it('renders sparkline bars for recent runs', () => {
-            const pipelines = [createPipeline({
-                name: 'acme-daily',
-                recent_runs: [
-                    { date: '2026-02-19', status: 'success' },
-                    { date: '2026-02-18', status: 'failed' },
-                    { date: '2026-02-17', status: 'success' },
-                ],
-            })];
-            mockQueryData.data = pipelines;
-            const { container } = render(<PipelinesSidebar />);
-            expandAllGroups();
-            const sparks = container.querySelectorAll('.sb-run-spark');
-            expect(sparks.length).toBe(3);
-        });
-
-        it('applies correct CSS classes for success/failed/running', () => {
-            const pipelines = [createPipeline({
-                name: 'acme-daily',
+        it('the sparkline has ten slots, newest run rightmost', () => {
+            mockQuery.data = pipelines({
+                name: 'one',
                 recent_runs: [
                     { date: '2026-02-19', status: 'running' },
                     { date: '2026-02-18', status: 'failed' },
                     { date: '2026-02-17', status: 'success' },
                 ],
-            })];
-            mockQueryData.data = pipelines;
+            });
             const { container } = render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(container.querySelector('.sb-run-spark.success')).toBeInTheDocument();
-            expect(container.querySelector('.sb-run-spark.failed')).toBeInTheDocument();
-            expect(container.querySelector('.sb-run-spark.running')).toBeInTheDocument();
+            const bars = [...container.querySelectorAll('.sb-spark__bar')];
+            expect(bars).toHaveLength(10);
+            expect(bars.slice(0, 7).every(b => b.className === 'sb-spark__bar')).toBe(true);
+            expect(bars.slice(7).map(b => b.className)).toEqual([
+                'sb-spark__bar sb-spark__bar--success',
+                'sb-spark__bar sb-spark__bar--failed',
+                'sb-spark__bar sb-spark__bar--running',
+            ]);
         });
 
-        it('does not render sparkline when no recent_runs', () => {
-            const pipelines = [createPipeline({ name: 'acme-daily', recent_runs: null })];
-            mockQueryData.data = pipelines;
+        it('a pipeline with no recent runs still has ten empty slots', () => {
+            mockQuery.data = pipelines({ name: 'one', recent_runs: null });
             const { container } = render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(container.querySelector('.sb-run-sparkline')).not.toBeInTheDocument();
+            expect(container.querySelectorAll('.sb-spark__bar')).toHaveLength(10);
+            expect(container.querySelector('[class*="sb-spark__bar--"]')).toBeNull();
+        });
+    });
+
+    describe('needs attention', () => {
+        it('pins failed pipelines on top; running and aborted are not pinned', () => {
+            mockQuery.data = pipelines(
+                { name: 'a-ok', status: 'success' },
+                { name: 'b-stopped', status: 'aborted' },
+                { name: 'c-run', status: 'running' },
+                { name: 'd-fail', status: 'failed' },
+            );
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('heading', { name: /Needs attention/ })).toHaveTextContent('1');
+            expect(rowNames()).toEqual(['d-fail', 'a-ok', 'b-stopped', 'c-run', 'd-fail']);
         });
 
-        it('does not render sparkline when recent_runs is empty', () => {
-            const pipelines = [createPipeline({ name: 'acme-daily', recent_runs: [] })];
-            mockQueryData.data = pipelines;
+        it('is hidden while searching', () => {
+            mockQuery.data = pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' }, { name: 'c' }, { name: 'd' });
+            useAppStore.getState().setPipelineSearch('a-fail');
+            render(<PipelinesSidebar />);
+            expect(screen.queryByRole('heading', { name: /Needs attention/ })).not.toBeInTheDocument();
+            expect(rowNames()).toEqual(['a-fail']);
+        });
+    });
+
+    describe('groups', () => {
+        it('groups only by group=; names alone make no group', () => {
+            mockQuery.data = pipelines({ name: 'acme-daily', group: '' }, { name: 'acme-weekly', group: '' });
+            render(<PipelinesSidebar />);
+            expect(screen.queryByRole('button', { name: /group,/ })).not.toBeInTheDocument();
+            expect(rowNames()).toEqual(['acme-daily', 'acme-weekly']);
+        });
+
+        it('lists groups A–Z with Ungrouped last', () => {
+            mockQuery.data = pipelines(
+                { name: 'solo', group: '' },
+                { name: 'orders-clean', group: 'orders' },
+                { name: 'inv', group: 'analytics' },
+            );
+            render(<PipelinesSidebar />);
+            const groups = screen.getAllByRole('button', { name: /group,/ }).map(b => b.getAttribute('aria-label'));
+            expect(groups).toEqual([
+                'analytics group, 1 pipeline',
+                'orders group, 1 pipeline',
+                'Ungrouped group, 1 pipeline',
+            ]);
+        });
+
+        it('folding a group hides its rows, keeps a failure visible, and is remembered', () => {
+            mockQuery.data = pipelines(
+                { name: 'orders-clean', group: 'orders', status: 'failed' },
+                { name: 'orders-report', group: 'orders' },
+                { name: 'sales', group: 'sales' },
+            );
+            const { unmount } = render(<PipelinesSidebar />);
+            fireEvent.click(groupButton(/^orders group/));
+
+            const folded = groupButton(/^orders group/);
+            expect(folded).toHaveAttribute('aria-expanded', 'false');
+            expect(within(folded).getByText('1 failed')).toBeInTheDocument();
+            // orders-clean stays under "Needs attention"; orders-report is folded away.
+            expect(rowNames()).toEqual(['orders-clean', 'sales']);
+
+            unmount();
+            render(<PipelinesSidebar />);
+            expect(groupButton(/^orders group/)).toHaveAttribute('aria-expanded', 'false');
+        });
+
+        it('marks a folded group that contains the open pipeline', () => {
+            localStorage.setItem('sidebarFoldedGroups', JSON.stringify(['orders']));
+            mockQuery.data = pipelines({ name: 'orders-clean', group: 'orders' }, { name: 'sales', group: 'sales' });
+            useAppStore.getState().setSelectedPipeline(mockQuery.data[0]);
+            render(<PipelinesSidebar />);
+            expect(groupButton(/^orders group/)).toHaveAccessibleName(/contains the open pipeline/);
+            expect(groupButton(/^sales group/)).not.toHaveAccessibleName(/contains the open pipeline/);
+        });
+
+        it('starts with every group open when the remembered value is unreadable', () => {
+            localStorage.setItem('sidebarFoldedGroups', 'not json');
+            mockQuery.data = pipelines({ name: 'a', group: 'g1' }, { name: 'b', group: 'g2' });
+            render(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['a', 'b']);
+        });
+
+        it('a search shows matches from folded groups too', () => {
+            localStorage.setItem('sidebarFoldedGroups', JSON.stringify(['orders']));
+            mockQuery.data = pipelines(
+                { name: 'orders-clean', group: 'orders' },
+                { name: 'orders-report', group: 'orders' },
+                { name: 'sales', group: 'sales' },
+                { name: 'misc', group: 'sales' },
+            );
+            useAppStore.getState().setPipelineSearch('orders');
+            render(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['orders-clean', 'orders-report']);
+        });
+    });
+
+    describe('search', () => {
+        it('is shown for more than three pipelines only', () => {
+            mockQuery.data = pipelines({ name: 'a' }, { name: 'b' }, { name: 'c' });
+            render(<PipelinesSidebar />);
+            expect(screen.queryByPlaceholderText(/Search pipelines/i)).not.toBeInTheDocument();
+        });
+
+        it('typing filters with every word (AND) and updates the count', () => {
+            mockQuery.data = pipelines({ name: 'acme-daily' }, { name: 'acme-weekly' }, { name: 'shop-daily' }, { name: 'x' });
+            render(<PipelinesSidebar />);
+            fireEvent.change(screen.getByPlaceholderText(/Search pipelines/i), { target: { value: 'acme daily' } });
+            expect(useAppStore.getState().pipelineSearch).toBe('acme daily');
+            expect(rowNames()).toEqual(['acme-daily']);
+            expect(screen.getByText('1 pipeline')).toBeInTheDocument();
+        });
+
+        it('says when nothing matches', () => {
+            useAppStore.getState().setPipelineSearch('nonexistent');
+            render(<PipelinesSidebar />);
+            expect(screen.getByText('No matches')).toBeInTheDocument();
+        });
+
+        it('Esc and the clear button empty the search', () => {
+            render(<PipelinesSidebar />);
+            const input = screen.getByPlaceholderText(/Search pipelines/i);
+            fireEvent.change(input, { target: { value: 'acme' } });
+            fireEvent.keyDown(input, { key: 'Escape' });
+            expect(useAppStore.getState().pipelineSearch).toBe('');
+
+            fireEvent.change(input, { target: { value: 'acme' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+            expect(useAppStore.getState().pipelineSearch).toBe('');
+            expect(input).toHaveFocus();
+        });
+    });
+
+    describe('keyboard', () => {
+        beforeEach(() => {
+            mockQuery.data = pipelines({ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' });
+        });
+
+        it('"/" focuses the search, and ↓ moves from it into the list', () => {
+            render(<PipelinesSidebar />);
+            fireEvent.keyDown(document.body, { key: '/' });
+            const input = screen.getByPlaceholderText(/Search pipelines/i);
+            expect(input).toHaveFocus();
+            fireEvent.keyDown(input, { key: 'ArrowDown' });
+            expect(document.activeElement?.querySelector('.sb-row__name')?.textContent).toBe('a');
+        });
+
+        it.each([
+            ['a modal', { 'aria-modal': 'true' }],
+            ['the command palette or a popover', {}],
+        ])('"/" leaves the focus in %s', (_, extra) => {
+            render(<><PipelinesSidebar /><div role="dialog" {...extra}><button>inside</button></div></>);
+            screen.getByText('inside').focus();
+            fireEvent.keyDown(document.body, { key: '/' });
+            expect(screen.getByText('inside')).toHaveFocus();
+        });
+
+        it('the list is one Tab stop; j / k and the arrows move through it', () => {
+            render(<PipelinesSidebar />);
+            const items = [...list().querySelectorAll('button')];
+            expect(items.filter(b => b.tabIndex === 0)).toHaveLength(1);
+
+            items[0].focus();
+            fireEvent.keyDown(items[0], { key: 'j' });
+            expect(items[1]).toHaveFocus();
+            fireEvent.keyDown(items[1], { key: 'ArrowDown' });
+            expect(items[2]).toHaveFocus();
+            fireEvent.keyDown(items[2], { key: 'k' });
+            expect(items[1]).toHaveFocus();
+            expect(items.filter(b => b.tabIndex === 0)).toEqual([items[1]]);
+        });
+
+        it('the Tab stop starts on the open pipeline', () => {
+            useAppStore.getState().setSelectedPipeline(mockQuery.data[2]);
+            render(<PipelinesSidebar />);
+            const stop = [...list().querySelectorAll('button')].find(b => b.tabIndex === 0);
+            expect(stop?.querySelector('.sb-row__name')?.textContent).toBe('c');
+        });
+    });
+
+    describe('refetch while the list is in use', () => {
+        const before = () => pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' }, { name: 'c' }, { name: 'd' });
+        const after = () => pipelines({ name: 'a-fail', status: 'success' }, { name: 'b' }, { name: 'c' }, { name: 'd' }, { name: 'e' });
+
+        it('keeps the rows still under the pointer, and shows the new data when it leaves', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            fireEvent.mouseEnter(list());
+            mockQuery.data = after();
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['a-fail', 'a-fail', 'b', 'c', 'd']);
+
+            fireEvent.mouseLeave(list());
+            expect(rowNames()).toEqual(['a-fail', 'b', 'c', 'd', 'e']);
+        });
+
+        it('keeps the focused row in place, so the keyboard does not lose it', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            const pinned = list().querySelector<HTMLButtonElement>('.sb-row')!;
+            act(() => pinned.focus());
+            mockQuery.data = after();
+            rerender(<PipelinesSidebar />);
+            expect(pinned).toHaveFocus();
+            expect(rowNames()[0]).toBe('a-fail');
+
+            act(() => screen.getByPlaceholderText(/Search pipelines/i).focus());
+            expect(rowNames()).toEqual(['a-fail', 'b', 'c', 'd', 'e']);
+        });
+
+        it('a held row still shows the fresh status', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            fireEvent.mouseEnter(list());
+            mockQuery.data = after();
+            rerender(<PipelinesSidebar />);
+            const pinned = list().querySelector('.sb-row')!;
+            expect(pinned).toHaveAccessibleName(/^a-fail, last run: success/);
+        });
+
+        it("a folded group's failure count follows the data while the rows are held", () => {
+            localStorage.setItem('sidebarFoldedGroups', JSON.stringify(['orders']));
+            mockQuery.data = pipelines({ name: 'o1', group: 'orders' }, { name: 'o2', group: 'orders' }, { name: 's', group: 'sales' }, { name: 't', group: 'sales' });
+            const { rerender } = render(<PipelinesSidebar />);
+            fireEvent.mouseEnter(list());
+            mockQuery.data = pipelines({ name: 'o1', group: 'orders', status: 'failed' }, { name: 'o2', group: 'orders' }, { name: 's', group: 'sales' }, { name: 't', group: 'sales' });
+            rerender(<PipelinesSidebar />);
+            expect(groupButton(/^orders group/)).toHaveAccessibleName(/1 failed/);
+        });
+
+        it('when a focused pinned row leaves, the focus moves to the same pipeline in its group', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            const pinned = list().querySelector<HTMLButtonElement>('.sb-row')!;
+            act(() => pinned.focus());
+            fireEvent.click(pinned);
+            mockQuery.data = after();
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['a-fail', 'b', 'c', 'd', 'e']);
+            expect(document.activeElement?.querySelector('.sb-row__name')?.textContent).toBe('a-fail');
+        });
+
+        it('opening a pipeline lets the rows follow the data, though the focus stays on its row', () => {
+            mockQuery.data = before();
+            const { rerender } = render(<PipelinesSidebar />);
+            const row = screen.getAllByRole('button', { name: /^b,/ })[0];
+            act(() => row.focus());
+            fireEvent.click(row);
+            mockQuery.data = after();
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['a-fail', 'b', 'c', 'd', 'e']);
+        });
+
+        it('a pointer resting on the list during the first load still shows the list', () => {
+            mockQuery.isLoading = true;
+            mockQuery.data = [];
+            const { rerender } = render(<PipelinesSidebar />);
+            fireEvent.mouseEnter(list());
+            mockQuery.isLoading = false;
+            mockQuery.data = before();
+            rerender(<PipelinesSidebar />);
+            expect(rowNames()).toContain('b');
+        });
+    });
+
+    describe('selection', () => {
+        it('clicking a row opens the pipeline, leaves "current structure" mode and closes the drawer', () => {
+            useAppStore.getState().setDagViewSource('current');
+            useAppStore.getState().setSidebarOpen(true);
+            render(<PipelinesSidebar />);
+            fireEvent.click(screen.getByRole('button', { name: /^acme-daily,/ }));
+            const state = useAppStore.getState();
+            expect(state.selectedPipeline).toEqual(expect.objectContaining({ name: 'acme-daily' }));
+            expect(state.dagViewSource).toBe('run');
+            expect(state.sidebarOpen).toBe(false);
+        });
+
+        it('highlights every row of the open pipeline and announces only the first as current', () => {
+            mockQuery.data = pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' });
+            useAppStore.getState().setSelectedPipeline(mockQuery.data[0]);
+            render(<PipelinesSidebar />);
+            const names = (sel: string) => [...list().querySelectorAll(sel)].map(el => el.querySelector('.sb-row__name')?.textContent);
+            expect(names('.sb-row--selected')).toEqual(['a-fail', 'a-fail']);
+            expect(names('[aria-current="page"]')).toEqual(['a-fail']);
+        });
+    });
+
+    describe('review follow-ups', () => {
+        it('Enter in the search opens the first match', () => {
+            mockQuery.data = pipelines({ name: 'acme-a' }, { name: 'acme-b' }, { name: 'shop' }, { name: 'x' });
+            render(<PipelinesSidebar />);
+            const input = screen.getByPlaceholderText(/Search pipelines/i);
+            fireEvent.change(input, { target: { value: 'acme' } });
+            fireEvent.keyDown(input, { key: 'Enter' });
+            expect(useAppStore.getState().selectedPipeline?.name).toBe('acme-a');
+        });
+
+        it('Esc in the list goes back to the search', () => {
+            mockQuery.data = pipelines({ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' });
+            render(<PipelinesSidebar />);
+            const row = list().querySelector<HTMLButtonElement>('.sb-row')!;
+            act(() => row.focus());
+            fireEvent.keyDown(row, { key: 'Escape' });
+            expect(screen.getByPlaceholderText(/Search pipelines/i)).toHaveFocus();
+        });
+
+        it('a search finds a pipeline by its group, and shows the group', () => {
+            mockQuery.data = pipelines(
+                { name: 'clean', group: 'orders' }, { name: 'report', group: 'orders' },
+                { name: 'stock', group: 'inventory' }, { name: 'misc', group: 'inventory' },
+            );
+            useAppStore.getState().setPipelineSearch('orders');
+            render(<PipelinesSidebar />);
+            expect(rowNames()).toEqual(['clean', 'report']);
+            expect(list().querySelector('.sb-group--static')).toHaveTextContent('orders');
+        });
+
+        it('"Needs attention" folds, keeps its count, and is remembered', () => {
+            mockQuery.data = pipelines({ name: 'a-fail', status: 'failed' }, { name: 'b' });
+            const { unmount } = render(<PipelinesSidebar />);
+            fireEvent.click(screen.getByRole('button', { name: /Needs attention/ }));
+            expect(screen.getByRole('button', { name: /Needs attention/ })).toHaveAttribute('aria-expanded', 'false');
+            expect(rowNames()).toEqual(['a-fail', 'b']);
+            unmount();
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('button', { name: /Needs attention/ })).toHaveAttribute('aria-expanded', 'false');
+        });
+
+        it('folds and unfolds every group at once', () => {
+            mockQuery.data = pipelines({ name: 'a', group: 'g1' }, { name: 'b', group: 'g2' });
+            render(<PipelinesSidebar />);
+            fireEvent.click(screen.getByRole('button', { name: 'Fold all groups' }));
+            expect(rowNames()).toEqual([]);
+            fireEvent.click(screen.getByRole('button', { name: 'Unfold all groups' }));
+            expect(rowNames()).toEqual(['a', 'b']);
+        });
+
+        it('pins a run that waits for a decision and says so', () => {
+            mockQuery.data = pipelines({ name: 'approve', status: 'running', waiting_on: 'waiting_decision' }, { name: 'b' });
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('button', { name: /Needs attention/ })).toHaveTextContent('1');
+            expect(screen.getAllByRole('button', { name: /^approve, last run: running, waiting for a decision/ })).toHaveLength(2);
+        });
+
+        it("a row's accessible name sums up its runs and gives the whole schedule", () => {
+            mockQuery.data = pipelines({
+                name: 'one',
+                schedule: '',
+                asset_schedule: { operator: 'AND', assets: ['raw_orders_from_the_warehouse', 'currency_rates'] },
+                recent_runs: [{ status: 'failed' }, { status: 'success' }, { status: 'success' }],
+            });
+            render(<PipelinesSidebar />);
+            const row = list().querySelector('.sb-row')!;
+            expect(row).toHaveAccessibleName(/last 3 runs: 1 failed, 2 success/);
+            expect(row).toHaveAccessibleName(/schedule: raw_orders_from_the_warehouse & currency_rates$/);
+        });
+
+        it('says when some runs could not be read', () => {
+            mockStats.incomplete = true;
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('status')).toHaveTextContent('Some recent runs could not be read');
+        });
+
+        it('offers no retry while the console has no API URL', () => {
+            const saved = config.API_URL;
+            (config as { API_URL: string }).API_URL = '';
+            try {
+                mockQuery.data = [];
+                mockQuery.isError = true;
+                render(<PipelinesSidebar />);
+                expect(screen.getByRole('alert')).toHaveTextContent('Configure API_URL');
+                expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+            } finally {
+                (config as { API_URL: string }).API_URL = saved;
+            }
+        });
+    });
+
+    describe('mobile drawer', () => {
+        it('opens with an overlay that closes it', () => {
+            useAppStore.getState().setSidebarOpen(true);
             const { container } = render(<PipelinesSidebar />);
-            expandAllGroups();
-            expect(container.querySelector('.sb-run-sparkline')).not.toBeInTheDocument();
+            expect(container.querySelector('.sidebar-open')).toBeInTheDocument();
+            fireEvent.click(container.querySelector('.sidebar-overlay')!);
+            expect(useAppStore.getState().sidebarOpen).toBe(false);
         });
     });
 });

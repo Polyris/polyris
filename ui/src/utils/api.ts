@@ -168,7 +168,7 @@ export function formatApiErrorMessage(error: string | null | undefined): string 
     if (e.includes('<!doctype') || e.includes('<html') || e.includes('unexpected token')) {
         return 'The API returned an HTML page instead of data — the console API URL is likely misconfigured.';
     }
-    if (e.includes('404')) return 'That resource was not found (404) — it may not be available in this edition.';
+    if (e.includes('404')) return 'That resource was not found (404).';
     if (e.includes('401') || e.includes('403')) return 'You are not authorized to make this request.';
     if (e.includes('500') || e.includes('502') || e.includes('503') || e.includes('504')) {
         return 'The API hit a server error. Please try again in a moment.';

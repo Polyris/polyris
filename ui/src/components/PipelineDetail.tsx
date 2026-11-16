@@ -8,7 +8,7 @@ import {
     GanttSkeleton,
     ErrorBoundary,
 } from './index';
-import { POLLING, toDateString, formatRelativeTime, formatTriggerSource } from '../utils';
+import { POLLING, toDateString, formatRelativeTime, formatTriggerSource, formatApiErrorMessage } from '../utils';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useToast, useKeyboardShortcuts, SHORTCUTS } from '../hooks';
@@ -35,7 +35,6 @@ import {
     ActionIcons,
     Clock,
     BookOpen,
-    AlertTriangle,
     Inbox,
     ArrowLeft,
     Loader2
@@ -50,11 +49,10 @@ const TaskDetailModal = lazy(() => import('./TaskDetailModal'));
  * Self-contained: fetches data, manages actions, renders modals.
  */
 interface PipelineDetailProps {
-    apiError: string | null;
     navigateToExecution: (name: string, execId?: string, date?: string) => void;
 }
 
-export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetailProps) {
+export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     const {
         selectedPipeline: pipeline,
         selectedExecution,
@@ -102,6 +100,9 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
         data: detailData,
         isLoading,
         isFetching,
+        isError: detailFailed,
+        error: detailFailure,
+        refetch: refetchDetail,
     } = usePipelineDetailQuery(pipelineName, date, executionId, {
         refetchInterval: liveMode && pipelineName ? (hasActiveCountdown ? POLLING.ACTIVE : POLLING.IDLE) : false,
     });
@@ -115,6 +116,11 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
         [detailData?.tasks, dagViewSource]
     );
     const dag = detailData?.dag ?? null;
+    // The runs of this date could not be read: say so, never "No executions" (ui/CLAUDE.md).
+    const runsError = dagViewSource === 'current' ? null
+        : detailFailed ? formatApiErrorMessage(detailFailure instanceof Error ? detailFailure.message : String(detailFailure ?? ''))
+        : detailData?.statusError ? formatApiErrorMessage(detailData.statusError)
+        : null;
     const serverOffsetMs = detailData?.serverOffsetMs ?? 0;
 
     const { data: executions = [] } = usePipelineExecutionsQuery(pipelineName, date);
@@ -259,8 +265,6 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
     const content = (actions: PipelineActions | null) => (
         <>
         <section className="pd-canvas">
-            {/* Error Banner */}
-            {apiError && <div className="pd-error-banner"><AlertTriangle size={16} /> {apiError}</div>}
 
             {/* Canvas Header */}
             <div className="pd-canvas-header">
@@ -481,6 +485,12 @@ export function PipelineDetail({ apiError, navigateToExecution }: PipelineDetail
                     />
                 ) : isLoading && !dag ? (
                     viewMode === 'gantt' && GanttChart ? <GanttSkeleton count={6} /> : <DAGSkeleton />
+                ) : runsError && tasks.length === 0 && viewMode !== 'calendar' ? (
+                    <ErrorFallback
+                        message={`Couldn't load the runs of ${date}. ${runsError}`}
+                        onRetry={() => { void refetchDetail(); }}
+                        retryText="Retry"
+                    />
                 ) : tasks.length === 0 && !isLoading && viewMode !== 'calendar' ? (
                     // Gate on the tasks, because the tasks are what the graph draws. This
                     // asked `executions.length === 0` instead — a different question, to a
@@ -777,7 +787,7 @@ function EmptyState({ icon, title, text, children }: { icon: React.ReactNode; ti
  */
 function ErrorFallback({ message, onRetry, retryText = 'Reload' }: { message: string; onRetry: () => void; retryText?: string }) {
     return (
-        <div className="pd-error-fallback">
+        <div className="pd-error-fallback" role="alert">
             {message} <button onClick={onRetry}>{retryText}</button>
         </div>
     );

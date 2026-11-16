@@ -257,7 +257,7 @@ The project uses a hybrid styling approach:
 - Toasts: `role="alert"`, `aria-live="polite"`
 - Sortable headers: `role="columnheader"`, `aria-sort`, keyboard support
 - Skeletons: `role="status"`, `aria-label="Loading..."`
-- Sidebar: `role="listbox"` / `role="option"`, `aria-selected`, keyboard navigation
+- Sidebar: a `nav` of buttons, `aria-current="page"` on the open pipeline, one Tab stop with J/K and arrow navigation
 - CountdownTimer: `role="timer"`, `aria-live="polite"`
 
 ## ESLint Suppressions
