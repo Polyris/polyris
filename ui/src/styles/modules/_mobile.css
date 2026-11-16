@@ -302,15 +302,13 @@
         bottom: 0.5rem;
     }
     
-    /* Sidebar drawer: rows, groups and the search become 40px tap targets (ADR #40);
-       the keyboard hints have no keyboard to serve here */
+    /* Sidebar drawer: rows, groups and the search become 40px tap targets (ADR #40) */
     .sb-row,
     .sb-group,
     .sb-search {
         height: 40px;
     }
     .sb-foldall {
-        width: 36px;
         height: 36px;
     }
     /* The drawer (up to 360px) has room for the schedule the tablet sidebar hides */
@@ -320,9 +318,6 @@
     .sb-search__clear {
         width: 36px;
         height: 36px;
-    }
-    .sb-footer {
-        display: none;
     }
 
     /* AssetDetailPage — collapse sidebar, compact header, scrollable tabs */

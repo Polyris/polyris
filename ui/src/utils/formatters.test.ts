@@ -153,13 +153,31 @@ describe('formatRelativeTime', () => {
     });
 });
 
-import { formatSchedule, formatFreshnessWindow, formatFreshnessWindowLong } from './formatters';
+import { formatSchedule, formatFreshnessWindow, formatFreshnessWindowLong, SCHEDULE_PRESET_LABELS } from './formatters';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
 describe('formatSchedule', () => {
-    it('returns "Manual" for empty / missing schedule (on-demand pipelines)', () => {
-        expect(formatSchedule('')).toBe('Manual');
-        expect(formatSchedule(undefined)).toBe('Manual');
-        expect(formatSchedule(null)).toBe('Manual');
+    it('returns "manual" for empty / missing schedule (on-demand pipelines)', () => {
+        expect(formatSchedule('')).toBe('manual');
+        expect(formatSchedule(undefined)).toBe('manual');
+        expect(formatSchedule(null)).toBe('manual');
+    });
+
+    it.each([
+        ['@hourly', 'hourly'], ['@daily', 'daily'], ['@weekly', 'weekly'],
+        ['@monthly', 'monthly'], ['@yearly', 'yearly'], ['@annually', 'yearly'], ['@once', 'once'],
+    ])('shows the preset %s as %j', (preset, label) => {
+        expect(formatSchedule(preset)).toBe(label);
+    });
+
+    it('has a word for every SDK schedule preset (polyris/constants.py SCHEDULE_PRESETS, Principle #28)', () => {
+        const source = readFileSync(resolve(process.cwd(), '../polyris/constants.py'), 'utf-8');
+        const block = source.match(/SCHEDULE_PRESETS = \{([\s\S]*?)\n\}/);
+        expect(block, 'SCHEDULE_PRESETS not found in polyris/constants.py').not.toBeNull();
+        const presets = [...block![1].matchAll(/"(@[a-z]+)"/g)].map(m => m[1]);
+        expect(presets.length).toBeGreaterThan(0);
+        expect(Object.keys(SCHEDULE_PRESET_LABELS).sort()).toEqual([...presets].sort());
     });
 
     it('formats rate expressions', () => {
@@ -176,10 +194,10 @@ describe('formatSchedule', () => {
         expect(formatSchedule('some-very-long-custom-expression-here')).toBe('some-very-long-custo…');
     });
 
-    it('still returns "Manual" for a genuinely manual pipeline (no asset_schedule either)', () => {
-        expect(formatSchedule('', null)).toBe('Manual');
-        expect(formatSchedule('', undefined)).toBe('Manual');
-        expect(formatSchedule(undefined, null)).toBe('Manual');
+    it('still returns "manual" for a genuinely manual pipeline (no asset_schedule either)', () => {
+        expect(formatSchedule('', null)).toBe('manual');
+        expect(formatSchedule('', undefined)).toBe('manual');
+        expect(formatSchedule(undefined, null)).toBe('manual');
     });
 
     it('shows the trigger asset for an asset-triggered pipeline instead of "Manual"', () => {

@@ -296,6 +296,19 @@ export const formatTriggerSource = (value: string | null | undefined): string | 
 //
 // `full` keeps the whole text (asset names, an unrecognised expression) for a tooltip
 // or an accessible name; by default long ones are cut to fit a row.
+
+/** The SDK's schedule presets (polyris/constants.py SCHEDULE_PRESETS) as words; the registry
+ *  keeps the preset itself. A parity test reads the Python keys. */
+export const SCHEDULE_PRESET_LABELS: Readonly<Record<string, string>> = {
+    '@once': 'once',
+    '@hourly': 'hourly',
+    '@daily': 'daily',
+    '@weekly': 'weekly',
+    '@monthly': 'monthly',
+    '@yearly': 'yearly',
+    '@annually': 'yearly',
+};
+
 export function formatSchedule(
     schedule: string | undefined | null,
     assetSchedule?: { operator: 'AND' | 'OR'; assets: string[] } | null,
@@ -307,8 +320,10 @@ export function formatSchedule(
             const label = assetSchedule.assets.join(joiner);
             return !full && label.length > 24 ? label.substring(0, 24) + '…' : label;
         }
-        return 'Manual';
+        return 'manual';
     }
+
+    if (Object.hasOwn(SCHEDULE_PRESET_LABELS, schedule)) return SCHEDULE_PRESET_LABELS[schedule];
 
     // Rate expressions: rate(1 hour), rate(6 hours)
     const rateMatch = schedule.match(/rate\((\d+)\s*(minute|hour|day)s?\)/i);

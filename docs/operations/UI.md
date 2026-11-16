@@ -53,9 +53,9 @@ The polyris Web Console is a React-based single-page application for monitoring 
 ### Pipelines sidebar
 
 The sidebar lists every registered pipeline, one line each. It reads the runs of the last 14 days:
-- **Status icon** — the latest run's status (success, failed, running, aborted); for a running run that waits for an operator, a question mark (a decision) or a pause sign; a dashed circle when the pipeline has no run in those 14 days. When the tasks of the latest run still say running, the console asks Step Functions, so a run whose execution died shows as failed, timed out or aborted.
+- **Status icon** — the latest run's status (success, failed, running, aborted); for a running run that waits for an operator, a question mark (a decision) or a pause sign; a small hollow circle when the pipeline has no run in those 14 days. When the tasks of the latest run still say running, the console asks Step Functions, so a run whose execution died shows as failed, timed out or aborted.
 - **Pipeline name** — truncated; hover for the full name and schedule
-- **Run sparkline** — up to the last 10 runs, oldest on the left. A bar's height tells its status apart without its colour: a failure stands full height, a running run nearly so, a success at two thirds, a stop at half; an empty slot is a short stub, so the newest run is always the rightmost bar
+- **Run sparkline** — up to the last 10 runs, oldest on the left, coloured by status; empty slots are a faint track, so the newest run is always the rightmost bar. Hover it, or read the row with a screen reader, for the runs spelled out
 - **Schedule** — see the table below; hidden on tablets, where the sidebar is narrow
 
 **Needs attention.** Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top. A running, paused or aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
@@ -72,8 +72,9 @@ Schedule formatting:
 | `cron(0 8 * * ? *)` | `daily @ 08:00` |
 | `cron(0 10 ? * MON *)` | `Mon @ 10:00` |
 | `rate(6 hours)` | `every 6h` |
+| `@daily`, `@hourly`, … (presets) | `daily`, `hourly`, … |
 | `schedule=[asset]` | the asset names, e.g. `raw_orders` |
-| No schedule | `Manual` |
+| No schedule | `manual` |
 
 > Schedule appears after pipelines are re-deployed so the registry gets the `schedule` field.
 

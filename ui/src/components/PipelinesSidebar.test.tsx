@@ -84,7 +84,8 @@ describe('PipelinesSidebar', () => {
             ['cron(0 8 * * ? *)', 'daily @ 08:00'],
             ['cron(0 10 ? * MON *)', 'Mon @ 10:00'],
             ['rate(6 hours)', 'every 6h'],
-            ['', 'Manual'],
+            ['', 'manual'],
+            ['@daily', 'daily'],
         ])('shows schedule %j as %j', (schedule, shown) => {
             mockQuery.data = pipelines({ name: 'one', schedule });
             const { container } = render(<PipelinesSidebar />);
@@ -448,8 +449,11 @@ describe('PipelinesSidebar', () => {
         it('folds and unfolds every group at once', () => {
             mockQuery.data = pipelines({ name: 'a', group: 'g1' }, { name: 'b', group: 'g2' });
             render(<PipelinesSidebar />);
-            fireEvent.click(screen.getByRole('button', { name: 'Fold all groups' }));
+            const foldAll = screen.getByRole('button', { name: 'Fold all groups' });
+            expect(foldAll).toHaveTextContent('Fold all');
+            fireEvent.click(foldAll);
             expect(rowNames()).toEqual([]);
+            expect(screen.getByRole('button', { name: 'Unfold all groups' })).toHaveTextContent('Unfold all');
             fireEvent.click(screen.getByRole('button', { name: 'Unfold all groups' }));
             expect(rowNames()).toEqual(['a', 'b']);
         });

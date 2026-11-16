@@ -2,7 +2,7 @@
 
 ### Changed — the pipelines sidebar
 
-- One line per pipeline: the latest run's status, the name, the last 10 runs and the schedule, all from the runs of the last 14 days. A pipeline with no run in those days shows a dashed circle. The sparkline tells statuses apart by height as well as colour, and a row's accessible name sums up its runs.
+- One line per pipeline: the latest run's status, the name, the last 10 runs and the schedule, all from the runs of the last 14 days. A pipeline with no run in those days shows a small hollow circle. A row's accessible name sums up its runs. Schedule presets read as words (`daily`, `hourly`), and a pipeline without a schedule reads `manual`.
 - Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top, under **Needs attention**, which you can fold. A run waiting for a decision or paused shows that icon instead of the spinner.
 - Groups come only from `DAG(group=)`, compared without case. The sidebar no longer makes a group from the part of a name before the first `-`; a pipeline without `group=` is listed under **Ungrouped**, or in a flat list when no pipeline sets a group. To keep a group you relied on, add `group="…"` to those DAGs and redeploy them; until then they are listed flat.
 - Groups fold one by one or all at once, stay folded in this browser, still show how many of their pipelines need attention, and are highlighted when they hold the open pipeline.

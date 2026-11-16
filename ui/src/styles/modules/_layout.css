@@ -234,10 +234,10 @@
 }
 .sidebar-header__actions { display: flex; align-items: center; gap: 0.375rem; }
 .sb-foldall {
-    display: flex; align-items: center; justify-content: center;
-    width: 24px; height: 24px; padding: 0;
+    height: 22px; padding: 0 0.375rem;
     border: 0; border-radius: 4px; background: transparent;
-    color: var(--text-secondary); cursor: pointer;
+    color: var(--text-secondary); font: inherit; font-size: 0.6875rem; font-weight: 500;
+    cursor: pointer; white-space: nowrap;
 }
 .sb-foldall:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 .pipeline-count {
@@ -353,7 +353,7 @@
 .sb-row:hover { background: var(--nav-bg-hover); }
 .sb-row--selected { background: var(--nav-bg-active); color: var(--nav-text-active); }
 .sb-row--selected .sb-row__name { font-weight: 600; }
-.sb-row__icon { display: flex; flex-shrink: 0; }
+.sb-row__icon { display: flex; flex-shrink: 0; align-items: center; justify-content: center; width: 14px; height: 14px; }
 .sb-row__name {
     flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -366,18 +366,16 @@
 }
 
 /* Run sparkline — last runs, oldest left; an empty slot keeps the base colour */
-/* Height tells a status apart without its colour: a failure stands full height, a success
-   at two thirds, a stop at half; an empty slot is a 3px stub. Colours reach 3:1 on white
-   (the light success green is darkened; dark mode keeps the tokens). */
-.sb-spark { display: flex; gap: 1px; align-items: flex-end; height: 12px; flex-shrink: 0; }
-.sb-spark__bar { width: 3px; height: 3px; border-radius: 1px; background: var(--border-strong); }
-.sb-spark__bar--success { height: 8px; background: color-mix(in srgb, var(--success) 75%, black); }
-.sb-spark__bar--recovered { height: 8px; background: var(--warning); }
-.sb-spark__bar--running { height: 10px; background: var(--running); animation: spark-pulse 1.5s ease-in-out infinite; }
-.sb-spark__bar--aborted { height: 6px; background: var(--aborted); }
-.sb-spark__bar--failed, .sb-spark__bar--timed_out { height: 12px; background: var(--error); }
-[data-theme="dark"] .sb-spark__bar--success { background: var(--success); }
-.sb-row__idle { color: var(--text-secondary); }
+/* Run sparkline: one full-height bar per run, oldest left; an empty slot is a faint track */
+.sb-spark { display: flex; gap: 1px; align-items: stretch; height: 12px; flex-shrink: 0; }
+.sb-spark__bar { width: 3px; border-radius: 1px; background: var(--bg-tertiary); }
+.sb-spark__bar--success { background: var(--success); }
+.sb-spark__bar--recovered { background: var(--warning); }
+.sb-spark__bar--running { background: var(--running); animation: spark-pulse 1.5s ease-in-out infinite; }
+.sb-spark__bar--aborted { background: var(--aborted); }
+.sb-spark__bar--failed, .sb-spark__bar--timed_out { background: var(--error); }
+/* No run in the window: a small hollow circle, quiet next to real statuses */
+.sb-row__idle { color: var(--text-muted); }
 
 /* Some runs could not be read (`stats_incomplete`): said once, above the list */
 .sb-note {
@@ -389,14 +387,6 @@
 }
 .sb-note__icon { flex-shrink: 0; margin-top: 1px; color: var(--warning); }
 @keyframes spark-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-
-.sb-footer {
-    display: flex; gap: 0.875rem;
-    padding: 0.5rem 1rem;
-    border-top: 1px solid var(--border);
-    font-size: 0.6875rem; color: var(--text-secondary);
-    flex-shrink: 0;
-}
 
 /* Notifications */
 .ntf-notification-bell-container {

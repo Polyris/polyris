@@ -3,7 +3,7 @@ import { PipelineListSkeleton } from './Skeletons';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from './EmptyState';
 import {
-    StatusIcon, Search, Inbox, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleDashed, X, AlertTriangle,
+    StatusIcon, Search, Inbox, ChevronDown, ChevronRight, Circle, X, AlertTriangle,
 } from '../utils/icons';
 import { formatSchedule } from '../utils/formatters';
 import { formatApiErrorMessage } from '../utils/api';
@@ -350,9 +350,9 @@ export function PipelinesSidebar() {
                             className="sb-foldall"
                             onClick={() => setFolded(allFolded ? [] : groupKeys)}
                             aria-label={allFolded ? 'Unfold all groups' : 'Fold all groups'}
-                            title={allFolded ? 'Unfold all groups' : 'Fold all groups'}
                         >
-                            {allFolded ? <ChevronsUpDown size={14} aria-hidden="true" /> : <ChevronsDownUp size={14} aria-hidden="true" />}
+                            {/* Words, not an icon: at this size the chevrons read as a close button. */}
+                            {allFolded ? 'Unfold all' : 'Fold all'}
                         </button>
                     )}
                     <span className="pipeline-count">
@@ -413,15 +413,6 @@ export function PipelinesSidebar() {
             >
                 {body}
             </div>
-
-            {!loading && lines.length > 0 && (
-                <div className="sb-footer" aria-hidden="true">
-                    {showSearch && <span><kbd className="sb-kbd">/</kbd> search</span>}
-                    {showSearch && <span><kbd className="sb-kbd">↓</kbd> list</span>}
-                    <span><kbd className="sb-kbd">j</kbd> <kbd className="sb-kbd">k</kbd> move</span>
-                    <span><kbd className="sb-kbd">↵</kbd> open</span>
-                </div>
-            )}
         </nav>
         </>
     );
@@ -454,7 +445,7 @@ function PipelineRow({ pipeline: p, selected, current, indented, tabIndex, butto
         >
             <span className="sb-row__icon" aria-hidden="true" title={`Last run: ${lastRun}`}>
                 {status === 'idle'
-                    ? <CircleDashed size={14} className="sb-row__idle" />
+                    ? <Circle size={9} strokeWidth={2.5} className="sb-row__idle" />
                     : <StatusIcon status={waitingOn ?? status} size={14} />}
             </span>
             <span className="sb-row__name">{p.name}</span>
@@ -466,8 +457,9 @@ function PipelineRow({ pipeline: p, selected, current, indented, tabIndex, butto
 
 /**
  * RunSparkline - the last runs within HISTORY_WINDOW_DAYS as bars, oldest on the
- * left. Empty slots pad the left side, so the newest run is always the rightmost
- * bar. A bar's height tells its status apart without its colour (`_layout.css`).
+ * left. Empty slots pad the left side as a faint track, so the newest run is always
+ * the rightmost bar. Colour tells the status; the row's accessible name and the
+ * hover title spell the runs out.
  */
 function RunSparkline({ runs }: RunSparklineProps) {
     // The API sends runs newest first.
