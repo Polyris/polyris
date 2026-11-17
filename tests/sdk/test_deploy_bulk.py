@@ -220,13 +220,62 @@ class TestLoadDagFromFile:
         assert exc.value.code == 1
         assert "'orders' more than once" in capsys.readouterr().out
 
-    def test_a_dag_no_file_made_belongs_to_none(self):
-        """Code run from a string with no module file under it (`python -c`) owns no DAG."""
+    def test_a_frame_with_no_module_under_it_has_no_owner(self):
+        """A worker thread, or code compiled from a string with no module file under it."""
         import types
-        from polyris.dag import _defining_file
-        assert _defining_file(None) is None
+        from polyris.dag import _defining_globals
+        assert _defining_globals(None) is None
         string_code = types.SimpleNamespace(f_code=types.SimpleNamespace(co_name="<module>", co_filename="<string>"), f_back=None)
-        assert _defining_file(string_code) is None
+        assert _defining_globals(string_code) is None
+
+    def test_a_helper_that_imports_the_pipeline_file_back_does_not_make_a_second_dag(self, tmp_path, monkeypatch):
+        """Second review: the file ran again as module `dag`; matched by file name, it counted twice."""
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            import sys, os; sys.path.insert(0, os.path.dirname(__file__))
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("orders", schedule="@daily") as dag:
+                @task.sfn(arn=ARN)
+                def a(): pass
+                a()
+            import helpers  # noqa: F401  imports this file back, as module `dag`
+        """))
+        (tmp_path / "helpers.py").write_text("from dag import ARN  # noqa: F401\n")
+        monkeypatch.delitem(sys.modules, "dag", raising=False)
+        monkeypatch.delitem(sys.modules, "helpers", raising=False)
+
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["orders"]
+
+    def test_a_dag_whose_block_raised_does_not_count(self, tmp_path):
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            try:
+                with DAG("optional", schedule="@daily"):
+                    raise ImportError("an optional dependency is missing")
+            except ImportError:
+                pass
+            with DAG("real", schedule="@daily"):
+                @task.sfn(arn=ARN)
+                def a(): pass
+                a()
+        """))
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["real"]
+
+    def test_a_dag_made_in_a_worker_thread_the_file_starts_counts(self, tmp_path):
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            import threading
+            from polyris import DAG, task
+            def build():
+                with DAG("threaded", schedule="@daily"):
+                    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                    def a(): pass
+                    a()
+            worker = threading.Thread(target=build)
+            worker.start()
+            worker.join()
+        """))
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["threaded"]
 
     def test_recorders_nest(self, tmp_path):
         """A pipeline file that records DAGs itself does not hide them from the deploy."""
@@ -361,6 +410,32 @@ class TestRunBulk:
             )
         assert exc.value.code == 0
         assert deployed.call_count == 1
+
+    def test_a_file_that_does_not_load_fails_the_batch(self, tmp_path, mocker, monkeypatch, capsys):
+        """Review of F18: a refused file (here one dag_id twice) was skipped, and the batch said 0 failed."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "p1").mkdir()
+        (tmp_path / "p1" / "dag.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            for schedule in ("@daily", "@hourly"):
+                with DAG("orders", schedule=schedule):
+                    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                    def a(): pass
+                    a()
+        """))
+        (tmp_path / "p2").mkdir()
+        _write_dag_file(tmp_path / "p2" / "dag.py", "fine")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+
+        with pytest.raises(SystemExit) as exc:
+            deploy._run_bulk(
+                ["p1", "p2"], select=None, stage=None, region=None,
+                dry_run=False, destroy=True, log_level="ERROR",
+                log_retention_days=30, profile=None,
+            )
+        assert exc.value.code == 1
+        assert [c.kwargs["dag"].dag_id for c in deployed.call_args_list] == ["fine"]
+        assert "1 succeeded, 1 failed" in capsys.readouterr().out
 
     def test_nonexistent_directory_is_reported_as_a_failure(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)

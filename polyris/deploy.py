@@ -1003,7 +1003,7 @@ def _load_dag_from_file(path: Path) -> list:
     module = importlib.util.module_from_spec(spec)
 
     try:
-        with recording_dags(str(path)) as defined_here:
+        with recording_dags(module) as defined_here:
             spec.loader.exec_module(module)
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else 1
@@ -1025,16 +1025,17 @@ def _load_dag_from_file(path: Path) -> list:
     return dags
 
 
-def _discover_dags_in_dir(dir_path: Path) -> "List[Tuple[Path, DAG]]":
+def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None) -> "List[Tuple[Path, DAG]]":
     """Find every DAG in every .py file directly inside dir_path (non-recursive).
 
     A .py file with zero DAG objects (a shared config.py, a utils module, etc.)
     contributes nothing and is silently skipped — that's expected, not an error.
     A file that fails to *load* (syntax error, import error, an accidental
-    top-level AWS call raising) is reported and skipped too, rather than
-    aborting the whole batch — _load_dag_from_file calls sys.exit(1) on load
-    failure, which is exactly right for the single-file CLI path but wrong
-    here, so it's caught as SystemExit and turned into "skip this file".
+    top-level AWS call raising, one dag_id twice) is reported and skipped, rather
+    than aborting the whole batch — _load_dag_from_file calls sys.exit(1) on load
+    failure, which is exactly right for the single-file CLI path but wrong here.
+    It is added to ``failed`` when given, so the batch can count it as a failure:
+    a skipped file leaves its stack as it was.
     """
     found: "List[Tuple[Path, DAG]]" = []
     seen_dag_ids: dict = {}
@@ -1043,6 +1044,8 @@ def _discover_dags_in_dir(dir_path: Path) -> "List[Tuple[Path, DAG]]":
             dags = _load_dag_from_file(py_file)
         except SystemExit:
             print(f"  ⚠️  Skipping {py_file} (failed to load)")
+            if failed is not None:
+                failed.append(py_file)
             continue
         for dag in dags:
             if dag.dag_id in seen_dag_ids:
@@ -1090,7 +1093,11 @@ def _run_bulk(
             continue
 
         print(f"\n=== {dir_name} ===")
-        dags = _discover_dags_in_dir(dir_path)
+        unloadable: "List[Path]" = []
+        dags = _discover_dags_in_dir(dir_path, unloadable)
+        # A file that did not load is a failure of the batch, never a quiet skip: its stack
+        # was neither deployed nor destroyed.
+        results.extend((dir_name, f.name, False, "failed to load") for f in unloadable)
 
         if select:
             dags = [(f, d) for f, d in dags if d.dag_id == select]

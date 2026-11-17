@@ -1,6 +1,6 @@
 """scripts/changelog_release.py — release.sh names the Unreleased notes after the version.
 
-1.2.1 and 1.2.2 went out with their notes still under ``## Unreleased``: nothing renamed it.
+Releases from 1.0.2 to 1.2.2 went out with their notes still under ``## Unreleased``.
 """
 from __future__ import annotations
 
@@ -54,17 +54,41 @@ def test_main_cuts_the_file_and_refuses_bad_input(tmp_path, monkeypatch, capsys)
     path.write_text(NOTES, encoding="utf-8")
     monkeypatch.setattr(changelog, "CHANGELOG", path)
 
-    assert changelog.main(["check"]) == 0
+    assert changelog.main(["check", "v1.2.3"]) == 0
     assert changelog.main(["cut", "v1.2.3", "2026-11-18"]) == 0
     assert path.read_text(encoding="utf-8").startswith("## Unreleased\n\n## v1.2.3 - 2026-11-18\n")
-    assert changelog.main(["check"]) == 1
+    assert changelog.main(["check", "v1.2.4"]) == 1
     assert "is empty" in capsys.readouterr().err
     assert changelog.main(["cut", "v1.2.3"]) == 2
+    assert changelog.main(["check"]) == 2
+
+
+def test_a_re_run_after_a_failed_push_goes_on_and_changes_nothing(tmp_path, monkeypatch):
+    """Second review: HEAD's changelog is cut already, and `check` refused the re-run."""
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text(NOTES, encoding="utf-8")
+    monkeypatch.setattr(changelog, "CHANGELOG", path)
+    assert changelog.main(["cut", "v1.2.3", "2026-11-18"]) == 0
+    once = path.read_text(encoding="utf-8")
+
+    assert changelog.main(["check", "v1.2.3"]) == 0
+    assert changelog.main(["cut", "v1.2.3", "2026-11-19"]) == 0
+    assert path.read_text(encoding="utf-8") == once
+
+
+def test_line_endings_are_kept(tmp_path, monkeypatch):
+    path = tmp_path / "CHANGELOG.md"
+    path.write_bytes(NOTES.replace("\n", "\r\n").encode("utf-8"))
+    monkeypatch.setattr(changelog, "CHANGELOG", path)
+    assert changelog.main(["cut", "v1.2.3", "2026-11-18"]) == 0
+    raw = path.read_bytes()
+    assert raw.startswith(b"## Unreleased\r\n\r\n## v1.2.3 - 2026-11-18\r\n")
+    assert b"\n" not in raw.replace(b"\r\n", b"")
 
 
 def test_release_sh_checks_before_the_gates_and_cuts_and_commits_after_the_bump():
     release = (REPO_ROOT / "scripts" / "release.sh").read_text(encoding="utf-8")
-    check = release.index("changelog_release.py check")
+    check = release.index('changelog_release.py check "$VERSION"')
     gates = release.index("make check\n")
     bump = release.index("make check-versions")
     cut = release.index('changelog_release.py cut "$VERSION"')

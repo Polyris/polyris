@@ -778,7 +778,7 @@ After significant changes:
 - `CHANGELOG.md` — new version entry
 - `docs/reference/DESIGN_DECISIONS.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
-- `CHANGELOG.md` opens with `## Unreleased`; add your entry under it. `scripts/release.sh` refuses an empty one and renames it to `## vX.Y.Z - <date>` (`scripts/changelog_release.py`). Nothing did before, and 1.2.1 and 1.2.2 shipped their notes under `## Unreleased`.
+- `CHANGELOG.md` opens with `## Unreleased`; add your entry under it. `scripts/release.sh` refuses an empty one and renames it to `## vX.Y.Z - <date>` (`scripts/changelog_release.py`). Nothing did before, and releases from 1.0.2 to 1.2.2 shipped their notes under `## Unreleased`.
 - A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/docs/test_resource_counts.py` and `tests/docs/test_resource_inventory.py` derive every number and name from `sam/template.yaml` (and the free route count from the console) and fail until the docs agree. Run `make test-docs`.
 
 ---

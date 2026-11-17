@@ -601,19 +601,20 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
 # ═══════════════════════════════════════════════════════════════
 
 def _load_dag_from_file(dag_file: str) -> DAG:
-    """Load the last DAG a pipeline file defines (``polyris.dag.defined_dags``).
+    """Load the DAG a pipeline file defines last (``polyris.dag.recording_dags``).
 
     Works for `with DAG("name"):` blocks that don't assign `as dag` — unlike vars(mod),
     which only finds module-level bindings (polyris/CLAUDE.md, "DAG discovery"). A DAG
-    that a module the file imports defines is left out.
+    that a module the file imports defines is left out. The last ``with`` block to close
+    wins; a file with none falls back to the DAGs its globals hold (``defined_dags``).
     """
     import importlib.util
 
-    with recording_dags(dag_file) as recorded:
-        spec = importlib.util.spec_from_file_location("dag_module", dag_file)
-        if spec is None or spec.loader is None:  # pragma: no cover — defensive: spec_from_file_location returns None only for paths Python cannot load
-            raise ImportError(f"Cannot load module from {dag_file}")
-        module = importlib.util.module_from_spec(spec)
+    spec = importlib.util.spec_from_file_location("dag_module", dag_file)
+    if spec is None or spec.loader is None:  # pragma: no cover — defensive: spec_from_file_location returns None only for paths Python cannot load
+        raise ImportError(f"Cannot load module from {dag_file}")
+    module = importlib.util.module_from_spec(spec)
+    with recording_dags(module) as recorded:
         try:
             spec.loader.exec_module(module)
         except (Exception, SystemExit) as e:
@@ -625,7 +626,7 @@ def _load_dag_from_file(dag_file: str) -> DAG:
                 print(f"❌ Error loading {c(dag_file, BOLD)}: {c(msg, RED)}")
                 sys.exit(1)
 
-    local_dags = defined_dags(module, recorded)
+    local_dags = recorded or defined_dags(module, recorded)
     if not local_dags:
         print(f"❌ No DAG found in {c(dag_file, BOLD)}")
         sys.exit(1)

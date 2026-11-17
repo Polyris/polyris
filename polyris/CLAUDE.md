@@ -58,17 +58,20 @@ The field used for saving (`parent_group`) must be populated in `__enter__`, not
 ## Deploy file scanning: filter by locality, not by name; non-zero exits are errors
 
 `_load_dag_from_file` must return only DAGs **defined in the loaded file**, never ones
-merely imported into it. Use `sys.modules` after `exec_module` to build a set of all
-DAG object IDs known in other modules; exclude those from the result. The `obj.__module__`
-attribute does **not** work for this — DAG instances always carry `__module__ == "polyris.dag"`
-regardless of where they were instantiated.
+merely imported into it. `recording_dags(module)` keeps a DAG whose `with` block the loaded
+module's own top-level code ran, matched by its globals; `defined_dags` adds a DAG a global
+holds only when no other module in `sys.modules` holds it (see "DAG discovery" below). The
+`obj.__module__` attribute does **not** work for this — DAG instances always carry
+`__module__ == "polyris.dag"` regardless of where they were instantiated.
 
 `except SystemExit: pass` silently swallows a pipeline file calling `sys.exit(1)`, hiding
 load errors. Re-raise non-zero exits: `if code != 0: sys.exit(1)`. Tolerate `exit(0)`.
 
 `_discover_dags_in_dir` must deduplicate by `dag_id`: if two files in the same directory
 define the same `dag_id`, keep the first and warn about the duplicate. Silent double-deploy
-would run the pipeline twice in the same batch.
+would run the pipeline twice in the same batch. A file that fails to load (an error, a
+non-zero exit, one `dag_id` twice in the file) is a failure of the batch, never a quiet skip:
+`_run_bulk` counts it and exits 1, since its stack was neither deployed nor destroyed.
 
 ## Graph objects: always `@dataclass(eq=False)`
 
@@ -481,16 +484,20 @@ that needs the file's own DAGs collects them with `polyris.dag.defined_dags`:
 ```python
 from polyris.dag import defined_dags, recording_dags
 
-with recording_dags(str(path)) as recorded:   # DAGs this file's top-level code made
+module = importlib.util.module_from_spec(spec)
+with recording_dags(module) as recorded:      # DAGs this module's top-level code made
     spec.loader.exec_module(module)
 dags = defined_dags(module, recorded)         # plus DAGs built without `with`, by their name
 ```
 
-With a filename, a DAG counts when that file's top-level code made it: directly, through a
-function it calls (`@dag`, a factory in another module), or through `exec`; a DAG that a
-module it imports makes at import time does not. `polyris-deploy`, `polyris-output` and
-`polyris-local` use both; `extract_dag_info`, `_validate_single` and `_run_test` record
-without a filename. Never write the `DAG.__exit__` patch by hand: six loaders each had their
+With a module, a DAG counts when that module's top-level code made it: directly, through a
+function it calls (`@dag`, a factory in another module), through `exec`, or in a worker
+thread it started. It is matched by the module's globals, not its file name: a pipeline
+file that a helper imports back runs a second time as another module, and matched by file
+name its DAGs counted twice. A DAG that a module it imports makes at import time does not
+count, nor does one whose `with` block raised. `polyris-deploy`, `polyris-output` and
+`polyris-local` pass the module; `extract_dag_info`, `_validate_single` and `_run_test`
+record every DAG. Never write the `DAG.__exit__` patch by hand: six loaders each had their
 own copy or none, and two of them, `polyris-deploy` and `polyris-output`, could not see a DAG
 without `as`.
 

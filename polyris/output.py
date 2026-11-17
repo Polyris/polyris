@@ -29,7 +29,7 @@ def _load_dags(dag_file: str):
         mod = importlib.util.module_from_spec(spec)
         from polyris.dag import defined_dags, recording_dags
         # `with DAG("x"):` without `as` binds no name (polyris/CLAUDE.md, "DAG discovery")
-        with recording_dags(str(path)) as recorded:
+        with recording_dags(mod) as recorded:
             spec.loader.exec_module(mod)
         dags = defined_dags(mod, recorded)
 

@@ -4,7 +4,7 @@ DAG class for SFN-DSL.
 
 import sys
 from contextlib import contextmanager
-from pathlib import Path
+from types import ModuleType
 from typing import List, Optional, Dict, Any, Callable, Iterator, TYPE_CHECKING, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -307,40 +307,43 @@ class DAG:
 Pipeline = DAG
 
 
-def _defining_file(frame: Any) -> Optional[str]:
-    """The file whose top-level code is running at ``frame``: the nearest module frame up
-    the stack. Code compiled from a string (``exec``, ``<string>``) belongs to the file
-    that ran it, so such frames are passed over."""
+def _defining_globals(frame: Any) -> Optional[Dict[str, Any]]:
+    """The globals of the module whose top-level code is running at ``frame``: the nearest
+    module frame up the stack. Code compiled from a string (``exec``, ``<string>``) belongs
+    to the module that ran it, so such frames are passed over. None when no module's code
+    is on the stack (a worker thread)."""
     while frame is not None:
         code = frame.f_code
         if code.co_name == "<module>" and not code.co_filename.startswith("<"):
-            return str(code.co_filename)
+            return frame.f_globals
         frame = frame.f_back
     return None
 
 
 @contextmanager
-def recording_dags(filename: Optional[str] = None) -> Iterator[List[DAG]]:
-    """Record every DAG whose ``with`` block exits while this block runs.
+def recording_dags(module: Optional[ModuleType] = None) -> Iterator[List[DAG]]:
+    """Record every DAG whose ``with`` block closes without an error while this block runs.
 
     This is how a loader finds the DAGs a pipeline file defines (polyris/CLAUDE.md, "DAG
     discovery"): ``with DAG("x"):`` without ``as`` binds no name, so the module's globals
-    never show it. With ``filename``, a DAG counts when that file's top-level code made it:
-    directly, through a function it calls (``@dag``, a factory in another module), or
-    through ``exec``. A DAG that a module it imports makes at import time is left out.
+    never show it. With ``module`` (the one being executed), a DAG counts when that module's
+    top-level code made it: directly, through a function it calls (``@dag``, a factory in
+    another module), through ``exec``, or in a worker thread it started. A DAG that a module
+    it imports makes at import time is left out — a copy of the pipeline file itself, run
+    again because a helper imports it, included: matched by its globals, not its file name.
     """
     recorded: List[DAG] = []
-    wanted = Path(filename).resolve() if filename is not None else None
     original_exit = DAG.__exit__
 
-    def recording_exit(self, *args):
-        if wanted is None:
-            recorded.append(self)
-        else:
-            owner = _defining_file(sys._getframe(1))
-            if owner is not None and Path(owner).resolve() == wanted:
+    def recording_exit(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            if module is None:
                 recorded.append(self)
-        return original_exit(self, *args)
+            else:
+                owner = _defining_globals(sys._getframe(1))
+                if owner is None or owner is vars(module):
+                    recorded.append(self)
+        return original_exit(self, exc_type, exc_val, exc_tb)
 
     DAG.__exit__ = recording_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
     try:
@@ -352,7 +355,7 @@ def recording_dags(filename: Optional[str] = None) -> Iterator[List[DAG]]:
 def defined_dags(module: Any, recorded: List[DAG]) -> List[DAG]:
     """The DAGs a loaded pipeline module defines, each once.
 
-    First the ones ``recording_dags(<its file>)`` recorded, in the order their ``with``
+    First the ones ``recording_dags(module)`` recorded, in the order their ``with``
     blocks closed; then the ones its globals hold that no other loaded module holds: a DAG
     built without ``with`` (``DAG(...)`` and ``add_task``) is found only by its name.
     """

@@ -3,7 +3,7 @@
 ### Fixed — `polyris-deploy` finds a pipeline written as `with DAG("x"):`
 
 - A pipeline file whose DAG has no `as` name (`with DAG("orders"):`), or that makes its DAGs through a call (an `@dag` function called without a name, a factory in another module, `exec`), deployed with "No DAG found", although `polyris-validate` accepted it. `polyris-deploy`, `polyris-output` and `polyris-local` now find every DAG the file makes; a DAG that a module the file imports makes is still left out.
-- `polyris-deploy` refuses a file that defines one `dag_id` twice. Before, it deployed the last one, or both to the same stack: each DAG is one stack, so the second replaced the first.
+- `polyris-deploy` refuses a file that defines one `dag_id` twice. Before, it deployed the last one, or both to the same stack: each DAG is one stack, so the second replaced the first. In `--all` / `--only`, a file that does not load is now a failure of the batch: the summary counts it and the exit code is 1. Before, it was skipped with a warning and the batch reported success, though that stack was neither deployed nor destroyed.
 - `polyris-destroy` for a file with several DAGs says "Destroying all..." instead of "Deploying all...".
 - The deploy's existence check looks a Batch job definition without a revision (a name, or an ARN without `:N`) up by name, so a DAG that names the family, as the docs advise, is checked against its newest ACTIVE revision. With a revision, it no longer sends a status filter that AWS documents as not allowed with it.
 
@@ -16,7 +16,8 @@
 
 ### Changed — a release names its changelog notes
 
-- `scripts/release.sh` refuses to release while `## Unreleased` is empty, and turns it into `## vX.Y.Z - <date>` with a new, empty `## Unreleased` above (`scripts/changelog_release.py`). 1.2.1 and 1.2.2 went out with their notes still under `## Unreleased`. A declined push now also puts the bumped files back.
+- `scripts/release.sh` refuses to release while `## Unreleased` is empty, and turns it into `## vX.Y.Z - <date>` with a new, empty `## Unreleased` above (`scripts/changelog_release.py`). Releases from 1.0.2 to 1.2.2 went out with their notes still under `## Unreleased`.
+- A failed commit (GPG could not sign) or a declined push puts the bumped files back, and a re-run after a failed push tags the release commit instead of stopping.
 
 ## v1.2.2 - 2026-11-17
 

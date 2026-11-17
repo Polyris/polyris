@@ -241,7 +241,8 @@ polyris-deploy --select my-dag-id
 
 # Bulk: deploy every subdirectory of the current directory
 # (each directory's every .py file is scanned; every DAG found is deployed;
-# a file with zero DAGs — a shared config.py, etc. — is silently skipped)
+# a file with zero DAGs — a shared config.py, etc. — is silently skipped;
+# a file that does not load counts as a failure: the summary lists it, exit code 1)
 polyris-deploy --all
 
 # Bulk: deploy only the listed subdirectories

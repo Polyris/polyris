@@ -45,7 +45,7 @@ if git rev-parse "$VERSION" >/dev/null 2>&1; then
   echo "❌ tag $VERSION already exists" >&2; exit 1
 fi
 
-python3 scripts/changelog_release.py check
+python3 scripts/changelog_release.py check "$VERSION"
 
 echo "→ mode: $MODE   version: $VERSION"
 
@@ -89,13 +89,23 @@ python3 scripts/changelog_release.py cut "$VERSION" "$(date +%F)"
 
 # ── Commit + tag ───────────────────────────────────────────────────────────────
 
-git add pyproject.toml polyris/__init__.py ui/package.json CHANGELOG.md \
-  sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+RELEASE_FILES=(pyproject.toml polyris/__init__.py ui/package.json CHANGELOG.md
+               sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt)
+# The tree was clean at the start: put back what this run bumped and cut, so a re-run starts clean.
+restore_release_files() { git restore --staged --worktree "${RELEASE_FILES[@]}"; }
 
+git add "${RELEASE_FILES[@]}"
+
+COMMITTED=0
 if git diff --cached --quiet; then
-  echo "→ versions already at $BARE in git — skipping bump commit"
+  # A re-run after a failed push: the release commit is HEAD already.
+  echo "→ $VERSION is already committed — tagging HEAD"
+elif git commit -m "chore: release $VERSION"; then
+  COMMITTED=1
 else
-  git commit -m "chore: release $VERSION"
+  restore_release_files
+  echo "❌ git commit failed (e.g. GPG could not sign) — the bumped files are put back; fix it and re-run" >&2
+  exit 1
 fi
 
 git tag "$VERSION"
@@ -109,10 +119,10 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
   echo "✅ $VERSION pushed"
 else
   git tag -d "$VERSION"
-  git reset --soft HEAD~1
-  # The tree was clean at the start: put back what this run bumped and cut, so a re-run starts clean.
-  git restore --staged --worktree pyproject.toml polyris/__init__.py ui/package.json CHANGELOG.md \
-    sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
+  if [[ "$COMMITTED" == 1 ]]; then
+    git reset --soft HEAD~1
+    restore_release_files
+  fi
   echo "ℹ️  rolled back — fix anything and re-run: ./scripts/release.sh $MODE $VERSION"
   exit 0
 fi
