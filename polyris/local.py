@@ -22,8 +22,10 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Callable, cast
 from dataclasses import dataclass, field
 
+from contextlib import ExitStack
+
 from .dag import DAG
-from .loader import PipelineLoadError, load_pipeline
+from .loader import PipelineLoadError, load_pipeline, open_pipeline
 from .task import Task
 from .generators import generate_step_function_json, generate_mermaid
 from .validation import validate_asl_from_dag
@@ -601,10 +603,14 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
 # CLI Integration
 # ═══════════════════════════════════════════════════════════════
 
-def _load_dag_from_file(dag_file: str) -> DAG:
-    """The DAG a pipeline file makes last, through the one loader every CLI uses (ADR #139)."""
+def _load_dag_from_file(dag_file: str, stack: Optional[ExitStack] = None) -> DAG:
+    """The DAG a pipeline file makes last, through the one loader every CLI uses (ADR #139).
+
+    With ``stack``, the file stays open (``open_pipeline``) until the stack closes, so a task
+    body run after the load can still import a sibling module.
+    """
     try:
-        loaded = load_pipeline(dag_file)
+        loaded = stack.enter_context(open_pipeline(dag_file)) if stack else load_pipeline(dag_file)
     except PipelineLoadError as e:
         print(f"❌ Error loading {c(dag_file, BOLD)}: {c(str(e), RED)}")
         sys.exit(1)
@@ -622,18 +628,19 @@ def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs: Any) -> None:
         dag_file: Path to Python file containing DAG
         mode: One of 'dry-run', 'validate', 'mock', 'localstack'
     """
-    dag = _load_dag_from_file(dag_file)
+    with ExitStack() as stack:
+        dag = _load_dag_from_file(dag_file, stack)
 
-    if mode == 'dry-run':
-        dry_run(dag, **kwargs)
-    elif mode == 'validate':
-        validate(dag, **kwargs)
-    elif mode == 'mock':
-        run(dag, mock=True, **kwargs)
-    elif mode == 'localstack':
-        run(dag, localstack=True, **kwargs)  # pragma: no cover — requires LocalStack running at localhost:4566
-    else:
-        print(f"❌ Unknown mode: {mode}")
+        if mode == 'dry-run':
+            dry_run(dag, **kwargs)
+        elif mode == 'validate':
+            validate(dag, **kwargs)
+        elif mode == 'mock':
+            run(dag, mock=True, **kwargs)
+        elif mode == 'localstack':
+            run(dag, localstack=True, **kwargs)  # pragma: no cover — requires LocalStack running at localhost:4566
+        else:
+            print(f"❌ Unknown mode: {mode}")
 
 
 def main() -> None:
@@ -694,17 +701,18 @@ def main() -> None:
     colorize_parser(parser)
     args = parser.parse_args()
 
-    dag = _load_dag_from_file(args.file)
+    with ExitStack() as stack:
+        dag = _load_dag_from_file(args.file, stack)
 
-    if args.validate:
-        sys.exit(0 if validate(dag)['valid'] else 1)
-    elif args.mock:
-        sys.exit(0 if run(dag, mock=True).status == 'success' else 1)
-    elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
-        sys.exit(0 if run(dag, localstack=True).status == 'success' else 1)
-    else:
-        # Default: --dry-run (also reached when --dry-run is passed explicitly)
-        sys.exit(0 if dry_run(dag, show_asl=args.asl)['valid'] else 1)
+        if args.validate:
+            sys.exit(0 if validate(dag)['valid'] else 1)
+        elif args.mock:
+            sys.exit(0 if run(dag, mock=True).status == 'success' else 1)
+        elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
+            sys.exit(0 if run(dag, localstack=True).status == 'success' else 1)
+        else:
+            # Default: --dry-run (also reached when --dry-run is passed explicitly)
+            sys.exit(0 if dry_run(dag, show_asl=args.asl)['valid'] else 1)
 
 
 if __name__ == '__main__':  # pragma: no cover — module entrypoint

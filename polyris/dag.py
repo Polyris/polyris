@@ -4,7 +4,6 @@ DAG class for SFN-DSL.
 
 import sys
 from contextlib import contextmanager
-from types import ModuleType
 from typing import List, Optional, Dict, Any, Callable, Iterator, TYPE_CHECKING, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -307,40 +306,35 @@ class DAG:
 Pipeline = DAG
 
 
-#: The import machinery's modules: a DAG made under them was made by an import.
-_IMPORT_MACHINERY = frozenset({
-    "importlib._bootstrap", "importlib._bootstrap_external", "_frozen_importlib", "_frozen_importlib_external",
-})
+#: The frame of an ``import`` statement (and ``importlib.import_module``) in progress.
+_IMPORTING = ("importlib._bootstrap", "_find_and_load")
 
 
-def _made_by(frame: Any, module_globals: Dict[str, Any]) -> bool:
-    """Whether the code running at ``frame`` was started by the module whose globals these are.
+def _made_in_an_import(frame: Any, stop: Any) -> bool:
+    """Whether an ``import`` ran between ``frame`` and ``stop`` (the loader's own frame).
 
-    Walks up the stack: reaching that module's own code first means yes (a call it made, an
-    ``exec``, a class body), passing through the import machinery first means no (a module it
-    imports, or a copy of itself that a helper imports back). No frame of the module on the
-    stack means a worker thread it started: yes.
+    A DAG a module makes while Python imports it is that module's: a module the pipeline file
+    imports, or a copy of the file a helper imports back. Anything else the file's code runs
+    is the file's — a call, a factory in another module, ``exec``, ``runpy``, a file it loads
+    with ``spec.loader.exec_module`` — and so is a worker thread it started, whose stack never
+    reaches ``stop``.
     """
-    while frame is not None:
-        if frame.f_globals is module_globals:
+    while frame is not None and frame is not stop:
+        if (frame.f_globals.get("__name__"), frame.f_code.co_name) == _IMPORTING:
             return True
-        if frame.f_globals.get("__name__") in _IMPORT_MACHINERY:
-            return False
         frame = frame.f_back
-    return True
+    return False
 
 
 @contextmanager
-def recording_dags(module: ModuleType) -> Iterator[List[DAG]]:
-    """Record every DAG that ``module``'s code makes while this block runs, in order.
+def recording_dags(stop: Any) -> Iterator[List[DAG]]:
+    """Record every DAG made while this block runs, outside an ``import``, in order.
 
-    ``polyris.loader.load_pipeline`` is the one user (ADR #139). A DAG is recorded when it is
-    made (``DAG.__post_init__``), so a DAG counts with or without ``with``, bound to a name or
-    not. It counts when ``module``'s code made it (``_made_by``): directly, through a function
-    it calls (``@dag``, a factory in another module), through ``exec`` or ``runpy``, or in a
-    worker thread it started. A DAG made under the import machinery does not: one a module it
-    imports makes, or a copy of the file itself that a helper imports back. Nor does one whose
-    ``with`` block raised an error.
+    ``polyris.loader.load_pipeline`` is the one user (ADR #139); ``stop`` is its own frame. A
+    DAG is recorded when it is made (``DAG.__post_init__``), so it counts with or without
+    ``with``, bound to a name or not, unless an ``import`` made it (``_made_in_an_import``).
+    A DAG whose ``with`` block raised an error does not count; ``sys.exit(0)`` in the block
+    or a closed generator does not drop it.
     """
     made: List[DAG] = []
     raised: set = set()
@@ -349,7 +343,7 @@ def recording_dags(module: ModuleType) -> Iterator[List[DAG]]:
 
     def recording_post_init(self):
         original_post_init(self)
-        if _made_by(sys._getframe(1), vars(module)):
+        if not _made_in_an_import(sys._getframe(1), stop):
             made.append(self)
 
     def recording_exit(self, exc_type, exc_val, exc_tb):

@@ -140,26 +140,74 @@ def test_each_file_imports_its_own_sibling_modules(tmp_path):
     assert "settings" not in sys.modules
 
 
-def test_a_projects_package_works_across_loads_and_deeper_modules_are_kept(tmp_path, monkeypatch):
-    """A package on the path (the project root) stays whole; a module deeper in the folders is not
-    forgotten, so a `.venv` inside a project never gets a second copy of its classes."""
+def test_project_modules_are_forgotten_after_a_load_and_installed_ones_stay(tmp_path, monkeypatch):
+    """Any module the file imported first that is not installed code — a package on the project
+    root, a `src/` it added, a symlinked settings — is forgotten; the standard library and
+    site-packages stay, so a class never gets a second copy."""
     _write(tmp_path / "pipelines" / "__init__.py", "")
     _write(tmp_path / "pipelines" / "shared.py", "SCHEDULE = '@daily'\n")
-    _write(tmp_path / "pipelines" / ".venv" / "deeplib.py", "VALUE = 1\n")
+    _write(tmp_path / "src" / "deeplib.py", "VALUE = 1\n")
     for name in ("orders", "sales"):
         _write(tmp_path / "pipelines" / name / "dag.py", f"""
-            import deeplib  # noqa: F401  from a folder deeper than the file's own
+            import sys, colorsys  # noqa: F401  colorsys: the standard library
+            sys.path.insert(0, r"{tmp_path / 'src'}")
+            import deeplib  # noqa: F401
             import pipelines.shared
             from polyris import DAG
             with DAG("{name}", schedule=pipelines.shared.SCHEDULE):
                 pass
         """)
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.syspath_prepend(str(tmp_path / "pipelines" / ".venv"))
-    monkeypatch.delitem(sys.modules, "deeplib", raising=False)
+    for module in ("colorsys", "deeplib", "pipelines", "pipelines.shared"):
+        monkeypatch.delitem(sys.modules, module, raising=False)
     for name in ("orders", "sales"):
         assert [d.dag_id for d in load_pipeline(tmp_path / "pipelines" / name / "dag.py").dags] == [name]
-    assert "deeplib" in sys.modules
+    assert "colorsys" in sys.modules
+    assert not {"deeplib", "pipelines", "pipelines.shared"} & set(sys.modules)
+
+
+def test_a_module_whose_getattr_raises_does_not_break_the_load(tmp_path):
+    """Fourth review: reading `__path__` ran the module's `__getattr__`, which raised KeyError."""
+    _write(tmp_path / "settings_lazy.py", "_VALUES = {}\ndef __getattr__(name):\n    return _VALUES[name]\n")
+    f = _write(tmp_path / "dag.py", """
+        import settings_lazy  # noqa: F401
+        from polyris import DAG
+        with DAG("orders", schedule="@daily"):
+            pass
+    """)
+    assert [d.dag_id for d in load_pipeline(f).dags] == ["orders"]
+
+
+def test_a_path_with_dotdot_has_the_right_folder_above(tmp_path, monkeypatch):
+    _write(tmp_path / "common.py", "SCHEDULE = '@daily'\n")
+    _write(tmp_path / "orders" / "dag.py", """
+        from common import SCHEDULE
+        from polyris import DAG
+        with DAG("orders", schedule=SCHEDULE):
+            pass
+    """)
+    (tmp_path / "orders" / "sub").mkdir()
+    monkeypatch.chdir(tmp_path / "orders" / "sub")
+    monkeypatch.delitem(sys.modules, "common", raising=False)
+    assert [d.dag_id for d in load_pipeline("../dag.py").dags] == ["orders"]
+
+
+def test_inside_open_pipeline_a_task_body_can_import_a_sibling(tmp_path, monkeypatch):
+    """Fourth review: polyris-local --mock and validate --test run bodies after the load."""
+    from polyris.loader import open_pipeline
+    _write(tmp_path / "helpers.py", "VALUE = 42\n")
+    f = _write(tmp_path / "dag.py", """
+        from polyris import DAG
+        def body():
+            from helpers import VALUE
+            return VALUE
+        with DAG("orders", schedule="@daily"):
+            pass
+    """)
+    monkeypatch.delitem(sys.modules, "helpers", raising=False)
+    with open_pipeline(f) as loaded:
+        assert loaded.module.body() == 42
+    assert str(tmp_path) not in sys.path and "helpers" not in sys.modules
 
 
 def test_a_relative_path_makes_the_folder_above_importable_too(tmp_path, monkeypatch):
@@ -213,6 +261,28 @@ def test_a_block_that_ends_without_an_error_keeps_its_dag(tmp_path, inside):
                 sys.exit(0)
         """
     assert [d.dag_id for d in load_pipeline(_write(tmp_path / "dag.py", body)).dags] == ["orders"]
+
+
+def test_an_unreadable_py_is_not_a_pipeline_file(tmp_path):
+    from polyris.loader import is_pipeline_file
+    (tmp_path / "odd.py").mkdir()  # reading it fails like an unreadable file
+    assert is_pipeline_file(tmp_path / "odd.py") is False
+
+
+def test_a_namespace_package_the_file_imports_is_forgotten_and_polyris_never_is(tmp_path, monkeypatch):
+    _write(tmp_path / "nsdir" / "mod.py", "VALUE = 1\n")  # no __init__.py: a namespace package
+    f = _write(tmp_path / "dag.py", """
+        import nsdir.mod  # noqa: F401
+        import polyris._ansi  # noqa: F401
+        from polyris import DAG
+        with DAG("orders", schedule="@daily"):
+            pass
+    """)
+    for module in ("nsdir", "nsdir.mod", "polyris._ansi"):
+        monkeypatch.delitem(sys.modules, module, raising=False)
+    assert [d.dag_id for d in load_pipeline(f).dags] == ["orders"]
+    assert "nsdir" not in sys.modules and "nsdir.mod" not in sys.modules
+    assert "polyris._ansi" in sys.modules
 
 
 def test_no_cli_runs_a_pipeline_file_but_through_the_loader():

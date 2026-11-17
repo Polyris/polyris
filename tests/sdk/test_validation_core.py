@@ -214,27 +214,29 @@ class TestDiscoverPipelineFiles:
         found = discover_pipeline_files(str(tmp_path))
         assert any(f.endswith("/dag.py") for f in found)
 
-    def test_finds_named_pipeline_and_dag_files(self, tmp_path):
-        _write(tmp_path, "foo_pipeline.py", "x = 1\n")
-        _write(tmp_path, "bar_dag.py", "x = 1\n")
+    def test_finds_any_file_that_mentions_polyris_whatever_its_name(self, tmp_path):
+        """ADR #139: like Airflow's safe mode — a pipeline imports polyris, its name does not matter."""
+        _write(tmp_path, "orders.py", "from polyris import Pipeline\n")
+        _write(tmp_path, "latest_prices_dag.py", "import polyris\n")
         found = discover_pipeline_files(str(tmp_path))
-        assert any(f.endswith("foo_pipeline.py") for f in found)
-        assert any(f.endswith("bar_dag.py") for f in found)
+        assert any(f.endswith("orders.py") for f in found)
+        assert any(f.endswith("latest_prices_dag.py") for f in found)
 
-    def test_finds_file_by_dag_content(self, tmp_path):
-        # Name matches no pattern → only the 'DAG(' content marks it.
+    def test_a_file_that_does_not_mention_polyris_is_not_run(self, tmp_path):
+        # A Glue script, a migration: never executed by --all, however it is named
+        _write(tmp_path, "glue_job_pipeline.py", "import awsglue\n")
         _write(tmp_path, "thing.py", "from x import DAG\nwith DAG('a'):\n    pass\n")
         found = discover_pipeline_files(str(tmp_path))
-        assert any(f.endswith("thing.py") for f in found)
+        assert found == []
 
-    def test_excludes_tests_pycache_and_plain_files(self, tmp_path):
-        _write(tmp_path, "test_thing.py", "with DAG('x'):\n    pass\n")
-        _write(tmp_path, "__pycache__/cached.py", "DAG(\n")
-        _write(tmp_path, "plain.py", "x = 1\n")  # no DAG, no name match
-        found = discover_pipeline_files(str(tmp_path))
-        assert not any("test_thing.py" in f for f in found)
-        assert not any("__pycache__" in f for f in found)
-        assert not any(f.endswith("plain.py") for f in found)
+    def test_excludes_tests_pycache_hidden_folders_and_plain_files(self, tmp_path):
+        _write(tmp_path, "test_thing.py", "import polyris\n")
+        _write(tmp_path, "thing_test.py", "import polyris\n")
+        _write(tmp_path, "conftest.py", "import polyris\n")
+        _write(tmp_path, "__pycache__/cached.py", "import polyris\n")
+        _write(tmp_path, ".venv/lib/polyris_plugin.py", "import polyris\n")
+        _write(tmp_path, "plain.py", "x = 1\n")
+        assert discover_pipeline_files(str(tmp_path)) == []
 
     def test_result_is_sorted_and_deduped(self, tmp_path):
         _write(tmp_path, "b/dag.py", "x = 1\n")

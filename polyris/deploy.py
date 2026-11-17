@@ -1004,9 +1004,10 @@ def _load_dag_from_file(path: Path) -> list:
 def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None) -> "List[Tuple[Path, DAG]]":
     """Find every DAG in every .py file directly inside dir_path (non-recursive).
 
-    Only files ``is_pipeline_file`` accepts are loaded, as ``polyris-validate --all`` does: a
-    Glue script or a helper module next to dag.py is never run. A pipeline file with zero DAG
-    objects contributes nothing and is silently skipped — that's expected, not an error.
+    Only files ``is_pipeline_file`` accepts are loaded (dag.py, or a file that mentions
+    polyris), as ``polyris-validate --all`` does: a Glue script next to dag.py is never run, and
+    the files left out are listed. A pipeline file with zero DAG objects contributes nothing
+    and is silently skipped — that's expected, not an error.
     A file that fails to *load* (syntax error, import error, an accidental
     top-level AWS call raising, one dag_id twice) is reported and skipped, rather
     than aborting the whole batch — _load_dag_from_file calls sys.exit(1) on load
@@ -1016,7 +1017,11 @@ def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None)
     """
     found: "List[Tuple[Path, DAG]]" = []
     seen_dag_ids: dict = {}
-    for py_file in sorted(p for p in dir_path.glob("*.py") if is_pipeline_file(p)):
+    candidates = sorted(dir_path.glob("*.py"))
+    skipped = [p.name for p in candidates if not is_pipeline_file(p)]
+    if skipped:
+        print(f"  (not pipeline files, not run: {', '.join(skipped)})")
+    for py_file in (p for p in candidates if is_pipeline_file(p)):
         try:
             dags = _load_dag_from_file(py_file)
         except SystemExit:

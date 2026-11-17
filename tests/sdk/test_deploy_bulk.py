@@ -66,7 +66,7 @@ class TestDiscoverDagsInDir:
 
     def test_file_that_fails_to_load_is_skipped_not_fatal(self, tmp_path, capsys):
         _write_dag_file(tmp_path / "dag.py", "real-one")
-        (tmp_path / "broken_dag.py").write_text("this is not ) valid python (((")
+        (tmp_path / "broken_dag.py").write_text("import polyris\nthis is not ) valid python (((")
         found = deploy._discover_dags_in_dir(tmp_path)
         assert [d.dag_id for _, d in found] == ["real-one"]
         assert "Skipping" in capsys.readouterr().out
@@ -96,7 +96,7 @@ class TestDiscoverDagsInDir:
     def test_file_that_exits_nonzero_is_skipped_with_warning(self, tmp_path, capsys):
         """A pipeline file that calls sys.exit(1) is treated as a load error."""
         _write_dag_file(tmp_path / "good.py", "good-dag")
-        (tmp_path / "bad_pipeline.py").write_text("import sys; sys.exit(1)\n")
+        (tmp_path / "bad_pipeline.py").write_text("import sys, polyris; sys.exit(1)\n")
         found = deploy._discover_dags_in_dir(tmp_path)
         assert [d.dag_id for _, d in found] == ["good-dag"]
         assert "Skipping" in capsys.readouterr().out
@@ -229,15 +229,18 @@ class TestLoadDagFromFile:
         assert exc.value.code == 1
         assert "'orders' more than once" in capsys.readouterr().out
 
-    def test_ownership_is_decided_by_the_call_chain(self):
-        """No frame of the module and no import on the stack: a thread it started (ADR #139)."""
+    def test_a_dag_is_another_files_only_when_an_import_made_it(self):
+        """ADR #139: an `import` between the DAG and the loader makes it the imported module's."""
         import types
-        from polyris.dag import _made_by
-        mine: dict = {}
-        frame = lambda globals_, back=None: types.SimpleNamespace(f_globals=globals_, f_back=back)  # noqa: E731
-        assert _made_by(None, mine) is True
-        assert _made_by(frame({"__name__": "common"}, frame(mine)), mine) is True
-        assert _made_by(frame({"__name__": "helpers"}, frame({"__name__": "importlib._bootstrap"}, frame(mine))), mine) is False
+        from polyris.dag import _made_in_an_import
+
+        def frame(module, code="f", back=None):
+            return types.SimpleNamespace(f_globals={"__name__": module}, f_code=types.SimpleNamespace(co_name=code), f_back=back)
+        loader = frame("polyris.loader", "open_pipeline")
+        assert _made_in_an_import(frame("common", back=frame("polyris_pipeline", "<module>", loader)), loader) is False
+        imported = frame("helpers", "<module>", frame("importlib._bootstrap", "_find_and_load", frame("polyris_pipeline", "<module>", loader)))
+        assert _made_in_an_import(imported, loader) is True
+        assert _made_in_an_import(frame("worker"), loader) is False  # a thread: never reaches the loader
 
     def test_a_helper_that_imports_the_pipeline_file_back_does_not_make_a_second_dag(self, tmp_path, monkeypatch):
         """Second review: the file ran again as module `dag`; matched by file name, it counted twice."""
@@ -288,8 +291,8 @@ class TestLoadDagFromFile:
         """))
         assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["threaded"]
 
-    def test_loads_nest_and_each_keeps_its_own_dags(self, tmp_path):
-        """A pipeline file that loads another one: each load records the DAGs its own file made."""
+    def test_a_file_that_loads_another_gets_its_dags_too(self, tmp_path):
+        """Airflow-style aggregation (a file that runs other files) is the file's code, not an import."""
         (tmp_path / "other.py").write_text(textwrap.dedent("""
             from polyris import DAG
             with DAG("other", schedule="@daily"):
@@ -304,7 +307,7 @@ class TestLoadDagFromFile:
             with DAG("after", schedule="@daily"):
                 pass
         """))
-        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["before", "after"]
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["before", "other", "after"]
 
     def test_the_dag_class_is_restored_when_the_file_fails(self, tmp_path):
         from polyris.dag import DAG

@@ -2,10 +2,10 @@
 
 ### Changed — every command loads a pipeline file the same way (ADR #139)
 
-- `polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` now run a pipeline file through one loader, so a file that passes validation also deploys. Before, each found DAGs its own way, and a file whose DAG had no `as` name (`with DAG("orders"):`), or that made its DAGs through a call (an `@dag` function, a factory in another module), passed `polyris-validate` and then deployed with "No DAG found".
-- A DAG belongs to the file whose code made it, with or without `with`; a DAG that a module the file imports makes is that module's. `polyris-validate` therefore no longer validates such a DAG as part of the importing file; it is validated with its own file.
+- `polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` now run a pipeline file through one loader, so a file that passes validation also deploys. Before, each found DAGs its own way, and a file whose DAG had no `as` name (`with DAG("orders"):`), or that made its DAGs through a call (an `@dag` function, a factory in another module, a file that runs other files), passed `polyris-validate` and then deployed with "No DAG found".
+- Every DAG the file's code makes is its own, with or without `with`; a DAG that an `import` makes is the imported module's. `polyris-validate` therefore no longer validates such a DAG as part of the importing file; it is validated with its own file.
 - Every command makes the file's folder and the one above importable while it runs, as `polyris-validate` did — also when run as plain `polyris-deploy` in the pipeline's folder — and lets `sys.exit(0)` end the file normally, as `polyris-deploy` did. A module a file imports from its own folder (a `settings.py`) is not handed to the next file in `--all`.
-- `polyris-deploy --all` / `--only` loads the same files as `polyris-validate --all`: `dag.py`, a name with "dag" or "pipeline", or a file that makes a DAG. A Glue script or a helper module next to `dag.py` is no longer run.
+- `polyris-deploy --all` / `--only` and `polyris-validate --all` load the same files: `dag.py` and every `.py` that mentions polyris, except test files (`test_*.py`, `*_test.py`, `conftest.py`), as Airflow's safe mode does. A Glue script next to `dag.py` is no longer run, and `deploy --all` lists the files it leaves out. In `--all`, each file imports its own `settings.py` and other modules, wherever they live; installed libraries are shared.
 - A file that makes one `dag_id` twice is refused by every command: each DAG is one stack, so the second would replace the first. Before, `polyris-deploy` deployed the last one.
 
 ### Fixed — `polyris-deploy`

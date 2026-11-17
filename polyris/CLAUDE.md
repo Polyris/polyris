@@ -484,16 +484,18 @@ pipeline file another way: `tests/sdk/test_loader.py` fails when a module of `po
 than `loader.py` (and `config.py`, which runs the project's `config.py`) calls `exec_module` or
 `spec_from_file_location`.
 
-A DAG belongs to the file whose code made it: `recording_dags(module)` records it when it is
-made (`DAG.__post_init__`), and `_made_by` walks up the stack — the file's own code first means
-it is the file's, the import machinery first means it is not. That finds `with DAG("x"):`
-without `as`, `DAG(...)` with `add_task`, an `@dag` call, a factory in another module, `exec`,
-`runpy`, and a worker thread the file starts; it leaves out a DAG a module the file imports makes
-at import time, a copy of the file a helper imports back, and a DAG whose `with` block raised an
-error. One `dag_id` made twice is a `PipelineLoadError` for every command. After a load, the
-top-level modules the file imported from its own folder and the one above are forgotten (never
-`polyris`, never a module deeper in those folders), so `deploy --all` never hands one folder's
-`settings.py` to the next. `--all` loads only `is_pipeline_file` files, for validate and deploy.
+A DAG belongs to the file unless an `import` made it: `recording_dags` records it when it is
+made (`DAG.__post_init__`), and `_made_in_an_import` looks for `importlib._bootstrap._find_and_load`
+between it and the loader. That finds `with DAG("x"):` without `as`, `DAG(...)` with `add_task`,
+`@dag`, a factory, `exec`, `runpy`, a file run with `exec_module`, and a worker thread; it leaves
+out a DAG a module the file imports makes, a copy of the file a helper imports back, and a DAG
+whose `with` block raised an error. One `dag_id` made twice is a `PipelineLoadError` for every
+command. On leaving `open_pipeline`, every module the file imported first is forgotten unless it
+is installed code or `polyris`, so `deploy --all` never hands one folder's `settings.py` to the
+next. `--all` loads `dag.py` and files that mention polyris (`is_pipeline_file`), for validate and
+deploy. Rules rest on facts — an import in progress, where a module is installed, whether a file
+mentions polyris — never on guesses about names or frames: each guess the first version made
+failed a review.
 
 **Why:** each command had its own loader and its own rule — validate recorded `with` exits,
 deploy and output read `vars(mod)`, local filtered by globals — and they disagreed on

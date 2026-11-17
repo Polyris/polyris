@@ -2,7 +2,7 @@
 
 All polyris commands. Run from your pipeline directory unless noted.
 
-`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag` or a helper function — and not one that a module it imports makes. While the file runs, its folder and the folder above it are importable, and `sys.exit(0)` ends it normally. A file that makes one `dag_id` twice is refused: each DAG is one stack. With `--all`, both commands read only files that look like pipelines: `dag.py`, a name with "dag" or "pipeline", or a file with `DAG(` or `@dag` — a Glue script next to `dag.py` is never run.
+`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag`, a helper function, or other files it runs — and not one that a module it imports makes. While the file runs, its folder and the folder above it are importable, and `sys.exit(0)` ends it normally. A file that makes one `dag_id` twice is refused: each DAG is one stack. With `--all`, both commands read `dag.py` and every `.py` that mentions polyris, except test files: a Glue script next to `dag.py` is never run.
 
 ---
 
@@ -242,9 +242,10 @@ polyris-deploy --file my_dag.py
 polyris-deploy --select my-dag-id
 
 # Bulk: deploy every subdirectory of the current directory
-# (each directory's every .py file is scanned; every DAG found is deployed;
-# a file with zero DAGs — a shared config.py, etc. — is silently skipped;
-# a file that does not load counts as a failure: the summary lists it, exit code 1)
+# (in each directory, dag.py and every .py that mentions polyris are loaded — other
+# files are listed and not run; every DAG found is deployed; a file with zero DAGs
+# is skipped; a file that does not load counts as a failure: the summary lists it,
+# the other directories still deploy, exit code 1)
 polyris-deploy --all
 
 # Bulk: deploy only the listed subdirectories
@@ -279,9 +280,10 @@ Run from the parent directory containing your pipeline subdirectories (e.g.
 `examples/`, with `cd examples`). Each target directory is scanned
 independently:
 
-1. Every `.py` file directly in the directory is loaded (non-recursive) —
-   not only `dag.py`. A directory with several independent pipeline files
-   (`orders.py`, `inventory.py`, ...) has all of them deployed.
+1. `dag.py` and every `.py` file directly in the directory that mentions
+   polyris are loaded (non-recursive), except test files. A directory with
+   several independent pipeline files (`orders.py`, `inventory.py`, ...) has
+   all of them deployed; a Glue script beside them is never run.
 2. Every DAG object found in every file is deployed — a file with several
    DAGs (see the multi-DAG-file note above) gets all of them, same as
    single-file mode.

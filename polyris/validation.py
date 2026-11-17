@@ -60,8 +60,12 @@ def discover_pipeline_files(directory: str) -> List[str]:
     
     from polyris.loader import is_pipeline_file
 
+    skip_dirs = {"__pycache__", "node_modules", "site-packages"}
     for path in root.rglob('*.py'):
-        if '__pycache__' not in str(path) and is_pipeline_file(path):
+        parts = path.relative_to(root).parts[:-1]
+        if any(p.startswith(".") or p in skip_dirs for p in parts):
+            continue  # .venv, .git, caches, installed code
+        if is_pipeline_file(path):
             pipeline_files.append(str(path))
 
     return sorted(set(pipeline_files))
@@ -588,16 +592,25 @@ def _run_test(dag_file: str) -> bool:
 
     Returns True if all callables succeeded, False if any raised.
     """
-    from polyris.loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
+    from contextlib import ExitStack
 
-    try:
-        dags = load_pipeline(dag_file).dags
-    except PipelineNotFoundError:
-        print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
-        sys.exit(1)
-    except PipelineLoadError as e:
-        print(f"{_c('❌ Failed to load', RED)} {_c(dag_file, CYAN)}: {e}")
-        sys.exit(1)
+    from polyris.loader import PipelineLoadError, PipelineNotFoundError, open_pipeline
+
+    with ExitStack() as stack:
+        try:
+            # Task bodies run while the file is open, so they can import a sibling module
+            dags = stack.enter_context(open_pipeline(dag_file)).dags
+        except PipelineNotFoundError:
+            print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
+            sys.exit(1)
+        except PipelineLoadError as e:
+            print(f"{_c('❌ Failed to load', RED)} {_c(dag_file, CYAN)}: {e}")
+            sys.exit(1)
+        return _run_test_bodies(dag_file, dags)
+
+
+def _run_test_bodies(dag_file: str, dags: list) -> bool:
+    """Run each task's python_callable in order; True when every one succeeded."""
 
     if not dags:
         print(f"{_c('❌ No DAG found in', RED)} {_c(dag_file, CYAN)}")
