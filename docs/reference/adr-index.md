@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_106 rows indexed (80 inline, 26 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_108 rows indexed (80 inline, 28 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|
@@ -116,3 +116,5 @@ _106 rows indexed (80 inline, 26 standalone). Actual ADR count is higher — ADR
 | 134 | A config the user names is used, or the command stops | inline |
 | 135 | A run is told how its task ended by whoever ends it | inline |
 | 136 | The pipelines list says what its statuses rest on, and groups only what a DAG names | inline |
+| 137 | Tasks as rows: one dispatcher starts the tasks, one token per run | [`adr-137-tasks-as-rows.md`](adr-137-tasks-as-rows.md) |
+| 138 | Trigger rules after the run-end change: nine rules over final outcomes | [`adr-138-trigger-rules-after-run-end-change.md`](adr-138-trigger-rules-after-run-end-change.md) |
