@@ -455,14 +455,14 @@ any caller doing `json.loads(output)`. `_validate_single` prints progress when
 
 `SystemExit` is a `BaseException` subclass — it does not inherit from `Exception` and is
 not caught by `except Exception`. Any code that calls `spec.loader.exec_module()` on a
-user-supplied pipeline file must use `except (Exception, SystemExit)`:
+user-supplied file must catch `SystemExit` as well. For a pipeline file that code is
+`polyris.loader.open_pipeline`, so its callers catch `PipelineLoadError`:
 
 ```python
 try:
-    dags = extract_dag_info(file_path)
-except (Exception, SystemExit) as e:
-    msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
-    errors.append(f"{file_path}: {msg}")
+    dags = load_pipeline(file_path).dags
+except PipelineLoadError as e:  # an error, a non-zero sys.exit, a dag_id made twice
+    errors.append(f"{file_path}: {e}")
 ```
 
 **Why:** A pipeline file that calls `sys.exit()` at module level (e.g., it imports a module
@@ -495,9 +495,12 @@ command. `--all` (validate and deploy) runs each folder in its own Python proces
 folder imports reaches the next — never isolate files by forgetting modules in one process: each
 way of doing it failed a review. The parent never loads a pipeline file itself (validate's ASL
 checks run in the folder's process too), and builds the child's environment with
-`loader.child_env` (polyris's folder appended to PYTHONPATH, never prepended). It loads `dag.py`
-and files that mention "polyris" and "dag" (`is_pipeline_file`, exactly Airflow's safe mode). Rules rest on facts — an import in
-progress, a process boundary, what a file mentions — never on guesses about names or frames.
+`loader.child_env` (polyris's folder appended to PYTHONPATH, never prepended) and starts it with
+`loader.run_child` (`python -P`: the run directory never shadows the standard library). It
+loads `dag.py` and files whose code imports `DAG`, `dag` or `Pipeline` from polyris
+(`is_pipeline_file`, parsed with `ast`, never by text: three text rules ran Glue scripts). Rules
+rest on facts — an import in progress, a process boundary, what the code imports — never on
+guesses about names, frames or words.
 
 **Why:** each command had its own loader and its own rule — validate recorded `with` exits,
 deploy and output read `vars(mod)`, local filtered by globals — and they disagreed on

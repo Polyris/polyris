@@ -341,14 +341,14 @@ def _collect_dag_info(files: List[str], *, check_asl: bool = False,
     for file_path in files:
         try:
             dags = load_pipeline(file_path).dags
-        except Exception as e:  # PipelineLoadError, or a bug of ours: reported, never a crash
+            file_infos = _dag_infos(file_path, dags)
+            valid, asl_errors = _validate_dags(dags, verbose) if check_asl else (True, [])
+        except Exception as e:  # PipelineLoadError, or a bug of ours: this file's error, never the folder's crash
             errors.append(f"{file_path}: {e}")
             continue
-        infos.extend(_dag_infos(file_path, dags))
-        if check_asl and dags:
-            valid, asl_errors = _validate_dags(dags, verbose)
-            if not valid:
-                errors.append(f"{file_path}: {'; '.join(asl_errors) or 'ASL validation failed'}")
+        infos.extend(file_infos)
+        if not valid:
+            errors.append(f"{file_path}: {'; '.join(asl_errors) or 'ASL validation failed'}")
     return infos, errors
 
 
@@ -371,19 +371,19 @@ def _collect_dag_info_in_its_own_process(files: List[str], *, check_asl: bool = 
     import subprocess
     import tempfile
 
-    from polyris.loader import child_env
+    from polyris.loader import child_env, run_child
 
     fd, results_path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     env = child_env(**{DAG_INFO_RESULTS_ENV: results_path,
                        VALIDATE_OPTIONS_ENV: json.dumps({"check_asl": check_asl, "verbose": verbose})})
     try:
-        proc = subprocess.run([sys.executable, "-m", "polyris.validation", *files], env=env,
-                              stdout=None if verbose else subprocess.DEVNULL)
+        code = run_child(["-m", "polyris.validation", *files], env,
+                         stdout=None if verbose else subprocess.DEVNULL)
         try:
             data = json.loads(Path(results_path).read_text())
         except (OSError, ValueError):
-            return [], [f"{Path(files[0]).parent}: its process exited with code {proc.returncode} before reporting"]
+            return [], [f"{Path(files[0]).parent}: its process exited with code {code} before reporting"]
         return [DAGInfo(**d) for d in data["infos"]], list(data["errors"])
     finally:
         os.unlink(results_path)
@@ -395,7 +395,13 @@ def _report_dag_info(files: List[str], results_path: str, options: Dict[str, boo
 
     infos, errors = _collect_dag_info(files, check_asl=options.get("check_asl", False),
                                       verbose=options.get("verbose", False))
-    Path(results_path).write_text(json.dumps({"infos": [_dag_info_as_json(i) for i in infos], "errors": errors}))
+    as_json = []
+    for info in infos:
+        try:
+            as_json.append(json.loads(json.dumps(_dag_info_as_json(info))))
+        except (TypeError, ValueError) as e:  # e.g. a schema default that is a date: this file's error
+            errors.append(f"{info.file_path}: {e}")
+    Path(results_path).write_text(json.dumps({"infos": as_json, "errors": errors}))
 
 
 def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl: bool = False) -> Dict:
@@ -405,10 +411,14 @@ def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl
     Checks:
     - Asset cycles between DAGs
     - Missing asset producers (optional warning)
+    - With ``check_asl``: each DAG's ASL, roles and trigger rules (``_validate_dags``)
+
+    Each folder's files load once, in a Python process of the folder's own (ADR #139).
     
     Args:
         directory: Root directory containing pipeline files
         verbose: Print progress
+        check_asl: Also run the per-DAG checks, in each folder's process
         
     Returns:
         {
@@ -438,12 +448,9 @@ def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl
     if verbose:
         print(f"{_c('Found', BOLD)} {len(files)} pipeline file(s)")
     
-    # Extract DAG info from each file; surface import failures as errors.
-    # SystemExit is a BaseException, not Exception — a pipeline that calls
-    # sys.exit() at module level must be caught here rather than propagating
-    # through the process and killing the CLI with a Python traceback.
     # Each folder runs in its own process (ADR #139): one folder's settings.py, a src/ it put on
     # the path, or a library's import-time side effects cannot reach the next folder's files.
+    # A file that does not load (an error, a non-zero sys.exit) is an error, never a crash.
     all_dags: List[DAGInfo] = []
     folders: Dict[str, List[str]] = {}
     for file_path in files:
@@ -822,8 +829,8 @@ def main():
                 'pipeline_count': len(results['pipelines']),
             }, indent=2))
         elif not effective_verbose and results['errors']:
-            # Non-verbose non-json: print all errors (import failures from
-            # validate_all AND ASL failures from _validate_single) so the user
+            # Non-verbose non-json: print all errors (load failures and ASL
+            # failures, both from validate_all's folder processes) so the user
             # never sees a silent exit 1. Verbose mode already surfaced these
             # via validate_all's summary and validate_asl_from_dag's verbose block.
             for e in results['errors']:

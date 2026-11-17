@@ -8,16 +8,20 @@ could not be deployed (backlog F18 and the reviews of its fix).
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
+import signal
 import site
+import subprocess
 import sys
 import sysconfig
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Dict, Iterator, List, Union
+from typing import IO, Dict, Iterator, List, Optional, Set, Union
 
 from .dag import DAG, recording_dags
 
@@ -26,6 +30,9 @@ MODULE_NAME = "polyris_pipeline"
 
 #: pytest's conftest and package markers: never loaded as pipelines.
 _NOT_PIPELINES = ("conftest.py", "__init__.py")
+
+#: What a pipeline file imports from polyris to make a DAG (``polyris/__init__.py`` exports them).
+_DAG_MAKERS = frozenset({"DAG", "dag", "Pipeline"})
 
 
 class PipelineLoadError(Exception):
@@ -45,16 +52,18 @@ class LoadedPipeline:
 
 
 def is_pipeline_file(path: Path) -> bool:
-    """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose text mentions "polyris"
-    and "dag".
+    """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose code imports ``DAG``,
+    ``dag`` or ``Pipeline`` from polyris.
 
-    Exactly Airflow's safe mode, which loads a file only when it mentions "airflow" and "dag": a
-    pipeline file names both, while a Glue or ECS script that uses ``xcom`` (and reads
-    ``POLYRIS_PIPELINE_NAME``) names no DAG, and is never run. A pipeline in another file that
-    never says "dag" (``Pipeline(...)``, a project wrapper) is skipped; name it ``dag.py`` or
-    deploy it with ``--file``. Test files by pytest's convention (``test_*.py``, ``*_test.py``,
-    ``conftest.py``) and ``__init__.py`` are not pipelines. ``polyris-validate --all`` and
-    ``polyris-deploy --all`` / ``--only`` both use it.
+    The file is parsed, never run: a Glue, Lambda or ECS script that imports only ``xcom``
+    is not a pipeline whatever its comments say, and a pipeline always imports what makes its
+    DAG. Text rules failed three reviews (ADR #139): a name, "polyris" in the text, then
+    "polyris" and "dag" in a comment. A pipeline that imports its DAG from a project wrapper is
+    skipped; name it ``dag.py`` or deploy it with ``--file``. A file that does not parse is
+    loaded when it mentions polyris, so its error is reported, not skipped. Test files by
+    pytest's convention (``test_*.py``, ``*_test.py``, ``conftest.py``) and ``__init__.py`` are
+    not pipelines. ``polyris-validate --all`` and ``polyris-deploy --all`` / ``--only`` both
+    use it.
     """
     name = path.name
     if name in _NOT_PIPELINES or name.startswith("test_") or name.endswith("_test.py"):
@@ -62,20 +71,43 @@ def is_pipeline_file(path: Path) -> bool:
     if name == "dag.py":
         return True
     try:
-        text = path.read_text(encoding="utf-8", errors="replace").lower()
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:  # unreadable (permissions): not loaded, and listed as skipped by the caller
         return False
-    return "polyris" in text and "dag" in text
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except (SyntaxError, ValueError):  # ValueError: a null byte
+        return "polyris" in text
+    return _imports_a_dag_maker(tree)
+
+
+def _imports_a_dag_maker(tree: ast.AST) -> bool:
+    """``from polyris[.x] import DAG|dag|Pipeline|*``, or ``import polyris[ as p]`` and
+    ``polyris.DAG`` (``p.dag``, …) used in the code."""
+    module_names: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if (node.module == "polyris" or node.module.startswith("polyris.")) and any(
+                    a.name in _DAG_MAKERS or a.name == "*" for a in node.names):
+                return True
+        elif isinstance(node, ast.Import):
+            module_names.update(a.asname or a.name.split(".")[0] for a in node.names
+                                if a.name == "polyris" or a.name.startswith("polyris."))
+    return bool(module_names) and any(
+        isinstance(node, ast.Attribute) and node.attr in _DAG_MAKERS
+        and isinstance(node.value, ast.Name) and node.value.id in module_names
+        for node in ast.walk(tree)
+    )
 
 
 def child_env(**extra: str) -> Dict[str, str]:
     """The environment of a folder's own process in ``--all``: this one's, plus ``extra``.
 
-    The child runs ``sys.executable -m polyris…`` and must import this very polyris. When
-    polyris is installed (site-packages), the child finds it there as this process did. When it
-    comes from elsewhere (a checkout run from source), its folder is appended to PYTHONPATH, after
-    the user's own entries; never prepended, which would put site-packages before the standard
-    library and a user's ``src/`` (sixth review of ADR #139).
+    The child (``run_child``) must import this very polyris. When polyris is installed
+    (site-packages), the child finds it there as this process did. When it comes from elsewhere
+    (a checkout run from source), its folder is appended to PYTHONPATH, after the user's own
+    entries. Never prepended: on an install that would put site-packages ahead of a user's
+    ``src/`` and of the standard library (sixth review of ADR #139).
     """
     import polyris
 
@@ -86,6 +118,43 @@ def child_env(**extra: str) -> Dict[str, str]:
     if code_root not in installed:
         env["PYTHONPATH"] = os.pathsep.join(p for p in (os.environ.get("PYTHONPATH", ""), str(code_root)) if p)
     return env
+
+
+def run_child(argv: List[str], env: Dict[str, str], *, stdout: Optional[Union[int, IO[str]]] = None) -> int:
+    """Run ``python -P <argv>`` — a folder's own process in ``--all`` — to its end; its exit code.
+
+    ``-P`` keeps the current directory off the child's ``sys.path``, as it is off this
+    process's when run as ``polyris-deploy``: a run directory with an ``email/`` or
+    ``calendar.py`` would otherwise shadow the standard library (seventh review of ADR #139).
+    If this process is stopped (Ctrl-C, or SIGTERM under ``sigterm_stops_children``), the child
+    is stopped too.
+    """
+    sys.stdout.flush()  # what this process printed comes before the child's output
+    proc = subprocess.Popen([sys.executable, "-P", *argv], env=env, stdout=stdout)
+    try:
+        return proc.wait()
+    except BaseException:
+        proc.terminate()
+        proc.wait()
+        raise
+
+
+def _raise_on_sigterm(signum: int, frame: object) -> None:
+    raise SystemExit(128 + signum)
+
+
+@contextmanager
+def sigterm_stops_children() -> Iterator[None]:
+    """Within the block, SIGTERM ends this process through Python, so ``run_child`` stops the
+    running child. Only the main thread can set a signal handler; elsewhere the default stays."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _raise_on_sigterm)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._exit); runs only as a folder's own process exits

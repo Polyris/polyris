@@ -214,15 +214,25 @@ class TestDiscoverPipelineFiles:
         found = discover_pipeline_files(str(tmp_path))
         assert any(f.endswith("/dag.py") for f in found)
 
-    def test_finds_any_file_that_mentions_polyris_and_a_dag_whatever_its_name(self, tmp_path):
-        """ADR #139: exactly Airflow's safe mode — the text names polyris and a DAG."""
+    def test_finds_any_file_whose_code_imports_a_dag_maker_from_polyris_whatever_its_name(self, tmp_path):
+        """ADR #139: the file's code (parsed, never run) imports DAG, dag or Pipeline from polyris."""
         _write(tmp_path, "orders.py", "from polyris import DAG\n")
-        _write(tmp_path, "latest_prices_dag.py", "from polyris import dag\n")
-        _write(tmp_path, "inventory.py", "from polyris import Pipeline\n")  # says no "dag": skipped
-        found = discover_pipeline_files(str(tmp_path))
-        assert any(f.endswith("orders.py") for f in found)
-        assert any(f.endswith("latest_prices_dag.py") for f in found)
-        assert not any(f.endswith("inventory.py") for f in found)
+        _write(tmp_path, "latest_prices.py", "from polyris.helpers import dag\n")
+        _write(tmp_path, "inventory.py", "from polyris import Pipeline\n")
+        _write(tmp_path, "aliased.py", "import polyris as p\nwith p.DAG('x'):\n    pass\n")
+        _write(tmp_path, "starred.py", "from polyris import *\n")
+        _write(tmp_path, "broken.py", "from polyris import DAG\nthis is not ) python\n")  # loaded: its error is reported
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"orders.py", "latest_prices.py", "inventory.py", "aliased.py", "starred.py", "broken.py"}
+
+    def test_a_comment_or_string_naming_a_dag_does_not_make_a_pipeline(self, tmp_path):
+        """Seventh review: "polyris" and "dag" in the text matched a Glue script's comment."""
+        _write(tmp_path, "transform_spark.py",
+               "# Spark step of the all-task-types DAG\nimport awsglue\nfrom polyris import xcom\n"
+               "NAME = os.environ['POLYRIS_PIPELINE_NAME']  # 'DAG'\n")
+        _write(tmp_path, "uses_module.py", "import polyris\npolyris.xcom.push('k', 1)\n")
+        _write(tmp_path, "not_python.py", "this is not ) python, and names no DAG\n")
+        assert discover_pipeline_files(str(tmp_path)) == []
 
     def test_a_file_that_does_not_mention_polyris_is_not_run(self, tmp_path):
         # A Glue script, a migration: never executed by --all, however it is named

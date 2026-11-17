@@ -293,6 +293,82 @@ def test_a_childs_python_path_never_moves_the_users_entries_or_site_packages(mon
     assert loader.child_env()["PYTHONPATH"] == "src"
 
 
+def test_a_folders_process_never_imports_from_the_run_directory(tmp_path, monkeypatch):
+    """Seventh review: ``python -m`` put the current directory first, so a run directory with a
+    ``json.py`` (or an ``email/`` package) broke every folder's process. ``-P`` keeps it out."""
+    from polyris.validation import validate_all
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path / "json.py", "raise RuntimeError('the run directory shadowed the standard library')\n")
+    _write(tmp_path / "orders" / "dag.py", """
+        from polyris import DAG
+        with DAG("orders", schedule="@daily"):
+            pass
+    """)
+    results = validate_all("orders", verbose=False)
+    assert results["errors"] == [] and [d.dag_id for d in results["pipelines"]] == ["orders"]
+
+
+def test_one_files_unreportable_dag_info_is_its_error_not_the_folders(tmp_path, monkeypatch):
+    """Seventh review: a schema default that JSON cannot carry crashed the folder's process, and
+    its other files were lost with it."""
+    import json
+    from polyris import validation
+    bad = _write(tmp_path / "dag.py", """
+        import datetime
+        from polyris import DAG, task, Asset, Column
+        from polyris import types as t
+        orders = Asset("s3://b/orders/", schema=[Column("d", t.date(), default=datetime.date(2026, 1, 1))])
+        with DAG("p1", schedule="@daily"):
+            @task.lambda_function(function_name="f", outlets=[orders])
+            def a(): pass
+            a()
+    """)
+    good = _write(tmp_path / "second_dag.py", """
+        from polyris import DAG
+        with DAG("p2", schedule="@daily"):
+            pass
+    """)
+    out = tmp_path / "out.json"
+    validation._report_dag_info([str(bad), str(good)], str(out), {})
+    data = json.loads(out.read_text())
+    assert [d["dag_id"] for d in data["infos"]] == ["p2"]
+    assert len(data["errors"]) == 1 and data["errors"][0].startswith(f"{bad}: ")
+
+
+def test_run_child_returns_the_childs_exit_code_and_stops_it_when_this_process_is_stopped(mocker):
+    from polyris import loader
+    assert loader.run_child(["-c", "import sys; sys.exit(3)"], dict(os.environ)) == 3
+
+    child = mocker.MagicMock()
+    child.wait.side_effect = [KeyboardInterrupt, 0]  # Ctrl-C while waiting; then the stopped child's end
+    mocker.patch("polyris.loader.subprocess.Popen", return_value=child)
+    with pytest.raises(KeyboardInterrupt):
+        loader.run_child(["-c", "pass"], {})
+    child.terminate.assert_called_once()
+
+
+def test_sigterm_ends_this_process_through_python_only_inside_the_block():
+    import signal
+    import threading
+    from polyris import loader
+    before = signal.getsignal(signal.SIGTERM)
+    with loader.sigterm_stops_children():
+        handler = signal.getsignal(signal.SIGTERM)
+        with pytest.raises(SystemExit) as e:
+            handler(signal.SIGTERM, None)
+        assert e.value.code == 128 + signal.SIGTERM
+    assert signal.getsignal(signal.SIGTERM) is before
+
+    seen = []
+    def off_the_main_thread():
+        with loader.sigterm_stops_children():  # signal.signal would raise ValueError here
+            seen.append(signal.getsignal(signal.SIGTERM))
+    t = threading.Thread(target=off_the_main_thread)
+    t.start()
+    t.join()
+    assert seen == [before]
+
+
 def test_no_cli_runs_a_pipeline_file_but_through_the_loader():
     """ADR #139: a second way to run a pipeline file is how validate and deploy came to disagree."""
     allowed = {"polyris/loader.py", "polyris/config.py"}  # config.py runs the project's config.py, not a pipeline
