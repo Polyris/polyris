@@ -307,17 +307,27 @@ class DAG:
 Pipeline = DAG
 
 
-def _defining_globals(frame: Any) -> Optional[Dict[str, Any]]:
-    """The globals of the module whose top-level code is running at ``frame``: the nearest
-    module frame up the stack. Code compiled from a string (``exec``, ``<string>``) belongs
-    to the module that ran it, so such frames are passed over. None when no module's code
-    is on the stack (a worker thread)."""
+#: The import machinery's modules: a DAG made under them was made by an import.
+_IMPORT_MACHINERY = frozenset({
+    "importlib._bootstrap", "importlib._bootstrap_external", "_frozen_importlib", "_frozen_importlib_external",
+})
+
+
+def _made_by(frame: Any, module_globals: Dict[str, Any]) -> bool:
+    """Whether the code running at ``frame`` was started by the module whose globals these are.
+
+    Walks up the stack: reaching that module's own code first means yes (a call it made, an
+    ``exec``, a class body), passing through the import machinery first means no (a module it
+    imports, or a copy of itself that a helper imports back). No frame of the module on the
+    stack means a worker thread it started: yes.
+    """
     while frame is not None:
-        code = frame.f_code
-        if code.co_name == "<module>" and not code.co_filename.startswith("<"):
-            return frame.f_globals
+        if frame.f_globals is module_globals:
+            return True
+        if frame.f_globals.get("__name__") in _IMPORT_MACHINERY:
+            return False
         frame = frame.f_back
-    return None
+    return True
 
 
 @contextmanager
@@ -326,12 +336,11 @@ def recording_dags(module: ModuleType) -> Iterator[List[DAG]]:
 
     ``polyris.loader.load_pipeline`` is the one user (ADR #139). A DAG is recorded when it is
     made (``DAG.__post_init__``), so a DAG counts with or without ``with``, bound to a name or
-    not. It counts when ``module``'s top-level code made it: directly, through a function it
-    calls (``@dag``, a factory in another module), through ``exec``, or in a worker thread it
-    started. It is matched by the module's globals, not its file name: a pipeline file that a
-    helper imports back runs a second time as another module, and its DAGs are not counted
-    again. A DAG that a module it imports makes at import time does not count, nor does one
-    whose ``with`` block raised.
+    not. It counts when ``module``'s code made it (``_made_by``): directly, through a function
+    it calls (``@dag``, a factory in another module), through ``exec`` or ``runpy``, or in a
+    worker thread it started. A DAG made under the import machinery does not: one a module it
+    imports makes, or a copy of the file itself that a helper imports back. Nor does one whose
+    ``with`` block raised an error.
     """
     made: List[DAG] = []
     raised: set = set()
@@ -340,12 +349,12 @@ def recording_dags(module: ModuleType) -> Iterator[List[DAG]]:
 
     def recording_post_init(self):
         original_post_init(self)
-        owner = _defining_globals(sys._getframe(1))
-        if owner is None or owner is vars(module):
+        if _made_by(sys._getframe(1), vars(module)):
             made.append(self)
 
     def recording_exit(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
+        # An error drops the DAG; sys.exit(0) or a generator closed inside the block do not
+        if exc_type is not None and issubclass(exc_type, Exception):
             raised.add(id(self))
         return original_exit(self, exc_type, exc_val, exc_tb)
 

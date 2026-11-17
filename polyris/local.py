@@ -604,7 +604,7 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
 def _load_dag_from_file(dag_file: str) -> DAG:
     """The DAG a pipeline file makes last, through the one loader every CLI uses (ADR #139)."""
     try:
-        loaded = load_pipeline(dag_file, module_name="dag_module")
+        loaded = load_pipeline(dag_file)
     except PipelineLoadError as e:
         print(f"❌ Error loading {c(dag_file, BOLD)}: {c(str(e), RED)}")
         sys.exit(1)

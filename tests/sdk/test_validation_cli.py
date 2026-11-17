@@ -134,7 +134,7 @@ class TestDiscoveryAndRunner:
 
     def test_run_test_finds_unbound_dag(self, tmp_path):
         """_run_test must not report 'No DAG found' for a pipeline written
-        without `as dag` — it uses DAG.__exit__ instrumentation, not vars(mod)."""
+        without `as dag`: it loads through polyris.loader.load_pipeline (ADR #139)."""
         f = _write(tmp_path, "dag.py", UNBOUND_DAG)
         assert _run_test(str(f)) is True
 
@@ -184,9 +184,9 @@ class TestSingleAndVerbose:
         assert "not-a-real-role" in out
 
     def test_validate_single_finds_dag_without_as_binding(self, tmp_path):
-        """_validate_single must use DAG.__exit__ instrumentation, not vars(mod).
-        vars(mod) only finds names bound at module level and misses DAGs written
-        as `with DAG("name"):` without an `as dag` clause."""
+        """_validate_single loads through polyris.loader.load_pipeline (ADR #139), which
+        records a DAG when it is made: vars(mod) only finds names bound at module level
+        and misses DAGs written as `with DAG("name"):` without an `as dag` clause."""
         f = _write(tmp_path, "dag.py", UNBOUND_DAG)
         valid, errors = _validate_single(str(f), verbose=False)
         assert valid is True

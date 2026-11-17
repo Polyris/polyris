@@ -66,10 +66,19 @@ class TestDiscoverDagsInDir:
 
     def test_file_that_fails_to_load_is_skipped_not_fatal(self, tmp_path, capsys):
         _write_dag_file(tmp_path / "dag.py", "real-one")
-        (tmp_path / "broken.py").write_text("this is not ) valid python (((")
+        (tmp_path / "broken_dag.py").write_text("this is not ) valid python (((")
         found = deploy._discover_dags_in_dir(tmp_path)
         assert [d.dag_id for _, d in found] == ["real-one"]
         assert "Skipping" in capsys.readouterr().out
+
+    def test_a_file_that_is_not_a_pipeline_is_never_run(self, tmp_path, capsys):
+        """Third review: a Glue script next to dag.py failed every batch; validate --all never ran it."""
+        _write_dag_file(tmp_path / "dag.py", "real-one")
+        (tmp_path / "glue_job.py").write_text("import awsglue  # only on Glue\n")
+        failed: list = []
+        found = deploy._discover_dags_in_dir(tmp_path, failed)
+        assert [d.dag_id for _, d in found] == ["real-one"]
+        assert failed == [] and "Skipping" not in capsys.readouterr().out
 
     def test_empty_directory_returns_nothing(self, tmp_path):
         assert deploy._discover_dags_in_dir(tmp_path) == []
@@ -87,7 +96,7 @@ class TestDiscoverDagsInDir:
     def test_file_that_exits_nonzero_is_skipped_with_warning(self, tmp_path, capsys):
         """A pipeline file that calls sys.exit(1) is treated as a load error."""
         _write_dag_file(tmp_path / "good.py", "good-dag")
-        (tmp_path / "bad.py").write_text("import sys; sys.exit(1)\n")
+        (tmp_path / "bad_pipeline.py").write_text("import sys; sys.exit(1)\n")
         found = deploy._discover_dags_in_dir(tmp_path)
         assert [d.dag_id for _, d in found] == ["good-dag"]
         assert "Skipping" in capsys.readouterr().out
@@ -220,13 +229,15 @@ class TestLoadDagFromFile:
         assert exc.value.code == 1
         assert "'orders' more than once" in capsys.readouterr().out
 
-    def test_a_frame_with_no_module_under_it_has_no_owner(self):
-        """A worker thread, or code compiled from a string with no module file under it."""
+    def test_ownership_is_decided_by_the_call_chain(self):
+        """No frame of the module and no import on the stack: a thread it started (ADR #139)."""
         import types
-        from polyris.dag import _defining_globals
-        assert _defining_globals(None) is None
-        string_code = types.SimpleNamespace(f_code=types.SimpleNamespace(co_name="<module>", co_filename="<string>"), f_back=None)
-        assert _defining_globals(string_code) is None
+        from polyris.dag import _made_by
+        mine: dict = {}
+        frame = lambda globals_, back=None: types.SimpleNamespace(f_globals=globals_, f_back=back)  # noqa: E731
+        assert _made_by(None, mine) is True
+        assert _made_by(frame({"__name__": "common"}, frame(mine)), mine) is True
+        assert _made_by(frame({"__name__": "helpers"}, frame({"__name__": "importlib._bootstrap"}, frame(mine))), mine) is False
 
     def test_a_helper_that_imports_the_pipeline_file_back_does_not_make_a_second_dag(self, tmp_path, monkeypatch):
         """Second review: the file ran again as module `dag`; matched by file name, it counted twice."""

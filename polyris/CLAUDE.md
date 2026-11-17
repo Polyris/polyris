@@ -485,11 +485,15 @@ than `loader.py` (and `config.py`, which runs the project's `config.py`) calls `
 `spec_from_file_location`.
 
 A DAG belongs to the file whose code made it: `recording_dags(module)` records it when it is
-made (`DAG.__post_init__`), matched by the globals of the nearest module frame up the stack.
-That finds `with DAG("x"):` without `as`, `DAG(...)` with `add_task`, an `@dag` call, a factory
-in another module, `exec`, and a worker thread the file starts; it leaves out a DAG a module the
-file imports makes at import time, a copy of the file a helper imports back, and a DAG whose
-`with` block raised. One `dag_id` made twice is a `PipelineLoadError` for every command.
+made (`DAG.__post_init__`), and `_made_by` walks up the stack — the file's own code first means
+it is the file's, the import machinery first means it is not. That finds `with DAG("x"):`
+without `as`, `DAG(...)` with `add_task`, an `@dag` call, a factory in another module, `exec`,
+`runpy`, and a worker thread the file starts; it leaves out a DAG a module the file imports makes
+at import time, a copy of the file a helper imports back, and a DAG whose `with` block raised an
+error. One `dag_id` made twice is a `PipelineLoadError` for every command. After a load, the
+top-level modules the file imported from its own folder and the one above are forgotten (never
+`polyris`, never a module deeper in those folders), so `deploy --all` never hands one folder's
+`settings.py` to the next. `--all` loads only `is_pipeline_file` files, for validate and deploy.
 
 **Why:** each command had its own loader and its own rule — validate recorded `with` exits,
 deploy and output read `vars(mod)`, local filtered by globals — and they disagreed on

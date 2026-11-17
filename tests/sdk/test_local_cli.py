@@ -665,8 +665,8 @@ class TestLoadDagFromFile:
         assert dag.dag_id == "test-pipeline"
         assert len(dag.tasks) == 2
 
-    def test_the_last_with_block_wins_over_a_dag_built_without_one(self, tmp_path):
-        """Second review: a DAG found only by its global came after the `with` ones and won."""
+    def test_the_dag_made_last_wins(self, tmp_path):
+        """polyris-local runs the DAG the file made last (the loader keeps the order DAGs were made)."""
         f = tmp_path / "dag.py"
         f.write_text(
             "from polyris import DAG, task\n"

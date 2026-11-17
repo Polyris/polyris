@@ -17,6 +17,8 @@ from polyris.dag import DAG
 from polyris.loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+#: The ways to run a Python file as a module (importlib, runpy).
+RUNNERS = {"exec_module", "spec_from_file_location", "run_path", "run_module"}
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
 
 
@@ -123,18 +125,94 @@ def test_a_file_without_dags_loads_with_none(tmp_path):
     assert load_pipeline(_write(tmp_path / "config.py", "STAGE = 'dev'\n")).dags == []
 
 
-def test_the_projects_pipelines_modules_are_dropped_after_each_load(tmp_path, monkeypatch):
+def test_each_file_imports_its_own_sibling_modules(tmp_path):
+    """Third review: b/dag.py got a/settings.py from the module cache, and deploy --all deployed a's DAG."""
+    for name in ("a", "b"):
+        _write(tmp_path / name / "settings.py", f"NAME = 'orders-{name}'\n")
+        _write(tmp_path / name / "dag.py", """
+            from settings import NAME
+            from polyris import DAG
+            with DAG(NAME, schedule="@daily"):
+                pass
+        """)
+    assert [d.dag_id for d in load_pipeline(tmp_path / "a" / "dag.py").dags] == ["orders-a"]
+    assert [d.dag_id for d in load_pipeline(tmp_path / "b" / "dag.py").dags] == ["orders-b"]
+    assert "settings" not in sys.modules
+
+
+def test_a_projects_package_works_across_loads_and_deeper_modules_are_kept(tmp_path, monkeypatch):
+    """A package on the path (the project root) stays whole; a module deeper in the folders is not
+    forgotten, so a `.venv` inside a project never gets a second copy of its classes."""
     _write(tmp_path / "pipelines" / "__init__.py", "")
-    _write(tmp_path / "pipelines" / "config.py", "SCHEDULE = '@daily'\n")
-    f = _write(tmp_path / "pipelines" / "orders" / "dag.py", """
-        from pipelines.config import SCHEDULE
+    _write(tmp_path / "pipelines" / "shared.py", "SCHEDULE = '@daily'\n")
+    _write(tmp_path / "pipelines" / ".venv" / "deeplib.py", "VALUE = 1\n")
+    for name in ("orders", "sales"):
+        _write(tmp_path / "pipelines" / name / "dag.py", f"""
+            import deeplib  # noqa: F401  from a folder deeper than the file's own
+            import pipelines.shared
+            from polyris import DAG
+            with DAG("{name}", schedule=pipelines.shared.SCHEDULE):
+                pass
+        """)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.syspath_prepend(str(tmp_path / "pipelines" / ".venv"))
+    monkeypatch.delitem(sys.modules, "deeplib", raising=False)
+    for name in ("orders", "sales"):
+        assert [d.dag_id for d in load_pipeline(tmp_path / "pipelines" / name / "dag.py").dags] == [name]
+    assert "deeplib" in sys.modules
+
+
+def test_a_relative_path_makes_the_folder_above_importable_too(tmp_path, monkeypatch):
+    """Third review: `polyris-deploy` reads "dag.py", whose parent is "." and has no folder above."""
+    _write(tmp_path / "project_settings.py", "SCHEDULE = '@daily'\n")
+    _write(tmp_path / "orders" / "dag.py", """
+        from project_settings import SCHEDULE
         from polyris import DAG
         with DAG("orders", schedule=SCHEDULE):
             pass
     """)
-    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path / "orders")
+    monkeypatch.delitem(sys.modules, "project_settings", raising=False)
+    assert [d.dag_id for d in load_pipeline("dag.py").dags] == ["orders"]
+
+
+@pytest.mark.parametrize("body", [
+    'exec(compile(SRC, __file__.replace("dag.py", "generated.py"), "exec"), {})',
+    'import runpy; runpy.run_path(OTHER)',
+], ids=["exec of code compiled with a real file name", "runpy.run_path"])
+def test_code_the_file_runs_itself_is_the_files(tmp_path, body):
+    """Third review: a <module> frame with a real file name was taken for another module."""
+    _write(tmp_path / "other.py", """
+        from polyris import DAG
+        with DAG("orders", schedule="@daily"):
+            pass
+    """)
+    f = _write(tmp_path / "dag.py", f"""
+        SRC = open(r"{tmp_path / 'other.py'}").read()
+        OTHER = r"{tmp_path / 'other.py'}"
+        {body}
+    """)
     assert [d.dag_id for d in load_pipeline(f).dags] == ["orders"]
-    assert "pipelines" not in sys.modules and "pipelines.config" not in sys.modules
+
+
+@pytest.mark.parametrize("inside", ["sys.exit(0)", "yield"], ids=["sys.exit(0) in the block", "a closed generator"])
+def test_a_block_that_ends_without_an_error_keeps_its_dag(tmp_path, inside):
+    if inside == "yield":
+        body = """
+            from polyris import DAG
+            def make():
+                with DAG("orders", schedule="@daily"):
+                    yield
+            gen = make(); next(gen); gen.close()
+        """
+    else:
+        body = """
+            import sys
+            from polyris import DAG
+            with DAG("orders", schedule="@daily"):
+                sys.exit(0)
+        """
+    assert [d.dag_id for d in load_pipeline(_write(tmp_path / "dag.py", body)).dags] == ["orders"]
 
 
 def test_no_cli_runs_a_pipeline_file_but_through_the_loader():
@@ -146,6 +224,9 @@ def test_no_cli_runs_a_pipeline_file_but_through_the_loader():
         if rel.startswith("polyris/_ee") or rel in allowed:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Attribute) and node.attr in ("exec_module", "spec_from_file_location"):
+            used = (node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name)
+                    else None)
+            imported = [a.name for a in node.names] if isinstance(node, ast.ImportFrom) else []
+            if used in RUNNERS or RUNNERS.intersection(imported):
                 runners.append(f"{rel}:{node.lineno}")
     assert runners == []

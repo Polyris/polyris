@@ -43,12 +43,8 @@ class DAGInfo:
 
 def discover_pipeline_files(directory: str) -> List[str]:
     """
-    Find all Python files that might contain pipeline definitions.
-    
-    Looks for:
-    - dag.py files in subdirectories
-    - *_pipeline.py, *_dag.py files
-    - Files containing 'DAG(' pattern
+    Find all Python files that might contain pipeline definitions
+    (``polyris.loader.is_pipeline_file``, the rule ``polyris-deploy --all`` uses too).
     
     Args:
         directory: Root directory to search
@@ -62,30 +58,12 @@ def discover_pipeline_files(directory: str) -> List[str]:
     if not root.exists():
         return []
     
+    from polyris.loader import is_pipeline_file
+
     for path in root.rglob('*.py'):
-        # Skip test files, __pycache__, etc
-        if '__pycache__' in str(path) or 'test' in path.name.lower():
-            continue
-            
-        # Include dag.py files (default pipeline file)
-        if path.name == 'dag.py':
+        if '__pycache__' not in str(path) and is_pipeline_file(path):
             pipeline_files.append(str(path))
-            continue
-            
-        # Include files with pipeline/dag in name
-        if 'pipeline' in path.name.lower() or 'dag' in path.name.lower():
-            pipeline_files.append(str(path))
-            continue
-            
-        # Check file content for DAG definition
-        try:
-            content = path.read_text()
-            if 'with DAG(' in content or 'DAG(' in content:
-                pipeline_files.append(str(path))
-        except (OSError, UnicodeDecodeError):
-            # File unreadable (permissions/binary) — skip it, not a pipeline
-            continue
-    
+
     return sorted(set(pipeline_files))
 
 
@@ -106,7 +84,7 @@ def extract_dag_info(file_path: str) -> List[DAGInfo]:
 
     # Raises PipelineLoadError (an Exception) for a file that does not load; validate_all reports it.
     dags = []
-    for dag in load_pipeline(file_path, module_name="pipeline_module").dags:
+    for dag in load_pipeline(file_path).dags:
         info = DAGInfo(
             dag_id=dag.dag_id,
             file_path=file_path,
@@ -470,7 +448,7 @@ def _validate_single(dag_file: str, verbose: bool) -> Tuple[bool, List[str]]:
     from polyris.loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 
     try:
-        dags = load_pipeline(dag_file, module_name="_dag").dags
+        dags = load_pipeline(dag_file).dags
     except PipelineNotFoundError:
         return False, [f"Pipeline file not found: {dag_file}"]
     except PipelineLoadError as e:
@@ -613,7 +591,7 @@ def _run_test(dag_file: str) -> bool:
     from polyris.loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 
     try:
-        dags = load_pipeline(dag_file, module_name="_dag").dags
+        dags = load_pipeline(dag_file).dags
     except PipelineNotFoundError:
         print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
         sys.exit(1)

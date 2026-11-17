@@ -17,7 +17,7 @@ from .loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 def _load_dags(dag_file: str):
     """The DAG(s) a pipeline file defines, through the one loader every CLI uses (ADR #139)."""
     try:
-        loaded = load_pipeline(dag_file, module_name="_dag")
+        loaded = load_pipeline(dag_file)
     except PipelineNotFoundError:
         print(f"{c('❌ Pipeline file not found:', RED)} {c(dag_file, CYAN)}")
         sys.exit(1)

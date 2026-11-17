@@ -110,7 +110,7 @@ class TestLoadDags:
         assert sorted(d.dag_id for d in dags) == ["first-dag", "second-dag"]
 
     def test_finds_a_dag_without_as(self, in_dir):
-        """`with DAG("x"):` binds no name (polyris/CLAUDE.md, "DAG discovery")."""
+        """`with DAG("x"):` binds no name (ADR #139; polyris/CLAUDE.md, "Pipeline files load through")."""
         (in_dir / "dag.py").write_text(
             "from polyris import DAG, task\n"
             "with DAG('unbound', schedule='@daily'):\n"
