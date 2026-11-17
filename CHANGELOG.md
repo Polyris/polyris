@@ -52,6 +52,10 @@
 - Its status icon read only today's task counts, so a pipeline that failed yesterday, or never ran, showed a green check. It now shows the same latest-run status as the sidebar.
 - Its search matches every word of the query in any order, as the sidebar's does: `daily acme` finds `acme-orders-daily`.
 
+### Fixed — local test gates use the SDK of the checkout they test
+
+- `make test-lambdas`, `scripts/verify-changed.sh`, the route count in `make test-docs` and the coordination smoke's `polyris-deploy` imported whichever `polyris` pip had installed. With an editable install of another checkout that was behind, the 1.2.1 release gate failed on an import. They now put the checkout's root on `PYTHONPATH`. CI was not affected: it installs the checkout under test.
+
 ## v1.2.0 - 2026-11-14
 
 ### Upgrading to 1.2.0 (ADR #130, ADR #132)

@@ -113,10 +113,10 @@ if touched '^(sam/|polyris/constants\.py|polyris/codegen/)'; then
   run "SFN status literals"     make check-sfn-templates
   run "backfill parity"         make check-backfill-parity
   for d in notify query_subscriptions bucket_cleanup; do
-    run "lambda: $d" bash -c "cd sam/lambdas/$d && PYTHONPATH=. python3 -m pytest -q -p no:cacheprovider"
+    run "lambda: $d" bash -c "cd sam/lambdas/$d && PYTHONPATH=.:\"$PWD\" python3 -m pytest -q -p no:cacheprovider"
   done
-  run "console_api" bash -c "cd sam/lambdas/console_api && PYTHONPATH=. python3 -m pytest tests/ -q -p no:cacheprovider"
-  run "coordination" bash -c "cd sam/lambdas/coordination && PYTHONPATH=. python3 -m pytest tests/ -q -p no:cacheprovider"
+  run "console_api" bash -c "cd sam/lambdas/console_api && PYTHONPATH=.:\"$PWD\" python3 -m pytest tests/ -q -p no:cacheprovider"
+  run "coordination" bash -c "cd sam/lambdas/coordination && PYTHONPATH=.:\"$PWD\" python3 -m pytest tests/ -q -p no:cacheprovider"
 fi
 
 # ── UI ──────────────────────────────────────────────────────────────────────

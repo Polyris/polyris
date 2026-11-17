@@ -65,6 +65,8 @@ def deploy_pipelines(stack: str, profile: Optional[str], region: str, prefix: st
     # so a second run reuses the stacks of the first, and --clean finds them.
     env = {k: v for k, v in os.environ.items() if k != "POLYRIS_CONFIG"}
     env["POLYRIS_SMOKE_SFN_PREFIX"] = prefix
+    # Deploy with this checkout's SDK, not whichever one pip installed (CLAUDE.md, Testing).
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(REPO_ROOT), os.environ.get("PYTHONPATH", "")) if p)
     command = ["polyris-destroy" if destroy else "polyris-deploy", "--stack", stack, "--region", region]
     if profile:
         command += ["--profile", profile]
