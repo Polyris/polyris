@@ -1,16 +1,18 @@
 """polyris CLI — command index / help dispatch.
 
-This is the bare ``polyris`` entry point. Its sole job is to print the list of
-available commands; it performs no operations itself. Each real command is its
-own console script (``polyris-init``, ``polyris-deploy``, …) wired in
-``pyproject.toml``.
+This is the bare ``polyris`` entry point. It prints the list of available
+commands, or with ``--version`` the installed version; it performs no
+operations itself. Each real command is its own console script
+(``polyris-init``, ``polyris-deploy``, …) wired in ``pyproject.toml``.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import Optional
 
+from . import __version__
 from ._ansi import c as _c, BOLD, CYAN
 
 
@@ -35,7 +37,7 @@ def _build_help_text() -> str:
     """
     rule = "═════════════════════════════════════════════════"
     return (
-        f"{_c('polyris', BOLD)} - Serverless Data Pipeline Orchestration\n"
+        f"{_c('polyris', BOLD)} {__version__} - Serverless Data Pipeline Orchestration\n"
         f"{rule}\n"
         "\n"
         f"{_c('Available commands:', BOLD)}\n"
@@ -43,12 +45,16 @@ def _build_help_text() -> str:
         f"  {_col('polyris-down', 20)} Delete the platform stack\n"
         f"  {_col('polyris-init', 20)} Create a new pipeline or project config\n"
         f"  {_col('polyris-deploy', 20)} Deploy pipeline via CloudFormation\n"
+        f"  {_col('polyris-destroy', 20)} Remove a deployed pipeline\n"
+        f"  {_col('polyris-local', 20)} Preview, validate and simulate a pipeline without AWS\n"
         f"  {_col('polyris-validate', 20)} Validate pipeline(s) for errors\n"
         f"  {_col('polyris-output', 20)} Generate pipeline artifacts (JSON, Mermaid, graph)\n"
         f"  {_col('polyris-register', 20)} Register pipeline in DynamoDB\n"
         f"  {_col('polyris-build-lambda', 20)} Stamp XCom helpers into a Lambda handler directory\n"
         "\n"
-        "Each command has its own --help. Run e.g. `polyris-deploy --help`.\n"
+        f"Each command has its own --help, e.g. {_c('polyris-deploy --help', CYAN)}.\n"
+        f"{_c('polyris --version', CYAN)} prints the installed version, which is also the\n"
+        "platform version polyris-up installs.\n"
         "\n"
         f"{_c('Documentation:', BOLD)}\n"
         "  https://github.com/Polyris/polyris\n"
@@ -56,8 +62,21 @@ def _build_help_text() -> str:
 
 
 def main(argv: Optional[list] = None) -> int:
-    """Print the command index. Always succeeds — this entry point performs
-    no work itself; the real commands are the separate ``polyris-*`` scripts."""
+    """Print the command index, or the version for ``--version``. Always succeeds:
+    this entry point performs no work itself; the real commands are the separate
+    ``polyris-*`` scripts, so any other argument still prints the index."""
+    parser = argparse.ArgumentParser(prog="polyris", add_help=False, allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("--version", action="store_true",
+                        help="print the installed version, which is also the platform version polyris-up installs")
+    try:
+        known, _ = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+    except argparse.ArgumentError:
+        # e.g. --version=1: not a request for the version, so the index, as for any other argument
+        known = argparse.Namespace(version=False)
+    if known.version:
+        # One line a bug report can quote: the CLI's version is the platform's (ADR #131).
+        print(f"polyris {__version__}")
+        return 0
     print(_build_help_text())
     return 0
 

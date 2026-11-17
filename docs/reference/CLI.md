@@ -10,8 +10,11 @@ Top-level help dispatcher. Prints the list of available commands and exits.
 Each command is a separate console script — run any with `--help` for options.
 
 ```bash
-polyris    # print the command index
+polyris              # print the command index
+polyris --version    # print the installed version, e.g. "polyris 1.2.1"
 ```
+
+The installed version is also the platform version `polyris-up` installs, so quote it in a bug report.
 
 ---
 

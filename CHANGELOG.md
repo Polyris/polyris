@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Added — `polyris --version`
+
+- `polyris --version` prints the installed version (`polyris 1.2.1`), which is also the platform version `polyris-up` installs. Before, it printed the command index. The index now shows the version too, and lists `polyris-destroy` and `polyris-local`, which it left out.
+
+## v1.2.1 - 2026-11-17
+
 ### Upgrading to 1.2.1 (ADR #136)
 
 1. **Groups.** The console's sidebar groups pipelines by `DAG(group=)` only (see *Changed — the pipelines sidebar*). Add `group="…"` to the DAGs whose name prefix you relied on, and redeploy them with `polyris-deploy`; until then they are listed under **Ungrouped**, or flat when no pipeline sets a group.
