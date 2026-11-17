@@ -66,7 +66,7 @@ class TestDiscoverDagsInDir:
 
     def test_file_that_fails_to_load_is_skipped_not_fatal(self, tmp_path, capsys):
         _write_dag_file(tmp_path / "dag.py", "real-one")
-        (tmp_path / "broken_dag.py").write_text("import polyris\nthis is not ) valid python (((")
+        (tmp_path / "broken_dag.py").write_text("from polyris import DAG\nthis is not ) valid python (((")
         found = deploy._discover_dags_in_dir(tmp_path)
         assert [d.dag_id for _, d in found] == ["real-one"]
         assert "Skipping" in capsys.readouterr().out
@@ -74,7 +74,7 @@ class TestDiscoverDagsInDir:
     def test_a_file_that_is_not_a_pipeline_is_never_run(self, tmp_path, capsys):
         """Third review: a Glue script next to dag.py failed every batch; validate --all never ran it."""
         _write_dag_file(tmp_path / "dag.py", "real-one")
-        (tmp_path / "glue_job.py").write_text("import awsglue  # only on Glue\n")
+        (tmp_path / "glue_job.py").write_text("import awsglue  # only on Glue\nfrom polyris import xcom\n")
         failed: list = []
         found = deploy._discover_dags_in_dir(tmp_path, failed)
         assert [d.dag_id for _, d in found] == ["real-one"]
@@ -96,7 +96,7 @@ class TestDiscoverDagsInDir:
     def test_file_that_exits_nonzero_is_skipped_with_warning(self, tmp_path, capsys):
         """A pipeline file that calls sys.exit(1) is treated as a load error."""
         _write_dag_file(tmp_path / "good.py", "good-dag")
-        (tmp_path / "bad_pipeline.py").write_text("import sys, polyris; sys.exit(1)\n")
+        (tmp_path / "bad_pipeline.py").write_text("import sys\nfrom polyris import DAG\nsys.exit(1)\n")
         found = deploy._discover_dags_in_dir(tmp_path)
         assert [d.dag_id for _, d in found] == ["good-dag"]
         assert "Skipping" in capsys.readouterr().out
@@ -354,7 +354,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["dir_a", "dir_b"], select=None, stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         assert exc.value.code == 0
         assert deployed.call_count == 2
@@ -380,7 +380,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["dir_a", "dir_b"], select=None, stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         # Overall exit is non-zero (something failed)...
         assert exc.value.code == 1
@@ -409,7 +409,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["multi"], select="keep-me", stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         assert exc.value.code == 0
         assert deployed.call_count == 1
@@ -427,7 +427,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["has_it", "lacks_it"], select="target-dag", stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         assert exc.value.code == 0
         assert deployed.call_count == 1
@@ -452,7 +452,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["p1", "p2"], select=None, stage=None, region=None,
                 dry_run=False, destroy=True, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         assert exc.value.code == 1
         assert [c.kwargs["dag"].dag_id for c in deployed.call_args_list] == ["fine"]
@@ -466,7 +466,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["does_not_exist"], select=None, stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         assert exc.value.code == 1
 
@@ -480,9 +480,35 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["dir_a"], select=None, stage=None, region=None,
                 dry_run=False, destroy=True, log_level="ERROR",
-                log_retention_days=30, profile=None,
+                log_retention_days=30, profile=None, in_own_process=False,
             )
         assert deployed.call_args.kwargs["destroy"] is True
+
+
+def _children_run_here(mocker):
+    """Run each folder's own process (``polyris-deploy --only DIR``) in this one, through the
+    subprocess boundary: the argv and the results file are the ones a real child gets."""
+    import os
+    import types
+
+    def run(cmd, env):
+        assert cmd[1:3] == ["-m", "polyris.deploy"] and env["PYTHONPATH"]
+        saved_argv, saved_env = sys.argv, os.environ.get(deploy.BULK_RESULTS_ENV)
+        sys.argv = ["polyris-deploy", *cmd[3:]]
+        os.environ[deploy.BULK_RESULTS_ENV] = env[deploy.BULK_RESULTS_ENV]
+        try:
+            deploy.main()
+            code = 0
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 1
+        finally:
+            sys.argv = saved_argv
+            if saved_env is None:
+                os.environ.pop(deploy.BULK_RESULTS_ENV, None)
+            else:
+                os.environ[deploy.BULK_RESULTS_ENV] = saved_env
+        return types.SimpleNamespace(returncode=code)
+    return mocker.patch("polyris.deploy.subprocess.run", side_effect=run)
 
 
 class TestMainCliBulkFlags:
@@ -508,11 +534,13 @@ class TestMainCliBulkFlags:
         _write_dag_file(tmp_path / "dir_b" / "dag.py", "dag-b")
         deployed = mocker.patch("polyris.deploy.deploy_pipeline")
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all"])
+        processes = _children_run_here(mocker)
 
         with pytest.raises(SystemExit) as exc:
             deploy.main()
         assert exc.value.code == 0
         assert deployed.call_count == 2
+        assert processes.call_count == 2
 
     def test_only_discovers_just_the_listed_directories(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -524,6 +552,7 @@ class TestMainCliBulkFlags:
         _write_dag_file(tmp_path / "dir_c" / "dag.py", "dag-c")
         deployed = mocker.patch("polyris.deploy.deploy_pipeline")
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--only", "dir_a", "dir_c"])
+        processes = _children_run_here(mocker)
 
         with pytest.raises(SystemExit) as exc:
             deploy.main()
@@ -531,6 +560,8 @@ class TestMainCliBulkFlags:
         assert deployed.call_count == 2
         deployed_ids = {c.kwargs["dag"].dag_id for c in deployed.call_args_list}
         assert deployed_ids == {"dag-a", "dag-c"}
+        # One fresh process per folder (ADR #139), each told what this run was told
+        assert [c.args[0][3:5] for c in processes.call_args_list] == [["--only", "dir_a"], ["--only", "dir_c"]]
 
     def test_single_file_mode_is_unaffected_when_no_bulk_flag_given(self, tmp_path, mocker, monkeypatch):
         """Control: the pre-existing, single-directory behavior must not

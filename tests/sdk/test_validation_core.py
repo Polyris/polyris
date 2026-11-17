@@ -214,10 +214,10 @@ class TestDiscoverPipelineFiles:
         found = discover_pipeline_files(str(tmp_path))
         assert any(f.endswith("/dag.py") for f in found)
 
-    def test_finds_any_file_that_mentions_polyris_whatever_its_name(self, tmp_path):
-        """ADR #139: like Airflow's safe mode — a pipeline imports polyris, its name does not matter."""
+    def test_finds_any_file_that_mentions_polyris_and_a_dag_whatever_its_name(self, tmp_path):
+        """ADR #139: Airflow's safe mode — the text names polyris and "dag" or "pipeline"."""
         _write(tmp_path, "orders.py", "from polyris import Pipeline\n")
-        _write(tmp_path, "latest_prices_dag.py", "import polyris\n")
+        _write(tmp_path, "latest_prices_dag.py", "from polyris import DAG\n")
         found = discover_pipeline_files(str(tmp_path))
         assert any(f.endswith("orders.py") for f in found)
         assert any(f.endswith("latest_prices_dag.py") for f in found)
@@ -225,16 +225,17 @@ class TestDiscoverPipelineFiles:
     def test_a_file_that_does_not_mention_polyris_is_not_run(self, tmp_path):
         # A Glue script, a migration: never executed by --all, however it is named
         _write(tmp_path, "glue_job_pipeline.py", "import awsglue\n")
+        _write(tmp_path, "transform.py", "import awsglue\nfrom polyris import xcom\n")  # DATA_PASSING.md's Glue script
         _write(tmp_path, "thing.py", "from x import DAG\nwith DAG('a'):\n    pass\n")
         found = discover_pipeline_files(str(tmp_path))
         assert found == []
 
     def test_excludes_tests_pycache_hidden_folders_and_plain_files(self, tmp_path):
-        _write(tmp_path, "test_thing.py", "import polyris\n")
-        _write(tmp_path, "thing_test.py", "import polyris\n")
-        _write(tmp_path, "conftest.py", "import polyris\n")
-        _write(tmp_path, "__pycache__/cached.py", "import polyris\n")
-        _write(tmp_path, ".venv/lib/polyris_plugin.py", "import polyris\n")
+        _write(tmp_path, "test_thing.py", "from polyris import DAG\n")
+        _write(tmp_path, "thing_test.py", "from polyris import DAG\n")
+        _write(tmp_path, "conftest.py", "from polyris import DAG\n")
+        _write(tmp_path, "__pycache__/cached.py", "from polyris import DAG\n")
+        _write(tmp_path, ".venv/lib/polyris_plugin.py", "from polyris import DAG\n")
         _write(tmp_path, "plain.py", "x = 1\n")
         assert discover_pipeline_files(str(tmp_path)) == []
 

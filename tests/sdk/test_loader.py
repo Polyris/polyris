@@ -125,47 +125,6 @@ def test_a_file_without_dags_loads_with_none(tmp_path):
     assert load_pipeline(_write(tmp_path / "config.py", "STAGE = 'dev'\n")).dags == []
 
 
-def test_each_file_imports_its_own_sibling_modules(tmp_path):
-    """Third review: b/dag.py got a/settings.py from the module cache, and deploy --all deployed a's DAG."""
-    for name in ("a", "b"):
-        _write(tmp_path / name / "settings.py", f"NAME = 'orders-{name}'\n")
-        _write(tmp_path / name / "dag.py", """
-            from settings import NAME
-            from polyris import DAG
-            with DAG(NAME, schedule="@daily"):
-                pass
-        """)
-    assert [d.dag_id for d in load_pipeline(tmp_path / "a" / "dag.py").dags] == ["orders-a"]
-    assert [d.dag_id for d in load_pipeline(tmp_path / "b" / "dag.py").dags] == ["orders-b"]
-    assert "settings" not in sys.modules
-
-
-def test_project_modules_are_forgotten_after_a_load_and_installed_ones_stay(tmp_path, monkeypatch):
-    """Any module the file imported first that is not installed code — a package on the project
-    root, a `src/` it added, a symlinked settings — is forgotten; the standard library and
-    site-packages stay, so a class never gets a second copy."""
-    _write(tmp_path / "pipelines" / "__init__.py", "")
-    _write(tmp_path / "pipelines" / "shared.py", "SCHEDULE = '@daily'\n")
-    _write(tmp_path / "src" / "deeplib.py", "VALUE = 1\n")
-    for name in ("orders", "sales"):
-        _write(tmp_path / "pipelines" / name / "dag.py", f"""
-            import sys, colorsys  # noqa: F401  colorsys: the standard library
-            sys.path.insert(0, r"{tmp_path / 'src'}")
-            import deeplib  # noqa: F401
-            import pipelines.shared
-            from polyris import DAG
-            with DAG("{name}", schedule=pipelines.shared.SCHEDULE):
-                pass
-        """)
-    monkeypatch.syspath_prepend(str(tmp_path))
-    for module in ("colorsys", "deeplib", "pipelines", "pipelines.shared"):
-        monkeypatch.delitem(sys.modules, module, raising=False)
-    for name in ("orders", "sales"):
-        assert [d.dag_id for d in load_pipeline(tmp_path / "pipelines" / name / "dag.py").dags] == [name]
-    assert "colorsys" in sys.modules
-    assert not {"deeplib", "pipelines", "pipelines.shared"} & set(sys.modules)
-
-
 def test_a_module_whose_getattr_raises_does_not_break_the_load(tmp_path):
     """Fourth review: reading `__path__` ran the module's `__getattr__`, which raised KeyError."""
     _write(tmp_path / "settings_lazy.py", "_VALUES = {}\ndef __getattr__(name):\n    return _VALUES[name]\n")
@@ -207,7 +166,7 @@ def test_inside_open_pipeline_a_task_body_can_import_a_sibling(tmp_path, monkeyp
     monkeypatch.delitem(sys.modules, "helpers", raising=False)
     with open_pipeline(f) as loaded:
         assert loaded.module.body() == 42
-    assert str(tmp_path) not in sys.path and "helpers" not in sys.modules
+    assert str(tmp_path) not in sys.path
 
 
 def test_a_relative_path_makes_the_folder_above_importable_too(tmp_path, monkeypatch):
@@ -269,20 +228,53 @@ def test_an_unreadable_py_is_not_a_pipeline_file(tmp_path):
     assert is_pipeline_file(tmp_path / "odd.py") is False
 
 
-def test_a_namespace_package_the_file_imports_is_forgotten_and_polyris_never_is(tmp_path, monkeypatch):
-    _write(tmp_path / "nsdir" / "mod.py", "VALUE = 1\n")  # no __init__.py: a namespace package
-    f = _write(tmp_path / "dag.py", """
-        import nsdir.mod  # noqa: F401
-        import polyris._ansi  # noqa: F401
-        from polyris import DAG
-        with DAG("orders", schedule="@daily"):
-            pass
+def test_validate_all_runs_each_folder_in_its_own_process(tmp_path):
+    """Third and fifth reviews: one folder's settings.py reached the next folder's pipeline.
+    A fresh process per folder (ADR #139) makes that impossible, wherever settings.py lives."""
+    from polyris.validation import validate_all
+    for name in ("a", "b"):
+        _write(tmp_path / name / "settings.py", f"NAME = 'orders-{name}'\n")
+        _write(tmp_path / name / "dag.py", """
+            from settings import NAME
+            from polyris import DAG
+            with DAG(NAME, schedule="@daily"):
+                pass
+        """)
+    results = validate_all(str(tmp_path), verbose=False)
+    assert results["errors"] == []
+    assert sorted(d.dag_id for d in results["pipelines"]) == ["orders-a", "orders-b"]
+    assert "settings" not in sys.modules  # nothing was imported into this process
+
+
+def test_a_folder_whose_process_dies_is_an_error_not_silence(tmp_path):
+    from polyris.validation import validate_all
+    _write(tmp_path / "a" / "dag.py", """
+        import os
+        os._exit(3)  # no exception, no report
     """)
-    for module in ("nsdir", "nsdir.mod", "polyris._ansi"):
-        monkeypatch.delitem(sys.modules, module, raising=False)
-    assert [d.dag_id for d in load_pipeline(f).dags] == ["orders"]
-    assert "nsdir" not in sys.modules and "nsdir.mod" not in sys.modules
-    assert "polyris._ansi" in sys.modules
+    results = validate_all(str(tmp_path), verbose=False)
+    assert results["pipelines"] == [] and len(results["errors"]) == 1
+    assert "ended before reporting" in results["errors"][0]
+
+
+def test_a_folders_own_process_reports_its_dag_info_as_json(tmp_path, monkeypatch):
+    """The child side of validate_all, run here so coverage sees it."""
+    import json
+    from polyris import validation
+    f = _write(tmp_path / "dag.py", """
+        from polyris import Asset, DAG, task
+        with DAG("orders", schedule=[Asset("raw/orders")]):
+            @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+            def a(): pass
+            a()
+    """)
+    results = tmp_path / "out.json"
+    monkeypatch.setenv(validation.DAG_INFO_RESULTS_ENV, str(results))
+    monkeypatch.setattr(sys, "argv", ["polyris-validate", str(f), str(tmp_path / "missing.py")])
+    validation.main()
+    data = json.loads(results.read_text())
+    assert [d["dag_id"] for d in data["infos"]] == ["orders"] and data["infos"][0]["schedule"] is None
+    assert len(data["errors"]) == 1 and "missing.py" in data["errors"][0]
 
 
 def test_no_cli_runs_a_pipeline_file_but_through_the_loader():

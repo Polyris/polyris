@@ -19,7 +19,7 @@ Usage:
 import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from polyris._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 
 
@@ -317,6 +317,65 @@ def validate_schema_consistency(all_dags: List[DAGInfo]) -> List[str]:
     return warnings
 
 
+#: Set by ``validate_all`` for a folder's own process: where it writes its files' DAG info.
+DAG_INFO_RESULTS_ENV = "POLYRIS_DAG_INFO_RESULTS"
+
+
+def _collect_dag_info(files: List[str]) -> Tuple[List[DAGInfo], List[str]]:
+    """The DAG info of each file, loaded in this process; a file that does not load is an error."""
+    infos: List[DAGInfo] = []
+    errors: List[str] = []
+    for file_path in files:
+        try:
+            infos.extend(extract_dag_info(file_path))
+        except (Exception, SystemExit) as e:
+            msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
+            errors.append(f"{file_path}: {msg}")
+    return infos, errors
+
+
+def _dag_info_as_json(info: DAGInfo) -> Dict[str, Any]:
+    data = asdict(info)
+    data["schedule"] = info.schedule if isinstance(info.schedule, str) else None  # assets are named in trigger_assets
+    return data
+
+
+def _collect_dag_info_in_its_own_process(files: List[str]) -> Tuple[List[DAGInfo], List[str]]:
+    """``_collect_dag_info`` in a fresh Python process that imports the same polyris as this one."""
+    import json
+    import os
+    import subprocess
+    import tempfile
+
+    import polyris
+
+    fd, results_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    code_root = str(Path(polyris.__file__).resolve().parents[1])
+    env = {**os.environ, DAG_INFO_RESULTS_ENV: results_path,
+           "PYTHONPATH": os.pathsep.join(p for p in (code_root, os.environ.get("PYTHONPATH", "")) if p)}
+    try:
+        # The pipelines' own output is not validate's; stderr is kept for a crash report only
+        proc = subprocess.run([sys.executable, "-m", "polyris.validation", *files], env=env,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            data = json.loads(Path(results_path).read_text())
+        except (OSError, ValueError):
+            last = (proc.stderr or "").strip().splitlines()[-1:] or [f"exit code {proc.returncode}"]
+            return [], [f"{Path(files[0]).parent}: its process ended before reporting: {last[0]}"]
+        return [DAGInfo(**d) for d in data["infos"]], list(data["errors"])
+    finally:
+        os.unlink(results_path)
+
+
+def _report_dag_info(files: List[str], results_path: str) -> None:
+    """A folder's own process: write its files' DAG info where ``validate_all`` reads it."""
+    import json
+
+    infos, errors = _collect_dag_info(files)
+    Path(results_path).write_text(json.dumps({"infos": [_dag_info_as_json(i) for i in infos], "errors": errors}))
+
+
 def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
     """
     Validate all pipelines in directory.
@@ -361,14 +420,15 @@ def validate_all(directory: str = './pipelines', verbose: bool = True) -> Dict:
     # SystemExit is a BaseException, not Exception — a pipeline that calls
     # sys.exit() at module level must be caught here rather than propagating
     # through the process and killing the CLI with a Python traceback.
-    all_dags = []
+    # Each folder runs in its own process (ADR #139): one folder's settings.py, a src/ it put on
+    # the path, or a library's import-time side effects cannot reach the next folder's files.
+    all_dags: List[DAGInfo] = []
+    folders: Dict[str, List[str]] = {}
     for file_path in files:
-        try:
-            dags = extract_dag_info(file_path)
-        except (Exception, SystemExit) as e:
-            msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
-            results['errors'].append(f"{file_path}: {msg}")
-            continue
+        folders.setdefault(str(Path(file_path).parent), []).append(file_path)
+    for folder_files in folders.values():
+        dags, errors = _collect_dag_info_in_its_own_process(folder_files)
+        results['errors'].extend(errors)
         all_dags.extend(dags)
         results['pipelines'].extend(dags)
 
@@ -660,6 +720,12 @@ def main():
     """
     import argparse
     import json
+    import os
+
+    results_path = os.environ.get(DAG_INFO_RESULTS_ENV)
+    if results_path:  # a folder's own process, started by validate_all
+        _report_dag_info(sys.argv[1:], results_path)
+        return
 
     parser = argparse.ArgumentParser(
         prog='polyris-validate',

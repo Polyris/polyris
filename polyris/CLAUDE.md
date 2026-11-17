@@ -479,7 +479,8 @@ other `exec_module` on a file path the user provided — not on modules we contr
 ## Pipeline files load through `polyris.loader.load_pipeline` (ADR #139)
 
 Every command that runs a pipeline file — `polyris-validate` (and `--test`), `polyris-deploy`,
-`polyris-output`, `polyris-local` — calls `load_pipeline(path)` and uses its `.dags`. Never run a
+`polyris-output`, `polyris-local` — calls `load_pipeline(path)` and uses its `.dags`, or keeps
+the file open with `open_pipeline(path)` while it runs task bodies (`polyris-local`, `--test`). Never run a
 pipeline file another way: `tests/sdk/test_loader.py` fails when a module of `polyris/` other
 than `loader.py` (and `config.py`, which runs the project's `config.py`) calls `exec_module` or
 `spec_from_file_location`.
@@ -490,18 +491,17 @@ between it and the loader. That finds `with DAG("x"):` without `as`, `DAG(...)` 
 `@dag`, a factory, `exec`, `runpy`, a file run with `exec_module`, and a worker thread; it leaves
 out a DAG a module the file imports makes, a copy of the file a helper imports back, and a DAG
 whose `with` block raised an error. One `dag_id` made twice is a `PipelineLoadError` for every
-command. On leaving `open_pipeline`, every module the file imported first is forgotten unless it
-is installed code or `polyris`, so `deploy --all` never hands one folder's `settings.py` to the
-next. `--all` loads `dag.py` and files that mention polyris (`is_pipeline_file`), for validate and
-deploy. Rules rest on facts — an import in progress, where a module is installed, whether a file
-mentions polyris — never on guesses about names or frames: each guess the first version made
-failed a review.
+command. `--all` (validate and deploy) runs each folder in its own Python process, so nothing one
+folder imports reaches the next — never isolate files by forgetting modules in one process: each
+way of doing it failed a review. It loads `dag.py` and files that mention polyris and "dag" or
+"pipeline" (`is_pipeline_file`, Airflow's safe mode). Rules rest on facts — an import in
+progress, a process boundary, what a file mentions — never on guesses about names or frames.
 
 **Why:** each command had its own loader and its own rule — validate recorded `with` exits,
 deploy and output read `vars(mod)`, local filtered by globals — and they disagreed on
 `sys.path` and `sys.exit(0)`. A file passed validation and then could not be deployed three
-times in one branch (F18 and the two reviews of its fix, up to 1.2.2), each fixed locally
-until the loaders became one (Principle #42).
+times in one branch (F18 and the reviews of its fix, up to 1.2.2), each fixed locally until
+the loaders became one, and three more reviews broke its in-process isolation (Principle #42).
 
 ## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
 

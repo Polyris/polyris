@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import site
 import sys
-import sysconfig
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Iterable, Iterator, List, Optional, Set, Union
+from typing import Iterator, List, Union
 
 from .dag import DAG, recording_dags
 
@@ -45,13 +43,15 @@ class LoadedPipeline:
 
 
 def is_pipeline_file(path: Path) -> bool:
-    """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose text mentions polyris.
+    """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose text mentions polyris and
+    "dag" or "pipeline".
 
-    The rule Airflow's safe mode uses (a DAG file mentions "airflow"): a pipeline always
-    imports polyris, so none is skipped, and a Glue script or a migration next to it is never
-    run. Test files by pytest's convention (``test_*.py``, ``*_test.py``, ``conftest.py``) and
-    ``__init__.py`` are not pipelines. ``polyris-validate --all`` and ``polyris-deploy --all`` /
-    ``--only`` both use it.
+    Airflow's safe mode, which loads a file only when it mentions "airflow" and "dag": a pipeline
+    file names both, while a Glue or Lambda script that uses ``from polyris import xcom`` does
+    not, and is never run. A pipeline in another file that never mentions polyris (it imports a
+    wrapper) is listed as skipped; name it ``dag.py`` or deploy it with ``--file``. Test files by
+    pytest's convention (``test_*.py``, ``*_test.py``, ``conftest.py``) and ``__init__.py`` are not
+    pipelines. ``polyris-validate --all`` and ``polyris-deploy --all`` / ``--only`` both use it.
     """
     name = path.name
     if name in _NOT_PIPELINES or name.startswith("test_") or name.endswith("_test.py"):
@@ -59,53 +59,10 @@ def is_pipeline_file(path: Path) -> bool:
     if name == "dag.py":
         return True
     try:
-        return "polyris" in path.read_text(encoding="utf-8", errors="replace").lower()
+        text = path.read_text(encoding="utf-8", errors="replace").lower()
     except OSError:  # unreadable (permissions): not loaded, and listed as skipped by the caller
         return False
-
-
-def _installed_roots() -> List[Path]:
-    """Where installed code lives: the standard library and every site-packages."""
-    roots: Set[str] = set()
-    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
-        where = sysconfig.get_paths().get(key)
-        if where:
-            roots.add(where)
-    roots.update(site.getsitepackages())
-    user_site = site.getusersitepackages()
-    if isinstance(user_site, str):
-        roots.add(user_site)
-    return [Path(r).resolve() for r in roots]
-
-
-def _origin(module: ModuleType) -> Optional[Path]:
-    """Where a module's code lives, read without running a module ``__getattr__``."""
-    attrs = vars(module)
-    spec = attrs.get("__spec__")
-    where = attrs.get("__file__") or getattr(spec, "origin", None)
-    if not where or where in ("built-in", "frozen"):
-        locations = getattr(spec, "submodule_search_locations", None) or attrs.get("__path__") or []
-        where = next(iter(locations), None)  # a namespace package: its folder
-    return Path(where).resolve() if where else None
-
-
-def _forget_imports(before: Set[str], installed: Iterable[Path]) -> None:
-    """Forget every module the file imported first, so the next file imports its own.
-
-    The file's ``settings.py`` — in its folder, in a ``src/`` it put on the path, behind a
-    symlink — would otherwise be handed to the next file in ``--all``. Installed code (the
-    standard library, site-packages) and ``polyris`` stay: they are the same for every file,
-    and a second copy of such a module would be a second copy of its classes.
-    """
-    roots = list(installed)
-    for name in [n for n in list(sys.modules) if n not in before]:
-        if name == "polyris" or name.startswith("polyris."):
-            continue
-        module = sys.modules.get(name)
-        where = _origin(module) if isinstance(module, ModuleType) else None
-        if where is None or any(where.is_relative_to(root) for root in roots):
-            continue
-        del sys.modules[name]
+    return "polyris" in text and ("dag" in text or "pipeline" in text)
 
 
 @contextmanager
@@ -114,9 +71,9 @@ def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
 
     The file's folder and the folder above it are importable while it runs and while the block
     runs, so a pipeline can import a sibling module or its project's ``config``, and a task body
-    that ``polyris-local`` or ``polyris-validate --test`` runs can too. On leaving the block they
-    are removed and every module the file imported first is forgotten (``_forget_imports``), so
-    the next file in ``--all`` imports its own. ``sys.exit(0)`` (or a bare ``sys.exit()``) ends
+    that ``polyris-local`` or ``polyris-validate --test`` runs can too; on leaving the block they
+    are removed. Modules the file imports stay imported: ``--all`` runs each folder in its own
+    process, so nothing one folder imports reaches the next (ADR #139). ``sys.exit(0)`` (or a bare ``sys.exit()``) ends
     the file normally. Raises ``PipelineNotFoundError`` for a missing file and
     ``PipelineLoadError`` for an error, a non-zero exit, or one dag_id made twice: each DAG is
     one stack, so the second would replace the first. A file without DAGs loads with an empty
@@ -134,7 +91,6 @@ def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
     added = [p for p in (str(path.parent), str(path.parent.parent)) if p not in sys.path]
     for p in added:
         sys.path.insert(0, p)
-    before = set(sys.modules)
     try:
         with recording_dags(sys._getframe()) as made:
             try:
@@ -156,7 +112,6 @@ def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
         for p in added:
             if p in sys.path:
                 sys.path.remove(p)
-        _forget_imports(before, _installed_roots())
 
 
 def load_pipeline(path: Union[str, Path]) -> LoadedPipeline:
