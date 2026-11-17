@@ -7,6 +7,7 @@ CLI runs a pipeline file any other way.
 from __future__ import annotations
 
 import ast
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -254,7 +255,7 @@ def test_a_folder_whose_process_dies_is_an_error_not_silence(tmp_path):
     """)
     results = validate_all(str(tmp_path), verbose=False)
     assert results["pipelines"] == [] and len(results["errors"]) == 1
-    assert "ended before reporting" in results["errors"][0]
+    assert "exited with code 3 before reporting" in results["errors"][0]
 
 
 def test_a_folders_own_process_reports_its_dag_info_as_json(tmp_path, monkeypatch):
@@ -273,8 +274,23 @@ def test_a_folders_own_process_reports_its_dag_info_as_json(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "argv", ["polyris-validate", str(f), str(tmp_path / "missing.py")])
     validation.main()
     data = json.loads(results.read_text())
-    assert [d["dag_id"] for d in data["infos"]] == ["orders"] and data["infos"][0]["schedule"] is None
+    assert [d["dag_id"] for d in data["infos"]] == ["orders"]
+    assert isinstance(data["infos"][0]["schedule"], str) and data["infos"][0]["trigger_assets"] == ["raw/orders"]
     assert len(data["errors"]) == 1 and "missing.py" in data["errors"][0]
+
+
+def test_a_childs_python_path_never_moves_the_users_entries_or_site_packages(monkeypatch):
+    """Sixth review: prepending polyris's folder put site-packages before a user's src/ and the
+    standard library in a folder's process. It is appended, and only when polyris is not installed."""
+    import polyris
+    from polyris import loader
+    code_root = str(Path(polyris.__file__).resolve().parents[1])
+    monkeypatch.setenv("PYTHONPATH", "src")
+    monkeypatch.setattr(loader.site, "getsitepackages", lambda: [])
+    assert loader.child_env(EXTRA="1")["PYTHONPATH"] == os.pathsep.join(["src", code_root])
+    assert loader.child_env(EXTRA="1")["EXTRA"] == "1"
+    monkeypatch.setattr(loader.site, "getsitepackages", lambda: [code_root])  # installed: found as here
+    assert loader.child_env()["PYTHONPATH"] == "src"
 
 
 def test_no_cli_runs_a_pipeline_file_but_through_the_loader():

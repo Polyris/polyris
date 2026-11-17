@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import site
 import sys
+import sysconfig
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Iterator, List, Union
+from typing import Dict, Iterator, List, Union
 
 from .dag import DAG, recording_dags
 
@@ -43,15 +45,16 @@ class LoadedPipeline:
 
 
 def is_pipeline_file(path: Path) -> bool:
-    """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose text mentions polyris and
-    "dag" or "pipeline".
+    """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose text mentions "polyris"
+    and "dag".
 
-    Airflow's safe mode, which loads a file only when it mentions "airflow" and "dag": a pipeline
-    file names both, while a Glue or Lambda script that uses ``from polyris import xcom`` does
-    not, and is never run. A pipeline in another file that never mentions polyris (it imports a
-    wrapper) is listed as skipped; name it ``dag.py`` or deploy it with ``--file``. Test files by
-    pytest's convention (``test_*.py``, ``*_test.py``, ``conftest.py``) and ``__init__.py`` are not
-    pipelines. ``polyris-validate --all`` and ``polyris-deploy --all`` / ``--only`` both use it.
+    Exactly Airflow's safe mode, which loads a file only when it mentions "airflow" and "dag": a
+    pipeline file names both, while a Glue or ECS script that uses ``xcom`` (and reads
+    ``POLYRIS_PIPELINE_NAME``) names no DAG, and is never run. A pipeline in another file that
+    never says "dag" (``Pipeline(...)``, a project wrapper) is skipped; name it ``dag.py`` or
+    deploy it with ``--file``. Test files by pytest's convention (``test_*.py``, ``*_test.py``,
+    ``conftest.py``) and ``__init__.py`` are not pipelines. ``polyris-validate --all`` and
+    ``polyris-deploy --all`` / ``--only`` both use it.
     """
     name = path.name
     if name in _NOT_PIPELINES or name.startswith("test_") or name.endswith("_test.py"):
@@ -62,7 +65,35 @@ def is_pipeline_file(path: Path) -> bool:
         text = path.read_text(encoding="utf-8", errors="replace").lower()
     except OSError:  # unreadable (permissions): not loaded, and listed as skipped by the caller
         return False
-    return "polyris" in text and ("dag" in text or "pipeline" in text)
+    return "polyris" in text and "dag" in text
+
+
+def child_env(**extra: str) -> Dict[str, str]:
+    """The environment of a folder's own process in ``--all``: this one's, plus ``extra``.
+
+    The child runs ``sys.executable -m polyris…`` and must import this very polyris. When
+    polyris is installed (site-packages), the child finds it there as this process did. When it
+    comes from elsewhere (a checkout run from source), its folder is appended to PYTHONPATH, after
+    the user's own entries; never prepended, which would put site-packages before the standard
+    library and a user's ``src/`` (sixth review of ADR #139).
+    """
+    import polyris
+
+    env = {**os.environ, **extra}
+    code_root = Path(polyris.__file__).resolve().parents[1]
+    installed = {Path(p).resolve() for p in (*site.getsitepackages(), site.getusersitepackages(),
+                                             sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"])}
+    if code_root not in installed:
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (os.environ.get("PYTHONPATH", ""), str(code_root)) if p)
+    return env
+
+
+def exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._exit); runs only as a folder's own process exits
+    """End a folder's own process once its results are written: flush, and do not wait for
+    non-daemon threads a pipeline started, which would hold the next folder."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 @contextmanager

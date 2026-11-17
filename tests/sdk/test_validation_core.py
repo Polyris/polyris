@@ -215,17 +215,19 @@ class TestDiscoverPipelineFiles:
         assert any(f.endswith("/dag.py") for f in found)
 
     def test_finds_any_file_that_mentions_polyris_and_a_dag_whatever_its_name(self, tmp_path):
-        """ADR #139: Airflow's safe mode — the text names polyris and "dag" or "pipeline"."""
-        _write(tmp_path, "orders.py", "from polyris import Pipeline\n")
-        _write(tmp_path, "latest_prices_dag.py", "from polyris import DAG\n")
+        """ADR #139: exactly Airflow's safe mode — the text names polyris and a DAG."""
+        _write(tmp_path, "orders.py", "from polyris import DAG\n")
+        _write(tmp_path, "latest_prices_dag.py", "from polyris import dag\n")
+        _write(tmp_path, "inventory.py", "from polyris import Pipeline\n")  # says no "dag": skipped
         found = discover_pipeline_files(str(tmp_path))
         assert any(f.endswith("orders.py") for f in found)
         assert any(f.endswith("latest_prices_dag.py") for f in found)
+        assert not any(f.endswith("inventory.py") for f in found)
 
     def test_a_file_that_does_not_mention_polyris_is_not_run(self, tmp_path):
         # A Glue script, a migration: never executed by --all, however it is named
         _write(tmp_path, "glue_job_pipeline.py", "import awsglue\n")
-        _write(tmp_path, "transform.py", "import awsglue\nfrom polyris import xcom\n")  # DATA_PASSING.md's Glue script
+        _write(tmp_path, "transform.py", "import awsglue\nfrom polyris import xcom\nos.environ['POLYRIS_PIPELINE_NAME']\n")  # a real xcom script
         _write(tmp_path, "thing.py", "from x import DAG\nwith DAG('a'):\n    pass\n")
         found = discover_pipeline_files(str(tmp_path))
         assert found == []

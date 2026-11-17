@@ -320,6 +320,16 @@ class TestMain:
         # Exactly one print path fires (main() non-verbose non-json branch) — not two.
         assert out.count("not-a-real-role") == 1
 
+    def test_a_folders_process_runs_the_asl_checks_on_the_dags_it_loaded(self, tmp_path):
+        """--all runs the ASL checks in each folder's process (ADR #139), where coverage does not
+        follow; this runs that side here."""
+        from polyris.validation import _collect_dag_info
+        f = _write(tmp_path, "proj/dag.py", INVALID_ROLE_DAG)
+        infos, errors = _collect_dag_info([str(f)], check_asl=True)
+        assert len(infos) == 1
+        assert len(errors) == 1 and errors[0].startswith(f"{f}: ") and "not-a-real-role" in errors[0]
+        assert _collect_dag_info([str(f)])[1] == []  # without check_asl: DAG info only
+
     def test_all_asl_invalid_json_includes_error_detail(self, tmp_path, monkeypatch, capsys):
         _write(tmp_path, "proj/dag.py", INVALID_ROLE_DAG)
         monkeypatch.chdir(tmp_path)

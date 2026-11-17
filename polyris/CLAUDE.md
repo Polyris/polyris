@@ -493,8 +493,10 @@ out a DAG a module the file imports makes, a copy of the file a helper imports b
 whose `with` block raised an error. One `dag_id` made twice is a `PipelineLoadError` for every
 command. `--all` (validate and deploy) runs each folder in its own Python process, so nothing one
 folder imports reaches the next — never isolate files by forgetting modules in one process: each
-way of doing it failed a review. It loads `dag.py` and files that mention polyris and "dag" or
-"pipeline" (`is_pipeline_file`, Airflow's safe mode). Rules rest on facts — an import in
+way of doing it failed a review. The parent never loads a pipeline file itself (validate's ASL
+checks run in the folder's process too), and builds the child's environment with
+`loader.child_env` (polyris's folder appended to PYTHONPATH, never prepended). It loads `dag.py`
+and files that mention "polyris" and "dag" (`is_pipeline_file`, exactly Airflow's safe mode). Rules rest on facts — an import in
 progress, a process boundary, what a file mentions — never on guesses about names or frames.
 
 **Why:** each command had its own loader and its own rule — validate recorded `with` exits,

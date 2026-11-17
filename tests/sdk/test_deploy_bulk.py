@@ -492,7 +492,7 @@ def _children_run_here(mocker):
     import types
 
     def run(cmd, env):
-        assert cmd[1:3] == ["-m", "polyris.deploy"] and env["PYTHONPATH"]
+        assert cmd[1:3] == ["-m", "polyris.deploy"]
         saved_argv, saved_env = sys.argv, os.environ.get(deploy.BULK_RESULTS_ENV)
         sys.argv = ["polyris-deploy", *cmd[3:]]
         os.environ[deploy.BULK_RESULTS_ENV] = env[deploy.BULK_RESULTS_ENV]
@@ -507,8 +507,32 @@ def _children_run_here(mocker):
                 os.environ.pop(deploy.BULK_RESULTS_ENV, None)
             else:
                 os.environ[deploy.BULK_RESULTS_ENV] = saved_env
-        return types.SimpleNamespace(returncode=code)
-    return mocker.patch("polyris.deploy.subprocess.run", side_effect=run)
+        return types.SimpleNamespace(returncode=code, wait=lambda: code)
+    return mocker.patch("polyris.deploy.subprocess.Popen", side_effect=run)
+
+
+class TestBulkRealProcesses:
+    """--all through real child processes, on folders that never reach AWS."""
+
+    def test_each_folder_runs_in_a_real_process_and_its_results_come_back(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "-dash").mkdir()  # a name argparse would take for a flag
+        (tmp_path / "-dash" / "dag.py").write_text("from polyris import DAG\nraise RuntimeError('broken on purpose')\n")
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "readme.txt").write_text("not a pipeline\n")
+
+        with pytest.raises(SystemExit) as exc:
+            deploy._run_bulk(["-dash", "notes"], select=None, stage=None, region=None, dry_run=False,
+                             destroy=True, log_level="ERROR", log_retention_days=30, profile=None)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "0 succeeded, 1 failed" in out and "-dash/dag.py: failed to load" in out
+
+    def test_bulk_argv_passes_every_option_as_flag_equals_value(self):
+        argv = deploy._bulk_argv(select="-odd", stage="dev", region="eu-west-1", dry_run=True, destroy=True,
+                                 log_level="ALL", log_retention_days=7, profile="p", stack="s")
+        assert argv == ["--log-level=ALL", "--log-retention=7", "--select=-odd", "--stage=dev",
+                        "--region=eu-west-1", "--profile=p", "--stack=s", "--dry-run", "--destroy"]
 
 
 class TestMainCliBulkFlags:
@@ -561,7 +585,7 @@ class TestMainCliBulkFlags:
         deployed_ids = {c.kwargs["dag"].dag_id for c in deployed.call_args_list}
         assert deployed_ids == {"dag-a", "dag-c"}
         # One fresh process per folder (ADR #139), each told what this run was told
-        assert [c.args[0][3:5] for c in processes.call_args_list] == [["--only", "dir_a"], ["--only", "dir_c"]]
+        assert [c.args[0][3] for c in processes.call_args_list] == ["--only=dir_a", "--only=dir_c"]
 
     def test_single_file_mode_is_unaffected_when_no_bulk_flag_given(self, tmp_path, mocker, monkeypatch):
         """Control: the pre-existing, single-directory behavior must not

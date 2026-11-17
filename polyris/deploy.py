@@ -26,6 +26,7 @@ Workflow:
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -52,7 +53,7 @@ from .generators import (
     generate_dag_hash,
 )
 from .dag import DAG
-from .loader import PipelineLoadError, is_pipeline_file, load_pipeline
+from .loader import PipelineLoadError, child_env, exit_now, is_pipeline_file, load_pipeline
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -1006,8 +1007,8 @@ def _load_dag_from_file(path: Path) -> list:
 def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None) -> "List[Tuple[Path, DAG]]":
     """Find every DAG in every .py file directly inside dir_path (non-recursive).
 
-    Only files ``is_pipeline_file`` accepts are loaded (dag.py, or a file that mentions
-    polyris), as ``polyris-validate --all`` does: a Glue script next to dag.py is never run, and
+    Only files ``is_pipeline_file`` accepts are loaded (dag.py, or a file that mentions polyris
+    and "dag"), as ``polyris-validate --all`` does: a Glue script next to dag.py is never run, and
     the files left out are listed. A pipeline file with zero DAG objects contributes nothing
     and is silently skipped — that's expected, not an error.
     A file that fails to *load* (syntax error, import error, an accidental
@@ -1125,12 +1126,14 @@ def _bulk_argv(
     *, select: Optional[str], stage: Optional[str], region: Optional[str], dry_run: bool, destroy: bool,
     log_level: str, log_retention_days: int, profile: Optional[str], stack: Optional[str],
 ) -> "List[str]":
-    """The polyris-deploy arguments that make a folder's own process do what this run does."""
-    argv = ["--log-level", log_level, "--log-retention", str(log_retention_days)]
+    """The polyris-deploy arguments that make a folder's own process do what this run does.
+
+    Every value goes as ``--flag=value``, so a value starting with "-" is never read as a flag."""
+    argv = [f"--log-level={log_level}", f"--log-retention={log_retention_days}"]
     for flag, value in (("--select", select), ("--stage", stage), ("--region", region),
                         ("--profile", profile), ("--stack", stack)):
         if value:
-            argv += [flag, value]
+            argv.append(f"{flag}={value}")
     return argv + (["--dry-run"] if dry_run else []) + (["--destroy"] if destroy else [])
 
 
@@ -1139,17 +1142,20 @@ def _deploy_directory_in_its_own_process(dir_name: str, argv: "List[str]") -> "L
 
     A fresh process is the isolation ``--all`` needs (ADR #139): one folder's ``settings.py``,
     a ``src/`` it put on the path, or a library's import-time side effects cannot reach the next
-    folder's pipeline. The child imports the same polyris as this process.
+    folder's pipeline. The child imports the same polyris as this process (``child_env``). If
+    this process is stopped (Ctrl-C, SIGTERM), the child is stopped too.
     """
-    import polyris
-
     fd, results_path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
-    code_root = str(Path(polyris.__file__).resolve().parents[1])
-    env = {**os.environ, BULK_RESULTS_ENV: results_path,
-           "PYTHONPATH": os.pathsep.join(p for p in (code_root, os.environ.get("PYTHONPATH", "")) if p)}
+    env = child_env(**{BULK_RESULTS_ENV: results_path})
     try:
-        proc = subprocess.run([sys.executable, "-m", "polyris.deploy", "--only", dir_name, *argv], env=env)
+        proc = subprocess.Popen([sys.executable, "-m", "polyris.deploy", f"--only={dir_name}", *argv], env=env)
+        try:
+            proc.wait()
+        except BaseException:
+            proc.terminate()
+            proc.wait()
+            raise
         try:
             results = [tuple(r) for r in json.loads(Path(results_path).read_text())]
         except (OSError, ValueError):
@@ -1159,6 +1165,10 @@ def _deploy_directory_in_its_own_process(dir_name: str, argv: "List[str]") -> "L
         return results
     finally:
         os.unlink(results_path)
+
+
+def _raise_on_sigterm(signum: int, frame: object) -> None:
+    raise SystemExit(128 + signum)
 
 
 def _run_bulk(
@@ -1184,14 +1194,23 @@ def _run_bulk(
     regardless of outcome; the process exits non-zero if anything failed, so this is safe to
     use as a CI/script gate.
     """
-    options = dict(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
-                   log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
+    argv = _bulk_argv(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
+                      log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
     results: "List[BulkResult]" = []
-    for dir_name in sorted(target_dirs):
-        if in_own_process and Path(dir_name).is_dir():
-            results += _deploy_directory_in_its_own_process(dir_name, _bulk_argv(**options))  # type: ignore[arg-type]
-        else:
-            results += _deploy_directory(dir_name, **options)  # type: ignore[arg-type]
+    # A SIGTERM ends this process through Python, so the running folder's process is stopped too
+    previous = signal.signal(signal.SIGTERM, _raise_on_sigterm) if in_own_process else None
+    try:
+        for dir_name in sorted(target_dirs):
+            if in_own_process and Path(dir_name).is_dir():
+                results += _deploy_directory_in_its_own_process(dir_name, argv)
+            else:
+                results += _deploy_directory(
+                    dir_name, select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
+                    log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack,
+                )
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
 
     results_path = os.environ.get(BULK_RESULTS_ENV)
     if results_path and not in_own_process:
@@ -1337,4 +1356,9 @@ def main_destroy() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as e:
+        if os.environ.get(BULK_RESULTS_ENV):  # a folder's own process: do not wait for a pipeline's threads
+            exit_now(e.code if isinstance(e.code, int) else 1)
+        raise
