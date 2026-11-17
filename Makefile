@@ -81,17 +81,17 @@ test-lambdas:
 	@echo "🧪 Running Lambda tests..."
 	@if [ -f sam/lambdas/notify/test_notify.py ]; then \
 		echo "  Running notify tests..."; \
-		cd sam/lambdas/notify && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_notify.py -v; \
+		cd sam/lambdas/notify && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest test_notify.py -v; \
 	fi
 	@if [ -d sam/lambdas/console_api/tests ]; then \
 		echo "  Running console_api tests (requires boto3, pytest-mock)..."; \
-		cd sam/lambdas/console_api && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest tests/ -v || \
+		cd sam/lambdas/console_api && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest tests/ -v || \
 			{ echo "  ❌ console_api tests failed (run: pip install -e '.[dev]')"; exit 1; }; \
 	fi
 	@echo "  Running coordination tests (moto, tables from sam/template.yaml)..."
-	cd sam/lambdas/coordination && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest tests/ -v
-	cd sam/lambdas/query_subscriptions && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_query_subscriptions.py -v
-	cd sam/lambdas/bucket_cleanup && PYTHONPATH=. $(HERMETIC_AWS) python3 -m pytest test_bucket_cleanup.py -v
+	cd sam/lambdas/coordination && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest tests/ -v
+	cd sam/lambdas/query_subscriptions && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest test_query_subscriptions.py -v
+	cd sam/lambdas/bucket_cleanup && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest test_bucket_cleanup.py -v
 
 # SFN JSONata expression tests (requires Node.js)
 test-sfn-jsonata:

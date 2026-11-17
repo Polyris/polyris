@@ -22,10 +22,14 @@ def fanout(reconciler):
 def stream(ddb):
     """All records the asset-events stream holds so far, as the mapping hands them to Lambda."""
     import boto3
+    from botocore.config import Config
 
     client = ddb.meta.client
     arn = client.describe_table(TableName=TABLES["ASSET_EVENTS_TABLE"][1])["Table"]["LatestStreamArn"]
-    streams = boto3.client("dynamodbstreams", region_name="us-east-1")
+    # The regional endpoint: botocore 1.44.4 sends Streams calls to {account}.streams-ddb.{region},
+    # which moto (5.2.5) does not serve yet, and answers 404 "Not yet implemented".
+    streams = boto3.client("dynamodbstreams", region_name="us-east-1",
+                           config=Config(account_id_endpoint_mode="disabled"))
 
     def read():
         records = []
