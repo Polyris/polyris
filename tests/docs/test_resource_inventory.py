@@ -156,7 +156,9 @@ def test_log_group_table_names_every_log_group():
 
 def test_free_route_count_matches_the_console():
     console = REPO_ROOT / "sam" / "lambdas" / "console_api"
-    env = {**os.environ, "PYTHONPATH": ".", "AWS_DEFAULT_REGION": "us-east-1"}
+    # The checkout's own SDK, not whichever one pip installed: the console imports polyris,
+    # and an editable install of another checkout failed the release gate when that one lagged.
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([".", str(REPO_ROOT)]), "AWS_DEFAULT_REGION": "us-east-1"}
     result = subprocess.run([sys.executable, "-c", "import main; print(len(main.ROUTES))"],
                             cwd=console, env=env, capture_output=True, text=True, check=True)
     routes = int(result.stdout.strip().splitlines()[-1])
