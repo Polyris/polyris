@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from boto3.dynamodb.types import TypeDeserializer
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from bindings import Bindings
@@ -106,7 +107,10 @@ class StreamAdapter:
         self.patterns = [json.loads(f["Pattern"]) for f in props["FilterCriteria"]["Filters"]]
         table = stack.tables["AssetEventsTable"]
         self.arn = stack.ddb.describe_table(TableName=table)["Table"]["LatestStreamArn"]
-        self.streams = boto3.client("dynamodbstreams", region_name="us-east-1")
+        # The regional endpoint: botocore 1.44.4 sends Streams calls to {account}.streams-ddb.{region},
+        # which moto (5.2.5) does not serve yet, and answers 404 "Not yet implemented".
+        self.streams = boto3.client("dynamodbstreams", region_name="us-east-1",
+                                    config=Config(account_id_endpoint_mode="disabled"))
         self.seen: set = set()
         self.pending: List[Dict[str, Any]] = []
 
