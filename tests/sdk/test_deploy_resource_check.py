@@ -385,10 +385,19 @@ class TestCheckFunctions:
 
     def test_check_batch_job_def_with_a_revision_names_that_revision(self, mocker):
         client = mocker.MagicMock()
-        client.describe_job_definitions.return_value = {"jobDefinitions": [{"jobDefinitionName": "jd", "revision": 3}]}
+        client.describe_job_definitions.return_value = {
+            "jobDefinitions": [{"jobDefinitionName": "jd", "revision": 3, "status": "ACTIVE"}]}
         _check_batch_job_def(client, "arn:aws:batch:us-east-1:123456789012:job-definition/jd:3")
+        # `jobDefinitions` takes no other parameter, so ACTIVE is checked on the answer
         client.describe_job_definitions.assert_called_once_with(
-            jobDefinitions=["arn:aws:batch:us-east-1:123456789012:job-definition/jd:3"], status="ACTIVE")
+            jobDefinitions=["arn:aws:batch:us-east-1:123456789012:job-definition/jd:3"])
+
+    def test_check_batch_job_def_with_a_revision_that_is_inactive_raises_not_found(self, mocker):
+        client = mocker.MagicMock()
+        client.describe_job_definitions.return_value = {
+            "jobDefinitions": [{"jobDefinitionName": "jd", "revision": 3, "status": "INACTIVE"}]}
+        with pytest.raises(_NotFoundError):
+            _check_batch_job_def(client, "jd:3")
 
     def test_check_batch_job_def_arn_without_revision_is_looked_up_by_name_on_every_page(self, mocker):
         """Principle #35: a DAG names the family; the newest ACTIVE revision runs."""

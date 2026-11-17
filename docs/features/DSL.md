@@ -271,7 +271,7 @@ Runs an existing ECS task definition.
 ```python
 @task.ecs_task(
     cluster="my-cluster",
-    task_definition="my-task:1",
+    task_definition="my-task",
     launch_type="FARGATE",
     subnets=["subnet-xxx"],
     security_groups=["sg-xxx"],

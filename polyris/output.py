@@ -27,10 +27,11 @@ def _load_dags(dag_file: str):
         if spec is None or spec.loader is None:  # pragma: no cover -- defensive: spec_from_file_location returns a loaded spec for existing .py paths
             raise ImportError(f"Cannot load module from {path}")
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        from polyris.dag import DAG as PolyrisDAG
-        dags = [v for v in vars(mod).values() if isinstance(v, PolyrisDAG)]
+        from polyris.dag import defined_dags, recording_dags
+        # `with DAG("x"):` without `as` binds no name (polyris/CLAUDE.md, "DAG discovery")
+        with recording_dags(str(path)) as recorded:
+            spec.loader.exec_module(mod)
+        dags = defined_dags(mod, recorded)
 
         if not dags:
             print(f"{c('❌ No DAG found in', RED)} {c(dag_file, CYAN)}")

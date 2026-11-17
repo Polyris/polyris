@@ -161,6 +161,84 @@ class TestLoadDagFromFile:
         dags = deploy._load_dag_from_file(tmp_path / "dag.py")
         assert [d.dag_id for d in dags] == ["local-dag"]
 
+    @pytest.mark.parametrize("files, expected", [
+        pytest.param({"dag.py": """
+            from polyris import task
+            from polyris.helpers import dag
+            @dag(schedule="@daily")
+            def unbound_etl():
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def a(): pass
+                a()
+            unbound_etl()
+        """}, ["unbound_etl"], id="an @dag call with no name"),
+        pytest.param({"common.py": """
+            from polyris import DAG, task
+            def make(name):
+                with DAG(name, schedule="@daily") as d:
+                    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                    def a(): pass
+                    a()
+                return d
+        """, "dag.py": """
+            import sys, os; sys.path.insert(0, os.path.dirname(__file__))
+            from common import make
+            for n in ("f1", "f2"):
+                make(n)
+        """}, ["f1", "f2"], id="a factory in another module, called in a loop"),
+        pytest.param({"dag.py": """
+            SRC = (
+                "from polyris import DAG, task\\n"
+                "with DAG('exec-dag', schedule='@daily'):\\n"
+                "    @task.sfn(arn='arn:aws:states:us-east-1:123456789012:stateMachine:x')\\n"
+                "    def a(): pass\\n"
+                "    a()\\n"
+            )
+            exec(compile(SRC, "<generated>", "exec"))
+        """}, ["exec-dag"], id="exec inside the file"),
+    ])
+    def test_a_dag_this_file_makes_through_a_call_is_found(self, tmp_path, monkeypatch, files, expected):
+        """polyris-validate finds these; the deploy must too (review of F18)."""
+        for name, body in files.items():
+            (tmp_path / name).write_text(textwrap.dedent(body))
+        monkeypatch.delitem(sys.modules, "common", raising=False)
+
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == expected
+
+    def test_a_file_that_defines_one_dag_id_twice_is_refused(self, tmp_path, capsys):
+        """Each DAG is one stack: the second would silently replace the first."""
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            for schedule in ("@daily", "@hourly"):
+                with DAG("orders", schedule=schedule):
+                    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                    def a(): pass
+                    a()
+        """))
+        with pytest.raises(SystemExit) as exc:
+            deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert exc.value.code == 1
+        assert "'orders' more than once" in capsys.readouterr().out
+
+    def test_a_dag_no_file_made_belongs_to_none(self):
+        """Code run from a string with no module file under it (`python -c`) owns no DAG."""
+        import types
+        from polyris.dag import _defining_file
+        assert _defining_file(None) is None
+        string_code = types.SimpleNamespace(f_code=types.SimpleNamespace(co_name="<module>", co_filename="<string>"), f_back=None)
+        assert _defining_file(string_code) is None
+
+    def test_recorders_nest(self, tmp_path):
+        """A pipeline file that records DAGs itself does not hide them from the deploy."""
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            from polyris.dag import DAG, recording_dags
+            with recording_dags() as inner:
+                with DAG("nested", schedule="@daily"):
+                    pass
+            assert [d.dag_id for d in inner] == ["nested"]
+        """))
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["nested"]
+
     def test_the_dag_class_is_restored_when_the_file_fails(self, tmp_path):
         from polyris.dag import DAG
         original = DAG.__exit__

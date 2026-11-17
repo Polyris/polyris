@@ -109,6 +109,18 @@ class TestLoadDags:
         dags, _ = _load_dags("dag.py")
         assert sorted(d.dag_id for d in dags) == ["first-dag", "second-dag"]
 
+    def test_finds_a_dag_without_as(self, in_dir):
+        """`with DAG("x"):` binds no name (polyris/CLAUDE.md, "DAG discovery")."""
+        (in_dir / "dag.py").write_text(
+            "from polyris import DAG, task\n"
+            "with DAG('unbound', schedule='@daily'):\n"
+            "    @task.sfn(arn='arn:aws:states:us-east-1:123456789012:stateMachine:x')\n"
+            "    def a(): pass\n"
+            "    a()\n"
+        )
+        dags, _ = _load_dags("dag.py")
+        assert [d.dag_id for d in dags] == ["unbound"]
+
     def test_error_paths_colorize_file_path_on_tty(self, in_dir, capsys, mocker):
         """Error messages name the bad file in CYAN + RED prefix on TTY."""
         from polyris._ansi import CYAN, RED

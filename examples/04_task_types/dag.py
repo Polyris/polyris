@@ -79,7 +79,7 @@ with DAG(
 
     @task.ecs_task(
         cluster="polyris-test-ecs",
-        task_definition="arn:aws:ecs:us-east-1:000000000000:task-definition/polyris-test-task:1",
+        task_definition="arn:aws:ecs:us-east-1:000000000000:task-definition/polyris-test-task",  # no :revision, so the newest ACTIVE revision runs
         launch_type="FARGATE",
         subnets=["subnet-08b2bc98a658e67b4", "subnet-09802d133167abae7"],
         security_groups=["sg-071773f53f202982f"],

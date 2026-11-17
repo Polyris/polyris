@@ -475,29 +475,37 @@ not on modules we control internally.
 ## DAG discovery in loaded modules must use `DAG.__exit__` instrumentation, never `vars(mod)`
 
 Any code that loads a pipeline file and searches for DAG instances records the DAGs
-whose `with` block exits, through the one helper `polyris.dag.recording_dags` (used by
-`extract_dag_info`, `_validate_single` and `polyris-deploy`'s `_load_dag_from_file`):
+whose `with` block exits, through the one helper `polyris.dag.recording_dags`, and a loader
+that needs the file's own DAGs collects them with `polyris.dag.defined_dags`:
 
 ```python
-from polyris.dag import recording_dags
+from polyris.dag import defined_dags, recording_dags
 
-with recording_dags(str(path)) as defined_here:   # str(path): only `with` blocks in this file
+with recording_dags(str(path)) as recorded:   # DAGs this file's top-level code made
     spec.loader.exec_module(module)
+dags = defined_dags(module, recorded)         # plus DAGs built without `with`, by their name
 ```
 
-Never write the `DAG.__exit__` patch by hand again: `validation.py` held two copies of it,
-and `polyris-deploy` had none.
+With a filename, a DAG counts when that file's top-level code made it: directly, through a
+function it calls (`@dag`, a factory in another module), or through `exec`; a DAG that a
+module it imports makes at import time does not. `polyris-deploy`, `polyris-output` and
+`polyris-local` use both; `extract_dag_info`, `_validate_single` and `_run_test` record
+without a filename. Never write the `DAG.__exit__` patch by hand: six loaders each had their
+own copy or none, and two of them, `polyris-deploy` and `polyris-output`, could not see a DAG
+without `as`.
 
-Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]` on its own. A DAG built
-without `with` (`@dag`, or `DAG(...)` and `add_task`) is found by a module global, as
-`_load_dag_from_file` does — in addition to the recording, never instead of it.
+Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]` on its own: it finds a DAG
+built without `with` (`DAG(...)` and `add_task`), and only as an addition to the recording,
+as `defined_dags` does.
 
 `vars(mod)` only finds objects bound to a module-level name. A pipeline written
 `with DAG("name"):` (without `as dag`) creates no binding — `vars(mod)` returns an
 empty list, producing a false-positive "No DAG found" error on a perfectly valid
 file. The `DAG.__exit__` hook fires unconditionally when the `with` block exits,
 regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3, and in
-`polyris-deploy` up to 1.2.2 (F18): it validated a file and then refused to deploy it.
+`polyris-deploy` and `polyris-output` up to 1.2.2 (F18): a file passed validation and then
+could not be deployed. `polyris-deploy` also refuses a file that defines one dag_id twice:
+each DAG is one stack, and the second would replace the first.
 
 ## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
 

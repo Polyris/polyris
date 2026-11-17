@@ -2,22 +2,27 @@
 
 ### Fixed — `polyris-deploy` finds a pipeline written as `with DAG("x"):`
 
-- A pipeline file whose DAG has no `as` name (`with DAG("orders"):`) deployed with "No DAG found", although `polyris-validate` accepted it. The deploy now finds every DAG whose `with` block is in the file; a DAG that a module the file imports defines is still left out.
+- A pipeline file whose DAG has no `as` name (`with DAG("orders"):`), or that makes its DAGs through a call (an `@dag` function called without a name, a factory in another module, `exec`), deployed with "No DAG found", although `polyris-validate` accepted it. `polyris-deploy`, `polyris-output` and `polyris-local` now find every DAG the file makes; a DAG that a module the file imports makes is still left out.
+- `polyris-deploy` refuses a file that defines one `dag_id` twice. Before, it deployed the last one, or both to the same stack: each DAG is one stack, so the second replaced the first.
 - `polyris-destroy` for a file with several DAGs says "Destroying all..." instead of "Deploying all...".
-- The deploy's existence check looks a Batch job definition without a revision (a name, or an ARN without `:N`) up by name, so a DAG that names the family, as the docs advise, is checked against its newest ACTIVE revision.
+- The deploy's existence check looks a Batch job definition without a revision (a name, or an ARN without `:N`) up by name, so a DAG that names the family, as the docs advise, is checked against its newest ACTIVE revision. With a revision, it no longer sends a status filter that AWS documents as not allowed with it.
 
 ### Changed — docs and examples
 
 - `wait_before` takes an `int` (seconds) or a `timedelta`, as it always did; the type hints and the DSL reference now say so. The `role` reference shows a neutral example key.
-- Examples and how-tos name Batch job definitions without a pinned revision.
+- Examples, how-tos and docstrings name Batch job definitions and ECS task definitions without a pinned revision.
 - `examples/02_linear_chain` sets its order with `>>`; the DSL reference says that passing a result to a task only makes it a dependency.
 - README: who polyris is for, a fairer "When a task fails" comparison, and what the body of a task function is.
+
+### Changed — a release names its changelog notes
+
+- `scripts/release.sh` refuses to release while `## Unreleased` is empty, and turns it into `## vX.Y.Z - <date>` with a new, empty `## Unreleased` above (`scripts/changelog_release.py`). 1.2.1 and 1.2.2 went out with their notes still under `## Unreleased`. A declined push now also puts the bumped files back.
 
 ## v1.2.2 - 2026-11-17
 
 ### Added — `polyris --version`
 
-- `polyris --version` prints the installed version (`polyris 1.2.1`), which is also the platform version `polyris-up` installs. Before, it printed the command index. The index now shows the version too, and lists `polyris-destroy` and `polyris-local`, which it left out.
+- `polyris --version` prints the installed version (`polyris 1.2.2`), which is also the platform version `polyris-up` installs. Before, it printed the command index. The index now shows the version too, and lists `polyris-destroy` and `polyris-local`, which it left out.
 
 ## v1.2.1 - 2026-11-17
 

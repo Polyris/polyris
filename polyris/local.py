@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Callable, cast
 from dataclasses import dataclass, field
 
-from .dag import DAG
+from .dag import DAG, defined_dags, recording_dags
 from .task import Task
 from .generators import generate_step_function_json, generate_mermaid
 from .validation import validate_asl_from_dag
@@ -601,26 +601,15 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
 # ═══════════════════════════════════════════════════════════════
 
 def _load_dag_from_file(dag_file: str) -> DAG:
-    """Load a DAG from a pipeline file using DAG.__exit__ instrumentation.
+    """Load the last DAG a pipeline file defines (``polyris.dag.defined_dags``).
 
-    Uses the same discovery pattern as extract_dag_info / _validate_single
-    (CLAUDE.md §): works for `with DAG("name"):` blocks that don't assign
-    `as dag` — unlike vars(mod) which only finds module-level bindings.
-
-    Only DAGs defined in the pipeline file itself are returned — DAGs from
-    imported modules are excluded via a sys.modules locality filter (CLAUDE.md).
+    Works for `with DAG("name"):` blocks that don't assign `as dag` — unlike vars(mod),
+    which only finds module-level bindings (polyris/CLAUDE.md, "DAG discovery"). A DAG
+    that a module the file imports defines is left out.
     """
     import importlib.util
 
-    created_dags: List[DAG] = []
-    original_exit = DAG.__exit__
-
-    def tracking_exit(self: Any, *args: Any) -> Any:
-        created_dags.append(self)
-        return original_exit(self, *args)
-
-    DAG.__exit__ = tracking_exit  # type: ignore[method-assign]
-    try:
+    with recording_dags(dag_file) as recorded:
         spec = importlib.util.spec_from_file_location("dag_module", dag_file)
         if spec is None or spec.loader is None:  # pragma: no cover — defensive: spec_from_file_location returns None only for paths Python cannot load
             raise ImportError(f"Cannot load module from {dag_file}")
@@ -635,24 +624,8 @@ def _load_dag_from_file(dag_file: str) -> DAG:
                 msg = f"sys.exit({code})" if code is not None else str(e)
                 print(f"❌ Error loading {c(dag_file, BOLD)}: {c(msg, RED)}")
                 sys.exit(1)
-    finally:
-        DAG.__exit__ = original_exit  # type: ignore[method-assign]
 
-    # Locality filter (CLAUDE.md): exclude DAGs that appear as named attributes in any
-    # imported module — those were defined elsewhere and merely imported by the pipeline
-    # file. The pipeline file's own module is not in sys.modules (we use module_from_spec
-    # without adding it), so any DAG found in sys.modules came from an import.
-    imported_dag_ids: set[int] = set()
-    for _mod in sys.modules.values():
-        try:
-            for _obj in vars(_mod).values():
-                if isinstance(_obj, DAG):
-                    imported_dag_ids.add(id(_obj))
-        except TypeError:  # pragma: no cover — built-in modules without __dict__
-            pass
-
-    local_dags = [d for d in created_dags if id(d) not in imported_dag_ids]
-
+    local_dags = defined_dags(module, recorded)
     if not local_dags:
         print(f"❌ No DAG found in {c(dag_file, BOLD)}")
         sys.exit(1)

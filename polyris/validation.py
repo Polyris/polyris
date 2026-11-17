@@ -685,36 +685,29 @@ def _run_test(dag_file: str) -> bool:
         print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
         sys.exit(1)
 
-    from polyris.dag import DAG as PolyrisDAG
-    created_dags: List = []
-    original_exit = PolyrisDAG.__exit__
-
-    def _tracking_exit(self, *args):
-        created_dags.append(self)
-        return original_exit(self, *args)
-
-    PolyrisDAG.__exit__ = _tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
+    from polyris.dag import recording_dags
 
     try:
-        spec = importlib.util.spec_from_file_location("_dag", path)
-        if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-            raise ImportError(f"Cannot load module from {path}")
-        mod = importlib.util.module_from_spec(spec)
+        with recording_dags() as created_dags:
+            spec = importlib.util.spec_from_file_location("_dag", path)
+            if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
+                raise ImportError(f"Cannot load module from {path}")
+            mod = importlib.util.module_from_spec(spec)
 
-        parent_dir = str(path.parent)
-        grandparent_dir = str(path.parent.parent)
-        added_paths = []
-        for p in [parent_dir, grandparent_dir]:
-            if p not in sys.path:
-                sys.path.insert(0, p)
-                added_paths.append(p)
+            parent_dir = str(path.parent)
+            grandparent_dir = str(path.parent.parent)
+            added_paths = []
+            for p in [parent_dir, grandparent_dir]:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+                    added_paths.append(p)
 
-        try:
-            spec.loader.exec_module(mod)
-        finally:
-            for p in added_paths:
-                if p in sys.path:
-                    sys.path.remove(p)
+            try:
+                spec.loader.exec_module(mod)
+            finally:
+                for p in added_paths:
+                    if p in sys.path:
+                        sys.path.remove(p)
 
     except (Exception, SystemExit) as e:
         # SystemExit is BaseException, not Exception — catch it here so a
@@ -725,7 +718,6 @@ def _run_test(dag_file: str) -> bool:
         sys.exit(1)
 
     finally:
-        PolyrisDAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
         for _mod_name in ['pipelines', 'pipelines.config']:  # pragma: no cover -- the del body only runs when a pipeline imported those names; unit-test pipelines never do
             if _mod_name in sys.modules:
                 del sys.modules[_mod_name]

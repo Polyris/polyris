@@ -29,4 +29,5 @@ def test_every_lambda_pins_the_release_this_repo_is_at():
 @pytest.mark.parametrize("name", LAMBDAS)
 def test_release_moves_and_commits_every_pin(name):
     release = (REPO / "scripts" / "release.sh").read_text()
-    assert release.count(f"sam/lambdas/{name}/requirements.txt") == 2, "the sed that moves it and the git add"
+    assert release.count(f"sam/lambdas/{name}/requirements.txt") == 3, \
+        "the sed that moves it, the git add, and the restore when the push is declined"

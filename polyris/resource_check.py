@@ -257,8 +257,9 @@ def _active_job_defs(client: Any, ref: str) -> List[Dict[str, Any]]:
     the newest ACTIVE revision, so it is looked up by name, every page of it.
     """
     if _JOB_DEF_REVISION.search(ref):
-        resp = client.describe_job_definitions(jobDefinitions=[ref], status="ACTIVE")
-        return list(resp.get("jobDefinitions", []))
+        # `jobDefinitions` takes no other parameter (AWS DescribeJobDefinitions): filter here
+        resp = client.describe_job_definitions(jobDefinitions=[ref])
+        return [d for d in resp.get("jobDefinitions", []) if d.get("status") == "ACTIVE"]
     name = ref.rsplit("job-definition/", 1)[-1]
     found: List[Dict[str, Any]] = []
     token: Optional[str] = None

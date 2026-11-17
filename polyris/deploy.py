@@ -50,7 +50,7 @@ from .generators import (
     generate_step_function_json,
     generate_dag_hash,
 )
-from .dag import DAG, recording_dags
+from .dag import DAG, defined_dags, recording_dags
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -988,12 +988,12 @@ def deploy_pipeline(
 
 
 def _load_dag_from_file(path: Path) -> list:
-    """Load the DAG(s) a pipeline file defines, in the order it defines them.
+    """Load the DAG(s) a pipeline file defines (``polyris.dag.defined_dags``).
 
     Imports pipeline file purely for DAG extraction.
     Pipeline files should not contain AWS calls at module level.
-    A DAG counts when its ``with`` block is in this file (``recording_dags``), with or
-    without ``as``, or when a global of this file holds it and no other module does.
+    A file that defines one dag_id twice is refused: each DAG is one stack, so the
+    second would silently replace the first.
     """
     spec = importlib.util.spec_from_file_location("pipeline", path)
     if (
@@ -1015,30 +1015,13 @@ def _load_dag_from_file(path: Path) -> list:
         print(f"❌ Error loading pipeline: {e}")
         sys.exit(1)
 
-    # Exclude DAGs that are merely imported from other modules.
-    # A DAG is "local" only if it is not referenced by any other currently-loaded module.
-    dags_in_other_modules: set = set()
-    for mod in list(sys.modules.values()):
-        if mod is None or mod is module or not hasattr(mod, '__dict__'):
-            continue
-        try:
-            for val in mod.__dict__.values():
-                if isinstance(val, DAG):
-                    dags_in_other_modules.add(id(val))
-        except RuntimeError:
-            pass
-
-    seen: set = set()
-    dags = []
-    for dag in defined_here:
-        if id(dag) not in seen:
-            seen.add(id(dag))
-            dags.append(dag)
-    # A DAG built without `with` (DAG(...) and add_task, or @dag) is found by its name.
-    for obj in module.__dict__.values():
-        if isinstance(obj, DAG) and id(obj) not in dags_in_other_modules and id(obj) not in seen:
-            seen.add(id(obj))
-            dags.append(obj)
+    dags = defined_dags(module, defined_here)
+    ids = [d.dag_id for d in dags]
+    twice = sorted({i for i in ids if ids.count(i) > 1})
+    if twice:
+        print(f"❌ {path.name} defines {', '.join(repr(i) for i in twice)} more than once: "
+              "each DAG is one stack, so the second would replace the first")
+        sys.exit(1)
     return dags
 
 

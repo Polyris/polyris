@@ -6,7 +6,9 @@
 #   ./scripts/release.sh full v0.1.0   # Full gates: make check (UI + CFN + all tests)
 #
 # Both modes bump all three version files (pyproject.toml, polyris/__init__.py,
-# ui/package.json) so check-versions stays green. The difference is gates only.
+# ui/package.json) so check-versions stays green, and turn CHANGELOG.md's
+# "## Unreleased" into "## vX.Y.Z - <today>" (scripts/changelog_release.py).
+# The difference is gates only.
 #
 # The script commits, tags and pushes. The GitHub Release itself (notes,
 # platform archive, install.sh) is created and published by
@@ -42,6 +44,8 @@ fi
 if git rev-parse "$VERSION" >/dev/null 2>&1; then
   echo "❌ tag $VERSION already exists" >&2; exit 1
 fi
+
+python3 scripts/changelog_release.py check
 
 echo "→ mode: $MODE   version: $VERSION"
 
@@ -80,9 +84,12 @@ sed -i "s|polyris @ git+https://github.com/Polyris/polyris@v[0-9]*\.[0-9]*\.[0-9
 
 make check-versions
 
+echo "→ CHANGELOG.md: Unreleased → $VERSION - $(date +%F)"
+python3 scripts/changelog_release.py cut "$VERSION" "$(date +%F)"
+
 # ── Commit + tag ───────────────────────────────────────────────────────────────
 
-git add pyproject.toml polyris/__init__.py ui/package.json \
+git add pyproject.toml polyris/__init__.py ui/package.json CHANGELOG.md \
   sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
 
 if git diff --cached --quiet; then
@@ -103,6 +110,9 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
 else
   git tag -d "$VERSION"
   git reset --soft HEAD~1
+  # The tree was clean at the start: put back what this run bumped and cut, so a re-run starts clean.
+  git restore --staged --worktree pyproject.toml polyris/__init__.py ui/package.json CHANGELOG.md \
+    sam/lambdas/console_api/requirements.txt sam/lambdas/coordination/requirements.txt
   echo "ℹ️  rolled back — fix anything and re-run: ./scripts/release.sh $MODE $VERSION"
   exit 0
 fi
