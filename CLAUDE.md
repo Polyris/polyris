@@ -380,7 +380,7 @@ sam/
       restart_wrapper/sfn.tpl.json
       pause_waiter/sfn.tpl.json
   lambdas/
-    console_api/      # REST API (28 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
+    console_api/      # REST API (27 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
     coordination/     # reconcile, asset-fanout, sweeper (ADR #130): decide readiness, signal wrappers, start push consumers, re-check
     query_subscriptions/  # Finds downstream subscribers for a completed task
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
@@ -579,7 +579,7 @@ After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums
 
 Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `register(router)`; `main.py` exposes the assembled `ROUTES` table `(METHOD, '/api/path') → (handler_fn, 'param_key')`.
 
-**Surface (ADR #98, #110):** 28 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
+**Surface (ADR #98, #110):** 27 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 

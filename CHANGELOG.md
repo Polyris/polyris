@@ -1,5 +1,12 @@
 ## Unreleased
 
+Until 2.0, a minor release may change how runs behave, remove console routes, stack outputs and DSL parameters that had no effect, add deploy-time limits, and require upgrade steps. Each such change is listed under "Breaking", and `polyris-up` checks the upgrade's preconditions itself.
+
+### Breaking
+
+- The step classes `Choice`, `Map`, `Sensor` and `ShortCircuit`, and the `Condition` helper, are gone. They never worked: no generator existed for them, so a pipeline that used one failed when it was generated. To wait for data, use `wait_for`. A test now fails for any exported step without a generator.
+- The console route `POST /api/pipeline-register` is gone. Nothing called it: `polyris-deploy` registers each pipeline, and the console has no button for it. To register a pipeline by hand, run `polyris-register`. The free console now serves 27 routes.
+
 ### Added — `polyris --version`
 
 - `polyris --version` prints the installed version (`polyris 1.2.1`), which is also the platform version `polyris-up` installs. Before, it printed the command index. The index now shows the version too, and lists `polyris-destroy` and `polyris-local`, which it left out.
@@ -63,6 +70,8 @@
 - `make test-lambdas`, `scripts/verify-changed.sh`, the route count in `make test-docs` and the coordination smoke's `polyris-deploy` imported whichever `polyris` pip had installed. With an editable install of another checkout that was behind, the 1.2.1 release gate failed on an import. They now put the checkout's root on `PYTHONPATH`. CI was not affected: it installs the checkout under test.
 
 ## v1.2.0 - 2026-11-14
+
+This section also holds the 1.1.x changes, which were not given headings of their own.
 
 ### Upgrading to 1.2.0 (ADR #130, ADR #132)
 

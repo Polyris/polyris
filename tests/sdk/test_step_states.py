@@ -17,10 +17,6 @@ from polyris.steps import (
     Wait,
     Pass,
     Succeed,
-    Choice,
-    Map,
-    Sensor,
-    ShortCircuit,
     LambdaTask,
     DynamoDBTask,
     SNSTask,
@@ -94,26 +90,21 @@ class TestControlFlowStates:
         with pytest.raises(ValueError, match="unrecognized step_type='mystery'"):
             _generate_step_state(Step(step_id="x", step_type="mystery"))
 
-    def test_choice_map_sensor_short_circuit_are_not_yet_generatable(self):
-        """Choice, Map, Sensor, and ShortCircuit are fully-implemented
-        dataclasses (own step_type, docstrings with realistic usage examples,
-        auto-register into the DAG exactly like every other Step subclass —
-        see test_steps_core.py) but have no entry in _STEP_STATE_BUILDERS: no
-        one ever wrote their `_gen_<type>_state` builder. Before the fix
-        above, using any of them exactly as documented silently produced a
-        no-op Pass state; now it fails loudly instead, at generation time —
-        which is the correct interim behavior until (if) they're implemented,
-        but the underlying feature gap is real and worth flagging: these are
-        documented as usable, not marked experimental/unimplemented anywhere,
-        unlike polyris.assets' explicit ExperimentalWarning."""
-        for step in [
-            Choice(step_id="c", default=Pass()),
-            Map(items_path="$.rows"),
-            Sensor(sensor_type="s3", bucket="b", key="k"),
-            ShortCircuit(condition="{% true %}"),
-        ]:
-            with pytest.raises(ValueError, match=f"unrecognized step_type={step.step_type!r}"):
-                _generate_step_state(step)
+    def test_every_exported_step_has_a_generator(self):
+        """A step the library exports must generate a state. Choice, Map, Sensor and ShortCircuit were
+        exported, documented in their docstrings and had no builder, so every DAG that used one failed
+        at generation; 1.3 removed them. A new Step subclass fails here until its builder exists."""
+        import polyris
+        from polyris.generators import _STEP_STATE_BUILDERS
+
+        missing = []
+        for name in polyris.__all__:
+            obj = getattr(polyris, name)
+            if isinstance(obj, type) and issubclass(obj, Step) and obj is not Step:
+                step_type = obj.__dataclass_fields__["step_type"].default
+                if step_type not in _STEP_STATE_BUILDERS:
+                    missing.append(f"{name} ({step_type!r})")
+        assert not missing, f"exported steps without a generator: {missing}"
 
 
 # ============================================================ #

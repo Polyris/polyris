@@ -329,7 +329,6 @@ def test_route_table_completeness():
         ('GET', '/api/runs'),
         ('GET', '/api/health'),
         ('POST', '/api/pipeline-run'),
-        ('POST', '/api/pipeline-register'),
     ]
     for method, path in critical:
         assert (method, path) in ROUTES, f"Missing free route: {method} {path}"

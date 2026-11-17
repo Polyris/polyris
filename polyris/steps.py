@@ -2,12 +2,12 @@
 Step classes for SFN-DSL.
 
 This module contains the base Step class and all Step subclasses:
-- Wait, Pass, Choice, HttpTask, Map, Sensor, ShortCircuit, LambdaTask, Succeed
+- Wait, Pass, HttpTask, LambdaTask, Succeed
 - AWS Service integrations: DynamoDBTask, SNSTask, SQSTask, S3Task, GlueTask, 
   AthenaTask, ECSTask, EventBridgeTask, BedrockTask
 """
 
-from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING, Union, Set
+from typing import List, Optional, Dict, Any, TYPE_CHECKING, Union, Set
 from dataclasses import dataclass, field
 
 from .context import get_current_dag
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 class Step:
     """
     Base class for all pipeline steps.
-    Enables mixing Task, Wait, Choice, Pass, etc. in the same DAG.
+    Enables mixing Task, Wait, Pass, etc. in the same DAG.
     """
     step_id: str
     step_type: str = "step"
@@ -208,98 +208,6 @@ class Pass(Step):
 
 
 # ============================================
-# Choice Step - Conditional branching
-# ============================================
-
-@dataclass(eq=False)
-class Choice(Step):
-    """
-    Choice step - conditional branching.
-
-    
-    Example:
-        check_day = Choice(
-            step_id="check_weekday",
-            choices=[
-                (Condition.string_equals("$.day_type", "weekend"), weekend_flow),
-                (Condition.number_greater_than("$.records", 1000), big_data_flow),
-            ],
-            default=normal_flow
-        )
-    """
-    step_id: str = ""
-    step_type: str = "choice"
-    
-    # List of (condition, next_step) tuples
-    choices: List[Tuple[str, 'Step']] = field(default_factory=list)
-    
-    # Default step if no condition matches
-    default: Optional['Step'] = None
-    
-    def __post_init__(self):
-        if not self.step_id:
-            self.step_id = "Choice"
-        
-        # Auto-register with current DAG
-        dag = get_current_dag()
-        if dag:
-            dag.add_step(self)
-
-
-# ============================================
-# Condition helpers for Choice
-# ============================================
-
-class Condition:
-    """Helper class to build Step Functions conditions."""
-    
-    @staticmethod
-    def string_equals(variable: str, value: str) -> str:
-        """Check if string equals value."""
-        return f'{{% {variable} = "{value}" %}}'
-    
-    @staticmethod
-    def string_matches(variable: str, pattern: str) -> str:
-        """Check if string matches pattern."""
-        return f'{{% $match({variable}, /{pattern}/) %}}'
-    
-    @staticmethod
-    def number_equals(variable: str, value: float) -> str:
-        """Check if number equals value."""
-        return f'{{% {variable} = {value} %}}'
-    
-    @staticmethod
-    def number_greater_than(variable: str, value: float) -> str:
-        """Check if number is greater than value."""
-        return f'{{% {variable} > {value} %}}'
-    
-    @staticmethod
-    def number_less_than(variable: str, value: float) -> str:
-        """Check if number is less than value."""
-        return f'{{% {variable} < {value} %}}'
-    
-    @staticmethod
-    def boolean_equals(variable: str, value: bool) -> str:
-        """Check if boolean equals value."""
-        return f'{{% {variable} = {"true" if value else "false"} %}}'
-    
-    @staticmethod
-    def is_present(variable: str) -> str:
-        """Check if variable exists."""
-        return f'{{% $exists({variable}) %}}'
-    
-    @staticmethod
-    def is_null(variable: str) -> str:
-        """Check if variable is null."""
-        return f'{{% {variable} = null %}}'
-    
-    @staticmethod 
-    def jsonata(expression: str) -> str:
-        """Custom JSONata expression."""
-        return f'{{% {expression} %}}'
-
-
-# ============================================
 # HttpTask - Call HTTP API without Step Function
 # ============================================
 
@@ -339,150 +247,6 @@ class HttpTask(Step):
             )
         if not self.step_id:
             self.step_id = "HttpTask"
-        
-        # Auto-register with current DAG
-        dag = get_current_dag()
-        if dag:
-            dag.add_step(self)
-
-
-# ============================================
-# Map Step - Dynamic Task Mapping
-# ============================================
-
-@dataclass(eq=False)
-class Map(Step):
-    """
-    Map step - iterate over array, process each item.
-
-    Example:
-        process_all = Map(
-            step_id="process_items",
-            items_path="$.items",  # JSONPath to array
-            iterator=process_task,  # Task to run for each item
-            max_concurrency=10,     # Limit parallel executions
-        )
-    """
-    step_id: str = ""
-    step_type: str = "map"
-    
-    # Array to iterate over
-    items_path: str = "$.items"  # JSONPath to array in input
-    items: Optional[List[Any]] = None  # Or static list
-    
-    # Task/Step to run for each item
-    iterator: Any = None  # Task or Step
-    
-    max_concurrency: int = 0  # 0 = unlimited
-    
-    # Tolerate failures
-    tolerated_failure_percentage: Optional[float] = None
-    tolerated_failure_count: Optional[int] = None
-    
-    # Result handling
-    result_path: str = "$.results"
-    
-    def __post_init__(self):
-        if not self.step_id:
-            self.step_id = "Map"
-        
-        # Auto-register with current DAG
-        dag = get_current_dag()
-        if dag:
-            dag.add_step(self)
-
-
-# ============================================
-# Sensor Step - Wait for external condition
-# ============================================
-
-@dataclass(eq=False)
-class Sensor(Step):
-    """
-    Sensor step - wait for external condition.
-
-    
-    Example:
-        # Wait for S3 file
-        wait_for_file = Sensor(
-            step_id="wait_for_data",
-            sensor_type="s3",
-            bucket="my-bucket",
-            key="data/{{ ds }}/input.csv",
-            poke_interval=60,
-            timeout=3600
-        )
-        
-        # Wait for external task
-        wait_for_upstream = Sensor(
-            step_id="wait_upstream",
-            sensor_type="external_task",
-            external_dag_id="upstream-dag",
-            external_task_id="final_task"
-        )
-    """
-    step_id: str = ""
-    step_type: str = "sensor"
-    
-    sensor_type: str = "s3"  # s3, external_task, time, custom
-    
-    # S3 sensor params
-    bucket: Optional[str] = None
-    key: Optional[str] = None
-    
-    # External task sensor params
-    external_dag_id: Optional[str] = None
-    external_task_id: Optional[str] = None
-    
-    # Polling params
-    poke_interval: int = 60  # seconds between checks
-    timeout: int = 3600  # max wait time
-    mode: str = "poke"  # poke or reschedule
-    
-    # Custom check (Lambda ARN or Step Function)
-    check_arn: Optional[str] = None
-    
-    def __post_init__(self):
-        if not self.step_id:
-            self.step_id = f"Sensor_{self.sensor_type}"
-        
-        # Auto-register with current DAG
-        dag = get_current_dag()
-        if dag:
-            dag.add_step(self)
-
-
-# ============================================
-# ShortCircuit - Conditional pipeline stop
-# ============================================
-
-@dataclass(eq=False)
-class ShortCircuit(Step):
-    """
-    ShortCircuit step - conditionally skip downstream tasks.
-
-    
-    Example:
-        # Skip rest of pipeline if condition is false
-        check = ShortCircuit(
-            step_id="check_data_exists",
-            condition="{% $count($.records) > 0 %}",
-        )
-        
-        check >> process >> load  # process and load skipped if condition false
-    """
-    step_id: str = ""
-    step_type: str = "short_circuit"
-    
-    # JSONata condition - if false, downstream is skipped
-    condition: str = "{% true %}"
-    
-    # What to do when condition is false
-    skip_downstream: bool = True
-    
-    def __post_init__(self):
-        if not self.step_id:
-            self.step_id = "ShortCircuit"
         
         # Auto-register with current DAG
         dag = get_current_dag()
@@ -534,18 +298,10 @@ class LambdaTask(Step):
 @dataclass(eq=False)
 class Succeed(Step):
     """
-    Succeed step - end pipeline successfully.
-    Useful for conditional early exit or short-circuit patterns.
-    
+    Succeed step - end its branch of the pipeline successfully.
+
     Example:
-        # Early exit if no data
-        check = Choice(
-            step_id="check_data",
-            choices=[
-                (Condition.number_equals("$.count", 0), Succeed(step_id="no_data_exit"))
-            ],
-            default=process_task
-        )
+        Succeed(step_id="done")
     """
     step_id: str = ""
     step_type: str = "succeed"
