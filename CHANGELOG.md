@@ -1,5 +1,20 @@
 ## Unreleased
 
+### Fixed — `polyris-deploy` finds a pipeline written as `with DAG("x"):`
+
+- A pipeline file whose DAG has no `as` name (`with DAG("orders"):`) deployed with "No DAG found", although `polyris-validate` accepted it. The deploy now finds every DAG whose `with` block is in the file; a DAG that a module the file imports defines is still left out.
+- `polyris-destroy` for a file with several DAGs says "Destroying all..." instead of "Deploying all...".
+- The deploy's existence check looks a Batch job definition without a revision (a name, or an ARN without `:N`) up by name, so a DAG that names the family, as the docs advise, is checked against its newest ACTIVE revision.
+
+### Changed — docs and examples
+
+- `wait_before` takes an `int` (seconds) or a `timedelta`, as it always did; the type hints and the DSL reference now say so. The `role` reference shows a neutral example key.
+- Examples and how-tos name Batch job definitions without a pinned revision.
+- `examples/02_linear_chain` sets its order with `>>`; the DSL reference says that passing a result to a task only makes it a dependency.
+- README: who polyris is for, a fairer "When a task fails" comparison, and what the body of a task function is.
+
+## v1.2.2 - 2026-11-17
+
 ### Added — `polyris --version`
 
 - `polyris --version` prints the installed version (`polyris 1.2.1`), which is also the platform version `polyris-up` installs. Before, it printed the command index. The index now shows the version too, and lists `polyris-destroy` and `polyris-local`, which it left out.

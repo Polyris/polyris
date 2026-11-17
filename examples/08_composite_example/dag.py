@@ -65,7 +65,7 @@ with DAG(
         """Roll up into the gold daily table."""
         pass
 
-    @task.batch_job(job_definition="arn:aws:batch:us-east-1:000000000000:job-definition/polyris-test-jobdef:1", job_queue="arn:aws:batch:us-east-1:000000000000:job-queue/polyris-test-queue")
+    @task.batch_job(job_definition="arn:aws:batch:us-east-1:000000000000:job-definition/polyris-test-jobdef", job_queue="arn:aws:batch:us-east-1:000000000000:job-queue/polyris-test-queue")
     def build_report():
         """Render the executive report.
 

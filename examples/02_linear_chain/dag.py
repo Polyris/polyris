@@ -1,9 +1,7 @@
 """Linear ETL — extract → transform → load, with data flowing down the chain.
 
-Dependencies are created by *calling* one task with another's result: the output
-of `extract()` flows into `transform(...)`, and that flows into `load(...)`.
-
-Each task sends data by returning it (xcom). Here every task is a nested Step
+`>>` sets the order: `extract() >> transform() >> load()`. It moves no data;
+each task sends data by returning it (xcom). Here every task is a nested Step
 Function, so each one receives its upstream's output in its input and reads it as
 ``$states.input.upstream.<task>.output`` — e.g. the transform state machine reads
 ``$states.input.upstream.extract.output``. (A Lambda would read the same under
@@ -49,7 +47,4 @@ with DAG(
         """Write the aggregated result to the warehouse."""
         pass
 
-    # extract → transform → load
-    raw = extract()
-    clean = transform(raw)
-    load(clean)
+    extract() >> transform() >> load()

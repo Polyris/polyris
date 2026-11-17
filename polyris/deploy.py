@@ -50,7 +50,7 @@ from .generators import (
     generate_step_function_json,
     generate_dag_hash,
 )
-from .dag import DAG
+from .dag import DAG, recording_dags
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -988,10 +988,12 @@ def deploy_pipeline(
 
 
 def _load_dag_from_file(path: Path) -> list:
-    """Load DAG(s) from a dag.py file.
+    """Load the DAG(s) a pipeline file defines, in the order it defines them.
 
     Imports pipeline file purely for DAG extraction.
     Pipeline files should not contain AWS calls at module level.
+    A DAG counts when its ``with`` block is in this file (``recording_dags``), with or
+    without ``as``, or when a global of this file holds it and no other module does.
     """
     spec = importlib.util.spec_from_file_location("pipeline", path)
     if (
@@ -1001,7 +1003,8 @@ def _load_dag_from_file(path: Path) -> list:
     module = importlib.util.module_from_spec(spec)
 
     try:
-        spec.loader.exec_module(module)
+        with recording_dags(str(path)) as defined_here:
+            spec.loader.exec_module(module)
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else 1
         if code != 0:
@@ -1027,6 +1030,11 @@ def _load_dag_from_file(path: Path) -> list:
 
     seen: set = set()
     dags = []
+    for dag in defined_here:
+        if id(dag) not in seen:
+            seen.add(id(dag))
+            dags.append(dag)
+    # A DAG built without `with` (DAG(...) and add_task, or @dag) is found by its name.
     for obj in module.__dict__.values():
         if isinstance(obj, DAG) and id(obj) not in dags_in_other_modules and id(obj) not in seen:
             seen.add(id(obj))
@@ -1250,7 +1258,7 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
 
     if len(dags) > 1 and not args.select:
         print(f"Found {len(dags)} DAGs: {[d.dag_id for d in dags]}")
-        print("Deploying all...")
+        print("Destroying all..." if destroy else "Deploying all...")
 
     # Deploy each DAG
     for dag in dags:

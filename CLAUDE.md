@@ -221,7 +221,7 @@ Any template change to `Command`, `Image`, etc. creates a new revision (`:2`, `:
 
 In `@task.ecs_task(task_definition=...)` and `@task.batch_job(job_definition=...)`: drop the trailing `:N`. Only pin `:N` when deliberately holding a specific version — document why.
 
-This applies to docstring examples too — a docstring that shows `task_definition='my-task-def:3'` misleads users into using the pinned form.
+This applies to docstring examples too — a docstring that shows `task_definition='my-task-def:3'` misleads users into using the pinned form. The deploy's existence check looks a Batch reference without `:N` up by name (`resource_check._active_job_defs`): `describe_job_definitions(jobDefinitions=[…])` documents only the forms with a revision.
 
 **36. Functions with 5+ parameters enforce keyword-only arguments**
 Any function with five or more parameters must separate positional from optional parameters with `*`, making every optional argument keyword-only at the call site:

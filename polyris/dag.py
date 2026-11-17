@@ -2,7 +2,10 @@
 DAG class for SFN-DSL.
 """
 
-from typing import List, Optional, Dict, Any, Callable, TYPE_CHECKING, Tuple
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Callable, Iterator, TYPE_CHECKING, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -302,3 +305,30 @@ class DAG:
 
 # Alias for backwards compatibility
 Pipeline = DAG
+
+
+@contextmanager
+def recording_dags(filename: Optional[str] = None) -> Iterator[List[DAG]]:
+    """Record every DAG whose ``with`` block exits while this block runs.
+
+    This is how a loader finds the DAGs a pipeline file defines (polyris/CLAUDE.md, "DAG
+    discovery"): ``with DAG("x"):`` without ``as`` binds no name, so the module's globals
+    never show it. With ``filename``, only ``with`` blocks in that file count, so a DAG that
+    a module it imports defines is left out.
+    """
+    recorded: List[DAG] = []
+    wanted = Path(filename).resolve() if filename is not None else None
+    original_exit = DAG.__exit__
+
+    def recording_exit(self, *args):
+        # The caller is the frame that runs the `with` statement.
+        if wanted is None or Path(sys._getframe(1).f_code.co_filename).resolve() == wanted:
+            recorded.append(self)
+        return original_exit(self, *args)
+
+    DAG.__exit__ = recording_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
+    try:
+        yield recorded
+    finally:
+        DAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore the method
+

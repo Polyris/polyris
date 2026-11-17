@@ -119,6 +119,56 @@ class TestLoadDagFromFile:
         dags = deploy._load_dag_from_file(tmp_path / "dag.py")
         assert [d.dag_id for d in dags] == ["local-dag"]
 
+    def test_a_dag_without_as_is_found(self, tmp_path):
+        """F18: `with DAG("x"):` binds no name; the loader finds it by its `with` block."""
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("first", schedule="@daily"):
+                @task.sfn(arn=ARN)
+                def a(): pass
+                a()
+            with DAG("second", schedule="@daily") as named:
+                @task.sfn(arn=ARN)
+                def b(): pass
+                b()
+        """))
+
+        dags = deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert [d.dag_id for d in dags] == ["first", "second"]
+
+    def test_a_dag_an_imported_module_defines_without_as_is_excluded(self, tmp_path, monkeypatch):
+        (tmp_path / "shared_unbound.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("shared-unbound", schedule="@daily"):
+                @task.sfn(arn=ARN)
+                def s(): pass
+                s()
+        """))
+        (tmp_path / "dag.py").write_text(textwrap.dedent(f"""
+            import sys; sys.path.insert(0, r"{tmp_path}")
+            import shared_unbound  # noqa: F401  defines a DAG of its own, with no name
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            with DAG("local-dag", schedule="@daily"):
+                @task.sfn(arn=ARN)
+                def go(): pass
+                go()
+        """))
+        monkeypatch.delitem(sys.modules, "shared_unbound", raising=False)
+
+        dags = deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert [d.dag_id for d in dags] == ["local-dag"]
+
+    def test_the_dag_class_is_restored_when_the_file_fails(self, tmp_path):
+        from polyris.dag import DAG
+        original = DAG.__exit__
+        (tmp_path / "dag.py").write_text("raise RuntimeError('boom')\n")
+        with pytest.raises(SystemExit):
+            deploy._load_dag_from_file(tmp_path / "dag.py")
+        assert DAG.__exit__ is original
+
     def test_systemexit_zero_is_tolerated(self, tmp_path):
         """exit(0) in a pipeline file must not abort loading."""
         (tmp_path / "dag.py").write_text(textwrap.dedent("""
@@ -320,3 +370,24 @@ class TestMainCliBulkFlags:
 
         assert deployed.call_count == 1
         assert deployed.call_args.kwargs["dag"].dag_id == "solo"
+
+    def test_destroy_of_a_file_with_several_dags_says_it_destroys(self, tmp_path, mocker, monkeypatch, capsys):
+        """F12: polyris-destroy said "Deploying all..." for a file with several DAGs."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            from polyris import DAG, task
+            ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+            for name in ("one", "two"):
+                with DAG(name, schedule="@daily"):
+                    @task.sfn(arn=ARN)
+                    def go(): pass
+                    go()
+        """))
+        destroyed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-destroy"])
+
+        deploy.main(force_destroy=True)
+
+        out = capsys.readouterr().out
+        assert "Destroying all..." in out and "Deploying all" not in out
+        assert [c.kwargs["dag"].dag_id for c in destroyed.call_args_list] == ["one", "two"]

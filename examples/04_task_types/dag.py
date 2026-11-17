@@ -106,7 +106,7 @@ with DAG(
         pass
 
     @task.batch_job(
-        job_definition="arn:aws:batch:us-east-1:000000000000:job-definition/polyris-test-jobdef:1",
+        job_definition="arn:aws:batch:us-east-1:000000000000:job-definition/polyris-test-jobdef",  # no :revision, so the newest ACTIVE revision runs
         job_queue="arn:aws:batch:us-east-1:000000000000:job-queue/polyris-test-queue",
         batch_parameters={"format": "pdf"},     # static Ref:: parameters
     )

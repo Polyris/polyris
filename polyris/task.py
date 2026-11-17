@@ -268,7 +268,7 @@ class Task:
     arn: str = ""
     
     # Cross-account execution
-    role: str = "same"  # 'acq', 'etl', 'processing', 'orchestration', 'same'
+    role: str = "same"  # 'same', a key of config.py's roles dict (e.g. 'analytics'), or a role ARN
     
     retries: int = 0
     retry_delay: timedelta = field(default_factory=lambda: timedelta(minutes=5))
@@ -457,7 +457,7 @@ class CommonTaskKwargs(TypedDict, total=False):
     """
     task_id: Optional[str]
     role: str
-    wait_before: int
+    wait_before: Union[int, timedelta]
     retries: Optional[int]
     retry_delay: Optional[timedelta]
     retry_exponential_backoff: bool
@@ -551,7 +551,7 @@ class TaskDecorator:
         task_type: TaskTypeLiteral = "sfn",
         arn: Optional[str] = None,
         role: str = "same",
-        wait_before: Optional[int] = None,
+        wait_before: Optional[Union[int, timedelta]] = None,
         retries: Optional[int] = None,
         retry_delay: Optional[timedelta] = None,
         retry_exponential_backoff: Optional[bool] = None,

@@ -381,7 +381,27 @@ class TestCheckFunctions:
             "jobDefinitions": [{"jobDefinitionName": "jd", "status": "ACTIVE"}]
         }
         _check_batch_job_def(client, "jd")  # no raise
-        client.describe_job_definitions.assert_called_once_with(jobDefinitions=["jd"], status="ACTIVE")
+        client.describe_job_definitions.assert_called_once_with(jobDefinitionName="jd", status="ACTIVE")
+
+    def test_check_batch_job_def_with_a_revision_names_that_revision(self, mocker):
+        client = mocker.MagicMock()
+        client.describe_job_definitions.return_value = {"jobDefinitions": [{"jobDefinitionName": "jd", "revision": 3}]}
+        _check_batch_job_def(client, "arn:aws:batch:us-east-1:123456789012:job-definition/jd:3")
+        client.describe_job_definitions.assert_called_once_with(
+            jobDefinitions=["arn:aws:batch:us-east-1:123456789012:job-definition/jd:3"], status="ACTIVE")
+
+    def test_check_batch_job_def_arn_without_revision_is_looked_up_by_name_on_every_page(self, mocker):
+        """Principle #35: a DAG names the family; the newest ACTIVE revision runs."""
+        client = mocker.MagicMock()
+        client.describe_job_definitions.side_effect = [
+            {"jobDefinitions": [], "nextToken": "p2"},
+            {"jobDefinitions": [{"jobDefinitionName": "jd", "revision": 7}]},
+        ]
+        _check_batch_job_def(client, "arn:aws:batch:us-east-1:123456789012:job-definition/jd")  # no raise
+        assert client.describe_job_definitions.call_args_list == [
+            mocker.call(jobDefinitionName="jd", status="ACTIVE"),
+            mocker.call(jobDefinitionName="jd", status="ACTIVE", nextToken="p2"),
+        ]
 
     def test_check_batch_job_def_empty_list_raises_not_found(self, mocker):
         client = mocker.MagicMock()
@@ -396,7 +416,7 @@ class TestCheckFunctions:
         client.describe_job_definitions.return_value = {"jobDefinitions": []}
         with pytest.raises(_NotFoundError):
             _check_batch_job_def(client, "inactive-def")
-        client.describe_job_definitions.assert_called_once_with(jobDefinitions=["inactive-def"], status="ACTIVE")
+        client.describe_job_definitions.assert_called_once_with(jobDefinitionName="inactive-def", status="ACTIVE")
 
     def test_check_athena_workgroup_found(self, mocker):
         client = mocker.MagicMock()

@@ -107,17 +107,9 @@ def extract_dag_info(file_path: str) -> List[DAGInfo]:
 
     try:
         # Track DAGs created via context manager
-        from polyris.dag import DAG
-        created_dags = []
-        original_exit = DAG.__exit__
+        from polyris.dag import recording_dags
 
-        def tracking_exit(self, *args):
-            created_dags.append(self)
-            return original_exit(self, *args)
-
-        DAG.__exit__ = tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
-
-        try:
+        with recording_dags() as created_dags:
             spec = importlib.util.spec_from_file_location("pipeline_module", file_path)
             if not spec or not spec.loader:  # pragma: no cover -- spec_from_file_location returns None only for a path Python cannot load; defensive
                 return []
@@ -152,7 +144,7 @@ def extract_dag_info(file_path: str) -> List[DAGInfo]:
                 )
 
                 if dag.is_asset_triggered:
-                    schedule_info = dag.asset_schedule_info
+                    schedule_info = dag.asset_schedule_info or {}  # set whenever is_asset_triggered
                     info.trigger_assets = schedule_info.get('assets', [])
                     info.trigger_operator = schedule_info.get('operator', 'OR')
 
@@ -178,9 +170,6 @@ def extract_dag_info(file_path: str) -> List[DAGInfo]:
                             info.consumed_assets.append(asset_name)
 
                 dags.append(info)
-
-        finally:
-            DAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
 
     finally:
         for mod in ['pipelines', 'pipelines.config']:  # pragma: no cover -- cleanup of optionally-cached pipeline modules; only runs when the pipeline imported them
@@ -518,17 +507,9 @@ def _validate_single(dag_file: str, verbose: bool) -> Tuple[bool, List[str]]:
         return False, [f"Pipeline file not found: {dag_file}"]
 
     try:
-        from polyris.dag import DAG as PolyrisDAG
-        created_dags: List = []
-        original_exit = PolyrisDAG.__exit__
+        from polyris.dag import recording_dags
 
-        def _tracking_exit(self, *args):
-            created_dags.append(self)
-            return original_exit(self, *args)
-
-        PolyrisDAG.__exit__ = _tracking_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
-
-        try:
+        with recording_dags() as created_dags:
             spec = importlib.util.spec_from_file_location("_dag", path)
             if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
                 raise ImportError(f"Cannot load module from {path}")
@@ -550,9 +531,6 @@ def _validate_single(dag_file: str, verbose: bool) -> Tuple[bool, List[str]]:
                 for p in added_paths:
                     if p in sys.path:
                         sys.path.remove(p)
-
-        finally:
-            PolyrisDAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore instrumented method
 
         dags = created_dags
 
@@ -600,8 +578,7 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
     try:
         # role must be 'same', a key in config.roles (pyproject.toml), or a
         # raw ARN passed through directly. The common case is a key (see the
-        # role field's own inline comment listing example keys: 'acq', 'etl',
-        # 'processing', 'orchestration', 'same') — but `polyris.roles`'
+        # role field's own inline comment) — but `polyris.roles`'
         # documented usage (`role=roles["data_warehouse"]`) passes the
         # *resolved ARN value* directly, which _build_task_branch already
         # accepts by falling through unresolved-as-is when a role isn't a

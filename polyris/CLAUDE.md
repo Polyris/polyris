@@ -474,29 +474,30 @@ not on modules we control internally.
 
 ## DAG discovery in loaded modules must use `DAG.__exit__` instrumentation, never `vars(mod)`
 
-Any code that loads a pipeline file and searches for DAG instances must use the
-`DAG.__exit__` hook pattern (same as `extract_dag_info`):
+Any code that loads a pipeline file and searches for DAG instances records the DAGs
+whose `with` block exits, through the one helper `polyris.dag.recording_dags` (used by
+`extract_dag_info`, `_validate_single` and `polyris-deploy`'s `_load_dag_from_file`):
 
 ```python
-created_dags = []
-original_exit = DAG.__exit__
-def tracking_exit(self, *args):
-    created_dags.append(self)
-    return original_exit(self, *args)
-DAG.__exit__ = tracking_exit
-try:
+from polyris.dag import recording_dags
+
+with recording_dags(str(path)) as defined_here:   # str(path): only `with` blocks in this file
     spec.loader.exec_module(module)
-finally:
-    DAG.__exit__ = original_exit
 ```
 
-Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]`.
+Never write the `DAG.__exit__` patch by hand again: `validation.py` held two copies of it,
+and `polyris-deploy` had none.
+
+Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]` on its own. A DAG built
+without `with` (`@dag`, or `DAG(...)` and `add_task`) is found by a module global, as
+`_load_dag_from_file` does — in addition to the recording, never instead of it.
 
 `vars(mod)` only finds objects bound to a module-level name. A pipeline written
 `with DAG("name"):` (without `as dag`) creates no binding — `vars(mod)` returns an
 empty list, producing a false-positive "No DAG found" error on a perfectly valid
 file. The `DAG.__exit__` hook fires unconditionally when the `with` block exits,
-regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3.
+regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3, and in
+`polyris-deploy` up to 1.2.2 (F18): it validated a file and then refused to deploy it.
 
 ## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
 

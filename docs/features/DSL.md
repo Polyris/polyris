@@ -383,9 +383,9 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `retry_exponential_backoff` | bool | False | Double the wait each retry: `min(retry_delay·2^n, max_retry_delay)` |
 | `max_retry_delay` | timedelta | none (3600s cap) | Ceiling for exponential backoff |
 | `retry_jitter` | bool | False | Randomise each wait into `[base/2, base)` (avoids retry stampede) |
-| `wait_before` | int (seconds) | 0 | Wait N seconds before executing (rate limiting) |
+| `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting) |
 | `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
-| `role` | str | `"same"` | Cross-account role key from `config.py` roles dict (`'acq'`, `'etl'`, `'processing'`, `'orchestration'`, `'same'`) |
+| `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
 | `outlets` | list[Asset] | `[]` | Assets produced by this task |
 | `inlets` | list[Asset] | `[]` | Assets consumed by this task |
 | `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
@@ -554,6 +554,10 @@ data = extract()
 transformed = transform(data)
 load(transformed)
 ```
+
+Passing a task's result to another task only makes it a dependency: no data moves through
+the argument, and the function body does not run in AWS. A task's output reaches the next
+task through xcom ([DATA_PASSING.md](DATA_PASSING.md)). Prefer `>>`: it says what it does.
 
 ### List of Dependencies
 
