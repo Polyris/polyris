@@ -1,9 +1,15 @@
 ## Unreleased
 
-### Fixed — `polyris-deploy` finds a pipeline written as `with DAG("x"):`
+### Changed — every command loads a pipeline file the same way (ADR #139)
 
-- A pipeline file whose DAG has no `as` name (`with DAG("orders"):`), or that makes its DAGs through a call (an `@dag` function called without a name, a factory in another module, `exec`), deployed with "No DAG found", although `polyris-validate` accepted it. `polyris-deploy`, `polyris-output` and `polyris-local` now find every DAG the file makes; a DAG that a module the file imports makes is still left out.
-- `polyris-deploy` refuses a file that defines one `dag_id` twice. Before, it deployed the last one, or both to the same stack: each DAG is one stack, so the second replaced the first. In `--all` / `--only`, a file that does not load is now a failure of the batch: the summary counts it and the exit code is 1. Before, it was skipped with a warning and the batch reported success, though that stack was neither deployed nor destroyed.
+- `polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` now run a pipeline file through one loader, so a file that passes validation also deploys. Before, each found DAGs its own way, and a file whose DAG had no `as` name (`with DAG("orders"):`), or that made its DAGs through a call (an `@dag` function, a factory in another module, `exec`), passed `polyris-validate` and then deployed with "No DAG found".
+- A DAG belongs to the file whose code made it, with or without `with`; a DAG that a module the file imports makes is that module's. `polyris-validate` therefore no longer validates such a DAG as part of the importing file; it is validated with its own file.
+- Every command makes the file's folder and the one above importable while it runs, as `polyris-validate` did, and lets `sys.exit(0)` end the file normally, as `polyris-deploy` did.
+- A file that makes one `dag_id` twice is refused by every command: each DAG is one stack, so the second would replace the first. Before, `polyris-deploy` deployed the last one.
+
+### Fixed — `polyris-deploy`
+
+- In `--all` / `--only`, a file that does not load is a failure of the batch: the summary counts it and the exit code is 1. Before, it was skipped with a warning and the batch reported success, though that stack was neither deployed nor destroyed.
 - `polyris-destroy` for a file with several DAGs says "Destroying all..." instead of "Deploying all...".
 - The deploy's existence check looks a Batch job definition without a revision (a name, or an ARN without `:N`) up by name, so a DAG that names the family, as the docs advise, is checked against its newest ACTIVE revision. With a revision, it no longer sends a status filter that AWS documents as not allowed with it.
 

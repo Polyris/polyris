@@ -277,16 +277,23 @@ class TestLoadDagFromFile:
         """))
         assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["threaded"]
 
-    def test_recorders_nest(self, tmp_path):
-        """A pipeline file that records DAGs itself does not hide them from the deploy."""
-        (tmp_path / "dag.py").write_text(textwrap.dedent("""
-            from polyris.dag import DAG, recording_dags
-            with recording_dags() as inner:
-                with DAG("nested", schedule="@daily"):
-                    pass
-            assert [d.dag_id for d in inner] == ["nested"]
+    def test_loads_nest_and_each_keeps_its_own_dags(self, tmp_path):
+        """A pipeline file that loads another one: each load records the DAGs its own file made."""
+        (tmp_path / "other.py").write_text(textwrap.dedent("""
+            from polyris import DAG
+            with DAG("other", schedule="@daily"):
+                pass
         """))
-        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["nested"]
+        (tmp_path / "dag.py").write_text(textwrap.dedent(f"""
+            from polyris import DAG
+            from polyris.loader import load_pipeline
+            with DAG("before", schedule="@daily"):
+                pass
+            assert [d.dag_id for d in load_pipeline(r"{tmp_path / 'other.py'}").dags] == ["other"]
+            with DAG("after", schedule="@daily"):
+                pass
+        """))
+        assert [d.dag_id for d in deploy._load_dag_from_file(tmp_path / "dag.py")] == ["before", "after"]
 
     def test_the_dag_class_is_restored_when_the_file_fails(self, tmp_path):
         from polyris.dag import DAG

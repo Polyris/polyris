@@ -17,7 +17,6 @@ Usage:
 """
 
 import sys
-import importlib.util
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional, Any
 from dataclasses import dataclass, field
@@ -92,89 +91,56 @@ def discover_pipeline_files(directory: str) -> List[str]:
 
 def extract_dag_info(file_path: str) -> List[DAGInfo]:
     """
-    Extract DAG information from a pipeline file without full import.
-    
-    Uses importlib to load the module and extract DAG objects.
-    Imports pipeline file for DAG extraction.
-    
+    Extract DAG information from a pipeline file.
+
+    Runs the file through ``polyris.loader.load_pipeline``, the loader every CLI uses
+    (ADR #139), so validate sees exactly the DAGs deploy would deploy.
+
     Args:
         file_path: Path to Python file
         
     Returns:
         List of DAGInfo objects found in file
     """
+    from polyris.loader import load_pipeline
+
+    # Raises PipelineLoadError (an Exception) for a file that does not load; validate_all reports it.
     dags = []
+    for dag in load_pipeline(file_path, module_name="pipeline_module").dags:
+        info = DAGInfo(
+            dag_id=dag.dag_id,
+            file_path=file_path,
+            schedule=dag.schedule,
+            is_asset_triggered=dag.is_asset_triggered
+        )
 
-    try:
-        # Track DAGs created via context manager
-        from polyris.dag import recording_dags
+        if dag.is_asset_triggered:
+            schedule_info = dag.asset_schedule_info or {}  # set whenever is_asset_triggered
+            info.trigger_assets = schedule_info.get('assets', [])
+            info.trigger_operator = schedule_info.get('operator', 'OR')
 
-        with recording_dags() as created_dags:
-            spec = importlib.util.spec_from_file_location("pipeline_module", file_path)
-            if not spec or not spec.loader:  # pragma: no cover -- spec_from_file_location returns None only for a path Python cannot load; defensive
-                return []
+        for task in dag.tasks:
+            for outlet in getattr(task, 'outlets', []):
+                asset_name = outlet.name if hasattr(outlet, 'name') else str(outlet)
+                if asset_name not in info.produced_assets:
+                    info.produced_assets.append(asset_name)
+                # Capture the typed schema declared on this outlet so
+                # cross-pipeline schema validation can compare them.
+                # Schema lives on real `Asset` instances; refs / bare
+                # strings have nothing to capture.
+                outlet_schema = getattr(outlet, 'schema', None)
+                if outlet_schema:
+                    from .schema import column_to_dict
+                    info.outlet_schemas[asset_name] = [
+                        column_to_dict(c) for c in outlet_schema
+                    ]
 
-            module = importlib.util.module_from_spec(spec)
+            for inlet in getattr(task, 'inlets', []):
+                asset_name = inlet.name if hasattr(inlet, 'name') else str(inlet)
+                if asset_name not in info.consumed_assets:
+                    info.consumed_assets.append(asset_name)
 
-            parent_dir = str(Path(file_path).parent)
-            grandparent_dir = str(Path(file_path).parent.parent)
-            added_paths = []
-            for p in [parent_dir, grandparent_dir]:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-                    added_paths.append(p)
-
-            try:
-                spec.loader.exec_module(module)
-            finally:
-                # Always restore sys.path — whether exec_module succeeded or raised.
-                # On failure the exception propagates; created_dags (partial) is
-                # never processed, so validate_all sees a clean error, not stale data.
-                for p in added_paths:
-                    if p in sys.path:
-                        sys.path.remove(p)
-
-            # Only reached when exec_module succeeded — no partial DAGs here.
-            for dag in created_dags:
-                info = DAGInfo(
-                    dag_id=dag.dag_id,
-                    file_path=file_path,
-                    schedule=dag.schedule,
-                    is_asset_triggered=dag.is_asset_triggered
-                )
-
-                if dag.is_asset_triggered:
-                    schedule_info = dag.asset_schedule_info or {}  # set whenever is_asset_triggered
-                    info.trigger_assets = schedule_info.get('assets', [])
-                    info.trigger_operator = schedule_info.get('operator', 'OR')
-
-                for task in dag.tasks:
-                    for outlet in getattr(task, 'outlets', []):
-                        asset_name = outlet.name if hasattr(outlet, 'name') else str(outlet)
-                        if asset_name not in info.produced_assets:
-                            info.produced_assets.append(asset_name)
-                        # Capture the typed schema declared on this outlet so
-                        # cross-pipeline schema validation can compare them.
-                        # Schema lives on real `Asset` instances; refs / bare
-                        # strings have nothing to capture.
-                        outlet_schema = getattr(outlet, 'schema', None)
-                        if outlet_schema:
-                            from .schema import column_to_dict
-                            info.outlet_schemas[asset_name] = [
-                                column_to_dict(c) for c in outlet_schema
-                            ]
-
-                    for inlet in getattr(task, 'inlets', []):
-                        asset_name = inlet.name if hasattr(inlet, 'name') else str(inlet)
-                        if asset_name not in info.consumed_assets:
-                            info.consumed_assets.append(asset_name)
-
-                dags.append(info)
-
-    finally:
-        for mod in ['pipelines', 'pipelines.config']:  # pragma: no cover -- cleanup of optionally-cached pipeline modules; only runs when the pipeline imported them
-            if mod in sys.modules:
-                del sys.modules[mod]
+        dags.append(info)
 
     return dags
 
@@ -498,67 +464,31 @@ def _validate_single(dag_file: str, verbose: bool) -> Tuple[bool, List[str]]:
     verbose=False — the caller must pass verbose=False (via effective_verbose)
     when --json is active so that JSON consumers receive clean stdout.
 
-    Uses DAG.__exit__ instrumentation (same as extract_dag_info) so that DAGs
-    defined without an `as dag` binding are found correctly.  vars(mod) only
-    finds names bound at module level and misses `with DAG():` blocks.
+    Loads the file through ``polyris.loader.load_pipeline``, the loader every CLI uses
+    (ADR #139): the DAGs validated are the ones deploy would deploy.
     """
-    path = Path(dag_file)
-    if not path.exists():
-        return False, [f"Pipeline file not found: {dag_file}"]
+    from polyris.loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 
     try:
-        from polyris.dag import recording_dags
+        dags = load_pipeline(dag_file, module_name="_dag").dags
+    except PipelineNotFoundError:
+        return False, [f"Pipeline file not found: {dag_file}"]
+    except PipelineLoadError as e:
+        return False, [f"Failed to load {dag_file}: {e}"]
+    if not dags:
+        return False, [f"No DAG found in {dag_file}"]
 
-        with recording_dags() as created_dags:
-            spec = importlib.util.spec_from_file_location("_dag", path)
-            if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-                raise ImportError(f"Cannot load module from {path}")
-            mod = importlib.util.module_from_spec(spec)
-
-            # Add parent and grandparent dirs so `from config import X` resolves —
-            # mirrors extract_dag_info's sys.path treatment.
-            parent_dir = str(path.parent)
-            grandparent_dir = str(path.parent.parent)
-            added_paths = []
-            for p in [parent_dir, grandparent_dir]:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-                    added_paths.append(p)
-
-            try:
-                spec.loader.exec_module(mod)
-            finally:
-                for p in added_paths:
-                    if p in sys.path:
-                        sys.path.remove(p)
-
-        dags = created_dags
-
-        if not dags:
-            return False, [f"No DAG found in {dag_file}"]
-
-        all_valid = True
-        all_errors: List[str] = []
-        for dag in dags:
-            if verbose:
-                print(f"{_c('Validating:', BOLD)} {_c(dag.dag_id, CYAN)}")
-            is_valid, errors, warnings = validate_asl_from_dag(dag, verbose=verbose)
-            if not is_valid:
-                all_valid = False
-                all_errors.extend(errors)
-        return all_valid, all_errors
-
-    except (Exception, SystemExit) as e:
-        # SystemExit is BaseException, not Exception — catch it here so a
-        # pipeline that calls sys.exit() at module level produces a clean
-        # "Failed to load" message rather than killing the process.
-        msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
-        return False, [f"Failed to load {dag_file}: {msg}"]
-
-    finally:
-        for _mod_name in ['pipelines', 'pipelines.config']:  # pragma: no cover -- the del body only runs when a pipeline imported those names; unit-test pipelines never do
-            if _mod_name in sys.modules:
-                del sys.modules[_mod_name]
+    all_valid = True
+    all_errors: List[str] = []
+    for dag in dags:
+        if verbose:
+            print(f"{_c('Validating:', BOLD)} {_c(dag.dag_id, CYAN)}")
+        # validate_asl_from_dag turns its own failures into errors; it does not raise
+        is_valid, errors, warnings = validate_asl_from_dag(dag, verbose=verbose)
+        if not is_valid:
+            all_valid = False
+            all_errors.extend(errors)
+    return all_valid, all_errors
 
 
 def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
@@ -680,49 +610,16 @@ def _run_test(dag_file: str) -> bool:
 
     Returns True if all callables succeeded, False if any raised.
     """
-    path = Path(dag_file)
-    if not path.exists():
-        print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
-        sys.exit(1)
-
-    from polyris.dag import recording_dags
+    from polyris.loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 
     try:
-        with recording_dags() as created_dags:
-            spec = importlib.util.spec_from_file_location("_dag", path)
-            if spec is None or spec.loader is None:  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-                raise ImportError(f"Cannot load module from {path}")
-            mod = importlib.util.module_from_spec(spec)
-
-            parent_dir = str(path.parent)
-            grandparent_dir = str(path.parent.parent)
-            added_paths = []
-            for p in [parent_dir, grandparent_dir]:
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-                    added_paths.append(p)
-
-            try:
-                spec.loader.exec_module(mod)
-            finally:
-                for p in added_paths:
-                    if p in sys.path:
-                        sys.path.remove(p)
-
-    except (Exception, SystemExit) as e:
-        # SystemExit is BaseException, not Exception — catch it here so a
-        # pipeline that calls sys.exit() at module level produces a clean
-        # "Failed to load" message rather than killing the CLI with a traceback.
-        msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
-        print(f"{_c('❌ Failed to load', RED)} {_c(dag_file, CYAN)}: {msg}")
+        dags = load_pipeline(dag_file, module_name="_dag").dags
+    except PipelineNotFoundError:
+        print(f"{_c('❌ Pipeline file not found:', RED)} {_c(dag_file, CYAN)}")
         sys.exit(1)
-
-    finally:
-        for _mod_name in ['pipelines', 'pipelines.config']:  # pragma: no cover -- the del body only runs when a pipeline imported those names; unit-test pipelines never do
-            if _mod_name in sys.modules:
-                del sys.modules[_mod_name]
-
-    dags = created_dags
+    except PipelineLoadError as e:
+        print(f"{_c('❌ Failed to load', RED)} {_c(dag_file, CYAN)}: {e}")
+        sys.exit(1)
 
     if not dags:
         print(f"{_c('❌ No DAG found in', RED)} {_c(dag_file, CYAN)}")

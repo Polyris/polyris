@@ -321,57 +321,39 @@ def _defining_globals(frame: Any) -> Optional[Dict[str, Any]]:
 
 
 @contextmanager
-def recording_dags(module: Optional[ModuleType] = None) -> Iterator[List[DAG]]:
-    """Record every DAG whose ``with`` block closes without an error while this block runs.
+def recording_dags(module: ModuleType) -> Iterator[List[DAG]]:
+    """Record every DAG that ``module``'s code makes while this block runs, in order.
 
-    This is how a loader finds the DAGs a pipeline file defines (polyris/CLAUDE.md, "DAG
-    discovery"): ``with DAG("x"):`` without ``as`` binds no name, so the module's globals
-    never show it. With ``module`` (the one being executed), a DAG counts when that module's
-    top-level code made it: directly, through a function it calls (``@dag``, a factory in
-    another module), through ``exec``, or in a worker thread it started. A DAG that a module
-    it imports makes at import time is left out — a copy of the pipeline file itself, run
-    again because a helper imports it, included: matched by its globals, not its file name.
+    ``polyris.loader.load_pipeline`` is the one user (ADR #139). A DAG is recorded when it is
+    made (``DAG.__post_init__``), so a DAG counts with or without ``with``, bound to a name or
+    not. It counts when ``module``'s top-level code made it: directly, through a function it
+    calls (``@dag``, a factory in another module), through ``exec``, or in a worker thread it
+    started. It is matched by the module's globals, not its file name: a pipeline file that a
+    helper imports back runs a second time as another module, and its DAGs are not counted
+    again. A DAG that a module it imports makes at import time does not count, nor does one
+    whose ``with`` block raised.
     """
-    recorded: List[DAG] = []
+    made: List[DAG] = []
+    raised: set = set()
+    original_post_init = DAG.__post_init__
     original_exit = DAG.__exit__
 
+    def recording_post_init(self):
+        original_post_init(self)
+        owner = _defining_globals(sys._getframe(1))
+        if owner is None or owner is vars(module):
+            made.append(self)
+
     def recording_exit(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            if module is None:
-                recorded.append(self)
-            else:
-                owner = _defining_globals(sys._getframe(1))
-                if owner is None or owner is vars(module):
-                    recorded.append(self)
+        if exc_type is not None:
+            raised.add(id(self))
         return original_exit(self, exc_type, exc_val, exc_tb)
 
+    DAG.__post_init__ = recording_post_init  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
     DAG.__exit__ = recording_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
     try:
-        yield recorded
+        yield made
     finally:
+        DAG.__post_init__ = original_post_init  # type: ignore[method-assign]  # deliberate: restore the method
         DAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore the method
-
-
-def defined_dags(module: Any, recorded: List[DAG]) -> List[DAG]:
-    """The DAGs a loaded pipeline module defines, each once.
-
-    First the ones ``recording_dags(module)`` recorded, in the order their ``with``
-    blocks closed; then the ones its globals hold that no other loaded module holds: a DAG
-    built without ``with`` (``DAG(...)`` and ``add_task``) is found only by its name.
-    """
-    elsewhere: set = set()
-    others = [m for m in list(sys.modules.values()) if m is not None and m is not module and hasattr(m, "__dict__")]
-    for other in others:
-        try:
-            elsewhere.update(id(v) for v in list(other.__dict__.values()) if isinstance(v, DAG))
-        except RuntimeError:  # pragma: no cover -- a module's dict changed while read (lazy imports)
-            continue
-    seen: set = set()
-    dags: List[DAG] = []
-    candidates = list(recorded) + [v for v in vars(module).values() if isinstance(v, DAG) and id(v) not in elsewhere]
-    for dag in candidates:
-        if id(dag) not in seen:
-            seen.add(id(dag))
-            dags.append(dag)
-    return dags
-
+        made[:] = [d for d in made if id(d) not in raised]

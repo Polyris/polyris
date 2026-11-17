@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import sys
-import importlib.util
 import argparse
 import threading
 import traceback
@@ -50,7 +49,8 @@ from .generators import (
     generate_step_function_json,
     generate_dag_hash,
 )
-from .dag import DAG, defined_dags, recording_dags
+from .dag import DAG
+from .loader import PipelineLoadError, load_pipeline
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -988,41 +988,17 @@ def deploy_pipeline(
 
 
 def _load_dag_from_file(path: Path) -> list:
-    """Load the DAG(s) a pipeline file defines (``polyris.dag.defined_dags``).
+    """The DAG(s) a pipeline file defines, through the one loader every CLI uses (ADR #139).
 
     Imports pipeline file purely for DAG extraction.
     Pipeline files should not contain AWS calls at module level.
-    A file that defines one dag_id twice is refused: each DAG is one stack, so the
-    second would silently replace the first.
+    A file that does not load, or that defines one dag_id twice, prints why and exits 1.
     """
-    spec = importlib.util.spec_from_file_location("pipeline", path)
-    if (
-        spec is None or spec.loader is None
-    ):  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-        raise ImportError(f"Cannot load module from {path}")
-    module = importlib.util.module_from_spec(spec)
-
     try:
-        with recording_dags(module) as defined_here:
-            spec.loader.exec_module(module)
-    except SystemExit as e:
-        code = e.code if isinstance(e.code, int) else 1
-        if code != 0:
-            print(f"❌ Error loading pipeline: exited with code {code}")
-            sys.exit(1)
-        # exit(0) is tolerated — treat as success
-    except Exception as e:
+        return load_pipeline(path).dags
+    except PipelineLoadError as e:
         print(f"❌ Error loading pipeline: {e}")
         sys.exit(1)
-
-    dags = defined_dags(module, defined_here)
-    ids = [d.dag_id for d in dags]
-    twice = sorted({i for i in ids if ids.count(i) > 1})
-    if twice:
-        print(f"❌ {path.name} defines {', '.join(repr(i) for i in twice)} more than once: "
-              "each DAG is one stack, so the second would replace the first")
-        sys.exit(1)
-    return dags
 
 
 def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None) -> "List[Tuple[Path, DAG]]":

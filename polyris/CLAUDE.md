@@ -58,11 +58,10 @@ The field used for saving (`parent_group`) must be populated in `__enter__`, not
 ## Deploy file scanning: filter by locality, not by name; non-zero exits are errors
 
 `_load_dag_from_file` must return only DAGs **defined in the loaded file**, never ones
-merely imported into it. `recording_dags(module)` keeps a DAG whose `with` block the loaded
-module's own top-level code ran, matched by its globals; `defined_dags` adds a DAG a global
-holds only when no other module in `sys.modules` holds it (see "DAG discovery" below). The
-`obj.__module__` attribute does **not** work for this — DAG instances always carry
-`__module__ == "polyris.dag"` regardless of where they were instantiated.
+merely imported into it: `load_pipeline` does this for every command (see "Pipeline files load
+through `polyris.loader.load_pipeline`" below). The `obj.__module__` attribute does **not**
+work for this — DAG instances always carry `__module__ == "polyris.dag"` regardless of where
+they were instantiated.
 
 `except SystemExit: pass` silently swallows a pipeline file calling `sys.exit(1)`, hiding
 load errors. Re-raise non-zero exits: `if code != 0: sys.exit(1)`. Tolerate `exit(0)`.
@@ -472,47 +471,31 @@ With `except Exception` only, the `SystemExit` propagates through all callers an
 CLI process with the pipeline's own exit code and zero diagnostic output. Hit in
 `validate_all`, `_validate_single`, and `_run_test` before 1.0.3.
 
-**How to apply:** Anywhere `exec_module` is called on a file path the user provided —
-not on modules we control internally.
+**How to apply:** `polyris.loader.load_pipeline` is the one place that runs a user's pipeline
+file; it turns a non-zero `SystemExit` and any exception into a `PipelineLoadError` and lets
+`sys.exit(0)` end the file normally. Callers catch `PipelineLoadError`. The rule stands for any
+other `exec_module` on a file path the user provided — not on modules we control internally.
 
-## DAG discovery in loaded modules must use `DAG.__exit__` instrumentation, never `vars(mod)`
+## Pipeline files load through `polyris.loader.load_pipeline` (ADR #139)
 
-Any code that loads a pipeline file and searches for DAG instances records the DAGs
-whose `with` block exits, through the one helper `polyris.dag.recording_dags`, and a loader
-that needs the file's own DAGs collects them with `polyris.dag.defined_dags`:
+Every command that runs a pipeline file — `polyris-validate` (and `--test`), `polyris-deploy`,
+`polyris-output`, `polyris-local` — calls `load_pipeline(path)` and uses its `.dags`. Never run a
+pipeline file another way: `tests/sdk/test_loader.py` fails when a module of `polyris/` other
+than `loader.py` (and `config.py`, which runs the project's `config.py`) calls `exec_module` or
+`spec_from_file_location`.
 
-```python
-from polyris.dag import defined_dags, recording_dags
+A DAG belongs to the file whose code made it: `recording_dags(module)` records it when it is
+made (`DAG.__post_init__`), matched by the globals of the nearest module frame up the stack.
+That finds `with DAG("x"):` without `as`, `DAG(...)` with `add_task`, an `@dag` call, a factory
+in another module, `exec`, and a worker thread the file starts; it leaves out a DAG a module the
+file imports makes at import time, a copy of the file a helper imports back, and a DAG whose
+`with` block raised. One `dag_id` made twice is a `PipelineLoadError` for every command.
 
-module = importlib.util.module_from_spec(spec)
-with recording_dags(module) as recorded:      # DAGs this module's top-level code made
-    spec.loader.exec_module(module)
-dags = defined_dags(module, recorded)         # plus DAGs built without `with`, by their name
-```
-
-With a module, a DAG counts when that module's top-level code made it: directly, through a
-function it calls (`@dag`, a factory in another module), through `exec`, or in a worker
-thread it started. It is matched by the module's globals, not its file name: a pipeline
-file that a helper imports back runs a second time as another module, and matched by file
-name its DAGs counted twice. A DAG that a module it imports makes at import time does not
-count, nor does one whose `with` block raised. `polyris-deploy`, `polyris-output` and
-`polyris-local` pass the module; `extract_dag_info`, `_validate_single` and `_run_test`
-record every DAG. Never write the `DAG.__exit__` patch by hand: six loaders each had their
-own copy or none, and two of them, `polyris-deploy` and `polyris-output`, could not see a DAG
-without `as`.
-
-Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]` on its own: it finds a DAG
-built without `with` (`DAG(...)` and `add_task`), and only as an addition to the recording,
-as `defined_dags` does.
-
-`vars(mod)` only finds objects bound to a module-level name. A pipeline written
-`with DAG("name"):` (without `as dag`) creates no binding — `vars(mod)` returns an
-empty list, producing a false-positive "No DAG found" error on a perfectly valid
-file. The `DAG.__exit__` hook fires unconditionally when the `with` block exits,
-regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3, and in
-`polyris-deploy` and `polyris-output` up to 1.2.2 (F18): a file passed validation and then
-could not be deployed. `polyris-deploy` also refuses a file that defines one dag_id twice:
-each DAG is one stack, and the second would replace the first.
+**Why:** each command had its own loader and its own rule — validate recorded `with` exits,
+deploy and output read `vars(mod)`, local filtered by globals — and they disagreed on
+`sys.path` and `sys.exit(0)`. A file passed validation and then could not be deployed three
+times in one branch (F18 and the two reviews of its fix, up to 1.2.2), each fixed locally
+until the loaders became one (Principle #42).
 
 ## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
 

@@ -9433,3 +9433,28 @@ Each time the console showed the task ended while its run stayed `RUNNING` until
 - Code: `routes/pipelines_list.py` (`list_pipelines`, `_finish_runs`, `check_with_sfn`, `RECONCILE_DEADLINE_SECONDS`); the console's `utils/pipelineSidebar.ts`, `PipelinesSidebar.tsx`, `SystemStatus.tsx` and `useSystemStatusQuery.ts`.
 - Tests: `console_api/tests/routes/test_pipelines_list_reconcile.py` checks against a moto Step Functions backend: a dead run, a live one, a failed, throttled, denied or late check, a missing state machine, a recovered run in the SLA, a registry or tokens table that cannot be read. `test_reconcile_sfn_status.py` raises a denial for `/runs`. `PipelinesSidebar.test.tsx` covers the failed load and the stale list.
 - Docs: `docs/operations/API.md`, `docs/operations/UI.md`, `docs/features/DSL.md` (`group=`), the CHANGELOG's *Upgrading to 1.2.1*.
+
+## ADR #139 — One loader runs a pipeline file for every command
+
+**Context.** `polyris-validate`, `polyris-deploy`, `polyris-output`, `polyris-local` and `polyris-validate --test` each ran a pipeline file with a loader of their own, and each found its DAGs by its own rule: validate recorded every DAG whose `with` block closed, deploy and output read the module's globals, local recorded `with` blocks and filtered by globals. They also differed on `sys.path` (validate made the file's folder and the one above importable, the others did not) and on `sys.exit(0)` (an error for validate, fine for deploy). So a file could pass validate and then fail to deploy. It happened three times in one branch (Principle #42): `with DAG("x"):` without `as` (backlog F18); then an `@dag` call, a factory in a loop and `exec`; then a pipeline file a helper imports back, whose DAGs a file-name match counted twice. Each fix was local, and the next case broke the same promise.
+
+**Decision.**
+
+1. **`polyris.loader.load_pipeline(path)` is the one way to run a pipeline file.** Every command above calls it; `tests/sdk/test_loader.py` fails when any other module of `polyris/` runs a file (`exec_module`, `spec_from_file_location`), `polyris/config.py` excepted, which runs the project's `config.py`.
+2. **A DAG belongs to the file whose code made it.** `recording_dags(module)` records each DAG when it is made (`DAG.__post_init__`), when the nearest module frame up the stack runs with that module's globals: the file's own top-level code, a function it calls (`@dag`, a factory in another module), `exec`, or a worker thread it started (no module frame). Matching the globals, not the file name, leaves out a copy of the file that a helper imports back. A DAG that a module the file imports makes at import time is that module's, and a DAG whose `with` block raised does not count. With or without `with`, bound to a name or not, the rule is the same.
+3. **What a load does, for every command.** The file's folder and the one above are importable while it runs; `pipelines` and `pipelines.config` are dropped after it, so the next file imports its own. `sys.exit(0)` or a bare `sys.exit()` ends the file normally. An error, a non-zero exit, or one `dag_id` made twice is a `PipelineLoadError`; a missing file is a `PipelineNotFoundError`. The DAGs come back in the order the file made them. Each command words the error its own way, and decides what a file without DAGs means.
+
+**Key design choices.**
+
+*Record at creation, not at `with` exit.* A DAG built without `with` (`DAG(...)` and `add_task`) never closes a block, so the exit hook missed it and the globals scan had to stand in, with its own rule. One hook at creation sees every DAG, in the order the file made them, which is also the order `polyris-local` needs ("the last DAG").
+
+*Globals, not file names.* A pipeline file runs twice when a helper imports it back (`from dag import ARN`); both copies have the same file name and different globals. Matching the file name counted its DAGs twice, and the duplicate check then refused a valid file.
+
+*A duplicate `dag_id` is a load error for every command.* Each DAG is one stack, so the second would replace the first. Refused only by deploy, the file would pass validate and fail to deploy: the class this ADR closes.
+
+**Consequences.**
+- `polyris-validate` no longer validates a DAG that a module the file imports makes (it is validated with its own file), tolerates `sys.exit(0)`, and refuses a file that makes one `dag_id` twice. `polyris-deploy`, `polyris-output` and `polyris-local` make the file's folder and the one above importable, as validate did.
+- Code: `polyris/loader.py`; `recording_dags` and `_defining_globals` in `polyris/dag.py`; `deploy._load_dag_from_file`, `output._load_dags`, `local._load_dag_from_file`, `validation.extract_dag_info`, `_validate_single` and `_run_test` call the loader.
+- Tests: `tests/sdk/test_loader.py` (the contract, and the one-runner check); `tests/sdk/test_deploy_bulk.py` (every shape the reviews found).
+- Rule in `polyris/CLAUDE.md` ("Pipeline files load through `polyris.loader.load_pipeline`").
+

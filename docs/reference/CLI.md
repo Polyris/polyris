@@ -2,6 +2,8 @@
 
 All polyris commands. Run from your pipeline directory unless noted.
 
+`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag` or a helper function — and not one that a module it imports makes. While the file runs, its folder and the folder above it are importable, and `sys.exit(0)` ends it normally. A file that makes one `dag_id` twice is refused: each DAG is one stack.
+
 ---
 
 ## polyris
