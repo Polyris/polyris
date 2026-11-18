@@ -155,6 +155,7 @@ def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     assert world.warnings() == []           # a repeated hint is a no-op, not an anomaly
 
 
+@defect("B-Q1")
 def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
     """D41: orchestration_timeout is the real maximum; the wrapper does not wait or register again."""
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)

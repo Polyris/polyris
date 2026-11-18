@@ -26,6 +26,7 @@ class Runtime:
     def __init__(self):
         self.callbacks = []
         self.executions = {}
+        self.expression_errors = []
 
     def accept(self, execution=WRAPPER, state=WAIT_STATE):
         self.callbacks.append({"execution": execution, "state": state, "outcome": {}})
@@ -194,5 +195,26 @@ def test_invariant_10_a_run_the_bell_says_could_not_be_told_passes(ddb, runtime,
     _row(ddb, "skipped", attention=None, pipeline_execution=RUN)
     _put(ddb, TOKENS, execution_name="_notify_warn_coordination_load", pipeline_execution=RUN, status="failed",
          error="The task is skipped, but its run could not be told, so it stays RUNNING until you stop it")
+    check.observe()
+    assert check.violations == []
+
+
+def test_a_failed_template_expression_is_a_violation_even_when_caught(ddb, runtime, check):
+    """D107: an expression that fails, undefined included, is a template bug, never an outcome."""
+    runtime.expression_errors.append({"machine": "failure-handler", "state": "Failure_Complete",
+                                      "cause": "$states.input.execution_name: the expression evaluates to undefined"})
+    check.observe()
+    assert check.violations == ["expression failed in failure-handler.Failure_Complete: "
+                                "$states.input.execution_name: the expression evaluates to undefined"]
+
+
+def test_no_failed_expression_no_violation(ddb, runtime, check):
+    check.observe()
+    assert check.violations == []
+
+
+def test_a_known_failing_expression_in_a_template_1_3_removes_is_skipped(ddb, runtime, check):
+    runtime.expression_errors.append({"machine": "acme-dev-polyris-restart-task-helper", "state": "Stop_Old_Inner_Wrapper",
+                                      "cause": "$states.input.item.run_task_helper_arn.S: undefined"})
     check.observe()
     assert check.violations == []

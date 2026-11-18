@@ -140,14 +140,15 @@ def test_task_tokens_resume_with_the_sent_output_and_die_after_use(rt):
     ex = run(rt, machine({
         "A": {"Type": "Task", "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
               "Arguments": {"StateMachineArn": child.arn, "Input": {"token": "{% $states.context.Task.Token %}"}},
-              "Assign": {"signal": "{% $states.result.signal %}"}, "Output": "{% $signal %}", "End": True},
+              "Assign": {"signal": "{% $states.result.signal %}"},
+              "Output": "{% $exists($signal) ? $signal : 'not assigned yet' %}", "End": True},
     }), name="waiter")
     assert ex.status == "RUNNING"
     [helper] = [e for e in rt.executions.values() if e.machine is child]
     token = helper.input["token"]
     rt.send_task_success(taskToken=token, output=json.dumps({"signal": "deps_ready"}))
     rt.run()
-    assert (ex.status, ex.output) == ("SUCCEEDED", None)    # Output sees $signal as it was before Assign
+    assert (ex.status, ex.output) == ("SUCCEEDED", "not assigned yet")    # Output sees $signal as it was before Assign
     with pytest.raises(Exception, match="TaskTimedOut"):
         rt.send_task_success(taskToken=token, output="{}")
 
@@ -240,6 +241,35 @@ def test_evaluation_errors_are_query_evaluation_errors():
     rt = Runtime(None, now=lambda: NOW)
     with pytest.raises(StatesError, match="States.QueryEvaluationError"):
         rt.expressions.evaluate("{% $notAFunction() %}", states={}, variables={})
+
+
+def test_an_expression_that_evaluates_to_undefined_fails_like_aws():
+    """AWS fails the state: JSON cannot represent undefined (D107). The F16 bug of 1.2.0 hid here."""
+    rt = Runtime(None, now=lambda: NOW)
+    with pytest.raises(StatesError, match="States.QueryEvaluationError.*undefined"):
+        rt.expressions.evaluate("{% $states.input.missing %}", states={"input": {}}, variables={})
+    with pytest.raises(StatesError, match="States.QueryEvaluationError.*undefined"):
+        rt.expressions.evaluate({"Item": {"k": {"S": "{% $states.input.missing %}"}}}, states={"input": {}}, variables={})
+
+
+def test_null_is_not_undefined_and_objects_drop_undefined_keys():
+    rt = Runtime(None, now=lambda: NOW)
+    assert rt.expressions.evaluate("{% $states.input.x %}", states={"input": {"x": None}}, variables={}) is None
+    assert rt.expressions.evaluate("{% {'a': null, 'b': [null, 1]} %}", states={}, variables={}) == {"a": None, "b": [None, 1]}
+    assert rt.expressions.evaluate("{% {'gone': $states.input.missing, 'kept': 1} %}", states={"input": {}}, variables={}) == {"kept": 1}
+
+
+def test_an_undefined_field_fails_the_state_and_reaches_its_catch(rt):
+    ex = run(rt, machine({
+        "A": {"Type": "Task", "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Arguments": {"TableName": "t", "Item": {"k": {"S": "{% $states.input.missing %}"}}},
+              "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Caught", "Output": "{% $states.errorOutput.Error %}"}],
+              "End": True},
+        "Caught": {"Type": "Pass", "End": True},
+    }))
+    assert (ex.status, ex.output) == ("SUCCEEDED", "States.QueryEvaluationError")
+    ex = run(rt, machine({"A": {"Type": "Pass", "Output": "{% $states.input.missing %}", "End": True}}), name="uncaught")
+    assert (ex.status, ex.error) == ("FAILED", "States.QueryEvaluationError")
 
 
 @pytest.mark.parametrize("error,names,expected", [

@@ -15,8 +15,11 @@ The runtime also serves the Step Functions API calls the Lambdas make
 (`send_task_success`, `describe_execution`, ...): one object is both the
 interpreter and the boto3 client the code under test talks to.
 
-Not modelled: real time (timeouts are explicit test actions), AWS's own
-JSONata dialect (the live smoke and TestState runs cover it), quotas.
+An expression that evaluates to undefined fails its state with
+States.QueryEvaluationError, as on AWS, and each such failure is recorded.
+
+Not modelled: real time (timeouts are explicit test actions), the rest of
+AWS's JSONata dialect (the live smoke and TestState runs cover it), quotas.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import jsonata
 from botocore.exceptions import ClientError
+from jsonata.utils import Utils
 
 ACCOUNT = "123456789012"
 REGION = "us-east-1"
@@ -111,10 +115,19 @@ class Expressions:
         compiled.register_lambda("hash", lambda text, algorithm: hashlib.new(
             str(algorithm).replace("-", "").lower(), str(text).encode("utf-8")).hexdigest())
         compiled.register_lambda("uuid", lambda: f"00000000-0000-4000-8000-{next(self._uuids):012d}")
+        # Keep JSON null apart from undefined: with the conversion off, null comes back as
+        # Utils.NULL_VALUE and only undefined as None.
+        compiled.set_output_convert_nulls(False)
         try:
-            return compiled.evaluate(None)
+            result = compiled.evaluate(None)
         except Exception as exc:   # noqa: BLE001 — AWS reports every evaluation failure as this error
             raise StatesError("States.QueryEvaluationError", f"{expression}: {exc}") from exc
+        if result is None:
+            # AWS fails the state: JSON cannot represent undefined (D107; F16 hid in the
+            # failure handler because this interpreter used to carry None on).
+            raise StatesError("States.QueryEvaluationError",
+                              f"{expression}: the expression evaluates to undefined, which JSON cannot represent")
+        return Utils.convert_nulls(result)
 
 
 @dataclass
@@ -190,6 +203,9 @@ class Runtime:
         self.side_effects: List[Dict[str, Any]] = []
         #: Every accepted token callback: {"execution", "state", "outcome"}.
         self.callbacks: List[Dict[str, Any]] = []
+        #: Every expression that failed in a state, caught or not: {"machine", "state", "cause"}.
+        #: Such a failure is always a template bug, never an outcome (D107); the World's check fails on it.
+        self.expression_errors: List[Dict[str, str]] = []
         self._ids = itertools.count(1)
 
     # ── registry ────────────────────────────────────────────────────────
@@ -399,6 +415,9 @@ class Runtime:
             else:
                 raise NotImplementedError(f"state type {kind}")
         except StatesError as err:
+            if err.error == "States.QueryEvaluationError":
+                self.expression_errors.append({"machine": frame.execution.machine.name, "state": frame.state,
+                                               "cause": err.cause})
             self._fail(frame, state, err)
 
     def _complete(self, frame: Frame, state: Dict[str, Any], result: Any) -> None:

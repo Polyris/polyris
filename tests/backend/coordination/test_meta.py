@@ -13,6 +13,7 @@ from typing import Dict, List, Set, Tuple
 
 from defects import DEFECTS
 from probes import PROBES
+from invariants import KNOWN_FAILING_EXPRESSIONS
 from stages import BOUND_STAGES, STAGES
 
 HERE = Path(__file__).resolve().parent
@@ -96,3 +97,12 @@ def test_scenarios_build_state_only_through_the_world():
     for path in SCENARIO_FILES:
         for number, line in enumerate(path.read_text().splitlines(), 1):
             assert not forbidden.search(line), f"{path.name}:{number}: write through a World verb, not to a table"
+
+
+def test_known_failing_expressions_are_only_in_templates_the_adr_removes():
+    """The expression check's exceptions may only name templates 1.3 deletes, so the list cannot grow
+    into a place where a template bug hides (D107)."""
+    adr = (REPO_ROOT / "docs/reference/adr-137-tasks-as-rows.md").read_text()
+    removed = next(line for line in adr.splitlines() if line.startswith("| State machines (8 of 13) |"))
+    for (machine, state), template in KNOWN_FAILING_EXPRESSIONS.items():
+        assert f"`{template}`" in removed, f"{machine}.{state}: {template} is not a template ADR #137 removes"

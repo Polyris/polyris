@@ -272,6 +272,11 @@ PROBES: Tuple[Probe, ...] = (
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),
           f"{SCENARIOS}::test_a_warning_about_an_old_partition_reaches_the_bell"),
+    # D107: the answer's API result replaced the state data, so Failure_Complete read fields that were gone.
+    Probe("B-Q1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
+                        '"Output": "{% $states.input %}",\n      "Next": "Failure_Complete",\n      "Catch": [',
+                        '"Next": "Failure_Complete",\n      "Catch": ['),),
+          f"{SCENARIOS}::test_a_dependency_wait_that_times_out_fails_the_task_once"),
     # ADR #135: the flag that told the failure handler run_task had answered, and its catch.
     Probe("B-RN1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
                          "\"Condition\": \"{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}\"",

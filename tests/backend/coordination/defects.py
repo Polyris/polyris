@@ -1,5 +1,6 @@
 """Defects ADR #130 fixes, by id (the ADR's Context table); B-D1 is ADR #133's, and the ids from
 B-RN1 on come from the external review of 1.2.0 (ADR #135 and the CHANGELOG's Fixed entries).
+B-Q1 is D107's: the harness fails like AWS on an expression that evaluates to undefined.
 
 Every id needs a scenario marked `@pytest.mark.defect(id)`, and, once that
 scenario is bound, a mutation probe in probes.py that re-introduces the
@@ -7,6 +8,9 @@ defect in the new code and makes the scenario fail. test_meta.py checks both.
 """
 
 DEFECTS = {
+    "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "
+            "States.QueryEvaluationError, while the harness carried undefined on as None and a Catch hid it "
+            "(Failure_Complete of the failure handler, found live in 1.2.0, CR-7)",
     "B-RN1": "A task fails before run_task answers its run (a pause token that cannot be saved): the failure "
              "handler skips the answer on helper_failed, and the run stays RUNNING",
     "B-RN2": "The reconciler aborts a task whose wrapper is gone without telling its run: the run stays RUNNING",
