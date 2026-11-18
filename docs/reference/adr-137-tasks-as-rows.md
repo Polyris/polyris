@@ -466,7 +466,7 @@ A value that two pieces of code must read alike gets one named constant, and a p
 | The spec's keys | an enum in `polyris/constants.py`, `TaskSpecKey`, beside `TaskConfigKey`. The task spec's parser becomes `polyris/coordination/task_spec.py`, and today's `spec.py`, the parser of asset conditions, is renamed `asset_spec.py` | the generator against the enum |
 | Canonical JSON, the text hash and the fingerprint (§8) | one function in `polyris/coordination/task_spec.py`, which `polyris-deploy`, `Start_Run`, the dispatcher and the console call | none needed, since one function serves all; a test reads `1.0` back as `1`, as DynamoDB does |
 | The format version and its registry field | one SDK constant, `task_spec.FORMAT_VERSION`, which `polyris-deploy` writes and `Start_Run` and the console read | the generated `Start_Run` arguments |
-| `run_task`'s input | constants for its keys, from which the dispatcher builds it in Python; today `run_task` reads 39 `$states.input` keys | the keys that `run_task`'s template reads |
+| `run_task`'s input | constants for its keys (`run_task_input.py`), from which the dispatcher builds it in Python; today `run_task` reads 39 `$states.input` keys | the keys that `run_task`'s template reads |
 | The upstream statuses for `xcom` | `POLYRIS_UPSTREAM_STATUSES` (`xcom.ENV_UPSTREAM_STATUSES`): a JSON object from each direct upstream's name to its status and skip origin | `test_xcom_coupled_constants_parity.py` |
 | The field only task rows carry | `generation`, which the stream's task-row patterns require (§7) | the template's `FilterCriteria` |
 | `SkipOrigin` | `polyris/constants.py`, emitted by `sync_enums` (ADR #138) | `check-generate-enums` |

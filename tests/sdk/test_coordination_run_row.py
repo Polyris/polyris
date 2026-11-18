@@ -154,3 +154,21 @@ def test_an_action_raises_a_row_that_has_no_run_version_yet():
                           ExpressionAttributeNames=run_row.VERSION_NAMES,
                           ExpressionAttributeValues=run_row.VERSION_RAISE_VALUES)
         assert table.get_item(Key=run_key)["Item"]["run_version"] == 1
+
+
+# ── run-start-index (§5) ─────────────────────────────────────────────
+
+def test_the_index_keys_are_strings_and_the_day_is_the_starts_utc_day():
+    from datetime import datetime, timedelta, timezone
+
+    kyiv = timezone(timedelta(hours=2))
+    keys = run_row.index_keys(datetime(2026, 11, 19, 1, 30, tzinfo=kyiv))   # 23:30 UTC the day before
+    assert keys == {"start_day": "2026-11-18", "started_at": "2026-11-18T23:30:00.000Z"}
+    assert all(isinstance(v, str) for v in keys.values())
+
+
+def test_the_index_keys_refuse_a_naive_time():
+    from datetime import datetime
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        run_row.index_keys(datetime(2026, 11, 18, 6, 0))

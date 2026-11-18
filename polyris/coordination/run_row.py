@@ -13,9 +13,11 @@ it enters neither date index; ``start_day`` alone puts it in
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Dict, Optional
 
 from ..constants import BackfillCascade
+from .times import format_utc
 
 #: The tasks table's partition key, which every row carries.
 TABLE_KEY = "execution_name"
@@ -121,6 +123,16 @@ def token_order(*, redrive_count: int, retry_count: int) -> int:
     if redrive_count < 0 or not 0 <= retry_count < _RETRIES:
         raise ValueError(f"counters out of range: RedriveCount {redrive_count}, RetryCount {retry_count}")
     return redrive_count * _RETRIES + retry_count
+
+
+def index_keys(execution_start: datetime) -> Dict[str, str]:
+    """``run-start-index``'s keys of a run whose execution started at ``execution_start`` (§5).
+
+    Both are strings, as the index declares them: ``start_day``, the UTC day of
+    the start, and ``started_at``, a timestamp whose string order is time order.
+    """
+    started_at = format_utc(execution_start)
+    return {START_DAY: started_at[:10], STARTED_AT: started_at}
 
 
 def cascade(*, suppress_asset_event: bool, cascade_all: bool) -> str:
