@@ -149,7 +149,7 @@ def _render_python_body() -> str:
                 src.BackfillStatus, src.BackfillCascade,
                 src.BackfillUpstream,
                 src.BackfillGranularity, src.StalenessStatus,
-                src.AssetOperator):
+                src.AssetOperator, src.SkipOrigin):
         members = [(n, getattr(cls, n))
                    for n in vars(cls) if not n.startswith("_")]
         parts.append(_enum_class_py(cls.__name__,
@@ -314,7 +314,8 @@ def _render_ts_body() -> str:
     for cls in (src.PipelineStatus, src.ExecutionStatus,
                 src.BackfillStatus, src.BackfillCascade,
                 src.BackfillUpstream,
-                src.BackfillGranularity, src.StalenessStatus):
+                src.BackfillGranularity, src.StalenessStatus,
+                src.SkipOrigin):
         values = [getattr(cls, n) for n in vars(cls) if not n.startswith("_")]
         parts.append(_ts_union(
             cls.__name__,

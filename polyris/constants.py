@@ -229,6 +229,19 @@ class TriggerRule:
     NONE_SKIPPED = "none_skipped"         # No task skipped
 
 
+
+class SkipOrigin:
+    """Who skipped a task: a ``skipped`` row's ``skip_origin`` (ADR #138 §3).
+
+    Only ``rule`` cascades under ``all_success``: a task that an operator or the
+    run skipped lets its dependants run. The console's Skip, ``Start_Run`` and
+    the dispatcher write these values (ADR #137 §3). A row skipped before 1.3
+    may carry none, and passes as it did. Regenerate after a change
+    (``make generate-enums``).
+    """
+    MANUAL = "manual"  # an operator, from the console
+    RUN = "run"        # Start_Run, for a task named in the run's skip_tasks
+    RULE = "rule"      # the dispatcher, because the task's own trigger rule can no longer be met
 class ManualResolution:
     """
     The four actions an operator can take on a task via the Console UI.

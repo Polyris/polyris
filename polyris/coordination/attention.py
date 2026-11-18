@@ -9,6 +9,9 @@ JSONata ``$hash(execution_name, 'SHA-256')``; a parity test pins both.
 Kinds: ``waiting`` (a reconcilable row the sweeper re-checks), ``paused`` (a
 task held in run_task's pause wait, released by the sweeper once its run is
 no longer paused), ``retry`` (a push start to retry), ``warn`` (a warning).
+ADR #137 §6 adds ``decision`` (a task row waiting for an operator's decision,
+due at its deadline) and ``failed`` (a failed task row, by when it failed),
+which the bell reads; ``paused`` goes with the pause wait.
 """
 
 from __future__ import annotations
@@ -29,7 +32,9 @@ WAITING = "waiting"
 PAUSED = "paused"
 RETRY = "retry"
 WARN = "warn"
-KINDS = frozenset({WAITING, PAUSED, RETRY, WARN})
+DECISION = "decision"
+FAILED = "failed"
+KINDS = frozenset({WAITING, PAUSED, RETRY, WARN, DECISION, FAILED})
 SHARDS = "0123456789abcdef"
 
 #: A newly registered task, or a task entering its pause wait, is first due for a sweeper check after this long.

@@ -462,7 +462,7 @@ A value that two pieces of code must read alike gets one named constant, and a p
 
 | Contract | Its home | Parity |
 |---|---|---|
-| The fields of the run row and of the run's input (§3) | constants in `polyris/coordination/`, read by `Start_Run`, the dispatcher and the console | the generated JSONata of the step mark and of `Start_Run`'s arguments |
+| The fields of the run row and of the run's input (§3) | constants in `polyris/coordination/run_row.py`, read by `Start_Run`, the dispatcher and the console | the generated JSONata of the step mark and of `Start_Run`'s arguments |
 | The spec's keys | an enum in `polyris/constants.py`, beside `TaskConfigKey`. The task spec's parser becomes `polyris/coordination/task_spec.py`, and today's `spec.py`, the parser of asset conditions, is renamed `asset_spec.py` | the generator against the enum |
 | Canonical JSON, the text hash and the fingerprint (§8) | one function in `polyris/coordination/`, which `polyris-deploy`, `Start_Run`, the dispatcher and the console call | none needed, since one function serves all; a test reads `1.0` back as `1`, as DynamoDB does |
 | The format version and its registry field | one SDK constant, which `polyris-deploy` writes and `Start_Run` and the console read | the generated `Start_Run` arguments |
@@ -474,7 +474,7 @@ A value that two pieces of code must read alike gets one named constant, and a p
 | The error of a failed run's answer | one constant, which the dispatcher sends and the generated `Catch` names, and which no `Retry` of `Start_Run` matches | the generator's tests |
 
 Values defined clause by clause are pure functions in `polyris/coordination/`, with a test per clause (Principle #48):
-- the transition table, with each status's attention kind, its *Wakes* column and the writes of the run row that raise `run_version` (§3, §6);
+- the transition table, with each status's attention kind, its *Wakes* column and the writes of the run row that raise `run_version` (§3, §6), with the stream's filter patterns generated from it (`transitions.py`);
 - a row's next deadline (§5);
 - a task row's next due time (invariant 9). It reads the row's own fields, its upstreams and the run row's pause state, never the clock, so a pass writes a due time only when it changes (§1).
   - It gives a limit's deadline, a countdown's end, a decision deadline, a start's next try, and a running execution's next check, from the time and the number of its checks so far.
