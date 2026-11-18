@@ -496,7 +496,7 @@ folder imports reaches the next — never isolate files by forgetting modules in
 way of doing it failed a review. The parent never loads a pipeline file itself (validate's ASL
 checks run in the folder's process too), and builds the child's environment with
 `loader.child_env` (polyris's folder appended to PYTHONPATH, never prepended) and starts it with
-`loader.run_child` (`python -P`: the run directory never shadows the standard library). It
+`loader.run_child` (`python -P`: the run directory cannot break polyris's own imports). It
 loads `dag.py` and files whose code imports `DAG`, `dag` or `Pipeline` from polyris
 (`is_pipeline_file`, parsed with `ast` from the file's bytes, never by text: three text rules ran
 Glue scripts). `sigterm_stops_children` belongs to the parent only: in a folder's process SIGTERM

@@ -294,9 +294,10 @@ def test_a_childs_python_path_never_moves_the_users_entries_or_site_packages(mon
     assert loader.child_env()["PYTHONPATH"] == "src"
 
 
-def test_a_folders_process_never_imports_from_the_run_directory(tmp_path, monkeypatch):
+def test_a_folders_process_starts_without_the_run_directory_on_its_path(tmp_path, monkeypatch):
     """Seventh review: ``python -m`` put the current directory first, so a run directory with a
-    ``json.py`` (or an ``email/`` package) broke every folder's process. ``-P`` keeps it out."""
+    ``json.py`` (or an ``email/`` package) broke polyris's own imports in every folder's process.
+    ``-P`` keeps it off the path while polyris starts."""
     from polyris.validation import validate_all
     monkeypatch.chdir(tmp_path)
     _write(tmp_path / "json.py", "raise RuntimeError('the run directory shadowed the standard library')\n")
@@ -384,6 +385,24 @@ def test_sigterm_ends_this_process_through_python_only_inside_the_block():
     t.start()
     t.join()
     assert seen == [before]
+
+
+def test_a_sibling_module_wins_over_the_project_roots(tmp_path, monkeypatch):
+    """Architect review: the folder above came first on sys.path, so a pipeline's own
+    settings module lost to the project root's of the same name, silently."""
+    monkeypatch.delitem(sys.modules, "pipeline_settings", raising=False)
+    _write(tmp_path / "pipeline_settings.py", "NAME = 'root'\n")
+    _write(tmp_path / "orders" / "pipeline_settings.py", "NAME = 'orders'\n")
+    f = _write(tmp_path / "orders" / "dag.py", """
+        from pipeline_settings import NAME
+        from polyris import DAG
+        with DAG(NAME):
+            pass
+    """)
+    try:
+        assert [d.dag_id for d in load_pipeline(f).dags] == ["orders"]
+    finally:
+        sys.modules.pop("pipeline_settings", None)
 
 
 def test_no_cli_runs_a_pipeline_file_but_through_the_loader():

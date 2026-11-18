@@ -137,9 +137,10 @@ def child_env(**extra: str) -> Dict[str, str]:
 def run_child(argv: List[str], env: Dict[str, str], *, stdout: Optional[Union[int, IO[str]]] = None) -> int:
     """Run ``python -P <argv>`` — a folder's own process in ``--all`` — to its end; its exit code.
 
-    ``-P`` keeps the current directory off the child's ``sys.path``, as it is off this
-    process's when run as ``polyris-deploy``: a run directory with an ``email/`` or
-    ``calendar.py`` would otherwise shadow the standard library (seventh review of ADR #139).
+    ``-P`` keeps the current directory off the child's ``sys.path`` while polyris starts, as it
+    is off this process's when run as ``polyris-deploy``: otherwise an ``email/`` or ``json.py``
+    in the run directory breaks polyris's own imports. While a file loads, its folder and the
+    folder above come first, as for every command (``open_pipeline``).
     If this process is stopped (Ctrl-C, or SIGTERM under ``sigterm_stops_children``), the child
     is stopped too.
     """
@@ -183,8 +184,8 @@ def exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._ex
 def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
     """Run the pipeline file at ``path``; inside the block, its imports stay as the file left them.
 
-    The file's folder and the folder above it are importable while it runs and while the block
-    runs, so a pipeline can import a sibling module or its project's ``config``, and a task body
+    The file's folder and then the folder above it come first on ``sys.path`` while it runs and
+    while the block runs, so a pipeline imports a sibling module before its project's, and a task body
     that ``polyris-local`` or ``polyris-validate --test`` runs can too; on leaving the block they
     are removed. Modules the file imports stay imported: ``--all`` runs each folder in its own
     process, so nothing one folder imports reaches the next (ADR #139). ``sys.exit(0)`` (or a bare ``sys.exit()``) ends
@@ -202,9 +203,10 @@ def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
         raise PipelineLoadError(f"Cannot load module from {path}")
     module = importlib.util.module_from_spec(spec)
 
+    # The file's own folder first, as Python puts a script's folder first, then the folder above:
+    # a sibling config.py wins over the project root's (architect review of ADR #139)
     added = [p for p in (str(path.parent), str(path.parent.parent)) if p not in sys.path]
-    for p in added:
-        sys.path.insert(0, p)
+    sys.path[0:0] = added
     try:
         with recording_dags(sys._getframe()) as made:
             try:
