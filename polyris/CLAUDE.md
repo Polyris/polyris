@@ -498,7 +498,9 @@ checks run in the folder's process too), and builds the child's environment with
 `loader.child_env` (polyris's folder appended to PYTHONPATH, never prepended) and starts it with
 `loader.run_child` (`python -P`: the run directory never shadows the standard library). It
 loads `dag.py` and files whose code imports `DAG`, `dag` or `Pipeline` from polyris
-(`is_pipeline_file`, parsed with `ast`, never by text: three text rules ran Glue scripts). Rules
+(`is_pipeline_file`, parsed with `ast` from the file's bytes, never by text: three text rules ran
+Glue scripts). `sigterm_stops_children` belongs to the parent only: in a folder's process SIGTERM
+must keep its default, or the process goes on deploying after it was stopped. Rules
 rest on facts — an import in progress, a process boundary, what the code imports — never on
 guesses about names, frames or words.
 

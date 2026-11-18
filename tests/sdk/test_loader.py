@@ -273,6 +273,7 @@ def test_a_folders_own_process_reports_its_dag_info_as_json(tmp_path, monkeypatc
     monkeypatch.setenv(validation.DAG_INFO_RESULTS_ENV, str(results))
     monkeypatch.setattr(sys, "argv", ["polyris-validate", str(f), str(tmp_path / "missing.py")])
     validation.main()
+    assert validation.DAG_INFO_RESULTS_ENV not in os.environ  # nothing a pipeline starts sees it
     data = json.loads(results.read_text())
     assert [d["dag_id"] for d in data["infos"]] == ["orders"]
     assert isinstance(data["infos"][0]["schedule"], str) and data["infos"][0]["trigger_assets"] == ["raw/orders"]
@@ -345,6 +346,22 @@ def test_run_child_returns_the_childs_exit_code_and_stops_it_when_this_process_i
     with pytest.raises(KeyboardInterrupt):
         loader.run_child(["-c", "pass"], {})
     child.terminate.assert_called_once()
+
+
+def test_validate_all_stops_its_folders_process_on_sigterm(tmp_path, mocker):
+    """Eighth review: validate never set the handler, so a stopped validate left its child running."""
+    import signal
+    from polyris import loader
+    from polyris.validation import validate_all
+    _write(tmp_path / "a" / "dag.py", "from polyris import DAG\n")
+    seen = []
+    def popen(cmd, env, stdout=None):
+        seen.append(signal.getsignal(signal.SIGTERM))
+        return mocker.MagicMock(wait=mocker.MagicMock(return_value=0))
+    mocker.patch("polyris.loader.subprocess.Popen", side_effect=popen)
+    results = validate_all(str(tmp_path), verbose=False)
+    assert seen == [loader._raise_on_sigterm]
+    assert "exited with code 0 before reporting" in results["errors"][0]
 
 
 def test_sigterm_ends_this_process_through_python_only_inside_the_block():

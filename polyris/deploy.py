@@ -32,6 +32,7 @@ import argparse
 import threading
 import traceback
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
@@ -1021,10 +1022,11 @@ def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None)
     found: "List[Tuple[Path, DAG]]" = []
     seen_dag_ids: dict = {}
     candidates = sorted(dir_path.glob("*.py"))
-    skipped = [p.name for p in candidates if not is_pipeline_file(p)]
+    pipelines = [p for p in candidates if is_pipeline_file(p)]
+    skipped = [p.name for p in candidates if p not in pipelines]
     if skipped:
         print(f"  (not pipeline files, not run: {', '.join(skipped)})")
-    for py_file in (p for p in candidates if is_pipeline_file(p)):
+    for py_file in pipelines:
         try:
             dags = _load_dag_from_file(py_file)
         except SystemExit:
@@ -1172,20 +1174,23 @@ def _run_bulk(
     profile: Optional[str],
     stack: Optional[str] = None,
     in_own_process: bool = True,
+    results_path: Optional[str] = None,
 ) -> None:
     """Deploy or destroy every DAG found across target_dirs (--all / --only).
 
     Each directory runs in its own Python process (``_deploy_directory_in_its_own_process``),
-    so nothing one folder imports reaches the next (ADR #139). ``in_own_process=False`` runs
-    them here instead: in a folder's own process, which writes its results to the file
-    ``BULK_RESULTS_ENV`` names and exits, and in tests. A summary prints at the end
+    so nothing one folder imports reaches the next (ADR #139). With ``results_path`` this *is*
+    a folder's own process: it deploys here, writes its results to that file and exits, and a
+    SIGTERM keeps its default (it ends the process, as the parent expects).
+    ``in_own_process=False`` also runs the folders here, for tests. A summary prints at the end
     regardless of outcome; the process exits non-zero if anything failed, so this is safe to
     use as a CI/script gate.
     """
     argv = _bulk_argv(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
                       log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
     results: "List[BulkResult]" = []
-    with sigterm_stops_children():
+    in_own_process = in_own_process and results_path is None
+    with sigterm_stops_children() if in_own_process else nullcontext():
         for dir_name in sorted(target_dirs):
             if in_own_process and Path(dir_name).is_dir():
                 results += _deploy_directory_in_its_own_process(dir_name, argv)
@@ -1195,8 +1200,7 @@ def _run_bulk(
                     log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack,
                 )
 
-    results_path = os.environ.get(BULK_RESULTS_ENV)
-    if results_path and not in_own_process:
+    if results_path:
         # A folder's own process: the parent prints the summary
         Path(results_path).write_text(json.dumps(results))
         sys.exit(1 if any(not ok for _, _, ok, _ in results) else 0)
@@ -1288,8 +1292,9 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
             log_level=args.log_level,
             log_retention_days=args.log_retention,
             profile=args.profile,
-            # In a folder's own process (BULK_RESULTS_ENV set), deploy here and report back
-            in_own_process=not os.environ.get(BULK_RESULTS_ENV),
+            # In a folder's own process, deploy here and report back. Taken out of the environment,
+            # so a process a pipeline starts is never mistaken for one
+            results_path=os.environ.pop(BULK_RESULTS_ENV, None),
         )
         return
 
@@ -1339,9 +1344,10 @@ def main_destroy() -> None:
 
 
 if __name__ == "__main__":
+    _in_a_folders_process = bool(os.environ.get(BULK_RESULTS_ENV))  # _dispatch takes it out
     try:
         main()
     except SystemExit as e:
-        if os.environ.get(BULK_RESULTS_ENV):  # a folder's own process: do not wait for a pipeline's threads
+        if _in_a_folders_process:  # do not wait for a pipeline's threads
             exit_now(e.code if isinstance(e.code, int) else 1)
         raise

@@ -225,6 +225,33 @@ class TestDiscoverPipelineFiles:
         found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
         assert found == {"orders.py", "latest_prices.py", "inventory.py", "aliased.py", "starred.py", "broken.py"}
 
+    def test_a_file_is_read_as_python_reads_it(self, tmp_path):
+        """Eighth review: a BOM (or a coding line) failed the parse of text, and the fallback ran a
+        Glue script. ast reads the bytes, as Python does."""
+        bom = b"\xef\xbb\xbf"
+        (tmp_path / "glue_bom.py").write_bytes(bom + b"import awsglue\nfrom polyris import xcom\n")
+        (tmp_path / "orders_bom.py").write_bytes(bom + b"from polyris import DAG\n")
+        (tmp_path / "latin.py").write_bytes(b"# coding: latin-1\nfrom polyris import xcom\nna\xefve = 1\n")
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"orders_bom.py"}
+
+    def test_a_file_that_does_not_parse_is_loaded_only_when_it_imports_a_dag_maker(self, tmp_path):
+        """Eighth review: any broken file that mentioned polyris was loaded, so a Lambda handler
+        written for a newer Python failed validate --all. Too deep for ast is the same case."""
+        _write(tmp_path, "newer_python.py", "from polyris import xcom\ntype Rows[T = dict] = list[T]\n")
+        _write(tmp_path, "broken_pipeline.py", "from polyris import DAG, task\nwith DAG('x') as\n")
+        _write(tmp_path, "broken_aliased.py", "import polyris\nwith polyris.DAG('x') as\n")
+        _write(tmp_path, "too_deep.py", "from polyris import xcom\nx = " + "+".join(["1"] * 20000) + "\n")
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"broken_pipeline.py", "broken_aliased.py"}
+
+    def test_a_star_import_counts_only_from_a_module_that_exports_a_dag_maker(self, tmp_path):
+        _write(tmp_path, "handler.py", "from polyris.xcom import *\n")
+        _write(tmp_path, "orders.py", "from polyris.dag import *\n")
+        _write(tmp_path, "orders2.py", "from polyris import *\n")
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"orders.py", "orders2.py"}
+
     def test_a_comment_or_string_naming_a_dag_does_not_make_a_pipeline(self, tmp_path):
         """Seventh review: "polyris" and "dag" in the text matched a Glue script's comment."""
         _write(tmp_path, "transform_spark.py",

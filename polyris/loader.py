@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import re
 import signal
 import site
 import subprocess
@@ -33,6 +34,16 @@ _NOT_PIPELINES = ("conftest.py", "__init__.py")
 
 #: What a pipeline file imports from polyris to make a DAG (``polyris/__init__.py`` exports them).
 _DAG_MAKERS = frozenset({"DAG", "dag", "Pipeline"})
+
+#: The modules a ``from … import *`` gets a DAG maker from: ``polyris``, ``polyris.dag`` (``DAG``,
+#: ``Pipeline``) and ``polyris.helpers`` (``dag``). A star import of ``polyris.xcom`` makes no DAG.
+_DAG_MAKER_MODULES = frozenset({"polyris", "polyris.dag", "polyris.helpers"})
+
+#: An import of a DAG maker, in the text of a file ``ast`` cannot parse.
+_DAG_MAKER_IMPORT = re.compile(
+    rb"^\s*from\s+polyris(\.\w+)*\s+import\b[^\n]*\b(DAG|dag|Pipeline)\b|\bpolyris(\.\w+)*\.(DAG|dag|Pipeline)\b",
+    re.MULTILINE,
+)
 
 
 class PipelineLoadError(Exception):
@@ -60,7 +71,9 @@ def is_pipeline_file(path: Path) -> bool:
     DAG. Text rules failed three reviews (ADR #139): a name, "polyris" in the text, then
     "polyris" and "dag" in a comment. A pipeline that imports its DAG from a project wrapper is
     skipped; name it ``dag.py`` or deploy it with ``--file``. A file that does not parse is
-    loaded when it mentions polyris, so its error is reported, not skipped. Test files by
+    loaded when its text imports a DAG maker from polyris, so a broken pipeline's error is
+    reported, while a script written for a newer Python that imports only ``xcom`` is not run.
+    Test files by
     pytest's convention (``test_*.py``, ``*_test.py``, ``conftest.py``) and ``__init__.py`` are
     not pipelines. ``polyris-validate --all`` and ``polyris-deploy --all`` / ``--only`` both
     use it.
@@ -71,24 +84,25 @@ def is_pipeline_file(path: Path) -> bool:
     if name == "dag.py":
         return True
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        source = path.read_bytes()  # bytes: ast honours a BOM and a coding line, as Python does
     except OSError:  # unreadable (permissions): not loaded, and listed as skipped by the caller
         return False
     try:
-        tree = ast.parse(text, filename=str(path))
-    except (SyntaxError, ValueError):  # ValueError: a null byte
-        return "polyris" in text
+        tree = ast.parse(source, filename=str(path))
+    except (SyntaxError, ValueError, RecursionError, MemoryError):  # ValueError: a null byte
+        return _DAG_MAKER_IMPORT.search(source) is not None
     return _imports_a_dag_maker(tree)
 
 
 def _imports_a_dag_maker(tree: ast.AST) -> bool:
-    """``from polyris[.x] import DAG|dag|Pipeline|*``, or ``import polyris[ as p]`` and
+    """``from polyris[.x] import DAG|dag|Pipeline`` (``*`` from a module that exports one), or ``import polyris[ as p]`` and
     ``polyris.DAG`` (``p.dag``, …) used in the code."""
     module_names: Set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             if (node.module == "polyris" or node.module.startswith("polyris.")) and any(
-                    a.name in _DAG_MAKERS or a.name == "*" for a in node.names):
+                    a.name in _DAG_MAKERS or (a.name == "*" and node.module in _DAG_MAKER_MODULES)
+                    for a in node.names):
                 return True
         elif isinstance(node, ast.Import):
             module_names.update(a.asname or a.name.split(".")[0] for a in node.names

@@ -455,11 +455,14 @@ def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl
     folders: Dict[str, List[str]] = {}
     for file_path in files:
         folders.setdefault(str(Path(file_path).parent), []).append(file_path)
-    for folder_files in folders.values():
-        dags, errors = _collect_dag_info_in_its_own_process(folder_files, check_asl=check_asl, verbose=verbose)
-        results['errors'].extend(errors)
-        all_dags.extend(dags)
-        results['pipelines'].extend(dags)
+    from polyris.loader import sigterm_stops_children
+
+    with sigterm_stops_children():  # a stopped validate stops the folder's process too
+        for folder_files in folders.values():
+            dags, errors = _collect_dag_info_in_its_own_process(folder_files, check_asl=check_asl, verbose=verbose)
+            results['errors'].extend(errors)
+            all_dags.extend(dags)
+            results['pipelines'].extend(dags)
 
     if verbose:
         print(f"{_c('Loaded', BOLD)} {len(all_dags)} DAG(s):")
@@ -755,9 +758,12 @@ def main():
     import json
     import os
 
-    results_path = os.environ.get(DAG_INFO_RESULTS_ENV)
-    if results_path:  # a folder's own process, started by validate_all
-        _report_dag_info(sys.argv[1:], results_path, json.loads(os.environ.get(VALIDATE_OPTIONS_ENV) or "{}"))
+    # A folder's own process, started by validate_all. Taken out of the environment, so a
+    # process a pipeline starts is never mistaken for one
+    results_path = os.environ.pop(DAG_INFO_RESULTS_ENV, None)
+    options = os.environ.pop(VALIDATE_OPTIONS_ENV, None)
+    if results_path:
+        _report_dag_info(sys.argv[1:], results_path, json.loads(options or "{}"))
         return
 
     parser = argparse.ArgumentParser(
@@ -866,8 +872,9 @@ def main():
 
 
 if __name__ == '__main__':  # pragma: no cover -- module entrypoint
-    main()
     import os as _os
-    if _os.environ.get(DAG_INFO_RESULTS_ENV):  # a folder's own process: do not wait for a pipeline's threads
+    _in_a_folders_process = bool(_os.environ.get(DAG_INFO_RESULTS_ENV))  # main() takes it out
+    main()
+    if _in_a_folders_process:  # do not wait for a pipeline's threads
         from polyris.loader import exit_now
         exit_now(0)

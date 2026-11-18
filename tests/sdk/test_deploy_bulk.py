@@ -5,6 +5,7 @@ found in every file is deployed — a directory can hold more than one pipeline
 file, and a file with zero DAGs (a shared config.py, a utils module) is a
 no-op, not an error. One DAG failing must not stop the rest of the batch.
 """
+import os
 import sys
 import textwrap
 
@@ -576,6 +577,39 @@ class TestMainCliBulkFlags:
         assert exc.value.code == 0
         assert deployed.call_count == 2
         assert processes.call_count == 2
+
+    def test_sigterm_stops_children_in_the_parent_and_ends_a_folders_process_by_default(self, tmp_path, mocker, monkeypatch):
+        """Eighth review: with the handler set in a folder's process too, SIGTERM there became one
+        DAG's failure and the process went on deploying the folder's other DAGs."""
+        import signal
+        from polyris import loader
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "dir_a").mkdir()
+        _write_dag_file(tmp_path / "dir_a" / "dag.py", "dag-a")
+        in_the_child = []
+        mocker.patch("polyris.deploy.deploy_pipeline", side_effect=lambda *a, **k: in_the_child.append(
+            (signal.getsignal(signal.SIGTERM), os.environ.get(deploy.BULK_RESULTS_ENV))))
+        in_the_parent = []
+        children = _children_run_here(mocker)
+        run_child_here = children.side_effect
+        def popen(cmd, env, stdout=None):
+            in_the_parent.append(signal.getsignal(signal.SIGTERM))
+            return run_child_here(cmd, env, stdout)
+        children.side_effect = popen
+        monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all"])
+
+        with pytest.raises(SystemExit):
+            deploy.main()
+        assert in_the_parent == [loader._raise_on_sigterm]
+        assert [env for _, env in in_the_child] == [None]  # nothing the child starts sees the results file
+
+        # A folder's own process (here, not under the parent's handler) keeps SIGTERM's default
+        in_the_child.clear()
+        with pytest.raises(SystemExit):
+            deploy._run_bulk(["dir_a"], select=None, stage=None, region=None, dry_run=False, destroy=False,
+                             log_level="ERROR", log_retention_days=30, profile=None,
+                             results_path=str(tmp_path / "out.json"))
+        assert [handler for handler, _ in in_the_child] == [signal.SIG_DFL]
 
     def test_only_discovers_just_the_listed_directories(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)
