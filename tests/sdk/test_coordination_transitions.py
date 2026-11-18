@@ -143,7 +143,7 @@ RUN_CHANGES = {
     "create": (None, run("creating", run_token="t1")),
     "mark_step_failure": (run(), run(step_failure={"step": "notify"})),
     "activate": (run("creating"), run("active")),
-    "new_token": (run(run_token="t1", answered_token="t1"), run(run_token="t2")),
+    "new_token": (run(run_token="t1", answered_order=1), run(run_token="t2")),
     "stop": (run(), run(stop={"by": "ops", "reason": "bad input"})),
     "engine_stop": (run("creating"), run("creating", stop={"by": "engine"})),
     "request": (run(), run(requests={"renew_ttl": {"at": "2026-11-18T10:00:00Z"}})),
@@ -153,7 +153,7 @@ RUN_CHANGES = {
     "resume": (run(pauses=[{"from": "2026-11-18T10:00:00Z"}]),
                run(pauses=[{"from": "2026-11-18T10:00:00Z", "to": "2026-11-18T11:00:00Z"}])),
     "clear_request": (run(requests={"renew_ttl": {"at": "t"}}), run(requests={})),
-    "answer": (run(run_token="t1"), run(run_token="t1", answered_token="t1", finished_at="2026-11-18T12:00:00Z")),
+    "answer": (run(run_token="t1"), run(run_token="t1", answered_order=1, finished_at="2026-11-18T12:00:00Z")),
     "stop_done": (run(stop={"by": "ops"}), run(stop={"by": "ops"}, stop_done="2026-11-18T12:00:00Z")),
 }
 

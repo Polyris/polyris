@@ -215,7 +215,7 @@ No transition leads back to `creating`.
 - **Key.** `_run_` followed by the run's `pipeline_execution`. It starts with `_`, so `is_internal_record` skips it, and every console loop over task rows skips it through `should_skip_token_row`.
 - **Indexes.** It carries no `date`, `pipeline_execution` or `backfill_id`, and its `pipeline_name` alone puts it in neither date index, since both need `date` too. Only `start_day` puts it in `run-start-index` (§5), and its due time puts it in `attention-index` while it is due.
 - **Fields.** `status`; the current token, its attempt order and the answered mark; the stop mark and whether the stop is done; `run_version`; `left_at`, the time a pass last left rows; the execution's name and `StartTime`; `pipeline_name`, the run's date as `run_date`, `start_day`, `started_at`, and `finished_at` with the answer; `triggered_by`; `spec_id`, `task_count` and the format version; the summary; the mark of a failed direct step; the requests; the pause intervals; the TTL.
-- **Size.** Every decision's transaction checks the run row, and DynamoDB bills the whole item, so the row stays under 4 KB. It keeps at most ten pause intervals: a Pause past ten merges the two oldest, which can only move a deadline later. A Stop's reason is capped at 500 characters, and a test builds the largest row that the code can write.
+- **Size.** Every decision's transaction checks the run row, and DynamoDB bills the whole item, so the row stays under 5 KB: a Step Functions task token alone takes up to 2,048 characters (D114). The answered mark is the answered token's order, not the token. It keeps at most ten pause intervals: a Pause past ten merges the two oldest, which can only move a deadline later. A Stop's reason is capped at 500 bytes of UTF-8, as are the other free-text fields at their own caps (`run_row.py`), and a test builds the largest row that the code can write.
 - **No task names.** A pass takes them from the run's spec version, and the dispatcher keeps the names of each `spec_id` it has read, since a version never changes. A spec version read with fewer items than `task_count` is a read failure (invariant 10). 2,000 names would weigh about 120 KB.
 - **The run's input** is an item of its own, keyed `_run_` followed by the run's `pipeline_execution` and `#input`. It holds the run's `variables`, `skip_tasks` and cascade flags, and enters no index. `Start_Run` writes it once (§1). The dispatcher reads it to build `run_task`'s input, Mark Successful for the cascade flags, and the console for what it shows.
 
@@ -656,7 +656,7 @@ Under "Added":
   - the size of `output#`, up to 350 KB and kept a year, and of `input#`, up to 380 KB and kept 90 days.
 - **Asset wakes.** A narrow pass reads about 80,000 items for the 90 facts of the example in §7, about a cent, instead of 16 million, about $2.
 - **Spec storage.** With each text stored once, the example of §8 costs about $0.2 a month after a year, instead of $9.
-- **The run row.** With a 100 KB run input on it, as revision 5 had it, a 2,000-task run would cost about $0.4 in the decisions' checks and the summary's writes; under 4 KB, under a cent (§3).
+- **The run row.** With a 100 KB run input on it, as revision 5 had it, a 2,000-task run would cost about $0.4 in the decisions' checks and the summary's writes; under 5 KB, under a cent (§3).
 - **Smaller items.** `Start_Run` reads its pipeline's spec version once per run. The dispatcher reads a task's spec once per start, and the run's input once per pass that starts tasks. The Runs tab reads one page of run rows, instead of every task row of 14 dates. The longer retention costs about $0.7 a month in storage at 1,000 tasks a day, from 1.1 KB rows (§5), $0.3 of it for keeping the history after the run's end.
 
 ## Alternatives considered
@@ -755,7 +755,7 @@ The harness comes first, before the code it tests, and each test comes before th
 | Due times (invariant 9, §9) | the due-time function, with no clock among its inputs: none for a row that waits only for other rows, nor in a pause for a held row or a limit. A decision deadline far in the future in a pause | unit |
 | Judged from the row (§1, invariant 9) | a due time removed by a race: the limit still fires, and the due time comes back at the run row's next check. A pause's removal refused after a Resume; `wait` reasons with no time in them, written only when they changed | unit, harness |
 | Trigger rules (ADR #138) | the truth table against `evaluate` | unit |
-| The run row (§3) | the largest row under 4 KB; a Pause past ten intervals merges the two oldest | unit |
+| The run row (§3) | the largest row under 5 KB; a Pause past ten intervals merges the two oldest | unit |
 | Specs and limits (§8) | a version item or a text dropped or altered stops the deploy before `create_change_set`; a text written once; golden spec files; `1.0` read back as `1`; outlets, duplicates, and bytes as sent | unit |
 | No reader of the registry's `tasks` or `dag` (§8) | a census, which exempts `stores.Registry` until the change that deletes it | unit |
 | `Start_Run` (§1) | it returns once active, and the activation wakes the first pass; the stop mark refuses a late attempt; a mark written first survives; the token order; the `Catch` fails after the `Parallel` | harness |

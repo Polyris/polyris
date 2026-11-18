@@ -13,7 +13,7 @@ it enters neither date index; ``start_day`` alone puts it in
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 from ..constants import BackfillCascade
 
@@ -29,7 +29,7 @@ ACTIVE = "active"
 
 TOKEN = "run_token"              # the token of Start_Run's latest attempt: the run's only token
 TOKEN_ORDER = "token_order"      # that attempt's order: Execution.RedriveCount first, then State.RetryCount
-ANSWERED = "answered_token"      # the token the dispatcher answered: the run's answer is marked
+ANSWERED = "answered_order"      # the token_order of the token the dispatcher answered: the answer is marked
 STOP = "stop"                    # the stop mark: who asked, why and when
 STOP_DONE = "stop_done"          # when the stop was done: every row final and the answer marked
 RUN_VERSION = "run_version"      # raised by each write of §3's table, checked by every decision
@@ -56,6 +56,21 @@ VARIABLES = "variables"
 SKIP_TASKS = "skip_tasks"
 CASCADE = "cascade"              # how the run's facts reach their consumers: a BackfillCascade value (ADR #57)
 
+# The run row stays under SIZE_MAX (§3, D114): a Step Functions token takes up to 2,048 characters, and
+# every other free-text field is capped in UTF-8 bytes, as DynamoDB counts them, by the builders below.
+SIZE_MAX = 5 * 1024
+TOKEN_MAX = 2048
+STOP_REASON_MAX = 500
+BY_MAX = 128
+TRIGGERED_BY_MAX = 128
+STEP_MAX = 80
+ERROR_MAX = 128
+#: A task id that a request names; polyris-deploy refuses a longer one (TR-3).
+TASK_ID_MAX = 128
+#: The kinds of request (§3): the renewal of the history TTL, and Restart with dependants' reset.
+RENEW_TTL = "renew_ttl"
+RESET_DEPENDANTS = "reset_dependants"
+
 #: The error with which the dispatcher answers a failed run (§9). The generated pipeline takes it in a
 #: ``Catch`` ahead of ``Start_Run``'s, without a warning, and no ``Retry`` of ``Start_Run`` matches it.
 FAILED_RUN_ERROR = "Polyris.RunFailed"
@@ -69,6 +84,21 @@ def key(pipeline_execution: str) -> str:
 def input_key(pipeline_execution: str) -> str:
     """The key of the run's input item."""
     return f"{key(pipeline_execution)}{INPUT_SUFFIX}"
+
+
+# ``run_version`` (§1, §3). A decision's ConditionCheck, and a pass's own raise, require it to be what the
+# pass read (``VERSION_UNCHANGED``); the raise then sets the next value (``VERSION_NEXT``, ``version_values``).
+# An operator's action, a new token and a request raise it whatever it is (``VERSION_RAISE``).
+VERSION_NAMES: Dict[str, str] = {"#rv": RUN_VERSION}
+VERSION_UNCHANGED = "#rv = :rv"
+VERSION_NEXT = "#rv = :rv_next"
+VERSION_RAISE = "#rv = if_not_exists(#rv, :rv_zero) + :rv_one"
+VERSION_RAISE_VALUES: Dict[str, int] = {":rv_zero": 0, ":rv_one": 1}
+
+
+def version_values(read: int) -> Dict[str, int]:
+    """The values of ``VERSION_UNCHANGED`` and ``VERSION_NEXT`` for a pass that read ``read``."""
+    return {":rv": read, ":rv_next": read + 1}
 
 
 #: Step Functions allows at most 99,999,999 attempts of a state, so a retry count stays below this.
@@ -98,6 +128,31 @@ def cascade(*, suppress_asset_event: bool, cascade_all: bool) -> str:
     if suppress_asset_event:
         return BackfillCascade.NONE
     return BackfillCascade.ALL if cascade_all else BackfillCascade.AUTO
+
+
+def clip(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` UTF-8 bytes, ending in an ellipsis when cut, never inside a character."""
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    return raw[:limit - 3].decode("utf-8", errors="ignore") + "…"
+
+
+def stop_mark(*, by: str, reason: str, at: str) -> Dict[str, str]:
+    """The stop mark: who asked, why and when (§4)."""
+    return {"by": clip(by, BY_MAX), "reason": clip(reason, STOP_REASON_MAX), "at": at}
+
+
+def step_mark(*, step: str, error: str) -> Dict[str, str]:
+    """The mark of a failed direct step; its cause goes to the step warning, not to the run row (§1)."""
+    return {"step": clip(step, STEP_MAX), "error": clip(error, ERROR_MAX)}
+
+
+def request(*, by: str, at: str, task: Optional[str] = None) -> Dict[str, str]:
+    """A request on the run row: who asked and when, and the task whose dependants a reset concerns."""
+    if task is not None and len(task.encode("utf-8")) > TASK_ID_MAX:
+        raise ValueError(f"a task id of more than {TASK_ID_MAX} bytes cannot be named in a request")
+    return {"by": clip(by, BY_MAX), "at": at, **({"task": task} if task is not None else {})}
 
 
 def is_run_row(row_key: str) -> bool:

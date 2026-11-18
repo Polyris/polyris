@@ -86,3 +86,71 @@ def test_the_token_condition_as_dynamodb_evaluates_it(stored, attempt, accepted)
             assert exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
             written = False
     assert written is accepted
+
+
+# ── run_version (§1, §3) ─────────────────────────────────────────────
+
+def _table():
+    import boto3
+
+    return boto3.resource("dynamodb", region_name="us-east-1").create_table(
+        TableName="tokens", KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST")
+
+
+def test_a_decision_read_before_a_raise_loses_its_transaction():
+    """A Restart lands between a pass's read and its write: the decision's ConditionCheck fails."""
+    import boto3
+    from botocore.exceptions import ClientError
+    from moto import mock_aws
+
+    run_key = {"execution_name": run_row.key("orders-run-2026-11-18-abcd1234")}
+    with mock_aws():
+        table = _table()
+        table.put_item(Item={**run_key, "run_version": 4})
+        read = 4
+        table.update_item(Key=run_key, UpdateExpression=f"SET {run_row.VERSION_RAISE}",       # the Restart
+                          ExpressionAttributeNames=run_row.VERSION_NAMES,
+                          ExpressionAttributeValues=run_row.VERSION_RAISE_VALUES)
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        with pytest.raises(ClientError, match="TransactionCanceled"):
+            client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {"TableName": "tokens", "Key": {"execution_name": {"S": run_key["execution_name"]}},
+                                    "ConditionExpression": run_row.VERSION_UNCHANGED,
+                                    "ExpressionAttributeNames": run_row.VERSION_NAMES,
+                                    "ExpressionAttributeValues": {":rv": {"N": str(read)}}}},
+                {"Put": {"TableName": "tokens", "Item": {"execution_name": {"S": "load-2026-11-18-x"},
+                                                          "status": {"S": "deps_ready"}}}},
+            ])
+
+
+def test_a_passs_own_raise_holds_only_while_nothing_else_raised():
+    from botocore.exceptions import ClientError
+    from moto import mock_aws
+
+    run_key = {"execution_name": run_row.key("orders-run-2026-11-18-abcd1234")}
+    with mock_aws():
+        table = _table()
+        table.put_item(Item={**run_key, "run_version": 7})
+        raise_from = dict(Key=run_key, UpdateExpression=f"SET {run_row.VERSION_NEXT}",
+                          ConditionExpression=run_row.VERSION_UNCHANGED,
+                          ExpressionAttributeNames=run_row.VERSION_NAMES,
+                          ExpressionAttributeValues=run_row.version_values(7))
+        table.update_item(**raise_from)
+        assert table.get_item(Key=run_key)["Item"]["run_version"] == 8
+        with pytest.raises(ClientError, match="ConditionalCheckFailed"):
+            table.update_item(**raise_from)                    # the pass read 7: someone raised since
+
+
+def test_an_action_raises_a_row_that_has_no_run_version_yet():
+    from moto import mock_aws
+
+    run_key = {"execution_name": run_row.key("orders-run-2026-11-18-abcd1234")}
+    with mock_aws():
+        table = _table()
+        table.put_item(Item=run_key)
+        table.update_item(Key=run_key, UpdateExpression=f"SET {run_row.VERSION_RAISE}",
+                          ExpressionAttributeNames=run_row.VERSION_NAMES,
+                          ExpressionAttributeValues=run_row.VERSION_RAISE_VALUES)
+        assert table.get_item(Key=run_key)["Item"]["run_version"] == 1
