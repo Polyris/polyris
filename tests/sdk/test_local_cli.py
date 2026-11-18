@@ -665,6 +665,24 @@ class TestLoadDagFromFile:
         assert dag.dag_id == "test-pipeline"
         assert len(dag.tasks) == 2
 
+    def test_the_dag_made_last_wins(self, tmp_path):
+        """polyris-local runs the DAG the file made last (the loader keeps the order DAGs were made)."""
+        f = tmp_path / "dag.py"
+        f.write_text(
+            "from polyris import DAG, task\n"
+            "template = DAG('template', schedule='@daily')\n"
+            "with DAG('main', schedule='@daily'):\n"
+            "    @task.sfn(arn='arn:aws:states:us-east-1:123456789012:stateMachine:x')\n"
+            "    def a(): pass\n"
+            "    a()\n"
+        )
+        assert _load_dag_from_file(str(f)).dag_id == "main"
+
+    def test_a_dag_built_without_with_is_found_by_its_name(self, tmp_path):
+        f = tmp_path / "dag.py"
+        f.write_text("from polyris import DAG\nonly = DAG('only', schedule='@daily')\n")
+        assert _load_dag_from_file(str(f)).dag_id == "only"
+
     def test_no_dag_exits_1(self, tmp_path, capsys):
         f = tmp_path / "dag.py"
         f.write_text("x = 1  # no DAG here\n")

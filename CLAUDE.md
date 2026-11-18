@@ -221,7 +221,7 @@ Any template change to `Command`, `Image`, etc. creates a new revision (`:2`, `:
 
 In `@task.ecs_task(task_definition=...)` and `@task.batch_job(job_definition=...)`: drop the trailing `:N`. Only pin `:N` when deliberately holding a specific version — document why.
 
-This applies to docstring examples too — a docstring that shows `task_definition='my-task-def:3'` misleads users into using the pinned form.
+This applies to docstring examples too — a docstring that shows `task_definition='my-task-def:3'` misleads users into using the pinned form. The deploy's existence check looks a Batch reference without `:N` up by name (`resource_check._active_job_defs`): `describe_job_definitions(jobDefinitions=[…])` documents only the forms with a revision.
 
 **36. Functions with 5+ parameters enforce keyword-only arguments**
 Any function with five or more parameters must separate positional from optional parameters with `*`, making every optional argument keyword-only at the call site:
@@ -778,6 +778,7 @@ After significant changes:
 - `CHANGELOG.md` — new version entry
 - `docs/reference/DESIGN_DECISIONS.md` — new ADR
 - Version must match across: `pyproject.toml`, `polyris/__init__.py`, `ui/package.json`
+- `CHANGELOG.md` opens with `## Unreleased`; add your entry under it. `scripts/release.sh` refuses an empty one and renames it to `## vX.Y.Z - <date>` (`scripts/changelog_release.py`). Nothing did before, and releases from 1.0.2 to 1.2.2 shipped their notes under `## Unreleased`.
 - A template change that adds or removes a resource updates the counts and inventory tables in `INFRASTRUCTURE.md`, `IAM_PERMISSIONS.md`, `BACKEND.md`, `README.md` and the State Machines table above in the same commit. `tests/docs/test_resource_counts.py` and `tests/docs/test_resource_inventory.py` derive every number and name from `sam/template.yaml` (and the free route count from the console) and fail until the docs agree. Run `make test-docs`.
 
 ---

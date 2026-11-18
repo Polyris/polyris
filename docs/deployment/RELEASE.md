@@ -8,7 +8,9 @@ How a polyris version is cut and what each release publishes. Read this before t
 ./scripts/release.sh full v1.2.0     # all gates (make check), or `lib` for SDK-only gates
 ```
 
-`release.sh` runs the gates, bumps the version in `pyproject.toml`, `polyris/__init__.py`, `ui/package.json` and the `polyris @ …@vX.Y.Z` pin in `sam/lambdas/console_api/requirements.txt`, commits, tags and pushes. It doesn't create the GitHub Release: CI does that from the tag (below).
+`release.sh` refuses to start while `## Unreleased` in `CHANGELOG.md` is empty. It runs the gates, bumps the version in `pyproject.toml`, `polyris/__init__.py`, `ui/package.json` and the `polyris @ …@vX.Y.Z` pins in `sam/lambdas/console_api/requirements.txt` and `sam/lambdas/coordination/requirements.txt`, turns `## Unreleased` into `## vX.Y.Z - <today>` with a new, empty `## Unreleased` above it, commits, tags and pushes. It doesn't create the GitHub Release: CI does that from the tag (below).
+
+If the commit fails (for example, GPG cannot sign), or you decline the push, the script puts the bumped files back: fix the cause and run it again. If the push itself fails, delete the local tag (`git tag -d vX.Y.Z`) and run it again: it finds the release commit and tags it.
 
 Before tagging, smoke-test current `main` on a dev account (root `CLAUDE.md` Principle #15).
 

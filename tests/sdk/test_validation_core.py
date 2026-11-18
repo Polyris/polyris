@@ -6,8 +6,8 @@ local-validation engine in ``polyris.validation``:
 
   - ``build_asset_graph``      — DAGInfo list → producer/consumer graph
   - ``detect_asset_cycles``    — BFS cycle detection over that graph
-  - ``discover_pipeline_files``— filesystem scan for pipeline files
-  - ``extract_dag_info``       — import a pipeline file → DAGInfo
+  - which files ``--all`` loads (``polyris.loader``)
+  - ``_dag_infos``             — a loaded pipeline file → DAGInfo
   - ``validate_asl_from_dag``  — generate + validate ASL for a DAG object
   - ``validate_all``           — full discover → extract → graph → cycles
   - ``_validate_single``       — single-file validation entrypoint
@@ -28,13 +28,24 @@ from polyris.validation import (
     DAGInfo,
     build_asset_graph,
     detect_asset_cycles,
-    discover_pipeline_files,
-    extract_dag_info,
+    _dag_infos,
     validate_all,
     validate_asl_from_dag,
     _validate_single,
     _print_error,
 )
+
+
+def discover_pipeline_files(directory) -> list:
+    """The files --all loads under ``directory`` (``polyris.loader``), as paths."""
+    from polyris.loader import files_in, pipeline_folders
+    return [str(p) for folder in pipeline_folders(directory) for p in files_in(folder).pipelines]
+
+
+def extract_dag_info(path) -> list:
+    """The DAG info of one file, loaded as every command loads it."""
+    from polyris.loader import load_pipeline
+    return _dag_infos(str(path), load_pipeline(path).dags)
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
 
@@ -214,27 +225,84 @@ class TestDiscoverPipelineFiles:
         found = discover_pipeline_files(str(tmp_path))
         assert any(f.endswith("/dag.py") for f in found)
 
-    def test_finds_named_pipeline_and_dag_files(self, tmp_path):
-        _write(tmp_path, "foo_pipeline.py", "x = 1\n")
-        _write(tmp_path, "bar_dag.py", "x = 1\n")
-        found = discover_pipeline_files(str(tmp_path))
-        assert any(f.endswith("foo_pipeline.py") for f in found)
-        assert any(f.endswith("bar_dag.py") for f in found)
+    def test_finds_any_file_whose_code_imports_a_dag_maker_from_polyris_whatever_its_name(self, tmp_path):
+        """The file's code (parsed, never run) imports DAG, dag or Pipeline from polyris."""
+        _write(tmp_path, "p/orders.py", "from polyris import DAG\n")
+        _write(tmp_path, "p/latest_prices.py", "from polyris.helpers import dag\n")
+        _write(tmp_path, "p/inventory.py", "from polyris import Pipeline\n")
+        _write(tmp_path, "p/aliased.py", "import polyris as p\nwith p.DAG('x'):\n    pass\n")
+        _write(tmp_path, "p/starred.py", "from polyris import *\n")
+        _write(tmp_path, "p/broken.py", "from polyris import DAG\nthis is not ) python\n")  # loaded: its error is reported
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"orders.py", "latest_prices.py", "inventory.py", "aliased.py", "starred.py", "broken.py"}
 
-    def test_finds_file_by_dag_content(self, tmp_path):
-        # Name matches no pattern → only the 'DAG(' content marks it.
-        _write(tmp_path, "thing.py", "from x import DAG\nwith DAG('a'):\n    pass\n")
-        found = discover_pipeline_files(str(tmp_path))
-        assert any(f.endswith("thing.py") for f in found)
+    def test_a_file_is_read_as_python_reads_it(self, tmp_path):
+        """A BOM (or a coding line) failed the parse of decoded text, and the fallback ran a Glue
+        script. ast reads the bytes, as Python does."""
+        bom = b"\xef\xbb\xbf"
+        folder = tmp_path / "p"
+        folder.mkdir()
+        (folder / "glue_bom.py").write_bytes(bom + b"import awsglue\nfrom polyris import xcom\n")
+        (folder / "orders_bom.py").write_bytes(bom + b"from polyris import DAG\n")
+        (folder / "latin.py").write_bytes(b"# coding: latin-1\nfrom polyris import xcom\nna\xefve = 1\n")
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"orders_bom.py"}
 
-    def test_excludes_tests_pycache_and_plain_files(self, tmp_path):
-        _write(tmp_path, "test_thing.py", "with DAG('x'):\n    pass\n")
-        _write(tmp_path, "__pycache__/cached.py", "DAG(\n")
-        _write(tmp_path, "plain.py", "x = 1\n")  # no DAG, no name match
+    def test_a_file_that_does_not_parse_is_loaded_only_when_it_imports_a_dag_maker(self, tmp_path):
+        """Any broken file that mentioned polyris was loaded, so a Lambda handler written for a
+        newer Python failed validate --all. Too deep for ast is the same case; an import over
+        several lines still counts, a DAG named in a comment does not."""
+        _write(tmp_path, "p/newer_python.py", "from polyris import xcom\ntype Rows[T = dict] = list[T]\n")
+        _write(tmp_path, "p/broken_pipeline.py", "from polyris import DAG, task\nwith DAG('x') as\n")
+        _write(tmp_path, "p/broken_aliased.py", "import polyris\nwith polyris.DAG('x') as\n")
+        _write(tmp_path, "p/too_deep.py", "from polyris import xcom\nx = " + "+".join(["1"] * 20000) + "\n")
+        _write(tmp_path, "p/broken_multiline.py", "from polyris import (\n    task,\n    DAG,\n)\nwith DAG('x') as\n")
+        _write(tmp_path, "p/broken_comment.py", "from polyris import xcom  # used by the DAG\nwith x as\n")
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"broken_pipeline.py", "broken_aliased.py", "broken_multiline.py"}
+
+    def test_a_star_import_counts_only_from_a_module_that_exports_a_dag_maker(self, tmp_path):
+        _write(tmp_path, "p/handler.py", "from polyris.xcom import *\n")
+        _write(tmp_path, "p/orders.py", "from polyris.dag import *\n")
+        _write(tmp_path, "p/orders2.py", "from polyris import *\n")
+        found = {Path(f).name for f in discover_pipeline_files(str(tmp_path))}
+        assert found == {"orders.py", "orders2.py"}
+
+    def test_a_comment_or_string_naming_a_dag_does_not_make_a_pipeline(self, tmp_path):
+        """ "polyris" and "dag" in the text matched a Glue script's comment."""
+        _write(tmp_path, "p/transform_spark.py",
+               "# Spark step of the all-task-types DAG\nimport awsglue\nfrom polyris import xcom\n"
+               "NAME = os.environ['POLYRIS_PIPELINE_NAME']  # 'DAG'\n")
+        _write(tmp_path, "p/uses_module.py", "import polyris\npolyris.xcom.push('k', 1)\n")
+        _write(tmp_path, "p/not_python.py", "this is not ) python, and names no DAG\n")
+        assert discover_pipeline_files(str(tmp_path)) == []
+
+    def test_a_file_that_does_not_mention_polyris_is_not_run(self, tmp_path):
+        # A Glue script, a migration: never executed by --all, however it is named
+        _write(tmp_path, "p/glue_job_pipeline.py", "import awsglue\n")
+        _write(tmp_path, "p/transform.py", "import awsglue\nfrom polyris import xcom\nos.environ['POLYRIS_PIPELINE_NAME']\n")  # a real xcom script
+        _write(tmp_path, "p/thing.py", "from x import DAG\nwith DAG('a'):\n    pass\n")
         found = discover_pipeline_files(str(tmp_path))
-        assert not any("test_thing.py" in f for f in found)
-        assert not any("__pycache__" in f for f in found)
-        assert not any(f.endswith("plain.py") for f in found)
+        assert found == []
+
+    def test_excludes_tests_pycache_hidden_folders_and_plain_files(self, tmp_path):
+        _write(tmp_path, "p/test_thing.py", "from polyris import DAG\n")
+        _write(tmp_path, "p/thing_test.py", "from polyris import DAG\n")
+        _write(tmp_path, "p/conftest.py", "from polyris import DAG\n")
+        _write(tmp_path, "__pycache__/cached.py", "from polyris import DAG\n")
+        _write(tmp_path, ".venv/lib/polyris_plugin.py", "from polyris import DAG\n")
+        _write(tmp_path, "p/plain.py", "x = 1\n")
+        assert discover_pipeline_files(str(tmp_path)) == []
+
+    def test_only_the_folders_directly_in_the_run_directory_are_loaded(self, tmp_path):
+        """D110: validate --all loads what deploy --all deploys; the rest is warned about."""
+        from polyris.loader import pipelines_out_of_reach
+        _write(tmp_path, "dag.py", "from polyris import DAG\n")
+        _write(tmp_path, "orders/dag.py", "from polyris import DAG\n")
+        _write(tmp_path, "team/billing/dag.py", "from polyris import DAG\n")
+        _write(tmp_path, ".venv/x/dag.py", "from polyris import DAG\n")
+        assert discover_pipeline_files(str(tmp_path)) == [str(tmp_path / "orders" / "dag.py")]
+        assert pipelines_out_of_reach(tmp_path) == [tmp_path / "dag.py", tmp_path / "team" / "billing" / "dag.py"]
 
     def test_result_is_sorted_and_deduped(self, tmp_path):
         _write(tmp_path, "b/dag.py", "x = 1\n")

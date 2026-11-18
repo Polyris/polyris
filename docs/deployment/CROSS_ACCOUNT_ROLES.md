@@ -40,7 +40,7 @@ cross-account credentials are applied by the `run_task` wrapper for each service
 ```python
 @task.glue_job(job_name="cross-acct-etl", role="etl")
 @task.lambda_function(function_name="cross-acct-fn", role="etl")
-@task.batch_job(job_definition="jd:1", job_queue="jq", role="etl")
+@task.batch_job(job_definition="jd", job_queue="jq", role="etl")
 ```
 
 A value that is already a full `arn:aws:iam::...:role/...` is used directly;

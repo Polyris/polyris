@@ -246,9 +246,36 @@ def _check_batch_job_queue(client: Any, ref: str) -> None:
         raise _NotFoundError(ref)
 
 
+_JOB_DEF_REVISION = re.compile(r":\d+$")
+
+
+def _active_job_defs(client: Any, ref: str) -> List[Dict[str, Any]]:
+    """The ACTIVE job definitions a reference names.
+
+    ``jobDefinitions=[…]`` takes the ``name:revision`` and ARN-with-revision forms only. A
+    reference without a revision (a name, or an ARN ending in the name, Principle #35) runs
+    the newest ACTIVE revision, so it is looked up by name, every page of it.
+    """
+    if _JOB_DEF_REVISION.search(ref):
+        # `jobDefinitions` takes no other parameter (AWS DescribeJobDefinitions): filter here
+        resp = client.describe_job_definitions(jobDefinitions=[ref])
+        return [d for d in resp.get("jobDefinitions", []) if d.get("status") == "ACTIVE"]
+    name = ref.rsplit("job-definition/", 1)[-1]
+    found: List[Dict[str, Any]] = []
+    token: Optional[str] = None
+    while True:
+        kwargs: Dict[str, Any] = {"jobDefinitionName": name, "status": "ACTIVE"}
+        if token:
+            kwargs["nextToken"] = token
+        resp = client.describe_job_definitions(**kwargs)
+        found += resp.get("jobDefinitions", [])
+        token = resp.get("nextToken")
+        if not token:
+            return found
+
+
 def _check_batch_job_def(client: Any, ref: str) -> None:
-    resp = client.describe_job_definitions(jobDefinitions=[ref], status="ACTIVE")
-    if not resp.get("jobDefinitions"):
+    if not _active_job_defs(client, ref):
         raise _NotFoundError(ref)
 
 
@@ -582,8 +609,7 @@ def _fetch_ecs_task_def_data(client: Any, ref: str) -> Dict[str, Any]:
 
 
 def _fetch_batch_job_def_data(client: Any, ref: str) -> Dict[str, Any]:
-    resp = client.describe_job_definitions(jobDefinitions=[ref], status="ACTIVE")
-    defs = resp.get("jobDefinitions", [])
+    defs = _active_job_defs(client, ref)
     if not defs:
         # No ACTIVE definition found — treat as not found so the caller routes
         # this resource to unverified rather than producing a false-clean report.

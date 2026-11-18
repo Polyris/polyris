@@ -134,7 +134,7 @@ class TestDiscoveryAndRunner:
 
     def test_run_test_finds_unbound_dag(self, tmp_path):
         """_run_test must not report 'No DAG found' for a pipeline written
-        without `as dag` — it uses DAG.__exit__ instrumentation, not vars(mod)."""
+        without `as dag`: it loads through polyris.loader.load_pipeline (ADR #139)."""
         f = _write(tmp_path, "dag.py", UNBOUND_DAG)
         assert _run_test(str(f)) is True
 
@@ -184,9 +184,9 @@ class TestSingleAndVerbose:
         assert "not-a-real-role" in out
 
     def test_validate_single_finds_dag_without_as_binding(self, tmp_path):
-        """_validate_single must use DAG.__exit__ instrumentation, not vars(mod).
-        vars(mod) only finds names bound at module level and misses DAGs written
-        as `with DAG("name"):` without an `as dag` clause."""
+        """_validate_single loads through polyris.loader.load_pipeline (ADR #139), which
+        records a DAG when it is made: vars(mod) only finds names bound at module level
+        and misses DAGs written as `with DAG("name"):` without an `as dag` clause."""
         f = _write(tmp_path, "dag.py", UNBOUND_DAG)
         valid, errors = _validate_single(str(f), verbose=False)
         assert valid is True
@@ -299,12 +299,34 @@ class TestMain:
 
     def test_all_with_unbound_dag_exits_zero(self, tmp_path, monkeypatch):
         """--all must not report 'No DAG found' for pipelines written without `as dag`."""
-        _write(tmp_path, "dag.py", UNBOUND_DAG)
+        _write(tmp_path, "p/dag.py", UNBOUND_DAG)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
         with pytest.raises(SystemExit) as e:
             main()
         assert e.value.code == 0
+
+    def test_all_in_a_pipeline_folder_warns_that_dag_py_is_out_of_reach(self, tmp_path, monkeypatch, capsys):
+        """D110: --all loads the folders directly in the run directory, as polyris-deploy --all
+        deploys them; run in the pipeline's own folder, it says why it found nothing."""
+        _write(tmp_path, "dag.py", UNBOUND_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 1
+        assert "dag.py: not loaded by --all" in capsys.readouterr().out
+
+    def test_all_refuses_a_dag_id_two_folders_make(self, tmp_path, monkeypatch, capsys):
+        """D111: each DAG is one stack, so polyris-deploy --all would refuse the run."""
+        _write(tmp_path, "a/dag.py", UNBOUND_DAG)
+        _write(tmp_path, "b/dag.py", UNBOUND_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 1
+        assert "is made by a/dag.py and b/dag.py" in capsys.readouterr().out
 
     def test_all_asl_invalid_exits_one(self, tmp_path, monkeypatch, capsys):
         # DAG loads cleanly (extract_dag_info succeeds) but _validate_single
@@ -319,6 +341,16 @@ class TestMain:
         out = capsys.readouterr().out
         # Exactly one print path fires (main() non-verbose non-json branch) — not two.
         assert out.count("not-a-real-role") == 1
+
+    def test_a_folders_process_runs_the_asl_checks_on_the_dags_it_loaded(self, tmp_path):
+        """--all runs the ASL checks in each folder's process (ADR #139), where coverage does not
+        follow; this runs that side here."""
+        from polyris.validation import _collect_dag_info
+        f = _write(tmp_path, "proj/dag.py", INVALID_ROLE_DAG)
+        infos, errors = _collect_dag_info([str(f)], check_asl=True)
+        assert len(infos) == 1
+        assert len(errors) == 1 and errors[0].startswith(f"{f}: ") and "not-a-real-role" in errors[0]
+        assert _collect_dag_info([str(f)])[1] == []  # without check_asl: DAG info only
 
     def test_all_asl_invalid_json_includes_error_detail(self, tmp_path, monkeypatch, capsys):
         _write(tmp_path, "proj/dag.py", INVALID_ROLE_DAG)
