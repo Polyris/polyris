@@ -320,3 +320,24 @@ def test_a_command_is_there_only_when_every_name_it_uses_is_known(fields, names)
 
 def test_the_lease_outlives_a_run_but_not_the_schedule():
     assert sweep.BUDGET < sweep.LEASE < timedelta(minutes=5)
+
+
+# ── ADR #137 §7: lost hints and a failed step ────────────────────────
+
+@pytest.mark.parametrize("enabled_minutes_ago,left_at,countdown,lost", [
+    (10, False, False, True),
+    (4, False, False, False),          # its stream pass may still be under way
+    (10, True, False, False),          # a pass left it for its budget
+    (10, False, True, False),          # the sweeper is how a countdown ends
+])
+def test_a_lost_hint_is_an_old_enabling_time_that_no_pass_left(enabled_minutes_ago, left_at, countdown, lost):
+    check = STARTED + timedelta(hours=1)
+    enabled = check - timedelta(minutes=enabled_minutes_ago)
+    assert sweep.lost_hint(enabled, check, left_at=left_at, countdown_ended=countdown) is lost
+    assert sweep.lost_hint(None, check, left_at=False, countdown_ended=False) is False
+
+
+@pytest.mark.parametrize("passes,failed,reported", [(10, 6, True), (10, 5, False), (3, 2, True), (1, 1, False),
+                                                    (2, 2, True), (0, 0, False)])
+def test_a_sweep_reports_a_failed_step_when_most_of_its_passes_failed_and_at_least_two(passes, failed, reported):
+    assert sweep.failed_step(passes, failed) is reported

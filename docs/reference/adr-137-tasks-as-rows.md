@@ -475,7 +475,7 @@ A value that two pieces of code must read alike gets one named constant, and a p
 
 Values defined clause by clause are pure functions in `polyris/coordination/`, with a test per clause (Principle #48):
 - the transition table, with each status's attention kind, its *Wakes* column and the writes of the run row that raise `run_version` (§3, §6), with the stream's filter patterns generated from it (`transitions.py`);
-- a row's next deadline (§5);
+- a row's next deadline (§5), with the due-time function below (`deadlines.py`);
 - a task row's next due time (invariant 9). It reads the row's own fields, its upstreams and the run row's pause state, never the clock, so a pass writes a due time only when it changes (§1).
   - It gives a limit's deadline, a countdown's end, a decision deadline, a start's next try, and a running execution's next check, from the time and the number of its checks so far.
   - It gives none for a row that waits only for other rows, and in a paused run none for a row the pause holds or a limit. A decision deadline then falls due far in the future (§5);

@@ -86,6 +86,31 @@ def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optio
     return started_at + (LEGACY_WAITS if legacy else 1) * timeout + timedelta(hours=1)
 
 
+#: A row whose stream pass may still be under way is no lost hint: longer than the stream's batching
+#: window and its retries of a failed batch (ADR #137 §7).
+LOST_HINT_GRACE = timedelta(minutes=5)
+
+
+def lost_hint(enabled_at: Optional[datetime], check_time: datetime, *, left_at: bool, countdown_ended: bool) -> bool:
+    """Whether a row whose wait a run row's check ends had lost its hint (ADR #137 §7).
+
+    Only when its enabling time is older than the grace: neither a row whose
+    countdown ended (the sweeper is how a countdown ends) nor a row found while
+    the run row carries ``left_at`` (a pass left it for its budget) counts.
+    """
+    if left_at or countdown_ended or enabled_at is None:
+        return False
+    return enabled_at < check_time - LOST_HINT_GRACE
+
+
+def failed_step(passes: int, failed: int) -> bool:
+    """Whether a sweep reports a failed step: more than half of its passes failed, and at least two (ADR #137 §7).
+
+    One broken run alone does not turn the System status red; its run's warning shows it.
+    """
+    return failed >= 2 and failed * 2 > passes
+
+
 def next_push_retry(now: datetime, attempts: int) -> datetime:
     """When a failed push start is tried again: 5 minutes, doubling, at most an hour (ADR #130 §8)."""
     return now + min(timedelta(minutes=5) * 2 ** max(attempts, 0), timedelta(hours=1))
