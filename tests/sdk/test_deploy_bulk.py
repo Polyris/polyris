@@ -5,7 +5,6 @@ found in every file is deployed — a directory can hold more than one pipeline
 file, and a file with zero DAGs (a shared config.py, a utils module) is a
 no-op, not an error. One DAG failing must not stop the rest of the batch.
 """
-import os
 import sys
 import textwrap
 
@@ -73,7 +72,7 @@ class TestDiscoverDagsInDir:
         assert "Skipping" in capsys.readouterr().out
 
     def test_a_file_that_is_not_a_pipeline_is_never_run(self, tmp_path, capsys):
-        """Third review: a Glue script next to dag.py failed every batch; validate --all never ran it."""
+        """A Glue script next to dag.py failed every batch; validate --all never ran it."""
         _write_dag_file(tmp_path / "dag.py", "real-one")
         (tmp_path / "glue_job.py").write_text("import awsglue  # only on Glue\nfrom polyris import xcom\n")
         failed: list = []
@@ -83,16 +82,6 @@ class TestDiscoverDagsInDir:
 
     def test_empty_directory_returns_nothing(self, tmp_path):
         assert deploy._discover_dags_in_dir(tmp_path) == []
-
-    def test_duplicate_dag_id_across_files_is_warned_and_skipped(self, tmp_path, capsys):
-        """Same dag_id in two files: first wins, second is warned and dropped."""
-        _write_dag_file(tmp_path / "a.py", "shared-id")
-        _write_dag_file(tmp_path / "b.py", "shared-id")
-        found = deploy._discover_dags_in_dir(tmp_path)
-        assert len(found) == 1
-        assert found[0][1].dag_id == "shared-id"
-        out = capsys.readouterr().out
-        assert "shared-id" in out
 
     def test_file_that_exits_nonzero_is_skipped_with_warning(self, tmp_path, capsys):
         """A pipeline file that calls sys.exit(1) is treated as a load error."""
@@ -208,7 +197,7 @@ class TestLoadDagFromFile:
         """}, ["exec-dag"], id="exec inside the file"),
     ])
     def test_a_dag_this_file_makes_through_a_call_is_found(self, tmp_path, monkeypatch, files, expected):
-        """polyris-validate finds these; the deploy must too (review of F18)."""
+        """polyris-validate finds these; the deploy must too (F18)."""
         for name, body in files.items():
             (tmp_path / name).write_text(textwrap.dedent(body))
         monkeypatch.delitem(sys.modules, "common", raising=False)
@@ -233,7 +222,7 @@ class TestLoadDagFromFile:
     def test_a_dag_is_another_files_only_when_an_import_made_it(self):
         """ADR #139: an `import` between the DAG and the loader makes it the imported module's."""
         import types
-        from polyris.dag import _made_in_an_import
+        from polyris.loader import _made_in_an_import
 
         def frame(module, code="f", back=None):
             return types.SimpleNamespace(f_globals={"__name__": module}, f_code=types.SimpleNamespace(co_name=code), f_back=back)
@@ -244,7 +233,7 @@ class TestLoadDagFromFile:
         assert _made_in_an_import(frame("worker"), loader) is False  # a thread: never reaches the loader
 
     def test_a_helper_that_imports_the_pipeline_file_back_does_not_make_a_second_dag(self, tmp_path, monkeypatch):
-        """Second review: the file ran again as module `dag`; matched by file name, it counted twice."""
+        """The file ran again as module `dag`; matched by file name, it counted twice."""
         (tmp_path / "dag.py").write_text(textwrap.dedent("""
             import sys, os; sys.path.insert(0, os.path.dirname(__file__))
             from polyris import DAG, task
@@ -342,6 +331,10 @@ class TestLoadDagFromFile:
 
 
 class TestRunBulk:
+    @pytest.fixture(autouse=True)
+    def _folders(self, mocker):
+        self.requests = _folders_run_here(mocker)
+
     def test_deploys_every_dag_across_two_directories(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "dir_a").mkdir()
@@ -355,7 +348,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["dir_a", "dir_b"], select=None, stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         assert exc.value.code == 0
         assert deployed.call_count == 2
@@ -381,7 +374,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["dir_a", "dir_b"], select=None, stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         # Overall exit is non-zero (something failed)...
         assert exc.value.code == 1
@@ -410,7 +403,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["multi"], select="keep-me", stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         assert exc.value.code == 0
         assert deployed.call_count == 1
@@ -428,13 +421,13 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["has_it", "lacks_it"], select="target-dag", stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         assert exc.value.code == 0
         assert deployed.call_count == 1
 
     def test_a_file_that_does_not_load_fails_the_batch(self, tmp_path, mocker, monkeypatch, capsys):
-        """Review of F18: a refused file (here one dag_id twice) was skipped, and the batch said 0 failed."""
+        """F18: a refused file (here one dag_id twice) was skipped, and the batch said 0 failed."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "p1").mkdir()
         (tmp_path / "p1" / "dag.py").write_text(textwrap.dedent("""
@@ -453,7 +446,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["p1", "p2"], select=None, stage=None, region=None,
                 dry_run=False, destroy=True, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         assert exc.value.code == 1
         assert [c.kwargs["dag"].dag_id for c in deployed.call_args_list] == ["fine"]
@@ -467,7 +460,7 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["does_not_exist"], select=None, stage=None, region=None,
                 dry_run=False, destroy=False, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         assert exc.value.code == 1
 
@@ -481,35 +474,78 @@ class TestRunBulk:
             deploy._run_bulk(
                 ["dir_a"], select=None, stage=None, region=None,
                 dry_run=False, destroy=True, log_level="ERROR",
-                log_retention_days=30, profile=None, in_own_process=False,
+                log_retention_days=30, profile=None,
             )
         assert deployed.call_args.kwargs["destroy"] is True
 
+    def test_every_option_reaches_the_folders_process(self, tmp_path, mocker, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "-dash").mkdir()  # a name argparse would take for a flag: no argv to parse now
+        _write_dag_file(tmp_path / "-dash" / "dag.py", "dag-a")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        with pytest.raises(SystemExit) as exc:
+            deploy._run_bulk(["-dash"], select="dag-a", stage="dev", region="eu-west-1", dry_run=True,
+                             destroy=False, log_level="ALL", log_retention_days=7, profile="p", stack="s")
+        assert exc.value.code == 0
+        assert {k: v for k, v in deployed.call_args.kwargs.items() if k != "dag"} == dict(
+            stage="dev", stack="s", region="eu-west-1", dry_run=True, destroy=False,
+            log_level="ALL", log_retention_days=7, profile="p")
 
-def _children_run_here(mocker):
-    """Run each folder's own process (``polyris-deploy --only DIR``) in this one, through the
-    subprocess boundary: the argv and the results file are the ones a real child gets."""
-    import os
+    def test_a_dag_id_two_files_make_stops_the_run_before_anything_is_deployed(self, tmp_path, mocker, monkeypatch, capsys):
+        """D111: each DAG is one stack, so the second deploy would replace the first. Two files of
+        one folder, or two folders: nothing is deployed (before, a warning or nothing at all)."""
+        monkeypatch.chdir(tmp_path)
+        for folder, name in (("a", "dag.py"), ("a", "second.py"), ("b", "dag.py")):
+            (tmp_path / folder).mkdir(exist_ok=True)
+            _write_dag_file(tmp_path / folder / name, "orders" if folder == "a" else "billing")
+        (tmp_path / "c").mkdir()
+        _write_dag_file(tmp_path / "c" / "dag.py", "billing")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+
+        with pytest.raises(SystemExit) as exc:
+            deploy._run_bulk(["a", "b", "c"], select=None, stage=None, region=None, dry_run=False,
+                             destroy=True, log_level="ERROR", log_retention_days=30, profile=None)
+        assert exc.value.code == 1
+        assert deployed.call_count == 0
+        out = capsys.readouterr().out
+        assert "dag_id 'billing' is made by b/dag.py and c/dag.py" in out
+        assert "dag_id 'orders' is made by a/dag.py and a/second.py" in out
+        assert "Nothing was destroyed" in out
+        assert [r["command"] for r in self.requests] == ["collect"] * 3  # no deploy started
+
+    def test_a_dag_id_made_twice_does_not_stop_a_run_that_selects_another(self, tmp_path, mocker, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        for folder in ("a", "b"):
+            (tmp_path / folder).mkdir()
+            _write_dag_file(tmp_path / folder / "dag.py", "orders")
+        _write_dag_file(tmp_path / "a" / "billing.py", "billing")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        with pytest.raises(SystemExit) as exc:
+            deploy._run_bulk(["a", "b"], select="billing", stage=None, region=None, dry_run=False,
+                             destroy=False, log_level="ERROR", log_retention_days=30, profile=None)
+        assert exc.value.code == 0
+        assert [c.kwargs["dag"].dag_id for c in deployed.call_args_list] == ["billing"]
+
+
+def _folders_run_here(mocker):
+    """Run each folder's process (``python -P -m polyris.folder_process``) in this one, through
+    the subprocess boundary: the request and answer files are the ones a real process gets.
+    Returns the requests, in order."""
+    import json
     import types
+    from pathlib import Path
+    from polyris import folder_process
 
-    def run(cmd, env, stdout=None):
-        assert cmd[1:4] == ["-P", "-m", "polyris.deploy"]
-        saved_argv, saved_env = sys.argv, os.environ.get(deploy.BULK_RESULTS_ENV)
-        sys.argv = ["polyris-deploy", *cmd[4:]]
-        os.environ[deploy.BULK_RESULTS_ENV] = env[deploy.BULK_RESULTS_ENV]
-        try:
-            deploy.main()
-            code = 0
-        except SystemExit as e:
-            code = e.code if isinstance(e.code, int) else 1
-        finally:
-            sys.argv = saved_argv
-            if saved_env is None:
-                os.environ.pop(deploy.BULK_RESULTS_ENV, None)
-            else:
-                os.environ[deploy.BULK_RESULTS_ENV] = saved_env
-        return types.SimpleNamespace(returncode=code, wait=lambda: code)
-    return mocker.patch("polyris.loader.subprocess.Popen", side_effect=run)
+    requests = []
+
+    def popen(cmd, env, stdout=None, stderr=None):
+        assert cmd[1:4] == ["-P", "-m", "polyris.folder_process"]
+        requests.append(json.loads(Path(cmd[4]).read_text()))
+        code = folder_process.main(cmd[4:])
+        return types.SimpleNamespace(wait=lambda: code)
+
+    mocker.patch("polyris.folder_process.subprocess.Popen", side_effect=popen)
+    return requests
 
 
 class TestBulkRealProcesses:
@@ -530,7 +566,7 @@ class TestBulkRealProcesses:
         assert "0 succeeded, 1 failed" in out and "-dash/dag.py: failed to load" in out
 
     def test_a_folder_whose_process_ends_without_results_fails_even_with_exit_code_zero(self, tmp_path, monkeypatch, capsys):
-        """Seventh review: such a folder vanished from the summary and the run exited 0."""
+        """Such a folder vanished from the summary and the run exited 0."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "quiet").mkdir()
         (tmp_path / "quiet" / "dag.py").write_text("import os\nfrom polyris import DAG\nos._exit(0)\n")
@@ -539,12 +575,6 @@ class TestBulkRealProcesses:
                              destroy=True, log_level="ERROR", log_retention_days=30, profile=None)
         assert exc.value.code == 1
         assert "exited with code 0 before reporting" in capsys.readouterr().out
-
-    def test_bulk_argv_passes_every_option_as_flag_equals_value(self):
-        argv = deploy._bulk_argv(select="-odd", stage="dev", region="eu-west-1", dry_run=True, destroy=True,
-                                 log_level="ALL", log_retention_days=7, profile="p", stack="s")
-        assert argv == ["--log-level=ALL", "--log-retention=7", "--select=-odd", "--stage=dev",
-                        "--region=eu-west-1", "--profile=p", "--stack=s", "--dry-run", "--destroy"]
 
 
 class TestMainCliBulkFlags:
@@ -562,54 +592,56 @@ class TestMainCliBulkFlags:
         assert exc.value.code == 1
         assert "--file is not used with --all/--only" in capsys.readouterr().out
 
-    def test_all_discovers_every_immediate_subdirectory(self, tmp_path, mocker, monkeypatch):
+    def test_all_discovers_every_immediate_subdirectory(self, tmp_path, mocker, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "dir_a").mkdir()
         (tmp_path / "dir_b").mkdir()
         _write_dag_file(tmp_path / "dir_a" / "dag.py", "dag-a")
         _write_dag_file(tmp_path / "dir_b" / "dag.py", "dag-b")
         deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        (tmp_path / "__pycache__").mkdir()
+        (tmp_path / ".venv").mkdir()
+        _write_dag_file(tmp_path / "root_dag.py", "at-the-root")  # --all does not take it: warned
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all"])
-        processes = _children_run_here(mocker)
+        requests = _folders_run_here(mocker)
 
         with pytest.raises(SystemExit) as exc:
             deploy.main()
         assert exc.value.code == 0
         assert deployed.call_count == 2
-        assert processes.call_count == 2
+        # dag_ids first, then the deploys; no process for __pycache__ or .venv
+        assert [(r["command"], r.get("dir_name")) for r in requests] == [
+            ("collect", None), ("collect", None), ("deploy", "dir_a"), ("deploy", "dir_b")]
+        assert "root_dag.py: not deployed by --all" in capsys.readouterr().out
 
     def test_sigterm_stops_children_in_the_parent_and_ends_a_folders_process_by_default(self, tmp_path, mocker, monkeypatch):
-        """Eighth review: with the handler set in a folder's process too, SIGTERM there became one
+        """With the handler set in a folder's process too, SIGTERM there became one
         DAG's failure and the process went on deploying the folder's other DAGs."""
+        import json
         import signal
-        from polyris import loader
+        from polyris import folder_process
         monkeypatch.chdir(tmp_path)
         (tmp_path / "dir_a").mkdir()
         _write_dag_file(tmp_path / "dir_a" / "dag.py", "dag-a")
         in_the_child = []
-        mocker.patch("polyris.deploy.deploy_pipeline", side_effect=lambda *a, **k: in_the_child.append(
-            (signal.getsignal(signal.SIGTERM), os.environ.get(deploy.BULK_RESULTS_ENV))))
+        mocker.patch("polyris.deploy.deploy_pipeline",
+                     side_effect=lambda *a, **k: in_the_child.append(signal.getsignal(signal.SIGTERM)))
         in_the_parent = []
-        children = _children_run_here(mocker)
-        run_child_here = children.side_effect
-        def popen(cmd, env, stdout=None):
-            in_the_parent.append(signal.getsignal(signal.SIGTERM))
-            return run_child_here(cmd, env, stdout)
-        children.side_effect = popen
+        mocker.patch("polyris.folder_process.run_child",
+                     side_effect=lambda *a, **k: in_the_parent.append(signal.getsignal(signal.SIGTERM)) or 0)
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all"])
-
         with pytest.raises(SystemExit):
             deploy.main()
-        assert in_the_parent == [loader._raise_on_sigterm]
-        assert [env for _, env in in_the_child] == [None]  # nothing the child starts sees the results file
+        assert in_the_parent == [folder_process._raise_on_sigterm] * 2  # dag_ids, then the deploy
 
-        # A folder's own process (here, not under the parent's handler) keeps SIGTERM's default
-        in_the_child.clear()
-        with pytest.raises(SystemExit):
-            deploy._run_bulk(["dir_a"], select=None, stage=None, region=None, dry_run=False, destroy=False,
-                             log_level="ERROR", log_retention_days=30, profile=None,
-                             results_path=str(tmp_path / "out.json"))
-        assert [handler for handler, _ in in_the_child] == [signal.SIG_DFL]
+        # The folder's process itself keeps SIGTERM's default
+        request, answer = tmp_path / "request.json", tmp_path / "answer.json"
+        request.write_text(json.dumps({"command": "deploy", "dir_name": "dir_a", "select": None, "stage": None,
+                                       "region": None, "dry_run": False, "destroy": False, "log_level": "ERROR",
+                                       "log_retention_days": 30, "profile": None, "stack": None}))
+        assert folder_process.main([str(request), str(answer)]) == 0
+        assert in_the_child == [signal.SIG_DFL]
+        assert json.loads(answer.read_text()) == [["dir_a", "dag-a", True, None]]
 
     def test_only_discovers_just_the_listed_directories(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -621,7 +653,7 @@ class TestMainCliBulkFlags:
         _write_dag_file(tmp_path / "dir_c" / "dag.py", "dag-c")
         deployed = mocker.patch("polyris.deploy.deploy_pipeline")
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--only", "dir_a", "dir_c"])
-        processes = _children_run_here(mocker)
+        requests = _folders_run_here(mocker)
 
         with pytest.raises(SystemExit) as exc:
             deploy.main()
@@ -629,8 +661,8 @@ class TestMainCliBulkFlags:
         assert deployed.call_count == 2
         deployed_ids = {c.kwargs["dag"].dag_id for c in deployed.call_args_list}
         assert deployed_ids == {"dag-a", "dag-c"}
-        # One fresh process per folder (ADR #139), each told what this run was told
-        assert [c.args[0][4] for c in processes.call_args_list] == ["--only=dir_a", "--only=dir_c"]
+        # One fresh process per folder (ADR #139)
+        assert [r["dir_name"] for r in requests if r["command"] == "deploy"] == ["dir_a", "dir_c"]
 
     def test_single_file_mode_is_unaffected_when_no_bulk_flag_given(self, tmp_path, mocker, monkeypatch):
         """Control: the pre-existing, single-directory behavior must not

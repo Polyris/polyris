@@ -16,9 +16,10 @@ Usage:
         sys.exit(1)
 """
 
+import io
 import sys
-from pathlib import Path
-from typing import Dict, List, Set, Tuple, Optional, Any
+from contextlib import nullcontext, redirect_stdout
+from typing import IO, Dict, List, Set, Tuple, Optional, Any
 from dataclasses import asdict, dataclass, field
 from polyris._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN, RED, YELLOW
 
@@ -42,33 +43,11 @@ class DAGInfo:
 
 
 def discover_pipeline_files(directory: str) -> List[str]:
-    """
-    Find all Python files that might contain pipeline definitions
-    (``polyris.loader.is_pipeline_file``, the rule ``polyris-deploy --all`` uses too).
-    
-    Args:
-        directory: Root directory to search
-        
-    Returns:
-        List of file paths
-    """
-    pipeline_files = []
-    root = Path(directory)
-    
-    if not root.exists():
-        return []
-    
-    from polyris.loader import is_pipeline_file
+    """The pipeline files ``--all`` loads under ``directory``: those in each folder directly in
+    it (``polyris.loader.pipeline_folders`` and ``files_in``), as ``polyris-deploy --all`` does."""
+    from polyris.loader import files_in, pipeline_folders
 
-    skip_dirs = {"__pycache__", "node_modules", "site-packages"}
-    for path in root.rglob('*.py'):
-        parts = path.relative_to(root).parts[:-1]
-        if any(p.startswith(".") or p in skip_dirs for p in parts):
-            continue  # .venv, .git, caches, installed code
-        if is_pipeline_file(path):
-            pipeline_files.append(str(path))
-
-    return sorted(set(pipeline_files))
+    return [str(p) for folder in pipeline_folders(directory) for p in files_in(folder).pipelines]
 
 
 def extract_dag_info(file_path: str) -> List[DAGInfo]:
@@ -322,18 +301,23 @@ def validate_schema_consistency(all_dags: List[DAGInfo]) -> List[str]:
     return warnings
 
 
-#: Set by ``validate_all`` for a folder's own process: where it writes its files' DAG info.
-DAG_INFO_RESULTS_ENV = "POLYRIS_DAG_INFO_RESULTS"
+class _Report(io.StringIO):
+    """Captures the per-DAG checks' output in a folder's process, coloured as the parent's
+    terminal would be: ``validate_all`` prints it after "Loaded N DAG(s)"."""
+
+    def __init__(self, color: bool) -> None:
+        super().__init__()
+        self._color = color
+
+    def isatty(self) -> bool:
+        return self._color
 
 
-#: The options of a folder's own process, as JSON: {"check_asl": bool, "verbose": bool}.
-VALIDATE_OPTIONS_ENV = "POLYRIS_VALIDATE_OPTIONS"
-
-
-def _collect_dag_info(files: List[str], *, check_asl: bool = False,
-                      verbose: bool = False) -> Tuple[List[DAGInfo], List[str]]:
+def _collect_dag_info(files: List[str], *, check_asl: bool = False, verbose: bool = False,
+                      report: Optional[IO[str]] = None) -> Tuple[List[DAGInfo], List[str]]:
     """Load each file once, in this process: its DAG info, and with ``check_asl`` its ASL,
-    role and trigger-rule errors. A file that does not load is an error."""
+    role and trigger-rule errors (their output goes to ``report`` when given). A file that does
+    not load is an error."""
     from polyris.loader import load_pipeline
 
     infos: List[DAGInfo] = []
@@ -342,7 +326,8 @@ def _collect_dag_info(files: List[str], *, check_asl: bool = False,
         try:
             dags = load_pipeline(file_path).dags
             file_infos = _dag_infos(file_path, dags)
-            valid, asl_errors = _validate_dags(dags, verbose) if check_asl else (True, [])
+            with redirect_stdout(report) if report is not None else nullcontext():
+                valid, asl_errors = _validate_dags(dags, verbose) if check_asl else (True, [])
         except Exception as e:  # PipelineLoadError, or a bug of ours: this file's error, never the folder's crash
             errors.append(f"{file_path}: {e}")
             continue
@@ -359,66 +344,43 @@ def _dag_info_as_json(info: DAGInfo) -> Dict[str, Any]:
     return data
 
 
-def _collect_dag_info_in_its_own_process(files: List[str], *, check_asl: bool = False,
-                                         verbose: bool = False) -> Tuple[List[DAGInfo], List[str]]:
-    """``_collect_dag_info`` in a fresh Python process that imports the same polyris as this one.
-
-    The pipelines' stdout is shown with ``verbose`` only, so ``--json`` stays clean; stderr
-    (warnings, a traceback) always reaches the user, as when validate ran them itself.
-    """
-    import json
-    import os
-    import subprocess
-    import tempfile
-
-    from polyris.loader import child_env, run_child
-
-    fd, results_path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    env = child_env(**{DAG_INFO_RESULTS_ENV: results_path,
-                       VALIDATE_OPTIONS_ENV: json.dumps({"check_asl": check_asl, "verbose": verbose})})
-    try:
-        code = run_child(["-m", "polyris.validation", *files], env,
-                         stdout=None if verbose else subprocess.DEVNULL)
-        try:
-            data = json.loads(Path(results_path).read_text())
-        except (OSError, ValueError):
-            return [], [f"{Path(files[0]).parent}: its process exited with code {code} before reporting"]
-        return [DAGInfo(**d) for d in data["infos"]], list(data["errors"])
-    finally:
-        os.unlink(results_path)
-
-
-def _report_dag_info(files: List[str], results_path: str, options: Dict[str, bool]) -> None:
-    """A folder's own process: write its files' results where ``validate_all`` reads them."""
+def collect_folder(files: List[str], check_asl: bool = False, verbose: bool = False,
+                   color: bool = False) -> Dict[str, Any]:
+    """A folder's process (``polyris.folder_process``, command ``collect``): its files' DAG
+    info, errors and the per-DAG checks' output, as JSON for ``validate_all``."""
     import json
 
-    infos, errors = _collect_dag_info(files, check_asl=options.get("check_asl", False),
-                                      verbose=options.get("verbose", False))
+    report = _Report(color)
+    infos, errors = _collect_dag_info(files, check_asl=check_asl, verbose=verbose, report=report)
     as_json = []
     for info in infos:
         try:
             as_json.append(json.loads(json.dumps(_dag_info_as_json(info))))
         except (TypeError, ValueError) as e:  # e.g. a schema default that is a date: this file's error
             errors.append(f"{info.file_path}: {e}")
-    Path(results_path).write_text(json.dumps({"infos": as_json, "errors": errors}))
+    return {"infos": as_json, "errors": errors, "report": report.getvalue()}
 
 
-def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl: bool = False) -> Dict:
+def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl: bool = False,
+                 quiet: bool = False) -> Dict:
     """
     Validate all pipelines in directory.
     
     Checks:
     - Asset cycles between DAGs
     - Missing asset producers (optional warning)
+    - One dag_id made by two files (error: each DAG is one stack)
     - With ``check_asl``: each DAG's ASL, roles and trigger rules (``_validate_dags``)
 
-    Each folder's files load once, in a Python process of the folder's own (ADR #139).
+    Loads the pipeline files of each folder directly in ``directory``, once, in a Python
+    process of the folder's own (ADR #139); a pipeline file in ``directory`` itself or deeper
+    is a warning, as ``polyris-deploy --all`` would not deploy it.
     
     Args:
         directory: Root directory containing pipeline files
         verbose: Print progress
         check_asl: Also run the per-DAG checks, in each folder's process
+        quiet: Hide what the pipelines print (``--json``); their errors still reach stderr
         
     Returns:
         {
@@ -438,37 +400,52 @@ def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl
     if verbose:
         print(f"{_c('Scanning', BOLD)} {_c(str(directory), CYAN)}...")
 
-    # Discover pipeline files
-    files = discover_pipeline_files(directory)
+    from polyris import folder_process
+    from polyris.loader import duplicate_dag_ids, files_in, pipeline_folders, pipelines_out_of_reach
 
-    if not files:
+    folders = [(folder, [str(p) for p in files_in(folder).pipelines]) for folder in pipeline_folders(directory)]
+    folders = [(folder, files) for folder, files in folders if files]
+    for path in pipelines_out_of_reach(directory):
+        results['warnings'].append(
+            f"{path}: not loaded by --all, which loads the folders directly in {directory} "
+            "(and polyris-deploy --all would not deploy it): move it into its own folder, or use --file"
+        )
+
+    if not folders:
         results['warnings'].append(f"No pipeline files found in {directory}")
         return results
 
     if verbose:
-        print(f"{_c('Found', BOLD)} {len(files)} pipeline file(s)")
-    
+        print(f"{_c('Found', BOLD)} {sum(len(files) for _, files in folders)} pipeline file(s)")
+
     # Each folder runs in its own process (ADR #139): one folder's settings.py, a src/ it put on
     # the path, or a library's import-time side effects cannot reach the next folder's files.
     # A file that does not load (an error, a non-zero sys.exit) is an error, never a crash.
     all_dags: List[DAGInfo] = []
-    folders: Dict[str, List[str]] = {}
-    for file_path in files:
-        folders.setdefault(str(Path(file_path).parent), []).append(file_path)
-    from polyris.loader import sigterm_stops_children
-
-    with sigterm_stops_children():  # a stopped validate stops the folder's process too
-        for folder_files in folders.values():
-            dags, errors = _collect_dag_info_in_its_own_process(folder_files, check_asl=check_asl, verbose=verbose)
-            results['errors'].extend(errors)
+    reports: List[str] = []
+    with folder_process.sigterm_stops_children():  # a stopped validate stops the folder's process too
+        for folder, files in folders:
+            answer = folder_process.run(
+                "collect",
+                {"files": files, "check_asl": check_asl, "verbose": verbose, "color": sys.stdout.isatty()},
+                output="stderr" if quiet else "all",
+            )
+            if answer.error:
+                results['errors'].append(f"{folder}: {answer.error}")
+                continue
+            dags = [DAGInfo(**d) for d in answer.payload["infos"]]
+            results['errors'].extend(answer.payload["errors"])
+            reports.append(answer.payload["report"])
             all_dags.extend(dags)
             results['pipelines'].extend(dags)
+    results['errors'].extend(duplicate_dag_ids((d.dag_id, d.file_path) for d in all_dags))
 
     if verbose:
         print(f"{_c('Loaded', BOLD)} {len(all_dags)} DAG(s):")
         for dag in all_dags:
             trigger = dag.schedule if not dag.is_asset_triggered else f"asset:{dag.trigger_operator}"
             print(f"  • {_c(dag.dag_id, CYAN)} ({trigger})")
+        print("".join(reports), end="")
 
     if not all_dags:
         # Surface load errors here — the verbose summary block below is never
@@ -662,7 +639,7 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
         is_valid = is_valid and not role_errors and not trigger_rule_errors and not placeholder_errors
 
         if verbose:
-            print(f"  Schedule: {_c(dag.schedule, CYAN) if dag.schedule else 'manual'}")
+            print(f"  Schedule: {_c(str(dag.schedule), CYAN) if dag.schedule else 'manual'}")
             print(f"  Tasks: {len(dag.tasks)}")
             print(f"  States: {len(asl.get('States', {}))}")
             if errors:
@@ -756,15 +733,6 @@ def main():
     """
     import argparse
     import json
-    import os
-
-    # A folder's own process, started by validate_all. Taken out of the environment, so a
-    # process a pipeline starts is never mistaken for one
-    results_path = os.environ.pop(DAG_INFO_RESULTS_ENV, None)
-    options = os.environ.pop(VALIDATE_OPTIONS_ENV, None)
-    if results_path:
-        _report_dag_info(sys.argv[1:], results_path, json.loads(options or "{}"))
-        return
 
     parser = argparse.ArgumentParser(
         prog='polyris-validate',
@@ -814,7 +782,7 @@ def main():
     if args.all:
         # Each folder's process also runs the per-file ASL/role/trigger_rule checks, on the DAGs
         # it loaded: no file is run in this process, nor twice (ADR #139)
-        results = validate_all('.', verbose=effective_verbose, check_asl=True)
+        results = validate_all('.', verbose=effective_verbose, check_asl=True, quiet=args.json)
         if not results['pipelines'] and not results['errors']:
             # validate_all added an informative warning; surface it without
             # contaminating --json stdout.
@@ -872,9 +840,4 @@ def main():
 
 
 if __name__ == '__main__':  # pragma: no cover -- module entrypoint
-    import os as _os
-    _in_a_folders_process = bool(_os.environ.get(DAG_INFO_RESULTS_ENV))  # main() takes it out
     main()
-    if _in_a_folders_process:  # do not wait for a pipeline's threads
-        from polyris.loader import exit_now
-        exit_now(0)

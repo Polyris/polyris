@@ -73,12 +73,12 @@ class TestDiscovery:
 
 class TestValidateAll:
     def test_pipeline_file_without_dag_warns(self, tmp_path):
-        _write(tmp_path, "dag.py", _NO_DAG_FILE)
+        _write(tmp_path, "p/dag.py", _NO_DAG_FILE)
         results = validate_all(str(tmp_path), verbose=False)
         assert any("No DAGs" in w for w in results["warnings"])
 
     def test_verbose_reports_unproduced_asset_warning(self, tmp_path, capsys):
-        _write(tmp_path, "dag.py", _CONSUMER_DAG)
+        _write(tmp_path, "p/dag.py", _CONSUMER_DAG)
         results = validate_all(str(tmp_path), verbose=True)
         out = capsys.readouterr().out
         assert any("no producer" in w for w in results["warnings"])
@@ -88,7 +88,7 @@ class TestValidateAll:
     def test_sysexit_pipeline_captured_as_error(self, tmp_path):
         """validate_all must catch SystemExit from a pipeline that calls sys.exit()
         at import time — previously `except Exception` missed BaseException subclasses."""
-        _write(tmp_path, "dag.py", _SYSEXIT_DAG)
+        _write(tmp_path, "p/dag.py", _SYSEXIT_DAG)
         results = validate_all(str(tmp_path), verbose=False)
         assert results['errors']
         assert any("sys.exit" in e for e in results['errors'])
@@ -96,7 +96,7 @@ class TestValidateAll:
 
 class TestMainAll:
     def test_all_with_broken_pipeline_exits_one(self, tmp_path, monkeypatch, capsys):
-        _write(tmp_path, "dag.py", _BROKEN_DAG)
+        _write(tmp_path, "p/dag.py", _BROKEN_DAG)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
         with pytest.raises(SystemExit) as e:
@@ -109,7 +109,7 @@ class TestMainAll:
         """--all -v with an unloadable pipeline must print the load error.
         Previously validate_all's early-return bypassed the verbose summary block
         and main()'s elif not effective_verbose was skipped, giving a silent exit 1."""
-        _write(tmp_path, "dag.py", _BROKEN_DAG)
+        _write(tmp_path, "p/dag.py", _BROKEN_DAG)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all", "-v"])
         with pytest.raises(SystemExit) as e:
@@ -154,8 +154,8 @@ _SCHEMA_B = """
 
 class TestSchemaConsistency:
     def test_conflicting_column_types_warn(self, tmp_path):
-        _write(tmp_path, "a.py", _SCHEMA_A)
-        _write(tmp_path, "b.py", _SCHEMA_B)
+        _write(tmp_path, "p/a.py", _SCHEMA_A)
+        _write(tmp_path, "p/b.py", _SCHEMA_B)
         results = validate_all(str(tmp_path), verbose=False)
         assert any("id" in w for w in results["warnings"])
 

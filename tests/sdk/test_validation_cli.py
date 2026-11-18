@@ -299,12 +299,34 @@ class TestMain:
 
     def test_all_with_unbound_dag_exits_zero(self, tmp_path, monkeypatch):
         """--all must not report 'No DAG found' for pipelines written without `as dag`."""
-        _write(tmp_path, "dag.py", UNBOUND_DAG)
+        _write(tmp_path, "p/dag.py", UNBOUND_DAG)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
         with pytest.raises(SystemExit) as e:
             main()
         assert e.value.code == 0
+
+    def test_all_in_a_pipeline_folder_warns_that_dag_py_is_out_of_reach(self, tmp_path, monkeypatch, capsys):
+        """D110: --all loads the folders directly in the run directory, as polyris-deploy --all
+        deploys them; run in the pipeline's own folder, it says why it found nothing."""
+        _write(tmp_path, "dag.py", UNBOUND_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 1
+        assert "dag.py: not loaded by --all" in capsys.readouterr().out
+
+    def test_all_refuses_a_dag_id_two_folders_make(self, tmp_path, monkeypatch, capsys):
+        """D111: each DAG is one stack, so polyris-deploy --all would refuse the run."""
+        _write(tmp_path, "a/dag.py", UNBOUND_DAG)
+        _write(tmp_path, "b/dag.py", UNBOUND_DAG)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
+        with pytest.raises(SystemExit) as e:
+            main()
+        assert e.value.code == 1
+        assert "is made by a/dag.py and b/dag.py" in capsys.readouterr().out
 
     def test_all_asl_invalid_exits_one(self, tmp_path, monkeypatch, capsys):
         # DAG loads cleanly (extract_dag_info succeeds) but _validate_single

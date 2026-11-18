@@ -7,7 +7,6 @@ CLI runs a pipeline file any other way.
 from __future__ import annotations
 
 import ast
-import os
 import sys
 import textwrap
 from pathlib import Path
@@ -127,7 +126,7 @@ def test_a_file_without_dags_loads_with_none(tmp_path):
 
 
 def test_a_module_whose_getattr_raises_does_not_break_the_load(tmp_path):
-    """Fourth review: reading `__path__` ran the module's `__getattr__`, which raised KeyError."""
+    """Reading `__path__` ran the module's `__getattr__`, which raised KeyError."""
     _write(tmp_path / "settings_lazy.py", "_VALUES = {}\ndef __getattr__(name):\n    return _VALUES[name]\n")
     f = _write(tmp_path / "dag.py", """
         import settings_lazy  # noqa: F401
@@ -153,7 +152,7 @@ def test_a_path_with_dotdot_has_the_right_folder_above(tmp_path, monkeypatch):
 
 
 def test_inside_open_pipeline_a_task_body_can_import_a_sibling(tmp_path, monkeypatch):
-    """Fourth review: polyris-local --mock and validate --test run bodies after the load."""
+    """Polyris-local --mock and validate --test run bodies after the load."""
     from polyris.loader import open_pipeline
     _write(tmp_path / "helpers.py", "VALUE = 42\n")
     f = _write(tmp_path / "dag.py", """
@@ -171,7 +170,7 @@ def test_inside_open_pipeline_a_task_body_can_import_a_sibling(tmp_path, monkeyp
 
 
 def test_a_relative_path_makes_the_folder_above_importable_too(tmp_path, monkeypatch):
-    """Third review: `polyris-deploy` reads "dag.py", whose parent is "." and has no folder above."""
+    """`polyris-deploy` reads "dag.py", whose parent is "." and has no folder above."""
     _write(tmp_path / "project_settings.py", "SCHEDULE = '@daily'\n")
     _write(tmp_path / "orders" / "dag.py", """
         from project_settings import SCHEDULE
@@ -189,7 +188,7 @@ def test_a_relative_path_makes_the_folder_above_importable_too(tmp_path, monkeyp
     'import runpy; runpy.run_path(OTHER)',
 ], ids=["exec of code compiled with a real file name", "runpy.run_path"])
 def test_code_the_file_runs_itself_is_the_files(tmp_path, body):
-    """Third review: a <module> frame with a real file name was taken for another module."""
+    """A <module> frame with a real file name was taken for another module."""
     _write(tmp_path / "other.py", """
         from polyris import DAG
         with DAG("orders", schedule="@daily"):
@@ -229,167 +228,9 @@ def test_an_unreadable_py_is_not_a_pipeline_file(tmp_path):
     assert is_pipeline_file(tmp_path / "odd.py") is False
 
 
-def test_validate_all_runs_each_folder_in_its_own_process(tmp_path):
-    """Third and fifth reviews: one folder's settings.py reached the next folder's pipeline.
-    A fresh process per folder (ADR #139) makes that impossible, wherever settings.py lives."""
-    from polyris.validation import validate_all
-    for name in ("a", "b"):
-        _write(tmp_path / name / "settings.py", f"NAME = 'orders-{name}'\n")
-        _write(tmp_path / name / "dag.py", """
-            from settings import NAME
-            from polyris import DAG
-            with DAG(NAME, schedule="@daily"):
-                pass
-        """)
-    results = validate_all(str(tmp_path), verbose=False)
-    assert results["errors"] == []
-    assert sorted(d.dag_id for d in results["pipelines"]) == ["orders-a", "orders-b"]
-    assert "settings" not in sys.modules  # nothing was imported into this process
-
-
-def test_a_folder_whose_process_dies_is_an_error_not_silence(tmp_path):
-    from polyris.validation import validate_all
-    _write(tmp_path / "a" / "dag.py", """
-        import os
-        os._exit(3)  # no exception, no report
-    """)
-    results = validate_all(str(tmp_path), verbose=False)
-    assert results["pipelines"] == [] and len(results["errors"]) == 1
-    assert "exited with code 3 before reporting" in results["errors"][0]
-
-
-def test_a_folders_own_process_reports_its_dag_info_as_json(tmp_path, monkeypatch):
-    """The child side of validate_all, run here so coverage sees it."""
-    import json
-    from polyris import validation
-    f = _write(tmp_path / "dag.py", """
-        from polyris import Asset, DAG, task
-        with DAG("orders", schedule=[Asset("raw/orders")]):
-            @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
-            def a(): pass
-            a()
-    """)
-    results = tmp_path / "out.json"
-    monkeypatch.setenv(validation.DAG_INFO_RESULTS_ENV, str(results))
-    monkeypatch.setattr(sys, "argv", ["polyris-validate", str(f), str(tmp_path / "missing.py")])
-    validation.main()
-    assert validation.DAG_INFO_RESULTS_ENV not in os.environ  # nothing a pipeline starts sees it
-    data = json.loads(results.read_text())
-    assert [d["dag_id"] for d in data["infos"]] == ["orders"]
-    assert isinstance(data["infos"][0]["schedule"], str) and data["infos"][0]["trigger_assets"] == ["raw/orders"]
-    assert len(data["errors"]) == 1 and "missing.py" in data["errors"][0]
-
-
-def test_a_childs_python_path_never_moves_the_users_entries_or_site_packages(monkeypatch):
-    """Sixth review: prepending polyris's folder put site-packages before a user's src/ and the
-    standard library in a folder's process. It is appended, and only when polyris is not installed."""
-    import polyris
-    from polyris import loader
-    code_root = str(Path(polyris.__file__).resolve().parents[1])
-    monkeypatch.setenv("PYTHONPATH", "src")
-    monkeypatch.setattr(loader.site, "getsitepackages", lambda: [])
-    assert loader.child_env(EXTRA="1")["PYTHONPATH"] == os.pathsep.join(["src", code_root])
-    assert loader.child_env(EXTRA="1")["EXTRA"] == "1"
-    monkeypatch.setattr(loader.site, "getsitepackages", lambda: [code_root])  # installed: found as here
-    assert loader.child_env()["PYTHONPATH"] == "src"
-
-
-def test_a_folders_process_starts_without_the_run_directory_on_its_path(tmp_path, monkeypatch):
-    """Seventh review: ``python -m`` put the current directory first, so a run directory with a
-    ``json.py`` (or an ``email/`` package) broke polyris's own imports in every folder's process.
-    ``-P`` keeps it off the path while polyris starts."""
-    from polyris.validation import validate_all
-    monkeypatch.chdir(tmp_path)
-    _write(tmp_path / "json.py", "raise RuntimeError('the run directory shadowed the standard library')\n")
-    _write(tmp_path / "orders" / "dag.py", """
-        from polyris import DAG
-        with DAG("orders", schedule="@daily"):
-            pass
-    """)
-    results = validate_all("orders", verbose=False)
-    assert results["errors"] == [] and [d.dag_id for d in results["pipelines"]] == ["orders"]
-
-
-def test_one_files_unreportable_dag_info_is_its_error_not_the_folders(tmp_path, monkeypatch):
-    """Seventh review: a schema default that JSON cannot carry crashed the folder's process, and
-    its other files were lost with it."""
-    import json
-    from polyris import validation
-    bad = _write(tmp_path / "dag.py", """
-        import datetime
-        from polyris import DAG, task, Asset, Column
-        from polyris import types as t
-        orders = Asset("s3://b/orders/", schema=[Column("d", t.date(), default=datetime.date(2026, 1, 1))])
-        with DAG("p1", schedule="@daily"):
-            @task.lambda_function(function_name="f", outlets=[orders])
-            def a(): pass
-            a()
-    """)
-    good = _write(tmp_path / "second_dag.py", """
-        from polyris import DAG
-        with DAG("p2", schedule="@daily"):
-            pass
-    """)
-    out = tmp_path / "out.json"
-    validation._report_dag_info([str(bad), str(good)], str(out), {})
-    data = json.loads(out.read_text())
-    assert [d["dag_id"] for d in data["infos"]] == ["p2"]
-    assert len(data["errors"]) == 1 and data["errors"][0].startswith(f"{bad}: ")
-
-
-def test_run_child_returns_the_childs_exit_code_and_stops_it_when_this_process_is_stopped(mocker):
-    from polyris import loader
-    assert loader.run_child(["-c", "import sys; sys.exit(3)"], dict(os.environ)) == 3
-
-    child = mocker.MagicMock()
-    child.wait.side_effect = [KeyboardInterrupt, 0]  # Ctrl-C while waiting; then the stopped child's end
-    mocker.patch("polyris.loader.subprocess.Popen", return_value=child)
-    with pytest.raises(KeyboardInterrupt):
-        loader.run_child(["-c", "pass"], {})
-    child.terminate.assert_called_once()
-
-
-def test_validate_all_stops_its_folders_process_on_sigterm(tmp_path, mocker):
-    """Eighth review: validate never set the handler, so a stopped validate left its child running."""
-    import signal
-    from polyris import loader
-    from polyris.validation import validate_all
-    _write(tmp_path / "a" / "dag.py", "from polyris import DAG\n")
-    seen = []
-    def popen(cmd, env, stdout=None):
-        seen.append(signal.getsignal(signal.SIGTERM))
-        return mocker.MagicMock(wait=mocker.MagicMock(return_value=0))
-    mocker.patch("polyris.loader.subprocess.Popen", side_effect=popen)
-    results = validate_all(str(tmp_path), verbose=False)
-    assert seen == [loader._raise_on_sigterm]
-    assert "exited with code 0 before reporting" in results["errors"][0]
-
-
-def test_sigterm_ends_this_process_through_python_only_inside_the_block():
-    import signal
-    import threading
-    from polyris import loader
-    before = signal.getsignal(signal.SIGTERM)
-    with loader.sigterm_stops_children():
-        handler = signal.getsignal(signal.SIGTERM)
-        with pytest.raises(SystemExit) as e:
-            handler(signal.SIGTERM, None)
-        assert e.value.code == 128 + signal.SIGTERM
-    assert signal.getsignal(signal.SIGTERM) is before
-
-    seen = []
-    def off_the_main_thread():
-        with loader.sigterm_stops_children():  # signal.signal would raise ValueError here
-            seen.append(signal.getsignal(signal.SIGTERM))
-    t = threading.Thread(target=off_the_main_thread)
-    t.start()
-    t.join()
-    assert seen == [before]
-
-
 def test_a_sibling_module_wins_over_the_project_roots(tmp_path, monkeypatch):
-    """Architect review: the folder above came first on sys.path, so a pipeline's own
-    settings module lost to the project root's of the same name, silently."""
+    """The folder above came first on sys.path, so a pipeline's own settings module lost to
+    the project root's of the same name, silently."""
     monkeypatch.delitem(sys.modules, "pipeline_settings", raising=False)
     _write(tmp_path / "pipeline_settings.py", "NAME = 'root'\n")
     _write(tmp_path / "orders" / "pipeline_settings.py", "NAME = 'orders'\n")

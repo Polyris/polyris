@@ -66,9 +66,10 @@ they were instantiated.
 `except SystemExit: pass` silently swallows a pipeline file calling `sys.exit(1)`, hiding
 load errors. Re-raise non-zero exits: `if code != 0: sys.exit(1)`. Tolerate `exit(0)`.
 
-`_discover_dags_in_dir` must deduplicate by `dag_id`: if two files in the same directory
-define the same `dag_id`, keep the first and warn about the duplicate. Silent double-deploy
-would run the pipeline twice in the same batch. A file that fails to load (an error, a
+A `dag_id` that two files make — in one directory or two — stops `--all` before anything is
+deployed (`_run_bulk` → `_dag_ids_made_twice`, `loader.duplicate_dag_ids`), and fails
+`validate --all`: each DAG is one stack, so one would replace the other. Never keep the first
+and warn: across folders that silently replaced a stack. A file that fails to load (an error, a
 non-zero exit, one `dag_id` twice in the file) is a failure of the batch, never a quiet skip:
 `_run_bulk` counts it and exits 1, since its stack was neither deployed nor destroyed.
 
@@ -480,35 +481,29 @@ other `exec_module` on a file path the user provided — not on modules we contr
 
 Every command that runs a pipeline file — `polyris-validate` (and `--test`), `polyris-deploy`,
 `polyris-output`, `polyris-local` — calls `load_pipeline(path)` and uses its `.dags`, or keeps
-the file open with `open_pipeline(path)` while it runs task bodies (`polyris-local`, `--test`). Never run a
-pipeline file another way: `tests/sdk/test_loader.py` fails when a module of `polyris/` other
-than `loader.py` (and `config.py`, which runs the project's `config.py`) calls `exec_module` or
-`spec_from_file_location`.
+the file open with `open_pipeline(path)` while it runs task bodies (`polyris-local`, `--test`).
+Never run a pipeline file another way: `tests/sdk/test_loader.py` fails when a module of
+`polyris/` other than `loader.py` (and `config.py`, which runs the project's `config.py`) calls
+`exec_module` or `spec_from_file_location`.
 
 A DAG belongs to the file unless an `import` made it: `recording_dags` records it when it is
-made (`DAG.__post_init__`), and `_made_in_an_import` looks for `importlib._bootstrap._find_and_load`
-between it and the loader. That finds `with DAG("x"):` without `as`, `DAG(...)` with `add_task`,
-`@dag`, a factory, `exec`, `runpy`, a file run with `exec_module`, and a worker thread; it leaves
-out a DAG a module the file imports makes, a copy of the file a helper imports back, and a DAG
-whose `with` block raised an error. One `dag_id` made twice is a `PipelineLoadError` for every
-command. `--all` (validate and deploy) runs each folder in its own Python process, so nothing one
-folder imports reaches the next — never isolate files by forgetting modules in one process: each
-way of doing it failed a review. The parent never loads a pipeline file itself (validate's ASL
-checks run in the folder's process too), and builds the child's environment with
-`loader.child_env` (polyris's folder appended to PYTHONPATH, never prepended) and starts it with
-`loader.run_child` (`python -P`: the run directory cannot break polyris's own imports). It
-loads `dag.py` and files whose code imports `DAG`, `dag` or `Pipeline` from polyris
-(`is_pipeline_file`, parsed with `ast` from the file's bytes, never by text: three text rules ran
-Glue scripts). `sigterm_stops_children` belongs to the parent only: in a folder's process SIGTERM
-must keep its default, or the process goes on deploying after it was stopped. Rules
-rest on facts — an import in progress, a process boundary, what the code imports — never on
-guesses about names, frames or words.
+made (`DAG.__post_init__`), and `_made_in_an_import` looks for an import in progress
+(`importlib._bootstrap._find_and_load`) between it and the loader. One `dag_id` made twice is a
+`PipelineLoadError` for every command.
 
-**Why:** each command had its own loader and its own rule — validate recorded `with` exits,
-deploy and output read `vars(mod)`, local filtered by globals — and they disagreed on
-`sys.path` and `sys.exit(0)`. A file passed validation and then could not be deployed three
-times in one branch (F18 and the reviews of its fix, up to 1.2.2), each fixed locally until
-the loaders became one, and three more reviews broke its in-process isolation (Principle #42).
+`--all` (validate and deploy) finds files one way — `loader.pipeline_folders`, `files_in`,
+`is_pipeline_file` (the file's code, parsed with `ast` from its bytes, imports `DAG`, `dag` or
+`Pipeline` from polyris; never a rule on names or text) — and loads each folder in its own
+process through `polyris.folder_process` only. Never isolate folders by forgetting modules in
+one process, and never pass a folder's process anything through the environment: the request
+and answer are JSON files on its command line. The parent never loads a pipeline file itself.
+`sigterm_stops_children` belongs to the parent only: in a folder's process SIGTERM keeps its
+default, or the process goes on deploying after it was stopped.
+
+**Why:** each command had its own loader and its own rule, and a file passed validation and
+then could not be deployed (F18 and the files like it, up to 1.2.2). Each local fix — of the
+loader, of the isolation between folders, of the file rule — failed the next review until the
+model changed (Principle #42).
 
 ## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
 

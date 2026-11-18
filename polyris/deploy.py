@@ -27,12 +27,10 @@ import hashlib
 import json
 import os
 import sys
-import tempfile
 import argparse
 import threading
 import traceback
 import uuid
-from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
@@ -52,9 +50,8 @@ from .generators import (
     generate_dag_hash,
 )
 from .dag import DAG
-from .loader import (
-    PipelineLoadError, child_env, exit_now, is_pipeline_file, load_pipeline, run_child, sigterm_stops_children,
-)
+from . import folder_process
+from .loader import PipelineLoadError, duplicate_dag_ids, files_in, load_pipeline, pipeline_folders, pipelines_out_of_reach
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -1008,9 +1005,9 @@ def _load_dag_from_file(path: Path) -> list:
 def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None) -> "List[Tuple[Path, DAG]]":
     """Find every DAG in every .py file directly inside dir_path (non-recursive).
 
-    Only files ``is_pipeline_file`` accepts are loaded (dag.py, or a file that imports ``DAG``,
-    ``dag`` or ``Pipeline`` from polyris), as ``polyris-validate --all`` does: a Glue script next to dag.py is never run, and
-    the files left out are listed. A pipeline file with zero DAG objects contributes nothing
+    Only the folder's pipeline files are loaded (``loader.files_in``: dag.py, or a file that
+    imports ``DAG``, ``dag`` or ``Pipeline`` from polyris), as ``polyris-validate --all`` does: a
+    Glue script next to dag.py is never run, and the files left out are listed. A pipeline file with zero DAG objects contributes nothing
     and is silently skipped — that's expected, not an error.
     A file that fails to *load* (syntax error, import error, an accidental
     top-level AWS call raising, one dag_id twice) is reported and skipped, rather
@@ -1020,13 +1017,10 @@ def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None)
     a skipped file leaves its stack as it was.
     """
     found: "List[Tuple[Path, DAG]]" = []
-    seen_dag_ids: dict = {}
-    candidates = sorted(dir_path.glob("*.py"))
-    pipelines = [p for p in candidates if is_pipeline_file(p)]
-    skipped = [p.name for p in candidates if p not in pipelines]
-    if skipped:
-        print(f"  (not pipeline files, not run: {', '.join(skipped)})")
-    for py_file in pipelines:
+    files = files_in(dir_path)
+    if files.others:
+        print(f"  (not pipeline files, not run: {', '.join(p.name for p in files.others)})")
+    for py_file in files.pipelines:
         try:
             dags = _load_dag_from_file(py_file)
         except SystemExit:
@@ -1034,20 +1028,10 @@ def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None)
             if failed is not None:
                 failed.append(py_file)
             continue
-        for dag in dags:
-            if dag.dag_id in seen_dag_ids:
-                print(
-                    f"  ⚠️  Skipping duplicate dag_id '{dag.dag_id}' in {py_file.name} "
-                    f"(already defined in {seen_dag_ids[dag.dag_id].name})"
-                )
-                continue
-            seen_dag_ids[dag.dag_id] = py_file
-            found.append((py_file, dag))
+        # A dag_id made by two files never gets here: _run_bulk refuses the run first
+        found.extend((py_file, dag) for dag in dags)
     return found
 
-
-#: Set by ``_run_bulk`` for a folder's own process: where that process writes its results.
-BULK_RESULTS_ENV = "POLYRIS_BULK_RESULTS"
 
 BulkResult = Tuple[str, str, bool, Optional[str]]
 
@@ -1066,6 +1050,9 @@ def _deploy_directory(
     stack: Optional[str] = None,
 ) -> "List[BulkResult]":
     """Deploy or destroy every DAG in one directory, in this process; one result per DAG.
+
+    ``_run_bulk`` runs it in the directory's own process (``polyris.folder_process``, command
+    ``deploy``).
 
     Each DAG's deploy_pipeline() call is isolated with its own try/except, so one failure —
     a validation error, an AWS error, anything that would sys.exit(1) in the single-pipeline
@@ -1124,41 +1111,21 @@ def _deploy_directory(
     return results
 
 
-def _bulk_argv(
-    *, select: Optional[str], stage: Optional[str], region: Optional[str], dry_run: bool, destroy: bool,
-    log_level: str, log_retention_days: int, profile: Optional[str], stack: Optional[str],
-) -> "List[str]":
-    """The polyris-deploy arguments that make a folder's own process do what this run does.
+def _dag_ids_made_twice(target_dirs: "List[str]", select: Optional[str]) -> "List[str]":
+    """The dag_ids (``select`` alone, when given) that two files across ``target_dirs`` make.
 
-    Every value goes as ``--flag=value``, so a value starting with "-" is never read as a flag."""
-    argv = [f"--log-level={log_level}", f"--log-retention={log_retention_days}"]
-    for flag, value in (("--select", select), ("--stage", stage), ("--region", region),
-                        ("--profile", profile), ("--stack", stack)):
-        if value:
-            argv.append(f"{flag}={value}")
-    return argv + (["--dry-run"] if dry_run else []) + (["--destroy"] if destroy else [])
-
-
-def _deploy_directory_in_its_own_process(dir_name: str, argv: "List[str]") -> "List[BulkResult]":
-    """Run ``polyris-deploy --only <dir>`` in a fresh Python process and read back its results.
-
-    A fresh process is the isolation ``--all`` needs (ADR #139): one folder's ``settings.py``,
-    a ``src/`` it put on the path, or a library's import-time side effects cannot reach the next
-    folder's pipeline. The child imports the same polyris as this process (``child_env``). If
-    this process is stopped (Ctrl-C, SIGTERM), the child is stopped too (``run_child``). A child
-    that ends without writing its results is a failure of its folder, whatever its exit code.
-    """
-    fd, results_path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    try:
-        code = run_child(["-m", "polyris.deploy", f"--only={dir_name}", *argv],
-                         child_env(**{BULK_RESULTS_ENV: results_path}))
-        try:
-            return [tuple(r) for r in json.loads(Path(results_path).read_text())]
-        except (OSError, ValueError):  # the file mkstemp made is empty until the child writes it
-            return [(dir_name, "-", False, f"its process exited with code {code} before reporting")]
-    finally:
-        os.unlink(results_path)
+    Each directory's files load in its own process, without deploying; a file that does not
+    load is reported by the deploy that follows, not here."""
+    made: "List[Tuple[str, str]]" = []
+    for dir_name in sorted(target_dirs):
+        files = [str(p) for p in files_in(dir_name).pipelines] if Path(dir_name).is_dir() else []
+        if not files:
+            continue
+        answer = folder_process.run("collect", {"files": files}, output="none")
+        if answer.error is None:
+            made += [(d["dag_id"], d["file_path"]) for d in answer.payload["infos"]
+                     if select is None or d["dag_id"] == select]
+    return duplicate_dag_ids(made)
 
 
 def _run_bulk(
@@ -1173,37 +1140,32 @@ def _run_bulk(
     log_retention_days: int,
     profile: Optional[str],
     stack: Optional[str] = None,
-    in_own_process: bool = True,
-    results_path: Optional[str] = None,
 ) -> None:
     """Deploy or destroy every DAG found across target_dirs (--all / --only).
 
-    Each directory runs in its own Python process (``_deploy_directory_in_its_own_process``),
-    so nothing one folder imports reaches the next (ADR #139). With ``results_path`` this *is*
-    a folder's own process: it deploys here, writes its results to that file and exits, and a
-    SIGTERM keeps its default (it ends the process, as the parent expects).
-    ``in_own_process=False`` also runs the folders here, for tests. A summary prints at the end
-    regardless of outcome; the process exits non-zero if anything failed, so this is safe to
-    use as a CI/script gate.
+    Each directory runs in its own Python process (``polyris.folder_process``), so nothing one
+    folder imports reaches the next (ADR #139). First every directory's dag_ids are collected,
+    each in its own process too: a dag_id that two files make stops the run before anything is
+    deployed, since each DAG is one stack and one would replace the other. A summary prints at
+    the end regardless of outcome; the process exits non-zero if anything failed, so this is
+    safe to use as a CI/script gate.
     """
-    argv = _bulk_argv(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
-                      log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
+    options = dict(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
+                   log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
     results: "List[BulkResult]" = []
-    in_own_process = in_own_process and results_path is None
-    with sigterm_stops_children() if in_own_process else nullcontext():
+    with folder_process.sigterm_stops_children():
+        twice = _dag_ids_made_twice(target_dirs, select)
+        if twice:
+            for message in twice:
+                print(f"❌ {message}")
+            print(f"\nNothing was {'destroyed' if destroy else 'deployed'}: give each DAG its own dag_id.")
+            sys.exit(1)
         for dir_name in sorted(target_dirs):
-            if in_own_process and Path(dir_name).is_dir():
-                results += _deploy_directory_in_its_own_process(dir_name, argv)
-            else:
-                results += _deploy_directory(
-                    dir_name, select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
-                    log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack,
-                )
-
-    if results_path:
-        # A folder's own process: the parent prints the summary
-        Path(results_path).write_text(json.dumps(results))
-        sys.exit(1 if any(not ok for _, _, ok, _ in results) else 0)
+            if not Path(dir_name).is_dir():
+                results += _deploy_directory(dir_name, **options)  # type: ignore[arg-type]  # options holds _deploy_directory's own keywords
+                continue
+            answer = folder_process.run("deploy", {"dir_name": dir_name, **options})
+            results += [tuple(r) for r in answer.payload] if answer.error is None else [(dir_name, "-", False, answer.error)]
 
     succeeded = [r for r in results if r[2]]
     failed = [r for r in results if not r[2]]
@@ -1280,7 +1242,13 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
         if args.file is not None:
             print("❌ --file is not used with --all/--only — each directory's .py files are discovered automatically")
             sys.exit(1)
-        target_dirs = args.only if args.only else [str(p) for p in sorted(Path(".").iterdir()) if p.is_dir()]
+        if args.only:
+            target_dirs = args.only
+        else:
+            target_dirs = [str(p) for p in pipeline_folders(".")]
+            for path in pipelines_out_of_reach("."):
+                print(f"⚠️  {path}: not deployed by --all, which deploys the folders directly in this one: "
+                      "move it into its own folder, or use --file")
         _run_bulk(
             target_dirs,
             select=args.select,
@@ -1292,9 +1260,6 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
             log_level=args.log_level,
             log_retention_days=args.log_retention,
             profile=args.profile,
-            # In a folder's own process, deploy here and report back. Taken out of the environment,
-            # so a process a pipeline starts is never mistaken for one
-            results_path=os.environ.pop(BULK_RESULTS_ENV, None),
         )
         return
 
@@ -1344,10 +1309,4 @@ def main_destroy() -> None:
 
 
 if __name__ == "__main__":
-    _in_a_folders_process = bool(os.environ.get(BULK_RESULTS_ENV))  # _dispatch takes it out
-    try:
-        main()
-    except SystemExit as e:
-        if _in_a_folders_process:  # do not wait for a pipeline's threads
-            exit_now(e.code if isinstance(e.code, int) else 1)
-        raise
+    main()

@@ -2,25 +2,29 @@
 
 ### Breaking — `--all` and pipeline files (ADR #139)
 
-- `polyris-deploy --all` / `--only` (and `polyris-destroy --all`) load only `dag.py` and the `.py` files whose code imports `DAG`, `dag` or `Pipeline` from polyris. A pipeline in another file that gets its DAG from a project wrapper is no longer deployed or destroyed, and the run still exits 0: name the file `dag.py`, or deploy it with `--file`.
+- `polyris-validate --all` and `polyris-deploy --all` / `--only` (and `polyris-destroy --all`) load only `dag.py` and the `.py` files whose code imports `DAG`, `dag` or `Pipeline` from polyris. A pipeline in another file that gets its DAG from a project wrapper is no longer deployed or destroyed, and the run still exits 0: name the file `dag.py`, or deploy it with `--file`.
+- `polyris-validate --all` loads the folders directly in the current directory, as `polyris-deploy --all` deploys them. A pipeline file in the current directory itself, or deeper than one folder, is no longer validated; both commands warn about it.
+- A `dag_id` that two files or two folders make is an error: `polyris-validate --all` reports it, and `polyris-deploy --all` / `polyris-destroy --all` deploy nothing. Before, deploy kept the first file's DAG with a warning, and across folders the second deploy replaced the first's stack. A file that makes one `dag_id` twice is refused by every command.
 - `--all` exits 1 when a pipeline file does not load; before, it skipped the file and exited 0.
-- A file that makes one `dag_id` twice is refused by every command.
-- **Upgrading:** run `polyris-deploy --all --dry-run` and check that every pipeline you expect is listed; a file listed as "not pipeline files, not run" that is one needs `dag.py` as its name or `--file`.
+- **Upgrading:** run `polyris-validate --all` from the folder that holds your pipeline folders, then `polyris-deploy --all --dry-run`: check that every pipeline you expect is listed, and act on any warning.
 
 ### Changed — every command loads a pipeline file the same way (ADR #139)
 
 - `polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` now run a pipeline file through one loader, so a file that passes validation also deploys. Before, each found DAGs its own way, and a file whose DAG had no `as` name (`with DAG("orders"):`), or that made its DAGs through a call (an `@dag` function, a factory in another module, a file that runs other files), passed `polyris-validate` and then deployed with "No DAG found".
 - Every DAG the file's code makes is its own, with or without `with`; a DAG that an `import` makes is the imported module's. `polyris-validate` therefore no longer validates such a DAG as part of the importing file; it is validated with its own file.
-- Every command puts the file's folder and then the one above first on `sys.path` while it runs — also when run as plain `polyris-deploy` in the pipeline's folder — so a sibling `config.py` wins over the project root's (`polyris-validate` put the folder above first), and lets `sys.exit(0)` end the file normally, as `polyris-deploy` did. A module a file imports from its own folder (a `settings.py`) is not handed to the next file in `--all`.
-- `polyris-deploy --all` / `--only` and `polyris-validate --all` decide the same way which files are pipelines: `dag.py`, and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files (`test_*.py`, `*_test.py`, `conftest.py`). The file is read, not run, so a comment does not count: a Glue or ECS script that imports only `xcom` is never run, and `deploy --all` lists the files it leaves out. A pipeline that imports its DAG from a project wrapper is skipped: name it `dag.py`, or use `--file`.
-- `--all` runs each folder in its own Python process, so one folder's `settings.py`, a path it adds, or a library's import-time side effects never reach another folder's pipeline. `validate --all` loads each file once there, for both its checks. It takes about a quarter of a second more per folder.
-- A file that makes one `dag_id` twice is refused by every command: each DAG is one stack, so the second would replace the first. Before, `polyris-deploy` deployed the last one.
+- Every command puts the file's folder and then the one above first on `sys.path` while it runs — also when run as plain `polyris-deploy` in the pipeline's folder — so a sibling `config.py` wins over the project root's (`polyris-validate` put the folder above first), and lets `sys.exit(0)` end the file normally, as `polyris-deploy` did.
+- The files `--all` does not load are read, not run: a Glue or ECS script that imports only `xcom` never runs, whatever its comments say, and `deploy --all` lists it. Hidden folders (`.venv`) and caches (`__pycache__`) are not deployed as pipeline folders.
+- `--all` runs each folder in its own Python process, so one folder's `settings.py`, a path it adds, or a library's import-time side effects never reach another folder's pipeline. `validate --all` loads each file once there, for both its checks, and still shows what a pipeline prints (except with `--json`). It takes about a quarter of a second more per folder.
 
 ### Fixed — `polyris-deploy`
 
 - In `--all` / `--only`, a file that does not load is a failure of the batch: the summary counts it and the exit code is 1. Before, it was skipped with a warning and the batch reported success, though that stack was neither deployed nor destroyed.
 - `polyris-destroy` for a file with several DAGs says "Destroying all..." instead of "Deploying all...".
 - The deploy's existence check looks a Batch job definition without a revision (a name, or an ARN without `:N`) up by name, so a DAG that names the family, as the docs advise, is checked against its newest ACTIVE revision. With a revision, it no longer sends a status filter that AWS documents as not allowed with it.
+
+### Fixed — `polyris-validate`
+
+- `polyris-validate -v` in a terminal no longer crashes on a DAG with an asset schedule.
 
 ### Changed — docs and examples
 

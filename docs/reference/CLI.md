@@ -2,7 +2,7 @@
 
 All polyris commands. Run from your pipeline directory unless noted.
 
-`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag`, a helper function, or other files it runs — and not one that a module it imports makes. While the file runs, its folder and the folder above it are importable, and `sys.exit(0)` ends it normally. A file that makes one `dag_id` twice is refused: each DAG is one stack. With `--all`, both commands read `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files — a Glue script that imports only `xcom` is never run, whatever its comments say — and run each folder in its own Python process, so one folder's modules never reach another's.
+`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag`, a helper function, or other files it runs — and not one that a module it imports makes. While the file runs, its folder and then the folder above it come first on `sys.path`, and `sys.exit(0)` ends it normally. Each DAG is one stack, so a `dag_id` made twice is refused. With `--all`, both commands load the folders directly in the current directory — each in its own Python process, so one folder's modules never reach another's — and in each, `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files: a Glue script that imports only `xcom` is never run, whatever its comments say. Both warn about a pipeline file in the current directory itself or deeper, which `--all` does not load, and refuse a `dag_id` that two files make.
 
 ---
 
@@ -151,7 +151,7 @@ polyris-validate
 # Verbose — shows schedule, task count, state count
 polyris-validate -v
 
-# Validate all pipelines found in project
+# Validate every pipeline folder in the current directory, as polyris-deploy --all deploys them
 polyris-validate --all
 
 # All pipelines, verbose
@@ -169,7 +169,7 @@ polyris-validate --json
 
 | Option | Description |
 |--------|-------------|
-| `--all`, `-a` | Find and validate all pipelines in project |
+| `--all`, `-a` | Validate the pipeline files of each folder directly in the current directory, as `polyris-deploy --all` deploys them, and check them against each other (asset cycles, a `dag_id` made twice) |
 | `-v`, `--verbose` | Show schedule, task count, state count |
 | `--file`, `-f` | Pipeline file (default: `dag.py`) |
 | `--test` | Run python_callable for `@task.python` tasks |
@@ -241,12 +241,12 @@ polyris-deploy --file my_dag.py
 # Multi-DAG file — deploy specific DAG
 polyris-deploy --select my-dag-id
 
-# Bulk: deploy every subdirectory of the current directory
+# Bulk: deploy every folder in the current directory (hidden ones and caches aside)
 # (each directory in its own process; dag.py and every .py whose code imports
-# DAG, dag or Pipeline from polyris are loaded — other
-# files are listed and not run; every DAG found is deployed; a file with zero DAGs
-# is skipped; a file that does not load counts as a failure: the summary lists it,
-# the other directories still deploy, exit code 1)
+# DAG, dag or Pipeline from polyris are loaded — other files are listed and not
+# run; every DAG found is deployed; a file with zero DAGs is skipped; a file that
+# does not load counts as a failure: the summary lists it, the other directories
+# still deploy, exit code 1; a dag_id two files make deploys nothing, exit code 1)
 polyris-deploy --all
 
 # Bulk: deploy only the listed subdirectories
@@ -269,7 +269,7 @@ polyris-deploy --only dir1 dir2 --select my-dag-id
 | `--dry-run` | Preview CloudFormation changes without deploying |
 | `--destroy` | Remove pipeline stack and clean up DynamoDB |
 | `--select` | Select DAG by ID (for multi-DAG files); combinable with `--all`/`--only` to filter within each directory |
-| `--all` | Bulk: every immediate subdirectory of the current directory. Mutually exclusive with `--only` |
+| `--all` | Bulk: every folder directly in the current directory, but hidden ones (`.venv`) and caches. Mutually exclusive with `--only` |
 | `--only DIR [DIR ...]` | Bulk: only the listed subdirectories. Mutually exclusive with `--all` |
 | `--region` | AWS region (default: from `config.py`) |
 | `--log-level` | CloudWatch log level: `ALL`, `ERROR`, `FATAL`, `OFF` (default: `ERROR`) |
@@ -292,6 +292,13 @@ independently:
    single-file mode.
 3. A file with zero DAGs (a shared `config.py`, a `utils.py`) contributes
    nothing and is silently skipped — not an error.
+4. Before anything is deployed, every directory's `dag_id`s are collected:
+   a `dag_id` that two files make (in one directory or two) stops the run,
+   and nothing is deployed — each DAG is one stack, so one would replace the
+   other. With `--select`, only that `dag_id` counts.
+5. With `--all`, a pipeline file in the current directory itself, or deeper
+   than one folder, is not deployed: a warning names it. Move it into its own
+   folder, or deploy it with `--file`.
 
 One DAG failing (a validation error, an AWS error) does not stop the batch —
 every DAG in every directory is still attempted, and a summary prints at the

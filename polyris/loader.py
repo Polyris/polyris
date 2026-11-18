@@ -1,9 +1,11 @@
-"""One way to run a pipeline file and find the DAGs it defines (ADR #139).
+"""One way to run a pipeline file and find the DAGs it defines, and which files ``--all`` loads
+(ADR #139).
 
 ``polyris-validate``, ``polyris-deploy``, ``polyris-output`` and ``polyris-local`` all load a
 pipeline file through ``load_pipeline``, so a file they disagree about cannot exist: until
-1.2.2 each had its own loader, and three times a file passed ``polyris-validate`` and then
-could not be deployed (backlog F18 and the reviews of its fix).
+1.2.2 each had its own loader, and a file could pass ``polyris-validate`` and then fail to
+deploy. ``polyris-validate --all`` and ``polyris-deploy --all`` find files the same way
+(``pipeline_folders``, ``files_in``, ``is_pipeline_file``).
 """
 
 from __future__ import annotations
@@ -12,19 +14,14 @@ import ast
 import importlib.util
 import os
 import re
-import signal
-import site
-import subprocess
 import sys
-import sysconfig
-import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import IO, Dict, Iterator, List, Optional, Set, Union
+from typing import Any, Dict, Iterable, Iterator, List, Set, Tuple, Union
 
-from .dag import DAG, recording_dags
+from .dag import DAG
 
 #: The ``__name__`` every pipeline file runs under, whichever command loads it.
 MODULE_NAME = "polyris_pipeline"
@@ -39,11 +36,19 @@ _DAG_MAKERS = frozenset({"DAG", "dag", "Pipeline"})
 #: ``Pipeline``) and ``polyris.helpers`` (``dag``). A star import of ``polyris.xcom`` makes no DAG.
 _DAG_MAKER_MODULES = frozenset({"polyris", "polyris.dag", "polyris.helpers"})
 
-#: An import of a DAG maker, in the text of a file ``ast`` cannot parse.
-_DAG_MAKER_IMPORT = re.compile(
-    rb"^\s*from\s+polyris(\.\w+)*\s+import\b[^\n]*\b(DAG|dag|Pipeline)\b|\bpolyris(\.\w+)*\.(DAG|dag|Pipeline)\b",
-    re.MULTILINE,
-)
+#: In the text of a file ``ast`` cannot parse: ``from polyris[.x] import …`` (one line, or a
+#: parenthesised list over several), ``polyris[.x].DAG``, a comment, and a DAG maker's name.
+_FROM_POLYRIS_IMPORT = re.compile(
+    rb"^[ \t]*from[ \t]+(polyris(?:\.\w+)*)[ \t]+import[ \t]*(\([^)]*\)|[^\n]*)", re.MULTILINE)
+_POLYRIS_ATTRIBUTE = re.compile(rb"\bpolyris(?:\.\w+)*\.(?:DAG|dag|Pipeline)\b")
+_COMMENT = re.compile(rb"#[^\n]*")
+_DAG_MAKER_NAME = re.compile(rb"\b(?:DAG|dag|Pipeline)\b")
+
+#: Folders ``--all`` never looks in: caches, installed code, and hidden ones (``.venv``, ``.git``).
+_NOT_PROJECT_FOLDERS = frozenset({"__pycache__", "node_modules", "site-packages"})
+
+#: The frame of an ``import`` statement (and ``importlib.import_module``) in progress.
+_IMPORTING = ("importlib._bootstrap", "_find_and_load")
 
 
 class PipelineLoadError(Exception):
@@ -66,17 +71,14 @@ def is_pipeline_file(path: Path) -> bool:
     """Whether ``--all`` loads this .py file: ``dag.py``, or a file whose code imports ``DAG``,
     ``dag`` or ``Pipeline`` from polyris.
 
-    The file is parsed, never run: a Glue, Lambda or ECS script that imports only ``xcom``
-    is not a pipeline whatever its comments say, and a pipeline always imports what makes its
-    DAG. Text rules failed three reviews (ADR #139): a name, "polyris" in the text, then
-    "polyris" and "dag" in a comment. A pipeline that imports its DAG from a project wrapper is
-    skipped; name it ``dag.py`` or deploy it with ``--file``. A file that does not parse is
-    loaded when its text imports a DAG maker from polyris, so a broken pipeline's error is
-    reported, while a script written for a newer Python that imports only ``xcom`` is not run.
-    Test files by
-    pytest's convention (``test_*.py``, ``*_test.py``, ``conftest.py``) and ``__init__.py`` are
-    not pipelines. ``polyris-validate --all`` and ``polyris-deploy --all`` / ``--only`` both
-    use it.
+    The file is parsed from its bytes, as Python reads it, and never run: a Glue, Lambda or ECS
+    script that imports only ``xcom`` is not a pipeline whatever its comments say, and a
+    pipeline always imports what makes its DAG. A pipeline that imports its DAG from a project
+    wrapper is skipped; name it ``dag.py`` or deploy it with ``--file``. A file that does not
+    parse is loaded when its text (comments aside) imports a DAG maker from polyris, so a
+    broken pipeline's error is reported, while a script written for a newer Python that imports
+    only ``xcom`` is not run. Test files by pytest's convention (``test_*.py``, ``*_test.py``,
+    ``conftest.py``) and ``__init__.py`` are not pipelines.
     """
     name = path.name
     if name in _NOT_PIPELINES or name.startswith("test_") or name.endswith("_test.py"):
@@ -90,8 +92,18 @@ def is_pipeline_file(path: Path) -> bool:
     try:
         tree = ast.parse(source, filename=str(path))
     except (SyntaxError, ValueError, RecursionError, MemoryError):  # ValueError: a null byte
-        return _DAG_MAKER_IMPORT.search(source) is not None
+        return _text_imports_a_dag_maker(source)
     return _imports_a_dag_maker(tree)
+
+
+def _text_imports_a_dag_maker(source: bytes) -> bool:
+    """``_imports_a_dag_maker`` for a file that does not parse, read from its text."""
+    text = _COMMENT.sub(b"", source)
+    for match in _FROM_POLYRIS_IMPORT.finditer(text):
+        module, names = match.group(1).decode(), match.group(2)
+        if _DAG_MAKER_NAME.search(names) or (b"*" in names and module in _DAG_MAKER_MODULES):
+            return True
+    return _POLYRIS_ATTRIBUTE.search(text) is not None
 
 
 def _imports_a_dag_maker(tree: ast.AST) -> bool:
@@ -114,70 +126,110 @@ def _imports_a_dag_maker(tree: ast.AST) -> bool:
     )
 
 
-def child_env(**extra: str) -> Dict[str, str]:
-    """The environment of a folder's own process in ``--all``: this one's, plus ``extra``.
+def _is_project_folder(name: str) -> bool:
+    return not name.startswith(".") and name not in _NOT_PROJECT_FOLDERS
 
-    The child (``run_child``) must import this very polyris. When polyris is installed
-    (site-packages), the child finds it there as this process did. When it comes from elsewhere
-    (a checkout run from source), its folder is appended to PYTHONPATH, after the user's own
-    entries. Never prepended: on an install that would put site-packages ahead of a user's
-    ``src/`` and of the standard library (sixth review of ADR #139).
+
+def pipeline_folders(run_dir: Union[str, Path]) -> List[Path]:
+    """The folders ``--all`` loads (``polyris-validate`` and ``polyris-deploy``): each folder
+    directly in ``run_dir``, but hidden ones (``.venv``, ``.git``) and caches."""
+    root = Path(run_dir)
+    if not root.is_dir():
+        return []
+    return [p for p in sorted(root.iterdir()) if p.is_dir() and _is_project_folder(p.name)]
+
+
+@dataclass
+class FolderFiles:
+    #: The folder's pipeline files (``is_pipeline_file``), in name order.
+    pipelines: List[Path]
+    #: Its other .py files, which ``--all`` lists and never runs.
+    others: List[Path]
+
+
+def files_in(folder: Union[str, Path]) -> FolderFiles:
+    """The .py files directly in ``folder``, split into pipeline files and the others."""
+    candidates = sorted(Path(folder).glob("*.py"))
+    pipelines = [p for p in candidates if is_pipeline_file(p)]
+    return FolderFiles(pipelines, [p for p in candidates if p not in pipelines])
+
+
+def pipelines_out_of_reach(run_dir: Union[str, Path]) -> List[Path]:
+    """Pipeline files ``--all`` does not load: in ``run_dir`` itself, or deeper than one folder
+    below it. Both commands warn about them, so a pipeline that validates also deploys."""
+    root = Path(run_dir)
+    found: List[Path] = []
+    for folder, subfolders, names in os.walk(root):
+        subfolders[:] = sorted(d for d in subfolders if _is_project_folder(d))
+        if len(Path(folder).relative_to(root).parts) == 1:
+            continue  # a folder --all loads
+        found.extend(p for p in (Path(folder) / n for n in sorted(names) if n.endswith(".py"))
+                     if is_pipeline_file(p))
+    return found
+
+
+def duplicate_dag_ids(made: Iterable[Tuple[str, Any]]) -> List[str]:
+    """One message per dag_id that more than one file makes, from ``(dag_id, file)`` pairs.
+
+    Each DAG is one stack, so one would replace the other. Within one file, ``open_pipeline``
+    already refuses it; across files and folders, ``--all`` does."""
+    files: Dict[str, List[str]] = {}
+    for dag_id, file in made:
+        files.setdefault(dag_id, []).append(str(file))
+    return [f"dag_id {dag_id!r} is made by {' and '.join(names)}: each DAG is one stack, "
+            "so one would replace the other"
+            for dag_id, names in sorted(files.items()) if len(names) > 1]
+
+
+def _made_in_an_import(frame: Any, stop: Any) -> bool:
+    """Whether an ``import`` ran between ``frame`` and ``stop`` (the loader's own frame).
+
+    A DAG a module makes while Python imports it is that module's: a module the pipeline file
+    imports, or a copy of the file a helper imports back. Anything else the file's code runs
+    is the file's — a call, a factory in another module, ``exec``, ``runpy``, a file it loads
+    with ``spec.loader.exec_module`` — and so is a worker thread it started, whose stack never
+    reaches ``stop``.
     """
-    import polyris
-
-    env = {**os.environ, **extra}
-    code_root = Path(polyris.__file__).resolve().parents[1]
-    installed = {Path(p).resolve() for p in (*site.getsitepackages(), site.getusersitepackages(),
-                                             sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"])}
-    if code_root not in installed:
-        env["PYTHONPATH"] = os.pathsep.join(p for p in (os.environ.get("PYTHONPATH", ""), str(code_root)) if p)
-    return env
-
-
-def run_child(argv: List[str], env: Dict[str, str], *, stdout: Optional[Union[int, IO[str]]] = None) -> int:
-    """Run ``python -P <argv>`` — a folder's own process in ``--all`` — to its end; its exit code.
-
-    ``-P`` keeps the current directory off the child's ``sys.path`` while polyris starts, as it
-    is off this process's when run as ``polyris-deploy``: otherwise an ``email/`` or ``json.py``
-    in the run directory breaks polyris's own imports. While a file loads, its folder and the
-    folder above come first, as for every command (``open_pipeline``).
-    If this process is stopped (Ctrl-C, or SIGTERM under ``sigterm_stops_children``), the child
-    is stopped too.
-    """
-    sys.stdout.flush()  # what this process printed comes before the child's output
-    proc = subprocess.Popen([sys.executable, "-P", *argv], env=env, stdout=stdout)
-    try:
-        return proc.wait()
-    except BaseException:
-        proc.terminate()
-        proc.wait()
-        raise
-
-
-def _raise_on_sigterm(signum: int, frame: object) -> None:
-    raise SystemExit(128 + signum)
+    while frame is not None and frame is not stop:
+        if (frame.f_globals.get("__name__"), frame.f_code.co_name) == _IMPORTING:
+            return True
+        frame = frame.f_back
+    return False
 
 
 @contextmanager
-def sigterm_stops_children() -> Iterator[None]:
-    """Within the block, SIGTERM ends this process through Python, so ``run_child`` stops the
-    running child. Only the main thread can set a signal handler; elsewhere the default stays."""
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-    previous = signal.signal(signal.SIGTERM, _raise_on_sigterm)
+def recording_dags(stop: Any) -> Iterator[List[DAG]]:
+    """Record every DAG made while this block runs, outside an ``import``, in order.
+
+    ``stop`` is ``open_pipeline``'s own frame. A DAG is recorded when it is made
+    (``DAG.__post_init__``), so it counts with or without ``with``, bound to a name or not,
+    unless an ``import`` made it (``_made_in_an_import``). A DAG whose ``with`` block raised an
+    error does not count; ``sys.exit(0)`` in the block or a closed generator does not drop it.
+    """
+    made: List[DAG] = []
+    raised: Set[int] = set()
+    original_post_init = DAG.__post_init__
+    original_exit = DAG.__exit__
+
+    def recording_post_init(self: DAG) -> None:
+        original_post_init(self)
+        if not _made_in_an_import(sys._getframe(1), stop):
+            made.append(self)
+
+    def recording_exit(self: DAG, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        # An error drops the DAG; sys.exit(0) or a generator closed inside the block do not
+        if exc_type is not None and issubclass(exc_type, Exception):
+            raised.add(id(self))
+        return original_exit(self, exc_type, exc_val, exc_tb)
+
+    DAG.__post_init__ = recording_post_init  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
+    DAG.__exit__ = recording_exit  # type: ignore[method-assign]  # deliberate: instrument for discovery, restored in finally
     try:
-        yield
+        yield made
     finally:
-        signal.signal(signal.SIGTERM, previous)
-
-
-def exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._exit); runs only as a folder's own process exits
-    """End a folder's own process once its results are written: flush, and do not wait for
-    non-daemon threads a pipeline started, which would hold the next folder."""
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(code)
+        DAG.__post_init__ = original_post_init  # type: ignore[method-assign]  # deliberate: restore the method
+        DAG.__exit__ = original_exit  # type: ignore[method-assign]  # deliberate: restore the method
+        made[:] = [d for d in made if id(d) not in raised]
 
 
 @contextmanager
@@ -188,8 +240,8 @@ def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
     while the block runs, so a pipeline imports a sibling module before its project's, and a task body
     that ``polyris-local`` or ``polyris-validate --test`` runs can too; on leaving the block they
     are removed. Modules the file imports stay imported: ``--all`` runs each folder in its own
-    process, so nothing one folder imports reaches the next (ADR #139). ``sys.exit(0)`` (or a bare ``sys.exit()``) ends
-    the file normally. Raises ``PipelineNotFoundError`` for a missing file and
+    process (``polyris.folder_process``), so nothing one folder imports reaches the next.
+    ``sys.exit(0)`` (or a bare ``sys.exit()``) ends the file normally. Raises ``PipelineNotFoundError`` for a missing file and
     ``PipelineLoadError`` for an error, a non-zero exit, or one dag_id made twice: each DAG is
     one stack, so the second would replace the first. A file without DAGs loads with an empty
     list; the caller says what that means for it.
@@ -204,7 +256,7 @@ def open_pipeline(path: Union[str, Path]) -> Iterator[LoadedPipeline]:
     module = importlib.util.module_from_spec(spec)
 
     # The file's own folder first, as Python puts a script's folder first, then the folder above:
-    # a sibling config.py wins over the project root's (architect review of ADR #139)
+    # a sibling config.py wins over the project root's
     added = [p for p in (str(path.parent), str(path.parent.parent)) if p not in sys.path]
     sys.path[0:0] = added
     try:
