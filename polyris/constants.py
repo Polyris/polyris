@@ -276,6 +276,7 @@ class WarningKind:
     NOTIFY = "notify"              # notify_dependents failed after a task finished
     MANUAL = "manual"              # a manual action kept the task's real output instead of its marker
     FACT = "fact"                  # a task or a manual action could not record the asset facts it owed
+    STEP = "step"                  # a direct step failed; its run fails once every branch has ended (ADR #137 §1)
 
 
 # =============================================================================

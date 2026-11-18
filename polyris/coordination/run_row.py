@@ -13,6 +13,8 @@ it enters neither date index; ``start_day`` alone puts it in
 
 from __future__ import annotations
 
+from ..constants import BackfillCascade
+
 #: The tasks table's partition key, which every row carries.
 TABLE_KEY = "execution_name"
 KEY_PREFIX = "_run_"
@@ -46,6 +48,16 @@ REQUESTS = "requests"            # the heavy actions in progress, by kind (§3)
 PAUSES = "pauses"                # the pause intervals, at most ten (§5)
 TTL = "ttl"
 
+# The run's input item (``input_key``): Start_Run writes it once; the dispatcher reads it to build
+# run_task's input, Mark Successful for the cascade, and the console for what it shows (§3).
+VARIABLES = "variables"
+SKIP_TASKS = "skip_tasks"
+CASCADE = "cascade"              # how the run's facts reach their consumers: a BackfillCascade value (ADR #57)
+
+#: The error with which the dispatcher answers a failed run (§9). The generated pipeline takes it in a
+#: ``Catch`` ahead of ``Start_Run``'s, without a warning, and no ``Retry`` of ``Start_Run`` matches it.
+FAILED_RUN_ERROR = "Polyris.RunFailed"
+
 
 def key(pipeline_execution: str) -> str:
     """The run row's key."""
@@ -55,6 +67,13 @@ def key(pipeline_execution: str) -> str:
 def input_key(pipeline_execution: str) -> str:
     """The key of the run's input item."""
     return f"{key(pipeline_execution)}{INPUT_SUFFIX}"
+
+
+def cascade(*, suppress_asset_event: bool, cascade_all: bool) -> str:
+    """The run's cascade from the flags its starter sets (``bulk_backfill``, ADR #57): ``none`` wins."""
+    if suppress_asset_event:
+        return BackfillCascade.NONE
+    return BackfillCascade.ALL if cascade_all else BackfillCascade.AUTO
 
 
 def is_run_row(row_key: str) -> bool:

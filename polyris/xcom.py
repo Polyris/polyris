@@ -29,6 +29,9 @@ ENV_PIPELINE = "POLYRIS_PIPELINE_NAME"
 ENV_DATE = "POLYRIS_RUN_DATE"
 ENV_TABLE = "POLYRIS_TOKENS_TABLE"
 ENV_TASK_NAME = "POLYRIS_TASK_NAME"          # set by run_task wrapper for service tasks
+#: Set by run_task for Glue, ECS and Batch tasks from 1.3 on (ADR #137 §1, §9): a JSON object from each
+#: direct upstream's name to its status and skip origin in this run.
+ENV_UPSTREAM_STATUSES = "POLYRIS_UPSTREAM_STATUSES"
 ENV_RUN_ID = "POLYRIS_WRAPPER_RUN_ID"        # SFN wrapper execution ARN — used by xcom.push()
 
 # Field name written to DDB by xcom.push() and read by run_task wrapper's
