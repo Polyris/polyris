@@ -51,7 +51,7 @@ from .generators import (
 )
 from .dag import DAG
 from . import folder_process
-from .loader import PipelineLoadError, duplicate_dag_ids, files_in, load_pipeline, pipeline_folders, pipelines_out_of_reach
+from .loader import PipelineLoadError, duplicate_dag_ids, files_in, load_pipeline, out_of_reach_warnings, pipeline_folders
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -1036,7 +1036,7 @@ def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None)
 BulkResult = Tuple[str, str, bool, Optional[str]]
 
 
-def _deploy_directory(
+def deploy_directory(
     dir_name: str,
     *,
     select: Optional[str],
@@ -1111,21 +1111,26 @@ def _deploy_directory(
     return results
 
 
-def _dag_ids_made_twice(target_dirs: "List[str]", select: Optional[str]) -> "List[str]":
-    """The dag_ids (``select`` alone, when given) that two files across ``target_dirs`` make.
+def _check_dag_ids(target_dirs: "List[str]", select: Optional[str]) -> "Tuple[List[str], dict]":
+    """The dag_ids (``select`` alone, when given) that two files across ``target_dirs`` make,
+    and the directories whose dag_ids could not be read, with why.
 
-    Each directory's files load in its own process, without deploying; a file that does not
-    load is reported by the deploy that follows, not here."""
+    Each directory's files load in its own process, without deploying. A file that does not
+    load is reported by the deploy that follows; a directory whose process ended without
+    answering is not deployed, since its dag_ids were not checked."""
     made: "List[Tuple[str, str]]" = []
-    for dir_name in sorted(target_dirs):
-        files = [str(p) for p in files_in(dir_name).pipelines] if Path(dir_name).is_dir() else []
-        if not files:
-            continue
+    unchecked: "dict" = {}
+    folders = [(d, [str(p) for p in files_in(d).pipelines]) for d in target_dirs if Path(d).is_dir()]
+    folders = [(d, files) for d, files in folders if files]
+    print(f"Checking the dag_ids of {len(folders)} folder(s)...")
+    for dir_name, files in folders:
         answer = folder_process.run("collect", {"files": files}, output="none")
-        if answer.error is None:
-            made += [(d["dag_id"], d["file_path"]) for d in answer.payload["infos"]
-                     if select is None or d["dag_id"] == select]
-    return duplicate_dag_ids(made)
+        if answer.error is not None:
+            unchecked[dir_name] = answer.error
+            continue
+        made += [(d["dag_id"], d["file_path"]) for d in answer.payload["infos"]
+                 if select is None or d["dag_id"] == select]
+    return duplicate_dag_ids(made), unchecked
 
 
 def _run_bulk(
@@ -1153,16 +1158,21 @@ def _run_bulk(
     options = dict(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
                    log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
     results: "List[BulkResult]" = []
+    target_dirs = sorted(set(target_dirs))  # --only a a: one directory, deployed once
     with folder_process.sigterm_stops_children():
-        twice = _dag_ids_made_twice(target_dirs, select)
+        twice, unchecked = _check_dag_ids(target_dirs, select)
         if twice:
             for message in twice:
                 print(f"❌ {message}")
             print(f"\nNothing was {'destroyed' if destroy else 'deployed'}: give each DAG its own dag_id.")
             sys.exit(1)
-        for dir_name in sorted(target_dirs):
+        for dir_name in target_dirs:
             if not Path(dir_name).is_dir():
-                results += _deploy_directory(dir_name, **options)  # type: ignore[arg-type]  # options holds _deploy_directory's own keywords
+                results += deploy_directory(dir_name, **options)  # type: ignore[arg-type]  # options holds deploy_directory's own keywords
+                continue
+            if dir_name in unchecked:
+                print(f"\n=== {dir_name} ===\n  ❌ its dag_ids could not be checked: {unchecked[dir_name]}")
+                results.append((dir_name, "-", False, f"not deployed: its dag_ids could not be checked ({unchecked[dir_name]})"))
                 continue
             answer = folder_process.run("deploy", {"dir_name": dir_name, **options})
             results += [tuple(r) for r in answer.payload] if answer.error is None else [(dir_name, "-", False, answer.error)]
@@ -1219,7 +1229,7 @@ Examples:
     bulk_group.add_argument(
         "--all",
         action="store_true",
-        help="Bulk mode: deploy/destroy every immediate subdirectory of the current directory",
+        help="Bulk mode: deploy/destroy every folder in the current directory (hidden ones and caches aside)",
     )
     bulk_group.add_argument(
         "--only", nargs="+", metavar="DIR", help="Bulk mode: deploy/destroy only the listed subdirectories"
@@ -1246,9 +1256,8 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
             target_dirs = args.only
         else:
             target_dirs = [str(p) for p in pipeline_folders(".")]
-            for path in pipelines_out_of_reach("."):
-                print(f"⚠️  {path}: not deployed by --all, which deploys the folders directly in this one: "
-                      "move it into its own folder, or use --file")
+            for warning in out_of_reach_warnings("."):
+                print(f"⚠️  {warning}")
         _run_bulk(
             target_dirs,
             select=args.select,

@@ -169,7 +169,7 @@ def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> Dict
     # DAG info
     print(c("📋 DAG Configuration:", BOLD))
     print(f"   ID:          {c(dag.dag_id, CYAN)}")
-    print(f"   Schedule:    {c(dag.schedule, CYAN) if dag.schedule else 'None (manual)'}")
+    print(f"   Schedule:    {c(str(dag.schedule), CYAN) if dag.schedule else 'None (manual)'}")
     print(f"   Description: {c(dag.description, CYAN) if dag.description else 'N/A'}")
     print(f"   Tags:        {c(str(dag.tags), CYAN) if dag.tags else []}")
     print()

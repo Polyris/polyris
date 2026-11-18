@@ -6,8 +6,8 @@ local-validation engine in ``polyris.validation``:
 
   - ``build_asset_graph``      — DAGInfo list → producer/consumer graph
   - ``detect_asset_cycles``    — BFS cycle detection over that graph
-  - ``discover_pipeline_files``— filesystem scan for pipeline files
-  - ``extract_dag_info``       — import a pipeline file → DAGInfo
+  - which files ``--all`` loads (``polyris.loader``)
+  - ``_dag_infos``             — a loaded pipeline file → DAGInfo
   - ``validate_asl_from_dag``  — generate + validate ASL for a DAG object
   - ``validate_all``           — full discover → extract → graph → cycles
   - ``_validate_single``       — single-file validation entrypoint
@@ -28,13 +28,24 @@ from polyris.validation import (
     DAGInfo,
     build_asset_graph,
     detect_asset_cycles,
-    discover_pipeline_files,
-    extract_dag_info,
+    _dag_infos,
     validate_all,
     validate_asl_from_dag,
     _validate_single,
     _print_error,
 )
+
+
+def discover_pipeline_files(directory) -> list:
+    """The files --all loads under ``directory`` (``polyris.loader``), as paths."""
+    from polyris.loader import files_in, pipeline_folders
+    return [str(p) for folder in pipeline_folders(directory) for p in files_in(folder).pipelines]
+
+
+def extract_dag_info(path) -> list:
+    """The DAG info of one file, loaded as every command loads it."""
+    from polyris.loader import load_pipeline
+    return _dag_infos(str(path), load_pipeline(path).dags)
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
 

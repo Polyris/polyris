@@ -513,6 +513,30 @@ class TestRunBulk:
         assert "Nothing was destroyed" in out
         assert [r["command"] for r in self.requests] == ["collect"] * 3  # no deploy started
 
+    def test_a_folder_whose_dag_ids_could_not_be_checked_is_not_deployed(self, tmp_path, mocker, monkeypatch, capsys):
+        """A folder whose process died while its dag_ids were collected skipped the duplicate check,
+        and was then deployed anyway."""
+        from polyris import folder_process
+        monkeypatch.chdir(tmp_path)
+        for folder in ("a", "b"):
+            (tmp_path / folder).mkdir()
+            _write_dag_file(tmp_path / folder / "dag.py", f"dag-{folder}")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        real_run = folder_process.run
+        def run(command, request, **kwargs):
+            if command == "collect" and request["files"][0].startswith("a"):
+                return folder_process.Answer(None, "its process exited with code 9 before reporting")
+            return real_run(command, request, **kwargs)
+        mocker.patch("polyris.folder_process.run", side_effect=run)
+        with pytest.raises(SystemExit) as exc:
+            deploy._run_bulk(["a", "b", "a"], select=None, stage=None, region=None, dry_run=False,
+                             destroy=False, log_level="ERROR", log_retention_days=30, profile=None)
+        assert exc.value.code == 1
+        assert [c.kwargs["dag"].dag_id for c in deployed.call_args_list] == ["dag-b"]  # "a" once, not deployed
+        out = capsys.readouterr().out
+        assert "a/-: not deployed: its dag_ids could not be checked (its process exited with code 9" in out
+        assert "1 succeeded, 1 failed" in out
+
     def test_a_dag_id_made_twice_does_not_stop_a_run_that_selects_another(self, tmp_path, mocker, monkeypatch):
         monkeypatch.chdir(tmp_path)
         for folder in ("a", "b"):
@@ -612,7 +636,7 @@ class TestMainCliBulkFlags:
         # dag_ids first, then the deploys; no process for __pycache__ or .venv
         assert [(r["command"], r.get("dir_name")) for r in requests] == [
             ("collect", None), ("collect", None), ("deploy", "dir_a"), ("deploy", "dir_b")]
-        assert "root_dag.py: not deployed by --all" in capsys.readouterr().out
+        assert "root_dag.py: not loaded by --all" in capsys.readouterr().out
 
     def test_sigterm_stops_children_in_the_parent_and_ends_a_folders_process_by_default(self, tmp_path, mocker, monkeypatch):
         """With the handler set in a folder's process too, SIGTERM there became one
@@ -627,12 +651,13 @@ class TestMainCliBulkFlags:
         mocker.patch("polyris.deploy.deploy_pipeline",
                      side_effect=lambda *a, **k: in_the_child.append(signal.getsignal(signal.SIGTERM)))
         in_the_parent = []
-        mocker.patch("polyris.folder_process.run_child",
+        mocker.patch("polyris.folder_process._run_child",
                      side_effect=lambda *a, **k: in_the_parent.append(signal.getsignal(signal.SIGTERM)) or 0)
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all"])
         with pytest.raises(SystemExit):
             deploy.main()
-        assert in_the_parent == [folder_process._raise_on_sigterm] * 2  # dag_ids, then the deploy
+        # The dag_ids check (here it answers nothing, so the folder is not deployed after it)
+        assert in_the_parent == [folder_process._raise_on_sigterm]
 
         # The folder's process itself keeps SIGTERM's default
         request, answer = tmp_path / "request.json", tmp_path / "answer.json"

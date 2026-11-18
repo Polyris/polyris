@@ -492,8 +492,9 @@ made (`DAG.__post_init__`), and `_made_in_an_import` looks for an import in prog
 `PipelineLoadError` for every command.
 
 `--all` (validate and deploy) finds files one way — `loader.pipeline_folders`, `files_in`,
-`is_pipeline_file` (the file's code, parsed with `ast` from its bytes, imports `DAG`, `dag` or
-`Pipeline` from polyris; never a rule on names or text) — and loads each folder in its own
+`is_pipeline_file` (`dag.py` by name; otherwise the file's code, parsed with `ast` from its
+bytes, imports `DAG`, `dag` or `Pipeline` from polyris — read from the text, comments aside,
+only when it does not parse) — and loads each folder in its own
 process through `polyris.folder_process` only. Never isolate folders by forgetting modules in
 one process, and never pass a folder's process anything through the environment: the request
 and answer are JSON files on its command line. The parent never loads a pipeline file itself.

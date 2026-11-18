@@ -178,27 +178,49 @@ def test_a_childs_python_path_never_moves_the_users_entries_or_site_packages(mon
     code_root = str(Path(polyris.__file__).resolve().parents[1])
     monkeypatch.setenv("PYTHONPATH", "src")
     monkeypatch.setattr(folder_process.site, "getsitepackages", lambda: [])
-    assert folder_process.child_env()["PYTHONPATH"] == os.pathsep.join(["src", code_root])
+    assert folder_process._child_env()["PYTHONPATH"] == os.pathsep.join(["src", code_root])
     monkeypatch.setattr(folder_process.site, "getsitepackages", lambda: [code_root])  # installed: found as here
-    assert folder_process.child_env()["PYTHONPATH"] == "src"
+    assert folder_process._child_env()["PYTHONPATH"] == "src"
 
 
-def test_run_child_returns_the_childs_exit_code_and_stops_it_when_this_process_is_stopped(mocker):
-    assert folder_process.run_child(["-c", "import sys; sys.exit(3)"], dict(os.environ)) == 3
+def test_a_child_returns_the_childs_exit_code_and_stops_it_when_this_process_is_stopped(mocker):
+    assert folder_process._run_child(["-c", "import sys; sys.exit(3)"], dict(os.environ)) == 3
 
     child = mocker.MagicMock()
     child.wait.side_effect = [KeyboardInterrupt, 0]  # Ctrl-C while waiting; then the stopped child's end
     mocker.patch("polyris.folder_process.subprocess.Popen", return_value=child)
     with pytest.raises(KeyboardInterrupt):
-        folder_process.run_child(["-c", "pass"], {})
+        folder_process._run_child(["-c", "pass"], {})
     child.terminate.assert_called_once()
+
+
+def test_plain_validate_all_prints_its_warnings(tmp_path, monkeypatch, capsys):
+    """Without -v or --json, validate --all printed only its errors and "no issues": a pipeline
+    file it did not load went unmentioned, and fewer files were validated than before."""
+    from polyris.validation import main
+    for path in ("orders/dag.py", "team/billing/dag.py"):
+        _write(tmp_path / path, f"""
+            from polyris import DAG, task
+            with DAG("{path.split('/')[-2]}", schedule="@daily"):
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def go(): pass
+                go()
+        """)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["polyris-validate", "--all"])
+    with pytest.raises(SystemExit) as e:
+        main()
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "team/billing/dag.py: not loaded by --all" in out
+    assert "Validated 1 pipeline(s) — 1 warning(s)" in out and "no issues" not in out
 
 
 def test_validate_all_stops_its_folders_process_on_sigterm(tmp_path, mocker):
     """Without the handler, a stopped validate left its folder's process running."""
     _write(tmp_path / "a" / "dag.py", "from polyris import DAG\n")
     seen = []
-    mocker.patch("polyris.folder_process.run_child",
+    mocker.patch("polyris.folder_process._run_child",
                  side_effect=lambda *a, **k: seen.append(signal.getsignal(signal.SIGTERM)) or 0)
     results = validate_all(str(tmp_path), verbose=False)
     assert seen == [folder_process._raise_on_sigterm]

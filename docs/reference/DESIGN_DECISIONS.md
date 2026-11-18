@@ -8949,6 +8949,8 @@ earlier than its logical `date`: no row older than T can hide on a date newer th
 
 ### 118. `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories
 
+*Amended by ADR #139: which files and folders `--all` loads, a process per folder, and a `dag_id` two files make refused.*
+
 **Context.** `polyris-deploy` only ever handled one file (default `dag.py`) per invocation
 — deploying N example/pipeline directories meant N manual `cd && polyris-deploy` calls,
 with no way to batch them, no way to skip a bad one and keep going, and no summary of what
@@ -9443,13 +9445,14 @@ Each time the console showed the task ended while its run stayed `RUNNING` until
 1. **One loader.** `polyris.loader.open_pipeline(path)` — and `load_pipeline(path)`, the same closed on return — is the only way a command runs a pipeline file. The path is made absolute; while the file runs, its folder and then the folder above come first on `sys.path`, so a sibling `config.py` wins over the project root's; `sys.exit(0)` ends it normally; an error, a non-zero exit or one `dag_id` made twice is a `PipelineLoadError`. The file runs as module `polyris_pipeline`.
 2. **A DAG belongs to the file unless an `import` made it.** `recording_dags` records each DAG when it is made (`DAG.__post_init__`). It is the file's unless Python was importing a module between the DAG and the loader (`importlib._bootstrap._find_and_load` on the stack). So `with` or not, `@dag`, a factory, `exec` and a file run with `exec_module` count; a DAG a module the file imports makes does not, nor one whose `with` block raised an error.
 3. **Which files `--all` loads.** `polyris-validate --all` and `polyris-deploy --all` load the folders directly in the run directory (`pipeline_folders`; hidden folders and caches aside), and in each, `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris (`is_pipeline_file`: the file is parsed from its bytes with `ast`, never run; test files are not pipelines). A file that does not parse is loaded when its text imports a DAG maker, so its error is reported. Both commands warn about pipeline files in the run directory itself or deeper (`pipelines_out_of_reach`): what validates is what deploys.
-4. **A process per folder.** Each folder's files load in a fresh Python process (`polyris.folder_process`: `python -P -m polyris.folder_process REQUEST ANSWER`, two JSON files), so nothing one folder imports — its `settings.py`, a path it adds, a library's import-time side effects — reaches the next. The child imports the same polyris as the parent; a stopped parent stops it; one that ends without answering fails its folder.
+4. **A process per folder.** Each folder's files load in a fresh Python process (`polyris.folder_process`: `python -P -m polyris.folder_process REQUEST ANSWER`, two JSON files), so nothing one folder imports — its `settings.py`, a path it adds, a library's import-time side effects — reaches the next. The child imports the same polyris as the parent; a stopped parent stops it; one that ends without answering fails its folder — in `deploy --all`, also when it was collecting the folder's `dag_id`s, so a folder never skips the check below.
 5. **One `dag_id`, one file.** Each DAG is one stack. A file that makes a `dag_id` twice does not load; two files or folders that make one fail `validate --all`, and `deploy --all` / `destroy --all` collect every folder's `dag_id`s first and then deploy nothing.
 
 **Alternatives rejected.**
 - Recording DAGs at `with` exit, or reading the module's globals: misses a DAG made without `with` or without a name.
 - Owning a DAG by the nearest module frame: a file run with `exec_module`, or a copy a helper imports back, looks like another module.
 - Isolating folders in one process by forgetting the modules a file imported: every layout (a symlink, a `src/`, an editable library) needed another exception.
+- A process per file: the files of one folder share their sibling modules (`settings.py`) as a project, and it would start twice as many processes.
 - Choosing files by name or by text, as Airflow's safe mode does ("airflow" and "dag"): skipped real pipelines, and ran task scripts whose comments or `POLYRIS_PIPELINE_NAME` matched; Airflow pairs it with an ignore file each user maintains.
 - Keeping the last DAG made for a `dag_id`, as Airflow does: deploys silently replace each other. Refused, as in Dagster.
 

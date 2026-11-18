@@ -290,12 +290,15 @@ independently:
 2. Every DAG object found in every file is deployed — a file with several
    DAGs (see the multi-DAG-file note above) gets all of them, same as
    single-file mode.
-3. A file with zero DAGs (a shared `config.py`, a `utils.py`) contributes
-   nothing and is silently skipped — not an error.
+3. A pipeline file with zero DAGs contributes nothing and is skipped — not
+   an error. A shared `config.py` or `utils.py` that imports no DAG maker is
+   listed as not a pipeline file and never run.
 4. Before anything is deployed, every directory's `dag_id`s are collected:
    a `dag_id` that two files make (in one directory or two) stops the run,
    and nothing is deployed — each DAG is one stack, so one would replace the
-   other. With `--select`, only that `dag_id` counts.
+   other. With `--select`, only that `dag_id` counts. A directory whose
+   `dag_id`s could not be read (its process ended without answering) is not
+   deployed and counts as a failure.
 5. With `--all`, a pipeline file in the current directory itself, or deeper
    than one folder, is not deployed: a warning names it. Move it into its own
    folder, or deploy it with `--file`.

@@ -1,7 +1,7 @@
 """Validation edge tests — discovery skip, validate_all warnings, --all.
 
 Closes the reachable remainder of ``polyris.validation`` (CLAUDE.md #13): the
-binary-file skip in ``discover_pipeline_files``, the no-DAG and verbose/warning
+binary-file skip in ``polyris.loader.files_in``, the no-DAG and verbose/warning
 paths of ``validate_all``, and ``main --all`` over an invalid pipeline.
 """
 from __future__ import annotations
@@ -11,8 +11,8 @@ import textwrap
 
 import pytest
 
+from polyris.loader import files_in, pipeline_folders
 from polyris.validation import (
-    discover_pipeline_files,
     validate_all,
     main,
 )
@@ -67,8 +67,10 @@ _VALID_DAG = """
 class TestDiscovery:
     def test_skips_binary_file(self, tmp_path):
         (tmp_path / "blob.py").write_bytes(b"\xff\xfe\x00\x01 not utf-8 \x80")
-        found = discover_pipeline_files(str(tmp_path))
-        assert all("blob.py" not in f for f in found)
+        (tmp_path / "p").mkdir()
+        (tmp_path / "p" / "blob.py").write_bytes(b"\xff\xfe\x00\x01 not utf-8 \x80")
+        found = [p for folder in pipeline_folders(tmp_path) for p in files_in(folder).pipelines]
+        assert all(p.name != "blob.py" for p in found)
 
 
 class TestValidateAll:

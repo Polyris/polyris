@@ -42,33 +42,6 @@ class DAGInfo:
     outlet_schemas: Dict[str, List[Dict]] = field(default_factory=dict)
 
 
-def discover_pipeline_files(directory: str) -> List[str]:
-    """The pipeline files ``--all`` loads under ``directory``: those in each folder directly in
-    it (``polyris.loader.pipeline_folders`` and ``files_in``), as ``polyris-deploy --all`` does."""
-    from polyris.loader import files_in, pipeline_folders
-
-    return [str(p) for folder in pipeline_folders(directory) for p in files_in(folder).pipelines]
-
-
-def extract_dag_info(file_path: str) -> List[DAGInfo]:
-    """
-    Extract DAG information from a pipeline file.
-
-    Runs the file through ``polyris.loader.load_pipeline``, the loader every CLI uses
-    (ADR #139), so validate sees exactly the DAGs deploy would deploy.
-
-    Args:
-        file_path: Path to Python file
-        
-    Returns:
-        List of DAGInfo objects found in file
-    """
-    from polyris.loader import load_pipeline
-
-    # Raises PipelineLoadError (an Exception) for a file that does not load; validate_all reports it.
-    return _dag_infos(file_path, load_pipeline(file_path).dags)
-
-
 def _dag_infos(file_path: str, loaded_dags: list) -> List[DAGInfo]:
     """The DAG info of DAGs already loaded from ``file_path``."""
     dags = []
@@ -401,15 +374,11 @@ def validate_all(directory: str = './pipelines', verbose: bool = True, check_asl
         print(f"{_c('Scanning', BOLD)} {_c(str(directory), CYAN)}...")
 
     from polyris import folder_process
-    from polyris.loader import duplicate_dag_ids, files_in, pipeline_folders, pipelines_out_of_reach
+    from polyris.loader import duplicate_dag_ids, files_in, out_of_reach_warnings, pipeline_folders
 
     folders = [(folder, [str(p) for p in files_in(folder).pipelines]) for folder in pipeline_folders(directory)]
     folders = [(folder, files) for folder, files in folders if files]
-    for path in pipelines_out_of_reach(directory):
-        results['warnings'].append(
-            f"{path}: not loaded by --all, which loads the folders directly in {directory} "
-            "(and polyris-deploy --all would not deploy it): move it into its own folder, or use --file"
-        )
+    results['warnings'].extend(out_of_reach_warnings(directory))
 
     if not folders:
         results['warnings'].append(f"No pipeline files found in {directory}")
@@ -748,7 +717,7 @@ def main():
     parser.add_argument(
         '--all', '-a',
         action='store_true',
-        help='Validate all pipelines found in project'
+        help='Validate the pipelines of every folder in the current directory, as polyris-deploy --all deploys them'
     )
     parser.add_argument(
         '--verbose', '-v',
@@ -802,20 +771,17 @@ def main():
                 'warnings': results['warnings'],
                 'pipeline_count': len(results['pipelines']),
             }, indent=2))
-        elif not effective_verbose and results['errors']:
-            # Non-verbose non-json: print all errors (load failures and ASL
-            # failures, both from validate_all's folder processes) so the user
-            # never sees a silent exit 1. Verbose mode already surfaced these
-            # via validate_all's summary and validate_asl_from_dag's verbose block.
+        elif not effective_verbose:
+            # Non-verbose non-json: print every error and warning — a pipeline file --all did
+            # not load is a warning, and "no issues" over it would hide it — then a summary
+            # line on success. Verbose mode surfaced all of them in validate_all's summary.
             for e in results['errors']:
                 _print_error(e)
-        elif not args.json and not results['errors']:
-            # Non-json success: surface a positive signal so the user never sees
-            # a silent "command returned, nothing happened" on a clean pass.
-            # Verbose mode already prints per-DAG ✅ Valid via
-            # validate_asl_from_dag, so only emit the summary line when quiet.
-            if not effective_verbose:
-                print(_c(f"✅ Validated {len(results['pipelines'])} pipeline(s) — no issues", BOLD_GREEN))
+            for w in results['warnings']:
+                print(_c(f"⚠️  {w}", YELLOW))
+            if not results['errors']:
+                found = f"{len(results['warnings'])} warning(s)" if results['warnings'] else "no issues"
+                print(_c(f"✅ Validated {len(results['pipelines'])} pipeline(s) — {found}", BOLD_GREEN))
         sys.exit(0 if not results['errors'] else 1)
 
     elif args.test:

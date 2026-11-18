@@ -168,6 +168,13 @@ def pipelines_out_of_reach(run_dir: Union[str, Path]) -> List[Path]:
     return found
 
 
+def out_of_reach_warnings(run_dir: Union[str, Path]) -> List[str]:
+    """One warning per pipeline file ``--all`` does not load, for validate and deploy alike."""
+    return [f"{path}: not loaded by --all, which loads only the folders directly in {run_dir}: "
+            "run it from the folder above this pipeline's folder, or use --file"
+            for path in pipelines_out_of_reach(run_dir)]
+
+
 def duplicate_dag_ids(made: Iterable[Tuple[str, Any]]) -> List[str]:
     """One message per dag_id that more than one file makes, from ``(dag_id, file)`` pairs.
 

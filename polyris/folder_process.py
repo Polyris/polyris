@@ -27,6 +27,9 @@ from typing import Any, Dict, Iterator, List, Literal, Optional
 #: Which output of the folder's process reaches the user: all of it, its stderr only, or none.
 Output = Literal["all", "stderr", "none"]
 
+#: What a folder's process does: ``validation.collect_folder`` or ``deploy.deploy_directory``.
+Command = Literal["collect", "deploy"]
+
 
 @dataclass
 class Answer:
@@ -37,7 +40,7 @@ class Answer:
     error: Optional[str] = None
 
 
-def run(command: str, request: Dict[str, Any], *, output: Output = "all") -> Answer:
+def run(command: Command, request: Dict[str, Any], *, output: Output = "all") -> Answer:
     """Run ``command`` (``"collect"`` or ``"deploy"``) for one folder in its own process.
 
     If this process is stopped (Ctrl-C, or SIGTERM under ``sigterm_stops_children``), the
@@ -50,8 +53,8 @@ def run(command: str, request: Dict[str, Any], *, output: Output = "all") -> Ans
     try:
         Path(request_path).write_text(json.dumps({"command": command, **request}))
         hidden = subprocess.DEVNULL
-        code = run_child(
-            ["-m", "polyris.folder_process", request_path, answer_path], child_env(),
+        code = _run_child(
+            ["-m", "polyris.folder_process", request_path, answer_path], _child_env(),
             stdout=None if output == "all" else hidden, stderr=hidden if output == "none" else None,
         )
         try:
@@ -74,9 +77,9 @@ def main(argv: List[str]) -> int:
 
             payload: Any = collect_folder(**request)
         elif command == "deploy":
-            from .deploy import _deploy_directory
+            from .deploy import deploy_directory
 
-            payload = _deploy_directory(**request)
+            payload = deploy_directory(**request)
         else:
             raise ValueError(f"unknown folder process command: {command!r}")
     except KeyboardInterrupt:  # the parent was stopped too and reports it: no second traceback
@@ -85,7 +88,7 @@ def main(argv: List[str]) -> int:
     return 0
 
 
-def child_env() -> Dict[str, str]:
+def _child_env() -> Dict[str, str]:
     """The environment of a folder's process: this one's, so that it imports this very polyris.
 
     When polyris is installed (site-packages), the child finds it there as this process did.
@@ -104,7 +107,7 @@ def child_env() -> Dict[str, str]:
     return env
 
 
-def run_child(argv: List[str], env: Dict[str, str], *, stdout: Optional[int] = None,
+def _run_child(argv: List[str], env: Dict[str, str], *, stdout: Optional[int] = None,
               stderr: Optional[int] = None) -> int:
     """Run ``python -P <argv>`` to its end; its exit code.
 
@@ -129,7 +132,7 @@ def _raise_on_sigterm(signum: int, frame: object) -> None:
 
 @contextmanager
 def sigterm_stops_children() -> Iterator[None]:
-    """Within the block, SIGTERM ends this process through Python, so ``run_child`` stops the
+    """Within the block, SIGTERM ends this process through Python, so ``_run_child`` stops the
     running child. For the parent only: a folder's process keeps SIGTERM's default, which ends
     it. Only the main thread can set a signal handler; elsewhere the default stays."""
     if threading.current_thread() is not threading.main_thread():
@@ -142,7 +145,7 @@ def sigterm_stops_children() -> Iterator[None]:
         signal.signal(signal.SIGTERM, previous)
 
 
-def exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._exit); runs only as a folder's process exits
+def _exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._exit); runs only as a folder's process exits
     """End a folder's process once its answer is written: flush, and do not wait for non-daemon
     threads a pipeline started, which would hold the next folder."""
     sys.stdout.flush()
@@ -151,4 +154,4 @@ def exit_now(code: int) -> None:  # pragma: no cover -- ends the process (os._ex
 
 
 if __name__ == "__main__":  # pragma: no cover -- the folder's process itself
-    exit_now(main(sys.argv[1:]))
+    _exit_now(main(sys.argv[1:]))
