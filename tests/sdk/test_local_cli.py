@@ -7,8 +7,7 @@ Coverage targets (after removing local.py from the omit list):
 - dry_run() all branches (show_asl, show_mermaid, topo-sort error)
 - run() mock path
 - _run_mock() success / failed / skipped / callbacks / python_callable / statuses
-- _evaluate_trigger_rule() all_done "not all done" branch (everything else is
-  covered by the pre-existing test_local_trigger_rules.py)
+- _evaluate_trigger_rule() is covered by test_local_trigger_rules.py
 - _parse_execution_history() all event types
 - _load_dag_from_file() success / no-dag / load-error / exit-0 / exit-1
 - run_cli() all modes
@@ -32,7 +31,6 @@ from polyris.local import (
     dry_run,
     run,
     _run_mock,
-    _evaluate_trigger_rule,
     _parse_execution_history,
     _load_dag_from_file,
     run_cli,
@@ -452,8 +450,9 @@ class TestRunMock:
         assert result.task_results[0].status == 'failed'
         assert result.task_results[0].error is not None
 
-    def test_skipped_task_via_trigger_rule(self, tmp_path):
-        """When the first task fails, a downstream all_success task is skipped."""
+    def test_a_dependant_of_a_failure_is_upstream_failed(self, tmp_path):
+        """When the first task fails, a downstream all_success task ends upstream_failed, as the
+        engine records it (ADR #138 §6); the run is partial."""
         code = '''
 from polyris import DAG, task
 
@@ -476,7 +475,7 @@ with DAG("skip-test", schedule="@daily") as dag:
         result = _run_mock(dag, {}, None, None)
         statuses = {r.task_id: r.status for r in result.task_results}
         assert statuses['bad'] == 'failed'
-        assert statuses['downstream'] == 'skipped'
+        assert statuses['downstream'] == 'upstream_failed'
         assert result.status == 'partial'
 
     def test_partial_status_some_failed(self, tmp_path):
@@ -521,9 +520,9 @@ with DAG("partial-test", schedule="@daily") as dag:
         result = cb.call_args_list[0].args[0]
         assert isinstance(result, TaskResult)
 
-    def test_on_task_complete_called_for_skipped_task(self, tmp_path, mocker):
-        """on_task_complete must fire even when a task is skipped (not only on
-        success/failure) — tests the callback call at line 248 in _run_mock."""
+    def test_on_task_complete_called_for_a_task_its_rule_does_not_run(self, tmp_path, mocker):
+        """on_task_complete must fire for a task its rule does not run, too, not only on
+        success or failure."""
         code = '''
 from polyris import DAG, task
 
@@ -548,7 +547,7 @@ with DAG("cb-skip", schedule="@daily") as dag:
         assert cb.call_count == 2
         statuses = {call.args[0].task_id: call.args[0].status for call in cb.call_args_list}
         assert statuses['bad'] == 'failed'
-        assert statuses['ds'] == 'skipped'
+        assert statuses['ds'] == 'upstream_failed'
 
     def test_task_mock_dict_used(self, tmp_path):
         dag_file = _make_dag_file(tmp_path, arns_real=True)
@@ -574,32 +573,6 @@ with DAG("cb-skip", schedule="@daily") as dag:
         result = _run_mock(dag, {}, None, None)
         assert result.status == 'failed'
         assert result.task_results == []
-
-
-# ─── _evaluate_trigger_rule() — all_done "not all done" branch ────────────────
-
-class TestEvaluateTriggerRuleAllDoneMissing:
-    """Covers the `return False, f"not all done"` branch in `all_done`, which
-    the synchronous mock model never reaches (done_count always equals total
-    there). Calling _evaluate_trigger_rule directly with fewer results than
-    dependencies exercises the branch without the mock runner's constraints."""
-
-    def test_all_done_not_all_done(self):
-        task = _fake_task('all_done', ['a', 'b'])
-        results = [_result('a', 'success')]  # b has no result yet
-        should_run, reason = _evaluate_trigger_rule(task, results)
-        assert should_run is False
-        assert "not all done" in reason
-
-    def test_all_skipped_not_all_done(self):
-        """Same pattern: fewer results than deps forces the 'not all done' arm
-        of the all_skipped ternary — covers the left side of
-        `f"not all done..." if done_count < total else f"not all skipped..."`."""
-        task = _fake_task('all_skipped', ['a', 'b'])
-        results = [_result('a', 'skipped')]  # b missing
-        should_run, reason = _evaluate_trigger_rule(task, results)
-        assert should_run is False
-        assert "not all done" in reason
 
 
 # ─── _parse_execution_history() ───────────────────────────────────────────────

@@ -90,7 +90,23 @@ class TestPause:
 
 
 def test_every_verdict_is_listed():
-    assert {d.NOOP, d.SKIP, d.UPSTREAM_FAILED, d.WAIT, d.PAUSED, d.READY} == d.VERDICTS
+    assert {d.NOOP, d.SKIP, d.UPSTREAM_FAILED, d.WAIT, d.PAUSED, d.READY, d.FAIL} == d.VERDICTS
+
+
+@pytest.mark.parametrize("dependencies", [(), ("extract",)])
+def test_an_unknown_rule_fails_its_task_a_root_task_included(dependencies):
+    """ADR #138 §2: not evaluated as all_success, whatever the upstreams' statuses."""
+    view = d.TaskView(status="waiting", has_pause_token=False, trigger_rule="always",
+                      dependencies=dependencies, has_asset_conditions=True)
+    decision = d.decide(view, dep_statuses=["success"] * len(dependencies))
+    assert decision.verdict == d.FAIL and "remove the dependency" in decision.reasons[0]
+
+
+def test_a_dependencys_skip_origin_reaches_its_rule():
+    view = d.TaskView(status="waiting", has_pause_token=False, trigger_rule="all_success",
+                      dependencies=("extract",), has_asset_conditions=False)
+    assert d.decide(view, dep_statuses=["skipped"], skip_origins=["rule"]).verdict == d.SKIP
+    assert d.decide(view, dep_statuses=["skipped"], skip_origins=["manual"]).verdict == d.READY
 
 
 def test_fact_is_a_value_object():

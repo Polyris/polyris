@@ -6,6 +6,19 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 
 - The step classes `Choice`, `Map`, `Sensor` and `ShortCircuit`, and the `Condition` helper, are gone. They never worked: no generator existed for them, so a pipeline that used one failed when it was generated. To wait for data, use `wait_for`. A test now fails for any exported step without a generator.
 - The console route `POST /api/pipeline-register` is gone. Nothing called it: `polyris-deploy` registers each pipeline, and the console has no button for it. To register a pipeline by hand, run `polyris-register`. The free console now serves 27 routes.
+- **Trigger rules read final outcomes (ADR #138).** After a final failure, its dependants' rules decide: an `all_done`, `one_success` or `none_skipped` dependant now runs after a failed upstream, where before the failure ended the run first. The run still ends failed.
+- **A Stop is final for the dependants (ADR #138).** A `one_failed` dependant runs at once, and an `all_success` dependant becomes `upstream_failed` once its other upstreams have finished. Until then, a Restart or Mark Successful of the stopped task still counts. Before, the dependants waited for the stopped task and followed it.
+
+### Changed
+
+- A trigger rule that the platform does not know fails its task with the cause; before, the task ran as `all_success` (ADR #138).
+- `polyris-validate` and `polyris-deploy` reject `one_done`, `all_done_min_one_success`, `always` and `all_done_setup_success`, each with the rule to use instead; any other unknown name gets the list of the nine rules.
+- `polyris-local` evaluates trigger rules with the engine's code, so a mock run records `upstream_failed` where a deployed run does, and fails a task whose rule it does not know.
+
+### Added
+
+- The trigger rules `one_failed`, `all_failed`, `none_failed` and `none_failed_min_one_success` (ADR #138). `docs/features/DSL.md#trigger-rules` describes all nine, and `examples/09_trigger_rules` shows them side by side.
+- Every skipped task records its origin in `skip_origin`: `manual`, `run` or `rule`. Only a rule's skip cascades under `all_success`.
 
 ## v1.2.3 - 2026-11-18
 

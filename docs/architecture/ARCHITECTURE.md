@@ -204,7 +204,7 @@ notify_dependents SFN
               for each subscriber: reconcile Lambda
               │    reads (consistent): the task row, its dependency rows,
               │      its wait_for assets, the pause flag
-              │    applies the trigger rule (5 rules — ADR #117)
+              │    applies the trigger rule (9 rules — ADR #138)
               │
               ├─ ready ──────────► SendTaskSuccess({signal: 'deps_ready'})
               │    └─ wrapper writes deps_ready, then runs the task
@@ -394,29 +394,9 @@ Quick reference — for full attribute definitions and access patterns see
 
 ## Trigger Rules
 
-Canonical: `all_success` (default), `one_success`, `all_done`. The other 8 are accepted
-accepted rule names — see `docs/features/DSL.md#trigger-rules` for which behave
-distinctly vs. collapse onto a canonical one under the intervention-first failure
-model (ADR #114), and `docs/reference/adr-115-canonical-trigger-rules-and-skip-semantics.md`
-for the full rationale.
+Nine rules (ADR #138); `docs/features/DSL.md#trigger-rules` describes each one with an example, and `polyris/coordination/trigger_rules.py` is the one implementation, checked against the ADR's truth table (`tests/fixtures/trigger_rules_truth_table.json`).
 
-| Rule | When triggers |
-|------|---------------|
-| `all_success` | All deps = success, or skipped with `skip_origin != 'rule'` (default) — a rule-originated skip does *not* count as ok (ADR #115) |
-| `all_done` | All deps finished (any status) |
-| `all_skipped` | All deps = skipped |
-| `one_success` | At least one dep = success (immediate!) |
-| `none_skipped` | No deps skipped |
-
-5 rules total (ADR #117 — 6 names are rejected outright; the other 6 either duplicated one
-of these in every state reachable under the intervention-first model, ADR #114, or
-could never fire at all — see `docs/features/DSL.md#trigger-rules`).
-
-A blocked rule (all deps terminal, condition not satisfied) resolves one of
-two ways via the reconciler's verdict (ADR #115, ADR #130). `upstream_failed`
-fires when a success/no-failure-requiring rule is blocked by a genuine
-failure. `skip` fires when the condition never occurred — the task resolves
-`skipped`, the run stays `success`, no error.
+A rule reads the final outcomes of its task's direct upstreams: a failed task is final only after the decision on it (ADR #114), and `stopped` is a final failure. It runs its task as soon as its condition holds, and decides the rest only once every upstream is final. A rule that needs success or no failure (`all_success`, `one_success`, `none_failed`, `none_failed_min_one_success`) ends a task that a final failure blocks `upstream_failed`; any other unmet rule ends it `skipped`, with `skip_origin = rule`. Only `all_success` reads a skip's origin: a rule's skip cascades, an operator's or a run's passes. A name the engine does not know fails its task.
 
 ---
 

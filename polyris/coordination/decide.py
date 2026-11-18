@@ -19,8 +19,10 @@ UPSTREAM_FAILED = trigger_rules.UPSTREAM_FAILED
 WAIT = trigger_rules.WAIT
 PAUSED = "paused"
 READY = trigger_rules.READY
+#: A rule the engine does not know: the task fails with the cause (ADR #138 §2).
+FAIL = trigger_rules.FAIL
 
-VERDICTS = frozenset({NOOP, SKIP, UPSTREAM_FAILED, WAIT, PAUSED, READY})
+VERDICTS = frozenset({NOOP, SKIP, UPSTREAM_FAILED, WAIT, PAUSED, READY, FAIL})
 
 
 @dataclass(frozen=True)
@@ -46,13 +48,14 @@ def decide(
     task: Optional[TaskView],
     *,
     dep_statuses: Sequence[str] = (),
-    rule_originated_skip: Optional[Sequence[bool]] = None,
+    skip_origins: Optional[Sequence[Optional[str]]] = None,
     assets: Optional[Evaluation] = None,
     paused: bool = False,
 ) -> Decision:
     """Decide what to do with ``task``.
 
-    ``dep_statuses`` is aligned with ``task.dependencies``. ``assets`` may be
+    ``dep_statuses`` is aligned with ``task.dependencies``, and so is
+    ``skip_origins``: the ``skip_origin`` of a skipped dependency. ``assets`` may be
     omitted when the task has no asset conditions, or when the dependencies
     already decide the outcome (pending, or never satisfiable): the reconciler
     skips the asset reads in those cases.
@@ -68,16 +71,13 @@ def decide(
             f"{len(dep_statuses)} dependency statuses for {len(task.dependencies)} dependencies"
         )
 
-    deps = None
-    reasons: list[str] = []
-    if task.dependencies:
-        deps = trigger_rules.evaluate(task.trigger_rule, dep_statuses, rule_originated_skip)
-        if deps.verdict in (SKIP, UPSTREAM_FAILED):
-            # No asset gate: a task whose dependencies can never satisfy its
-            # rule can never run, whatever its assets do (ADR #122, #130).
-            return Decision(deps.verdict, (deps.reason,), deps, assets)
-        if deps.verdict == WAIT:
-            reasons.append(deps.reason)
+    evaluation = trigger_rules.evaluate(task.trigger_rule, dep_statuses, skip_origins)
+    if evaluation.verdict in (SKIP, UPSTREAM_FAILED, FAIL):
+        # No asset gate: a task whose dependencies can never satisfy its rule can never run, whatever
+        # its assets do (ADR #122, #130), and an unknown rule fails its task, a root task included.
+        return Decision(evaluation.verdict, (evaluation.reason,), evaluation, assets)
+    reasons: list[str] = [evaluation.reason] if evaluation.verdict == WAIT else []
+    deps = evaluation if task.dependencies else None
 
     if task.has_asset_conditions:
         if assets is None:

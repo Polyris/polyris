@@ -254,7 +254,7 @@ Called by the `registration` helper, by `notify_dependents` for each subscriber,
 and by asset-fanout.
 
 - Reads the task row, its dependencies' statuses and its `wait_for` facts with consistent reads
-- Evaluates the `trigger_rule` (5 rules — ADR #117; see
+- Evaluates the `trigger_rule` (9 rules — ADR #138; see
   `docs/features/DSL.md#trigger-rules`) and the asset conditions with `polyris/coordination`
 - Parks the task as `waiting_paused` when its run is paused
 - Signals the wrapper: `deps_ready`, `deps_skip` or `deps_blocked`; the wrapper writes the status

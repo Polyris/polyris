@@ -36,14 +36,23 @@ from polyris.coordination.asset_conditions import evaluate as evaluate_assets
 from polyris.coordination.partition import partition_date
 from polyris.coordination.records import warning_item
 from polyris.coordination.times import format_utc, parse_utc
-from polyris.coordination.statuses import RECONCILABLE, SKIPPED, WAITING_PAUSED
+from polyris.constants import TaskStatus
+from polyris.coordination.statuses import RECONCILABLE, WAITING_PAUSED
 from failures import CoordinationTransient, reraise_transient
 from logger import log
 from signals import ACCEPTED, Signals
 from stores import FactStore, PauseFlag, Registry, SubscriptionStore, TaskStore
 
 #: What the wrapper's Check_Deps_Signal state routes on.
-SIGNALS = {dc.READY: wake.DEPS_READY, dc.SKIP: wake.DEPS_SKIP, dc.UPSTREAM_FAILED: wake.DEPS_BLOCKED}
+#: The wrapper engine writes `stopped` for a task that a restart hands over to a new wrapper, and for a
+#: Stop that a restart can undo, and their dependants wait (B-R2). ADR #138 makes `stopped` a final
+#: failure; until the dispatcher of ADR #137 replaces this reconciler (TR-4), it reads `stopped` as
+#: pending, as 1.2 did.
+PENDING_IN_1_2 = {TaskStatus.STOPPED.value: TaskStatus.WAITING.value}
+#: A rule this engine does not know ends its task blocked, with the cause in the signal's reason, until
+#: the dispatcher of ADR #137 writes it `failed` itself (ADR #138 §2); validation rejects such a name.
+SIGNALS = {dc.READY: wake.DEPS_READY, dc.SKIP: wake.DEPS_SKIP, dc.UPSTREAM_FAILED: wake.DEPS_BLOCKED,
+           dc.FAIL: wake.DEPS_BLOCKED}
 #: Verdict reported when no decision could be made.
 ERROR = "error"
 #: Resume handles a run's rows for this long, then leaves the rest due for the sweeper. The console's
@@ -193,21 +202,21 @@ class Reconciler:
         date_key = str(row["date"])
 
         statuses: List[str] = []
-        rule_skips: List[bool] = []
+        origins: List[Optional[str]] = []
         started = parse_utc(str(row["started_at"])) if row.get("started_at") else None
         dependencies_enabled: Optional[datetime] = None
         if dependencies:
             short = str(row["pipeline_execution_short"])
             names = [f"{dep}-{date_key}-{short}" for dep in dependencies]
             facts = _aws(lambda: self.tasks.dependency_facts(names))
-            statuses = [facts[n].status for n in names]
-            rule_skips = [facts[n].status == SKIPPED and facts[n].skip_origin == "rule" for n in names]
+            statuses = [PENDING_IN_1_2.get(facts[n].status, facts[n].status) for n in names]
+            origins = [facts[n].skip_origin or None for n in names]
             finished = [parse_utc(facts[n].finished_at) if facts[n].finished_at else None for n in names]
-            dependencies_enabled = tr.enabled_at(view.trigger_rule, statuses, finished, rule_skips)
-            if tr.evaluate(view.trigger_rule, statuses, rule_skips).verdict != tr.READY:
+            dependencies_enabled = tr.enabled_at(view.trigger_rule, statuses, finished, origins)
+            if tr.evaluate(view.trigger_rule, statuses, origins).verdict != tr.READY:
                 # Pending or never satisfiable: no asset read can change the outcome. A pause
                 # never holds back a skip, so its resume time does not date one.
-                return (dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips),
+                return (dc.decide(view, dep_statuses=statuses, skip_origins=origins),
                         _latest([started, dependencies_enabled]))
 
         assets = None
@@ -220,7 +229,7 @@ class Reconciler:
 
         pipeline_execution = str(row.get("pipeline_execution") or "")
         flag = _aws(lambda: self.tasks.pause_flag(pipeline_execution)) if pipeline_execution else PauseFlag(False, None)
-        decision = dc.decide(view, dep_statuses=statuses, rule_originated_skip=rule_skips, assets=assets,
+        decision = dc.decide(view, dep_statuses=statuses, skip_origins=origins, assets=assets,
                              paused=flag.paused)
         return decision, _latest([started, flag.resumed_at, dependencies_enabled,
                                   assets.enabled_at if assets is not None else None])
@@ -438,7 +447,7 @@ class Reconciler:
             "verdict": verdict, "action": action, "reasons": list(reasons),
         }
         if decision is not None and decision.deps is not None:
-            result["deps"] = {"rule": decision.deps.effective_rule, "verdict": decision.deps.verdict,
+            result["deps"] = {"rule": decision.deps.rule, "verdict": decision.deps.verdict,
                               "counts": asdict(decision.deps.counts)}
         if decision is not None and decision.assets is not None:
             result["assets"] = [{"asset": a.asset_name, "ready": a.ready, "reason": a.reason}

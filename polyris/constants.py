@@ -154,24 +154,20 @@ STOPPABLE_STATUSES: Set[str] = {
 # =============================================================================
 
 
-# Type alias for trigger_rule with IDE autocomplete.
-#
-# ADR #114/#115/#117: polyris pauses a failed task for a human decision rather
-# than propagating failure autonomously (intervention-first), and a CONFIRMED
-# failure (resolved via Fail) cancels the whole pipeline's Parallel before any
-# downstream trigger_rule ever evaluates. Given that, only 5 rule names produce
-# a behavior reachable in practice; the other 6 either duplicate one of these 5
-# exactly (verified across the full status-combination matrix, see
-# tests/sdk/test_trigger_rules.py) or can never be satisfied at all
-# (all_failed/one_failed — their only use case is reacting to a confirmed
-# failure, which is exactly the state Parallel-abort prevents them from
-# reaching). See ADR #117 and docs/features/DSL.md for the full analysis.
+# Type alias for trigger_rule with IDE autocomplete: the nine rules of ADR #138,
+# the same names as TriggerRule (a test keeps them equal). A rule reads its
+# task's direct upstreams and their final outcomes; docs/features/DSL.md
+# explains each one, and polyris/coordination/trigger_rules.py evaluates them.
 TriggerRuleLiteral = Literal[
-    "all_success",           # Default. All upstream tasks succeeded.
-    "one_success",           # At least one succeeded (doesn't wait for all).
-    "all_done",              # All upstream tasks done (any status) — cleanup.
-    "all_skipped",           # All upstream tasks were skipped.
-    "none_skipped",          # No upstream task was skipped.
+    "all_success",                  # Default. Every upstream succeeded, or an operator or the run skipped it.
+    "one_success",                  # One upstream succeeded; runs at the first success.
+    "all_done",                     # Every upstream is final, whatever the outcome.
+    "all_skipped",                  # Every upstream was skipped.
+    "none_skipped",                 # Every upstream is final and none was skipped.
+    "one_failed",                   # One upstream failed finally; runs at the first final failure.
+    "all_failed",                   # Every upstream failed finally.
+    "none_failed",                  # Every upstream is final and none failed.
+    "none_failed_min_one_success",  # Every upstream is final, none failed and one succeeded.
 ]
 
 
@@ -213,20 +209,22 @@ SCHEDULE_PRESETS = {
 
 class TriggerRule:
     """
-    Trigger rule constants. 5 rule names, each producing a distinct,
-    reachable behavior under polyris's intervention-first failure model
-    (ADR #114): a failed task pauses for a human decision rather than
-    propagating failure autonomously, and a *confirmed* failure cancels the
-    whole pipeline's Parallel before any downstream trigger_rule evaluates.
-    6 rule names were rejected (ADR #117) — they either duplicated one of
-    these 5 exactly in every reachable state, or could never be satisfied at
-    all. See docs/features/DSL.md for the analysis.
+    The nine trigger rules (ADR #138). A rule reads its task's direct
+    upstreams: it runs the task as soon as its condition holds, and skips it
+    or makes it ``upstream_failed`` only once every upstream is final. A failed
+    task is final only after the decision on it (ADR #114). Validation rejects
+    any other name, with a hint for the four that ADR #138 turned down
+    (``trigger_rules.REJECTED``). See docs/features/DSL.md.
     """
-    ALL_SUCCESS = "all_success"           # All upstream tasks have succeeded (default)
-    ONE_SUCCESS = "one_success"           # At least one succeeded (does NOT wait for all)
-    ALL_DONE = "all_done"                 # All upstream tasks are done with execution (cleanup)
-    ALL_SKIPPED = "all_skipped"           # All upstream tasks are in skipped state
-    NONE_SKIPPED = "none_skipped"         # No task skipped
+    ALL_SUCCESS = "all_success"           # Every upstream succeeded, or an operator or the run skipped it (default)
+    ONE_SUCCESS = "one_success"           # One upstream succeeded; does NOT wait for the others
+    ALL_DONE = "all_done"                 # Every upstream is final, whatever the outcome (cleanup)
+    ALL_SKIPPED = "all_skipped"           # Every upstream was skipped
+    NONE_SKIPPED = "none_skipped"         # Every upstream is final and none was skipped
+    ONE_FAILED = "one_failed"             # One upstream failed finally; does NOT wait for the others
+    ALL_FAILED = "all_failed"             # Every upstream failed finally
+    NONE_FAILED = "none_failed"           # Every upstream is final and none failed; skips pass
+    NONE_FAILED_MIN_ONE_SUCCESS = "none_failed_min_one_success"  # As none_failed, and one upstream succeeded
 
 
 

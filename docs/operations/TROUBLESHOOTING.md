@@ -178,10 +178,10 @@ running, and its upstream dependency is itself `skipped` — not failed.
 **This is expected behavior (ADR #115).** A skipped upstream now cascades through
 `all_success`, instead of silently counting as "OK to continue."
 Check *why* the upstream was skipped:
-1. If a human explicitly skipped it (task action) — a **manual** skip does **not**
-   cascade, so if you're seeing this, the skip likely came from a trigger_rule
-   resolving `skipped` further upstream in the same chain (a **rule**-triggered skip
-   does cascade).
+1. If an operator skipped it (task action), or the run did (`skip_tasks`), the skip
+   does **not** cascade, so if you're seeing this, the skip likely came from a
+   trigger_rule resolving `skipped` further upstream in the same chain (a skip with
+   `skip_origin = rule` does cascade).
 2. If you want this task to proceed regardless of an upstream skip, change its
    `trigger_rule` to `all_done`.
 
