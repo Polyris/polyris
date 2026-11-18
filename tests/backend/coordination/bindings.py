@@ -16,6 +16,7 @@ from types import ModuleType
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from boundary import as_component
 from platform_stack import Stack
 
 LAMBDAS = Path(__file__).resolve().parents[3] / "sam" / "lambdas"
@@ -135,8 +136,9 @@ class Bindings:
             pipelines_table=tables["PipelineRegistryTable"],
             clock=self.clock,
         ))
-        self.stack.bind_lambda("ReconcileFunction", reconcile.handler)
-        return reconcile.handler
+        handler = as_component("lambda:reconcile", reconcile.handler)
+        self.stack.bind_lambda("ReconcileFunction", handler)
+        return handler
 
     def asset_fanout(self) -> Any:
         """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
@@ -168,5 +170,6 @@ class Bindings:
 
         self._set(qs_dal, "_dynamodb", self.resource)
         self._set(qs_dal.subscriptions_repo, "_explicit_table_name", self.stack.tables["DependencySubscriptionsTable"])
-        self.stack.bind_lambda("QuerySubscriptionsFunction", module.handler)
-        return module.handler
+        handler = as_component("lambda:query-subscriptions", module.handler)
+        self.stack.bind_lambda("QuerySubscriptionsFunction", handler)
+        return handler

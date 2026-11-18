@@ -38,6 +38,8 @@ import jsonata
 from botocore.exceptions import ClientError
 from jsonata.utils import Utils
 
+from boundary import acting_as
+
 ACCOUNT = "123456789012"
 REGION = "us-east-1"
 TOKEN_SUFFIX = ".waitForTaskToken"
@@ -594,7 +596,8 @@ class Runtime:
     def _dispatch(self, frame: Frame, state: Dict[str, Any], resource: str,
                   arguments: Dict[str, Any], token: Optional[str]) -> None:
         if resource.startswith(("arn:aws:states:::dynamodb:", "arn:aws:states:::aws-sdk:dynamodb:")):
-            result: Any = self._dynamodb(resource, arguments)
+            with acting_as(f"sfn:{frame.execution.machine.name}:{frame.execution.name}"):
+                result: Any = self._dynamodb(resource, arguments)
         elif resource == "arn:aws:states:::lambda:invoke":
             result = {"Payload": self._invoke(arguments["FunctionName"], arguments.get("Payload")), "StatusCode": 200}
         elif resource.startswith("arn:aws:lambda:"):

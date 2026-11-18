@@ -1,8 +1,9 @@
 """ADR #137's invariants for tasks as rows, as checks over what the stack holds.
 
 Each check is a pure function over a `RowsView`: the runs and task rows of the
-tasks table, the `run_task` executions and their starts, and the answers of the
-runs' tokens, in the ADR's own terms. The view that reads them from the stack
+tasks table, the `run_task` executions and their starts, the answers of the
+runs' tokens, and the writes and passes the boto3 boundary logged (boundary.py),
+in the ADR's own terms. The view that reads them from the stack
 comes with the contracts of TR-2, which name the table's fields; the checks do
 not change then. `test_row_invariants.py` plants a violation of each and shows
 that its check flags it, and a near miss that it does not.
@@ -78,6 +79,37 @@ class Start:
 
 
 @dataclass(frozen=True)
+class RowWrite:
+    """A write that changed a task row, in the ADR's terms; the view derives it from the boundary's log.
+
+    `kind`: "decision" (a pass decides the row), "action" (an operator's action through the console),
+    "request" (the dispatcher carries out a request), "stop" (the engine's stop of a run),
+    "run_task", "start_run", or "other".
+    """
+
+    kind: str
+    task: str
+    status_before: Optional[str]          # None for an insert
+    status_after: str
+    generation_before: int
+    generation_after: int
+    conditional: bool = False             # conditioned on the status and the generation it read
+    checks_run_version: bool = False      # its transaction checks the run row's run_version
+    writer_generation: Optional[int] = None   # run_task's own generation
+
+
+@dataclass(frozen=True)
+class Pass:
+    """One pass of the dispatcher, with the reads it could not complete and what it did."""
+
+    id: str
+    unresolved_read_failures: int = 0     # reads that failed or came back partial, and were not completed
+    starts: int = 0
+    closes: int = 0
+    answers: int = 0
+
+
+@dataclass(frozen=True)
 class Answer:
     """An answer to a run's token, with the rows that were not final when it was sent."""
 
@@ -100,6 +132,10 @@ class RowsView(Protocol):
 
     def answers(self) -> List[Answer]: ...
 
+    def row_writes(self) -> List[RowWrite]: ...
+
+    def passes(self) -> List[Pass]: ...
+
 
 @dataclass
 class View:
@@ -111,6 +147,8 @@ class View:
     executions: List[RunTaskExecution] = field(default_factory=list)
     start_list: List[Start] = field(default_factory=list)
     answer_list: List[Answer] = field(default_factory=list)
+    write_list: List[RowWrite] = field(default_factory=list)
+    pass_list: List[Pass] = field(default_factory=list)
 
     def runs(self) -> List[Run]:
         return self.run_list
@@ -126,6 +164,12 @@ class View:
 
     def answers(self) -> List[Answer]:
         return self.answer_list
+
+    def row_writes(self) -> List[RowWrite]:
+        return self.write_list
+
+    def passes(self) -> List[Pass]:
+        return self.pass_list
 
 
 def _all_tasks(view: RowsView) -> List[Task]:
@@ -144,6 +188,26 @@ def invariant_1(view: RowsView) -> List[str]:
     return found
 
 
+#: Statuses only the dispatcher, or an operator, moves a row out of (invariant 2).
+WAITING_STATES: FrozenSet[str] = frozenset({TaskStatus.WAITING.value, TaskStatus.WAITING_PAUSED.value})
+#: Kinds of write that end a task's ownership, and so raise its generation (invariant 6).
+OWNERSHIP_ENDS: FrozenSet[str] = frozenset({"action", "request", "stop"})
+
+
+def invariant_2(view: RowsView) -> List[str]:
+    """Apart from an operator's action, only the dispatcher moves a row out of waiting or waiting_paused,
+    with a decision conditioned on the status and generation it read and on the run row's run_version."""
+    found = []
+    for w in view.row_writes():
+        if w.status_before not in WAITING_STATES or w.status_after == w.status_before:
+            continue
+        if w.kind not in {"decision"} | OWNERSHIP_ENDS:
+            found.append(f"invariant 2: {w.task} left {w.status_before} for {w.status_after} by a {w.kind} write")
+        elif w.kind == "decision" and not (w.conditional and w.checks_run_version):
+            found.append(f"invariant 2: a decision moved {w.task} to {w.status_after} without its conditions")
+    return found
+
+
 def invariant_3(view: RowsView) -> List[str]:
     """Write first, then start: run_task starts only for a row already deps_ready under that generation."""
     return [f"invariant 3: run_task started for {s.task} generation {s.generation} while the row was "
@@ -159,6 +223,23 @@ def invariant_4(view: RowsView) -> List[str]:
         counts[(e.task, e.generation)] = counts.get((e.task, e.generation), 0) + 1
     return [f"invariant 4: {task} has {n} run_task executions for generation {gen}"
             for (task, gen), n in sorted(counts.items()) if n > 1]
+
+
+def invariant_5(view: RowsView) -> List[str]:
+    """run_task writes only under its own generation, and never changes it."""
+    return [f"invariant 5: run_task of generation {w.writer_generation} wrote {w.task} under generation "
+            f"{w.generation_before}" + ("" if w.generation_after == w.generation_before else f", making it {w.generation_after}")
+            for w in view.row_writes()
+            if w.kind == "run_task" and (w.writer_generation != w.generation_before or w.generation_after != w.generation_before)]
+
+
+def invariant_6(view: RowsView) -> List[str]:
+    """An action that ends a task's ownership raises its generation by one, in the same write."""
+    return [f"invariant 6: a {w.kind} moved {w.task} from {w.status_before} to {w.status_after} "
+            f"with generation {w.generation_before} -> {w.generation_after}"
+            for w in view.row_writes()
+            if w.kind in OWNERSHIP_ENDS and w.status_after != w.status_before
+            and w.generation_after != w.generation_before + 1]
 
 
 def invariant_8(view: RowsView) -> List[str]:
@@ -183,6 +264,13 @@ def invariant_8(view: RowsView) -> List[str]:
             found.append(f"invariant 8: the token of {answer.run} was answered while "
                          f"{', '.join(answer.unfinished)} were not final")
     return found
+
+
+def invariant_10(view: RowsView) -> List[str]:
+    """No fail-open: a pass with a read it could not complete starts, closes and answers nothing."""
+    return [f"invariant 10: pass {p.id} could not complete {p.unresolved_read_failures} read(s), yet made "
+            f"{p.starts} start(s), {p.closes} close(s) and {p.answers} answer(s)"
+            for p in view.passes() if p.unresolved_read_failures and (p.starts or p.closes or p.answers)]
 
 
 def invariant_9(view: RowsView) -> List[str]:
@@ -237,12 +325,14 @@ def liveness(view: RowsView) -> List[str]:
 
 
 CHECKS: Dict[int, Callable[[RowsView], List[str]]] = {
-    1: invariant_1, 3: invariant_3, 4: invariant_4, 8: invariant_8, 9: invariant_9, 11: invariant_11, 12: invariant_12,
+    1: invariant_1, 2: invariant_2, 3: invariant_3, 4: invariant_4, 5: invariant_5, 6: invariant_6,
+    8: invariant_8, 9: invariant_9, 10: invariant_10, 11: invariant_11, 12: invariant_12,
 }
 
 #: The stage from which the World runs each check (stages.py, ADR #137 *Tests*).
-STAGE_OF: Dict[int, str] = {1: "rows-core", 3: "rows-core", 4: "rows-core", 8: "rows-core", 9: "rows-core",
-                            11: "rows-core", 12: "rows-run-task"}
+STAGE_OF: Dict[int, str] = {1: "rows-core", 2: "rows-core", 3: "rows-core", 4: "rows-core", 5: "rows-run-task",
+                            6: "rows-ops", 8: "rows-core", 9: "rows-core", 10: "rows-core", 11: "rows-core",
+                            12: "rows-run-task"}
 
 #: Invariants another test holds, and where.
 ELSEWHERE: Dict[int, str] = {
@@ -250,9 +340,4 @@ ELSEWHERE: Dict[int, str] = {
 }
 
 #: Invariants whose check needs a part of the harness that is not built yet.
-PENDING: Dict[int, str] = {
-    2: "the log of writes at the boto3 boundary, with the component that sent each (TR-1)",
-    5: "the log of writes at the boto3 boundary: run_task writes only under its own generation (TR-1)",
-    6: "the log of writes at the boto3 boundary: an action that ends ownership raises the generation (TR-1)",
-    10: "reads that fail at the boto3 boundary, and the starts, closes and answers that follow them (TR-1)",
-}
+PENDING: Dict[int, str] = {}

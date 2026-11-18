@@ -7,8 +7,9 @@ finds it, then a near miss that is legal and shows the check stays quiet.
 from datetime import datetime, timedelta, timezone
 
 from row_invariants import (
-    RUN_CHECK_EVERY, Answer, Run, RunTaskExecution, Start, Task, View,
-    invariant_1, invariant_3, invariant_4, invariant_8, invariant_9, invariant_11, invariant_12, liveness,
+    RUN_CHECK_EVERY, Answer, Pass, RowWrite, Run, RunTaskExecution, Start, Task, View,
+    invariant_1, invariant_2, invariant_3, invariant_4, invariant_5, invariant_6, invariant_8, invariant_9,
+    invariant_10, invariant_11, invariant_12, liveness,
 )
 
 NOW = datetime(2026, 11, 18, 6, 0, tzinfo=timezone.utc)
@@ -24,8 +25,13 @@ def task(status, key="load", generation=1, **kwargs) -> Task:
     return Task(key=key, run=RUN, status=status, generation=generation, **kwargs)
 
 
-def view(runs=(), tasks=(), executions=(), starts=(), answers=()) -> View:
-    return View(NOW, list(runs), list(tasks), list(executions), list(starts), list(answers))
+def view(runs=(), tasks=(), executions=(), starts=(), answers=(), writes=(), passes=()) -> View:
+    return View(NOW, list(runs), list(tasks), list(executions), list(starts), list(answers), list(writes), list(passes))
+
+
+def write(kind, before, after, gen=(1, 1), **kwargs) -> RowWrite:
+    return RowWrite(kind=kind, task="load", status_before=before, status_after=after,
+                    generation_before=gen[0], generation_after=gen[1], **kwargs)
 
 
 # ── invariant 1: a task that does not run has no execution and no token ──
@@ -162,3 +168,63 @@ def test_liveness_an_ended_or_paused_run_or_a_decision_with_a_due_time_passes():
     assert liveness(view([active(paused=True)], [task("waiting")])) == []
     assert liveness(view([active()], [task("waiting_decision")])) == []
     assert liveness(view([active(due_at=None)], [task("waiting_decision")])) != []
+
+
+# ── invariant 2: only the dispatcher, or an operator, moves a row out of waiting ──
+
+def test_2_run_task_moving_a_waiting_row_is_flagged():
+    assert invariant_2(view(writes=[write("run_task", "waiting", "running")])) == [
+        "invariant 2: load left waiting for running by a run_task write"]
+
+
+def test_2_a_decision_without_its_conditions_is_flagged():
+    unconditioned = write("decision", "waiting", "deps_ready", checks_run_version=True)
+    assert invariant_2(view(writes=[unconditioned])) == [
+        "invariant 2: a decision moved load to deps_ready without its conditions"]
+
+
+def test_2_a_conditioned_decision_an_action_or_a_stop_passes():
+    writes = [write("decision", "waiting", "deps_ready", conditional=True, checks_run_version=True),
+              write("action", "waiting_paused", "skipped", gen=(1, 2)), write("stop", "waiting", "stopped", gen=(1, 2)),
+              write("run_task", "deps_ready", "running", writer_generation=1)]
+    assert invariant_2(view(writes=writes)) == []
+
+
+# ── invariant 5: run_task writes only under its own generation ────────
+
+def test_5_run_task_writing_under_another_generation_is_flagged():
+    assert invariant_5(view(writes=[write("run_task", "running", "success", gen=(2, 2), writer_generation=1)])) == [
+        "invariant 5: run_task of generation 1 wrote load under generation 2"]
+
+
+def test_5_run_task_changing_the_generation_is_flagged():
+    assert invariant_5(view(writes=[write("run_task", "running", "success", gen=(1, 2), writer_generation=1)])) != []
+
+
+def test_5_run_task_under_its_own_generation_passes():
+    assert invariant_5(view(writes=[write("run_task", "running", "success", writer_generation=1)])) == []
+
+
+# ── invariant 6: ending ownership raises the generation ───────────────
+
+def test_6_an_action_that_keeps_the_generation_is_flagged():
+    assert invariant_6(view(writes=[write("action", "running", "skipped")])) == [
+        "invariant 6: a action moved load from running to skipped with generation 1 -> 1"]
+
+
+def test_6_a_request_or_a_stop_that_raises_it_by_one_passes_and_a_decision_needs_none():
+    writes = [write("request", "failed", "waiting", gen=(1, 2)), write("stop", "running", "stopped", gen=(3, 4)),
+              write("decision", "waiting", "deps_ready", conditional=True, checks_run_version=True)]
+    assert invariant_6(view(writes=writes)) == []
+
+
+# ── invariant 10: no fail-open ────────────────────────────────────────
+
+def test_10_a_pass_that_acts_after_a_read_it_could_not_complete_is_flagged():
+    assert invariant_10(view(passes=[Pass("p1", unresolved_read_failures=1, starts=1)])) == [
+        "invariant 10: pass p1 could not complete 1 read(s), yet made 1 start(s), 0 close(s) and 0 answer(s)"]
+    assert invariant_10(view(passes=[Pass("p2", unresolved_read_failures=1, answers=1)])) != []
+
+
+def test_10_a_pass_that_stops_on_a_failed_read_or_acts_on_complete_reads_passes():
+    assert invariant_10(view(passes=[Pass("p1", unresolved_read_failures=2), Pass("p2", starts=3, closes=1)])) == []

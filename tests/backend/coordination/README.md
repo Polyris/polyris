@@ -61,9 +61,21 @@ After every step the World checks invariants 1, 3, 4, 5 and 10 of ADR #130 (`inv
 
 The checks of 1.3's invariants are pure functions over a `RowsView`: the runs and task rows, the `run_task` executions and their starts, and the answers of the runs' tokens, in the ADR's terms. The view that reads them from the stack comes with the contracts of TR-2, which name the table's fields; the checks stay as they are. `test_row_invariants.py` plants a violation of each check and a legal near miss.
 
-Each check runs from the stage that builds its mechanism (`STAGE_OF`): `rows-core` (Start_Run, the dispatcher, the stream, the sweeper; TR-4), `rows-run-task` (TR-5), `rows-ops` (TR-6) and `rows-migration` (TR-8). Invariant 8 is checked both ways, and `liveness` judges a scenario's end. Invariant 7 lives in `tests/sdk/test_task_row_writers.py`; 2, 5, 6 and 10 wait for the log of writes and reads at the boto3 boundary (`PENDING`). `test_meta.py` keeps every invariant from 1 to 12 in exactly one of these places.
+Each check runs from the stage that builds its mechanism (`STAGE_OF`): `rows-core` (Start_Run, the dispatcher, the stream, the sweeper; TR-4), `rows-run-task` (TR-5), `rows-ops` (TR-6) and `rows-migration` (TR-8). Invariant 8 is checked both ways, and `liveness` judges a scenario's end. Invariants 2, 5, 6 and 10 are judged from the boundary's log (below), as writes of task rows and passes of the dispatcher; invariant 7 lives in `tests/sdk/test_task_row_writers.py`. `test_meta.py` keeps every invariant from 1 to 12 in exactly one place.
 
 A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
+
+## The boto3 boundary (`boundary.py`)
+
+Every component reaches DynamoDB through one of two shared clients, and `Boundary` hooks both with botocore's events, so no production code carries a hook. `World.boundary` logs each call with the component that made it: `lambda:reconcile`, `lambda:sweeper`, `console`, or `sfn:{machine}:{execution}` for a state machine's integration. A call is `sent` once it reached DynamoDB and `answered` once its caller got the answer, so a write whose answer is lost shows as sent and unanswered.
+
+| Boundary verb | What it does |
+|---|---|
+| `between(after_read=, then=)` | run `then` after a matching read returns and before its caller goes on, to put an action between a pass's read and its write |
+| `between(before_write=, then=)` | run `then` before a matching write is sent |
+| `unprocess(table=, keys=, keep=)` | answer the next BatchGetItem on `table` with `keep` items and the rest as `UnprocessedKeys` |
+
+`test_boundary.py` pins each.
 
 ## Defects and mutation probes
 

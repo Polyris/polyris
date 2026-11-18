@@ -21,6 +21,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from bindings import Bindings
+from boundary import Boundary, acting_as, as_component
 from invariants import Invariants
 from platform_stack import Stack
 from sfn_runtime import ACCOUNT, REGION, Execution, client_error
@@ -158,13 +159,15 @@ class World:
         self.runtime = self.stack.runtime
         self.ddb = ddb_client
         self.resource = boto3.resource("dynamodb", region_name="us-east-1")
+        #: Every DynamoDB call a component makes, and the races scenarios order (boundary.py).
+        self.boundary = Boundary([self.ddb, self.resource.meta.client])
         self._run_ids = itertools.count(0xABCD0000)
         self.bindings = Bindings(self.stack, self.resource, self.clock.read)
         self.bindings.reconcile()
         self.bindings.query_subscriptions()
-        self._fanout = self.bindings.asset_fanout()
+        self._fanout = as_component("lambda:asset-fanout", self.bindings.asset_fanout())
         self._console = self.bindings.console()
-        self._sweeper = self.bindings.sweeper()
+        self._sweeper = as_component("lambda:sweeper", self.bindings.sweeper())
         self._producers: Dict[str, Pipeline] = {}
         self._stream = StreamAdapter(self.stack)
         #: ADR #130 invariants 1, 3, 4, 5 and 10, checked each time the stack settles (invariants.py).
@@ -332,7 +335,8 @@ class World:
             "rawPath": path, "headers": {}, "queryStringParameters": query, "body": json.dumps(body or {}),
             "requestContext": {"http": {"method": "POST"}, "requestId": "harness", "stage": "$default"},
         }
-        response = self._console.handler(event, None)
+        with acting_as("console"):
+            response = self._console.handler(event, None)
         if response["statusCode"] >= 300:
             raise AssertionError(f"POST {path} → {response['statusCode']}: {response.get('body')}")
         self.settle()
