@@ -14,6 +14,7 @@ from typing import Dict, List, Set, Tuple
 from defects import DEFECTS
 from probes import PROBES
 from invariants import KNOWN_FAILING_EXPRESSIONS
+from row_invariants import CHECKS, ELSEWHERE, PENDING, STAGE_OF
 from stages import BOUND_STAGES, STAGES
 
 HERE = Path(__file__).resolve().parent
@@ -106,3 +107,16 @@ def test_known_failing_expressions_are_only_in_templates_the_adr_removes():
     removed = next(line for line in adr.splitlines() if line.startswith("| State machines (8 of 13) |"))
     for (machine, state), template in KNOWN_FAILING_EXPRESSIONS.items():
         assert f"`{template}`" in removed, f"{machine}.{state}: {template} is not a template ADR #137 removes"
+
+
+
+def test_every_invariant_of_adr_137_has_one_home():
+    """Each of invariants 1-12 has a check here, a test elsewhere, or a named reason it waits (ADR #137, Tests)."""
+    homes = [set(CHECKS), set(ELSEWHERE), set(PENDING)]
+    assert set().union(*homes) == set(range(1, 13))
+    assert sum(len(h) for h in homes) == 12, "an invariant has two homes"
+
+
+def test_every_row_check_runs_from_a_known_stage():
+    assert set(STAGE_OF) == set(CHECKS)
+    assert set(STAGE_OF.values()) <= set(STAGES)

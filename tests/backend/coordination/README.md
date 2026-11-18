@@ -57,6 +57,12 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 
 After every step the World checks invariants 1, 3, 4, 5 and 10 of ADR #130 (`invariants.py`): one accepted dependency signal per wrapper; no status moving back under one wrapper execution; a waiting row keeps its pointers until its signal is accepted; a waiting row is under `waiting#` and a row held in its pause wait under `paused#`; a run whose task rows have all finished has finished too, unless an execution still works for it or the bell says it could not be told (ADR #135). It also checks that no template expression failed, caught or not (D107): such a failure is always a template bug, and a `Catch` can hide it. `KNOWN_FAILING_EXPRESSIONS` names the few that fail in templates 1.3 deletes, and `test_meta.py` keeps that list to templates ADR #137 removes. A scenario that breaks one fails, whatever it asserts itself. `test_invariants.py` tests the check.
 
+### ADR #137's invariants (`row_invariants.py`)
+
+The checks of 1.3's invariants are pure functions over a `RowsView`: the runs and task rows, the `run_task` executions and their starts, and the answers of the runs' tokens, in the ADR's terms. The view that reads them from the stack comes with the contracts of TR-2, which name the table's fields; the checks stay as they are. `test_row_invariants.py` plants a violation of each check and a legal near miss.
+
+Each check runs from the stage that builds its mechanism (`STAGE_OF`): `rows-core` (Start_Run, the dispatcher, the stream, the sweeper; TR-4), `rows-run-task` (TR-5), `rows-ops` (TR-6) and `rows-migration` (TR-8). Invariant 8 is checked both ways, and `liveness` judges a scenario's end. Invariant 7 lives in `tests/sdk/test_task_row_writers.py`; 2, 5, 6 and 10 wait for the log of writes and reads at the boto3 boundary (`PENDING`). `test_meta.py` keeps every invariant from 1 to 12 in exactly one of these places.
+
 A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
 
 ## Defects and mutation probes
