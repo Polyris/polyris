@@ -4,6 +4,7 @@ If the interpreter is wrong, every scenario built on it is wrong, so each
 semantic the scenarios rely on is pinned here first.
 """
 
+import itertools
 import json
 
 import boto3
@@ -278,3 +279,115 @@ def test_an_undefined_field_fails_the_state_and_reaches_its_catch(rt):
 ])
 def test_error_matching(error, names, expected):
     assert matches(error, names) is expected
+
+
+# ── behaviour observed live in TR-0 (ADR #137, To verify in TR-0) ─────────
+
+TOKEN_PAYLOAD = {"token": "{% $states.context.Task.Token %}", "retry": "{% $states.context.State.RetryCount %}",
+                 "redrive": "{% $states.context.Execution.RedriveCount %}", "entered": "{% $states.context.State.EnteredTime %}"}
+
+
+def _start_run_machine():
+    """A pipeline's shape in 1.3: Start_Run waits on the run's token beside a direct step; a failure ends it after."""
+    return machine({
+        "Run": {"Type": "Parallel", "Next": "Check", "Branches": [
+            {"StartAt": "Start_Run", "States": {
+                "Start_Run": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                              "Arguments": {"FunctionName": "start-run", "Payload": TOKEN_PAYLOAD},
+                              "Catch": [{"ErrorEquals": ["RunFailed"], "Next": "Record",
+                                         "Output": "{% {'error': $states.errorOutput.Error} %}"}],
+                              "End": True},
+                "Record": {"Type": "Pass", "End": True}}},
+            {"StartAt": "Direct", "States": {"Direct": {"Type": "Pass", "Output": {"ok": True}, "End": True}}}]},
+        "Check": {"Type": "Choice", "Choices": [{"Condition": "{% $exists($states.input[0].error) %}", "Next": "Failed"}],
+                  "Default": "Done"},
+        "Failed": {"Type": "Fail", "Error": "RunFailed"},
+        "Done": {"Type": "Succeed"}}, start="Run")
+
+
+def _recording_runtime(calls, now=lambda: NOW):
+    return Runtime(None, now=now, lambdas={"start-run": lambda event, context: calls.append(event) or {}})
+
+
+def test_a_retried_token_state_gets_a_new_token_its_retry_count_and_one_entered_time():
+    """TR-0 B1: each attempt brings a new token, RetryCount counts them, EnteredTime stays, the old token is dead."""
+    clock, calls = itertools.count(), []
+
+    def start_run(event, context):
+        calls.append(event)
+        if event["retry"] == 0:
+            raise RuntimeError("a transient failure of the first attempt")
+        return {}
+
+    rt = Runtime(None, now=lambda: f"2026-11-12T06:00:{next(clock):02d}.000Z", lambdas={"start-run": start_run})
+    ex = run(rt, machine({"A": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+                                "Arguments": {"FunctionName": "start-run", "Payload": TOKEN_PAYLOAD},
+                                "Retry": [{"ErrorEquals": ["RuntimeError"], "MaxAttempts": 2}], "End": True}}))
+    assert [call["retry"] for call in calls] == [0, 1]
+    assert calls[0]["entered"] == calls[1]["entered"]
+    assert calls[0]["token"] != calls[1]["token"]
+    with pytest.raises(Exception, match="TaskTimedOut"):
+        rt.send_task_success(taskToken=calls[0]["token"], output="{}")
+    rt.send_task_success(taskToken=calls[1]["token"], output="{}")
+    rt.run()
+    assert ex.status == "SUCCEEDED"
+
+
+def test_a_redrive_of_a_stopped_run_starts_its_waiting_state_again():
+    """TR-0 B4: an aborted run's redrive runs Start_Run again, with RedriveCount 1 and RetryCount 0."""
+    calls = []
+    rt = _recording_runtime(calls)
+    ex = run(rt, _start_run_machine(), name="stopped-run")
+    rt.stop_execution(executionArn=ex.arn)
+    rt.redrive_execution(executionArn=ex.arn)
+    rt.run()
+    assert [(call["retry"], call["redrive"]) for call in calls] == [(0, 0), (0, 1)]
+    with pytest.raises(Exception, match="TaskTimedOut"):
+        rt.send_task_success(taskToken=calls[0]["token"], output="{}")
+    rt.send_task_success(taskToken=calls[1]["token"], output="{}")
+    rt.run()
+    assert ex.status == "SUCCEEDED"
+
+
+def test_a_redrive_of_a_failed_run_fails_again_without_starting_the_run_again():
+    """TR-0 B4: the run fails after its Parallel, so its redrive fails again at once; Restart reruns tasks."""
+    calls = []
+    rt = _recording_runtime(calls)
+    ex = run(rt, _start_run_machine(), name="failed-run")
+    rt.send_task_failure(taskToken=calls[0]["token"], error="RunFailed", cause="the run's tasks failed")
+    rt.run()
+    assert (ex.status, ex.error) == ("FAILED", "RunFailed")
+    rt.redrive_execution(executionArn=ex.arn)
+    rt.run()
+    assert (ex.status, len(calls)) == ("FAILED", 1)
+
+
+def test_only_a_failed_or_stopped_execution_can_be_redriven(rt):
+    ex = run(rt, machine({"A": {"Type": "Pass", "End": True}}))
+    with pytest.raises(Exception, match="ExecutionNotRedrivable"):
+        rt.redrive_execution(executionArn=ex.arn)
+
+
+@pytest.mark.parametrize("names", [["States.ALL"], ["States.DataLimitExceeded"]])
+def test_a_result_over_256_kb_fails_the_state_and_either_catch_takes_it(names):
+    """TR-0 B2: a Lambda result over 256 KB fails the Task; States.ALL and the named error both catch it."""
+    rt = Runtime(None, now=lambda: NOW, lambdas={"big": lambda event, context: {"blob": "x" * 300_000}})
+    ex = run(rt, machine({
+        "A": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke", "Arguments": {"FunctionName": "big", "Payload": {}},
+              "Catch": [{"ErrorEquals": names, "Next": "Caught", "Output": "{% $states.errorOutput.Error %}"}], "End": True},
+        "Caught": {"Type": "Pass", "End": True}}))
+    assert (ex.status, ex.output) == ("SUCCEEDED", "States.DataLimitExceeded")
+
+
+def test_arguments_over_256_kb_fail_the_state(rt):
+    ex = run(rt, machine({"A": {"Type": "Task", "Resource": "arn:aws:states:::dynamodb:putItem",
+                                "Arguments": {"TableName": "t", "Item": {"k": {"S": "x" * 300_000}}}, "End": True}}))
+    assert (ex.status, ex.error) == ("FAILED", "States.DataLimitExceeded")
+
+
+def test_a_200_kb_item_goes_through_a_dynamodb_task(rt):
+    """TR-0 B3: a success transaction with a 200 KB item went through the SDK integration."""
+    ex = run(rt, machine({"A": {"Type": "Task", "Resource": "arn:aws:states:::dynamodb:putItem",
+                                "Arguments": {"TableName": "t", "Item": {"k": {"S": "k1"}, "blob": {"S": "x" * 200_000}}},
+                                "End": True}}))
+    assert ex.status == "SUCCEEDED"

@@ -17,6 +17,9 @@ interpreter and the boto3 client the code under test talks to.
 
 An expression that evaluates to undefined fails its state with
 States.QueryEvaluationError, as on AWS, and each such failure is recorded.
+As TR-0 observed on AWS: State.RetryCount and Execution.RedriveCount in the
+context, an EnteredTime that retries keep, `redrive_execution`, and
+States.DataLimitExceeded over 256 KB.
 
 Not modelled: real time (timeouts are explicit test actions), the rest of
 AWS's JSONata dialect (the live smoke and TestState runs cover it), quotas.
@@ -38,6 +41,8 @@ from jsonata.utils import Utils
 ACCOUNT = "123456789012"
 REGION = "us-east-1"
 TOKEN_SUFFIX = ".waitForTaskToken"
+#: Step Functions' payload quota: a state's input, output, task result or arguments, as JSON.
+PAYLOAD_LIMIT = 262_144
 
 
 class StatesError(Exception):
@@ -151,6 +156,11 @@ class Execution:
     cause: Optional[str] = None
     waiter: Optional["Frame"] = None   # a `.sync` parent waiting for this execution
     sync_shape: str = ""
+    redrive_count: int = 0
+    #: Every frame of the execution, and the ones a redrive takes up again: the frames in progress when
+    #: it was stopped, or the top-level frame at the state where it failed.
+    frames: List["Frame"] = field(default_factory=list)
+    frontier: List["Frame"] = field(default_factory=list)
 
 
 @dataclass(eq=False)
@@ -171,6 +181,8 @@ class Frame:
     open_children: int = 0
     attempts: Dict[int, int] = field(default_factory=dict)
     done: bool = False
+    #: When the frame entered its state; its retries keep it, as on AWS (TR-0 B1).
+    entered: str = ""
 
 
 @dataclass
@@ -248,8 +260,32 @@ class Runtime:
         if execution is None:
             raise client_error("ExecutionDoesNotExist", "StopExecution")
         if execution.status == "RUNNING":
+            execution.frontier = [f for f in execution.frames if not f.done and f.waiting != "children"]
             self._finish(execution, "ABORTED", error=error or "States.Aborted", cause=cause)
         return {"stopDate": self.now()}
+
+    def redrive_execution(self, *, executionArn: str) -> Dict[str, Any]:
+        """Take a failed or stopped execution up again, as TR-0 B4 observed on AWS.
+
+        A stopped execution runs again each state that was in progress, with its retry count back at 0.
+        A failed one runs again the state where it failed, at the top level: a pipeline that fails
+        after its `Parallel` fails again at once. A failure inside a `Parallel` runs the whole state
+        again here, where AWS runs only the branches that did not succeed; no 1.3 template fails there.
+        Each redrive raises `Execution.RedriveCount`, and the tokens of the earlier attempt stay dead.
+        """
+        execution = self.executions.get(executionArn)
+        if execution is None:
+            raise client_error("ExecutionDoesNotExist", "RedriveExecution")
+        if execution.status not in ("FAILED", "ABORTED", "TIMED_OUT") or execution.machine.type != "STANDARD":
+            raise client_error("ExecutionNotRedrivable", "RedriveExecution",
+                               f"Execution is {execution.status} and cannot be redriven")
+        execution.status, execution.output, execution.error, execution.cause = "RUNNING", None, None, None
+        execution.redrive_count += 1
+        for frame in execution.frontier:
+            frame.done, frame.waiting, frame.resume, frame.attempts, frame.entered = False, None, None, {}, ""
+            self.runnable.append(frame)
+        execution.frontier = []
+        return {"redriveDate": self.now()}
 
     # ── test controls ──────────────────────────────────────────────────
 
@@ -301,6 +337,7 @@ class Runtime:
         execution = Execution(arn, name, machine, payload, self.now())
         self.executions[arn] = execution
         frame = Frame(execution, machine.definition["States"], machine.definition["StartAt"], payload, {})
+        execution.frames.append(frame)
         if machine_arn in self.held:
             self.held[machine_arn].append(frame)
         else:
@@ -373,11 +410,13 @@ class Runtime:
 
     def _context(self, frame: Frame, **extra: Any) -> Dict[str, Any]:
         execution = frame.execution
+        if not frame.entered:
+            frame.entered = self.now()
         context: Dict[str, Any] = {
             "Execution": {"Id": execution.arn, "Name": execution.name, "StartTime": execution.started,
-                          "Input": execution.input},
+                          "Input": execution.input, "RedriveCount": execution.redrive_count},
             "StateMachine": {"Id": execution.machine.arn, "Name": execution.machine.name},
-            "State": {"Name": frame.state, "EnteredTime": self.now()},
+            "State": {"Name": frame.state, "EnteredTime": frame.entered, "RetryCount": sum(frame.attempts.values())},
         }
         context.update(extra)
         return context
@@ -423,17 +462,20 @@ class Runtime:
     def _complete(self, frame: Frame, state: Dict[str, Any], result: Any) -> None:
         """Apply Output and Assign (both see the variables as they were), then move on."""
         produces = state["Type"] in ("Task", "Parallel", "Map")
+        if produces:
+            self._within_limit(frame, result, "result")
         states: Dict[str, Any] = {"result": result} if produces else {}
         if "Output" in state:
             output = self._eval(frame, state["Output"], **states)
         else:
             output = result if produces else frame.input
+        self._within_limit(frame, output, "output")
         if "Assign" in state:
             frame.variables = {**frame.variables, **self._eval(frame, state["Assign"], **states)}
         if state.get("End"):
             self._end(frame, output)
             return
-        frame.state, frame.input, frame.attempts = state["Next"], output, {}
+        frame.state, frame.input, frame.attempts, frame.entered = state["Next"], output, {}, ""
         self.runnable.append(frame)
 
     def _choice(self, frame: Frame, state: Dict[str, Any]) -> None:
@@ -448,7 +490,7 @@ class Runtime:
         assign = rule.get("Assign", state.get("Assign"))
         if assign:
             frame.variables = {**frame.variables, **self._eval(frame, assign)}
-        frame.state, frame.input, frame.attempts = rule["Next"], output, {}
+        frame.state, frame.input, frame.attempts, frame.entered = rule["Next"], output, {}, ""
         self.runnable.append(frame)
 
     def _end(self, frame: Frame, output: Any) -> None:
@@ -479,11 +521,12 @@ class Runtime:
                 if "Assign" in catcher:
                     frame.variables = {**frame.variables,
                                        **self._eval(frame, catcher["Assign"], errorOutput=error_output)}
-                frame.state, frame.input, frame.attempts = catcher["Next"], output, {}
+                frame.state, frame.input, frame.attempts, frame.entered = catcher["Next"], output, {}, ""
                 self.runnable.append(frame)
                 return
         frame.done = True
         if frame.parent is None:
+            frame.execution.frontier = [frame]
             self._finish(frame.execution, "FAILED", error=err.error, cause=err.cause)
             return
         parent = frame.parent
@@ -503,6 +546,7 @@ class Runtime:
         for slot, (states, start, payload) in enumerate(branches):
             child = Frame(frame.execution, states, start, payload, dict(frame.variables), parent=frame, slot=slot)
             frame.children.append(child)
+            frame.execution.frames.append(child)
             self.runnable.append(child)
 
     def _map(self, frame: Frame, state: Dict[str, Any]) -> None:
@@ -518,16 +562,25 @@ class Runtime:
             branches.append((processor["States"], processor["StartAt"], item))
         self._fork(frame, branches)
 
+    def _within_limit(self, frame: Frame, value: Any, what: str) -> Any:
+        """Fail the state as AWS does when a payload passes 256 KB (TR-0 B2: a Catch on States.ALL takes it too)."""
+        size = len(json.dumps(value, separators=(",", ":"), default=str).encode("utf-8"))
+        if size > PAYLOAD_LIMIT:
+            raise StatesError("States.DataLimitExceeded",
+                              f"the {what} of {frame.state} is {size} bytes, over the {PAYLOAD_LIMIT} Step Functions allows")
+        return value
+
     # ── internals: integrations ─────────────────────────────────────────
 
     def _task(self, frame: Frame, state: Dict[str, Any]) -> None:
         resource = state["Resource"]
         if not resource.endswith(TOKEN_SUFFIX):
-            arguments = self._eval(frame, state.get("Arguments", {}))
+            arguments = self._within_limit(frame, self._eval(frame, state.get("Arguments", {})), "arguments")
             self._dispatch(frame, state, resource, arguments, token=None)
             return
         token = f"token-{next(self._ids)}:{frame.execution.name}:{frame.state}"
-        arguments = self._eval(frame, state.get("Arguments", {}), context=self._context(frame, Task={"Token": token}))
+        arguments = self._within_limit(
+            frame, self._eval(frame, state.get("Arguments", {}), context=self._context(frame, Task={"Token": token})), "arguments")
         # Registered before the call: a Lambda may send the token back before it returns.
         self.tokens[token] = frame
         frame.waiting = token
