@@ -17,7 +17,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from boto3.dynamodb.types import TypeDeserializer
-from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from bindings import Bindings
@@ -25,6 +24,7 @@ from boundary import Boundary, acting_as, as_component
 from invariants import Invariants
 from platform_stack import Stack
 from sfn_runtime import ACCOUNT, REGION, Execution, client_error
+from streams import StreamAdapter
 
 TASK_ARN = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:user-{{}}"
 _deserializer = TypeDeserializer()
@@ -92,57 +92,6 @@ class Run:
         return f"{task}-{self.date}-{self.short}"
 
 
-class StreamAdapter:
-    """The asset-events stream as the event source mapping delivers it (template settings applied).
-
-    Records are read from moto's stream, filtered with the mapping's
-    FilterCriteria, and handed to the handler in batches of its BatchSize.
-    Records the handler reports as failed stay pending and are delivered again.
-    """
-
-    def __init__(self, stack: Stack):
-        import boto3
-
-        props = stack.resources["AssetEventsFanoutMapping"]["Properties"]
-        self.batch_size = int(props["BatchSize"])
-        self.patterns = [json.loads(f["Pattern"]) for f in props["FilterCriteria"]["Filters"]]
-        table = stack.tables["AssetEventsTable"]
-        self.arn = stack.ddb.describe_table(TableName=table)["Table"]["LatestStreamArn"]
-        # The regional endpoint: botocore 1.44.4 sends Streams calls to {account}.streams-ddb.{region},
-        # which moto (5.2.5) does not serve yet, and answers 404 "Not yet implemented".
-        self.streams = boto3.client("dynamodbstreams", region_name="us-east-1",
-                                    config=Config(account_id_endpoint_mode="disabled"))
-        self.seen: set = set()
-        self.pending: List[Dict[str, Any]] = []
-
-    def _matches(self, record: Dict[str, Any]) -> bool:
-        return any(all(record.get(key) in values for key, values in pattern.items()) for pattern in self.patterns)
-
-    def _read(self) -> None:
-        for shard in self.streams.describe_stream(StreamArn=self.arn)["StreamDescription"]["Shards"]:
-            iterator = self.streams.get_shard_iterator(StreamArn=self.arn, ShardId=shard["ShardId"],
-                                                       ShardIteratorType="TRIM_HORIZON")["ShardIterator"]
-            for record in self.streams.get_records(ShardIterator=iterator)["Records"]:
-                sequence = record["dynamodb"]["SequenceNumber"]
-                if sequence not in self.seen:
-                    self.seen.add(sequence)
-                    if self._matches(record):
-                        self.pending.append({**record, "eventSourceARN": self.arn})
-
-    def deliver(self, handler: Callable[[Any, Any], Any], *, asset: Optional[str] = None) -> None:
-        self._read()
-        chosen = [r for r in self.pending
-                  if asset is None or r["dynamodb"]["NewImage"]["asset_name"]["S"] == asset]
-        held = [r for r in self.pending if r not in chosen]
-        failed: List[Dict[str, Any]] = []
-        for start in range(0, len(chosen), self.batch_size):
-            batch = chosen[start:start + self.batch_size]
-            result = handler({"Records": batch}, None)
-            ids = {f["itemIdentifier"] for f in result.get("batchItemFailures", [])}
-            failed += [r for r in batch if r["dynamodb"]["SequenceNumber"] in ids]
-        self.pending = held + failed
-
-
 class World:
     clock: Clock
     stack: Stack
@@ -169,7 +118,8 @@ class World:
         self._console = self.bindings.console()
         self._sweeper = as_component("lambda:sweeper", self.bindings.sweeper())
         self._producers: Dict[str, Pipeline] = {}
-        self._stream = StreamAdapter(self.stack)
+        self._stream = StreamAdapter.for_mapping(self.stack, "AssetEventsFanoutMapping", table="AssetEventsTable",
+                                                 key="asset_name")
         #: ADR #130 invariants 1, 3, 4, 5 and 10, checked each time the stack settles (invariants.py).
         self.invariants = Invariants(ddb_client, self.runtime, self.stack.tables)
 
@@ -326,7 +276,9 @@ class World:
 
     def deliver_hints(self, asset: Any = None) -> None:
         """Deliver the stream records not yet delivered — all of them, or `asset`'s only."""
-        self._stream.deliver(self._fanout, asset=None if asset is None else asset.name)
+        name = None if asset is None else asset.name
+        self._stream.deliver(self._fanout, select=None if name is None
+                             else lambda r: r["dynamodb"]["NewImage"]["asset_name"]["S"] == name)
         self.settle()
 
     def _call_console(self, path: str, *, query: Dict[str, str], body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -357,6 +309,52 @@ class World:
     def stop_run(self, run: Run) -> Dict[str, Any]:
         """The console's Stop of a whole run."""
         return self._call_console("/api/execution-stop", query={"pipeline_execution": run.name})
+
+    def expire_ttl(self, table: str = "PipelineTokensTable") -> List[str]:
+        """DynamoDB's TTL deletes every row of `table` (a logical id) whose `ttl` has passed on the clock.
+
+        The deletions are the service's: a stream adapter on that table marks their REMOVE records with
+        TTL's `userIdentity`. Returns the keys of the rows deleted.
+        """
+        name = self.stack.tables[table]
+        now = self.clock.read().timestamp()
+        schema = self.ddb.describe_table(TableName=name)["Table"]["KeySchema"]
+        expired, kwargs = [], {"TableName": name, "ConsistentRead": True}
+        while True:
+            page = self.ddb.scan(**kwargs)
+            expired += [i for i in page.get("Items", []) if "ttl" in i and float(i["ttl"]["N"]) <= now]
+            if "LastEvaluatedKey" not in page:
+                break
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+        hash_key = next(k["AttributeName"] for k in schema if k["KeyType"] == "HASH")
+        keys = [next(iter(item[hash_key].values())) for item in expired]
+        if self._stream.table == name:
+            self._stream.mark_expired(set(keys))
+        for item in expired:
+            self.ddb.delete_item(TableName=name, Key={k["AttributeName"]: item[k["AttributeName"]] for k in schema})
+        return keys
+
+    # ── the tasks table's stream (ADR #137 §7): wired with the dispatcher in TR-4 ──
+
+    def deliver_task_hints(self, run: Optional["Run"] = None) -> None:
+        """Deliver the tasks table's stream records not yet delivered to the dispatcher: all, or `run`'s."""
+        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+
+    def lose_task_hint(self, run: "Run", task: str) -> None:
+        """The next stream record of `task`'s row in `run` is lost before the mapping reads it."""
+        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+
+    def delay_task_hint(self, run: "Run", task: str) -> None:
+        """The next stream record of `task`'s row in `run` is held back until `release_task_hints`."""
+        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+
+    def release_task_hints(self) -> None:
+        """The delayed stream records arrive, after the ones delivered meanwhile."""
+        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+
+    def two_passes_at_once(self, run: "Run") -> None:
+        """Two passes over `run` at once: the second runs between the first's read and its first write."""
+        raise NeedsBinding("rows-core", "the dispatcher's pass")
 
     def sweep(self) -> None:
         """One scheduled run of the sweeper, at the clock's current time."""

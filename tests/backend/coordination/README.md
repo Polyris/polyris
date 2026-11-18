@@ -53,6 +53,8 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 | `time_out_registration`, `time_out_pause_wait`, `stop_wrapper_externally`, `inject_failure`, `fail_starts`, `fail_signals`, `fail_invokes` | faults from outside: a timeout, a stop, a refused DynamoDB call (or, with `after=True`, an applied call whose answer is lost), a Step Functions start (a Lambda's or a state machine's) or callback (`call=` SendTaskSuccess or SendTaskFailure, `when=` to pick one), a Lambda that keeps failing (transiently, or with `error="Sandbox.Timedout"` as a timeout) |
 | `hold(machine)`, `release(machine)`, `release_newest(machine)` | new executions of a platform state machine wait to take a step, to order a race (B-P3, B-R2) |
 | `sweep()`, `clock.advance(...)`, `clock.jump_to(when)` | the safety net and the passing of time; every reading of the clock, by the stack, the Lambdas or the console, moves it on 1 ms |
+| `expire_ttl(table=)` | DynamoDB's TTL deletes the rows whose `ttl` has passed; a stream on that table marks their `REMOVE` records as TTL's |
+| `deliver_task_hints`, `lose_task_hint`, `delay_task_hint`, `release_task_hints`, `two_passes_at_once` | the tasks table's stream and the dispatcher's passes of ADR #137 §7; they raise `NeedsBinding("rows-core")` until TR-4 wires them |
 | `status`, `row`, `running_tasks`, `task_runs`, `signals`, `warnings`, `pipeline_status`, `push_runs`, `push_subscribers` | what a scenario asserts on |
 
 After every step the World checks invariants 1, 3, 4, 5 and 10 of ADR #130 (`invariants.py`): one accepted dependency signal per wrapper; no status moving back under one wrapper execution; a waiting row keeps its pointers until its signal is accepted; a waiting row is under `waiting#` and a row held in its pause wait under `paused#`; a run whose task rows have all finished has finished too, unless an execution still works for it or the bell says it could not be told (ADR #135). It also checks that no template expression failed, caught or not (D107): such a failure is always a template bug, and a `Catch` can hide it. `KNOWN_FAILING_EXPRESSIONS` names the few that fail in templates 1.3 deletes, and `test_meta.py` keeps that list to templates ADR #137 removes. A scenario that breaks one fails, whatever it asserts itself. `test_invariants.py` tests the check.
@@ -64,6 +66,12 @@ The checks of 1.3's invariants are pure functions over a `RowsView`: the runs an
 Each check runs from the stage that builds its mechanism (`STAGE_OF`): `rows-core` (Start_Run, the dispatcher, the stream, the sweeper; TR-4), `rows-run-task` (TR-5), `rows-ops` (TR-6) and `rows-migration` (TR-8). Invariant 8 is checked both ways, and `liveness` judges a scenario's end. Invariants 2, 5, 6 and 10 are judged from the boundary's log (below), as writes of task rows and passes of the dispatcher; invariant 7 lives in `tests/sdk/test_task_row_writers.py`. `test_meta.py` keeps every invariant from 1 to 12 in exactly one place.
 
 A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
+
+## Streams (`streams.py`, `stream_filters.py`)
+
+`StreamAdapter.for_mapping` delivers a table's stream as one of the template's event source mappings does: its `FilterCriteria`, its `BatchSize`, and shards by partition key. A batch the handler reports partly failed goes on from its first failed record, as Lambda checkpoints it; with `hold_on_error`, a handler that raises holds its batch and its shard, as a mapping that retries does. `drop`, `delay` and `release` lose or hold records, and `mark_expired` gives a TTL deletion TTL's `userIdentity`. `test_streams.py` pins each.
+
+`stream_filters.matches` applies a filter pattern with EventBridge's syntax. `test_stream_filters.py` runs the four filters of ADR #137 §7 over the 25 writes and 4 deletions of TR-0's live probe and gets exactly the 11 records AWS delivered.
 
 ## The boto3 boundary (`boundary.py`)
 
