@@ -1,5 +1,7 @@
 ## Unreleased
 
+## v1.2.3 - 2026-11-18
+
 ### Breaking — `--all` and pipeline files (ADR #139)
 
 - `polyris-validate --all` and `polyris-deploy --all` / `--only` (and `polyris-destroy --all`) load only `dag.py` and the `.py` files whose code imports `DAG`, `dag` or `Pipeline` from polyris. A pipeline in another file that gets its DAG from a project wrapper is no longer deployed or destroyed, and the run still exits 0: name the file `dag.py`, or deploy it with `--file`.
