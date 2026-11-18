@@ -39,7 +39,7 @@ python -m pytest tests/backend/coordination
 
 `test_platform_stack.py` runs a one-task pipeline end to end: pipeline execution → `dependency_wrapper` → registration helper → `run_task` → the user's task → success.
 
-## Scenarios (`test_scenarios.py`)
+## Scenarios (`test_scenarios*.py`)
 
 Scenarios speak only the `World` API in `world.py` and build pipelines only through `dags.py`, which uses the real SDK. A scenario therefore keeps its text while the templates and Lambdas under it change. Each one checks both sides of a wake: the task starts once its conditions hold, and never before.
 
@@ -47,7 +47,7 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 |---|---|
 | `deploy(dag, before_upgrade=)`, `start_run(pipeline, date, **inputs)` | generate the pipeline's ASL and start a run; `before_upgrade=True` starts its tasks on the v1.1.4 wrapper (`legacy/`), as runs in flight across the upgrade do |
 | `fire_schedule(pipeline, scheduled_time)`, `start_bare(pipeline)` | start a run as EventBridge Scheduler does, with the input `polyris-deploy` gives the schedule; or with an empty input |
-| `complete(run, task, status=)` | finish the user's work for a task |
+| `complete(run, task, status=, output=)` | finish the user's work for a task, a success with `output` |
 | `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact, by `run_task` or as an older version stored it (`writer="older version"`); deliver its stream record separately, so tests choose the interleaving |
 | `pause`, `resume`, `restart`, `skip`, `mark_success`, `fail_task`, `stop_task`, `stop_run` | operator actions through the console routes |
 | `time_out_registration`, `time_out_pause_wait`, `stop_wrapper_externally`, `inject_failure`, `fail_starts`, `fail_signals`, `fail_invokes` | faults from outside: a timeout, a stop, a refused DynamoDB call (or, with `after=True`, an applied call whose answer is lost), a Step Functions start (a Lambda's or a state machine's) or callback (`call=` SendTaskSuccess or SendTaskFailure, `when=` to pick one), a Lambda that keeps failing (transiently, or with `error="Sandbox.Timedout"` as a timeout) |
@@ -55,6 +55,9 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 | `sweep()`, `clock.advance(...)`, `clock.jump_to(when)` | the safety net and the passing of time; every reading of the clock, by the stack, the Lambdas or the console, moves it on 1 ms |
 | `expire_ttl(table=)` | DynamoDB's TTL deletes the rows whose `ttl` has passed; a stream on that table marks their `REMOVE` records as TTL's |
 | `deliver_task_hints`, `lose_task_hint`, `delay_task_hint`, `release_task_hints`, `two_passes_at_once` | the tasks table's stream and the dispatcher's passes of ADR #137 §7; they raise `NeedsBinding("rows-core")` until TR-4 wires them |
+| `delete_row(run, task)`, `delete_output(run, task)` | a task's row, or its date's `output#`, goes missing (ADR #137 invariant 11, D109) |
+| `delete_run_row`, `hold_start_run_retry`, `release_start_run_retry`, `shrink_pass_budget`, `restart_with_dependants`, `upgrade_platform` | 1.3's run row, a late `Start_Run` attempt, a pass's time budget, Restart with dependants and the upgrade from 1.2; each raises `NeedsBinding` until its stage |
+| `run_to_the_end()` | the liveness check of ADR #137 *Tests*: the clock past every deadline, sweeps until nothing changes, then `row_invariants.liveness`; `NeedsBinding("rows-core")` until TR-4 |
 | `status`, `row`, `running_tasks`, `task_runs`, `signals`, `warnings`, `pipeline_status`, `push_runs`, `push_subscribers` | what a scenario asserts on |
 
 After every step the World checks invariants 1, 3, 4, 5 and 10 of ADR #130 (`invariants.py`): one accepted dependency signal per wrapper; no status moving back under one wrapper execution; a waiting row keeps its pointers until its signal is accepted; a waiting row is under `waiting#` and a row held in its pause wait under `paused#`; a run whose task rows have all finished has finished too, unless an execution still works for it or the bell says it could not be told (ADR #135). It also checks that no template expression failed, caught or not (D107): such a failure is always a template bug, and a `Catch` can hide it. `KNOWN_FAILING_EXPRESSIONS` names the few that fail in templates 1.3 deletes, and `test_meta.py` keeps that list to templates ADR #137 removes. A scenario that breaks one fails, whatever it asserts itself. `test_invariants.py` tests the check.
@@ -66,6 +69,10 @@ The checks of 1.3's invariants are pure functions over a `RowsView`: the runs an
 Each check runs from the stage that builds its mechanism (`STAGE_OF`): `rows-core` (Start_Run, the dispatcher, the stream, the sweeper; TR-4), `rows-run-task` (TR-5), `rows-ops` (TR-6) and `rows-migration` (TR-8). Invariant 8 is checked both ways, and `liveness` judges a scenario's end. Invariants 2, 5, 6 and 10 are judged from the boundary's log (below), as writes of task rows and passes of the dispatcher; invariant 7 lives in `tests/sdk/test_task_row_writers.py`. `test_meta.py` keeps every invariant from 1 to 12 in exactly one place.
 
 A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
+
+### Red scenarios of tasks as rows (`test_scenarios_rows.py`)
+
+Each class of bug ADR #137 makes impossible has one scenario or two, written before the code. The classes are a lost hint, a pass without a time budget, a late `Start_Run` attempt, a start that keeps failing, and Restart with dependants racing a pass. Then two passes at once, a Pause or a Stop racing a pass, a fail-open read and a lost answer. Last, a missing row or output, an output at the payload limit, a limit in a pause and a 1.2 row left in flight. R-S1 to R-S4 are the four stability blockers of the plan's review. Each is skipped until its stage is bound; from then on the stage's invariants run under it, and `test_meta.py` asks for a probe that brings its bug back.
 
 ## Streams (`streams.py`, `stream_filters.py`)
 
@@ -87,7 +94,7 @@ Every component reaches DynamoDB through one of two shared clients, and `Boundar
 
 ## Defects and mutation probes
 
-`defects.py` lists the defects by the ids in ADR #130's defects table (B-D1 is ADR #133's; the ids from B-RN1 on come from the external review of 1.2.0; B-Q1 is D107's, the harness's strictness about undefined), and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect. CI runs it after the other suites (`make test-probes`).
+`defects.py` lists the defects by the ids in ADR #130's defects table (B-D1 is ADR #133's; the ids from B-RN1 on come from the external review of 1.2.0; B-Q1 is D107's, the harness's strictness about undefined; the ids from R-L1 on are the classes of bug of ADR #137), and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect. CI runs it after the other suites (`make test-probes`).
 
 `test_meta.py` keeps these consistent:
 - every defect has a scenario, and every scenario names a known defect;

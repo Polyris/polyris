@@ -99,6 +99,7 @@ class World:
     ddb: Any
     resource: Any
     bindings: Bindings
+    boundary: Boundary
 
     def __init__(self, ddb_client: Any, *, start: Optional[datetime] = None):
         import boto3
@@ -196,14 +197,15 @@ class World:
         names = {run.execution_name(t.task_id): t.task_id for t in run.pipeline.dag.tasks}
         return sorted(names[n] for n in (self._job_owner(j) for j in self.runtime.jobs.values()) if n in names)
 
-    def complete(self, run: Run, task: str, *, status: str = "success") -> None:
-        """Finish the user's work for `task`; `status` is "success" or "failed"."""
+    def complete(self, run: Run, task: str, *, status: str = "success", output: Any = None) -> None:
+        """Finish the user's work for `task`; `status` is "success" or "failed", and a success returns
+        `output` (an empty object when None)."""
         name = run.execution_name(task)
         job = next((j for j in self.runtime.jobs.values() if self._job_owner(j) == name), None)
         if job is None:
             raise AssertionError(f"{task} is not running in {run.name}; running: {self.running_tasks(run)}")
         if status == "success":
-            self.runtime.finish_job(job.id, output={"Output": {}, "Status": "SUCCEEDED"})
+            self.runtime.finish_job(job.id, output={"Output": {} if output is None else output, "Status": "SUCCEEDED"})
         elif status == "failed":
             self.runtime.finish_job(job.id, error="States.TaskFailed", cause="the user's task failed")
         else:
@@ -334,18 +336,60 @@ class World:
             self.ddb.delete_item(TableName=name, Key={k["AttributeName"]: item[k["AttributeName"]] for k in schema})
         return keys
 
+    def delete_row(self, run: Run, task: str) -> None:
+        """Someone deletes `task`'s row of `run` by hand (invariant 11's missing row)."""
+        self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
+                             Key={"execution_name": {"S": run.execution_name(task)}})
+
+    def delete_output(self, run: Run, task: str) -> None:
+        """`task`'s output for `run`'s date is gone, as when it expired a year after its last write (D109)."""
+        self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
+                             Key={"execution_name": {"S": f"output#{run.pipeline.name}#{task}#{run.date}"}})
+
+    # ── tasks as rows (ADR #137): wired by the phases of 1.3 ──────────
+
+    def delete_run_row(self, run: Run) -> None:
+        """Someone deletes `run`'s run row by hand."""
+        raise NeedsBinding("rows-core", "the run row")
+
+    def hold_start_run_retry(self, pipeline: Pipeline) -> None:
+        """Start_Run's next first attempt writes its run as creating and dies; its retry waits for release."""
+        raise NeedsBinding("rows-core", "Start_Run")
+
+    def release_start_run_retry(self, pipeline: Pipeline) -> None:
+        """The retry `hold_start_run_retry` held goes on, late."""
+        raise NeedsBinding("rows-core", "Start_Run")
+
+    def shrink_pass_budget(self, *, rows: int) -> None:
+        """A pass's budget runs out after `rows` rows, as a large run's does at the declared maximum."""
+        raise NeedsBinding("rows-core", "the dispatcher's pass budget")
+
+    def run_to_the_end(self) -> None:
+        """Move the clock past every deadline and sweep until nothing changes; then check liveness
+        (row_invariants.liveness): every run ended or is paused, or a row waits for a decision."""
+        raise NeedsBinding("rows-core", "the liveness check over the rows")
+
+    def restart_with_dependants(self, run: Run, task: str) -> None:
+        """The console's Restart of `task` and of its dependants that failed or were skipped by a rule."""
+        raise NeedsBinding("rows-ops", "Restart with dependants")
+
+    def upgrade_platform(self) -> None:
+        """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are."""
+        raise NeedsBinding("rows-migration", "the upgrade from 1.2")
+
     # ── the tasks table's stream (ADR #137 §7): wired with the dispatcher in TR-4 ──
 
     def deliver_task_hints(self, run: Optional["Run"] = None) -> None:
-        """Deliver the tasks table's stream records not yet delivered to the dispatcher: all, or `run`'s."""
+        """Deliver the tasks table's stream to the dispatcher, every record or `run`'s, until none is left:
+        a pass's own writes, such as `left_at`, wake the passes after it."""
         raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
 
     def lose_task_hint(self, run: "Run", task: str) -> None:
-        """The next stream record of `task`'s row in `run` is lost before the mapping reads it."""
+        """The next record of `task`'s row in `run` that the mapping would deliver is lost."""
         raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
 
     def delay_task_hint(self, run: "Run", task: str) -> None:
-        """The next stream record of `task`'s row in `run` is held back until `release_task_hints`."""
+        """The next record of `task`'s row in `run` that the mapping would deliver waits for `release_task_hints`."""
         raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
 
     def release_task_hints(self) -> None:
@@ -353,7 +397,8 @@ class World:
         raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
 
     def two_passes_at_once(self, run: "Run") -> None:
-        """Two passes over `run` at once: the second runs between the first's read and its first write."""
+        """Two passes over `run` at once, as when two shards of the stream carry records of one run:
+        the second runs between the first's read and its first write."""
         raise NeedsBinding("rows-core", "the dispatcher's pass")
 
     def sweep(self) -> None:
