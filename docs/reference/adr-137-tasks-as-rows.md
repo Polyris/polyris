@@ -479,8 +479,8 @@ Values defined clause by clause are pure functions in `polyris/coordination/`, w
 - a task row's next due time (invariant 9). It reads the row's own fields, its upstreams and the run row's pause state, never the clock, so a pass writes a due time only when it changes (§1).
   - It gives a limit's deadline, a countdown's end, a decision deadline, a start's next try, and a running execution's next check, from the time and the number of its checks so far.
   - It gives none for a row that waits only for other rows, and in a paused run none for a row the pause holds or a limit. A decision deadline then falls due far in the future (§5);
-- the order of `Start_Run`'s tokens (§1);
-- the history TTL and its renewal (§5);
+- the order of `Start_Run`'s tokens (§1), with the condition of a token's write (`run_row.token_order`, `TOKEN_CONDITION`);
+- the history TTL and its renewal, the other lifetimes and the Restart's margin (§5, `retention.py`);
 - the run's summary and its outcome (§4);
 - canonical spec JSON, with the text hash and the fingerprint (§8).
 

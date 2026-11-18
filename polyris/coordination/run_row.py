@@ -13,6 +13,8 @@ it enters neither date index; ``start_day`` alone puts it in
 
 from __future__ import annotations
 
+from typing import Dict
+
 from ..constants import BackfillCascade
 
 #: The tasks table's partition key, which every row carries.
@@ -67,6 +69,28 @@ def key(pipeline_execution: str) -> str:
 def input_key(pipeline_execution: str) -> str:
     """The key of the run's input item."""
     return f"{key(pipeline_execution)}{INPUT_SUFFIX}"
+
+
+#: Step Functions allows at most 99,999,999 attempts of a state, so a retry count stays below this.
+_RETRIES = 100_000_000
+
+#: Start_Run's write of its attempt's token: a later attempt's token replaces the stored one, the same
+#: attempt may write its own again, an earlier one's never replaces a later one, and the stop mark refuses
+#: them all (§1). With ``TOKEN_CONDITION_NAMES`` and ``:order``, the attempt's ``token_order``.
+TOKEN_CONDITION = "attribute_not_exists(#stop) AND (attribute_not_exists(#order) OR #order <= :order)"
+TOKEN_CONDITION_NAMES: Dict[str, str] = {"#stop": STOP, "#order": TOKEN_ORDER}
+
+
+def token_order(*, redrive_count: int, retry_count: int) -> int:
+    """The order of a ``Start_Run`` attempt's token: ``Execution.RedriveCount`` first, then ``State.RetryCount``.
+
+    In TR-0, ``State.EnteredTime`` was the same for every retry of the state, so
+    only these counters order the tokens; a redrive runs ``Start_Run`` again with
+    ``RetryCount`` 0 and a higher ``RedriveCount``.
+    """
+    if redrive_count < 0 or not 0 <= retry_count < _RETRIES:
+        raise ValueError(f"counters out of range: RedriveCount {redrive_count}, RetryCount {retry_count}")
+    return redrive_count * _RETRIES + retry_count
 
 
 def cascade(*, suppress_asset_event: bool, cascade_all: bool) -> str:

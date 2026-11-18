@@ -35,3 +35,54 @@ def test_a_failed_direct_step_has_a_warning_kind_of_its_own():
 
 def test_the_upstream_statuses_reach_a_task_under_an_environment_name():
     assert re.fullmatch(r"POLYRIS_[A-Z_]+", ENV_UPSTREAM_STATUSES)
+
+
+# ── the order of Start_Run's tokens (§1) ─────────────────────────────
+
+def test_a_redrive_orders_after_every_retry_of_the_attempts_before_it():
+    assert run_row.token_order(redrive_count=1, retry_count=0) > run_row.token_order(redrive_count=0,
+                                                                                    retry_count=99_999_999)
+    assert run_row.token_order(redrive_count=0, retry_count=1) > run_row.token_order(redrive_count=0, retry_count=0)
+
+
+@pytest.mark.parametrize("redrive,retry", [(-1, 0), (0, -1), (0, 100_000_000)])
+def test_counters_out_of_step_functions_range_are_refused(redrive, retry):
+    with pytest.raises(ValueError, match="counters out of range"):
+        run_row.token_order(redrive_count=redrive, retry_count=retry)
+
+
+@pytest.mark.parametrize("stored,attempt,accepted", [
+    ({}, (0, 0), True),                                                # the first token
+    ({"token_order": (0, 2)}, (0, 3), True),                           # a later retry
+    ({"token_order": (0, 3)}, (0, 3), True),                           # the same attempt writes again
+    ({"token_order": (0, 3)}, (0, 2), False),                          # an earlier attempt, late
+    ({"token_order": (0, 7)}, (1, 0), True),                           # a redrive
+    ({"token_order": (0, 2), "stop": {"by": "engine"}}, (0, 3), False),  # the engine stopped the run
+])
+def test_the_token_condition_as_dynamodb_evaluates_it(stored, attempt, accepted):
+    """The real condition, evaluated by DynamoDB (moto)."""
+    import boto3
+    from botocore.exceptions import ClientError
+    from moto import mock_aws
+
+    def order(pair):
+        return run_row.token_order(redrive_count=pair[0], retry_count=pair[1])
+
+    row = {**stored, **({"token_order": order(stored["token_order"])} if "token_order" in stored else {})}
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="tokens", KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST")
+        key = {"execution_name": run_row.key("orders-run-2026-11-18-abcd1234")}
+        table.put_item(Item={**key, **row})
+        try:
+            table.update_item(Key=key, UpdateExpression="SET #order = :order, run_token = :token",
+                              ConditionExpression=run_row.TOKEN_CONDITION,
+                              ExpressionAttributeNames=run_row.TOKEN_CONDITION_NAMES,
+                              ExpressionAttributeValues={":order": order(attempt), ":token": "t"})
+            written = True
+        except ClientError as exc:
+            assert exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
+            written = False
+    assert written is accepted
