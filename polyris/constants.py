@@ -585,3 +585,29 @@ class TaskConfigKey(str, Enum):
     RETRY_BACKOFF = "retry_backoff"
     MAX_RETRY_DELAY = "max_retry_delay"
     RETRY_JITTER = "retry_jitter"
+
+
+class TaskSpecKey(str, Enum):
+    """
+    Keys of a task's spec in ``pipeline-specs`` (ADR #137 §8, §9): everything
+    needed to run the task and to draw it. ``polyris-deploy`` writes a spec with
+    these keys only, and ``Start_Run`` rejects a spec with any other
+    (``polyris/coordination/task_spec.py``). A change to them changes the
+    specs' shape, which needs a new ``task_spec.FORMAT_VERSION``.
+
+    str-Enum: members compare and JSON-serialize as their plain string values.
+    """
+    TASK_ID = "task_id"
+    TASK_TYPE = "task_type"
+    TASK_ARN = "task_arn"
+    TASK_CONFIG = "task_config"                      # ADR #108, retries included
+    CROSS_ACCOUNT_ROLE = "cross_account_role"
+    DEPENDENCIES = "dependencies"
+    TRIGGER_RULE = "trigger_rule"
+    EXECUTION_TIMEOUT = "execution_timeout"          # seconds, one attempt of the work
+    ORCHESTRATION_TIMEOUT = "orchestration_timeout"  # seconds, a cap on all of the task's waiting
+    WAIT_BEFORE = "wait_before"                      # seconds of countdown once ready
+    OUTLETS = "outlets"
+    INLETS = "inlets"
+    WAIT_FOR = "wait_for"
+    SKIP_ON_BACKFILL = "skip_on_backfill"

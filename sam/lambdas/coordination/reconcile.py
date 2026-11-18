@@ -28,7 +28,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 import env
 from polyris.coordination import decide as dc
 from polyris.coordination import ownership
-from polyris.coordination import spec as sp
+from polyris.coordination import asset_spec as sp
 from polyris.coordination import sweep
 from polyris.coordination import trigger_rules as tr
 from polyris.coordination import wake

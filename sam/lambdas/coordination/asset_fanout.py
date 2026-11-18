@@ -29,7 +29,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 import env
-from polyris.coordination import spec as sp
+from polyris.coordination import asset_spec as sp
 from polyris.coordination.asset_conditions import evaluate as evaluate_assets
 from polyris.coordination.records import FACT_VERSION, fact_from_item, push_retry_item, warning_item
 from polyris.coordination.run_name import KIND_AND, KIND_EVENT, run_name

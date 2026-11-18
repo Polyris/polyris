@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from boto3.dynamodb.types import TypeDeserializer
 
-from polyris.coordination import spec as sp
+from polyris.coordination import asset_spec as sp
 from polyris.coordination.statuses import RECONCILABLE, TERMINAL, WAITING_PAUSED
 
 #: The dependency wait of the dependency wrapper: where its token is signalled.

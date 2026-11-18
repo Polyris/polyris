@@ -25,7 +25,7 @@ from .partition import (
     in_current_or_previous_period,
     oldest_useful_date,
 )
-from .spec import AND, AssetGroup, AssetLeaf, SpecNode
+from .asset_spec import AND, AssetGroup, AssetLeaf, SpecNode
 
 OK = "ok"
 NO_FACT = "no_fact"

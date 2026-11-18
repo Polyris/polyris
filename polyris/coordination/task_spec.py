@@ -7,15 +7,24 @@ string keeps every byte. A version's fingerprint is the sha256 over its
 ``(task_id, text hash)`` pairs in key order, and names the version:
 ``spec_id = {pipeline}#{fingerprint}``. ``polyris-deploy``, ``Start_Run``, the
 dispatcher and the console all call these functions, so no parity test is needed.
+
+``parse`` reads a text back: it checks the hash, then rejects a key that
+``TaskSpecKey`` does not know, as the parser of asset conditions does, and a
+field the dispatcher decides on that has the wrong type. ``Start_Run`` writes a
+task's ``decision_fields`` on its row (§8).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Iterable, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Mapping, Tuple
 
-from . import run_row
+from ..constants import TaskSpecKey
+from . import asset_spec, run_row, trigger_rules
+
+K = TaskSpecKey
 
 #: The format of what ``Start_Run`` receives and reads: the specs and its arguments. ``polyris-deploy``
 #: writes it to the registry and into ``Start_Run``'s arguments; ``Start_Run`` refuses a format it does
@@ -53,3 +62,80 @@ def spec_id(pipeline: str, version_fingerprint: str) -> str:
 def text_partition(pipeline: str) -> str:
     """The partition of a pipeline's spec texts; each text's hash is its sort key."""
     return f"{pipeline}#text"
+
+
+#: The task row's field that names its spec text in ``pipeline-specs``; ``run_row.SPEC_ID`` names the version.
+ROW_TEXT_HASH = "spec_hash"
+#: Every spec names these; the other keys of ``TaskSpecKey`` may be absent.
+REQUIRED = frozenset({K.TASK_ID, K.TASK_TYPE, K.DEPENDENCIES, K.TRIGGER_RULE})
+#: What a task row carries for the dispatcher, which decides on these alone (§8).
+DECISION_KEYS = (K.DEPENDENCIES, K.TRIGGER_RULE, K.ORCHESTRATION_TIMEOUT, K.WAIT_BEFORE, K.WAIT_FOR)
+_KNOWN = frozenset(k.value for k in TaskSpecKey)
+
+
+class SpecError(ValueError):
+    """A spec that cannot be run; its message is the cause that ``Start_Run``'s warning shows."""
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+    """A spec read back and checked: its fields keyed by ``TaskSpecKey`` values, and its text's hash."""
+    fields: Mapping[str, Any]
+    text_hash: str
+
+    @property
+    def task_id(self) -> str:
+        return str(self.fields[K.TASK_ID])
+
+    def decision_fields(self) -> Dict[str, Any]:
+        """The fields ``Start_Run`` writes on the task's row: those of ``DECISION_KEYS`` that the spec has."""
+        return {key.value: self.fields[key] for key in DECISION_KEYS if key in self.fields}
+
+
+def parse(text: str, *, expected_hash: str) -> TaskSpec:
+    """A spec text from ``pipeline-specs``, checked against the hash it was stored under."""
+    actual = text_hash(text)
+    if actual != expected_hash:
+        raise SpecError(f"a spec text does not match its hash: stored under {expected_hash}, hashes to {actual}")
+    try:
+        fields = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SpecError(f"a spec text is not JSON: {exc}") from exc
+    if not isinstance(fields, dict):
+        raise SpecError(f"a spec must be a JSON object, got {type(fields).__name__}")
+    name = fields.get(K.TASK_ID, "?")
+    unknown = set(fields) - _KNOWN
+    if unknown:
+        raise SpecError(f"spec of {name!r}: unknown keys {sorted(unknown)}")
+    missing = REQUIRED - set(fields)
+    if missing:
+        raise SpecError(f"spec of {name!r}: missing keys {sorted(k.value for k in missing)}")
+    _check(fields, name)
+    return TaskSpec(fields, actual)
+
+
+def _check(fields: Mapping[str, Any], name: Any) -> None:
+    def fail(problem: str) -> SpecError:
+        return SpecError(f"spec of {name!r}: {problem}")
+
+    for key in (K.TASK_ID, K.TASK_TYPE):
+        if not isinstance(fields[key], str) or not fields[key].strip():
+            raise fail(f"{key.value} must be a non-empty string")
+    dependencies = fields[K.DEPENDENCIES]
+    if not isinstance(dependencies, list) or not all(isinstance(d, str) and d for d in dependencies):
+        raise fail("dependencies must be a list of task names")
+    if len(set(dependencies)) != len(dependencies):
+        raise fail(f"dependencies name a task twice: {dependencies}")
+    if fields[K.TRIGGER_RULE] not in trigger_rules.KNOWN_RULES:
+        raise fail(f"unknown trigger_rule {fields[K.TRIGGER_RULE]!r}")
+    for key, least in ((K.EXECUTION_TIMEOUT, 1), (K.ORCHESTRATION_TIMEOUT, 1), (K.WAIT_BEFORE, 0)):
+        value = fields.get(key, least)
+        if isinstance(value, bool) or not isinstance(value, int) or value < least:
+            raise fail(f"{key.value} must be a whole number of seconds, at least {least}")
+    if not isinstance(fields.get(K.SKIP_ON_BACKFILL, False), bool):
+        raise fail("skip_on_backfill must be true or false")
+    if K.WAIT_FOR in fields:
+        try:
+            asset_spec.parse(fields[K.WAIT_FOR])
+        except ValueError as exc:
+            raise fail(f"wait_for: {exc}") from exc
