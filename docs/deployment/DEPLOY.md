@@ -30,7 +30,7 @@ polyris-destroy
 # Multi-DAG file — deploy specific DAG
 polyris-deploy --select acme-daily
 
-# Bulk: every subdirectory of the current directory
+# Bulk: every folder in the current directory (hidden ones and caches aside)
 polyris-deploy --all
 
 # Bulk: only the listed subdirectories

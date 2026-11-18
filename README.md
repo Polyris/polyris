@@ -2,6 +2,8 @@
 
 **Data pipelines that pause for you instead of failing on you.**
 
+For teams on AWS who want scheduled data pipelines without running Airflow.
+
 Serverless orchestration on AWS Step Functions. When a task fails, polyris
 waits for a human decision (retry / mark success / skip / fail) instead of
 nuking the run. Fix it inline, in the same execution.
@@ -11,8 +13,8 @@ from polyris import DAG, task
 
 with DAG("orders-etl", schedule="@daily") as dag:
 
-    @task.glue_job(job_name="extract-orders")
-    def extract(): ...
+    @task.glue_job(job_name="extract-orders")   # runs your existing Glue job
+    def extract(): ...                          # the body doesn't run in AWS
 
     @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:transform",
               retries=2)
@@ -35,7 +37,7 @@ here is how the operations differ:
 
 | | polyris | Airflow / Dagster / Prefect |
 |---|---|---|
-| **When a task fails** | Run pauses for a human decision — retry / mark success / skip / fail. Fix inline; upstream tasks that already succeeded don't re-run. | Retry policy, then the run fails. Re-execute from the failing task manually. |
+| **When a task fails** | The run waits for your decision — retry, mark success, skip, fail — then continues in the same execution. Upstream tasks that already succeeded don't re-run. | Retry policy; then you clear the task and re-run it from the UI or CLI. |
 | **Debugging a run** | Step Functions execution history in the AWS Console — graph, inputs, and error at each state. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
 | **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
 | **Assets & lineage** | First-class: `outlets=` / `wait_for=` / asset-triggered schedules — same model as Dagster. | Native in Dagster; add-on or missing in Airflow / Prefect. |

@@ -22,7 +22,10 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Callable, cast
 from dataclasses import dataclass, field
 
+from contextlib import ExitStack
+
 from .dag import DAG
+from .loader import PipelineLoadError, load_pipeline, open_pipeline
 from .task import Task
 from .generators import generate_step_function_json, generate_mermaid
 from .validation import validate_asl_from_dag
@@ -166,7 +169,7 @@ def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> Dict
     # DAG info
     print(c("📋 DAG Configuration:", BOLD))
     print(f"   ID:          {c(dag.dag_id, CYAN)}")
-    print(f"   Schedule:    {c(dag.schedule, CYAN) if dag.schedule else 'None (manual)'}")
+    print(f"   Schedule:    {c(str(dag.schedule), CYAN) if dag.schedule else 'None (manual)'}")
     print(f"   Description: {c(dag.description, CYAN) if dag.description else 'N/A'}")
     print(f"   Tags:        {c(str(dag.tags), CYAN) if dag.tags else []}")
     print()
@@ -600,64 +603,21 @@ def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
 # CLI Integration
 # ═══════════════════════════════════════════════════════════════
 
-def _load_dag_from_file(dag_file: str) -> DAG:
-    """Load a DAG from a pipeline file using DAG.__exit__ instrumentation.
+def _load_dag_from_file(dag_file: str, stack: Optional[ExitStack] = None) -> DAG:
+    """The DAG a pipeline file makes last, through the one loader every CLI uses (ADR #139).
 
-    Uses the same discovery pattern as extract_dag_info / _validate_single
-    (CLAUDE.md §): works for `with DAG("name"):` blocks that don't assign
-    `as dag` — unlike vars(mod) which only finds module-level bindings.
-
-    Only DAGs defined in the pipeline file itself are returned — DAGs from
-    imported modules are excluded via a sys.modules locality filter (CLAUDE.md).
+    With ``stack``, the file stays open (``open_pipeline``) until the stack closes, so a task
+    body run after the load can still import a sibling module.
     """
-    import importlib.util
-
-    created_dags: List[DAG] = []
-    original_exit = DAG.__exit__
-
-    def tracking_exit(self: Any, *args: Any) -> Any:
-        created_dags.append(self)
-        return original_exit(self, *args)
-
-    DAG.__exit__ = tracking_exit  # type: ignore[method-assign]
     try:
-        spec = importlib.util.spec_from_file_location("dag_module", dag_file)
-        if spec is None or spec.loader is None:  # pragma: no cover — defensive: spec_from_file_location returns None only for paths Python cannot load
-            raise ImportError(f"Cannot load module from {dag_file}")
-        module = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(module)
-        except (Exception, SystemExit) as e:
-            if isinstance(e, SystemExit) and e.code in (0, None):
-                pass  # exit(0) or bare sys.exit() (code=None) means ran to completion
-            else:
-                code = e.code if isinstance(e, SystemExit) else None
-                msg = f"sys.exit({code})" if code is not None else str(e)
-                print(f"❌ Error loading {c(dag_file, BOLD)}: {c(msg, RED)}")
-                sys.exit(1)
-    finally:
-        DAG.__exit__ = original_exit  # type: ignore[method-assign]
-
-    # Locality filter (CLAUDE.md): exclude DAGs that appear as named attributes in any
-    # imported module — those were defined elsewhere and merely imported by the pipeline
-    # file. The pipeline file's own module is not in sys.modules (we use module_from_spec
-    # without adding it), so any DAG found in sys.modules came from an import.
-    imported_dag_ids: set[int] = set()
-    for _mod in sys.modules.values():
-        try:
-            for _obj in vars(_mod).values():
-                if isinstance(_obj, DAG):
-                    imported_dag_ids.add(id(_obj))
-        except TypeError:  # pragma: no cover — built-in modules without __dict__
-            pass
-
-    local_dags = [d for d in created_dags if id(d) not in imported_dag_ids]
-
-    if not local_dags:
+        loaded = stack.enter_context(open_pipeline(dag_file)) if stack else load_pipeline(dag_file)
+    except PipelineLoadError as e:
+        print(f"❌ Error loading {c(dag_file, BOLD)}: {c(str(e), RED)}")
+        sys.exit(1)
+    if not loaded.dags:
         print(f"❌ No DAG found in {c(dag_file, BOLD)}")
         sys.exit(1)
-
-    return local_dags[-1]
+    return loaded.dags[-1]
 
 
 def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs: Any) -> None:
@@ -668,18 +628,19 @@ def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs: Any) -> None:
         dag_file: Path to Python file containing DAG
         mode: One of 'dry-run', 'validate', 'mock', 'localstack'
     """
-    dag = _load_dag_from_file(dag_file)
+    with ExitStack() as stack:
+        dag = _load_dag_from_file(dag_file, stack)
 
-    if mode == 'dry-run':
-        dry_run(dag, **kwargs)
-    elif mode == 'validate':
-        validate(dag, **kwargs)
-    elif mode == 'mock':
-        run(dag, mock=True, **kwargs)
-    elif mode == 'localstack':
-        run(dag, localstack=True, **kwargs)  # pragma: no cover — requires LocalStack running at localhost:4566
-    else:
-        print(f"❌ Unknown mode: {mode}")
+        if mode == 'dry-run':
+            dry_run(dag, **kwargs)
+        elif mode == 'validate':
+            validate(dag, **kwargs)
+        elif mode == 'mock':
+            run(dag, mock=True, **kwargs)
+        elif mode == 'localstack':
+            run(dag, localstack=True, **kwargs)  # pragma: no cover — requires LocalStack running at localhost:4566
+        else:
+            print(f"❌ Unknown mode: {mode}")
 
 
 def main() -> None:
@@ -740,17 +701,18 @@ def main() -> None:
     colorize_parser(parser)
     args = parser.parse_args()
 
-    dag = _load_dag_from_file(args.file)
+    with ExitStack() as stack:
+        dag = _load_dag_from_file(args.file, stack)
 
-    if args.validate:
-        sys.exit(0 if validate(dag)['valid'] else 1)
-    elif args.mock:
-        sys.exit(0 if run(dag, mock=True).status == 'success' else 1)
-    elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
-        sys.exit(0 if run(dag, localstack=True).status == 'success' else 1)
-    else:
-        # Default: --dry-run (also reached when --dry-run is passed explicitly)
-        sys.exit(0 if dry_run(dag, show_asl=args.asl)['valid'] else 1)
+        if args.validate:
+            sys.exit(0 if validate(dag)['valid'] else 1)
+        elif args.mock:
+            sys.exit(0 if run(dag, mock=True).status == 'success' else 1)
+        elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
+            sys.exit(0 if run(dag, localstack=True).status == 'success' else 1)
+        else:
+            # Default: --dry-run (also reached when --dry-run is passed explicitly)
+            sys.exit(0 if dry_run(dag, show_asl=args.asl)['valid'] else 1)
 
 
 if __name__ == '__main__':  # pragma: no cover — module entrypoint

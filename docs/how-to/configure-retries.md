@@ -78,7 +78,7 @@ Waits: 2m, 4m, 8m. Simple exponential without jitter — this is one task, no he
 
 ```python
 @task.batch_job(
-    job_definition="ml-training:1",
+    job_definition="ml-training",
     job_queue="high-mem",
     retries=1,
     retry_delay=timedelta(minutes=1),

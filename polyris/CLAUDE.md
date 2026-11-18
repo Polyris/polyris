@@ -58,17 +58,20 @@ The field used for saving (`parent_group`) must be populated in `__enter__`, not
 ## Deploy file scanning: filter by locality, not by name; non-zero exits are errors
 
 `_load_dag_from_file` must return only DAGs **defined in the loaded file**, never ones
-merely imported into it. Use `sys.modules` after `exec_module` to build a set of all
-DAG object IDs known in other modules; exclude those from the result. The `obj.__module__`
-attribute does **not** work for this — DAG instances always carry `__module__ == "polyris.dag"`
-regardless of where they were instantiated.
+merely imported into it: `load_pipeline` does this for every command (see "Pipeline files load
+through `polyris.loader.load_pipeline`" below). The `obj.__module__` attribute does **not**
+work for this — DAG instances always carry `__module__ == "polyris.dag"` regardless of where
+they were instantiated.
 
 `except SystemExit: pass` silently swallows a pipeline file calling `sys.exit(1)`, hiding
 load errors. Re-raise non-zero exits: `if code != 0: sys.exit(1)`. Tolerate `exit(0)`.
 
-`_discover_dags_in_dir` must deduplicate by `dag_id`: if two files in the same directory
-define the same `dag_id`, keep the first and warn about the duplicate. Silent double-deploy
-would run the pipeline twice in the same batch.
+A `dag_id` that two files make — in one directory or two — stops `--all` before anything is
+deployed (`_run_bulk` → `_dag_ids_made_twice`, `loader.duplicate_dag_ids`), and fails
+`validate --all`: each DAG is one stack, so one would replace the other. Never keep the first
+and warn: across folders that silently replaced a stack. A file that fails to load (an error, a
+non-zero exit, one `dag_id` twice in the file) is a failure of the batch, never a quiet skip:
+`_run_bulk` counts it and exits 1, since its stack was neither deployed nor destroyed.
 
 ## Graph objects: always `@dataclass(eq=False)`
 
@@ -453,14 +456,14 @@ any caller doing `json.loads(output)`. `_validate_single` prints progress when
 
 `SystemExit` is a `BaseException` subclass — it does not inherit from `Exception` and is
 not caught by `except Exception`. Any code that calls `spec.loader.exec_module()` on a
-user-supplied pipeline file must use `except (Exception, SystemExit)`:
+user-supplied file must catch `SystemExit` as well. For a pipeline file that code is
+`polyris.loader.open_pipeline`, so its callers catch `PipelineLoadError`:
 
 ```python
 try:
-    dags = extract_dag_info(file_path)
-except (Exception, SystemExit) as e:
-    msg = f"sys.exit({e.code})" if isinstance(e, SystemExit) else str(e)
-    errors.append(f"{file_path}: {msg}")
+    dags = load_pipeline(file_path).dags
+except PipelineLoadError as e:  # an error, a non-zero sys.exit, a dag_id made twice
+    errors.append(f"{file_path}: {e}")
 ```
 
 **Why:** A pipeline file that calls `sys.exit()` at module level (e.g., it imports a module
@@ -469,34 +472,39 @@ With `except Exception` only, the `SystemExit` propagates through all callers an
 CLI process with the pipeline's own exit code and zero diagnostic output. Hit in
 `validate_all`, `_validate_single`, and `_run_test` before 1.0.3.
 
-**How to apply:** Anywhere `exec_module` is called on a file path the user provided —
-not on modules we control internally.
+**How to apply:** `polyris.loader.load_pipeline` is the one place that runs a user's pipeline
+file; it turns a non-zero `SystemExit` and any exception into a `PipelineLoadError` and lets
+`sys.exit(0)` end the file normally. Callers catch `PipelineLoadError`. The rule stands for any
+other `exec_module` on a file path the user provided — not on modules we control internally.
 
-## DAG discovery in loaded modules must use `DAG.__exit__` instrumentation, never `vars(mod)`
+## Pipeline files load through `polyris.loader.load_pipeline` (ADR #139)
 
-Any code that loads a pipeline file and searches for DAG instances must use the
-`DAG.__exit__` hook pattern (same as `extract_dag_info`):
+Every command that runs a pipeline file — `polyris-validate` (and `--test`), `polyris-deploy`,
+`polyris-output`, `polyris-local` — calls `load_pipeline(path)` and uses its `.dags`, or keeps
+the file open with `open_pipeline(path)` while it runs task bodies (`polyris-local`, `--test`).
+Never run a pipeline file another way: `tests/sdk/test_loader.py` fails when a module of
+`polyris/` other than `loader.py` (and `config.py`, which runs the project's `config.py`) calls
+`exec_module` or `spec_from_file_location`.
 
-```python
-created_dags = []
-original_exit = DAG.__exit__
-def tracking_exit(self, *args):
-    created_dags.append(self)
-    return original_exit(self, *args)
-DAG.__exit__ = tracking_exit
-try:
-    spec.loader.exec_module(module)
-finally:
-    DAG.__exit__ = original_exit
-```
+A DAG belongs to the file unless an `import` made it: `recording_dags` records it when it is
+made (`DAG.__post_init__`), and `_made_in_an_import` looks for an import in progress
+(`importlib._bootstrap._find_and_load`) between it and the loader. One `dag_id` made twice is a
+`PipelineLoadError` for every command.
 
-Never use `[v for v in vars(mod).values() if isinstance(v, DAG)]`.
+`--all` (validate and deploy) finds files one way — `loader.pipeline_folders`, `files_in`,
+`is_pipeline_file` (`dag.py` by name; otherwise the file's code, parsed with `ast` from its
+bytes, imports `DAG`, `dag` or `Pipeline` from polyris — read from the text, comments aside,
+only when it does not parse) — and loads each folder in its own
+process through `polyris.folder_process` only. Never isolate folders by forgetting modules in
+one process, and never pass a folder's process anything through the environment: the request
+and answer are JSON files on its command line. The parent never loads a pipeline file itself.
+`sigterm_stops_children` belongs to the parent only: in a folder's process SIGTERM keeps its
+default, or the process goes on deploying after it was stopped.
 
-`vars(mod)` only finds objects bound to a module-level name. A pipeline written
-`with DAG("name"):` (without `as dag`) creates no binding — `vars(mod)` returns an
-empty list, producing a false-positive "No DAG found" error on a perfectly valid
-file. The `DAG.__exit__` hook fires unconditionally when the `with` block exits,
-regardless of whether the result is assigned. Hit in `_validate_single` before 1.0.3.
+**Why:** each command had its own loader and its own rule, and a file passed validation and
+then could not be deployed (F18 and the files like it, up to 1.2.2). Each local fix — of the
+loader, of the isolation between folders, of the file rule — failed the next review until the
+model changed (Principle #42).
 
 ## Asset `&` / `|` algebra routes through `_combine_and` / `_combine_or` — never per-class dispatch
 

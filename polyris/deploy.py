@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import sys
-import importlib.util
 import argparse
 import threading
 import traceback
@@ -51,6 +50,8 @@ from .generators import (
     generate_dag_hash,
 )
 from .dag import DAG
+from . import folder_process
+from .loader import PipelineLoadError, duplicate_dag_ids, files_in, load_pipeline, out_of_reach_warnings, pipeline_folders
 from . import resource_tags
 from .cfn_changeset import (
     TEMPLATE_BODY_LIMIT,
@@ -988,81 +989,148 @@ def deploy_pipeline(
 
 
 def _load_dag_from_file(path: Path) -> list:
-    """Load DAG(s) from a dag.py file.
+    """The DAG(s) a pipeline file defines, through the one loader every CLI uses (ADR #139).
 
     Imports pipeline file purely for DAG extraction.
     Pipeline files should not contain AWS calls at module level.
+    A file that does not load, or that defines one dag_id twice, prints why and exits 1.
     """
-    spec = importlib.util.spec_from_file_location("pipeline", path)
-    if (
-        spec is None or spec.loader is None
-    ):  # pragma: no cover -- defensive: returns a loaded spec for existing .py paths
-        raise ImportError(f"Cannot load module from {path}")
-    module = importlib.util.module_from_spec(spec)
-
     try:
-        spec.loader.exec_module(module)
-    except SystemExit as e:
-        code = e.code if isinstance(e.code, int) else 1
-        if code != 0:
-            print(f"❌ Error loading pipeline: exited with code {code}")
-            sys.exit(1)
-        # exit(0) is tolerated — treat as success
-    except Exception as e:
+        return load_pipeline(path).dags
+    except PipelineLoadError as e:
         print(f"❌ Error loading pipeline: {e}")
         sys.exit(1)
 
-    # Exclude DAGs that are merely imported from other modules.
-    # A DAG is "local" only if it is not referenced by any other currently-loaded module.
-    dags_in_other_modules: set = set()
-    for mod in list(sys.modules.values()):
-        if mod is None or mod is module or not hasattr(mod, '__dict__'):
-            continue
-        try:
-            for val in mod.__dict__.values():
-                if isinstance(val, DAG):
-                    dags_in_other_modules.add(id(val))
-        except RuntimeError:
-            pass
 
-    seen: set = set()
-    dags = []
-    for obj in module.__dict__.values():
-        if isinstance(obj, DAG) and id(obj) not in dags_in_other_modules and id(obj) not in seen:
-            seen.add(id(obj))
-            dags.append(obj)
-    return dags
-
-
-def _discover_dags_in_dir(dir_path: Path) -> "List[Tuple[Path, DAG]]":
+def _discover_dags_in_dir(dir_path: Path, failed: "Optional[List[Path]]" = None) -> "List[Tuple[Path, DAG]]":
     """Find every DAG in every .py file directly inside dir_path (non-recursive).
 
-    A .py file with zero DAG objects (a shared config.py, a utils module, etc.)
-    contributes nothing and is silently skipped — that's expected, not an error.
+    Only the folder's pipeline files are loaded (``loader.files_in``: dag.py, or a file that
+    imports ``DAG``, ``dag`` or ``Pipeline`` from polyris), as ``polyris-validate --all`` does: a
+    Glue script next to dag.py is never run, and the files left out are listed. A pipeline file with zero DAG objects contributes nothing
+    and is silently skipped — that's expected, not an error.
     A file that fails to *load* (syntax error, import error, an accidental
-    top-level AWS call raising) is reported and skipped too, rather than
-    aborting the whole batch — _load_dag_from_file calls sys.exit(1) on load
-    failure, which is exactly right for the single-file CLI path but wrong
-    here, so it's caught as SystemExit and turned into "skip this file".
+    top-level AWS call raising, one dag_id twice) is reported and skipped, rather
+    than aborting the whole batch — _load_dag_from_file calls sys.exit(1) on load
+    failure, which is exactly right for the single-file CLI path but wrong here.
+    It is added to ``failed`` when given, so the batch can count it as a failure:
+    a skipped file leaves its stack as it was.
     """
     found: "List[Tuple[Path, DAG]]" = []
-    seen_dag_ids: dict = {}
-    for py_file in sorted(dir_path.glob("*.py")):
+    files = files_in(dir_path)
+    if files.others:
+        print(f"  (not pipeline files, not run: {', '.join(p.name for p in files.others)})")
+    for py_file in files.pipelines:
         try:
             dags = _load_dag_from_file(py_file)
         except SystemExit:
             print(f"  ⚠️  Skipping {py_file} (failed to load)")
+            if failed is not None:
+                failed.append(py_file)
             continue
-        for dag in dags:
-            if dag.dag_id in seen_dag_ids:
-                print(
-                    f"  ⚠️  Skipping duplicate dag_id '{dag.dag_id}' in {py_file.name} "
-                    f"(already defined in {seen_dag_ids[dag.dag_id].name})"
-                )
-                continue
-            seen_dag_ids[dag.dag_id] = py_file
-            found.append((py_file, dag))
+        # A dag_id made by two files never gets here: _run_bulk refuses the run first
+        found.extend((py_file, dag) for dag in dags)
     return found
+
+
+BulkResult = Tuple[str, str, bool, Optional[str]]
+
+
+def deploy_directory(
+    dir_name: str,
+    *,
+    select: Optional[str],
+    stage: Optional[str],
+    region: Optional[str],
+    dry_run: bool,
+    destroy: bool,
+    log_level: str,
+    log_retention_days: int,
+    profile: Optional[str],
+    stack: Optional[str] = None,
+) -> "List[BulkResult]":
+    """Deploy or destroy every DAG in one directory, in this process; one result per DAG.
+
+    ``_run_bulk`` runs it in the directory's own process (``polyris.folder_process``, command
+    ``deploy``).
+
+    Each DAG's deploy_pipeline() call is isolated with its own try/except, so one failure —
+    a validation error, an AWS error, anything that would sys.exit(1) in the single-pipeline
+    path — is recorded and the next DAG still runs.
+    """
+    action = "destroy" if destroy else "deploy"
+    results: "List[BulkResult]" = []
+    dir_path = Path(dir_name)
+    if not dir_path.is_dir():
+        print(f"❌ Not a directory: {dir_name}")
+        results.append((dir_name, "-", False, "not a directory"))
+        return results
+
+    print(f"\n=== {dir_name} ===")
+    unloadable: "List[Path]" = []
+    dags = _discover_dags_in_dir(dir_path, unloadable)
+    # A file that did not load is a failure of the batch, never a quiet skip: its stack
+    # was neither deployed nor destroyed.
+    results.extend((dir_name, f.name, False, "failed to load") for f in unloadable)
+
+    if select:
+        dags = [(f, d) for f, d in dags if d.dag_id == select]
+        if not dags:
+            print(f"  (no DAG '{select}' here — skipping)")
+            return results
+
+    if not dags:
+        print("  (no DAGs found — skipping)")
+        return results
+
+    for py_file, dag in dags:
+        print(f"  → {action}ing '{dag.dag_id}' (from {py_file.name})")
+        try:
+            deploy_pipeline(
+                dag=dag,
+                stage=stage,
+                stack=stack,
+                region=region,
+                dry_run=dry_run,
+                destroy=destroy,
+                log_level=log_level,
+                log_retention_days=log_retention_days,
+                profile=profile,
+            )
+            results.append((dir_name, dag.dag_id, True, None))
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 1
+            if code == 0:
+                results.append((dir_name, dag.dag_id, True, None))
+            else:
+                results.append((dir_name, dag.dag_id, False, f"exited with code {code}"))
+        except Exception as e:  # pragma: no cover -- defensive: deploy_pipeline's own
+            # error paths all go through sys.exit, this guards
+            # against a future change that raises instead
+            results.append((dir_name, dag.dag_id, False, str(e)))
+    return results
+
+
+def _check_dag_ids(target_dirs: "List[str]", select: Optional[str]) -> "Tuple[List[str], dict]":
+    """The dag_ids (``select`` alone, when given) that two files across ``target_dirs`` make,
+    and the directories whose dag_ids could not be read, with why.
+
+    Each directory's files load in its own process, without deploying. A file that does not
+    load is reported by the deploy that follows; a directory whose process ended without
+    answering is not deployed, since its dag_ids were not checked."""
+    made: "List[Tuple[str, str]]" = []
+    unchecked: "dict" = {}
+    folders = [(d, [str(p) for p in files_in(d).pipelines]) for d in target_dirs if Path(d).is_dir()]
+    folders = [(d, files) for d, files in folders if files]
+    print(f"Checking the dag_ids of {len(folders)} folder(s)...")
+    for dir_name, files in folders:
+        answer = folder_process.run("collect", {"files": files}, output="none")
+        if answer.error is not None:
+            unchecked[dir_name] = answer.error
+            continue
+        made += [(d["dag_id"], d["file_path"]) for d in answer.payload["infos"]
+                 if select is None or d["dag_id"] == select]
+    return duplicate_dag_ids(made), unchecked
 
 
 def _run_bulk(
@@ -1080,62 +1148,34 @@ def _run_bulk(
 ) -> None:
     """Deploy or destroy every DAG found across target_dirs (--all / --only).
 
-    Each directory is scanned independently (see _discover_dags_in_dir); each
-    DAG's deploy_pipeline() call is isolated with its own try/except so one
-    failure — a validation error, an AWS error, anything that would normally
-    sys.exit(1) in the single-pipeline path — is recorded and the batch moves
-    on to the next DAG, rather than aborting everything after it. A summary
-    prints at the end regardless of outcome; the process exits non-zero if
-    anything failed, so this is safe to use as a CI/script gate.
+    Each directory runs in its own Python process (``polyris.folder_process``), so nothing one
+    folder imports reaches the next (ADR #139). First every directory's dag_ids are collected,
+    each in its own process too: a dag_id that two files make stops the run before anything is
+    deployed, since each DAG is one stack and one would replace the other. A summary prints at
+    the end regardless of outcome; the process exits non-zero if anything failed, so this is
+    safe to use as a CI/script gate.
     """
-    action = "destroy" if destroy else "deploy"
-    results: "List[Tuple[str, str, bool, Optional[str]]]" = []
-
-    for dir_name in sorted(target_dirs):
-        dir_path = Path(dir_name)
-        if not dir_path.is_dir():
-            print(f"❌ Not a directory: {dir_name}")
-            results.append((dir_name, "-", False, "not a directory"))
-            continue
-
-        print(f"\n=== {dir_name} ===")
-        dags = _discover_dags_in_dir(dir_path)
-
-        if select:
-            dags = [(f, d) for f, d in dags if d.dag_id == select]
-            if not dags:
-                print(f"  (no DAG '{select}' here — skipping)")
+    options = dict(select=select, stage=stage, region=region, dry_run=dry_run, destroy=destroy,
+                   log_level=log_level, log_retention_days=log_retention_days, profile=profile, stack=stack)
+    results: "List[BulkResult]" = []
+    target_dirs = sorted(set(target_dirs))  # --only a a: one directory, deployed once
+    with folder_process.sigterm_stops_children():
+        twice, unchecked = _check_dag_ids(target_dirs, select)
+        if twice:
+            for message in twice:
+                print(f"❌ {message}")
+            print(f"\nNothing was {'destroyed' if destroy else 'deployed'}: give each DAG its own dag_id.")
+            sys.exit(1)
+        for dir_name in target_dirs:
+            if not Path(dir_name).is_dir():
+                results += deploy_directory(dir_name, **options)  # type: ignore[arg-type]  # options holds deploy_directory's own keywords
                 continue
-
-        if not dags:
-            print("  (no DAGs found — skipping)")
-            continue
-
-        for py_file, dag in dags:
-            print(f"  → {action}ing '{dag.dag_id}' (from {py_file.name})")
-            try:
-                deploy_pipeline(
-                    dag=dag,
-                    stage=stage,
-                    stack=stack,
-                    region=region,
-                    dry_run=dry_run,
-                    destroy=destroy,
-                    log_level=log_level,
-                    log_retention_days=log_retention_days,
-                    profile=profile,
-                )
-                results.append((dir_name, dag.dag_id, True, None))
-            except SystemExit as e:
-                code = e.code if isinstance(e.code, int) else 1
-                if code == 0:
-                    results.append((dir_name, dag.dag_id, True, None))
-                else:
-                    results.append((dir_name, dag.dag_id, False, f"exited with code {code}"))
-            except Exception as e:  # pragma: no cover -- defensive: deploy_pipeline's own
-                # error paths all go through sys.exit, this guards
-                # against a future change that raises instead
-                results.append((dir_name, dag.dag_id, False, str(e)))
+            if dir_name in unchecked:
+                print(f"\n=== {dir_name} ===\n  ❌ its dag_ids could not be checked: {unchecked[dir_name]}")
+                results.append((dir_name, "-", False, f"not deployed: its dag_ids could not be checked ({unchecked[dir_name]})"))
+                continue
+            answer = folder_process.run("deploy", {"dir_name": dir_name, **options})
+            results += [tuple(r) for r in answer.payload] if answer.error is None else [(dir_name, "-", False, answer.error)]
 
     succeeded = [r for r in results if r[2]]
     failed = [r for r in results if not r[2]]
@@ -1189,7 +1229,7 @@ Examples:
     bulk_group.add_argument(
         "--all",
         action="store_true",
-        help="Bulk mode: deploy/destroy every immediate subdirectory of the current directory",
+        help="Bulk mode: deploy/destroy every folder in the current directory (hidden ones and caches aside)",
     )
     bulk_group.add_argument(
         "--only", nargs="+", metavar="DIR", help="Bulk mode: deploy/destroy only the listed subdirectories"
@@ -1212,7 +1252,12 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
         if args.file is not None:
             print("❌ --file is not used with --all/--only — each directory's .py files are discovered automatically")
             sys.exit(1)
-        target_dirs = args.only if args.only else [str(p) for p in sorted(Path(".").iterdir()) if p.is_dir()]
+        if args.only:
+            target_dirs = args.only
+        else:
+            target_dirs = [str(p) for p in pipeline_folders(".")]
+            for warning in out_of_reach_warnings("."):
+                print(f"⚠️  {warning}")
         _run_bulk(
             target_dirs,
             select=args.select,
@@ -1250,7 +1295,7 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
 
     if len(dags) > 1 and not args.select:
         print(f"Found {len(dags)} DAGs: {[d.dag_id for d in dags]}")
-        print("Deploying all...")
+        print("Destroying all..." if destroy else "Deploying all...")
 
     # Deploy each DAG
     for dag in dags:

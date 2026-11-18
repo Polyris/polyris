@@ -628,7 +628,7 @@ class ECSTask(Step):
         container_job = ECSTask(
             step_id="run_container",
             cluster="my-cluster",
-            task_definition="my-task:1",
+            task_definition="my-task",
             launch_type="FARGATE",
             overrides={
                 "containerOverrides": [{

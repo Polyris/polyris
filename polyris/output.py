@@ -9,38 +9,25 @@ Reads dag.py from current directory and outputs:
 """
 
 import sys
-import importlib.util
-from pathlib import Path
 
 from ._ansi import c, colorize_parser, CYAN, RED
+from .loader import PipelineLoadError, PipelineNotFoundError, load_pipeline
 
 
 def _load_dags(dag_file: str):
-    """Load DAG(s) from file."""
-    path = Path(dag_file)
-    if not path.exists():
+    """The DAG(s) a pipeline file defines, through the one loader every CLI uses (ADR #139)."""
+    try:
+        loaded = load_pipeline(dag_file)
+    except PipelineNotFoundError:
         print(f"{c('❌ Pipeline file not found:', RED)} {c(dag_file, CYAN)}")
         sys.exit(1)
-
-    try:
-        spec = importlib.util.spec_from_file_location("_dag", path)
-        if spec is None or spec.loader is None:  # pragma: no cover -- defensive: spec_from_file_location returns a loaded spec for existing .py paths
-            raise ImportError(f"Cannot load module from {path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        from polyris.dag import DAG as PolyrisDAG
-        dags = [v for v in vars(mod).values() if isinstance(v, PolyrisDAG)]
-
-        if not dags:
-            print(f"{c('❌ No DAG found in', RED)} {c(dag_file, CYAN)}")
-            sys.exit(1)
-
-        return dags, mod
-
-    except Exception as e:
+    except PipelineLoadError as e:
         print(f"{c('❌ Failed to load', RED)} {c(dag_file, CYAN)}: {e}")
         sys.exit(1)
+    if not loaded.dags:
+        print(f"{c('❌ No DAG found in', RED)} {c(dag_file, CYAN)}")
+        sys.exit(1)
+    return loaded.dags, loaded.module
 
 
 def _select_dag(dags, select_id=None):
