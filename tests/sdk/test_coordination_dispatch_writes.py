@@ -111,6 +111,15 @@ def test_a_stop_raises_the_generation_to_fence_a_running_run_task(ddb):
     assert "attention" not in written
 
 
+def test_a_row_whose_run_row_is_missing_is_stopped_without_a_version_to_check(ddb):
+    seed(ddb, status=S.RUNNING.value)
+    judgment = dispatch.stop(row(S.RUNNING.value), now=NOW, cause="its run row is missing")
+    items = dispatch_writes.task_write(row(S.RUNNING.value), judgment, None, table=TABLE, now=NOW)
+    assert len(items) == 1 and send(ddb, items) and get(ddb, KEY)["status"] == "stopped"
+    with pytest.raises(ValueError, match="only within its run"):
+        dispatch_writes.task_write(row(), ready(), None, table=TABLE, now=NOW)
+
+
 def test_a_failed_row_enters_the_bell_when_it_failed(ddb):
     seed(ddb)
     judgment = dispatch.Judgment("load", "fail_wait", {task_row.ERROR: "the row of its upstream x is missing"},

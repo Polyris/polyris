@@ -14,8 +14,10 @@ ASSET_EVENTS_TABLE = os.environ.get("ASSET_EVENTS_TABLE", "asset-events")
 PIPELINES_TABLE = os.environ.get("PIPELINES_TABLE", "pipeline-registry")
 #: Push consumers: pipelines with `schedule=[assets]` (AssetFanout only).
 ASSET_SUBSCRIPTIONS_TABLE = os.environ.get("ASSET_SUBSCRIPTIONS_TABLE", "asset-subscriptions")
-#: The task specs (ADR #137 §8), which Start_Run reads.
+#: The task specs (ADR #137 §8), which Start_Run and the dispatcher read.
 SPECS_TABLE = os.environ.get("SPECS_TABLE", "pipeline-specs")
+#: The state machine the dispatcher starts for a ready row (ADR #137 §1).
+RUN_TASK_ARN = os.environ.get("RUN_TASK_ARN", "run-task")
 #: The function the asset-events stream feeds; the sweeper checks its event source mapping.
 ASSET_FANOUT_FUNCTION = os.environ.get("ASSET_FANOUT_FUNCTION", "asset-fanout")
 

@@ -63,6 +63,9 @@ class RunView:
     token_order: Optional[int] = None
     answered_order: Optional[int] = None
     summary: Optional[Mapping[str, int]] = None
+    date: str = ""                         # the run's date, by which its rows are keyed
+    left_at: Optional[str] = None          # when a pass last left rows (§7)
+    requests: bool = False                 # a heavy action waits on the run (§3)
 
     @property
     def active(self) -> bool:
@@ -95,6 +98,8 @@ def run_view(item: Mapping[str, Any]) -> RunView:
         step_failure=item.get(run_row.STEP_FAILURE), task_count=int(item.get(run_row.TASK_COUNT, 0)),
         token_order=_int(item.get(run_row.TOKEN_ORDER)), answered_order=_int(item.get(run_row.ANSWERED)),
         summary={str(k): int(v) for k, v in summary.items()} if isinstance(summary, Mapping) else None,
+        date=str(item.get(run_row.RUN_DATE, "")), left_at=item.get(run_row.LEFT_AT),
+        requests=bool(item.get(run_row.REQUESTS)),
     )
 
 

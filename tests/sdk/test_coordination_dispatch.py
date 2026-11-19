@@ -385,9 +385,11 @@ def test_a_run_row_reads_back_as_the_pass_judges_it():
     item: Dict[str, Any] = {run_row.TABLE_KEY: "_run_orders", run_row.EXECUTION: "orders", run_row.STATUS: "active",
                             run_row.RUN_VERSION: 7, run_row.TASK_COUNT: 3, run_row.TOKEN_ORDER: 2,
                             run_row.ANSWERED: 2, run_row.SUMMARY: {"success": 3},
-                            run_row.PAUSES: [[1763553600]], run_row.STOP: {"by": "ops"}}
+                            run_row.PAUSES: [[1763553600]], run_row.STOP: {"by": "ops"}, run_row.RUN_DATE: "2026-11-19",
+                            run_row.LEFT_AT: "2026-11-19T12:00:00.000Z", run_row.REQUESTS: {"renew_ttl": {"by": "x"}}}
     view = dispatch.run_view(item)
     assert (view.version, view.task_count, view.answered, view.paused, view.stopping) == (7, 3, True, True, True)
+    assert (view.date, view.left_at, view.requests) == ("2026-11-19", "2026-11-19T12:00:00.000Z", True)
     assert view.active and view.summary == {"success": 3}
     assert not dispatch.run_view({**item, run_row.STOP_DONE: True}).stopping
 

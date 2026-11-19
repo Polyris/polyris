@@ -37,10 +37,12 @@ _serializer = TypeSerializer()
 ROW_CONDITION = "#status = :read AND #g = :g"
 
 
-def task_write(row: RowView, judgment: Judgment, run: RunView, *, table: str, now: datetime) -> List[Dict[str, Any]]:
+def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, table: str,
+               now: datetime) -> List[Dict[str, Any]]:
     """The transact items of ``judgment``'s write: none when nothing changes, the row's ``Update`` alone, or
     with the run row's ``ConditionCheck`` (a decision, or a pause that removes or postpones the due time).
 
+    ``run`` is None for the stop of a row whose run row is missing (invariant 11): there is no version to check.
     One item is sent as ``UpdateItem``, two as ``TransactWriteItems``.
     """
     if judgment.task_id != row.task_id:
@@ -59,6 +61,8 @@ def task_write(row: RowView, judgment: Judgment, run: RunView, *, table: str, no
         sets.append("#status = :status")
         values[":status"] = status
         if judgment.transition == "ready":
+            if run is None:
+                raise ValueError(f"{row.key}: a row is made ready only within its run")
             fields[task_row.TASK_RUN_ID] = run_name.run_task_name(row.key, run.run_start, row.generation)
         if judgment.transition == "stop":
             sets.append("#g = :g_next")
@@ -81,7 +85,7 @@ def task_write(row: RowView, judgment: Judgment, run: RunView, *, table: str, no
               "ConditionExpression": ROW_CONDITION, "ExpressionAttributeNames": names,
               "ExpressionAttributeValues": _typed(values)}
     items: List[Dict[str, Any]] = [{"Update": update}]
-    if judgment.transition or _pause_moves_due(row, judgment, run):
+    if run is not None and (judgment.transition or _pause_moves_due(row, judgment, run)):
         items.append(version_check(run, table=table))
     return items
 
