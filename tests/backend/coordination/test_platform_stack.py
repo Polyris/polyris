@@ -10,6 +10,7 @@ from moto import mock_aws
 from bindings import Bindings
 from platform_stack import Stack
 from sfn_runtime import Runtime
+from streams import StreamAdapter
 
 NOW = "2026-11-12T06:00:00.000Z"
 RUN = "orders_daily-run-2026-11-12-0000abcd"
@@ -144,3 +145,85 @@ def test_unbound_lambdas_fail_the_state_that_calls_them():
     arn = rt.start_execution(stateMachineArn=m.arn)["executionArn"]
     rt.run()
     assert rt.executions[arn].error == "Lambda.ResourceNotFoundException"
+
+
+# ── the dispatcher on the tasks table's stream, with run_task's stand-in (ADR #137 §1, §7) ──
+
+@pytest.fixture
+def engine():
+    from types import SimpleNamespace
+
+    with mock_aws():
+        stack = Stack(boto3.client("dynamodb", region_name="us-east-1"), now=lambda: NOW)
+        bindings = Bindings(stack, boto3.resource("dynamodb", region_name="us-east-1"),
+                            lambda: datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc))
+        bindings.start_run()
+        dispatch = bindings.dispatcher(bindings.run_task_stub())
+        stream = StreamAdapter.for_mapping(stack, "TasksDispatchMapping", table="PipelineTokensTable",
+                                           key="execution_name")
+        yield SimpleNamespace(stack=stack, stream=stream, dispatch=dispatch)
+        bindings.close()
+
+
+def _settle(engine) -> None:
+    """Run the stack until neither an execution nor the tasks stream has anything left to do."""
+    for _ in range(100):
+        engine.stack.runtime.run()
+        if not engine.stream.deliver(engine.dispatch):
+            return
+    raise AssertionError("the stack did not settle")
+
+
+def _chain_dag():
+    from polyris import DAG, task
+
+    with DAG("orders_daily", schedule="cron(0 6 * * ? *)") as dag:
+        @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:extract")
+        def extract(): ...
+
+        @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:load")
+        def load(): ...
+
+        extract() >> load()
+    return dag
+
+
+def _work(engine, task: str):
+    [job] = [j for j in engine.stack.runtime.jobs.values() if j.arguments.get("JobName") == task]
+    return job
+
+
+def test_a_run_goes_to_its_end_through_the_tasks_stream(engine):
+    """Start_Run writes the rows; the stream wakes the dispatcher at each change; its last pass answers the run."""
+    execution = _start(engine.stack, _chain_dag())
+    _settle(engine)
+    assert [j.arguments["JobName"] for j in engine.stack.runtime.jobs.values()] == ["extract"]
+    assert _item(engine.stack, f"load-2026-11-12-{RUN[-20:]}")["status"]["S"] == "waiting"
+    engine.stack.runtime.finish_job(_work(engine, "extract").id, output={})
+    _settle(engine)
+    engine.stack.runtime.finish_job(_work(engine, "load").id, output={})
+    _settle(engine)
+    assert execution.status == "SUCCEEDED"
+    for task in ("extract", "load"):
+        assert _item(engine.stack, f"{task}-2026-11-12-{RUN[-20:]}")["status"]["S"] == "success"
+
+
+def test_a_failure_decided_by_an_operator_ends_the_run_once_its_rows_are_final(engine):
+    from polyris.coordination import run_row
+
+    execution = _start(engine.stack, _chain_dag())
+    _settle(engine)
+    engine.stack.runtime.finish_job(_work(engine, "extract").id, error="States.TaskFailed", cause="bad input")
+    _settle(engine)
+    extract = f"extract-2026-11-12-{RUN[-20:]}"
+    assert _item(engine.stack, extract)["status"]["S"] == "waiting_decision" and execution.status == "RUNNING"
+    # The operator's Fail, as the console's action writes it (TR-6): final, and the generation raised.
+    engine.stack.ddb.update_item(
+        TableName=engine.stack.tables["PipelineTokensTable"], Key={"execution_name": {"S": extract}},
+        UpdateExpression="SET #s = :failed, finished_at = :now, generation = generation + :one",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":failed": {"S": "failed"}, ":now": {"S": NOW}, ":one": {"N": "1"}})
+    _settle(engine)
+    assert _item(engine.stack, f"load-2026-11-12-{RUN[-20:]}")["status"]["S"] == "upstream_failed"
+    assert (execution.status, execution.error) == ("FAILED", run_row.FAILED_RUN_ERROR)
+    assert "2 tasks failed" in execution.cause

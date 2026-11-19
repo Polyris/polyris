@@ -156,6 +156,32 @@ class Bindings:
         self.stack.bind_lambda("StartRunFunction", handler)
         return handler
 
+    def run_task_stub(self) -> str:
+        """The stand-in for run_task until TR-5 (run_task_stub.py), on the stack's clock; returns its ARN."""
+        import run_task_stub as stub
+
+        machine = self.stack.runtime.add_machine(stub.NAME, stub.DEFINITION)
+        for name, handler in stub.handlers(self.stack.ddb, self.stack.tables["PipelineTokensTable"],
+                                           self.clock).items():
+            self.stack.runtime.lambdas[name] = as_component(f"lambda:{name}", handler)
+        return machine.arn
+
+    def dispatcher(self, run_task_arn: str) -> Callable[[Any, Any], Any]:
+        """The dispatcher over the stack's tables, on the stack's clock, under reconcile's function as the
+        template binds it (ADR #137 §7); returns the handler the tasks stream's adapter feeds."""
+        import dispatcher as module
+
+        tables = self.stack.tables
+        self._set(module, "_DISPATCHER", module.Dispatcher(
+            self.stack.ddb, self.stack.runtime, resource=self.resource,
+            tokens_table=tables["PipelineTokensTable"], subscriptions_table=tables["DependencySubscriptionsTable"],
+            specs_table=tables["PipelineSpecsTable"], asset_events_table=tables["AssetEventsTable"],
+            pipelines_table=tables["PipelineRegistryTable"], run_task_arn=run_task_arn, clock=self.clock,
+            sleep=lambda _: None))
+        handler = as_component("lambda:dispatcher", module.handler)
+        self.stack.bind_lambda("ReconcileFunction", handler)
+        return handler
+
     def asset_fanout(self) -> Any:
         """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
         import asset_fanout

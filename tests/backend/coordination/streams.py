@@ -94,13 +94,18 @@ class StreamAdapter:
 
     # ── delivery ───────────────────────────────────────────────────────
 
-    def deliver(self, handler: Callable[[Any, Any], Any], *, select: Optional[Callable[[Record], bool]] = None) -> None:
-        """Deliver every pending record, or those `select` picks, shard by shard."""
+    def deliver(self, handler: Callable[[Any, Any], Any], *, select: Optional[Callable[[Record], bool]] = None) -> int:
+        """Deliver every pending record, or those `select` picks, shard by shard; return how many the handler
+        took, so a caller can tell when the stack has settled."""
         self._read()
+        taken = 0
         for shard, records in enumerate(self.pending):
             chosen = [r for r in records if select is None or select(r)]
             held = [r for r in records if r not in chosen]
-            self.pending[shard] = held + self._deliver_shard(handler, chosen)
+            left = self._deliver_shard(handler, chosen)
+            taken += len(chosen) - len(left)
+            self.pending[shard] = held + left
+        return taken
 
     def _deliver_shard(self, handler: Callable[[Any, Any], Any], records: List[Record]) -> List[Record]:
         """Deliver one shard's records in order; return those still pending."""
