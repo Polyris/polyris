@@ -70,6 +70,8 @@ Each check runs from the stage that builds its mechanism (`STAGE_OF`): `rows-cor
 
 A verb whose code path has not landed raises `NeedsBinding`. A scenario that uses one carries `@pytest.mark.needs_binding(stage)` and is skipped until its stage is listed in `stages.BOUND_STAGES`.
 
+The scenarios of `test_scenarios.py` ran on ADR #130's engine. TR-4 generates pipelines with `Start_Run` (D115), so the stages of that engine retired with it, and each of those scenarios now waits for the stage that ports it to ADR #137's engine: `rows-run-task` (TR-5), `rows-ops` (TR-6) or `rows-migration` (TR-8). A scenario that tests machinery 1.3 removes goes with that machinery, with the reason.
+
 ### Red scenarios of tasks as rows (`test_scenarios_rows.py`)
 
 Each class of bug ADR #137 makes impossible has one scenario or two, written before the code. The classes are a lost hint, a pass without a time budget, a late `Start_Run` attempt, a start that keeps failing, and Restart with dependants racing a pass. Then two passes at once, a Pause or a Stop racing a pass, a fail-open read and a lost answer. Last, a missing row or output, an output at the payload limit, a limit in a pause and a 1.2 row left in flight. R-S1 to R-S4 are the four stability blockers of the plan's review. Each is skipped until its stage is bound; from then on the stage's invariants run under it, and `test_meta.py` asks for a probe that brings its bug back.
@@ -94,7 +96,7 @@ Every component reaches DynamoDB through one of two shared clients, and `Boundar
 
 ## Defects and mutation probes
 
-`defects.py` lists the defects by the ids in ADR #130's defects table (B-D1 is ADR #133's; the ids from B-RN1 on come from the external review of 1.2.0; B-Q1 is D107's, the harness's strictness about undefined; the ids from R-L1 on are the classes of bug of ADR #137), and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect. CI runs it after the other suites (`make test-probes`).
+`defects.py` lists the defects by the ids in ADR #130's defects table (B-D1 is ADR #133's; the ids from B-RN1 on come from the external review of 1.2.0; B-Q1 is D107's, the harness's strictness about undefined; the ids from R-L1 on are the classes of bug of ADR #137), and each scenario that pins one carries `@pytest.mark.defect(id)`. `probes.py` holds the mutation probes: each re-introduces one defect in the new code, and `run_probes.py` applies it, runs its scenario, expects the scenario to fail and restores the file. A probe whose scenario waits for an unbound stage is reported `SKIPPED`, as its scenario is. `scenario_marks.py` reads the marks from the scenarios' source for both. The runner edits source files while it runs, so run no other suite at the same time: a suite that loads a template or module then sees the defect. CI runs it after the other suites (`make test-probes`).
 
 `test_meta.py` keeps these consistent:
 - every defect has a scenario, and every scenario names a known defect;

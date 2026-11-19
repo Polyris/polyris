@@ -4,6 +4,12 @@ Each scenario checks both sides of a wake: the task starts once its
 conditions hold, and never before. They speak only the World API; a
 scenario whose code path has not landed yet is marked needs_binding(stage)
 and skipped (stages.py). Defect ids refer to defects.py.
+
+These scenarios ran on the engine of ADR #130 until TR-4 switched the
+generator to Start_Run (D115). Each now waits for the stage that ports it to
+the engine of ADR #137: the new run_task (`rows-run-task`, TR-5), the
+operator actions (`rows-ops`, TR-6) or the upgrade (`rows-migration`, TR-8).
+A scenario that tests machinery 1.3 removes goes with it, with the reason.
 """
 
 import itertools
@@ -22,6 +28,7 @@ WEEKLY = asset("ns/weekly", granularity="weekly")
 # ── task dependencies ───────────────────────────────────────────────────
 
 
+@needs_binding("rows-run-task")
 def test_a_root_task_starts_at_registration(world):
     run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
     assert world.running_tasks(run) == ["extract"]
@@ -30,6 +37,7 @@ def test_a_root_task_starts_at_registration(world):
     assert world.pipeline_status(run) == "SUCCEEDED"
 
 
+@needs_binding("rows-run-task")
 def test_a_downstream_task_starts_only_after_its_upstream_succeeds(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     assert world.running_tasks(run) == ["extract"]
@@ -51,6 +59,7 @@ def _orders():
             yield order
 
 
+@needs_binding("rows-run-task")
 @defect("B-A1")
 @pytest.mark.parametrize("order", list(_orders()), ids=lambda o: ",".join(s.replace(" ", "-") for s in o))
 def test_and_of_two_assets_wakes_once_after_both_in_every_order(world, order):
@@ -71,6 +80,7 @@ def test_and_of_two_assets_wakes_once_after_both_in_every_order(world, order):
     assert len(world.signals(run, "consumer")) == 1
 
 
+@needs_binding("rows-run-task")
 @pytest.mark.parametrize("member", [A, B], ids=["a", "b"])
 def test_or_wakes_on_either_member(world, member):
     run = world.start_run(world.deploy(waits_for("p", [A | B])), DATE)
@@ -79,6 +89,7 @@ def test_or_wakes_on_either_member(world, member):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-A2")
 @pytest.mark.parametrize("first", [B, C], ids=["b", "c"])
 def test_mixed_and_or_needs_a_and_one_of_b_or_c(world, first):
@@ -91,6 +102,7 @@ def test_mixed_and_or_needs_a_and_one_of_b_or_c(world, first):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-A3")
 def test_an_early_and_member_is_rechecked_for_freshness(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=2), B])), DATE)
@@ -105,6 +117,7 @@ def test_an_early_and_member_is_rechecked_for_freshness(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-C1")
 def test_a_backfill_does_not_pass_on_todays_fact(world):
     consumer = world.deploy(waits_for("p", [A]))
@@ -117,6 +130,7 @@ def test_a_backfill_does_not_pass_on_todays_fact(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 def test_a_fact_for_a_later_partition_does_not_satisfy_an_earlier_run(world):
     world.write_event(A, "2026-11-13")
     world.deliver_hints()
@@ -124,6 +138,7 @@ def test_a_fact_for_a_later_partition_does_not_satisfy_an_earlier_run(world):
     assert world.running_tasks(run) == []
 
 
+@needs_binding("rows-run-task")
 def test_a_weekly_fact_from_monday_satisfies_the_rest_of_its_week(world):
     world.write_event(WEEKLY, "2026-W46")    # Monday 2026-11-09
     world.deliver_hints()
@@ -131,6 +146,7 @@ def test_a_weekly_fact_from_monday_satisfies_the_rest_of_its_week(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-K1")
 def test_same_named_waiting_tasks_in_two_pipelines_both_wake(world):
     first = world.start_run(world.deploy(waits_for("p1", [A])), DATE)
@@ -141,6 +157,7 @@ def test_same_named_waiting_tasks_in_two_pipelines_both_wake(world):
     assert world.running_tasks(second) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-T1")
 def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
@@ -155,6 +172,7 @@ def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     assert world.warnings() == []           # a repeated hint is a no-op, not an anomaly
 
 
+@needs_binding("rows-run-task")
 @defect("B-Q1")
 def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
     """D41: orchestration_timeout is the real maximum; the wrapper does not wait or register again."""
@@ -173,6 +191,7 @@ def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
 # ── writers ─────────────────────────────────────────────────────────────
 
 
+@needs_binding("rows-ops")
 @defect("B-M1")
 def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
     produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), "2026-11-01")
@@ -182,6 +201,7 @@ def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
     assert world.running_tasks(consumer) == ["consumer"]
 
 
+@needs_binding("rows-ops")
 @defect("B-M2")
 def test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it(world):
     produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), DATE)
@@ -198,6 +218,7 @@ def test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it(wo
     assert world.running_tasks(consumer) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-F1")
 def test_a_failed_fan_out_does_not_fail_the_producer(world):
     producer = world.deploy(pipeline("producer", [("build", {"outlets": [A]})]))
@@ -215,6 +236,7 @@ def test_a_failed_fan_out_does_not_fail_the_producer(world):
 # ── push ────────────────────────────────────────────────────────────────
 
 
+@needs_binding("rows-run-task")
 @defect("B-U1")
 def test_push_and_starts_exactly_one_run_for_the_day(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A, B]))
@@ -228,6 +250,7 @@ def test_push_and_starts_exactly_one_run_for_the_day(world):
     assert len(world.push_runs(consumer)) == 1
 
 
+@needs_binding("rows-run-task")
 @defect("B-U2")
 def test_a_consumer_deployed_after_the_facts_does_not_start_for_them(world):
     world.write_event(A, "2026-11-10")
@@ -243,6 +266,7 @@ def test_a_consumer_deployed_after_the_facts_does_not_start_for_them(world):
     assert [run.date for run in world.push_runs(consumer)] == [DATE]
 
 
+@needs_binding("rows-run-task")
 @defect("B-D1")
 def test_a_scheduled_run_carries_the_day_it_was_scheduled_for(world):
     nightly = world.deploy(pipeline("nightly", [("load", {}), ("report", {})], [("load", "report")],
@@ -256,6 +280,7 @@ def test_a_scheduled_run_carries_the_day_it_was_scheduled_for(world):
     assert world.running_tasks(run) == ["report"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-D1")
 def test_a_pushed_run_of_a_pipeline_with_variables_carries_the_facts_partition(world):
     consumer = world.deploy(pipeline("pushed_v", [("report", {})], schedule=[A], variables={"region": "eu"}))
@@ -267,6 +292,7 @@ def test_a_pushed_run_of_a_pipeline_with_variables_carries_the_facts_partition(w
     assert report is not None and report["date"] == DATE
 
 
+@needs_binding("rows-ops")
 @defect("B-R2")
 def test_a_restart_never_lets_a_dependant_run_on_the_old_status(world):
     run = world.start_run(world.deploy(chain("orders", "a", "b")), DATE)
@@ -283,6 +309,7 @@ def test_a_restart_never_lets_a_dependant_run_on_the_old_status(world):
     assert world.running_tasks(run) == ["b"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-D1")
 def test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started(world):
     plain = world.deploy(pipeline("plain", [("a", {}), ("b", {}), ("c", {})]))
@@ -292,6 +319,7 @@ def test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started(world):
     assert [(world.row(run, t) or {}).get("date") for t in ("a", "b", "c")] == [DATE] * 3
 
 
+@needs_binding("rows-run-task")
 @defect("B-U3")
 def test_an_asset_dropped_from_the_schedule_no_longer_starts_the_pipeline(world):
     world.deploy(pipeline("pushed", [("report", {})], schedule=[A & B]))
@@ -305,6 +333,7 @@ def test_an_asset_dropped_from_the_schedule_no_longer_starts_the_pipeline(world)
     assert world.warnings() == []
 
 
+@needs_binding("rows-run-task")
 @defect("B-U3")
 def test_a_pipeline_moved_to_a_cron_loses_its_push_subscription_quietly(world):
     world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
@@ -316,6 +345,7 @@ def test_a_pipeline_moved_to_a_cron_loses_its_push_subscription_quietly(world):
     assert world.warnings() == []
 
 
+@needs_binding("rows-run-task")
 @defect("B-X1")
 def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
     first = world.deploy(pipeline("pushed_1", [("report", {})], schedule=[A]))
@@ -334,6 +364,7 @@ def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
 # ── loud failures ───────────────────────────────────────────────────────
 
 
+@needs_binding("rows-run-task")
 @defect("B-G1")
 def test_a_failed_registration_fails_the_task_with_its_cause(world):
     world.inject_failure("PutItem", "PipelineTokensTable", "AccessDeniedException",
@@ -343,6 +374,7 @@ def test_a_failed_registration_fails_the_task_with_its_cause(world):
     assert "AccessDeniedException" in world.row(run, "extract")["error"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-U2")
 def test_a_consumer_registered_again_keeps_its_subscription_time(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
@@ -354,6 +386,7 @@ def test_a_consumer_registered_again_keeps_its_subscription_time(world):
     assert [run.date for run in world.push_runs(consumer)] == [DATE]
 
 
+@needs_binding("rows-run-task")
 @defect("B-F2")
 def test_an_unreadable_fact_fails_no_waiting_task(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
@@ -366,6 +399,7 @@ def test_an_unreadable_fact_fails_no_waiting_task(world):
     assert any(w["kind"] == "coordination" and "cannot be read" in w["error"] for w in world.warnings())
 
 
+@needs_binding("rows-run-task")
 @defect("B-W1")
 def test_a_claim_whose_answer_is_lost_still_runs_the_task(world):
     orders = world.deploy(chain("orders", "extract"))
@@ -375,6 +409,7 @@ def test_a_claim_whose_answer_is_lost_still_runs_the_task(world):
     assert world.running_tasks(run) == ["extract"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-S1")
 def test_a_failed_auto_skip_write_does_not_wake_dependants(world):
     world.inject_failure("PutItem", "PipelineTokensTable", "AccessDeniedException",
@@ -390,6 +425,7 @@ def test_a_failed_auto_skip_write_does_not_wake_dependants(world):
 # ── pause and restart ───────────────────────────────────────────────────
 
 
+@needs_binding("rows-ops")
 @defect("B-P1")
 def test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
@@ -401,6 +437,7 @@ def test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-ops")
 @defect("B-P2")
 def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
     run = world.start_run(world.deploy(waits_for("p", [A], deps=["extract"])), DATE)
@@ -413,6 +450,7 @@ def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-ops")
 @defect("B-P3")
 def test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -430,6 +468,7 @@ def test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_
     assert any(w["kind"] == "sweeper" and w["task_name"] == "load" for w in world.warnings())
 
 
+@needs_binding("rows-ops")
 @defect("B-P4")
 @defect("B-RN1")
 def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
@@ -448,6 +487,7 @@ def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
     assert world.pipeline_status(run) == "FAILED"
 
 
+@needs_binding("rows-ops")
 def test_a_task_resume_could_not_check_is_woken_by_the_sweeper_without_a_miss(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.pause(run)
@@ -462,6 +502,7 @@ def test_a_task_resume_could_not_check_is_woken_by_the_sweeper_without_a_miss(wo
     assert [w for w in world.warnings() if w["kind"] == "sweeper"] == []   # resume deferred it: no lost hint
 
 
+@needs_binding("rows-ops")
 @defect("B-R1")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)
@@ -479,6 +520,7 @@ def test_a_restarted_task_is_still_gated_on_its_assets(world):
 # ── the sweeper and the bell ────────────────────────────────────────────
 
 
+@needs_binding("rows-run-task")
 def test_a_lost_hint_is_recovered_by_the_sweeper_with_a_warning(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.write_event(A, DATE)              # its hint is never delivered
@@ -488,6 +530,7 @@ def test_a_lost_hint_is_recovered_by_the_sweeper_with_a_warning(world):
     assert any(w["kind"] == "sweeper" for w in world.warnings())
 
 
+@needs_binding("rows-ops")
 def test_a_lost_notify_after_mark_success_warns_and_the_sweeper_wakes_the_dependant(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.fail_starts("NotifyDependentsSfn", "ThrottlingException", times=1)
@@ -500,6 +543,7 @@ def test_a_lost_notify_after_mark_success_warns_and_the_sweeper_wakes_the_depend
     assert world.running_tasks(run) == ["load"]
 
 
+@needs_binding("rows-run-task")
 def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
     world.stop_wrapper_externally(run, "consumer")
@@ -512,6 +556,7 @@ def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world)
     assert world.pipeline_status(run) == "FAILED"
 
 
+@needs_binding("rows-run-task")
 @defect("B-RN2")
 def test_a_stopped_wrapper_found_by_its_signal_ends_its_run(world):
     """A fact wakes a task whose wrapper was stopped in the AWS console: the signal finds the token dead (Z1)."""
@@ -523,6 +568,7 @@ def test_a_stopped_wrapper_found_by_its_signal_ends_its_run(world):
     assert world.pipeline_status(run) == "FAILED"
 
 
+@needs_binding("rows-run-task")
 @defect("B-F3")
 def test_a_fact_that_cannot_be_recorded_reaches_the_bell(world):
     """The work is done, so the row stays success; its fact is not, so the consumer cannot
@@ -539,6 +585,7 @@ def test_a_fact_that_cannot_be_recorded_reaches_the_bell(world):
     assert world.pipeline_status(producer) == "FAILED"
 
 
+@needs_binding("rows-run-task")
 @defect("B-U4")
 def test_the_catch_up_starts_no_run_that_a_cascade_none_backfill_completed(world):
     """A arrives without B: no run. B then comes from a cascade='none' backfill, which starts
@@ -557,6 +604,7 @@ def test_the_catch_up_starts_no_run_that_a_cascade_none_backfill_completed(world
     assert world.push_runs(consumer) == []
 
 
+@needs_binding("rows-ops")
 @defect("B-S2")
 def test_stopping_a_run_ends_its_execution(world):
     """The console's Stop: the run's execution first, then its wrappers, then the rows. The route
@@ -568,6 +616,7 @@ def test_stopping_a_run_ends_its_execution(world):
     assert (world.status(run, "extract"), world.status(run, "load")) == ("stopped", "stopped")
 
 
+@needs_binding("rows-ops")
 @defect("B-R3")
 def test_a_restart_that_cannot_start_its_wrapper_says_so_and_can_be_repeated(world):
     """The console answered "Task restarted" while nothing started, and nothing said why
@@ -584,6 +633,7 @@ def test_a_restart_that_cannot_start_its_wrapper_says_so_and_can_be_repeated(wor
     assert world.status(run, "extract") == "success"
 
 
+@needs_binding("rows-run-task")
 @defect("B-RN3")
 def test_a_rule_skip_whose_run_cannot_be_told_says_so(world):
     """The wrapper's skip answer caught every error and went on: the task was skipped, its run stayed
@@ -598,6 +648,7 @@ def test_a_rule_skip_whose_run_cannot_be_told_says_so(world):
     assert warning["kind"] == "coordination" and "AccessDeniedException" in warning["error"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-RN4")
 @pytest.mark.parametrize("action,status,call", [
     ("skip", "skipped", "send_task_success"),
@@ -616,6 +667,7 @@ def test_a_console_action_whose_run_cannot_be_told_says_so(world, action, status
     assert "AccessDeniedException" in warning["error"] and "states:SendTask" in warning["error"]
 
 
+@needs_binding("rows-ops")
 @defect("B-M3")
 def test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers(world):
     """A cascade='none' backfill starts no consumer of its facts (ADR #57); marking one of its tasks
@@ -629,6 +681,7 @@ def test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers(w
     assert world.push_runs(consumer) == []
 
 
+@needs_binding("rows-run-task")
 def test_a_push_start_that_failed_transiently_is_retried_by_the_sweeper(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
     world.fail_starts(consumer, "ThrottlingException", times=1)
@@ -640,6 +693,7 @@ def test_a_push_start_that_failed_transiently_is_retried_by_the_sweeper(world):
     assert len(world.push_runs(consumer)) == 1
 
 
+@needs_binding("rows-run-task")
 def test_a_push_whose_stream_record_was_lost_is_started_by_the_catch_up(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
     world.write_event(A, DATE)              # its stream record is never delivered
@@ -649,6 +703,7 @@ def test_a_push_whose_stream_record_was_lost_is_started_by_the_catch_up(world):
     assert len(world.push_runs(consumer)) == 1
 
 
+@needs_binding("rows-run-task")
 @defect("B-N1")
 def test_a_warning_about_an_old_partition_reaches_the_bell(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), "2026-10-13")
@@ -661,6 +716,7 @@ def test_a_warning_about_an_old_partition_reaches_the_bell(world):
 # ── the matrix rows of COORDINATION_DESIGN §4.2 not pinned above ─────────
 
 
+@needs_binding("rows-ops")
 @defect("B-O1")
 def test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -673,6 +729,7 @@ def test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped(world):
     assert world.wrapper(run, "load").status == "SUCCEEDED"   # it ended as superseded
 
 
+@needs_binding("rows-ops")
 @defect("B-O2")
 def test_a_wrapper_a_restart_replaced_never_takes_the_row_back(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -686,6 +743,7 @@ def test_a_wrapper_a_restart_replaced_never_takes_the_row_back(world):
     assert (world.status(run, "load"), world.task_runs(run, "load")) == ("running", 1)
 
 
+@needs_binding("rows-migration")
 @defect("B-O3")
 def test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load"), before_upgrade=True), DATE)
@@ -697,6 +755,7 @@ def test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided(world):
     assert world.task_runs(run, "load") == 0
 
 
+@needs_binding("rows-ops")
 @defect("B-O4")
 def test_run_task_never_starts_a_task_an_operator_decided_after_its_wait(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -709,6 +768,7 @@ def test_run_task_never_starts_a_task_an_operator_decided_after_its_wait(world):
     assert world.task_runs(run, "load") == 1                # started, then superseded
 
 
+@needs_binding("rows-ops")
 @defect("B-O5")
 def test_a_task_an_operator_decided_while_paused_is_never_released_to_run(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -724,6 +784,7 @@ def test_a_task_an_operator_decided_while_paused_is_never_released_to_run(world)
     assert (world.status(run, "load"), world.running_tasks(run)) == ("skipped", [])
 
 
+@needs_binding("rows-ops")
 def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_it(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.skip(run, "load")                 # while load still waits for extract
@@ -733,6 +794,7 @@ def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_
     assert world.running_tasks(run) == []
 
 
+@needs_binding("rows-ops")
 @pytest.mark.parametrize("rule,outcome,expected", [
     ("all_success", "failed", "upstream_failed"),
     ("all_success", "skipped", None),           # a manual skip counts as done: load runs
@@ -754,6 +816,7 @@ def test_each_trigger_rule_after_an_upstream_failure_or_skip(world, rule, outcom
         assert world.status(run, "load") == expected and world.running_tasks(run) == []
 
 
+@needs_binding("rows-run-task")
 @pytest.mark.parametrize("asset_first", [True, False], ids=["asset-first", "dependency-first"])
 def test_a_task_with_a_dependency_and_an_asset_waits_for_both_in_either_order(world, asset_first):
     run = world.start_run(world.deploy(waits_for("p", [A], deps=["extract"])), DATE)
@@ -770,6 +833,7 @@ def test_a_task_with_a_dependency_and_an_asset_waits_for_both_in_either_order(wo
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 def test_two_runs_of_one_task_wake_independently(world):
     orders = world.deploy(chain("orders", "extract", "load"))
     first, second = world.start_run(orders, DATE), world.start_run(orders, "2026-11-13")
@@ -779,6 +843,7 @@ def test_two_runs_of_one_task_wake_independently(world):
     assert world.running_tasks(first) == ["load"]
 
 
+@needs_binding("rows-run-task")
 @defect("B-G2")
 @pytest.mark.parametrize("error", ["CoordinationTransient", "Sandbox.Timedout", "Lambda.Unknown"])
 def test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper(world, error):
@@ -791,6 +856,7 @@ def test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_
     assert world.running_tasks(run) == ["consumer"]
 
 
+@needs_binding("rows-run-task")
 def test_a_daily_and_weekly_schedule_runs_daily_with_the_latest_weekly_fact(world):
     consumer = world.deploy(pipeline("report", [("report", {})], schedule=[A, WEEKLY]))
     world.write_event(WEEKLY, "2026-W46")    # Monday 2026-11-09

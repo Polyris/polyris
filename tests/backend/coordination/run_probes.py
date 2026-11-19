@@ -3,7 +3,8 @@
     python tests/backend/coordination/run_probes.py
 
 Exit code 1 when a probe survives (its scenario still passes) or no longer
-applies (one of its texts is gone from its file).
+applies (one of its texts is gone from its file). A probe whose scenario waits
+for an unbound stage (needs_binding) is skipped, as its scenario is.
 """
 
 import subprocess
@@ -15,11 +16,24 @@ REPO_ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 
 from probes import PROBES  # noqa: E402 — the harness directory is not a package
+from scenario_marks import scenarios  # noqa: E402
+from stages import BOUND_STAGES  # noqa: E402
+
+
+def _waiting(scenario: str) -> list:
+    """The unbound stages a probe's scenario waits for: the probe cannot run until they are bound."""
+    stages = scenarios().get(scenario.split("[")[0], {}).get("needs_binding", [])
+    return [s for s in stages if s not in BOUND_STAGES]
 
 
 def main() -> int:
-    problems = 0
+    problems = skipped = 0
     for probe in PROBES:
+        waiting = _waiting(probe.scenario)
+        if waiting:
+            skipped += 1
+            print(f"SKIPPED  {probe.defect}: {probe.scenario} (needs {', '.join(waiting)})")
+            continue
         originals = {}
         try:
             for edit in probe.edits:
@@ -39,7 +53,7 @@ def main() -> int:
         finally:
             for path, text in originals.items():
                 path.write_text(text)
-    print(f"{len(PROBES)} probes, {problems} problems")
+    print(f"{len(PROBES)} probes, {skipped} skipped until their stage, {problems} problems")
     return 1 if problems else 0
 
 
