@@ -1,4 +1,5 @@
-"""Run and wrapper names stay unique (ADR #130 §6.6, defect B-X1)."""
+"""Run names, the keys of their task rows and run_task's names stay unique (ADR #130 §6.6, defect B-X1;
+ADR #137 invariant 4)."""
 
 import pytest
 
@@ -7,25 +8,22 @@ from polyris.coordination.run_name import (
     KIND_BACKFILL,
     KIND_EVENT,
     MAX_NAME,
-    fit_task_id,
+    RUN_TASK_HASH,
     run_name,
+    run_task_name,
 )
-
-
-def wrapper_name(task_id, date, run):
-    """How 1.2 named a run's task executions: "{task id}-{date}-{the run name's last 8 characters}"."""
-    return f"{task_id}-{date}-{run[-8:]}"
+from polyris.coordination import task_row
 
 
 class TestRunName:
     def test_deterministic(self):
         assert run_name("sales", "2026-11-12", KIND_AND) == run_name("sales", "2026-11-12", KIND_AND)
 
-    def test_two_consumers_never_share_task_wrapper_names(self):
+    def test_two_consumers_never_share_task_rows(self):
         # Before: both runs ended in "-asset-and", so their `load` tasks collided.
         first = run_name("finance", "2026-11-12", KIND_AND)
         second = run_name("marketing", "2026-11-12", KIND_AND)
-        assert wrapper_name("load", "2026-11-12", first) != wrapper_name("load", "2026-11-12", second)
+        assert task_row.key("load", "2026-11-12", first) != task_row.key("load", "2026-11-12", second)
 
     @pytest.mark.parametrize("args", [
         ("p", "2026-11-12", KIND_EVENT, "ns/a@2026-11-12T06:00:00.000Z"),
@@ -56,20 +54,28 @@ class TestRunName:
             run_name(*args)
 
 
-class TestFitTaskId:
-    def test_short_ids_are_unchanged(self):
-        assert fit_task_id("load", 60) == "load"
+class TestRunTaskName:
+    """A run_task execution's name (ADR #137 invariant 4)."""
 
-    def test_long_ids_keep_a_prefix_and_a_hash(self):
-        long_id = "group." + "x" * 80
-        fitted = fit_task_id(long_id, 60)
-        assert len(fitted) == 60
-        assert fitted.startswith("group.")
+    KEY = "load-2026-11-12-run-2026-11-12-abcdef12"
+    START = "2026-11-12T06:00:00.123Z"
 
-    def test_long_ids_differing_only_at_the_end_stay_distinct(self):
-        base = "reporting_group." + "very_long_task_name_" * 4
-        assert fit_task_id(base + "a", 40) != fit_task_id(base + "b", 40)
+    def test_it_is_a_prefix_of_the_row_key_and_a_hash(self):
+        name = run_task_name(self.KEY, self.START, 1)
+        assert name.startswith(self.KEY + "-") and len(name) == len(self.KEY) + 1 + RUN_TASK_HASH
+        assert name == run_task_name(self.KEY, self.START, 1)              # a start repeated finds the first
 
-    def test_budget_too_small(self):
-        with pytest.raises(ValueError):
-            fit_task_id("anything", 7)
+    @pytest.mark.parametrize("change", [{"run_start": "2027-11-12T06:00:00.123Z"}, {"generation": 2},
+                                        {"key": KEY + "x"}])
+    def test_another_run_generation_or_row_gets_another_name(self, change):
+        args = {"key": self.KEY, "run_start": self.START, "generation": 1}
+        assert run_task_name(**{**args, **change}) != run_task_name(**args)
+
+    def test_a_long_key_keeps_its_hash_within_80_characters(self):
+        long_key = "group." + "very_long_task_name_" * 8 + "-2026-11-12-run"
+        first, second = run_task_name(long_key + "a", self.START, 1), run_task_name(long_key + "b", self.START, 1)
+        assert len(first) == MAX_NAME and first != second
+        assert set(first) <= set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+
+    def test_a_key_of_characters_step_functions_rejects_is_named_by_its_hash(self):
+        assert len(run_task_name("...", self.START, 1)) == RUN_TASK_HASH

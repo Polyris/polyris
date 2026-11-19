@@ -53,6 +53,8 @@ class RunView:
     execution: str
     status: str
     version: int
+    run_start: str = ""                    # the execution's StartTime as Step Functions gave it
+    token: Optional[str] = None
     pauses: Tuple[pauses.Interval, ...] = ()
     stop: Optional[Mapping[str, Any]] = None
     stop_done: bool = False
@@ -87,6 +89,7 @@ def run_view(item: Mapping[str, Any]) -> RunView:
     return RunView(
         key=str(item[run_row.TABLE_KEY]), execution=str(item.get(run_row.EXECUTION, "")),
         status=str(item.get(run_row.STATUS, "")), version=int(item.get(run_row.RUN_VERSION, 0)),
+        run_start=str(item.get(run_row.RUN_START, "")), token=item.get(run_row.TOKEN),
         pauses=tuple(pauses.from_item(item.get(run_row.PAUSES) or [])),
         stop=item.get(run_row.STOP), stop_done=bool(item.get(run_row.STOP_DONE)),
         step_failure=item.get(run_row.STEP_FAILURE), task_count=int(item.get(run_row.TASK_COUNT, 0)),

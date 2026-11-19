@@ -1,11 +1,12 @@
-"""Names for pipeline runs started by coordination, and for task wrappers.
+"""Names for pipeline runs started by coordination, and for ``run_task`` executions.
 
-A run's task executions are named ``{task_id}-{date}-{last 8 characters of the
-run's name}``, and the run's ``pipeline_execution_short`` is its last 20
-characters. Those suffixes must therefore be unique per run, or tasks of
-different runs collide (ADR #130, defect B-X1). Every name built here ends with
-an 8-character hash of everything that identifies the run. A task id too long
-to leave room for the date and the suffix is shortened by ``fit_task_id``.
+A run's task rows are keyed ``{task_id}-{date}-{last 20 characters of the run's
+name}`` (``task_row.key``), so that suffix must be unique per run, or the rows of
+different runs collide (ADR #130, defect B-X1). Every run name built here ends
+with an 8-character hash of everything that identifies the run.
+
+A ``run_task`` execution is named from its row (``run_task_name``, ADR #137
+invariant 4), so a start repeated under the same name finds the first one.
 """
 
 from __future__ import annotations
@@ -52,15 +53,19 @@ def run_name(pipeline: str, date: str, kind: str, discriminator: str = "") -> st
     return head + tail
 
 
-def fit_task_id(task_id: str, budget: int) -> str:
-    """The task-id part of a wrapper execution name, at most ``budget`` characters.
+#: The hash at the end of a run_task execution's name: of the row key, the run's StartTime and the generation.
+RUN_TASK_HASH = 16
 
-    Short ids are returned unchanged. A long id keeps a prefix and gains a
-    6-character hash of the full id, so two long ids that differ only at the
-    end still produce different names (ADR #130 §6.6).
+
+def run_task_name(key: str, run_start: str, generation: int) -> str:
+    """The name of a row's ``run_task`` execution (ADR #137 invariant 4).
+
+    A prefix of the row key and a hash of the key, the run's ``StartTime`` and the
+    generation, within Step Functions' 80 characters. One name per row and
+    generation, so ``ExecutionAlreadyExists`` means the start was made; a Restart
+    raises the generation, and with the start time in the hash, a run name used
+    again once its old rows expired never meets an old execution.
     """
-    if budget < 8:
-        raise ValueError(f"budget {budget} is too small for a task id")
-    if len(task_id) <= budget:
-        return task_id
-    return f"{task_id[: budget - 7]}-{_digest(task_id, length=6)}"
+    digest = _digest(key, run_start, str(int(generation)), length=RUN_TASK_HASH)
+    head = _clean(key)[: MAX_NAME - RUN_TASK_HASH - 1].rstrip("-")
+    return f"{head}-{digest}" if head else digest

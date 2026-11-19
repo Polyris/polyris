@@ -230,12 +230,16 @@ def pointer_items(call: Call, specs: Mapping[str, TaskSpec]) -> List[Dict[str, s
     pointers = []
     for task_id, spec in sorted(specs.items()):
         wait_for = spec.fields.get(TaskSpecKey.WAIT_FOR)
-        if not wait_for or task_id in skip:
-            continue
-        subscriber = task_row.key(task_id, call.date, call.execution)
-        for name in sorted(asset_spec.asset_names(asset_spec.parse(wait_for))):
-            pointers.append({POINTER_KEY: f"{ASSET_POINTER_PREFIX}{name}", POINTER_SUBSCRIBER: subscriber})
+        if wait_for and task_id not in skip:
+            pointers += asset_pointers(task_row.key(task_id, call.date, call.execution), wait_for)
     return pointers
+
+
+def asset_pointers(subscriber: str, wait_for: Any) -> List[Dict[str, str]]:
+    """The pointers of one row: one per asset its ``wait_for`` names. The dispatcher deletes them once the row
+    has left the wait (Rule 40)."""
+    return [{POINTER_KEY: f"{ASSET_POINTER_PREFIX}{name}", POINTER_SUBSCRIBER: subscriber}
+            for name in sorted(asset_spec.asset_names(asset_spec.parse(wait_for)))]
 
 
 def triggered_by(call: Call) -> str:

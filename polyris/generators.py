@@ -26,11 +26,9 @@ from .steps import (
 from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
 from .coordination.records import DAG_SNAPSHOT_PREFIX
-from .coordination.run_name import MAX_NAME, fit_task_id
 from .coordination import retention, run_row, task_spec
 from .coordination import start_run as start_run_contract
 from .coordination.start_run import Arg, RunArg
-from .partitions import MAX_PARTITION_KEY_LENGTH
 from . import limits
 
 
@@ -116,19 +114,6 @@ _STANDARD_DYNAMODB_RETRY: Dict[str, Any] = {
 }
 
 
-# A wrapper execution is named "{task id}-{date}-{run suffix}". The date is a
-# partition key and the run suffix the run name's last 8 characters; the task
-# id gets what is left of the 80 characters, so the date and the suffix are
-# never cut (ADR #130 §6.6).
-_WRAPPER_NAME_TAIL = 1 + MAX_PARTITION_KEY_LENGTH + 1 + 8
-_TASK_ID_BUDGET = MAX_NAME - _WRAPPER_NAME_TAIL
-
-
-def _wrapper_name_part(node_id: str) -> str:
-    """The task-id part of a wrapper execution name: the id, or a prefix and a hash of it."""
-    return fit_task_id(node_id, _TASK_ID_BUDGET)
-
-
 def _warning_item(subject: str, task_name: str, dag_id: str, error: str, *,
                   kind: str = WarningKind.COORDINATION) -> Dict[str, Any]:
     """A DynamoDB-typed warning row, the shape of records.warning_item (ADR #130 §9).
@@ -151,20 +136,6 @@ def _warning_item(subject: str, task_name: str, dag_id: str, error: str, *,
         "attention_at": {"S": JSONATA_NOW},
         "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"},
     }
-
-
-def _check_wrapper_names(dag: DAG) -> None:
-    """Fail when two nodes of ``dag`` would start wrappers under the same name."""
-    seen: Dict[str, str] = {}
-    nodes = [t.task_id for t in dag.tasks] + [s.step_id for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES]
-    for node_id in nodes:
-        part = _wrapper_name_part(node_id)
-        first = seen.setdefault(part, node_id)
-        if first != node_id:
-            raise ValueError(
-                f"DAG '{dag.dag_id}': tasks '{first}' and '{node_id}' would start their wrappers under "
-                f"the same name ('{part}-<date>-<run>'). Rename one of them."
-            )
 
 
 def _serialize_wait_for(wait_for: List[Any]) -> List[Dict[str, Any]]:
@@ -1707,7 +1678,6 @@ def generate_step_function_json(
     _asset_subscriptions_table = asset_subscriptions_table or "${asset_subscriptions_table}"
     
     # 1. The branches: Start_Run for the rows, one per direct step
-    _check_wrapper_names(dag)
     _check_dependencies(dag)
     specs = build_spec_version(dag)
     has_rows = specs.task_count > 0
