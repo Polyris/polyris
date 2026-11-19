@@ -2,9 +2,10 @@
 
 ``polyris-deploy`` writes a version with ``write`` and reads it back with
 ``read`` before it creates the change set; the console reads a pipeline's
-version with ``read``, and so will ``Start_Run``. Each takes a low-level boto3
-DynamoDB client (a resource's ``meta.client`` will do). The check of what was
-read is the pure ``task_spec.check_version``.
+version with ``read``, and so does ``Start_Run``. Each takes a low-level boto3
+DynamoDB client, ``boto3.client("dynamodb")``: a resource's ``meta.client``
+serializes the typed values these functions send a second time. The check of
+what was read is the pure ``task_spec.check_version``.
 
 - A text is written once: ``write`` reads which texts the table holds, and puts
   each missing one with a condition that counts a text already there as

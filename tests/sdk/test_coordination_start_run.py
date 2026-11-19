@@ -163,9 +163,10 @@ def test_the_run_row_never_goes_back_to_creating(table):
 
 
 @pytest.mark.parametrize("existing,accepted", [
-    ({"run_execution": EXECUTION, "started_at": START, "step_failure": {"step": "notify"}}, True),  # a step's mark
-    ({"run_execution": "orders-run-2026-11-19-ffffffff", "started_at": START}, False),           # another run
-    ({"run_execution": EXECUTION, "started_at": START, "stop": {"by": "engine"}}, False),         # stopped
+    ({"run_execution": EXECUTION, "run_start": START, "step_failure": {"step": "notify"}}, True),  # a step's mark
+    ({"run_execution": "orders-run-2026-11-19-ffffffff", "run_start": START}, False),           # another run
+    ({"run_execution": EXECUTION, "run_start": "2026-11-19T07:00:00Z"}, False),                 # same name, later
+    ({"run_execution": EXECUTION, "run_start": START, "stop": {"by": "engine"}}, False),         # stopped
 ])
 def test_the_run_row_accepts_only_its_own_run_and_no_stopped_one(table, existing, accepted):
     table.put_item(Item={"execution_name": run_row.key(EXECUTION), **existing})
@@ -204,6 +205,7 @@ def test_activation_marks_the_run_active_once_and_never_a_stopped_one(table):
     assert start_run.activation_refused(run_item(table), call()) is False
     with pytest.raises(start_run.OtherRun):
         start_run.activation_refused({**run_item(table), "run_execution": "another"}, call())
+    assert start_run.is_this_run(run_item(table), call()) and run_item(table)["run_start"] == START
 
 
 def test_the_rows_key_takes_the_runs_last_20_characters_without_dots_and_colons():

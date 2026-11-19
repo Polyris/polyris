@@ -18,6 +18,7 @@ from coordination_testkit import (
     NOW,
     RUN,
     SHORT,
+    STARTED_AT,
     TABLES,
     FUNCTION_ENV,
     FUNCTION_TABLES,
@@ -43,7 +44,8 @@ def resources() -> Dict[str, Any]:
 
 
 @contextmanager
-def recording(ddb) -> Iterator[Set[Call]]:
+def recording(ddb, *clients: Any) -> Iterator[Set[Call]]:
+    """Every DynamoDB call made through ``ddb`` and through the low-level ``clients``."""
     calls: Set[Call] = set()
 
     def before(params: Dict[str, Any], model: Any, **_: Any) -> None:
@@ -51,16 +53,18 @@ def recording(ddb) -> Iterator[Set[Call]]:
         for table in tables:
             calls.add((f"dynamodb:{model.name}", LOGICAL[table], params.get("IndexName")))
 
-    events = ddb.meta.client.meta.events
-    events.register("before-parameter-build.dynamodb", before, unique_id="coordination-iam")
+    every = [ddb.meta.client.meta.events, *(client.meta.events for client in clients)]
+    for events in every:
+        events.register("before-parameter-build.dynamodb", before, unique_id="coordination-iam")
     try:
         yield calls
     finally:
-        events.unregister("before-parameter-build.dynamodb", unique_id="coordination-iam")
+        for events in every:
+            events.unregister("before-parameter-build.dynamodb", unique_id="coordination-iam")
 
 
 @contextmanager
-def reading(ddb) -> Iterator[Set[Read]]:
+def reading(ddb, *clients: Any) -> Iterator[Set[Read]]:
     """Every DynamoDB read, with whether it is consistent (per table for BatchGetItem)."""
     reads: Set[Read] = set()
 
@@ -74,12 +78,14 @@ def reading(ddb) -> Iterator[Set[Read]]:
         reads.add((model.name, LOGICAL[params["TableName"]], params.get("IndexName"),
                    bool(params.get("ConsistentRead"))))
 
-    events = ddb.meta.client.meta.events
-    events.register("before-parameter-build.dynamodb", before, unique_id="coordination-reads")
+    every = [ddb.meta.client.meta.events, *(client.meta.events for client in clients)]
+    for events in every:
+        events.register("before-parameter-build.dynamodb", before, unique_id="coordination-reads")
     try:
         yield reads
     finally:
-        events.unregister("before-parameter-build.dynamodb", unique_id="coordination-reads")
+        for events in every:
+            events.unregister("before-parameter-build.dynamodb", unique_id="coordination-reads")
 
 
 def _resource(value: Any) -> Tuple[str, Optional[str]]:
@@ -236,6 +242,34 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
     assert own - used == set(), "the sweeper's own grants that no call uses"
 
 
+def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_is_consistent(
+        resources, ddb, monkeypatch):
+    """Start_Run's paths: a first attempt, a retry that finds its rows, an earlier attempt that arrives late."""
+    import boto3
+
+    import start_run
+    from polyris.coordination import spec_store, task_spec
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    monkeypatch.setattr(env, "_dynamodb", ddb)
+    monkeypatch.setattr(env, "_dynamodb_client", client)
+    version = task_spec.build_version("orders", [{"task_id": "load", "task_type": "sfn", "dependencies": [],
+                                                  "trigger_rule": "all_success",
+                                                  "wait_for": [{"asset_name": "ns/orders"}]}])
+    spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+    event = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 1,
+             "pipeline_name": "orders", "execution_name": RUN, "execution_start": STARTED_AT, "token": "t1",
+             "retry_count": 0, "redrive_count": 0, "input": {}}
+    with recording(ddb, client) as used, reading(ddb, client) as reads:
+        assert start_run.handler(event, None)["started"]
+        assert start_run.handler({**event, "retry_count": 2, "token": "t3"}, None)["started"]
+        assert not start_run.handler({**event, "retry_count": 1, "token": "t2"}, None)["started"]
+    granted = _dynamodb_grants(_statements(resources, "StartRunRole"))
+    assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
+    assert granted - used == set(), "grants no call uses (drop them, or walk the path that needs them)"
+    assert {read for read in reads if not read[3]} == set(), "a read that may miss a write just made"
+
+
 def test_the_sweeper_runs_every_5_minutes_without_retries(resources):
     schedule = resources["SweeperSchedule"]["Properties"]
     assert schedule["ScheduleExpression"] == "rate(5 minutes)"
@@ -258,7 +292,8 @@ def test_the_sweeper_schedule_is_named_after_its_function(resources):
 
 
 @pytest.mark.parametrize("function,log_group", [("SweeperFunction", "SweeperLogGroup"),
-                                                ("AssetFanoutFunction", "AssetFanoutLogGroup")])
+                                                ("AssetFanoutFunction", "AssetFanoutLogGroup"),
+                                                ("StartRunFunction", "StartRunLogGroup")])
 def test_a_function_logs_to_the_group_the_console_commands_tail(resources, function, log_group):
     """`aws logs tail /aws/lambda/<name>` in the console's findings reads the function's own log group."""
     props = resources[function]["Properties"]
@@ -324,6 +359,7 @@ def test_describe_execution_is_scoped_to_wrapper_executions(resources):
     ("ReconcileFunction", "reconcile", "ReconcileRole"),
     ("AssetFanoutFunction", "asset_fanout", "AssetFanoutRole"),
     ("SweeperFunction", "sweeper", "SweeperRole"),
+    ("StartRunFunction", "start_run", "StartRunRole"),
 ])
 def test_function_wiring(resources, function, module_name, role):
     import importlib

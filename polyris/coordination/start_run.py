@@ -117,6 +117,7 @@ def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
     index_keys = run_row.index_keys(started)
     values: Dict[str, Any] = {
         ":creating": run_row.CREATING, ":token": call.token, ":order": call.order, ":execution": call.execution,
+        ":run_start": call.execution_start,
         ":started_at": index_keys[run_row.STARTED_AT], ":start_day": index_keys[run_row.START_DAY],
         ":pipeline": call.pipeline, ":run_date": call.date,
         ":triggered_by": run_row.clip(str(call.execution_input.get("triggered_by") or "unknown"),
@@ -131,12 +132,12 @@ def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
         "Key": {run_row.TABLE_KEY: key},
         "UpdateExpression": (
             "SET #status = if_not_exists(#status, :creating), run_token = :token, #order = :order, "
-            "run_execution = :execution, started_at = :started_at, start_day = :start_day, "
+            "run_execution = :execution, run_start = :run_start, started_at = :started_at, start_day = :start_day, "
             "pipeline_name = :pipeline, run_date = :run_date, triggered_by = :triggered_by, spec_id = :spec_id, "
             "task_count = :task_count, format_version = :format, #ttl = :ttl, "
             f"attention = :attention, attention_at = :due, {run_row.VERSION_RAISE} REMOVE answered_order"),
         "ConditionExpression": (f"({run_row.TOKEN_CONDITION}) AND (attribute_not_exists(run_execution) "
-                                "OR (run_execution = :execution AND started_at = :started_at))"),
+                                "OR (run_execution = :execution AND run_start = :run_start))"),
         "ExpressionAttributeNames": names,
         "ExpressionAttributeValues": values,
     }
@@ -230,10 +231,15 @@ def activation(call: Call) -> Dict[str, Any]:
     }
 
 
+def is_this_run(run_item: Mapping[str, Any], call: Call) -> bool:
+    """Whether a run row read back is this execution's: its name and its StartTime as Step Functions gave it."""
+    return run_item.get(run_row.EXECUTION) == call.execution and run_item.get(run_row.RUN_START) == call.execution_start
+
+
 def activation_refused(run_item: Mapping[str, Any], call: Call) -> bool:
     """After a refused activation, read back: True when the run is already this run's and active (a retry),
     False when it carries the stop mark; anything else is another run's row."""
-    if run_item.get("run_execution") != call.execution:
+    if not is_this_run(run_item, call):
         raise OtherRun(f"the run row of {call.execution} belongs to another run")
     if run_row.STOP in run_item:
         return False

@@ -4,7 +4,7 @@
 
 The backend consists of:
 - **Step Function state machines** (13 total) — 10 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13)
-- **Lambda functions** (8) — console API, reconcile, asset fan-out, sweeper, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
+- **Lambda functions** (9) — console API, reconcile, asset fan-out, sweeper, run start, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
 - **DynamoDB tables** (8) — state, metadata, task specs, event history
 - **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 

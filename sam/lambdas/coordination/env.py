@@ -14,6 +14,8 @@ ASSET_EVENTS_TABLE = os.environ.get("ASSET_EVENTS_TABLE", "asset-events")
 PIPELINES_TABLE = os.environ.get("PIPELINES_TABLE", "pipeline-registry")
 #: Push consumers: pipelines with `schedule=[assets]` (AssetFanout only).
 ASSET_SUBSCRIPTIONS_TABLE = os.environ.get("ASSET_SUBSCRIPTIONS_TABLE", "asset-subscriptions")
+#: The task specs (ADR #137 §8), which Start_Run reads.
+SPECS_TABLE = os.environ.get("SPECS_TABLE", "pipeline-specs")
 #: The function the asset-events stream feeds; the sweeper checks its event source mapping.
 ASSET_FANOUT_FUNCTION = os.environ.get("ASSET_FANOUT_FUNCTION", "asset-fanout")
 
@@ -32,6 +34,7 @@ CONNECT_TIMEOUT_SECONDS = 2
 READ_TIMEOUT_SECONDS = 5
 
 _dynamodb = None
+_dynamodb_client = None
 _stepfunctions = None
 _lambda = None
 
@@ -51,6 +54,17 @@ def dynamodb():
 
         _dynamodb = boto3.resource("dynamodb", config=_config())
     return _dynamodb
+
+
+def dynamodb_client():
+    """Lazily created low-level DynamoDB client, for code that sends DynamoDB's typed values itself
+    (``spec_store``): a resource's ``meta.client`` would serialize them a second time."""
+    global _dynamodb_client
+    if _dynamodb_client is None:
+        import boto3
+
+        _dynamodb_client = boto3.client("dynamodb", config=_config())
+    return _dynamodb_client
 
 
 def lambda_():

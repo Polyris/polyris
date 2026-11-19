@@ -36,6 +36,7 @@ STOP_DONE = "stop_done"          # when the stop was done: every row final and t
 RUN_VERSION = "run_version"      # raised by each write of §3's table, checked by every decision
 LEFT_AT = "left_at"              # when a pass last left rows, for its budget or a conflict (§7)
 EXECUTION = "run_execution"      # the pipeline execution's name
+RUN_START = "run_start"          # its StartTime as Step Functions gives it: with the name, which run the row is
 PIPELINE = "pipeline_name"
 RUN_DATE = "run_date"            # the run's logical date
 START_DAY = "start_day"          # YYYY-MM-DD of the execution's start: run-start-index's partition key
@@ -53,7 +54,7 @@ TTL = "ttl"
 
 #: Every field of the run row besides its key, its summary's time and its due time; a test builds the
 #: largest row from it, so a field added here is measured.
-FIELDS = (STATUS, TOKEN, TOKEN_ORDER, ANSWERED, STOP, STOP_DONE, RUN_VERSION, LEFT_AT, EXECUTION, PIPELINE,
+FIELDS = (STATUS, TOKEN, TOKEN_ORDER, ANSWERED, STOP, STOP_DONE, RUN_VERSION, LEFT_AT, EXECUTION, RUN_START, PIPELINE,
           RUN_DATE, START_DAY, STARTED_AT, FINISHED_AT, TRIGGERED_BY, SPEC_ID, TASK_COUNT, FORMAT, SUMMARY,
           STEP_FAILURE, REQUESTS, PAUSES, TTL)
 

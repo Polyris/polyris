@@ -1106,6 +1106,19 @@ Resources:
         - Key: polyris:component
           Value: platform
 
+  StartRunLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-start-run"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
   AssetFanoutLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1190,6 +1203,28 @@ Resources:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+
+  # ADR #137 §1: a pipeline invokes it with lambda:invoke.waitForTaskToken; it writes the run row, the run's
+  # input and every task row, then marks the run active. The dispatcher answers the token.
+  StartRunFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-start-run"
+      CodeUri: lambdas/coordination/
+      Handler: start_run.handler
+      # The largest pipeline: 2,000 task rows (task_spec.MAX_TASKS), one conditional put each, at
+      # 5-20 ms a put. A timeout fails the attempt, and the next one finds the rows already written.
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt StartRunRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref StartRunLogGroup
+      Environment:
+        Variables:
+          TOKENS_TABLE: !Ref PipelineTokensTable
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+          SPECS_TABLE: !Ref PipelineSpecsTable
 
   # ADR #130 §6.1: wakes the tasks waiting on each new asset fact.
   AssetFanoutFunction:
@@ -1496,6 +1531,51 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - !Ref CoordinationReconcilePolicy
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  # Start_Run writes a run's rows and the asset pointers of its tasks, and reads the run's specs.
+  StartRunRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-start-run-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartRunPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt DependencySubscriptionsTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                Resource:
+                  - !GetAtt PipelineSpecsTable.Arn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -2706,6 +2786,12 @@ Outputs:
     Value: !Ref PipelineRegistryTable
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-registry-table"
+
+  StartRunFunctionArn:
+    Description: The Lambda that a pipeline's run invokes first; it writes the run's rows (ADR #137 §1)
+    Value: !GetAtt StartRunFunction.Arn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-start-run-function-arn"
 
   PipelineSpecsTable:
     Description: DynamoDB table of the pipelines' task specs, which polyris-deploy writes

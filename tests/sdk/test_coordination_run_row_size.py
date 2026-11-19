@@ -59,6 +59,7 @@ def largest_run_row():
         run_row.RUN_VERSION: 99_999_999,
         run_row.LEFT_AT: ISO,
         run_row.EXECUTION: pipeline_execution,
+        run_row.RUN_START: "2026-11-18T06:00:00.123456+00:00",
         run_row.PIPELINE: "p" * 56,
         run_row.RUN_DATE: "2026-11-18",
         run_row.START_DAY: "2026-11-18",
