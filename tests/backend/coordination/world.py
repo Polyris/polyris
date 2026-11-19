@@ -478,8 +478,10 @@ class World:
         def second() -> None:
             dispatcher._DISPATCHER.full_pass(run_row.key(run.name), source="second", remaining_ms=lambda: 10 ** 9)
 
+        tokens = self.stack.tables["PipelineTokensTable"]
+        # The read of the run's task rows: a pass's first read of its spec version comes earlier.
         self.boundary.between(then=second, after_read=lambda call: call.component == "lambda:reconcile"
-                              and call.operation == "BatchGetItem")
+                              and call.operation == "BatchGetItem" and call.tables == [tokens])
 
     def sweep(self) -> None:
         """One scheduled run of the sweeper, at the clock's current time."""

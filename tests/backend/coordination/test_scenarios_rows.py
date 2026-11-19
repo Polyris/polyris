@@ -32,8 +32,10 @@ def left_waiting(world, run):
 
 
 def a_pass_reads_the_run(call):
-    """The dispatcher's read of a run's task rows: where a scenario puts an action into a pass."""
-    return call.component == "lambda:reconcile" and call.operation == "BatchGetItem"
+    """The dispatcher's read of a run's task rows (not of its spec version): where a scenario puts an action
+    into a pass."""
+    return (call.component == "lambda:reconcile" and call.operation == "BatchGetItem"
+            and all(table.endswith("-pipeline-tokens") for table in call.tables))
 
 
 @needs_binding("rows-run-task")

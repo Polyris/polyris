@@ -13,6 +13,8 @@ scenario runs.
 from typing import NamedTuple, Tuple
 
 SCENARIOS = "tests/backend/coordination/test_scenarios.py"
+ROWS = "tests/backend/coordination/test_scenarios_rows.py"
+DISPATCHER = "sam/lambdas/coordination/dispatcher.py"
 CORE = "polyris/coordination/asset_conditions.py"
 REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
 TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
@@ -321,4 +323,18 @@ PROBES: Tuple[Probe, ...] = (
                         "'wait_for': ($exists($states.input.item.wait_for.S) and $states.input.item.wait_for.S != '') ? $parse($states.input.item.wait_for.S) : [], ",
                         "")),
           f"{SCENARIOS}::test_a_restarted_task_is_still_gated_on_its_assets"),
+    # ADR #137's tasks as rows (test_scenarios_rows.py).
+    # A pass that runs out of budget no longer sets left_at, so no record wakes the next pass.
+    Probe("R-S1", (Edit(DISPATCHER, "left=bool(state.changed) or state.run.left_at is None), quiet=True)",
+                        "left=False), quiet=True)"),),
+          f"{ROWS}::test_a_pass_out_of_budget_leaves_the_rest_to_the_next_pass_at_once"),
+    # Two guards keep two passes at once from starting a task twice: each decision's write is conditioned
+    # on the status it read, and run_task's name is derived from the row. The probe removes both.
+    Probe("R-D1", (Edit("polyris/coordination/dispatch_writes.py", 'ROW_CONDITION = "#status = :read AND #g = :g"',
+                        'ROW_CONDITION = "(#status = :read OR attribute_exists(#status)) AND #g = :g"'),
+                   Edit("polyris/coordination/run_name.py",
+                        "    digest = _digest(key, run_start, str(int(generation)), length=RUN_TASK_HASH)",
+                        "    digest = _digest(key, run_start, str(int(generation)), str(__import__('time').time_ns()), "
+                        "length=RUN_TASK_HASH)")),
+          f"{ROWS}::test_two_passes_at_once_start_each_task_once"),
 )
