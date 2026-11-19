@@ -300,6 +300,9 @@ Resources:
               - finished_at
               - started_at
               - attempts
+      # ADR #137 §7: a change of a row that the transition table marks wakes the dispatcher.
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -1186,9 +1189,10 @@ Resources:
     Properties:
       FunctionName: !Sub "${Namespace}-${Stage}-polyris-reconcile"
       CodeUri: lambdas/coordination/
-      Handler: reconcile.handler
-      # Resume handles one run's rows for at most 10 s (RESUME_BUDGET_SECONDS),
-      # then leaves the rest due for the sweeper.
+      # The dispatcher (ADR #137 §1, §7), under reconcile's names: a rename would replace the
+      # function, its role and its managed policy, whose fixed name would collide (Principle #33).
+      Handler: dispatcher.handler
+      # A pass keeps RESERVE_MS in hand (dispatcher.RESERVE_MS) and leaves the rest through left_at.
       Timeout: 30
       # Every task wake runs through this function; CPU scales with memory,
       # and 256 MB keeps the boto3 cold start short for a negligible GB-s cost.
@@ -1203,6 +1207,9 @@ Resources:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+          SPECS_TABLE: !Ref PipelineSpecsTable
+          # By name, not !Ref: run_task's definition names this function, and a !Ref would close a cycle.
+          RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
 
   # ADR #137 §1: a pipeline invokes it with lambda:invoke.waitForTaskToken; it writes the run row, the run's
   # input and every task row, then marks the run active. The dispatcher answers the token.
@@ -1267,6 +1274,39 @@ Resources:
       FilterCriteria:
         Filters:
           - Pattern: '{"eventName": ["INSERT"]}'
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  # ADR #137 §7. The filters come from the transition table (transitions.filter_patterns, a test
+  # pins them); the dispatcher drops what they let through and the table does not mark. Retries
+  # until the record is handled; a record the dispatcher cannot handle ends in a row or a warning,
+  # so there is no on-failure destination. TRIM_HORIZON: a mapping at LATEST missed the records of
+  # its first two minutes in TR-0.
+  TasksDispatchMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt PipelineTokensTable.StreamArn
+      FunctionName: !Ref ReconcileFunction
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 1
+      ParallelizationFactor: 2
+      MaximumRetryAttempts: -1
+      MaximumRecordAgeInSeconds: -1
+      BisectBatchOnFunctionError: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"dynamodb": {"NewImage": {"generation": {"N": [{"exists": true}]}, "status": {"S": ["aborted", "failed", "skipped", "stopped", "succeeded", "success", "upstream_failed", "waiting_decision"]}}, "OldImage": {"status": {"S": [{"anything-but": ["aborted", "failed", "skipped", "stopped", "succeeded", "success", "upstream_failed"]}]}}}}'
+          - Pattern: '{"dynamodb": {"NewImage": {"generation": {"N": [{"exists": true}]}, "status": {"S": ["waiting"]}}, "OldImage": {"status": {"S": ["aborted", "failed", "skipped", "stopped", "succeeded", "success", "upstream_failed", "waiting_decision"]}}}}'
+          - Pattern: '{"dynamodb": {"NewImage": {"generation": {"N": [{"exists": true}]}, "status": {"S": ["skipped", "success"]}}, "OldImage": {"status": {"S": ["aborted", "failed", "stopped", "upstream_failed"]}}}}'
+          - Pattern: '{"eventName": ["INSERT", "MODIFY"], "dynamodb": {"Keys": {"execution_name": {"S": [{"prefix": "_run_"}]}}}}'
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -1469,14 +1509,15 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          # Task row, dependency rows and pause flag (consistent reads);
-          # park / close / attention updates; warning rows.
+          # Run rows, task rows and the run's input (consistent reads); decisions (an update and
+          # the run row's ConditionCheck in one transaction), attention updates; warning rows.
           - Effect: Allow
             Action:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:UpdateItem
               - dynamodb:PutItem
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
           # Resume: candidate rows of one run.
@@ -1504,6 +1545,19 @@ Resources:
               - dynamodb:GetItem
             Resource:
               - !GetAtt PipelineRegistryTable.Arn
+          # A run's spec version (ADR #137 §8): its version items and their texts.
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+              - dynamodb:BatchGetItem
+            Resource:
+              - !GetAtt PipelineSpecsTable.Arn
+          # A ready row's run_task, under its derived name (invariant 4); by name, as !Ref would close a cycle.
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
           # Task tokens have no resource-level permissions.
           - Effect: Allow
             Action:
@@ -1531,6 +1585,20 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - !Ref CoordinationReconcilePolicy
+      Policies:
+        # The dispatcher reads the tasks table's stream (ADR #137 §7).
+        - PolicyName: DispatcherStreamPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource:
+                  - !GetAtt PipelineTokensTable.StreamArn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace

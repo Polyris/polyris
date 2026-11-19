@@ -79,7 +79,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 |--------------|-----------|---------|
 | `polyris-console-api` | API Gateway | Serves the REST endpoints behind the Console UI (list pipelines, describe run, trigger execution, manual action, etc.) |
 | `polyris-query-subscriptions` | `notify-dependents` SFN | Reads `dep-subscriptions` to find who to notify when an upstream completes |
-| `polyris-reconcile` | `registration` and `notify-dependents` SFNs, asset-fanout | Decides whether a waiting task is ready (trigger rule, `wait_for` assets, pause) and signals its wrapper (ADR #130) |
+| `polyris-reconcile` | The tasks table's stream | The dispatcher (ADR #137): passes over a run's rows, decides each waiting row (trigger rule, `wait_for` assets, pause), starts its `run_task`, and answers the run once every row is final |
 | `polyris-asset-fanout` | `asset-events` stream | Wakes the tasks waiting on a new asset fact and starts the pipelines scheduled on that asset |
 | `polyris-sweeper` | EventBridge Scheduler, every 5 minutes | Re-checks the waiting tasks whose due time has come, so a lost wake-up hint delays a task instead of losing it. Aborts a task whose wrapper is gone, and releases a task a resume missed from its pause wait. Retries failed push starts and hourly replays the pushes of recent facts. Adopts rows an older version wrote and reports the engine's health (ADR #130 §8) |
 | `polyris-start-run` | Each pipeline run, as its first state (`lambda:invoke.waitForTaskToken`) | Reads the run's task specs, writes the run row with the run's task token, the run's input and one row per task, then marks the run active (ADR #137 §1) |
@@ -91,7 +91,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 
 | Logical name | Contents |
 |--------------|----------|
-| `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output, and the coordination rows the sweeper keeps (`_engine_health`, `_sweeper_lease`, warnings). Its sparse `attention-index` lists the rows that need attention by due time: waiting tasks, tasks held in their pause wait, push retries, warnings. Hottest table |
+| `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output, and the coordination rows the sweeper keeps (`_engine_health`, `_sweeper_lease`, warnings). Its sparse `attention-index` lists the rows that need attention by due time: waiting tasks, tasks held in their pause wait, push retries, warnings. Its stream, with both images, wakes the dispatcher when a row changes (ADR #137 §7). Hottest table |
 | `polyris-pipeline-registry` | One row per deployed pipeline: its state machine, schedule, the spec version it runs (`spec_id`, `task_count`) and the format it was deployed with |
 | `polyris-pipeline-specs` | Every task's spec, which `polyris-deploy` writes before the pipeline's stack: each spec text once under `{pipeline}#text` by its sha256, and each version under `{pipeline}#{fingerprint}` naming its tasks' texts. Never changes, never expires. The Console draws a pipeline's graph from it |
 | `polyris-dep-subscriptions` | One pointer per waiting task and per thing it waits on (an upstream task of its run, or a `wait_for` asset). Read by `query-subscriptions` and asset-fanout; deleted once the task is signalled |
@@ -181,7 +181,7 @@ A common admin/developer question during an incident. Table maps concepts to con
 | "Where's the large XCom payload the task pushed?" | `polyris-results` S3 bucket, at the `_s3_ref` path the DDB `result` field points to |
 | "Why did the Console API return 500?" | `/aws/lambda/polyris-console-api` log group, filter by request ID from the browser response |
 | "Which tasks depend on this one?" | `polyris-dep-subscriptions` DDB (GSI: `subscriber-index`) |
-| "Why is this task still waiting?" | `/aws/lambda/polyris-reconcile` log group, filter by the task's execution name: each line has the `verdict` and its `reasons` |
+| "Why is this task still waiting?" | The task's row in `polyris-pipeline-tokens`: `reasons` says what it waits for, as the dispatcher recorded it. The `/aws/lambda/polyris-reconcile` log group has one line per pass and one per row the pass changed |
 | "Is task coordination healthy?" | The **System** pill in the Console header, or `GET /api/health` → `checks.coordination.status` |
 | "When did this task last transition to `failed`?" | `polyris-task-events` DDB, query by `task_run_id` |
 | "Did Cognito reject the login?" | CloudTrail → filter EventSource `cognito-idp.amazonaws.com` |

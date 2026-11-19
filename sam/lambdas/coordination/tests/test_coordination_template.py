@@ -49,6 +49,12 @@ def recording(ddb, *clients: Any) -> Iterator[Set[Call]]:
     calls: Set[Call] = set()
 
     def before(params: Dict[str, Any], model: Any, **_: Any) -> None:
+        if model.name == "TransactWriteItems":       # IAM authorizes each item's own action
+            for item in params["TransactItems"]:
+                [(kind, request)] = item.items()
+                action = "ConditionCheckItem" if kind == "ConditionCheck" else f"{kind}Item"
+                calls.add((f"dynamodb:{action}", LOGICAL[request["TableName"]], None))
+            return
         tables = params["RequestItems"] if model.name == "BatchGetItem" else [params["TableName"]]
         for table in tables:
             calls.add((f"dynamodb:{model.name}", LOGICAL[table], params.get("IndexName")))
@@ -162,13 +168,121 @@ def test_every_fact_a_decision_rests_on_is_read_consistently(
     assert ("BatchGetItem", "PipelineTokensTable", None, True) in reads
 
 
+def _walk_the_dispatcher(ddb, monkeypatch) -> Tuple[Set[Call], Set[Read]]:
+    """The dispatcher's paths over a run Start_Run wrote: a start, a fact that wakes a row, the run's end."""
+    import boto3
+
+    run = "orders-run-2026-11-12-dddd0001"          # not RUN: the old reconciler's walk wrote 1.2 rows under it
+
+    import start_run
+    from dispatcher import Dispatcher
+    from polyris.coordination import run_row, spec_store, task_spec
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    monkeypatch.setattr(env, "_dynamodb", ddb)
+    monkeypatch.setattr(env, "_dynamodb_client", client)
+    version = task_spec.build_version("orders", [
+        {"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
+        {"task_id": "load", "task_type": "sfn", "dependencies": ["extract"], "trigger_rule": "all_success",
+         "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
+    spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+    start_run.handler({"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 2,
+                       "pipeline_name": "orders", "execution_name": run, "execution_start": STARTED_AT,
+                       "token": "run-token", "retry_count": 0, "redrive_count": 0, "date": "2026-11-12",
+                       "input": {}}, None)
+    sfn = FakeSfn()
+    dispatcher = Dispatcher(client, sfn, resource=ddb, tokens_table=TABLES["TOKENS_TABLE"][1],
+                            subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1],
+                            specs_table=TABLES["SPECS_TABLE"][1], asset_events_table=TABLES["ASSET_EVENTS_TABLE"][1],
+                            pipelines_table=TABLES["PIPELINES_TABLE"][1], run_task_arn="arn:run-task",
+                            clock=lambda: NOW, sleep=lambda _: None)
+    tokens = TABLES["TOKENS_TABLE"][1]
+    run_key = run_row.key(run)
+    calls: Set[Call] = set()
+    reads: Set[Read] = set()
+
+    def walk(step: Any) -> None:
+        with recording(ddb, client) as made, reading(ddb, client) as read:
+            step()
+        calls.update(made)
+        reads.update(read)
+
+    def pass_over(narrow: bool = False) -> Any:
+        if narrow:
+            return lambda: dispatcher.narrow_pass(run_key, [execution_name("load", run)], source="asset",
+                                                  remaining_ms=lambda: 60_000)
+        return lambda: dispatcher.full_pass(run_key, source="test", remaining_ms=lambda: 60_000)
+
+    walk(pass_over())                                                            # extract starts
+    client.update_item(TableName=tokens, Key={"execution_name": {"S": execution_name("extract", run)}},
+                       UpdateExpression="SET #s = :s, finished_at = :f", ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":s": {"S": "success"}, ":f": {"S": "2026-11-12T05:59:00.000Z"}})
+    ddb.Table(TABLES["ASSET_EVENTS_TABLE"][1]).put_item(Item=legacy_fact("ns/orders", "2026-11-12",
+                                                                         event_time="2026-11-12T05:55:00.000Z"))
+    walk(pass_over(narrow=True))                                                 # the fact starts load
+    client.update_item(TableName=tokens, Key={"execution_name": {"S": execution_name("load", run)}},
+                       UpdateExpression="SET #s = :s", ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":s": {"S": "success"}})
+    walk(pass_over())                                                            # the run's end
+    client.delete_item(TableName=tokens, Key={"execution_name": {"S": execution_name("load", run)}})
+    walk(pass_over())                                                            # a missing row warns
+    assert len(sfn.started) == 2 and sfn.succeeded, "the walk must start both rows and answer the run"
+    return calls, reads
+
+
 def test_reconcile_role_allows_exactly_the_calls_the_code_makes(
-        resources, reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb):
+        resources, reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb, monkeypatch):
+    """The old reconciler and the dispatcher share the policy until the sweeper and AssetFanout move (TR-4c)."""
     used = _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb)
+    dispatched, _ = _walk_the_dispatcher(ddb, monkeypatch)
+    used |= dispatched
     granted = _dynamodb_grants(_statements(resources))
     assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
     assert granted - used == set(), "grants no call uses (drop them, or walk the path that needs them)"
-    assert "Policies" not in resources["ReconcileRole"]["Properties"], "the reconciler's grants live in its policy"
+    [own] = resources["ReconcileRole"]["Properties"]["Policies"]
+    [stream] = own["PolicyDocument"]["Statement"]
+    assert set(stream["Action"]) == STREAM_ACTIONS and stream["Resource"] == [{"!GetAtt": "PipelineTokensTable.StreamArn"}]
+
+
+def test_every_read_of_the_dispatcher_is_consistent(ddb, monkeypatch):
+    """A pass decides from consistent reads by key, with no index on the decision path (ADR #137 §7)."""
+    _, reads = _walk_the_dispatcher(ddb, monkeypatch)
+    decisions = {r for r in reads if r[1] in {"PipelineTokensTable", "PipelineSpecsTable"}}
+    assert decisions and {r for r in decisions if not r[3] or r[2] is not None} == set()
+
+
+def test_the_tasks_stream_wakes_the_dispatcher_through_the_transition_tables_filters(resources):
+    """ADR #137 §7: both images, from the start, retried until handled, no failure destination, and the
+    filters the transition table generates."""
+    from polyris.coordination import transitions
+
+    tokens = resources["PipelineTokensTable"]["Properties"]
+    assert tokens["StreamSpecification"] == {"StreamViewType": "NEW_AND_OLD_IMAGES"}
+    mapping = {k: v for k, v in resources["TasksDispatchMapping"]["Properties"].items() if k != "Tags"}
+    filters = mapping.pop("FilterCriteria")["Filters"]
+    assert mapping == {
+        "EventSourceArn": {"!GetAtt": "PipelineTokensTable.StreamArn"},
+        "FunctionName": {"!Ref": "ReconcileFunction"},
+        "StartingPosition": "TRIM_HORIZON",
+        "BatchSize": 10,
+        "MaximumBatchingWindowInSeconds": 1,
+        "ParallelizationFactor": 2,
+        "MaximumRetryAttempts": -1,
+        "MaximumRecordAgeInSeconds": -1,
+        "BisectBatchOnFunctionError": True,
+        "FunctionResponseTypes": ["ReportBatchItemFailures"],
+    }
+    assert [json.loads(f["Pattern"]) for f in filters] == transitions.filter_patterns()
+    assert len(filters) <= 4, "Lambda allows five filters per mapping by default; the ADR keeps one spare"
+
+
+def test_the_dispatcher_starts_the_run_task_machine_by_its_name(resources):
+    from coordination_testkit import RUN_TASK_ARN
+
+    name = resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"]
+    assert RUN_TASK_ARN["!Sub"].endswith(f":stateMachine:{name}") and "${AWS::Region}" in RUN_TASK_ARN["!Sub"]
+    [start] = [s for s in _statements(resources) if s["Action"] == ["states:StartExecution"]]
+    assert start["Resource"] == [RUN_TASK_ARN]
 
 
 def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
@@ -336,13 +450,14 @@ def test_step_functions_actions_per_role(resources):
     def actions(role):
         return {a for s in _statements(resources, role) for a in s["Action"] if a.startswith("states:")}
 
-    reconciler = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution"}
+    reconciler = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution",
+                  "states:StartExecution"}
     assert actions("ReconcileRole") == reconciler
     assert actions("AssetFanoutRole") == reconciler | {"states:StartExecution"}
     assert actions("SweeperRole") == reconciler | {"states:StartExecution"}
     # The fake implements exactly the calls the code makes.
     assert {"states:" + "".join(p.title() for p in m.split("_")) for m in vars(FakeSfn) if not m.startswith("_")} \
-        == reconciler | {"states:StartExecution"}
+        == reconciler
 
 
 def test_describe_execution_is_scoped_to_wrapper_executions(resources):
@@ -356,7 +471,7 @@ def test_describe_execution_is_scoped_to_wrapper_executions(resources):
 
 
 @pytest.mark.parametrize("function,module_name,role", [
-    ("ReconcileFunction", "reconcile", "ReconcileRole"),
+    ("ReconcileFunction", "dispatcher", "ReconcileRole"),
     ("AssetFanoutFunction", "asset_fanout", "AssetFanoutRole"),
     ("SweeperFunction", "sweeper", "SweeperRole"),
     ("StartRunFunction", "start_run", "StartRunRole"),
@@ -379,6 +494,7 @@ def test_function_wiring(resources, function, module_name, role):
 
 def test_time_budgets_fit_their_timeouts(resources):
     import asset_fanout
+    import dispatcher
     from polyris.coordination import start_run as start_run_core
 
     # Start_Run's retry window counts every attempt at the function's timeout (ADR #137 §1).
@@ -386,6 +502,8 @@ def test_time_budgets_fit_their_timeouts(resources):
 
     # Resume's budget fits inside the timeout with room for the last row.
     assert reconcile.RESUME_BUDGET_SECONDS + 5 <= resources["ReconcileFunction"]["Properties"]["Timeout"]
+    # A pass keeps RESERVE_MS in hand below the dispatcher's timeout, and has time left to work (Rule 52).
+    assert dispatcher.RESERVE_MS * 2 <= resources["ReconcileFunction"]["Properties"]["Timeout"] * 1000
     # AssetFanout stops starting records with RESERVE_MS left: one record's work fits in that reserve.
     assert asset_fanout.RESERVE_MS / 1000 < resources["AssetFanoutFunction"]["Properties"]["Timeout"]
     # The sweeper works within its budget, and its lease outlives a run that dies at the timeout

@@ -25,7 +25,8 @@ TABLES = {
 }
 #: Variables each coordination function reads (the others' tables it never touches).
 FUNCTION_TABLES = {
-    "ReconcileFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE"),
+    "ReconcileFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
+                          "SPECS_TABLE"),
     "AssetFanoutFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
                             "ASSET_SUBSCRIPTIONS_TABLE"),
     "SweeperFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
@@ -33,8 +34,11 @@ FUNCTION_TABLES = {
     "StartRunFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
 }
 #: Environment a function reads beyond its tables.
+#: The run_task state machine by its name: a !Ref would close a dependency cycle (ADR #137 §1).
+RUN_TASK_ARN = {"!Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"}
 FUNCTION_ENV = {
     "SweeperFunction": {"ASSET_FANOUT_FUNCTION": {"!Ref": "AssetFanoutFunction"}},
+    "ReconcileFunction": {"RUN_TASK_ARN": RUN_TASK_ARN},
 }
 
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
