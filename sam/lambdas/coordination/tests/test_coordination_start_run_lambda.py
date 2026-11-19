@@ -32,7 +32,7 @@ def stack(ddb, monkeypatch):
 def event(version, **changes):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": version.task_count,
                "pipeline_name": "orders", "execution_name": EXECUTION, "execution_start": START, "token": "token-1",
-               "retry_count": 0, "redrive_count": 0, "input": {"current_date": "2026-11-18", "triggered_by": "schedule"}}
+               "retry_count": 0, "redrive_count": 0, "date": "2026-11-18", "input": {"triggered_by": "schedule"}}
     payload.update(changes)
     return payload
 

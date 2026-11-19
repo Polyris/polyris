@@ -306,7 +306,7 @@ class TestReadSamStack:
             "Stacks": [
                 {
                     "Outputs": [
-                        {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrap"},
+                        {"OutputKey": "StartRunFunctionArn", "OutputValue": "arn:wrap"},
                         {"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"},
                     ],
                     "Parameters": [
@@ -319,7 +319,7 @@ class TestReadSamStack:
         outputs, params = deploy_mod._read_sam_stack(session, "acme-dev")
 
         assert outputs == {
-            "DependencyWrapperArn": "arn:wrap",
+            "StartRunFunctionArn": "arn:wrap",
             "PipelineRegistryTable": "reg",
         }
         assert params == {"Stage": "dev", "Namespace": "acme"}
@@ -381,7 +381,7 @@ class TestSamStackOutputKeys:
         # If sam/template.yaml renames one of these, this test breaks and
         # forces the reader to be updated in the same change (Principle #13).
         assert deploy_mod.SAM_STACK_OUTPUT_KEYS == (
-            "DependencyWrapperArn",
+            "StartRunFunctionArn",
             "OrchestrationRoleArn",
             "PipelineRegistryTable",
             "PipelineTokensTable",

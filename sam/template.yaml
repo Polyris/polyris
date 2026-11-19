@@ -1212,8 +1212,8 @@ Resources:
       FunctionName: !Sub "${Namespace}-${Stage}-polyris-start-run"
       CodeUri: lambdas/coordination/
       Handler: start_run.handler
-      # The largest pipeline: 2,000 task rows (task_spec.MAX_TASKS), one conditional put each, at
-      # 5-20 ms a put. A timeout fails the attempt, and the next one finds the rows already written.
+      # The largest pipeline's rows, one conditional put each (start_run.TIMEOUT; a test pins it).
+      # A timeout fails the attempt, and the next one finds the rows already written.
       Timeout: 300
       MemorySize: 256
       Role: !GetAtt StartRunRole.Arn

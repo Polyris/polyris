@@ -140,6 +140,22 @@ class Bindings:
         self.stack.bind_lambda("ReconcileFunction", handler)
         return handler
 
+    def start_run(self) -> Callable[[Any, Any], Any]:
+        """Start_Run over the stack's tables, on the stack's clock (ADR #137 §1)."""
+        import env
+        import start_run
+
+        tables = self.stack.tables
+        self._set(env, "_dynamodb", self.resource)
+        self._set(env, "_dynamodb_client", self.stack.ddb)
+        self._set(env, "TOKENS_TABLE", tables["PipelineTokensTable"])
+        self._set(env, "SUBSCRIPTIONS_TABLE", tables["DependencySubscriptionsTable"])
+        self._set(env, "SPECS_TABLE", tables["PipelineSpecsTable"])
+        self._set(start_run, "datetime", _clocked_datetime(self.clock))
+        handler = as_component("lambda:start-run", start_run.handler)
+        self.stack.bind_lambda("StartRunFunction", handler)
+        return handler
+
     def asset_fanout(self) -> Any:
         """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
         import asset_fanout

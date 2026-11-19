@@ -1,7 +1,7 @@
 """
 ASL Snapshot Tests for Step branches in generators.py
 
-Covers _build_step_branch() and _generate_step_state() which had
+Covers the direct steps' branches, the wrapper steps' specs and _generate_step_state(), which had
 ZERO snapshot coverage prior to this file. Every Step type that
 goes through generate_step_function_json() is tested here.
 
@@ -438,26 +438,28 @@ def test_all_step_scenarios_produce_valid_asl():
         assert valid, f"{name}: ASL validation failed: {errors}"
 
 
-def test_all_step_scenarios_branch_count():
-    """Branch count == tasks + steps."""
+def _specs(dag):
+    """The spec of each row of ``dag`` by task_id (ADR #137 §8): what each 1.2 branch carried."""
+    from polyris.generators import build_task_specs
+    return {spec["task_id"]: spec for spec in build_task_specs(dag)}
+
+
+def _branches(dag):
+    """The Parallel's branches by their first state: Start_Run's, and one per direct step."""
     from polyris.generators import generate_step_function_json
+    asl = json.loads(generate_step_function_json(dag))
+    return {b["StartAt"]: b for b in asl["States"]["Run_All_Tasks"]["Branches"]}
+
+
+def test_all_step_scenarios_branch_count():
+    """One Start_Run branch for the tasks and wrapper steps, one branch per direct step."""
+    from polyris.generators import WRAPPER_STEP_TYPES
 
     for name, builder in STEP_SCENARIOS.items():
         dag = builder()
-        asl = json.loads(generate_step_function_json(dag))
-
-        parallel = None
-        for state in asl["States"].values():
-            if state.get("Type") == "Parallel":
-                parallel = state
-                break
-
-        assert parallel is not None, f"{name}: no Parallel state"
-        branches = len(parallel["Branches"])
-        expected = len(dag.tasks) + len(dag.steps)
-        assert branches == expected, (
-            f"{name}: {branches} branches != {expected} (tasks={len(dag.tasks)}, steps={len(dag.steps)})"
-        )
+        direct = [s.step_id for s in dag.steps if s.step_type not in WRAPPER_STEP_TYPES]
+        rows = len(dag.tasks) + len(dag.steps) - len(direct)
+        assert sorted(_branches(dag)) == sorted((["Start_Run"] if rows else []) + direct), name
 
 
 def test_direct_steps_run_inline():
@@ -483,89 +485,32 @@ def test_direct_steps_run_inline():
 
 
 def test_wrapper_steps_use_wrapper():
-    """Wrapper steps (lambda/glue/ecs/athena via Step API) go through wrapper SFN."""
-    from polyris.generators import generate_step_function_json
-
+    """Wrapper steps (lambda/glue/ecs/athena via Step API) are rows, with a task's spec (ADR #137 §1)."""
     dag = _build_step_wrapper_lambda()
-    asl = json.loads(generate_step_function_json(dag))
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                if "validate_data" in branch["StartAt"]:
-                    step_state = branch["States"][branch["StartAt"]]
-                    assert step_state["Type"] == "Task"
-                    assert "startExecution.waitForTaskToken" in step_state["Resource"]
-                    inp = step_state["Arguments"]["Input"]
-                    assert inp["task_name"] == "validate_data"
-                    assert inp["task_type"] == "lambda"
-                    assert inp["task_config"]["payload"] == {"mode": "strict"}
-                    return
-
-    pytest.fail("validate_data wrapper step not found")
+    assert "validate_data" not in _branches(dag)
+    spec = _specs(dag)["validate_data"]
+    assert spec["task_type"] == "lambda" and spec["task_config"]["payload"] == {"mode": "strict"}
 
 
 def test_wrapper_step_has_dependencies():
-    """Wrapper steps carry dependency info to the wrapper."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_step_wrapper_lambda()
-    asl = json.loads(generate_step_function_json(dag))
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                if "validate_data" in branch["StartAt"]:
-                    inp = branch["States"][branch["StartAt"]]["Arguments"]["Input"]
-                    assert inp["dependencies"] == ["extract"], (
-                        f"Expected ['extract'], got {inp['dependencies']}"
-                    )
-                    return
-
-    pytest.fail("validate_data not found")
+    """Wrapper steps keep their dependencies in their spec."""
+    assert _specs(_build_step_wrapper_lambda())["validate_data"]["dependencies"] == ["extract"]
 
 
 def test_wrapper_step_glue_has_task_config():
     """GlueTask wrapper step carries job_name and arguments in task_config."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_step_wrapper_glue()
-    asl = json.loads(generate_step_function_json(dag))
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                if "run_etl" in branch["StartAt"]:
-                    inp = branch["States"][branch["StartAt"]]["Arguments"]["Input"]
-                    assert inp["task_type"] == "glue"
-                    tc = inp["task_config"]
-                    assert tc["job_name"] == "daily-etl-job"
-                    assert "--source_path" in tc["arguments"]
-                    return
-
-    pytest.fail("run_etl not found")
+    spec = _specs(_build_step_wrapper_glue())["run_etl"]
+    assert spec["task_type"] == "glue"
+    assert spec["task_config"]["job_name"] == "daily-etl-job" and "--source_path" in spec["task_config"]["arguments"]
 
 
 def test_wrapper_step_ecs_has_network_config():
     """ECS wrapper step carries cluster, task_definition, subnets."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_step_wrapper_ecs_athena()
-    asl = json.loads(generate_step_function_json(dag))
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                if "run_container" in branch["StartAt"]:
-                    inp = branch["States"][branch["StartAt"]]["Arguments"]["Input"]
-                    assert inp["task_type"] == "ecs"
-                    tc = inp["task_config"]
-                    assert tc["cluster"] == "prod-cluster"
-                    assert tc["subnets"] == ["subnet-abc123"]
-                    assert tc["security_groups"] == ["sg-xyz789"]
-                    return
-
-    pytest.fail("run_container not found")
+    spec = _specs(_build_step_wrapper_ecs_athena())["run_container"]
+    assert spec["task_type"] == "ecs"
+    config = spec["task_config"]
+    assert (config["cluster"], config["subnets"], config["security_groups"]) == (
+        "prod-cluster", ["subnet-abc123"], ["sg-xyz789"])
 
 
 def test_sns_step_produces_correct_resource():
@@ -674,41 +619,10 @@ def test_http_step_has_headers():
 
 
 def test_mixed_dag_has_all_branches():
-    """Mixed DAG has both task and step branches with correct types."""
-    from polyris.generators import generate_step_function_json
-
+    """Mixed DAG: tasks and the LambdaTask wrapper step are rows of Start_Run, direct steps are branches."""
     dag = _build_step_mixed_full()
-    asl = json.loads(generate_step_function_json(dag))
-
-    branch_names = set()
-    wrapper_branches = set()
-    direct_branches = set()
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                start = branch["StartAt"]
-                branch_names.add(start)
-                step_state = branch["States"][start]
-                resource = step_state.get("Resource", "")
-                if "startExecution.waitForTaskToken" in resource:
-                    wrapper_branches.add(start)
-                elif step_state["Type"] in ("Wait", "Pass"):
-                    direct_branches.add(start)
-                elif "sns:publish" in resource:
-                    direct_branches.add(start)
-
-    # 3 tasks go through wrapper
-    assert "Task_extract" in wrapper_branches
-    assert "Task_transform" in wrapper_branches
-    assert "Task_load" in wrapper_branches
-
-    # 1 LambdaTask wrapper step
-    assert "validate" in wrapper_branches
-
-    # 2 direct steps
-    assert "cooldown" in direct_branches
-    assert "notify_start" in direct_branches
+    assert set(_branches(dag)) == {"Start_Run", "cooldown", "notify_start"}
+    assert set(_specs(dag)) == {"extract", "transform", "load", "validate"}
 
 
 # ============================================================
@@ -779,9 +693,8 @@ def test_task_depending_on_direct_step_raises():
 
 def test_wrapper_step_lambda_retries_appear_in_task_config():
     """LambdaTask(retries=N) used as a wrapper step must carry RETRIES and RETRY_DELAY
-    in the generated task_config — parity guard against drift from _build_task_config_and_arn."""
+    in its task_config — parity guard against drift from _build_task_config_and_arn."""
     from polyris import DAG, LambdaTask
-    from polyris.generators import generate_step_function_json
     from polyris.constants import TaskConfigKey
 
     with DAG("step_retries_parity", schedule=None) as dag:
@@ -792,28 +705,14 @@ def test_wrapper_step_lambda_retries_appear_in_task_config():
             retry_interval=5,
         )
 
-    asl = json.loads(generate_step_function_json(dag))
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                if "fn_with_retries" in branch["StartAt"]:
-                    tc = branch["States"][branch["StartAt"]]["Arguments"]["Input"]["task_config"]
-                    assert tc[TaskConfigKey.RETRIES.value] == 3, (
-                        "LambdaTask wrapper step must carry retries=3 in task_config"
-                    )
-                    assert tc[TaskConfigKey.RETRY_DELAY.value] == 5, (
-                        "LambdaTask wrapper step must carry retry_delay=5 in task_config"
-                    )
-                    return
-
-    pytest.fail("fn_with_retries wrapper branch not found")
+    config = _specs(dag)["fn_with_retries"]["task_config"]
+    assert config[TaskConfigKey.RETRIES.value] == 3, "LambdaTask wrapper step must carry retries=3"
+    assert config[TaskConfigKey.RETRY_DELAY.value] == 5, "LambdaTask wrapper step must carry retry_delay=5"
 
 
 def test_wrapper_step_lambda_without_retries_has_no_retry_keys():
     """LambdaTask(retries=0) wrapper step must NOT include RETRIES in task_config."""
     from polyris import DAG, LambdaTask
-    from polyris.generators import generate_step_function_json
     from polyris.constants import TaskConfigKey
 
     with DAG("step_no_retries", schedule=None) as dag:
@@ -822,19 +721,7 @@ def test_wrapper_step_lambda_without_retries_has_no_retry_keys():
             function_arn="arn:aws:lambda:us-east-1:123:function:fn",
         )
 
-    asl = json.loads(generate_step_function_json(dag))
-
-    for state in asl["States"].values():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                if "fn_no_retries" in branch["StartAt"]:
-                    tc = branch["States"][branch["StartAt"]]["Arguments"]["Input"]["task_config"]
-                    assert TaskConfigKey.RETRIES.value not in tc, (
-                        "LambdaTask with no retries must not add RETRIES key to task_config"
-                    )
-                    return
-
-    pytest.fail("fn_no_retries wrapper branch not found")
+    assert TaskConfigKey.RETRIES.value not in _specs(dag)["fn_no_retries"]["task_config"]
 
 
 # ============================================================

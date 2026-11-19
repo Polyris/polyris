@@ -154,11 +154,12 @@ def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: O
 
 def _generate_cfn_template(
     dag: DAG,
+    *,
     namespace: str,
     stage: str,
     region: str,
     role_arn: str,
-    wrapper_arn: str,
+    start_run_function_arn: str,
     registry_table: str,
     tokens_table: str,
     asset_subscriptions_table: str,
@@ -170,7 +171,7 @@ def _generate_cfn_template(
     full_name = f"{namespace}-{stage}-polyris-{dag.dag_id}"
     asl_json = generate_step_function_json(
         dag,
-        wrapper_arn=wrapper_arn,
+        start_run_function_arn=start_run_function_arn,
         registry_table=registry_table,
         tokens_table=tokens_table,
         asset_subscriptions_table=asset_subscriptions_table,
@@ -432,7 +433,7 @@ def _register_pipeline(
 # tests import the same names — a rename in the template that misses this
 # constant is caught immediately (Principle #13).
 SAM_STACK_OUTPUT_KEYS = (
-    "DependencyWrapperArn",
+    "StartRunFunctionArn",
     "OrchestrationRoleArn",
     "PipelineRegistryTable",
     "PipelineTokensTable",
@@ -829,7 +830,7 @@ def deploy_pipeline(
     print(f"\nReading SAM stack outputs from {_c(sam_stack_name, CYAN)}...")
     outputs, _params = _read_sam_stack(session, sam_stack_name)
 
-    wrapper_arn = outputs.get("DependencyWrapperArn")
+    start_run_arn = outputs.get("StartRunFunctionArn")
     role_arn = outputs.get("OrchestrationRoleArn")
     registry_table = outputs.get("PipelineRegistryTable")
     tokens_table = outputs.get("PipelineTokensTable")
@@ -838,7 +839,7 @@ def deploy_pipeline(
     results_bucket = outputs.get("ResultsBucket")
     console_url = outputs.get("ConsoleUiUrl")
 
-    required = ("DependencyWrapperArn", "OrchestrationRoleArn") + (() if destroy else ("PipelineSpecsTable",))
+    required = ("OrchestrationRoleArn",) + (() if destroy else ("PipelineSpecsTable", "StartRunFunctionArn"))
     missing = [k for k in required if not outputs.get(k)]
     if missing:
         print(f"❌ SAM stack '{sam_stack_name}' is missing required outputs.")
@@ -846,7 +847,7 @@ def deploy_pipeline(
         print("   The platform is older than this polyris. Upgrade it with polyris-up "
               "(or redeploy sam/ from the current repo).")
         sys.exit(1)
-    assert wrapper_arn and role_arn  # narrowed by the check above
+    assert role_arn  # narrowed by the check above
 
     stack_name = pipeline_stack
 
@@ -921,7 +922,7 @@ def deploy_pipeline(
         stage=stage,
         region=region,
         role_arn=role_arn,
-        wrapper_arn=wrapper_arn,
+        start_run_function_arn=start_run_arn or "",
         registry_table=registry_table or "",
         tokens_table=tokens_table or "",
         asset_subscriptions_table=asset_subscriptions_table or "",

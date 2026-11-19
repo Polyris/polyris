@@ -20,7 +20,7 @@ from polyris.generators import generate_step_function_json
 
 _ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:acme-dev-polyris-my-pipeline"
 _SAM_OUTPUTS = [
-    {"OutputKey": "DependencyWrapperArn", "OutputValue": _ARN},
+    {"OutputKey": "StartRunFunctionArn", "OutputValue": _ARN},
     {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:aws:iam::000000000000:role/exec"},
     {"OutputKey": "PipelineRegistryTable", "OutputValue": "my-registry"},
     {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},

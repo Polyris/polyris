@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from polyris.coordination import attention, deadlines, run_input, run_row, start_run, task_row, task_spec
+from polyris.coordination import attention, deadlines, records, run_input, run_row, start_run, task_row, task_spec
 
 NOW = datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc)
 EXECUTION = "orders-run-2026-11-19-abcd1234"
@@ -29,8 +29,8 @@ SPECS = {
 def call(**changes):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64, "task_count": 4,
                "pipeline_name": "orders", "execution_name": EXECUTION, "execution_start": START,
-               "token": "token-1", "retry_count": 0, "redrive_count": 0,
-               "input": {"current_date": "2026-11-18", "skip_tasks": ["audit"], "triggered_by": "schedule"}}
+               "token": "token-1", "retry_count": 0, "redrive_count": 0, "date": "2026-11-18",
+               "input": {"skip_tasks": ["audit"], "triggered_by": "schedule"}}
     payload.update(changes)
     return start_run.call_from(payload)
 
@@ -43,24 +43,36 @@ def test_a_format_this_platform_does_not_run_is_refused_first_with_the_fix():
 
 
 @pytest.mark.parametrize("change,problem", [({"spec_id": None, "token": None}, "malformed"),
-                                            ({"retry_count": "x"}, "malformed"), ({"task_count": 0}, "no task")])
+                                            ({"retry_count": "x"}, "malformed"), ({"task_count": 0}, "no task"),
+                                            ({"date": None}, "malformed"), ({"date": ""}, "no date")])
 def test_a_malformed_call_is_refused(change, problem):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "s", "task_count": 1, "pipeline_name": "p",
-               "execution_name": "e", "execution_start": START, "token": "t", "retry_count": 0, **change}
-    if change.get("token", "") is None:
-        payload.pop("token")
+               "execution_name": "e", "execution_start": START, "token": "t", "retry_count": 0,
+               "date": "2026-11-19", **change}
+    for key in [k for k, v in change.items() if v is None]:
+        payload.pop(key)
     with pytest.raises(ValueError, match=problem):
         start_run.call_from(payload)
 
 
-@pytest.mark.parametrize("given,date", [
-    ({"variables": {"current_date": "2026-01-01"}, "current_date": "2026-02-02"}, "2026-01-01"),
-    ({"current_date": "2026-02-02", "scheduled_time": "2026-03-03T06:00:00Z"}, "2026-02-02"),
-    ({"scheduled_time": "2026-03-03T06:00:00Z"}, "2026-03-03"),
-    ({}, "2026-11-19"),                                          # the execution's start
-])
-def test_the_runs_date_is_read_in_the_generators_order(given, date):
-    assert start_run.run_date(given, START) == date
+def test_the_cascade_flags_of_the_payload_are_those_records_reads():
+    assert records.cascade_of({start_run.RunArg.CASCADE_ALL: True}) == "all"
+    assert records.cascade_of({start_run.RunArg.SUPPRESS_ASSET_EVENT: True, start_run.RunArg.CASCADE_ALL: True}) == "none"
+
+
+def test_no_retry_of_start_run_matches_the_answer_of_a_failed_run():
+    """TR-0 B4: a Retry that matched it would start the run again after its end."""
+    from sfn_jsonata import LAMBDA_TRANSIENT
+
+    assert set(start_run.RETRY_ERRORS) == LAMBDA_TRANSIENT            # as the platform's own templates retry
+    assert run_row.FAILED_RUN_ERROR not in start_run.RETRY_ERRORS
+    assert not {"States.ALL", "States.TaskFailed"} & set(start_run.RETRY_ERRORS)
+
+
+def test_the_retry_window_holds_every_attempt_and_every_backoff_at_its_longest():
+    assert start_run.TIMEOUT == timedelta(seconds=300)
+    # 7 attempts of 300 s, and backoffs of 2, 4, 8, 16, 32 and 60 s (the last one capped).
+    assert start_run.retry_window() == timedelta(seconds=7 * 300 + 2 + 4 + 8 + 16 + 32 + 60)
 
 
 # ── the rows Start_Run writes ────────────────────────────────────────
@@ -213,10 +225,10 @@ def test_the_rows_key_takes_the_runs_last_20_characters_without_dots_and_colons(
     assert task_row.key("load", "2026-11-19", "orders-run-2026-11-19.123:45") == "load-2026-11-19-un-2026-11-1912345"
 
 
-def test_a_retry_after_one_day_would_still_name_its_rows_by_the_runs_date():
-    late = call(execution_start="2026-11-20T00:10:00.000Z", input={})
-    assert late.date == "2026-11-20" and start_run.task_items(late, {"extract": SPECS["extract"]},
-                                                             now=NOW + timedelta(days=1))[0]["date"] == "2026-11-20"
+def test_a_retry_a_day_later_still_names_its_rows_by_the_runs_date():
+    late = call(retry_count=3, input={})
+    rows = start_run.task_items(late, {"extract": SPECS["extract"]}, now=NOW + timedelta(days=1))
+    assert rows[0]["date"] == "2026-11-18" and rows[0]["execution_name"].startswith("extract-2026-11-18-")
 
 
 def test_a_backfill_runs_rows_name_their_backfill():

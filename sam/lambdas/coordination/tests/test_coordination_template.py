@@ -259,7 +259,7 @@ def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_i
     spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
     event = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 1,
              "pipeline_name": "orders", "execution_name": RUN, "execution_start": STARTED_AT, "token": "t1",
-             "retry_count": 0, "redrive_count": 0, "input": {}}
+             "retry_count": 0, "redrive_count": 0, "date": "2026-11-12", "input": {}}
     with recording(ddb, client) as used, reading(ddb, client) as reads:
         assert start_run.handler(event, None)["started"]
         assert start_run.handler({**event, "retry_count": 2, "token": "t3"}, None)["started"]
@@ -379,6 +379,10 @@ def test_function_wiring(resources, function, module_name, role):
 
 def test_time_budgets_fit_their_timeouts(resources):
     import asset_fanout
+    from polyris.coordination import start_run as start_run_core
+
+    # Start_Run's retry window counts every attempt at the function's timeout (ADR #137 §1).
+    assert resources["StartRunFunction"]["Properties"]["Timeout"] == start_run_core.TIMEOUT.total_seconds()
 
     # Resume's budget fits inside the timeout with room for the last row.
     assert reconcile.RESUME_BUDGET_SECONDS + 5 <= resources["ReconcileFunction"]["Properties"]["Timeout"]

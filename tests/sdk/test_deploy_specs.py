@@ -43,7 +43,7 @@ def _platform(mocker, ddb, *, outputs=None):
     mocker.patch("polyris.validation.validate_asl_from_dag", return_value=(True, [], []))
     mocker.patch("polyris.deploy._register_pipeline")
     sam_outputs = outputs if outputs is not None else {
-        "DependencyWrapperArn": ARN, "OrchestrationRoleArn": "arn:aws:iam::000000000000:role/exec",
+        "StartRunFunctionArn": ARN, "OrchestrationRoleArn": "arn:aws:iam::000000000000:role/exec",
         "PipelineRegistryTable": "registry", "PipelineTokensTable": "tokens",
         "AssetSubscriptionsTable": "asset-subs", "PipelineSpecsTable": SPECS, "ResultsBucket": "results"}
     cfn = mocker.MagicMock()
@@ -154,7 +154,7 @@ def test_a_dry_run_writes_no_spec(mocker, platform_dynamodb, capsys):
 
 def test_a_platform_without_the_specs_table_is_refused(mocker, platform_dynamodb, capsys):
     cfn = _platform(mocker, platform_dynamodb, outputs={
-        "DependencyWrapperArn": ARN, "OrchestrationRoleArn": "arn:aws:iam::000000000000:role/exec"})
+        "StartRunFunctionArn": ARN, "OrchestrationRoleArn": "arn:aws:iam::000000000000:role/exec"})
     with pytest.raises(SystemExit):
         deploy_pipeline(_dag(), stage="dev", region="us-east-1")
     cfn.create_change_set.assert_not_called()

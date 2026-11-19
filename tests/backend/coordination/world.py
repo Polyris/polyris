@@ -114,6 +114,7 @@ class World:
         self._run_ids = itertools.count(0xABCD0000)
         self.bindings = Bindings(self.stack, self.resource, self.clock.read)
         self.bindings.reconcile()
+        self.bindings.start_run()
         self.bindings.query_subscriptions()
         self._fanout = as_component("lambda:asset-fanout", self.bindings.asset_fanout())
         self._console = self.bindings.console()
@@ -133,11 +134,11 @@ class World:
         """Deploy as polyris-deploy does: load the machine, then run it register_only, so the
         real registration states write the registry entry and any push subscriptions.
 
-        `before_upgrade`: the pipeline's tasks start the wrapper as v1.1.4 defined it, as runs
-        in flight across the upgrade do; every helper they call is the current one.
+        `before_upgrade`: a pipeline generated before 1.3, whose run is in flight across the upgrade.
         """
-        wrapper_arn = self.stack.legacy_wrapper_arn() if before_upgrade else None
-        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag, wrapper_arn=wrapper_arn))
+        if before_upgrade:
+            raise NeedsBinding("rows-migration", "a pipeline generated before 1.3")
+        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag))
         # A fresh name per deploy, as polyris-deploy does, so a pipeline can be deployed again.
         self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register-{next(self._run_ids):08x}",
                                      input=json.dumps({"register_only": True}))
@@ -160,7 +161,7 @@ class World:
         template = _generate_cfn_template(
             pipeline.dag, namespace="acme", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::123456789012:role/acme-dev-polyris-orchestration-role",
-            wrapper_arn=self.stack.machine_arn("DependencyWrapperSfn"),
+            start_run_function_arn=self.stack.function_arn("StartRunFunction"),
             registry_table=self.stack.tables["PipelineRegistryTable"],
             tokens_table=self.stack.tables["PipelineTokensTable"],
             asset_subscriptions_table=self.stack.tables["AssetSubscriptionsTable"],

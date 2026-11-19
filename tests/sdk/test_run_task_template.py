@@ -195,20 +195,18 @@ def test_no_orphan_states(template):
 # asserts a known field first as a binding guard.
 # ---------------------------------------------------------------------------
 
-WRAPPER_ARN = "arn:aws:states:us-east-1:111111111111:stateMachine:wrapper"
-
-
 def _wrapper_input_for(build):
-    """Build a one-task DAG via the real SDK and return the Input dict the
-    pipeline ASL hands to run_task (contains the SDK-emitted task_config)."""
+    """Build a one-task DAG via the real SDK and return what run_task reads of the task: its
+    spec's name, type, ARN, role and task_config (ADR #137 §8), the fields 1.2's wrapper passed on."""
     from polyris import DAG
-    from polyris.generators import _build_task_branch
+    from polyris.constants import TaskSpecKey as K
+    from polyris.generators import build_task_specs
     with DAG(dag_id="contract", schedule="@daily") as dag:
         build(dag)
-    t = dag.tasks[0]
-    branch = _build_task_branch(t, dag, WRAPPER_ARN)
-    state = next(iter(branch["States"].values()))
-    return state["Arguments"]["Input"]
+    spec = build_task_specs(dag)[0]
+    return {"task_name": spec[K.TASK_ID], "task_type": spec[K.TASK_TYPE], "task_arn": spec[K.TASK_ARN],
+            "cross_account_role": spec[K.CROSS_ACCOUNT_ROLE], "task_config": spec[K.TASK_CONFIG],
+            "pipeline_name": dag.dag_id, "date": "2026-11-12", "current_date": "2026-11-12"}
 
 
 def _resolve_arguments(template, state_name, wrapper_input, context_execution_id=None):

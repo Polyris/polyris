@@ -417,7 +417,7 @@ class TestValidateAslFromDag:
     def test_role_as_raw_arn_passthrough_is_valid(self):
         """polyris.roles' own documented usage (`role=roles["data_warehouse"]`)
         passes the *resolved ARN value* directly, not a config.roles key —
-        _build_task_branch already accepts this (falls through unresolved-
+        the task's spec already accepts this (falls through unresolved-
         as-is when the value isn't found as a key), so the validator must not
         reject it. An earlier version of this check did reject it, based on
         the (incomplete) assumption that role is always a key, never a raw

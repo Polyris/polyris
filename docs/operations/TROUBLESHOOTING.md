@@ -179,9 +179,9 @@ running, and its upstream dependency is itself `skipped` — not failed.
 `all_success`, instead of silently counting as "OK to continue."
 Check *why* the upstream was skipped:
 1. If an operator skipped it (task action), or the run did (`skip_tasks`), the skip
-   does **not** cascade, so if you're seeing this, the skip likely came from a
-   trigger_rule resolving `skipped` further upstream in the same chain (a skip with
-   `skip_origin = rule` does cascade).
+   does **not** cascade. So if you're seeing this, the skip likely came from a
+   trigger_rule resolving `skipped` further upstream in the same chain: a skip with
+   `skip_origin = rule` does cascade.
 2. If you want this task to proceed regardless of an upstream skip, change its
    `trigger_rule` to `all_done`.
 
@@ -275,7 +275,7 @@ A grey **System · status unknown** means the console could not read `/api/healt
 ### "SAM stack '…' is missing required outputs" error
 
 **Symptoms:** `polyris-deploy` fails with the SAM stack missing outputs
-(`DependencyWrapperArn`, `OrchestrationRoleArn`, …). Historically this
+(`StartRunFunctionArn`, `OrchestrationRoleArn`, …). Historically this
 error was "SSM parameter not found"; polyris-deploy no longer reads SSM,
 it reads the SAM stack's CloudFormation Outputs directly.
 
@@ -288,9 +288,10 @@ it reads the SAM stack's CloudFormation Outputs directly.
      --query "Stacks[0].Outputs[*].OutputKey" \
      --output table
    ```
-   You should see `DependencyWrapperArn`, `OrchestrationRoleArn`,
-   `PipelineRegistryTable`, `PipelineTokensTable`,
-   `AssetSubscriptionsTable`, `ResultsBucket`.
+   You should see `StartRunFunctionArn`, `OrchestrationRoleArn`,
+   `PipelineRegistryTable`, `PipelineTokensTable`, `PipelineSpecsTable`,
+   `AssetSubscriptionsTable`, `ResultsBucket`. A platform older than your
+   polyris lacks some of them: upgrade it with `polyris-up`.
 
 2. The stack you're pointing at is the SAM stack, not a pipeline stack.
    `config.py`'s `stack_name` must match `sam/samconfig.toml`'s

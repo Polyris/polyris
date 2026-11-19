@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from coordination_testkit import REPO_ROOT, template
@@ -110,20 +109,6 @@ class Stack:
 
     # ── loading ────────────────────────────────────────────────────────
 
-    def legacy_wrapper_arn(self) -> str:
-        """The wrapper as v1.1.4 defined it, against the current helpers and tables.
-
-        A run in flight across the upgrade keeps the wrapper definition it started
-        on, while every helper it calls is already the new one (ADR #130 Migration).
-        The definition is a frozen copy: ``legacy/dependency_wrapper.v1.1.4.tpl.json``.
-        """
-        name = f"{self.machine_names['DependencyWrapperSfn']}-v1-1-4"
-        arn = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:{name}"
-        if arn not in self.runtime.machines:
-            text = (Path(__file__).resolve().parent / "legacy" / "dependency_wrapper.v1.1.4.tpl.json").read_text()
-            self.runtime.add_machine(name, self._substituted("DependencyWrapperSfn", text))
-        return arn
-
     def _definition(self, logical: str) -> Dict[str, Any]:
         props = self.resources[logical]["Properties"]
         return self._substituted(logical, (REPO_ROOT / "sam" / props["DefinitionUri"]).read_text())
@@ -151,13 +136,18 @@ class Stack:
 
     # ── pipelines ──────────────────────────────────────────────────────
 
-    def deploy_pipeline(self, dag: Any, *, name: Optional[str] = None, wrapper_arn: Optional[str] = None) -> str:
-        """Generate the pipeline's ASL with the real generator and load it; returns its ARN."""
-        from polyris.generators import generate_step_function_json
+    def deploy_pipeline(self, dag: Any, *, name: Optional[str] = None) -> str:
+        """Deploy as polyris-deploy does: write the pipeline's spec version and read it back, then
+        generate its ASL with the real generator and load it; returns its ARN."""
+        from polyris.coordination import spec_store
+        from polyris.generators import build_spec_version, generate_step_function_json
 
+        version = build_spec_version(dag)
+        spec_store.write(self.ddb, self.tables["PipelineSpecsTable"], version, sleep=lambda _: None)
+        spec_store.verify(self.ddb, self.tables["PipelineSpecsTable"], version, sleep=lambda _: None)
         asl = generate_step_function_json(
             dag,
-            wrapper_arn=wrapper_arn or self.machine_arn("DependencyWrapperSfn"),
+            start_run_function_arn=self.function_arn("StartRunFunction"),
             registry_table=self.tables["PipelineRegistryTable"],
             tokens_table=self.tables["PipelineTokensTable"],
             asset_subscriptions_table=self.tables["AssetSubscriptionsTable"],

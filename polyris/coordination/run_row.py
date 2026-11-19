@@ -148,9 +148,16 @@ def stop_mark(*, by: str, reason: str, at: str) -> Dict[str, str]:
     return {"by": clip(by, BY_MAX), "reason": clip(reason, STOP_REASON_MAX), "at": at}
 
 
+#: The keys of the step mark, which the generated pipeline writes in JSONata too (generators._mark_state).
+STEP_MARK_STEP = "step"
+STEP_MARK_ERROR = "error"
+#: JSONata cuts a string by characters, and a character takes at most four bytes of UTF-8.
+ERROR_CHARS = ERROR_MAX // 4
+
+
 def step_mark(*, step: str, error: str) -> Dict[str, str]:
     """The mark of a failed direct step; its cause goes to the step warning, not to the run row (§1)."""
-    return {"step": clip(step, STEP_MAX), "error": clip(error, ERROR_MAX)}
+    return {STEP_MARK_STEP: clip(step, STEP_MAX), STEP_MARK_ERROR: clip(error, ERROR_MAX)}
 
 
 def request(*, by: str, at: str, task: Optional[str] = None) -> Dict[str, str]:

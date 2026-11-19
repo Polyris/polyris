@@ -206,7 +206,6 @@ Key outputs:
 
 | Output | Consumers |
 |---|---|
-| `DependencyWrapperArn` | polyris-deploy — root SFN each pipeline invokes |
 | `OrchestrationRoleArn` | polyris-deploy — role attached to per-pipeline state machines |
 | `PipelineRegistryTable` | Console API, notify Lambda |
 | `PipelineTokensTable` | Every wrapper execution, Console API, notify Lambda |

@@ -23,20 +23,68 @@ sends what they build.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Mapping
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Mapping, Tuple
 
 from ..constants import SkipOrigin, TaskSpecKey, TaskStatus
-from . import asset_spec, attention, deadlines, ownership, records, retention, run_input, run_row, task_row
-from .task_spec import FORMAT_VERSION, TaskSpec, decision_text
+from . import asset_spec, attention, deadlines, ownership, records, retention, run_input, run_row, task_row, wake
+from .task_spec import FORMAT_VERSION, MAX_TASKS, TaskSpec, decision_text
 from .times import format_utc, parse_utc
 
 #: The table of per-run pointers that AssetFanout reads (DependencySubscriptionsTable) and its keys.
 POINTER_KEY = "dependency_key"
 POINTER_SUBSCRIBER = "subscriber"
 ASSET_POINTER_PREFIX = "asset:"
-#: The field of the execution's input that a scheduled run carries (generators.SCHEDULED_TIME_FIELD).
-SCHEDULED_TIME = "scheduled_time"
+
+
+class Arg:
+    """The keys of Start_Run's payload, which the generated pipeline builds (generators._start_run_branch)."""
+    FORMAT_VERSION = "format_version"
+    SPEC_ID = "spec_id"
+    TASK_COUNT = "task_count"
+    PIPELINE_NAME = "pipeline_name"
+    EXECUTION_NAME = "execution_name"      # $states.context.Execution.Name
+    EXECUTION_START = "execution_start"    # $states.context.Execution.StartTime
+    TOKEN = "token"                        # $states.context.Task.Token
+    RETRY_COUNT = "retry_count"            # $states.context.State.RetryCount
+    REDRIVE_COUNT = "redrive_count"        # $states.context.Execution.RedriveCount
+    DATE = "date"                          # the run's date, computed once by the generated JSONata
+    INPUT = "input"                        # what the run was started with (RunArg)
+
+
+class RunArg:
+    """The keys of the payload's ``input``: the values a run was started with, as each 1.2 task got them."""
+    VARIABLES = "variables"
+    SKIP_TASKS = "skip_tasks"
+    CASCADE_ALL = "cascade_all"                    # the two flags records.cascade_of reads
+    SUPPRESS_ASSET_EVENT = "_suppress_asset_event"
+    TRIGGERED_BY = "triggered_by"
+    BACKFILL_ID = "backfill_id"
+
+
+#: The errors on which the Start_Run state tries again (Principle #53): Lambda's own failures, its
+#: throttling, and Start_Run's CoordinationTransient. None of them is run_row.FAILED_RUN_ERROR, the
+#: dispatcher's answer of a failed run, and no wildcard (States.ALL, States.TaskFailed) is among them.
+RETRY_ERRORS = ("Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException",
+                "Lambda.TooManyRequestsException", "Lambda.Unknown", "Sandbox.Timedout", wake.TRANSIENT_ERROR)
+RETRY_INTERVAL = timedelta(seconds=2)
+RETRY_ATTEMPTS = 6
+RETRY_BACKOFF = 2
+RETRY_MAX_DELAY = timedelta(minutes=1)
+#: The Lambda's timeout, from the largest pipeline polyris-deploy accepts (§8): MAX_TASKS rows, one
+#: conditional put each, at an allowance ten times a put's usual 5-20 ms, so the asset pointers fit
+#: too, and the reads of the specs and of the run row. sam/template.yaml declares it; a test pins it.
+PUT_ALLOWANCE = timedelta(milliseconds=100)
+READS_ALLOWANCE = timedelta(seconds=100)
+TIMEOUT = MAX_TASKS * PUT_ALLOWANCE + READS_ALLOWANCE
+
+
+def retry_window() -> timedelta:
+    """The longest a run row stays ``creating`` while its Start_Run is tried (§1): every attempt's
+    timeout and every backoff at its longest. A run still ``creating`` after it never became active (§4)."""
+    backoffs = sum((min(RETRY_INTERVAL * RETRY_BACKOFF ** attempt, RETRY_MAX_DELAY)
+                    for attempt in range(RETRY_ATTEMPTS)), timedelta())
+    return (RETRY_ATTEMPTS + 1) * TIMEOUT + backoffs
 
 
 class FormatError(ValueError):
@@ -59,49 +107,35 @@ class Call:
     token: str                  # $states.context.Task.Token
     retry_count: int            # $states.context.State.RetryCount
     redrive_count: int          # $states.context.Execution.RedriveCount
+    date: str                   # the run's date, as the generated JSONata computed it
     execution_input: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def order(self) -> int:
         return run_row.token_order(redrive_count=self.redrive_count, retry_count=self.retry_count)
 
-    @property
-    def date(self) -> str:
-        return run_date(self.execution_input, self.execution_start)
-
 
 def call_from(payload: Mapping[str, Any]) -> Call:
     """The call from ``Start_Run``'s payload. The format is checked before anything else."""
-    version = payload.get("format_version")
+    version = payload.get(Arg.FORMAT_VERSION)
     if version != FORMAT_VERSION:
         raise FormatError(f"this platform runs pipelines of format {FORMAT_VERSION}, and this pipeline was "
                           f"deployed with format {version!r}: redeploy it with polyris-deploy")
     try:
         call = Call(
-            format_version=int(version), spec_id=str(payload["spec_id"]), task_count=int(payload["task_count"]),
-            pipeline=str(payload["pipeline_name"]), execution=str(payload["execution_name"]),
-            execution_start=str(payload["execution_start"]), token=str(payload["token"]),
-            retry_count=int(payload["retry_count"]), redrive_count=int(payload.get("redrive_count") or 0),
-            execution_input=dict(payload.get("input") or {}),
+            format_version=int(version), spec_id=str(payload[Arg.SPEC_ID]), task_count=int(payload[Arg.TASK_COUNT]),
+            pipeline=str(payload[Arg.PIPELINE_NAME]), execution=str(payload[Arg.EXECUTION_NAME]),
+            execution_start=str(payload[Arg.EXECUTION_START]), token=str(payload[Arg.TOKEN]),
+            retry_count=int(payload[Arg.RETRY_COUNT]), redrive_count=int(payload.get(Arg.REDRIVE_COUNT) or 0),
+            date=str(payload[Arg.DATE]), execution_input=dict(payload.get(Arg.INPUT) or {}),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"Start_Run's payload is malformed: {exc!r}") from exc
+    if not call.date:
+        raise ValueError(f"{call.pipeline}: Start_Run's payload is malformed: the run has no date")
     if call.task_count < 1:
         raise ValueError(f"{call.pipeline}: a run of no task has no Start_Run")
     return call
-
-
-def run_date(execution_input: Mapping[str, Any], execution_start: str) -> str:
-    """The run's logical date, in the order the generator's ``_DATE_FALLBACK`` reads it."""
-    variables = execution_input.get("variables") or {}
-    for candidate in (variables.get("current_date") if isinstance(variables, Mapping) else None,
-                      execution_input.get("current_date")):
-        if candidate:
-            return str(candidate)
-    scheduled = execution_input.get(SCHEDULED_TIME)
-    if scheduled:
-        return str(scheduled).split("T", 1)[0]
-    return execution_start.split("T", 1)[0]
 
 
 def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
@@ -120,8 +154,7 @@ def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
         ":run_start": call.execution_start,
         ":started_at": index_keys[run_row.STARTED_AT], ":start_day": index_keys[run_row.START_DAY],
         ":pipeline": call.pipeline, ":run_date": call.date,
-        ":triggered_by": run_row.clip(str(call.execution_input.get("triggered_by") or "unknown"),
-                                      run_row.TRIGGERED_BY_MAX),
+        ":triggered_by": run_row.clip(triggered_by(call), run_row.TRIGGERED_BY_MAX),
         ":spec_id": call.spec_id, ":task_count": call.task_count, ":format": call.format_version,
         ":ttl": retention.ttl(now, retention.HISTORY),
         ":attention": attention.attention(attention.WAITING, key), ":due": format_utc(now),
@@ -147,15 +180,14 @@ def input_item(call: Call, *, now: datetime) -> Dict[str, Any]:
     """The run's input item: variables, skip list and cascade, with the execution that wrote it."""
     given = call.execution_input
     item = run_input.to_item(
-        run_input.RunInput(dict(given.get("variables") or {}), tuple(given.get("skip_tasks") or ()),
-                           records.cascade_of(given)),
+        run_input.RunInput(dict(given.get(RunArg.VARIABLES) or {}), skipped(call), records.cascade_of(given)),
         pipeline_execution=call.execution, ttl=retention.ttl(now, retention.HISTORY))
     return {**item, task_row.PIPELINE_EXECUTION: call.execution, task_row.RUN_START: call.execution_start}
 
 
 def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> List[Dict[str, Any]]:
     """One row per task: ``waiting``, or ``skipped`` (origin ``run``) when the run's input names it."""
-    skip = set(call.execution_input.get("skip_tasks") or ())
+    skip = set(skipped(call))
     unknown = skip - set(specs)
     if unknown:
         raise ValueError(f"{call.pipeline}: skip_tasks names tasks the pipeline does not have: {sorted(unknown)}")
@@ -170,10 +202,10 @@ def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> L
             task_row.GENERATION: ownership.FIRST,
             task_row.SPEC_ID: call.spec_id, task_row.SPEC_HASH: spec.text_hash, task_row.DECISION: decision_text(spec),
             task_row.TASK_TYPE: spec.fields[TaskSpecKey.TASK_TYPE],
-            task_row.TRIGGERED_BY: str(call.execution_input.get("triggered_by") or "unknown"),
+            task_row.TRIGGERED_BY: triggered_by(call),
             task_row.TTL: retention.ttl(now, retention.HISTORY),
         }
-        backfill = call.execution_input.get("backfill_id")
+        backfill = call.execution_input.get(RunArg.BACKFILL_ID)
         if backfill:
             item[task_row.BACKFILL_ID] = str(backfill)
         if task_id in skip:
@@ -194,7 +226,7 @@ def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> L
 
 def pointer_items(call: Call, specs: Mapping[str, TaskSpec]) -> List[Dict[str, str]]:
     """The ``asset:{name}`` pointers of the waiting tasks with ``wait_for``, for AssetFanout (§7)."""
-    skip = set(call.execution_input.get("skip_tasks") or ())
+    skip = set(skipped(call))
     pointers = []
     for task_id, spec in sorted(specs.items()):
         wait_for = spec.fields.get(TaskSpecKey.WAIT_FOR)
@@ -204,6 +236,15 @@ def pointer_items(call: Call, specs: Mapping[str, TaskSpec]) -> List[Dict[str, s
         for name in sorted(asset_spec.asset_names(asset_spec.parse(wait_for))):
             pointers.append({POINTER_KEY: f"{ASSET_POINTER_PREFIX}{name}", POINTER_SUBSCRIBER: subscriber})
     return pointers
+
+
+def triggered_by(call: Call) -> str:
+    return str(call.execution_input.get(RunArg.TRIGGERED_BY) or "unknown")
+
+
+def skipped(call: Call) -> Tuple[str, ...]:
+    """The tasks the run was started without: the run skips them (``skip_origin = run``)."""
+    return tuple(str(task) for task in call.execution_input.get(RunArg.SKIP_TASKS) or ())
 
 
 def task_condition() -> Dict[str, Any]:

@@ -49,7 +49,7 @@ class TestScheduleResourceInTemplate:
         dag = _scheduled_dag(is_paused_upon_creation=True)
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/x", wrapper_arn=ARN,
+            role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
         )
         rule = template["Resources"]["PipelineSchedule"]
@@ -60,7 +60,7 @@ class TestScheduleResourceInTemplate:
         dag = _scheduled_dag(is_paused_upon_creation=None)
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/x", wrapper_arn=ARN,
+            role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
         )
         rule = template["Resources"]["PipelineSchedule"]
@@ -72,7 +72,7 @@ class TestScheduleResourceInTemplate:
         dag = _scheduled_dag()
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/x", wrapper_arn=ARN,
+            role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
         )
         rule = template["Resources"]["PipelineSchedule"]
@@ -82,7 +82,7 @@ class TestScheduleResourceInTemplate:
         dag = _scheduled_dag()
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/x", wrapper_arn=ARN,
+            role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
         )
         role = template["Resources"]["PipelineSchedulerRole"]
@@ -104,7 +104,7 @@ class TestScheduleResourceInTemplate:
         dag = _scheduled_dag()
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/x", wrapper_arn=ARN,
+            role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
         )
         role = template["Resources"]["PipelineSchedulerRole"]
@@ -119,7 +119,7 @@ class TestScheduleResourceInTemplate:
         dag = _scheduled_dag()
         template = _generate_cfn_template(
             dag, namespace="test", stage="dev", region="us-east-1",
-            role_arn="arn:aws:iam::000000000000:role/pipeline-exec", wrapper_arn=ARN,
+            role_arn="arn:aws:iam::000000000000:role/pipeline-exec", start_run_function_arn=ARN,
             registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
         )
         rule = template["Resources"]["PipelineSchedule"]
@@ -127,7 +127,7 @@ class TestScheduleResourceInTemplate:
 
 
 _SAM_OUTPUTS = [
-    {"OutputKey": "DependencyWrapperArn", "OutputValue": ARN},
+    {"OutputKey": "StartRunFunctionArn", "OutputValue": ARN},
     {"OutputKey": "OrchestrationRoleArn",
      "OutputValue": "arn:aws:iam::000000000000:role/exec"},
     {"OutputKey": "PipelineRegistryTable", "OutputValue": "registry"},

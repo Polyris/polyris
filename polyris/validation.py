@@ -534,7 +534,7 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
         # raw ARN passed through directly. The common case is a key (see the
         # role field's own inline comment) — but `polyris.roles`'
         # documented usage (`role=roles["data_warehouse"]`) passes the
-        # *resolved ARN value* directly, which _build_task_branch already
+        # *resolved ARN value* directly, which the task's spec (_resolved_role) already
         # accepts by falling through unresolved-as-is when a role isn't a
         # config.roles key. A typo'd role KEY isn't caught anywhere else: it
         # silently passes through generation as a plain string and only fails

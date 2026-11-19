@@ -13,7 +13,7 @@ from polyris.coordination.run_name import (
 
 
 def wrapper_name(task_id, date, run):
-    """How a run's task executions are named (generators._make_execution_name_expr)."""
+    """How 1.2 named a run's task executions: "{task id}-{date}-{the run name's last 8 characters}"."""
     return f"{task_id}-{date}-{run[-8:]}"
 
 

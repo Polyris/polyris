@@ -1,7 +1,7 @@
 """Contract: task_config keys are shared constants (CLAUDE.md #13).
 
-The SDK writer (generators._build_task_config_and_arn, shared by
-_build_task_branch and _build_dag_visualization_nodes_edges) and the
+The SDK writer (generators._build_task_config_and_arn, shared by the
+task's spec and _build_dag_visualization_nodes_edges) and the
 run_task wrapper template are two sides of one contract. The keys live once in
 polyris.constants.TaskConfigKey; these tests pin that:
   1. every `task_config.<key>` the template reads is a declared constant,
@@ -22,19 +22,15 @@ ALL_KEYS = {k.value for k in TaskConfigKey}
 
 
 def _wrapper_input_for(build):
-    """Build a one-task DAG via the real SDK and return the wrapper Input
-    (same proven pattern as tests/sdk/test_run_task_template.py)."""
+    """Build a one-task DAG via the real SDK and return its task's task_config, as its spec
+    carries it (ADR #137 §8) and run_task receives it."""
     from polyris import DAG
-    from polyris.generators import _build_task_branch
+    from polyris.constants import TaskSpecKey
+    from polyris.generators import build_task_specs
 
     with DAG(dag_id="contract_dag", schedule="@daily") as dag:
         build(dag)
-    t = dag.tasks[0]
-    branch = _build_task_branch(
-        t, dag, "arn:aws:states:us-east-1:000000000000:stateMachine:run-task"
-    )
-    state = next(iter(branch["States"].values()))
-    return state["Arguments"]["Input"]
+    return {"task_config": build_task_specs(dag)[0][TaskSpecKey.TASK_CONFIG]}
 
 
 class TestTemplateReadsOnlyDeclaredKeys:
@@ -143,13 +139,13 @@ class TestWriterProducesOnlyDeclaredKeys:
             @task.sfn(arn="arn:aws:states:us-east-1:1:stateMachine:x")
             def t():
                 pass
-        assert "task_config" not in _wrapper_input_for(build)
+        assert _wrapper_input_for(build)["task_config"] == {}
 
 
 class TestNoLiteralKeysInWriter:
     def test_generators_uses_constants_not_literals(self):
         """Source guard: _build_task_config_and_arn (the single shared
-        task_config builder, used by both _build_task_branch and
+        task_config builder, used by both the task's spec and
         _build_dag_visualization_nodes_edges) must key its dicts via
         TaskConfigKey, not bare string literals."""
         src = Path(__file__).parents[2].joinpath("polyris/generators.py").read_text()
@@ -160,10 +156,10 @@ class TestNoLiteralKeysInWriter:
 
 def _task_config_and_arn_for(build):
     """Build a one-task DAG via the real SDK and call
-    _build_task_config_and_arn directly — not through _build_task_branch or
+    _build_task_config_and_arn directly — not through _task_spec or
     _build_dag_visualization_nodes_edges, its two callers. Isolates the
     function's own branching logic from either caller's surrounding
-    construction (wrapper_input assembly / node assembly)."""
+    construction (spec assembly / node assembly)."""
     from polyris import DAG
     from polyris.generators import _build_task_config_and_arn
 
@@ -269,7 +265,7 @@ class TestBuildTaskConfigAndArnDirectly:
 
     def test_retry_logic_shared_with_wrapper_step_path(self):
         """_add_retry_config is the single source of truth: calling it directly
-        mirrors what both _build_task_config_and_arn and _build_step_branch produce
+        mirrors what both _build_task_config_and_arn and _build_step_config_and_arn produce
         for the same retry parameters."""
         from polyris.generators import _add_retry_config
         from polyris.constants import TaskConfigKey

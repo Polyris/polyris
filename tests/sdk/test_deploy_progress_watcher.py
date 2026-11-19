@@ -301,7 +301,7 @@ class TestDeployStillWorksExactlyAsBefore:
         # for the pipeline stack (to read StateMachineArn after deploy). The
         # side_effect switches on which stack was asked for.
         _SAM_OUTPUTS = [
-            {"OutputKey": "DependencyWrapperArn", "OutputValue": ARN},
+            {"OutputKey": "StartRunFunctionArn", "OutputValue": ARN},
             {"OutputKey": "OrchestrationRoleArn",
              "OutputValue": "arn:aws:iam::000000000000:role/exec"},
             {"OutputKey": "PipelineRegistryTable", "OutputValue": "registry"},

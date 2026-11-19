@@ -174,24 +174,20 @@ After adding a member: run `python -m polyris.codegen.sync_enums` to regenerate
 the four downstream files. A bare string literal on either side (generator or
 template) fails `tests/sdk/test_task_config_contract.py`.
 
-## New wrapper input fields require three-file updates + snapshot regeneration
+## A new task field goes through the task's spec (ADR #137 §8, §9)
 
-Any field that must flow from the SDK through every task execution and be written to
-DynamoDB requires changes in **all three** of these places in the same commit:
+A run's tasks are rows that `Start_Run` writes from the pipeline's task specs; no task
+field travels through the pipeline's state machine any more. A field that must reach
+the engine changes these places in the same commit:
 
-1. `generators.py` → `_build_wrapper_input` — include the field in the dict returned
-   for each task's SFN input.
-2. `sam/sfn_templates/dependency_wrapper/sfn.tpl.json` → `Arguments.Input` block of
-   the registration_helper call — thread the field through using JSONata so it is
-   forwarded to the helper SFN.
-3. `sam/sfn_templates/helpers/registration/sfn.tpl.json` → DDB `PutItem` — write the
-   field to the `pipeline-tokens` table so it is queryable later.
+1. `polyris/constants.py` → `TaskSpecKey` (then `python -m polyris.codegen.sync_enums`),
+   and `generators._task_spec` / `_step_spec`, which write it.
+2. If the dispatcher decides on it: `task_spec.DECISION_KEYS`, so `Start_Run` copies it
+   onto each task row's `decision`.
+3. If `run_task` needs it: `run_task_input.Key` and `run_task_input.build`.
 
-Missing any one of the three means the field arrives in the SFN execution context but
-is never persisted, or is persisted but never populated, or is populated only for
-directly-started executions and not for SDK-generated ones.
-
-After changing `_build_wrapper_input`, regenerate snapshots:
+Each definition names its spec version by a fingerprint of the specs, so a spec change
+moves the snapshots. Regenerate them:
 ```bash
 SNAPSHOT_UPDATE=1 python -m pytest tests/sdk/test_asl_snapshots.py tests/sdk/test_asl_snapshots_steps.py
 python -m pytest tests/sdk/test_asl_snapshots.py  # verify
@@ -296,7 +292,7 @@ single shared definition — don't inline a one-off retry dict.
 
 ## Wrapper step retry policy lives in `_add_retry_config`, not duplicated inline
 
-`_build_task_config_and_arn` (Task path) and `_build_step_branch` (wrapper-step
+`_build_task_config_and_arn` (Task path) and `_build_step_config_and_arn` (wrapper-step
 path) must both call `_add_retry_config` to thread the retry contract into
 `task_config`. Never inline the `if task.retries: task_config[...] = ...` block
 again — that's the duplication that caused `LambdaTask(retries=3)` used as a

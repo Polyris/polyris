@@ -160,20 +160,6 @@ def test_register_pipeline_names_the_version_and_its_task_count():
     assert {":tasks", ":dag"} <= set(values)
 
 
-def test_the_1_2_branch_keeps_its_bounds_until_tr4():
-    """The wrapper branch of a task without limits keeps 1.2's 24 hours; with an execution
-    limit, orchestration falls back to it there, as in 1.2."""
-    branches = json.loads(generators.generate_step_function_json(_every_field()))["States"]["Run_All_Tasks"]["Branches"]
-    by_task = {b["StartAt"]: b["States"][b["StartAt"]] for b in branches}
-    assert by_task["Task_notify"]["TimeoutSeconds"] == 86400
-    assert by_task["Task_load"]["TimeoutSeconds"] == 7200 + 30
-    assert by_task["Task_load"]["Arguments"]["Input"]["orchestration_timeout"] == 7200
-    assert by_task["Task_extract"]["Arguments"]["Input"]["orchestration_timeout"] == 8 * 86400
-
-
-# ── the decorator rejects a duplicate outlet ─────────────────────────
-
-
 def test_the_same_asset_twice_in_outlets_is_refused():
     orders = Asset("s3://acme/orders/")
     with DAG("dupes", schedule=None):

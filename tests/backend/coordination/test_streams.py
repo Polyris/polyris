@@ -138,6 +138,7 @@ def test_select_delivers_the_chosen_records_and_keeps_the_rest(ddb):
     assert (chosen.seen, rest.seen) == (["b"], ["a"])
 
 
+@pytest.mark.needs_binding("rows-core")
 def test_the_world_expires_rows_whose_ttl_passed_and_only_those(world):
     """World.expire_ttl deletes as DynamoDB's TTL does: invariant 11's scenarios rest on it."""
     from dags import chain

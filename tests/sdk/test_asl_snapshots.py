@@ -442,6 +442,19 @@ def test_snapshot_consecutive_wait_for():
 # Structural validation (always runs, no golden files needed)
 # ============================================================
 
+def _specs(dag):
+    """The spec of each row of ``dag`` by task_id (ADR #137 §8): what each 1.2 branch carried."""
+    from polyris.generators import build_task_specs
+    return {spec["task_id"]: spec for spec in build_task_specs(dag)}
+
+
+def _branches(dag):
+    """The Parallel's branches by their first state: Start_Run's, and one per direct step."""
+    from polyris.generators import generate_step_function_json
+    asl = json.loads(generate_step_function_json(dag))
+    return {b["StartAt"]: b for b in asl["States"]["Run_All_Tasks"]["Branches"]}
+
+
 def test_all_scenarios_produce_valid_asl():
     """Every scenario generates valid ASL with required top-level keys."""
     from polyris.generators import generate_step_function_json, validate_asl
@@ -650,141 +663,48 @@ def test_dag_hash_is_8_chars():
 
 
 def test_all_scenarios_task_count_matches():
-    """Number of parallel branches == number of tasks in DAG."""
-    from polyris.generators import generate_step_function_json
+    """One Start_Run branch for the rows, one branch per direct step; Start_Run counts the rows."""
+    from polyris.generators import WRAPPER_STEP_TYPES
 
     for name, builder in ALL_SCENARIOS.items():
         dag = builder()
-        asl = json.loads(generate_step_function_json(dag))
-
-        # Find the Parallel state
-        parallel_state = None
-        for sname, state in asl["States"].items():
-            if state.get("Type") == "Parallel":
-                parallel_state = state
-                break
-
-        assert parallel_state is not None, f"{name}: no Parallel state found"
-        branch_count = len(parallel_state.get("Branches", []))
-        task_count = len(dag.tasks) + len(dag.steps)
-        assert branch_count == task_count, (
-            f"{name}: branch count ({branch_count}) != task count ({task_count})"
-        )
+        branches = _branches(dag)
+        rows = len(dag.tasks) + len([s for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES])
+        direct = len(dag.steps) - (rows - len(dag.tasks))
+        assert len(branches) == (1 if rows else 0) + direct, name
+        if rows:
+            payload = branches["Start_Run"]["States"]["Start_Run"]["Arguments"]["Payload"]
+            assert payload["task_count"] == rows == len(_specs(dag)), name
 
 
 def test_chain_has_correct_dependencies():
     """Chain DAG: transform depends on extract, load depends on transform."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_chain()
-    asl = json.loads(generate_step_function_json(dag))
-
-    # Find branches by task name
-    branches = {}
-    for sname, state in asl["States"].items():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                for bsname, bstate in branch["States"].items():
-                    if bstate.get("Type") == "Task" and "Arguments" in bstate:
-                        inp = bstate["Arguments"].get("Input", {})
-                        task_name = inp.get("task_name", "")
-                        if task_name:
-                            branches[task_name] = inp
-
-    assert "extract" in branches
-    assert "transform" in branches
-    assert "load" in branches
-
-    assert branches["extract"].get("dependencies", []) == []
-    assert branches["transform"].get("dependencies") == ["extract"]
-    assert branches["load"].get("dependencies") == ["transform"]
+    specs = _specs(_build_chain())
+    assert specs["extract"]["dependencies"] == []
+    assert specs["transform"]["dependencies"] == ["extract"]
+    assert specs["load"]["dependencies"] == ["transform"]
 
 
 def test_fan_in_has_multiple_dependencies():
     """Fan-in: load depends on [a, b, c]."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_fan_in()
-    asl = json.loads(generate_step_function_json(dag))
-
-    for sname, state in asl["States"].items():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                for bsname, bstate in branch["States"].items():
-                    if bstate.get("Type") == "Task" and "Arguments" in bstate:
-                        inp = bstate["Arguments"].get("Input", {})
-                        if inp.get("task_name") == "load":
-                            deps = sorted(inp.get("dependencies", []))
-                            assert deps == ["task_a", "task_b", "task_c"], f"Expected 3 deps, got {deps}"
-                            return
-
-    assert False, "load task not found in generated ASL"
+    assert sorted(_specs(_build_fan_in())["load"]["dependencies"]) == ["task_a", "task_b", "task_c"]
 
 
 def test_diamond_dependencies():
     """Diamond: a->[], b->[a], c->[a], d->[b,c]."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_complex_diamond()
-    asl = json.loads(generate_step_function_json(dag))
-
-    task_deps = {}
-    for sname, state in asl["States"].items():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                for bsname, bstate in branch["States"].items():
-                    if bstate.get("Type") == "Task" and "Arguments" in bstate:
-                        inp = bstate["Arguments"].get("Input", {})
-                        tn = inp.get("task_name", "")
-                        if tn:
-                            task_deps[tn] = sorted(inp.get("dependencies", []))
-
-    assert task_deps.get("a") == []
-    assert task_deps.get("b") == ["a"]
-    assert task_deps.get("c") == ["a"]
-    assert task_deps.get("d") == ["b", "c"]
+    deps = {task_id: sorted(spec["dependencies"]) for task_id, spec in _specs(_build_complex_diamond()).items()}
+    assert deps == {"a": [], "b": ["a"], "c": ["a"], "d": ["b", "c"]}
 
 
 def test_wait_before_in_task_input():
-    """wait_before=600 is passed to wrapper as task input."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_wait_before()
-    asl = json.loads(generate_step_function_json(dag))
-
-    found = False
-    for sname, state in asl["States"].items():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                for bsname, bstate in branch["States"].items():
-                    if bstate.get("Type") == "Task" and "Arguments" in bstate:
-                        inp = bstate["Arguments"].get("Input", {})
-                        if inp.get("wait_before") == 600:
-                            found = True
-
-    assert found, "wait_before=600 not found in task input"
+    """wait_before=600 reaches the task's spec, whose countdown the dispatcher owns (ADR #137 §1)."""
+    assert [s.get("wait_before") for s in _specs(_build_wait_before()).values()].count(600) == 1
 
 
 def test_outlets_in_generated_asl():
-    """Outlets are passed in task input for asset event emission."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_with_outlets()
-    asl = json.loads(generate_step_function_json(dag))
-
-    for sname, state in asl["States"].items():
-        if state.get("Type") == "Parallel":
-            for branch in state["Branches"]:
-                for bsname, bstate in branch["States"].items():
-                    if bstate.get("Type") == "Task" and "Arguments" in bstate:
-                        inp = bstate["Arguments"].get("Input", {})
-                        outlets = inp.get("outlets", [])
-                        if outlets:
-                            assert len(outlets) == 1
-                            assert outlets[0]["name"] == "raw/inventory"
-                            return
-
-    assert False, "No outlets found in generated ASL"
+    """Outlets reach the task's spec, from which run_task records the facts."""
+    outlets = [o for spec in _specs(_build_with_outlets()).values() for o in spec.get("outlets", [])]
+    assert [o["name"] for o in outlets] == ["raw/inventory"]
 
 
 def test_variables_in_define_inputs():

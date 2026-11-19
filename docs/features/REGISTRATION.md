@@ -73,7 +73,8 @@ Save_DAG_Snapshot state
 Check_Register_Only
     │
     ├── true  → Success (exit)
-    └── false → Run_All_Tasks
+    └── false → Run_All_Tasks: Start_Run writes the run's tasks as rows,
+                and each direct step runs as a branch beside it
 ```
 
 This ensures metadata stays current even if DynamoDB items were deleted manually

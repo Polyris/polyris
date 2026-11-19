@@ -61,7 +61,7 @@ def _nightly() -> DAG:
 
 def _define_inputs() -> Dict[str, Any]:
     asl = json.loads(generate_step_function_json(
-        _nightly(), wrapper_arn=ARN, registry_table="registry", tokens_table="tokens",
+        _nightly(), start_run_function_arn=ARN, registry_table="registry", tokens_table="tokens",
         asset_subscriptions_table="asset-subs"))
     output: Dict[str, Any] = asl["States"]["Define_Inputs"]["Output"]
     return output
@@ -95,7 +95,7 @@ def test_the_schedule_hands_each_run_the_time_it_fired_it_for():
     """Principle #28: deploy.py writes the field the run date reads; Scheduler fills in the placeholder."""
     template = _generate_cfn_template(
         _nightly(), namespace="acme", stage="prod", region="us-east-1",
-        role_arn="arn:aws:iam::123456789012:role/x", wrapper_arn=ARN,
+        role_arn="arn:aws:iam::123456789012:role/x", start_run_function_arn=ARN,
         registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs")
     run_input = json.loads(template["Resources"]["PipelineSchedule"]["Properties"]["Target"]["Input"])
     assert run_input == {"triggered_by": "schedule", "schedule": "cron(59 23 * * ? *)",
