@@ -7,14 +7,18 @@ the keys of ``Key``: today it reads 39 keys of the wrapper's state, and the
 rewrite of ``run_task`` (TR-5) adds the parity test with its template. The
 lifetimes come in the input, so the template keeps no copy of them.
 
-An input over Step Functions' 256 KB refuses the start for good: the row fails
-with the cause instead of starting (§3). A pass that did not read every
-upstream starts nothing (invariant 10).
+``build`` returns the JSON text to send as the execution's input, and measures
+that text: an input over Step Functions' 256 KB refuses the start for good, and
+the row fails with the cause instead of starting (§3). A pass that did not read
+every upstream starts nothing (invariant 10). The variables come from
+``run_input.from_item``, so they hold no ``Decimal``; a generation read with
+boto3's resource may be one.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Tuple
+from decimal import Decimal
+from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from ..constants import TaskSpecKey
 from . import retention
@@ -55,11 +59,12 @@ class InputTooLarge(ValueError):
     """``run_task``'s input passes Step Functions' 256 KB: the start is refused for good."""
 
 
-def build(*, execution_name: str, generation: int, task_name: str, pipeline_name: str,
+def build(*, execution_name: str, generation: Union[int, Decimal], task_name: str, pipeline_name: str,
           pipeline_execution: str, date: str, triggered_by: str, backfill_id: Optional[str],
           spec: TaskSpec, variables: Mapping[str, Any], cascade: str,
-          upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> Dict[str, Any]:
-    """The input of the task's ``run_task``; ``upstreams`` maps each direct upstream to its status and skip origin."""
+          upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> str:
+    """The input text of the task's ``run_task``; ``upstreams`` maps each direct upstream to its status and
+    skip origin."""
     dependencies = spec.fields[TaskSpecKey.DEPENDENCIES]
     if set(upstreams) != set(dependencies):
         raise ValueError(f"{task_name}: the upstreams read {sorted(upstreams)} are not its dependencies "
@@ -69,7 +74,7 @@ def build(*, execution_name: str, generation: int, task_name: str, pipeline_name
     fields = spec.fields
     payload: Dict[str, Any] = {
         Key.EXECUTION_NAME: execution_name,
-        Key.GENERATION: generation,
+        Key.GENERATION: int(generation),
         Key.TASK_NAME: task_name,
         Key.PIPELINE_NAME: pipeline_name,
         Key.PIPELINE_EXECUTION: pipeline_execution,
@@ -91,10 +96,11 @@ def build(*, execution_name: str, generation: int, task_name: str, pipeline_name
             payload[key] = fields[spec_key]
     if backfill_id is not None:
         payload[Key.BACKFILL_ID] = backfill_id
-    size = len(canonical_json(payload).encode("utf-8"))
+    text = canonical_json(payload)
+    size = len(text.encode("utf-8"))
     if size > PAYLOAD_LIMIT:
         raise InputTooLarge(f"{task_name}: run_task's input takes {size} bytes, over Step Functions' {PAYLOAD_LIMIT}")
-    return payload
+    return text
 
 
 def upstream_statuses(upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> Dict[str, Dict[str, Optional[str]]]:

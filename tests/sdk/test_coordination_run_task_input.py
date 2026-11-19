@@ -1,6 +1,7 @@
 """run_task's input, as the dispatcher builds it (ADR #137 §1, §9)."""
 
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -25,7 +26,16 @@ def build(**overrides):
                      variables={"region": "eu"}, cascade="auto",
                      upstreams={"extract": ("failed", None), "audit": ("skipped", "manual")})
     arguments.update(overrides)
-    return rti.build(**arguments)
+    return json.loads(rti.build(**arguments))
+
+
+def test_the_input_is_the_canonical_text_that_was_measured_and_a_decimal_generation_is_a_number():
+    text = rti.build(execution_name="load-x", generation=Decimal(3), task_name="load", pipeline_name="orders",
+                     pipeline_execution="orders-run-x", date="2026-11-18", triggered_by="schedule",
+                     backfill_id=None, spec=spec(LOAD), variables={"name": "Kyiv – Київ"}, cascade="auto",
+                     upstreams={"extract": ("failed", None), "audit": ("skipped", "manual")})
+    assert json.loads(text)["generation"] == 3
+    assert "Київ" in text                                    # characters as they are, as the limit counts them
 
 
 def test_the_input_carries_only_the_keys_run_task_reads():

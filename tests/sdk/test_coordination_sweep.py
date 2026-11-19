@@ -337,6 +337,16 @@ def test_a_lost_hint_is_an_old_enabling_time_that_no_pass_left(enabled_minutes_a
     assert sweep.lost_hint(None, check, left_at=False, countdown_ended=False) is False
 
 
+def test_a_hint_lost_before_a_resume_counts_from_the_resume():
+    """A row that a resume released is no lost hint while the resume's own pass may still run."""
+    check = STARTED + timedelta(hours=1)
+    enabled = check - timedelta(minutes=30)
+    assert sweep.lost_hint(enabled, check, left_at=False, countdown_ended=False,
+                           resumed_at=check - timedelta(minutes=2)) is False
+    assert sweep.lost_hint(enabled, check, left_at=False, countdown_ended=False,
+                           resumed_at=check - timedelta(minutes=20)) is True
+
+
 @pytest.mark.parametrize("passes,failed,reported", [(10, 6, True), (10, 5, False), (3, 2, True), (1, 1, False),
                                                     (2, 2, True), (0, 0, False)])
 def test_a_sweep_reports_a_failed_step_when_most_of_its_passes_failed_and_at_least_two(passes, failed, reported):

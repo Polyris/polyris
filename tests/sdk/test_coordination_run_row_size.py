@@ -82,6 +82,10 @@ def largest_run_row():
     }
 
 
+def test_the_largest_row_has_every_field_of_the_run_row():
+    assert set(run_row.FIELDS) <= set(largest_run_row())
+
+
 def test_the_largest_run_row_stays_under_its_bound():
     row = largest_run_row()
     assert len(row[run_row.PAUSES]) == pauses.MAX_INTERVALS

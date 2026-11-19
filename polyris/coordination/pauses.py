@@ -3,7 +3,7 @@
 Pause opens an interval and Resume closes it. The row keeps at most ten: a
 Pause past ten merges the two oldest into one, which can only move a deadline
 later. A pause's time counts toward no waiting limit: the deadline function
-moves each deadline by the paused time inside its wait (``paused_within``).
+moves each deadline by the paused time inside its wait (``deadlines.moved``).
 Only the sweeper's lost-hint check reads the latest resume (``resumed_at``).
 
 In the row an interval is a list of epoch seconds, ``[start, end]``, or
@@ -13,7 +13,7 @@ In the row an interval is a list of epoch seconds, ``[start, end]``, or
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -73,16 +73,6 @@ def resume(intervals: Sequence[Interval], now: datetime) -> Intervals:
         return tuple(intervals)
     last = intervals[-1]
     return tuple(intervals[:-1]) + (Interval(last.start, max(now, last.start)),)
-
-
-def paused_within(intervals: Sequence[Interval], start: datetime, end: datetime) -> timedelta:
-    """How much of ``[start, end]`` the run spent paused; an open interval lasts until ``end``."""
-    total = timedelta(0)
-    for interval in intervals:
-        overlap = min(interval.end or end, end) - max(interval.start, start)
-        if overlap > timedelta(0):
-            total += overlap
-    return total
 
 
 def resumed_at(intervals: Sequence[Interval]) -> Optional[datetime]:

@@ -13,8 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Tuple
 
-from ..constants import FAILURE_STATUSES, SETTLED_STATUSES, SkipOrigin, TaskStatus
+from ..constants import FAILURE_STATUSES, SETTLED_STATUSES, SUCCESS_STATUSES, SkipOrigin, TaskStatus
 from . import attention, ownership, run_row
+from .statuses import RECONCILABLE
 
 S = TaskStatus
 
@@ -40,8 +41,8 @@ FINAL: FrozenSet[str] = frozenset(SETTLED_STATUSES)
 NOT_FINAL: FrozenSet[str] = frozenset(s.value for s in S) - FINAL
 #: The final failures, which a Skip or a Mark Successful turns into an outcome that lets dependants run.
 FINAL_FAILURES: FrozenSet[str] = frozenset(FAILURE_STATUSES | {S.STOPPED.value})
-_WAITS = frozenset({S.WAITING.value, S.WAITING_PAUSED.value})
-_NO_OUTCOME_YET = frozenset(s.value for s in S) - {S.SUCCESS.value, S.SUCCEEDED.value, S.SKIPPED.value}
+_WAITS = RECONCILABLE
+_NO_OUTCOME_YET = frozenset(s.value for s in S) - SUCCESS_STATUSES
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,10 @@ TASK_TRANSITIONS: Tuple[TaskTransition, ...] = (
     _task("mark_success", _NO_OUTCOME_YET, S.SUCCESS.value, {_C}, True),
     _task("fail", NOT_FINAL, S.FAILED.value, {_C}, True),
     _task("stop", NOT_FINAL, S.STOPPED.value, {_C, _D}, True),    # dispatcher: a Stop of the run, a run row gone
-    _task("restart", FINAL | {S.WAITING_DECISION.value}, S.WAITING.value, {_C, _D}, True),  # dispatcher: the dependants' resets
+    _task("restart", FINAL | {S.WAITING_DECISION.value}, S.WAITING.value, {_C}, True),
+    # Restart with dependants: the descendants that a failure or a Stop decided, upstream_failed or skipped by a
+    # rule (the dispatcher builds the set from its reads; an operator's or a run's skip stays).
+    _task("reset", {S.UPSTREAM_FAILED.value, S.SKIPPED.value}, S.WAITING.value, {_D}, True),
 )
 
 RUN_TRANSITIONS: Tuple[RunTransition, ...] = (
@@ -190,8 +194,19 @@ def run_row_wakes(old: Optional[Mapping[str, Any]], new: Optional[Mapping[str, A
             or new.get(run_row.LEFT_AT) not in (None, old.get(run_row.LEFT_AT)))
 
 
+_TYPE_TAGS = frozenset({"S", "N", "B", "BOOL", "NULL", "M", "L", "SS", "NS", "BS"})
+
+
 def wakes(row_key: str, old: Optional[Mapping[str, Any]], new: Optional[Mapping[str, Any]]) -> bool:
-    """Whether a stream record of the row ``row_key`` wakes the dispatcher; the dispatcher drops the others."""
+    """Whether a stream record of the row ``row_key`` wakes the dispatcher; the dispatcher drops the others.
+
+    ``old`` and ``new`` are the record's images deserialized (``TypeDeserializer``): on the raw images a
+    status would compare unequal to every name, and a lost wake-up would pass silently.
+    """
+    for image in (old, new):
+        if image and any(isinstance(v, dict) and len(v) == 1 and next(iter(v)) in _TYPE_TAGS
+                         for v in image.values()):
+            raise ValueError("deserialize the stream record's images before asking whether they wake")
     if run_row.is_run_row(row_key):
         return run_row_wakes(old, new)
     return task_row_wakes(old, new)

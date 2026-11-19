@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, Tuple
 
 from ..constants import TaskSpecKey
-from . import asset_spec, run_row, trigger_rules
+from . import asset_spec, run_row
 
 K = TaskSpecKey
 
@@ -66,6 +66,9 @@ def text_partition(pipeline: str) -> str:
 
 #: The task row's field that names its spec text in ``pipeline-specs``; ``run_row.SPEC_ID`` names the version.
 ROW_TEXT_HASH = "spec_hash"
+#: The task row's field that holds its decision fields as canonical JSON text: as attributes, boto3's
+#: resource would give their numbers back as ``Decimal``, which the parser of asset conditions refuses.
+ROW_DECISION = "decision"
 #: Every spec names these; the other keys of ``TaskSpecKey`` may be absent.
 REQUIRED = frozenset({K.TASK_ID, K.TASK_TYPE, K.DEPENDENCIES, K.TRIGGER_RULE})
 #: What a task row carries for the dispatcher, which decides on these alone (§8).
@@ -126,8 +129,10 @@ def _check(fields: Mapping[str, Any], name: Any) -> None:
         raise fail("dependencies must be a list of task names")
     if len(set(dependencies)) != len(dependencies):
         raise fail(f"dependencies name a task twice: {dependencies}")
-    if fields[K.TRIGGER_RULE] not in trigger_rules.KNOWN_RULES:
-        raise fail(f"unknown trigger_rule {fields[K.TRIGGER_RULE]!r}")
+    if not isinstance(fields[K.TRIGGER_RULE], str) or not fields[K.TRIGGER_RULE].strip():
+        # A name this platform does not know is no error here: the dispatcher fails that task alone, with
+        # the cause, so a pipeline deployed by a newer SDK fails only where it must (ADR #138 §2).
+        raise fail("trigger_rule must be a non-empty string")
     for key, least in ((K.EXECUTION_TIMEOUT, 1), (K.ORCHESTRATION_TIMEOUT, 1), (K.WAIT_BEFORE, 0)):
         value = fields.get(key, least)
         if isinstance(value, bool) or not isinstance(value, int) or value < least:
@@ -139,3 +144,24 @@ def _check(fields: Mapping[str, Any], name: Any) -> None:
             asset_spec.parse(fields[K.WAIT_FOR])
         except ValueError as exc:
             raise fail(f"wait_for: {exc}") from exc
+
+
+def decision_text(spec: TaskSpec) -> str:
+    """What ``Start_Run`` writes in the task row's ``ROW_DECISION``."""
+    return canonical_json(spec.decision_fields())
+
+
+def decision_from_text(text: str) -> Dict[str, Any]:
+    """The decision fields a task row holds, checked as ``parse`` checks a spec's."""
+    try:
+        fields = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise SpecError(f"a task row's decision fields are not JSON: {exc}") from exc
+    if not isinstance(fields, dict):
+        raise SpecError(f"a task row's decision fields must be a JSON object, got {type(fields).__name__}")
+    unknown = set(fields) - {k.value for k in DECISION_KEYS}
+    missing = {K.DEPENDENCIES.value, K.TRIGGER_RULE.value} - set(fields)
+    if unknown or missing:
+        raise SpecError(f"a task row's decision fields: unknown {sorted(unknown)}, missing {sorted(missing)}")
+    _check({**fields, K.TASK_ID.value: "row", K.TASK_TYPE.value: "row"}, "row")
+    return fields

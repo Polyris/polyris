@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional, Sequence
 
 from ..constants import SkipOrigin, TaskStatus, TriggerRule
+from .statuses import SUCCESS_ONLY
 from .transitions import FINAL, FINAL_FAILURES
 
 #: The engine's rules: the members of ``TriggerRule``, which the validation and the UI's type share.
@@ -50,7 +51,6 @@ UPSTREAM_FAILED = "upstream_failed"
 #: An unknown rule: the task fails with the cause, whatever its upstreams (§2).
 FAIL = "fail"
 
-_SUCCESSES = frozenset({TaskStatus.SUCCESS.value, TaskStatus.SUCCEEDED.value})
 _SKIPPED = TaskStatus.SKIPPED.value
 
 
@@ -68,10 +68,8 @@ class Counts:
 class DepEvaluation:
     """A rule's outcome over its upstreams' current statuses."""
     verdict: str
-    satisfied: bool
     reason: str
     rule: str
-    rule_known: bool
     counts: Counts
 
 
@@ -80,7 +78,7 @@ def count(statuses: Sequence[str], skip_origins: Optional[Sequence[Optional[str]
     origins = _aligned(statuses, skip_origins, "skip_origins")
     return Counts(
         total=len(statuses),
-        success=sum(1 for s in statuses if s in _SUCCESSES),
+        success=sum(1 for s in statuses if s in SUCCESS_ONLY),
         failed=sum(1 for s in statuses if s in FINAL_FAILURES),
         skipped=sum(1 for s in statuses if s == _SKIPPED),
         cascading=sum(1 for s, o in zip(statuses, origins) if s == _SKIPPED and o == SkipOrigin.RULE),
@@ -120,17 +118,17 @@ def evaluate(rule: str, statuses: Sequence[str],
     counts = count(statuses, skip_origins)
     if rule not in KNOWN_RULES:
         hint = f"; use {REJECTED[rule]}" if rule in REJECTED else f"; known rules: {sorted(KNOWN_RULES)}"
-        return DepEvaluation(FAIL, False, f"unknown trigger_rule {rule!r}{hint}", rule, False, counts)
+        return DepEvaluation(FAIL, f"unknown trigger_rule {rule!r}{hint}", rule, counts)
     if counts.total == 0:
-        return DepEvaluation(READY, True, "no upstreams", rule, True, counts)
+        return DepEvaluation(READY, "no upstreams", rule, counts)
     if _MET[rule](counts):
-        return DepEvaluation(READY, True, f"{rule} is met", rule, True, counts)
+        return DepEvaluation(READY, f"{rule} is met", rule, counts)
     if counts.pending > 0:
-        return DepEvaluation(WAIT, False, f"waiting for {counts.pending} of {counts.total} upstreams", rule, True,
-                             counts)
+        # No count in it: a row's recorded reason changes only when its outcome may (ADR #137 §1, *Cost*).
+        return DepEvaluation(WAIT, "waiting for its upstreams", rule, counts)
     if rule in FAILURE_AVERSE_RULES and counts.failed > 0:
-        return DepEvaluation(UPSTREAM_FAILED, False, f"{counts.failed} upstreams failed", rule, True, counts)
-    return DepEvaluation(SKIP, False, _UNMET[rule](counts), rule, True, counts)
+        return DepEvaluation(UPSTREAM_FAILED, f"{counts.failed} upstreams failed", rule, counts)
+    return DepEvaluation(SKIP, _UNMET[rule](counts), rule, counts)
 
 
 def enabled_at(rule: str, statuses: Sequence[str], finished_at: Sequence[Optional[datetime]],
@@ -147,7 +145,7 @@ def enabled_at(rule: str, statuses: Sequence[str], finished_at: Sequence[Optiona
     if evaluation.verdict in (WAIT, FAIL):
         return None
     if evaluation.verdict == READY and rule in (TriggerRule.ONE_SUCCESS, TriggerRule.ONE_FAILED):
-        firing = _SUCCESSES if rule == TriggerRule.ONE_SUCCESS else FINAL_FAILURES
+        firing = SUCCESS_ONLY if rule == TriggerRule.ONE_SUCCESS else FINAL_FAILURES
         return min((t for s, t in zip(statuses, finished_at) if s in firing and t is not None), default=None)
     return max((t for t in finished_at if t is not None), default=None)
 

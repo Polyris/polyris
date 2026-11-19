@@ -22,11 +22,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, FrozenSet, List, Optional, Protocol, Tuple
 
 from polyris.constants import TaskStatus
-from polyris.coordination.statuses import TERMINAL
-
-#: A row is final once no work for it remains in its run: the terminal statuses and a Stop (ADR #137 §4).
-#: TR-2's status set in polyris/coordination replaces this.
-FINAL: FrozenSet[str] = TERMINAL | {TaskStatus.STOPPED.value}
+from polyris.coordination.transitions import FINAL
 #: Statuses in which a task may have an execution of its current generation: started, or running.
 MAY_RUN: FrozenSet[str] = frozenset({TaskStatus.DEPS_READY.value, TaskStatus.RUNNING.value})
 #: The longest a run row with work left goes without a check (invariant 9).

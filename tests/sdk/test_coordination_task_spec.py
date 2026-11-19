@@ -1,6 +1,5 @@
 """Spec texts, their hashes and a version's fingerprint (ADR #137 §8, §9)."""
 
-import json
 
 import pytest
 
@@ -19,15 +18,6 @@ def test_a_spec_has_one_text_sorted_compact_with_its_characters_as_they_are():
 def test_a_spec_without_a_json_number_is_refused():
     with pytest.raises(ValueError):
         task_spec.canonical_json({"limit": float("nan")})
-
-
-def test_the_text_keeps_1_0_where_dynamodb_would_give_back_1():
-    """DynamoDB stores the number 1.0 as 1 (TR-0); moto keeps it, so only a live table shows this.
-    A hash of the attributes read back would not match the deploy's; the stored text does."""
-    text = task_spec.canonical_json(SPEC)
-    read_back_as_attributes = {**SPEC, "timeout_hours": 1}
-    assert task_spec.text_hash(task_spec.canonical_json(read_back_as_attributes)) != task_spec.text_hash(text)
-    assert task_spec.canonical_json(json.loads(text)) == text
 
 
 def test_a_texts_hash_is_the_sha256_of_its_utf8_bytes():
@@ -106,8 +96,7 @@ def test_a_text_that_is_not_a_json_object_is_refused(text, problem):
 
 @pytest.mark.parametrize("change,problem", [
     ({"retries": 2}, r"unknown keys \['retries'\]"),                  # retries live in task_config
-    ({"trigger_rule": None}, "unknown trigger_rule None"),
-    ({"trigger_rule": "none_failed_or_skipped"}, "unknown trigger_rule"),
+    ({"trigger_rule": None}, "trigger_rule must be a non-empty string"),
     ({"task_id": " "}, "task_id must be a non-empty string"),
     ({"task_type": 7}, "task_type must be a non-empty string"),
     ({"dependencies": "extract"}, "dependencies must be a list"),
@@ -129,6 +118,33 @@ def test_a_spec_without_a_required_key_is_refused_with_the_names():
     spec = {k: v for k, v in LOAD.items() if k not in ("task_type", "trigger_rule")}
     with pytest.raises(task_spec.SpecError, match=r"spec of 'load': missing keys \['task_type', 'trigger_rule'\]"):
         parsed(spec)
+
+
+def test_a_rule_this_platform_does_not_know_is_left_to_the_dispatcher():
+    """ADR #138 §2: it fails its task at run time, not Start_Run: validation refuses it before a deploy."""
+    assert parsed({**LOAD, "trigger_rule": "none_failed_or_skipped"}).decision_fields()["trigger_rule"] == \
+        "none_failed_or_skipped"
+
+
+def test_the_decision_fields_survive_dynamodb_as_text():
+    """As attributes, boto3's resource gives numbers back as Decimal, which the asset parser refuses."""
+    from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
+
+    spec = parsed({**LOAD, "wait_for": [{"asset_name": "s3/orders", "freshness_hours": 1.5}]})
+    stored = TypeSerializer().serialize(task_spec.decision_text(spec))
+    fields = task_spec.decision_from_text(TypeDeserializer().deserialize(stored))
+    assert fields == spec.decision_fields()
+    assert fields["wait_for"][0]["freshness_hours"] == 1.5 and isinstance(fields["orchestration_timeout"], int)
+
+
+@pytest.mark.parametrize("text,problem", [
+    ("{", "not JSON"), ("[]", "must be a JSON object"), ('{"dependencies": []}', r"missing \['trigger_rule'\]"),
+    ('{"dependencies": [], "trigger_rule": "all_success", "task_arn": "x"}', r"unknown \['task_arn'\]"),
+    ('{"dependencies": "x", "trigger_rule": "all_success"}', "dependencies must be a list"),
+])
+def test_decision_fields_of_another_shape_are_refused(text, problem):
+    with pytest.raises(task_spec.SpecError, match=problem):
+        task_spec.decision_from_text(text)
 
 
 def test_the_parser_knows_exactly_the_spec_keys():

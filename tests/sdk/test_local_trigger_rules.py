@@ -43,7 +43,7 @@ def test_the_verdict_is_the_engines(rule, results, verdict):
 
 def test_an_upstream_this_runner_did_not_execute_counts_as_pending():
     verdict, reason = _evaluate_trigger_rule(_task("all_success", ["a", "wait_step"]), [_result("a", "success")])
-    assert (verdict, reason) == (tr.WAIT, "waiting for 1 of 2 upstreams")
+    assert (verdict, reason) == (tr.WAIT, "waiting for its upstreams")
 
 
 def test_a_mock_run_records_what_the_engine_would():

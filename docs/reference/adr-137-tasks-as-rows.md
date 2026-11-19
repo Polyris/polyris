@@ -462,7 +462,7 @@ A value that two pieces of code must read alike gets one named constant, and a p
 
 | Contract | Its home | Parity |
 |---|---|---|
-| The fields of the run row and of the run's input (§3) | constants in `polyris/coordination/run_row.py`, read by `Start_Run`, the dispatcher and the console | the generated JSONata of the step mark and of `Start_Run`'s arguments |
+| The fields of the run row and of the run's input (§3) | constants in `polyris/coordination/run_row.py` and `run_input.py`, read by `Start_Run`, the dispatcher and the console | the generated JSONata of the step mark and of `Start_Run`'s arguments |
 | The spec's keys | an enum in `polyris/constants.py`, `TaskSpecKey`, beside `TaskConfigKey`. The task spec's parser becomes `polyris/coordination/task_spec.py`, and today's `spec.py`, the parser of asset conditions, is renamed `asset_spec.py` | the generator against the enum |
 | Canonical JSON, the text hash and the fingerprint (§8) | one function in `polyris/coordination/task_spec.py`, which `polyris-deploy`, `Start_Run`, the dispatcher and the console call | none needed, since one function serves all; a test reads `1.0` back as `1`, as DynamoDB does |
 | The format version and its registry field | one SDK constant, `task_spec.FORMAT_VERSION`, which `polyris-deploy` writes and `Start_Run` and the console read | the generated `Start_Run` arguments |

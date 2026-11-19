@@ -6,15 +6,18 @@ row from the row itself and writes its due time only when it changes (§1). The
 clauses, each with its test:
 
 - waiting for tasks of the same run has no limit of its own;
-- waiting for ``wait_for`` facts lasts ``WAIT_FOR_LIMIT`` from when the task's
-  own dependencies allowed it (``trigger_rules.enabled_at``), whose failures
-  count from when they became final;
-- ``orchestration_timeout``, when set, caps the whole wait until the row is
-  ready, counted from the start of the wait, which a Restart begins anew;
-- the paused time inside a wait moves its deadline, and in a pause a limit
-  has no due time;
-- a ready row's countdown (``wait_before``) ends at a time no pause moves, and
-  no limit applies to the row while it counts down;
+- waiting for ``wait_for`` facts lasts ``WAIT_FOR_LIMIT`` by default, from when
+  the task's own dependencies allowed it (``enabled_since``: the upstreams'
+  enabling time, whose failures count from when they became final, never
+  before the wait began, and the wait's start for a task without upstreams);
+- ``orchestration_timeout``, when set, limits the whole wait until the row is
+  ready, counted from the start of the wait, which a Restart begins anew; it
+  replaces the default of ``wait_for`` (D49);
+- the paused time inside a wait moves its deadline, and in a pause no limit
+  and no decision deadline falls due (§5);
+- a ready row's countdown (``wait_before``) ends at a time no pause moves,
+  counted from when the row became ready, its facts included; no limit applies
+  to the row while it counts down;
 - a decision deadline is the decision timeout in force when the wait for the
   decision began, moved by the paused time; in a pause it falls due far in the
   future, where the bell still reads it;
@@ -23,7 +26,8 @@ clauses, each with its test:
   by paused time; an ``AccessDeniedException`` counts toward neither, so the
   caller records no failed attempt for it (§7);
 - a ``deps_ready`` row whose start did not fail, and a ``running`` row, are
-  checked on the backoff of ``attention.next_due``.
+  checked on the backoff of ``attention.next_due``, counted from the latest
+  check, so each due time lies after its check.
 """
 
 from __future__ import annotations
@@ -53,7 +57,7 @@ class RowTimes:
     status: str
     #: When the wait began, and again at each Restart.
     waiting_since: Optional[datetime] = None
-    #: When its dependencies first allowed the outcome (``trigger_rules.enabled_at``); None while they wait.
+    #: When its dependencies allowed it (``enabled_since``); None while they wait.
     enabled_at: Optional[datetime] = None
     has_wait_for: bool = False
     orchestration_timeout: Optional[timedelta] = None
@@ -62,8 +66,10 @@ class RowTimes:
     start_failed_first: Optional[datetime] = None
     start_failed_last: Optional[datetime] = None
     start_failures: int = 0
-    #: When the row became ``deps_ready`` or ``running``, from which its liveness checks count.
+    #: When the row became ``deps_ready`` or ``running``, from which its first liveness check counts.
     status_since: Optional[datetime] = None
+    #: The latest liveness check, from which the next one counts; ``checks`` is how many there were.
+    last_check: Optional[datetime] = None
     checks: int = 0
     decision_since: Optional[datetime] = None
     decision_timeout: Optional[timedelta] = None
@@ -90,30 +96,45 @@ def moved(start: datetime, limit: timedelta, intervals: Sequence[Interval]) -> O
     return deadline
 
 
-def countdown_end(enabled_at: datetime, wait_before: timedelta) -> Optional[datetime]:
-    """When a ready row's countdown ends, which the row records; None without a countdown."""
-    return enabled_at + wait_before if wait_before > timedelta(0) else None
+def enabled_since(dependencies_enabled_at: Optional[datetime], waiting_since: datetime) -> datetime:
+    """When a row's dependencies allowed it, never before its wait began (ADR #130 §9, ADR #137 §5).
+
+    ``dependencies_enabled_at`` is ``trigger_rules.enabled_at`` once the rule no
+    longer waits; None for a task without upstreams or whose upstreams record no
+    time. A Restart begins the wait anew, so an old upstream time does not
+    shorten the new wait.
+    """
+    if dependencies_enabled_at is None:
+        return waiting_since
+    return max(dependencies_enabled_at, waiting_since)
+
+
+def countdown_end(ready_at: datetime, wait_before: timedelta) -> Optional[datetime]:
+    """When a ready row's countdown ends, which the row records; None without a countdown.
+
+    ``ready_at`` is when the row became ready: its dependencies and its facts.
+    """
+    return ready_at + wait_before if wait_before > timedelta(0) else None
 
 
 def wait_deadline(row: RowTimes, intervals: Sequence[Interval]) -> Optional[datetime]:
-    """When a waiting row fails for its wait: the earliest of its limits, or None if it has none now."""
-    if row.countdown_end is not None:
+    """When a waiting row fails for its wait, or None while it has no limit or a pause holds it."""
+    if row.countdown_end is not None or is_paused(intervals):
         return None
-    candidates = []
-    if row.orchestration_timeout is not None and row.waiting_since is not None:
-        candidates.append(moved(row.waiting_since, row.orchestration_timeout, intervals))
+    if row.orchestration_timeout is not None:
+        return moved(row.waiting_since, row.orchestration_timeout, intervals) if row.waiting_since else None
     if row.has_wait_for and row.enabled_at is not None:
-        candidates.append(moved(row.enabled_at, WAIT_FOR_LIMIT, intervals))
-    known = [c for c in candidates if c is not None]
-    return min(known) if known else None
+        return moved(row.enabled_at, WAIT_FOR_LIMIT, intervals)
+    return None
 
 
 def decision_deadline(row: RowTimes, intervals: Sequence[Interval]) -> Optional[datetime]:
     """When a row that waits for a decision fails; ``FAR_FUTURE`` while a pause holds the deadline."""
     if row.decision_since is None or row.decision_timeout is None:
         return None
-    deadline = moved(row.decision_since, row.decision_timeout, intervals)
-    return FAR_FUTURE if deadline is None else deadline
+    if is_paused(intervals):
+        return FAR_FUTURE
+    return moved(row.decision_since, row.decision_timeout, intervals)
 
 
 def start_deadlines(row: RowTimes, intervals: Sequence[Interval]) -> Optional[StartDeadlines]:
@@ -151,4 +172,5 @@ def due_time(row: RowTimes, intervals: Sequence[Interval]) -> Optional[datetime]
 
 
 def _check(row: RowTimes) -> Optional[datetime]:
-    return attention.next_due(row.status_since, row.checks) if row.status_since is not None else None
+    since = row.last_check or row.status_since
+    return attention.next_due(since, row.checks) if since is not None else None

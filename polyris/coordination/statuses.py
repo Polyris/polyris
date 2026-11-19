@@ -4,7 +4,6 @@ Derived from :mod:`polyris.constants`, the single source of truth.
 """
 
 from ..constants import (
-    FAILURE_STATUSES,
     RECONCILABLE_STATUSES,
     SUCCESS_STATUSES,
     TERMINAL_STATUSES,
@@ -13,7 +12,7 @@ from ..constants import (
 )
 
 __all__ = [
-    "RECONCILABLE", "TERMINAL", "SUCCESS_ONLY", "FAILURE",
+    "RECONCILABLE", "TERMINAL", "SUCCESS_ONLY",
     "SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED", "WARNING_KINDS",
 ]
 
@@ -23,8 +22,6 @@ RECONCILABLE = frozenset(RECONCILABLE_STATUSES)
 TERMINAL = frozenset(TERMINAL_STATUSES)
 #: "Ran and succeeded" — includes the legacy ``succeeded`` alias, excludes ``skipped``.
 SUCCESS_ONLY = frozenset(SUCCESS_STATUSES - {TaskStatus.SKIPPED.value})
-#: Real failures, as trigger rules count them.
-FAILURE = frozenset(FAILURE_STATUSES)
 SKIPPED = TaskStatus.SKIPPED.value
 WAITING = TaskStatus.WAITING.value
 WAITING_PAUSED = TaskStatus.WAITING_PAUSED.value

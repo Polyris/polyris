@@ -49,9 +49,29 @@ def test_wait_for_has_no_deadline_while_its_dependencies_still_wait():
     assert d.due_time(waiting(has_wait_for=True), ()) is None
 
 
-def test_the_earlier_limit_wins():
-    row = waiting(has_wait_for=True, enabled_at=at(3), orchestration_timeout=24 * HOUR)
-    assert d.due_time(row, ()) == at(24)
+@pytest.mark.parametrize("timeout_hours", [24, 14 * 24])
+def test_an_explicit_orchestration_timeout_replaces_the_default_of_wait_for(timeout_hours):
+    """D49: the 7 days are wait_for's default; an explicit limit, shorter or longer, takes its place."""
+    row = waiting(has_wait_for=True, enabled_at=at(3), orchestration_timeout=timeout_hours * HOUR)
+    assert d.due_time(row, ()) == at(timeout_hours)
+
+
+def test_the_enabling_time_is_never_before_the_wait_began():
+    assert d.enabled_since(None, at(2)) == at(2)                     # a task without upstreams
+    assert d.enabled_since(at(1), at(2)) == at(2)                    # a Restart after its upstreams finished
+    assert d.enabled_since(at(3), at(2)) == at(3)
+
+
+def test_a_root_task_with_wait_for_has_its_seven_days_from_the_start_of_its_wait():
+    row = waiting(has_wait_for=True, enabled_at=d.enabled_since(None, T0))
+    assert d.due_time(row, ()) == T0 + d.WAIT_FOR_LIMIT
+
+
+def test_a_task_restarted_after_its_limit_gets_a_new_one():
+    restarted_at = at(8 * 24)
+    row = d.RowTimes(status="waiting", waiting_since=restarted_at, has_wait_for=True,
+                     enabled_at=d.enabled_since(at(1), restarted_at))
+    assert d.due_time(row, ()) == restarted_at + d.WAIT_FOR_LIMIT
 
 
 def test_paused_time_inside_the_wait_moves_its_deadline():
@@ -72,12 +92,13 @@ def test_in_a_pause_a_limit_has_no_due_time():
     assert d.due_time(waiting(orchestration_timeout=2 * HOUR), paused(1)) is None
 
 
-def test_a_deadline_passed_before_the_pause_began_still_falls_due():
-    assert d.due_time(waiting(orchestration_timeout=2 * HOUR), paused(3)) == at(2)
+def test_no_limit_falls_due_in_a_pause_not_even_one_that_passed_before_it():
+    """§5: neither a limit nor a decision deadline can fire during a pause."""
+    assert d.due_time(waiting(orchestration_timeout=2 * HOUR), paused(3)) is None
 
 
 def test_a_countdown_ends_where_no_pause_moves_it_and_no_limit_applies():
-    end = d.countdown_end(at(1), timedelta(minutes=30))
+    end = d.countdown_end(ready_at=at(1), wait_before=timedelta(minutes=30))
     row = waiting(orchestration_timeout=HOUR, countdown_end=end)
     assert d.due_time(row, paused(1, 5)) == at(1) + timedelta(minutes=30)
     assert d.wait_deadline(row, ()) is None
@@ -105,6 +126,7 @@ def test_paused_time_moves_both_and_a_pause_holds_the_start():
     start = d.start_deadlines(failing(3, 10), paused(1, 3))
     assert (start.warn_at, start.fail_at) == (T0 + d.START_WARN_AFTER, T0 + d.START_FAIL_AFTER + 2 * HOUR)
     assert d.due_time(failing(3, 10), paused(1)) is None
+    assert d.start_deadlines(failing(3, 10), paused(1)).fail_at is None     # held while the pause lasts
 
 
 def test_a_start_with_no_failed_attempt_has_no_start_deadlines():
@@ -114,9 +136,13 @@ def test_a_start_with_no_failed_attempt_has_no_start_deadlines():
 # ── liveness checks and decisions ────────────────────────────────────
 
 @pytest.mark.parametrize("status", ["deps_ready", "running"])
-def test_a_started_row_is_checked_on_the_attention_backoff(status):
-    row = d.RowTimes(status=status, status_since=T0, checks=2)
-    assert d.due_time(row, ()) == attention.next_due(T0, 2)
+def test_a_started_row_is_checked_on_the_attention_backoff_from_its_latest_check(status):
+    assert d.due_time(d.RowTimes(status=status, status_since=T0), ()) == attention.next_due(T0, 0)
+    check = T0
+    for n in range(6):                                       # every due time lies after its check
+        due = d.due_time(d.RowTimes(status=status, status_since=T0, last_check=check if n else None, checks=n), ())
+        assert due > check
+        check = due
     assert d.due_time(d.RowTimes(status=status), ()) is None
 
 

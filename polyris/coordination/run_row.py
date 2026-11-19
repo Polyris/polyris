@@ -16,7 +16,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, Optional
 
-from ..constants import BackfillCascade
 from .times import format_utc
 
 #: The tasks table's partition key, which every row carries.
@@ -52,11 +51,11 @@ REQUESTS = "requests"            # the heavy actions in progress, by kind (§3)
 PAUSES = "pauses"                # the pause intervals, at most ten (§5)
 TTL = "ttl"
 
-# The run's input item (``input_key``): Start_Run writes it once; the dispatcher reads it to build
-# run_task's input, Mark Successful for the cascade, and the console for what it shows (§3).
-VARIABLES = "variables"
-SKIP_TASKS = "skip_tasks"
-CASCADE = "cascade"              # how the run's facts reach their consumers: a BackfillCascade value (ADR #57)
+#: Every field of the run row besides its key, its summary's time and its due time; a test builds the
+#: largest row from it, so a field added here is measured.
+FIELDS = (STATUS, TOKEN, TOKEN_ORDER, ANSWERED, STOP, STOP_DONE, RUN_VERSION, LEFT_AT, EXECUTION, PIPELINE,
+          RUN_DATE, START_DAY, STARTED_AT, FINISHED_AT, TRIGGERED_BY, SPEC_ID, TASK_COUNT, FORMAT, SUMMARY,
+          STEP_FAILURE, REQUESTS, PAUSES, TTL)
 
 # The run row stays under SIZE_MAX (§3, D114): a Step Functions token takes up to 2,048 characters, and
 # every other free-text field is capped in UTF-8 bytes, as DynamoDB counts them, by the builders below.
@@ -84,7 +83,7 @@ def key(pipeline_execution: str) -> str:
 
 
 def input_key(pipeline_execution: str) -> str:
-    """The key of the run's input item."""
+    """The key of the run's input item, whose contract is ``run_input.py``."""
     return f"{key(pipeline_execution)}{INPUT_SUFFIX}"
 
 
@@ -133,13 +132,6 @@ def index_keys(execution_start: datetime) -> Dict[str, str]:
     """
     started_at = format_utc(execution_start)
     return {START_DAY: started_at[:10], STARTED_AT: started_at}
-
-
-def cascade(*, suppress_asset_event: bool, cascade_all: bool) -> str:
-    """The run's cascade from the flags its starter sets (``bulk_backfill``, ADR #57): ``none`` wins."""
-    if suppress_asset_event:
-        return BackfillCascade.NONE
-    return BackfillCascade.ALL if cascade_all else BackfillCascade.AUTO
 
 
 def clip(text: str, limit: int) -> str:

@@ -112,3 +112,18 @@ def test_a_dependencys_skip_origin_reaches_its_rule():
 def test_fact_is_a_value_object():
     when = datetime(2026, 1, 1, tzinfo=timezone.utc)
     assert Fact("a", date(2026, 1, 1), when, "daily") == Fact("a", date(2026, 1, 1), when, "daily")
+
+
+def test_a_wait_records_reasons_with_no_time_in_them():
+    """ADR #137 §1: a pass over a run where nothing changed writes nothing, so the reasons hold no
+    time or count that changes while the task still waits: the same wait gives the same reasons."""
+    stale_then = Evaluation(False, (AssetResult("ns/a", "within", False, "stale",
+                                                Fact("ns/a", date(2026, 11, 17), datetime(2026, 11, 17, 3, tzinfo=timezone.utc),
+                                                     "daily")),))
+    stale_now = Evaluation(False, (AssetResult("ns/a", "within", False, "stale",
+                                               Fact("ns/a", date(2026, 11, 17), datetime(2026, 11, 17, 9, tzinfo=timezone.utc),
+                                                    "daily")),))
+    waiting_on_two = d.decide(task(deps=("x", "y"), assets=True), dep_statuses=["running", "waiting"])
+    waiting_on_one = d.decide(task(deps=("x", "y"), assets=True), dep_statuses=["success", "running"])
+    assert waiting_on_two.reasons == waiting_on_one.reasons == ("waiting for its upstreams",)
+    assert d.decide(task(assets=True), assets=stale_then).reasons == d.decide(task(assets=True), assets=stale_now).reasons

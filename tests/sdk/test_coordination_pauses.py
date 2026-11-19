@@ -37,29 +37,16 @@ def test_an_interval_never_starts_before_the_last_one_ended():
 
 
 def test_a_pause_past_ten_merges_the_two_oldest_which_only_moves_deadlines_later():
+    from polyris.coordination.deadlines import moved
+
     intervals = ()
     for k in range(10):
         intervals = p.resume(p.pause(intervals, at(10 * k)), at(10 * k + 5))
-    before = p.paused_within(intervals, at(0), at(200))
-    merged = p.pause(intervals, at(150))
+    merged = p.resume(p.pause(intervals, at(150)), at(155))
     assert len(merged) == p.MAX_INTERVALS
     assert merged[0] == p.Interval(at(0), at(15))                 # [0, 5] and [10, 15] became one
-    assert p.paused_within(merged, at(0), at(149)) >= before
-
-
-@pytest.mark.parametrize("start,end,paused", [
-    (0, 60, 30),          # the whole interval [10, 40] inside the wait
-    (20, 60, 20),         # the wait began during the pause
-    (0, 25, 15),          # the wait ended during it
-    (50, 60, 0),          # after it
-])
-def test_the_paused_time_within_a_wait(start, end, paused):
-    intervals = p.resume(p.pause((), at(10)), at(40))
-    assert p.paused_within(intervals, at(start), at(end)) == timedelta(minutes=paused)
-
-
-def test_an_open_pause_counts_until_the_end_of_the_window():
-    assert p.paused_within(p.pause((), at(10)), at(0), at(25)) == timedelta(minutes=15)
+    for limit in (timedelta(minutes=m) for m in (3, 8, 30, 120)):
+        assert moved(at(0), limit, merged) >= moved(at(0), limit, intervals + (p.Interval(at(150), at(155)),))
 
 
 def test_the_row_keeps_epoch_seconds_and_reads_back_what_dynamodb_returns():

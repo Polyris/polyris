@@ -74,12 +74,20 @@ def test_an_unknown_rule_fails_its_task_in_every_column(column):
     check("none_failed_or_skipped", column, TABLE["unknown_rule"]["verdict"])
 
 
-def test_the_arrow_cells_give_their_outcome_once_the_pending_upstream_is_final():
-    """⏳→⏭ and ⏳→⛔ wait although the task can no longer run (§2)."""
-    assert tr.evaluate("all_success", ["failed", "running"]).verdict == tr.WAIT
-    assert tr.evaluate("all_success", ["failed", "success"]).verdict == tr.UPSTREAM_FAILED
-    assert tr.evaluate("all_skipped", ["success", "running"]).verdict == tr.WAIT
-    assert tr.evaluate("all_skipped", ["success", "skipped"]).verdict == tr.SKIP
+ARROWS = [pytest.param(rule, column, symbol.split(">")[1], id=f"{rule}-{column}")
+          for section in ("two_upstreams", "three_upstreams")
+          for rule, symbols in TABLE[section]["rules"].items()
+          for column, symbol in zip(TABLE[section]["columns"], symbols) if ">" in symbol]
+
+
+@pytest.mark.parametrize("rule,column,outcome", ARROWS)
+def test_an_arrow_cell_gives_its_outcome_whatever_final_status_its_pending_upstream_takes(rule, column, outcome):
+    """⏳→⏭ and ⏳→⛔ wait although the task can no longer run (§2): once P is final, the outcome is fixed."""
+    finals = TABLE["letters"]["S"] + TABLE["letters"]["K"] + TABLE["letters"]["F"]
+    for upstreams in combinations(column.replace("P", "S")):
+        for status, origin in finals:
+            resolved = [(status, origin) if column.split(",")[i] == "P" else u for i, u in enumerate(upstreams)]
+            assert tr.evaluate(rule, [s for s, _ in resolved], [o for _, o in resolved]).verdict == VERDICT[outcome]
 
 
 # ── names (§1, §6) ───────────────────────────────────────────────────
@@ -92,7 +100,7 @@ def test_the_engine_the_literal_and_the_enum_name_the_same_nine_rules():
 
 def test_a_rejected_name_fails_with_what_to_use_instead():
     result = tr.evaluate("always", ["success"])
-    assert (result.verdict, result.rule_known) == (tr.FAIL, False)
+    assert result.verdict == tr.FAIL
     assert "remove the dependency" in result.reason
     assert set(tr.REJECTED) == {"one_done", "all_done_min_one_success", "always", "all_done_setup_success"}
     assert not set(tr.REJECTED) & tr.KNOWN_RULES
@@ -113,7 +121,7 @@ def test_counts_read_every_category_and_the_origin_of_each_skip():
 @pytest.mark.parametrize("rule,statuses,origins,reason", [
     ("all_success", [], None, "no upstreams"),
     ("all_success", ["success"], None, "all_success is met"),
-    ("all_success", ["success", "running"], None, "waiting for 1 of 2 upstreams"),
+    ("all_success", ["success", "running"], None, "waiting for its upstreams"),     # no count: no rewrite
     ("all_success", ["failed", "stopped"], None, "2 upstreams failed"),
     ("all_success", ["skipped"], ["rule"], "1 upstreams were skipped by their own rule"),
     ("one_success", ["skipped"], None, "no upstream succeeded"),

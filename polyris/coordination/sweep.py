@@ -91,16 +91,21 @@ def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optio
 LOST_HINT_GRACE = timedelta(minutes=5)
 
 
-def lost_hint(enabled_at: Optional[datetime], check_time: datetime, *, left_at: bool, countdown_ended: bool) -> bool:
-    """Whether a row whose wait a run row's check ends had lost its hint (ADR #137 §7).
+def lost_hint(enabled_at: Optional[datetime], check_time: datetime, *, left_at: bool, countdown_ended: bool,
+              resumed_at: Optional[datetime] = None) -> bool:
+    """Whether a row whose wait a run row's check ends had lost its hint (ADR #137 §5, §7).
 
-    Only when its enabling time is older than the grace: neither a row whose
-    countdown ended (the sweeper is how a countdown ends) nor a row found while
-    the run row carries ``left_at`` (a pass left it for its budget) counts.
+    ``enabled_at`` is ``deadlines.enabled_since``, never before the wait began,
+    so a lost activation counts too; this check alone also reads the latest
+    resume, and an enabling time is never before it. Only a time older than the
+    grace counts: neither a row whose countdown ended (the sweeper is how a
+    countdown ends) nor a row found while the run row carries ``left_at`` (a
+    pass left it for its budget) does.
     """
     if left_at or countdown_ended or enabled_at is None:
         return False
-    return enabled_at < check_time - LOST_HINT_GRACE
+    effective = max(enabled_at, resumed_at) if resumed_at is not None else enabled_at
+    return effective < check_time - LOST_HINT_GRACE
 
 
 def failed_step(passes: int, failed: int) -> bool:

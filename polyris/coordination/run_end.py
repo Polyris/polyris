@@ -35,10 +35,13 @@ def summary(statuses: Iterable[str]) -> Dict[str, int]:
     return dict(Counter(statuses))
 
 
-def outcome(counts: Mapping[str, int], *, step_failed: bool) -> Optional[str]:
-    """The run's outcome once every row is final, or None while one is not."""
+def outcome(counts: Mapping[str, int], *, task_count: int, step_failed: bool) -> Optional[str]:
+    """The run's outcome once every row of its ``task_count`` is final, or None while one is not or was not read.
+
+    A read that missed rows is no answer (invariant 10): the counts must cover the whole run.
+    """
     present = {status for status, n in counts.items() if n > 0}
-    if not present or not present <= FINAL:
+    if sum(counts.values()) != task_count or not present or not present <= FINAL:
         return None
     if step_failed:
         return ExecutionStatus.FAILED

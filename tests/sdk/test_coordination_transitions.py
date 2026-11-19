@@ -79,6 +79,8 @@ def test_run_task_writes_only_running_success_and_a_request_for_a_decision():
     ("failed", "stopped", t.Writer.CONSOLE, False),                # a final status stays final
     ("stopped", "waiting", t.Writer.CONSOLE, True),                # Restart after a Stop
     ("upstream_failed", "waiting", t.Writer.DISPATCHER, True),     # a reset of Restart with dependants
+    ("failed", "waiting", t.Writer.DISPATCHER, False),             # the dispatcher resets only what a failure decided
+    ("success", "waiting", t.Writer.DISPATCHER, False),
     ("waiting_decision", "failed", t.Writer.DISPATCHER, True),     # the decision timeout
     ("waiting_decision", "failed", t.Writer.CONSOLE, True),        # Fail
     ("running", "failed", t.Writer.RUN_TASK, False),               # a failed attempt asks for a decision
@@ -195,6 +197,12 @@ def test_wakes_tells_a_run_row_from_its_input_and_from_a_task_row():
     assert not t.wakes(run_row.input_key("orders-run-2026-11-18-abcd1234"), {}, {"variables": {}})
     assert t.wakes("extract-2026-11-18-abcd1234", task("running"), task("success"))
     assert not t.wakes("_notify_warn_coordination_x", {"status": "warn"}, {"status": "warned"})
+
+
+def test_raw_stream_images_are_refused_not_read_as_no_wake():
+    raw = {"status": {"S": "success"}, "generation": {"N": "2"}}
+    with pytest.raises(ValueError, match="deserialize"):
+        t.wakes("extract-2026-11-18-abcd1234", {"status": {"S": "running"}}, raw)
 
 
 def test_the_run_rows_keys():
