@@ -5,7 +5,7 @@
 The backend consists of:
 - **Step Function state machines** (13 total) — 10 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13)
 - **Lambda functions** (8) — console API, reconcile, asset fan-out, sweeper, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
-- **DynamoDB tables** (7) — state, metadata, event history
+- **DynamoDB tables** (8) — state, metadata, task specs, event history
 - **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 
 **Generated constants & enums.** Status and trigger-rule enum families are defined once in `polyris/constants.py` and
@@ -350,10 +350,27 @@ Pipeline metadata:
 |-----------|------|-------------|
 | pipeline_name | PK | Pipeline identifier |
 | sfn_arn | S | Step Function ARN |
-| dag | S | JSON: nodes, edges |
-| tasks | S | JSON: task definitions |
+| spec_id | S | The pipeline's spec version in `pipeline_specs`: `{pipeline}#{fingerprint}` |
+| task_count | N | The number of tasks in that version |
+| format_version | N | The format `polyris-deploy` deployed the pipeline with (`task_spec.FORMAT_VERSION`); missing or older, the console marks the pipeline "redeploy needed" |
+| registered_at | S | The last `polyris-deploy` |
+| dag | S | JSON: nodes, edges. Written for the 1.2 engine only; no console code reads it |
+| tasks | S | JSON: task definitions. Written for the 1.2 engine only; no console code reads it |
 | schedule | S | Schedule expression |
 | asset_schedule | S | JSON: asset trigger config |
+
+`polyris-deploy` writes `registered_at` and `format_version`; the pipeline's own `Register_Pipeline` state writes the rest on every run. `tests/sdk/test_registry_readers.py` fails for any code that reads `tasks` or `dag`.
+
+### pipeline_specs
+
+Every task's spec (ADR #137 §8), written by `polyris-deploy` before the pipeline's stack and read by the console through `dal.specs_repo`. Both keys are strings (`polyris/coordination/task_spec.py`: `PK`, `SK`, `TEXT`, `VERSION_HASH`):
+
+| Item | `pk` | `sk` | Attribute |
+|------|------|------|-----------|
+| A spec text | `{pipeline}#text` | sha256 of the text | `spec_text`: the spec as canonical JSON |
+| A version's task | `{pipeline}#{fingerprint}` (the `spec_id`) | task_id | `spec_hash`: the hash of its text |
+
+A text is stored once, however many versions use it. A version's fingerprint is the sha256 over its `(task_id, text hash)` pairs in key order. Items never change and are never deleted; every reader checks each text's hash and the fingerprint (`spec_store.read`).
 
 ### asset_events
 

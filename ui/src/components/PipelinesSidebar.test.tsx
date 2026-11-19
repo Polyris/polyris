@@ -92,6 +92,15 @@ describe('PipelinesSidebar', () => {
             expect(container.querySelector('.sb-row__schedule')).toHaveTextContent(shown);
         });
 
+        it('marks a pipeline that needs a redeploy, and only that one', () => {
+            mockQuery.data = pipelines({ name: 'old', needs_redeploy: true }, { name: 'new', needs_redeploy: false });
+            const { container } = render(<PipelinesSidebar />);
+            const marks = container.querySelectorAll('.sb-row__redeploy');
+            expect(marks).toHaveLength(1);
+            expect(screen.getByRole('button', { name: /^old, redeploy needed, last run/ })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /^new, last run/ })).toBeInTheDocument();
+        });
+
         it('the sparkline has ten slots, newest run rightmost', () => {
             mockQuery.data = pipelines({
                 name: 'one',

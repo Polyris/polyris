@@ -18,6 +18,7 @@ os.environ.setdefault('PIPELINES_TABLE', 'test-pipeline-registry')
 os.environ.setdefault('ASSET_EVENTS_TABLE', 'test-asset-events')
 os.environ.setdefault('TASK_EVENTS_TABLE', 'test-task-events')
 os.environ.setdefault('API_TOKENS_TABLE', 'test-api-tokens')
+os.environ.setdefault('SPECS_TABLE', 'test-pipeline-specs')
 os.environ.setdefault('SLS_STAGE', 'test')
 
 import pytest

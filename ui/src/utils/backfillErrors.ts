@@ -44,6 +44,10 @@ const BACKFILL_ERROR_MAP: Record<string, BackfillErrorInfo> = {
         title: 'Producer pipeline not in registry',
         hint: 'The asset names a producer pipeline that isn\'t deployed. Deploy it or fix the asset definition.',
     },
+    redeploy_needed: {
+        title: 'Pipeline needs a redeploy',
+        hint: 'Redeploy the pipeline with polyris-deploy, then start the backfill again.',
+    },
     unreachable_target_type: {
         title: 'Unsupported target type',
         hint: 'Only "pipeline" and "asset" targets are supported.',

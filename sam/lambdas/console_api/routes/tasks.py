@@ -23,7 +23,9 @@ from config import sfn
 from polyris.coordination import ownership
 from polyris.coordination.records import cascade_of, warning_item
 from polyris.coordination.wake import DEAD_TOKEN_CODES
-from dal import asset_events_repo, executions_repo, pipelines_repo
+from dal import asset_events_repo, executions_repo, pipelines_repo, specs_repo
+from dal.specs_repo import SpecsMissing
+from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
 from constants import Limits, TaskStatus, TASK_WAITING_STATUSES, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TASK_TERMINAL_STATUSES
 from constants_generated import ManualResolution
@@ -758,12 +760,11 @@ def _emit_marker_blocked_warn(
         )
 
 
-def _read_dag_node(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict], str]:
-    """A task's node from the pipeline registry's dag_metadata, or why it cannot be read.
+def _read_task_spec(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict], str]:
+    """A task's spec fields from the version the registry names (ADR #137 §8), or why it cannot be read.
 
-    Per ADR #119's unified node builder the node holds the outlets and, as of
-    the restart data-loss fix, task_config too. Wrapper steps are not nodes.
-    Returns ``(node, '')`` on success and ``(None, reason)`` otherwise.
+    The spec holds the outlets and task_config (``TaskSpecKey``); wrapper steps have one too.
+    Returns ``(spec, '')`` on success and ``(None, reason)`` otherwise.
     """
     if not pipeline_name:
         return None, 'the task row names no pipeline'
@@ -774,23 +775,21 @@ def _read_dag_node(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict], 
     if not registry_item:
         return None, f'pipeline {pipeline_name} is not in the registry'
     try:
-        dag_str = registry_item.get('dag', '{}')
-        dag = json.loads(dag_str) if isinstance(dag_str, str) else dag_str
-        node = next((n for n in dag.get('nodes', []) if n.get('id') == task_name), None)
-    except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as e:
-        return None, f'the registry entry of {pipeline_name} cannot be read: {e}'
-    if node is None:
+        spec = specs_repo.task_of(registry_item, task_name)
+    except (SpecsMissing, SpecError, ClientError, BotoCoreError) as e:
+        return None, f'the task specs of {pipeline_name} cannot be read: {e}'
+    if spec is None:
         return None, f'task {task_name} is not in the deployed pipeline {pipeline_name}'
-    return node, ''
+    return spec, ''
 
 
-def _lookup_dag_node(pipeline_name: str, task_name: str) -> Optional[Dict]:
-    """Best-effort ``_read_dag_node``: None on any failure, which is logged; callers choose their fallback."""
-    node, reason = _read_dag_node(pipeline_name, task_name)
+def _lookup_task_spec(pipeline_name: str, task_name: str) -> Optional[Dict]:
+    """Best-effort ``_read_task_spec``: None on any failure, which is logged; callers choose their fallback."""
+    spec, reason = _read_task_spec(pipeline_name, task_name)
     if reason:
-        log.warn("_lookup_dag_node", "Could not read node from registry",
+        log.warn("_lookup_task_spec", "Could not read the task's spec",
                  task_name=task_name, pipeline_name=pipeline_name, error=reason)
-    return node
+    return spec
 
 
 def _row_outlets(item: Dict) -> Optional[List[Dict]]:
@@ -826,8 +825,7 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     a task successful calls it.
 
     The outlets are the run's own, from the task row; a row from before 1.2
-    has none, and they come from the pipeline registry's dag_metadata.nodes
-    (ADR #119). The facts belong to the partition of the marked run, the row's
+    has none, and they come from the task's spec (ADR #137 §8). The facts belong to the partition of the marked run, the row's
     ``date`` — never the day the action happens (B-M1). Their cascade is the
     run's own: a cascade='none' backfill starts no push consumer this way either.
 
@@ -838,7 +836,7 @@ def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
     pipeline_name = item.get('pipeline_name', '')
     outlets = _row_outlets(item)
     if outlets is None:
-        node, reason = _read_dag_node(pipeline_name, task_name)
+        node, reason = _read_task_spec(pipeline_name, task_name)
         if reason:
             # Outlets unknown: whatever facts the task had are missing, so say so (B-M2).
             _warn_fact_not_recorded(item, task_name, '*', f'its outlets are unknown ({reason})')
@@ -1375,10 +1373,10 @@ def restart_task(task_name: str, event: Dict) -> Dict:
     record_manual_decision(execution_name, 'restart', 'Task restarted via UI', item)
 
     # task_config/outlets are deploy-time DAG properties, never stored on
-    # the per-execution record — look them up from the registry so the
+    # the per-execution record — look them up from the task's spec so the
     # restarted attempt doesn't silently lose retries/worker-type/etc or
     # outlets (previously always reconstructed as empty).
-    node = _lookup_dag_node(item.get('pipeline_name', ''), item.get('task_name', ''))
+    node = _lookup_task_spec(item.get('pipeline_name', ''), item.get('task_name', ''))
     task_config = (node or {}).get('task_config', {})
     outlets = (node or {}).get('outlets', [])
 

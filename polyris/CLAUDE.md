@@ -12,7 +12,10 @@ Each column on the `pipeline-registry` row has an owner — either `polyris-depl
 including `register_only=true` self-registrations). `registered_at` means "last
 polyris-deploy" and is owned by the CLI; `sfn_arn`, `description`,
 `pipeline_group`, `tasks`, `dag`, `schedule`, `asset_schedule`, and
-`last_execution` are owned by the runtime.
+`last_execution`, `spec_id` and `task_count` are owned by the runtime.
+`format_version` (`task_spec.REGISTRY_FORMAT_FIELD`) is deploy-owned, written
+with `registered_at`: the console compares it with `task_spec.FORMAT_VERSION`
+to mark a pipeline "redeploy needed" (ADR #137, *Migration*).
 
 Rules:
 1. `_build_registration_chain`'s `Register_Pipeline` state must be a DynamoDB
@@ -23,7 +26,7 @@ Rules:
 2. The runtime `Register_Pipeline` state's `UpdateExpression` must only mention
    runtime-owned fields. Never add `registered_at` or any future deploy-stamp
    there.
-3. Deploy-owned fields are written exclusively from `deploy.py`
+3. Deploy-owned fields (`registered_at`, `format_version`) are written exclusively from `deploy.py`
    (`_stamp_registered_at`), as a direct boto3 `UpdateItem` on
    `pipeline-registry` right after a successful CloudFormation deploy — before
    the register_only SFN kick. Errors route through the standard

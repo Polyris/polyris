@@ -16,6 +16,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import pytest
+
 from polyris.cfn_changeset import _colorize_status, _watch_stack_events
 from polyris.deploy import deploy_pipeline
 from polyris._ansi import c as _ansi_c, BOLD, CYAN, RESET
@@ -23,6 +25,16 @@ from polyris import DAG, task
 
 
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:x"
+
+#: The platform's DynamoDB, on moto (conftest.platform_dynamodb): deploy writes and reads back the specs.
+_PLATFORM: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _platform_tables(platform_dynamodb):
+    _PLATFORM["dynamodb"] = platform_dynamodb
+    yield
+    _PLATFORM.clear()
 
 
 def _event(event_id, status, resource_type, logical_id, reason=None, ts=None):
@@ -295,6 +307,7 @@ class TestDeployStillWorksExactlyAsBefore:
             {"OutputKey": "PipelineRegistryTable", "OutputValue": "registry"},
             {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},
             {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
+            {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
             {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
         ]
         _PIPELINE_OUTPUTS = [{"OutputKey": "StateMachineArn", "OutputValue": ARN}]
@@ -317,7 +330,7 @@ class TestDeployStillWorksExactlyAsBefore:
         }
 
         def _client(name, **_kw):
-            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
+            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, **_PLATFORM}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
 

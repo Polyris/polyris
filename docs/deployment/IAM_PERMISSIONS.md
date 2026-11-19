@@ -18,7 +18,7 @@ Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-
 
 | Phase | Who runs it | Frequency | AWS-level permissions needed |
 |-------|-------------|-----------|------------------------------|
-| **Install** | Platform admin or CI role | Once per account | Broad — 81 resources across 11 services |
+| **Install** | Platform admin or CI role | Once per account | Broad — 82 resources across 11 services |
 | **Deploy** | Developer or CI role | Per pipeline, per change | Narrow — CloudFormation + Step Functions + PassRole |
 | **Operate** | Console user (Cognito) / on-call engineer | Continuous | None (Console user) or read-only (on-call) |
 | **Remove** | Platform admin | Rare | Same as Install + S3 bucket empty rights |
@@ -27,7 +27,7 @@ Approval question for each phase: *what happens if this role is compromised?* In
 
 ## Install — `polyris-up` (or a from-source `sam deploy`)
 
-The polyris platform stack creates 81 resources across 11 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
+The polyris platform stack creates 82 resources across 11 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
 
 ### Recommended approach: AWS-managed policies
 
@@ -47,7 +47,7 @@ If your org requires enumerated permissions, the installer role needs these serv
 | `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources`; `CreateChangeSet` also on `arn:aws:cloudformation:<region>:aws:transform/Serverless-2016-10-31` | `polyris-up` / SAM build the change set and execute it |
 | `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
 | `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `UpdateAssumeRolePolicy`, `TagRole`, `UntagRole`, `ListRoleTags`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions`, `GetPolicyVersion`, `ListEntitiesForPolicy` | 11 roles + 3 managed policies |
-| `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `ListTagsOfResource`, `UpdateContinuousBackups`, `DescribeContinuousBackups`, `UpdateTimeToLive`, `DescribeTimeToLive`, `DescribeContributorInsights`, `DescribeKinesisStreamingDestination` | 7 tables (pipeline-tokens, pipeline-registry, task-events, etc.) |
+| `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `ListTagsOfResource`, `UpdateContinuousBackups`, `DescribeContinuousBackups`, `UpdateTimeToLive`, `DescribeTimeToLive`, `DescribeContributorInsights`, `DescribeKinesisStreamingDestination` | 8 tables (pipeline-tokens, pipeline-registry, pipeline-specs, task-events, etc.) |
 | `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `GetPolicy`, `InvokeFunction`, `TagResource`, `UntagResource`, `ListTags`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, query-subscriptions, notify, etc.) and the mapping that feeds the asset-events stream to asset-fanout |
 | `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource`, `UntagResource`, `ListTagsForResource` | 13 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
 | `scheduler` | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule`, `GetSchedule` | The sweeper's 5-minute schedule |
@@ -63,7 +63,7 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 
 ## Deploy — per-pipeline `polyris-deploy`
 
-After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${stage}-polyris-${pipeline}`) containing the pipeline's dependency-wrapper state machines. After the stack deploys, `polyris-deploy` writes the pipeline's metadata to the `pipeline-registry` DDB table directly.
+After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${stage}-polyris-${pipeline}`) containing the pipeline's dependency-wrapper state machines. Before it touches the stack, `polyris-deploy` writes the pipeline's task specs to the `pipeline-specs` DDB table, reads them back and checks them; without the `PipelineTaskSpecs` permissions below it stops there, with the cause. After the stack deploys, it writes the deploy time and the pipeline's format to the `pipeline-registry` DDB table directly.
 
 Minimum permissions for the developer/CI role:
 
@@ -127,6 +127,17 @@ Minimum permissions for the developer/CI role:
       "Effect": "Allow",
       "Action": "dynamodb:UpdateItem",
       "Resource": "arn:aws:dynamodb:*:*:table/*-polyris-pipeline-registry"
+    },
+    {
+      "Sid": "PipelineTaskSpecs",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query"
+      ],
+      "Resource": "arn:aws:dynamodb:*:*:table/*-polyris-pipeline-specs"
     },
     {
       "Sid": "PipelineLogGroups",

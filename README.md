@@ -71,7 +71,7 @@ cd my-pipeline
 
 polyris-validate              # Validate structure
 polyris-validate -v           # Verbose: tasks, deps, ASL preview
-polyris-output --json         # Full Step Functions JSON
+polyris-output --json         # The definition and its task specs
 polyris-output --mermaid      # Mermaid diagram source
 polyris-output --graph        # ASCII graph
 ```

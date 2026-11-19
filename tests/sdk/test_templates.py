@@ -25,12 +25,12 @@ sys.path.insert(0, os.path.join(REPO_ROOT, 'sam', 'lambdas', 'console_api'))
 # ============================================================
 
 def test_orchestration_timeout_default():
-    """orchestration_timeout defaults to execution_timeout."""
+    """orchestration_timeout no longer falls back to execution_timeout (D49, ADR #137 §5)."""
     from polyris.task import Task
     t = Task(task_id='test', execution_timeout=timedelta(hours=2))
     assert t.orchestration_timeout is None
-    assert t.orchestration_timeout_seconds == 7200  # Same as execution_timeout
-    assert t.timeout == 7200
+    assert t.orchestration_timeout_seconds is None
+    assert t.execution_timeout_seconds == 7200
 
 
 def test_orchestration_timeout_explicit():
@@ -42,7 +42,7 @@ def test_orchestration_timeout_explicit():
         orchestration_timeout=timedelta(days=3)
     )
     assert t.orchestration_timeout_seconds == 259200  # 3 days
-    assert t.timeout == 7200  # execution_timeout unchanged
+    assert t.execution_timeout_seconds == 7200  # execution_timeout unchanged
 
 
 def test_orchestration_timeout_via_default_args():
@@ -223,7 +223,8 @@ def test_orchestration_timeout_in_generated_sfn():
 
 
 def test_orchestration_timeout_default_in_generated_sfn():
-    """Default orchestration_timeout = execution_timeout in generated SFN."""
+    """The 1.2 wrapper branch keeps its 24-hour bound for a task without limits until TR-4
+    replaces the branch; the task's spec carries no limit (test_task_specs.py)."""
     from polyris import DAG, task
     from polyris.generators import generate_step_function_json
 

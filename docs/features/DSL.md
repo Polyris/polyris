@@ -100,8 +100,8 @@ with DAG(
     default_args={
         "retries": 0,
         "retry_delay": timedelta(minutes=10),
-        "execution_timeout": timedelta(hours=4),
-        "orchestration_timeout": timedelta(hours=12),  # Wait for deps up to 12h
+        "execution_timeout": timedelta(hours=4),       # One attempt of the work: 4h at most
+        "orchestration_timeout": timedelta(hours=12),  # All waiting: 12h at most
     }
 ) as dag:
     # All tasks inherit these defaults unless overridden
@@ -375,9 +375,9 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `task_id` | str | (inferred from function name) | Override the auto-inferred task id. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
-| `execution_timeout` | timedelta | 24 hours | Max task execution time |
-| `orchestration_timeout` | timedelta | same as `execution_timeout` | Max time waiting for dependencies |
+| `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
+| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. Unset, the work has no limit |
+| `orchestration_timeout` | timedelta | none | A cap on all of the task's waiting, until it is ready. It never falls back to `execution_timeout`. Unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
 | `retry_exponential_backoff` | bool | False | Double the wait each retry: `min(retry_delay·2^n, max_retry_delay)` |
@@ -386,17 +386,17 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting) |
 | `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
 | `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
-| `outlets` | list[Asset] | `[]` | Assets produced by this task |
+| `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 98, each once (the decorator refuses an asset named twice) |
 | `inlets` | list[Asset] | `[]` | Assets consumed by this task |
-| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
+| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]`. The wait lasts 7 days from when the task's own dependencies are met; then the task fails. `polyris-deploy` warns when `orchestration_timeout` is shorter |
 
 ```python
 from datetime import timedelta
 
 @task.sfn(
     arn="arn:aws:states:us-east-1:123456789:stateMachine:my-sfn",
-    execution_timeout=timedelta(hours=2),
-    orchestration_timeout=timedelta(days=3),  # Long wait for cross-pipeline deps
+    execution_timeout=timedelta(hours=2),     # One attempt of the work: 2h at most
+    orchestration_timeout=timedelta(days=8),  # All waiting: 8 days at most
     retries=2,
     retry_delay=timedelta(minutes=10),
     wait_before=60,
@@ -406,6 +406,20 @@ from datetime import timedelta
 def my_task():
     pass
 ```
+
+### Pipeline limits
+
+`polyris-validate` and `polyris-deploy` refuse a pipeline beyond any of these limits, naming the limit and the size they measured:
+
+| Limit | Value | Why |
+|---|---|---|
+| Tasks per pipeline | 2,000 | The declared maximum the platform is tested at |
+| Outlets per task | 98 | A task's success is recorded in one DynamoDB transaction of at most 100 items |
+| A task's spec | 256 KB | A task starts with its spec as its input, which Step Functions caps at 256 KB |
+| `task_id` | 128 bytes | Operator requests name a task in full |
+| The definition | 1 MB | Step Functions' limit, measured as `polyris-deploy` sends it |
+
+`polyris-output --json` shows each task's spec and the definition.
 
 ## Task-type-specific parameters
 
@@ -791,7 +805,7 @@ polyris-validate
 # Validate with details
 polyris-validate -v
 
-# Generate Step Functions JSON
+# The Step Functions definition and its task specs
 polyris-output --json
 
 # Generate Mermaid diagram

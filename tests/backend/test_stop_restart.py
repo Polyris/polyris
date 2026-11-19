@@ -252,10 +252,10 @@ def test_restart_still_rejects_genuinely_active_running_task(mocker):
     assert 'not in restartable state' in json.loads(response['body'])['error'].lower()
 
 
-def test_restart_looks_up_and_passes_task_config_and_outlets(mocker):
+def test_restart_looks_up_and_passes_task_config_and_outlets(mocker, deploy_specs):
     """task_config/outlets are deploy-time DAG properties never stored on
     the per-execution record — restart_task must look them up from the
-    registry and pass them explicitly to restart_task_helper, or a
+    task's spec (ADR #137 §8) and pass them explicitly to restart_task_helper, or a
     restarted task with retries/worker-type/outlets configured would
     silently lose that configuration (previously always reconstructed as
     empty by Start_New_Wrapper, since the fields it tried to read never
@@ -268,17 +268,11 @@ def test_restart_looks_up_and_passes_task_config_and_outlets(mocker):
     mock_sfn = mocker.patch('routes.tasks.sfn')
     mock_sfn.start_execution.return_value = {'executionArn': 'arn:aws:states:us-east-1:123:execution:restart:r-123'}
     mocker.patch.dict(os.environ, {'RESTART_HELPER_ARN': 'arn:restart-helper'})
-    mocker.patch('routes.tasks.pipelines_repo.get', return_value={
-        'pipeline_name': 'test_pipeline',
-        'dag': json.dumps({
-            'nodes': [{
-                'id': 'extract',
-                'task_config': {'retries': 3, 'retry_delay': 120},
-                'outlets': [{'name': 'raw/sales'}],
-            }],
-            'edges': [],
-        }),
-    })
+    mocker.patch('routes.tasks.pipelines_repo.get', return_value=deploy_specs('test_pipeline', [{
+        'task_id': 'extract',
+        'task_config': {'retries': 3, 'retry_delay': 120},
+        'outlets': [{'name': 'raw/sales'}],
+    }]))
 
     response = restart_task('extract', _make_event())
 

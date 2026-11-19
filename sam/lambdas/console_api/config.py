@@ -16,6 +16,7 @@ from typing import Dict
 # AWS Clients (lazy initialization)
 # ============================================
 _dynamodb = None
+_dynamodb_client = None
 _sfn = None
 _lambda = None
 _logs = None
@@ -31,6 +32,17 @@ def _get_dynamodb():
         import boto3
         _dynamodb = boto3.resource('dynamodb')
     return _dynamodb
+
+
+def _get_dynamodb_client():
+    """Lazy init a low-level DynamoDB client, for code that sends typed attributes
+    (``polyris.coordination.spec_store``). A resource's ``meta.client`` would
+    serialize them a second time."""
+    global _dynamodb_client
+    if _dynamodb_client is None:
+        import boto3
+        _dynamodb_client = boto3.client('dynamodb')
+    return _dynamodb_client
 
 
 #: Step Functions calls fail fast, well inside API Gateway's 29 s (Principle #53): botocore's
@@ -137,6 +149,11 @@ class _LazyDynamoDB:
         return _get_dynamodb().Table(table_name)
 
 
+class _LazyDynamoDBClient:
+    def __getattr__(self, name):
+        return getattr(_get_dynamodb_client(), name)
+
+
 class _LazySFN:
     def __getattr__(self, name):
         return getattr(_get_sfn(), name)
@@ -169,6 +186,7 @@ class _LazyGlue:
 
 # Export lazy proxies (same interface as before)
 dynamodb = _LazyDynamoDB()
+dynamodb_client = _LazyDynamoDBClient()
 sfn = _LazySFN()
 lambda_client = _LazyLambda()
 logs = _LazyLogs()
@@ -187,6 +205,8 @@ ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))
 TASK_EVENTS_TABLE = os.environ.get('TASK_EVENTS_TABLE', 'task-events')
 # Personal Access Token store (ADR #65). Dedicated table, not pipeline-tokens.
 API_TOKENS_TABLE = os.environ.get('API_TOKENS_TABLE', 'api-tokens')
+# Task specs (ADR #137 §8): polyris-deploy writes them; the console reads them (dal.specs_repo).
+SPECS_TABLE = os.environ.get('SPECS_TABLE', 'pipeline-specs')
 # Optional: only set when circuit-breaker monitoring is enabled in this deployment.
 # Empty string means feature disabled (health check returns HEALTHY/not-configured).
 CIRCUIT_BREAKER_TABLE = os.environ.get('CIRCUIT_BREAKER_TABLE', '')

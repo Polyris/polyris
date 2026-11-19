@@ -276,8 +276,11 @@ class Task:
     retry_exponential_backoff: bool = False
     retry_jitter: bool = False
     
-    execution_timeout: timedelta = field(default_factory=lambda: timedelta(hours=24))
-    orchestration_timeout: Optional[timedelta] = None  # How long to wait for deps. Defaults to execution_timeout
+    # One attempt of the work; None: no limit (ADR #137 §5). A timeout is a failed attempt.
+    execution_timeout: Optional[timedelta] = None
+    # A cap on all of the task's waiting; None: no cap of its own (a wait_for wait still ends
+    # after 7 days). It never falls back to execution_timeout (ADR #137 §5).
+    orchestration_timeout: Optional[timedelta] = None
     
     
     trigger_rule: TriggerRuleLiteral = "all_success"
@@ -370,16 +373,14 @@ class Task:
         return self.task_id
     
     @property
-    def timeout(self) -> int:
-        """Timeout in seconds for SFN."""
-        return int(self.execution_timeout.total_seconds())
-    
+    def execution_timeout_seconds(self) -> Optional[int]:
+        """One attempt's limit in seconds, or None: no limit."""
+        return None if self.execution_timeout is None else int(self.execution_timeout.total_seconds())
+
     @property
-    def orchestration_timeout_seconds(self) -> int:
-        """How long wrapper waits for deps (seconds). Defaults to execution_timeout."""
-        if self.orchestration_timeout is not None:
-            return int(self.orchestration_timeout.total_seconds())
-        return self.timeout
+    def orchestration_timeout_seconds(self) -> Optional[int]:
+        """The cap on all of the task's waiting in seconds, or None: no cap of its own."""
+        return None if self.orchestration_timeout is None else int(self.orchestration_timeout.total_seconds())
     
     @property
     def retry_delay_seconds(self) -> int:
@@ -486,6 +487,25 @@ def _validate_common_kwargs(decorator_name: str, common: Mapping[str, object]) -
             f"task.{decorator_name}() got an unexpected keyword argument "
             f"{sorted(unknown)[0]!r}"
         )
+
+#: The decorator of each task type, so a refusal names the one the user wrote.
+_DECORATOR_OF = {"sfn": "sfn", "lambda": "lambda_function", "glue": "glue_job", "ecs": "ecs_task",
+                 "athena": "athena_query", "emr": "emr_step", "batch": "batch_job"}
+
+
+def _reject_duplicate_outlets(task_type: str, task_id: str, outlets: List[Any]) -> None:
+    """The same asset twice in a task's outlets: its success transaction puts one key twice,
+    which DynamoDB cancels every time, so the success could never be recorded (ADR #137 §8)."""
+    seen: Set[str] = set()
+    for asset in outlets:
+        name = getattr(asset, 'name', None) or str(asset)
+        if name in seen:
+            raise ValueError(
+                f"@task.{_DECORATOR_OF.get(task_type, task_type)}: outlets of task '{task_id}' name asset "
+                f"'{name}' twice. List each asset once, e.g. outlets=[orders, customers]."
+            )
+        seen.add(name)
+
 
 class TaskDecorator:
     """
@@ -609,6 +629,7 @@ class TaskDecorator:
             default_args = dag.default_args if dag else {}
 
             resolved_retries = retries if retries is not None else default_args.get('retries', 0)
+            _reject_duplicate_outlets(task_type, tid, outlets or [])
             if resolved_retries > 9:
                 raise ValueError(
                     f"retries={resolved_retries}: maximum is 9. "
@@ -642,7 +663,7 @@ class TaskDecorator:
                 ),
                 execution_timeout=(
                     execution_timeout if execution_timeout is not None
-                    else default_args.get('execution_timeout', timedelta(hours=24))
+                    else default_args.get('execution_timeout')
                 ),
                 orchestration_timeout=(
                     orchestration_timeout if orchestration_timeout is not None

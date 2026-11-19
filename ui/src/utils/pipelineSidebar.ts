@@ -149,3 +149,7 @@ export function buildSidebarLines(
     });
     return lines;
 }
+
+/** Why a pipeline is marked: the registry's format_version is missing or older than the platform reads
+ *  (`needs_redeploy` from /api/pipelines, ADR #137). */
+export const REDEPLOY_HINT = 'Redeploy needed: run polyris-deploy for this pipeline; its runs fail until then.';

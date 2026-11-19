@@ -493,6 +493,7 @@ BACKFILL_ERROR_CODES: FrozenSet[str] = frozenset({
     "partition_keys_not_failed",
     "producer_pipeline_missing",
     "range_too_large",
+    "redeploy_needed",
     "sfn_start_failed",
     "status_race",
     "target_not_found",

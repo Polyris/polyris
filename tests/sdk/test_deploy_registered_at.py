@@ -14,6 +14,7 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from polyris import DAG, deploy, task
+from polyris.coordination import task_spec
 from polyris.deploy import deploy_pipeline
 from polyris.generators import generate_step_function_json
 
@@ -24,9 +25,21 @@ _SAM_OUTPUTS = [
     {"OutputKey": "PipelineRegistryTable", "OutputValue": "my-registry"},
     {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},
     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
+    {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
     {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
 ]
 _PIPELINE_OUTPUTS = [{"OutputKey": "StateMachineArn", "OutputValue": _ARN}]
+
+
+#: The platform's DynamoDB, on moto (conftest.platform_dynamodb): deploy writes and reads back the specs.
+_PLATFORM: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _platform_tables(platform_dynamodb):
+    _PLATFORM["dynamodb"] = platform_dynamodb
+    yield
+    _PLATFORM.clear()
 
 
 def _make_deploy_mocks(mocker):
@@ -60,7 +73,7 @@ def _make_deploy_mocks(mocker):
     }
 
     def _client(name, **_kw):
-        return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
+        return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, **_PLATFORM}.get(
             name, mocker.MagicMock())
 
     session.client.side_effect = _client
@@ -180,7 +193,8 @@ def test_orphaned_register_pipeline_sfn_uses_updateitem():
 
 def test_stamp_registered_at_writes_updateitem_on_registry(mocker):
     """The authoritative deploy-time write: UpdateItem on the registry table
-    keyed by pipeline_name, with a SET for registered_at only."""
+    keyed by pipeline_name, with a SET for the deploy-owned fields only:
+    registered_at and the format the pipeline was deployed with (ADR #137)."""
     session = mocker.MagicMock()
     ddb = session.client.return_value
 
@@ -192,7 +206,9 @@ def test_stamp_registered_at_writes_updateitem_on_registry(mocker):
 
     assert kwargs["TableName"] == "my-registry"
     assert kwargs["Key"] == {"pipeline_name": {"S": "my-pipeline"}}
-    assert kwargs["UpdateExpression"] == "SET registered_at = :now"
+    assert kwargs["UpdateExpression"] == "SET registered_at = :now, #format = :format"
+    assert kwargs["ExpressionAttributeNames"] == {"#format": task_spec.REGISTRY_FORMAT_FIELD}
+    assert kwargs["ExpressionAttributeValues"][":format"] == {"N": str(task_spec.FORMAT_VERSION)}
     # ISO-8601 UTC — parseable; narrows to "actual timestamp, not a placeholder".
     stamp = kwargs["ExpressionAttributeValues"][":now"]["S"]
     parsed = datetime.fromisoformat(stamp)

@@ -369,6 +369,34 @@ Resources:
         - Key: polyris:component
           Value: platform
 
+  # Task specs (ADR #137 §8). Texts under {pipeline}#text keyed by their sha256; versions under
+  # spec_id = {pipeline}#{fingerprint} keyed by task_id, each naming its task's text. Items never
+  # change and are never deleted. No TTL, no deletion protection (it would fail polyris-down and
+  # the rollback of a failed first install), no Retain (a table left behind blocks the next
+  # polyris-up) and no PITR (the specs are derived; a redeploy writes them again).
+  PipelineSpecsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-pipeline-specs"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
   AssetEventsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -1276,6 +1304,7 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
           API_TOKENS_TABLE: !Ref ApiTokensTable
+          SPECS_TABLE: !Ref PipelineSpecsTable
           # ADR #65/#66: auth enforcement follows EnableCognitoAuth — true when
           # Cognito is enabled, false otherwise. Public paths: /api/health*,
           # /api/metrics, /api/action/*.
@@ -1677,6 +1706,13 @@ Resources:
                   - !Sub "${TaskEventsTable.Arn}/index/*"
                   - !GetAtt ApiTokensTable.Arn
                   - !Sub "${ApiTokensTable.Arn}/index/*"
+              # Task specs: read only (ADR #137 §8); polyris-deploy writes them.
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                Resource: !GetAtt PipelineSpecsTable.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -2670,6 +2706,12 @@ Outputs:
     Value: !Ref PipelineRegistryTable
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-registry-table"
+
+  PipelineSpecsTable:
+    Description: DynamoDB table of the pipelines' task specs, which polyris-deploy writes
+    Value: !Ref PipelineSpecsTable
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-specs-table"
 
   PipelineTokensTable:
     Description: DynamoDB pipeline tokens table name

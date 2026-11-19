@@ -15,7 +15,7 @@ This module contains all the generate_* functions:
 from typing import Dict, Any, List, Tuple, Iterator, Optional, Callable, Set
 import json
 
-from .constants import TaskConfigKey
+from .constants import TaskConfigKey, TaskSpecKey
 from .config import config
 from .dag import DAG
 from .task import Task
@@ -27,7 +27,9 @@ from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _f
 from .schema import column_to_dict
 from .coordination.records import DAG_SNAPSHOT_PREFIX
 from .coordination.run_name import MAX_NAME, fit_task_id
+from .coordination import task_spec
 from .partitions import MAX_PARTITION_KEY_LENGTH
+from . import limits
 
 
 # =============================================================================
@@ -333,21 +335,12 @@ def validate_asl(asl: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
     errors = []
     warnings: List[str] = []
 
-    # 0. Size guard — AWS rejects definitions ≥ 1 MB; warn at 900 KB
-    _ASL_LIMIT_BYTES = 1_000_000
-    _ASL_WARN_BYTES = 900_000
-    size = len(json.dumps(asl).encode())
-    if size >= _ASL_LIMIT_BYTES:
-        errors.append(
-            f"Definition size {size:,} bytes exceeds the AWS 1 MB limit "
-            f"({_ASL_LIMIT_BYTES:,} bytes). Reduce the number of tasks or "
-            f"schema column count."
-        )
-    elif size >= _ASL_WARN_BYTES:
-        warnings.append(
-            f"Definition size {size:,} bytes is approaching the AWS 1 MB limit "
-            f"({_ASL_LIMIT_BYTES:,} bytes)."
-        )
+    # 0. Size guard — measured as polyris-deploy sends the definition (indented, as
+    # generate_step_function_json writes it): measured compact, 230 tasks validated at
+    # 937 KB and deployed at 1.11 MB (ADR #137 §8).
+    sent = json.dumps(asl, indent=2)
+    errors.extend(limits.definition_errors(sent))
+    warnings.extend(limits.definition_warnings(sent))
 
     # 1. Basic structure
     if "StartAt" not in asl:
@@ -545,7 +538,7 @@ def generate_debug_info(dag: "DAG") -> Dict[str, Any]:
             "task_type": task.task_type,
             "arn": task.arn[:50] + "..." if task.arn and len(task.arn) > 50 else task.arn,
             "dependencies": [d.node_id for d in task.dependencies],
-            "timeout": task.timeout,
+            "execution_timeout": task.execution_timeout_seconds,
             "retries": task.retries,
         }
         if task.outlets:
@@ -1012,6 +1005,82 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
     return task_config, task_arn
 
 
+def _build_step_config_and_arn(step: Step) -> Tuple[Dict[TaskConfigKey, Any], str]:
+    """task_config and task_arn of a wrapper step (lambda/glue/ecs/athena), as for a Task.
+
+    Shared by _build_step_branch and the step's spec (build_task_specs), so a
+    step runs with the configuration its spec records.
+    """
+    task_config: Dict[TaskConfigKey, Any] = {}
+    if step.step_type == 'lambda':
+        assert isinstance(step, LambdaTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {TaskConfigKey.PAYLOAD: step.payload or {}}
+    elif step.step_type == 'glue':
+        assert isinstance(step, GlueTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {
+            TaskConfigKey.JOB_NAME: step.job_name,
+            TaskConfigKey.ARGUMENTS: step.arguments or {}
+        }
+    elif step.step_type == 'ecs':
+        assert isinstance(step, ECSTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {
+            TaskConfigKey.CLUSTER: step.cluster,
+            TaskConfigKey.TASK_DEFINITION: step.task_definition,
+            TaskConfigKey.LAUNCH_TYPE: step.launch_type,
+            TaskConfigKey.SUBNETS: step.subnets or [],
+            TaskConfigKey.SECURITY_GROUPS: step.security_groups or [],
+            TaskConfigKey.ASSIGN_PUBLIC_IP: step.assign_public_ip,
+            TaskConfigKey.OVERRIDES: step.overrides or {}
+        }
+    elif step.step_type == 'athena':
+        assert isinstance(step, AthenaTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {
+            TaskConfigKey.QUERY_STRING: step.query_string,
+            TaskConfigKey.DATABASE: step.database,
+            TaskConfigKey.OUTPUT_LOCATION: step.output_location,
+            TaskConfigKey.WORKGROUP: step.workgroup
+        }
+    else:
+        raise ValueError(f"step '{step.step_id}' ({step.step_type}) does not run as a task row")
+
+    # Include retry policy from step (same contract as _build_task_config_and_arn for Task).
+    # LambdaTask(Step) uses retry_interval; other wrapper step types currently carry no
+    # retry fields, so getattr defaults keep them out of the config.
+    _add_retry_config(
+        task_config,
+        getattr(step, 'retries', 0),
+        getattr(step, 'retry_interval', 1),
+    )
+
+    # For lambda, task_arn is function_arn
+    task_arn = getattr(step, 'function_arn', '') or getattr(step, 'task_arn', '') or step.step_id
+    return task_config, task_arn
+
+
+def _resolved_role(task: Task) -> str:
+    """The task's cross_account_role: a config.roles key resolved to its ARN, anything else as written."""
+    if task.role and task.role != 'same' and task.role in config.roles:  # pragma: no cover -- cross-account role->ARN resolution depends on a populated config.roles, exercised by deploy e2e
+        return config.roles[task.role]
+    return task.role
+
+
+#: The 1.2 wrapper branch's bound when a task sets no execution_timeout: the 24 hours it had
+#: before 1.3 removed the default (ADR #137 §5). The branch goes in TR-4 with the wrapper.
+_LEGACY_BRANCH_TIMEOUT = 86400
+
+
+def _legacy_branch_timeouts(task: Task) -> Tuple[int, int]:
+    """The 1.2 wrapper branch's (execution, orchestration) bounds, as 1.2 computed them.
+
+    1.3 runs a task with no work limit and no fallback of orchestration_timeout to
+    execution_timeout (D49); the 1.2 engine still runs on this branch until TR-4, so its
+    branches keep the bounds they had.
+    """
+    execution = task.execution_timeout_seconds or _LEGACY_BRANCH_TIMEOUT
+    orchestration = task.orchestration_timeout_seconds or execution
+    return execution, orchestration
+
+
 def _build_task_branch(task: Task, dag: DAG, wrapper_arn: str) -> Dict:
     """Build a single parallel branch for a Task (wrapper-based execution).
     
@@ -1042,10 +1111,8 @@ def _build_task_branch(task: Task, dag: DAG, wrapper_arn: str) -> Dict:
     dep_names = [d.node_id for d in task.dependencies]
     task_config, task_arn = _build_task_config_and_arn(task)
     # Resolve cross_account_role to ARN from config.roles (pyproject.toml)
-    # If role is defined in config.roles, use the ARN; otherwise keep the string
-    cross_account_role = task.role
-    if task.role and task.role != 'same' and task.role in config.roles:  # pragma: no cover -- cross-account role->ARN resolution depends on a populated config.roles, exercised by deploy e2e
-        cross_account_role = config.roles[task.role]
+    cross_account_role = _resolved_role(task)
+    execution_timeout, orchestration_timeout = _legacy_branch_timeouts(task)
     
     # Build task state (JSONata syntax)
     # Name is deterministic based on current_date (not $now()) for proper backfill support
@@ -1056,7 +1123,7 @@ def _build_task_branch(task: Task, dag: DAG, wrapper_arn: str) -> Dict:
         dependencies=dep_names,
         dag=dag,
         cross_account_role=cross_account_role,
-        orchestration_timeout=task.orchestration_timeout_seconds,
+        orchestration_timeout=orchestration_timeout,
         task_config=task_config,
     )
     # Task-specific extras (not applicable to Step wrapper)
@@ -1076,7 +1143,7 @@ def _build_task_branch(task: Task, dag: DAG, wrapper_arn: str) -> Dict:
     task_state = {
         "Type": "Task",
         "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
-        "TimeoutSeconds": task.timeout + task.wait_before_seconds,
+        "TimeoutSeconds": execution_timeout + task.wait_before_seconds,
         "Arguments": {
             "StateMachineArn": wrapper_arn,
             "Name": _make_execution_name_expr(task.task_id),
@@ -1127,54 +1194,12 @@ def _build_step_branch(step: Step, dag: DAG, wrapper_arn: str) -> Dict:
         
         # Generate wrapper call with task_type and task_config
         dep_names = [d.node_id for d in step.dependencies]
-        
-        # Build task_config based on step type
-        task_config: Dict[TaskConfigKey, Any] = {}
-        if step.step_type == 'lambda':
-            assert isinstance(step, LambdaTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {TaskConfigKey.PAYLOAD: step.payload or {}}
-        elif step.step_type == 'glue':
-            assert isinstance(step, GlueTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {
-                TaskConfigKey.JOB_NAME: step.job_name,
-                TaskConfigKey.ARGUMENTS: step.arguments or {}
-            }
-        elif step.step_type == 'ecs':
-            assert isinstance(step, ECSTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {
-                TaskConfigKey.CLUSTER: step.cluster,
-                TaskConfigKey.TASK_DEFINITION: step.task_definition,
-                TaskConfigKey.LAUNCH_TYPE: step.launch_type,
-                TaskConfigKey.SUBNETS: step.subnets or [],
-                TaskConfigKey.SECURITY_GROUPS: step.security_groups or [],
-                TaskConfigKey.ASSIGN_PUBLIC_IP: step.assign_public_ip,
-                TaskConfigKey.OVERRIDES: step.overrides or {}
-            }
-        elif step.step_type == 'athena':
-            assert isinstance(step, AthenaTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {
-                TaskConfigKey.QUERY_STRING: step.query_string,
-                TaskConfigKey.DATABASE: step.database,
-                TaskConfigKey.OUTPUT_LOCATION: step.output_location,
-                TaskConfigKey.WORKGROUP: step.workgroup
-            }
+        task_config, task_arn = _build_step_config_and_arn(step)
 
-        # Include retry policy from step (same contract as _build_task_config_and_arn for Task).
-        # LambdaTask(Step) uses retry_interval; other wrapper step types currently carry no
-        # retry fields, so getattr defaults keep them out of the config.
-        _add_retry_config(
-            task_config,
-            getattr(step, 'retries', 0),
-            getattr(step, 'retry_interval', 1),
-        )
-
-        # For lambda, task_arn is function_arn
-        task_arn = getattr(step, 'function_arn', '') or getattr(step, 'task_arn', '') or step.step_id
-        
         # Get timeout from step or use default (3600 for lambda, 86400 for glue/ecs/athena)
         default_timeout = 3600 if step.step_type == 'lambda' else 86400
         step_timeout = getattr(step, 'timeout', default_timeout)
-        
+
         step_state = {
             "Type": "Task",
             "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
@@ -1316,6 +1341,69 @@ def _build_pipeline_metadata(dag: DAG) -> Tuple[List, Dict, Dict]:
     return tasks_metadata, dag_metadata, asset_schedule
 
 
+def _task_spec(task: Task) -> Dict[str, Any]:
+    """A task's spec (ADR #137 §8): everything needed to run the task and to draw it.
+
+    Keys are ``TaskSpecKey`` values. An optional key is absent when the task does not
+    set it, so a spec says only what the task declares: no execution_timeout means no
+    limit on the work, no orchestration_timeout no cap on the wait (§5).
+    """
+    task_config, task_arn = _build_task_config_and_arn(task)
+    spec: Dict[str, Any] = {
+        TaskSpecKey.TASK_ID: task.task_id,
+        TaskSpecKey.TASK_TYPE: task.task_type,
+        TaskSpecKey.TASK_ARN: task_arn,
+        TaskSpecKey.TASK_CONFIG: task_config,
+        TaskSpecKey.CROSS_ACCOUNT_ROLE: _resolved_role(task),
+        TaskSpecKey.DEPENDENCIES: [d.node_id for d in task.dependencies],
+        TaskSpecKey.TRIGGER_RULE: task.trigger_rule or "all_success",
+    }
+    if task.execution_timeout_seconds is not None:
+        spec[TaskSpecKey.EXECUTION_TIMEOUT] = task.execution_timeout_seconds
+    if task.orchestration_timeout_seconds is not None:
+        spec[TaskSpecKey.ORCHESTRATION_TIMEOUT] = task.orchestration_timeout_seconds
+    if task.wait_before_seconds:
+        spec[TaskSpecKey.WAIT_BEFORE] = task.wait_before_seconds
+    if task.outlets:
+        spec[TaskSpecKey.OUTLETS] = [_serialize_outlet(a) for a in task.outlets]
+    if task.inlets:
+        spec[TaskSpecKey.INLETS] = [_serialize_inlet(a) for a in task.inlets]
+    if task.wait_for:
+        spec[TaskSpecKey.WAIT_FOR] = _serialize_wait_for(task.wait_for)
+    if task.skip_on_backfill:
+        spec[TaskSpecKey.SKIP_ON_BACKFILL] = True
+    return spec
+
+
+def _step_spec(step: Step) -> Dict[str, Any]:
+    """A wrapper step's spec: it runs as a task row, with a task's defaults (ADR #137 §1)."""
+    task_config, task_arn = _build_step_config_and_arn(step)
+    return {
+        TaskSpecKey.TASK_ID: step.step_id,
+        TaskSpecKey.TASK_TYPE: step.step_type,
+        TaskSpecKey.TASK_ARN: task_arn,
+        TaskSpecKey.TASK_CONFIG: task_config,
+        TaskSpecKey.CROSS_ACCOUNT_ROLE: "same",
+        TaskSpecKey.DEPENDENCIES: [d.node_id for d in step.dependencies],
+        TaskSpecKey.TRIGGER_RULE: "all_success",
+    }
+
+
+def build_task_specs(dag: DAG) -> List[Dict[str, Any]]:
+    """The spec of every node of ``dag`` that runs as a task row: its tasks and wrapper steps.
+
+    Direct steps (wait/pass/sns/...) are branches of the definition, not rows, and have none.
+    """
+    specs = [_task_spec(t) for t in dag.tasks]
+    specs += [_step_spec(s) for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES]
+    return specs
+
+
+def build_spec_version(dag: DAG) -> task_spec.Version:
+    """The spec version ``polyris-deploy`` writes to ``pipeline-specs`` and the definition names."""
+    return task_spec.build_version(dag.dag_id, build_task_specs(dag))
+
+
 def _build_registration_chain(
     dag: DAG,
     tasks_metadata: List,
@@ -1324,6 +1412,7 @@ def _build_registration_chain(
     registry_table: str,
     tokens_table: str,
     asset_subscriptions_table: str,
+    specs: task_spec.Version,
 ) -> Tuple[Dict, str]:
     """Build the registration state chain that runs before tasks.
 
@@ -1349,6 +1438,8 @@ def _build_registration_chain(
             in its ASSET_SUBSCRIPTIONS_TABLE, both sourced from the SAM stack's
             AssetSubscriptionsTable output that polyris-deploy reads via
             describe_stacks)
+        specs: the pipeline's spec version (build_spec_version); Register_Pipeline
+            names it in the registry with its task count (ADR #137 §8)
     
     Returns:
         Tuple of (states_dict, start_at_state_name)
@@ -1412,7 +1503,9 @@ def _build_registration_chain(
                 "#dag = :dag, "
                 "#schedule = :schedule, "
                 "asset_schedule = :asset_schedule, "
-                "last_execution = :last_execution"
+                "last_execution = :last_execution, "
+                "spec_id = :spec_id, "
+                "task_count = :task_count"
             ),
             "ExpressionAttributeNames": {
                 "#description": "description",
@@ -1429,11 +1522,19 @@ def _build_registration_chain(
                 ":schedule": {"S": dag.schedule if isinstance(dag.schedule, str) else ""},
                 ":asset_schedule": {"S": json.dumps(asset_schedule)},
                 ":last_execution": {"S": JSONATA_EXECUTION_NAME},
+                ":spec_id": {"S": specs.spec_id},
+                ":task_count": {"N": str(specs.task_count)},
             },
         },
         "Output": JSONATA_PASS_INPUT,
         "Retry": [_STANDARD_DYNAMODB_RETRY],
+        # States.ALL does not match States.DataLimitExceeded (AWS documents it outside it), so the
+        # Catch names it too: an input over 256 KB must reach the bell, not kill the run (ADR #137 §8).
         "Catch": [{
+            "ErrorEquals": ["States.DataLimitExceeded"],
+            "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
+            "Next": "Warn_Registration_Failed"
+        }, {
             "ErrorEquals": ["States.ALL"],
             "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
             "Next": "Warn_Registration_Failed"
@@ -1654,6 +1755,7 @@ def generate_step_function_json(
     states, start_at = _build_registration_chain(
         dag, tasks_metadata, dag_metadata, asset_schedule,
         _registry_table, _tokens_table, _asset_subscriptions_table,
+        build_spec_version(dag),
     )
     
     # 4. Add parallel execution + failure handler

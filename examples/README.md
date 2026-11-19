@@ -38,7 +38,7 @@ polyris-validate                 # is the DAG valid?
 polyris-validate -v              # verbose: tasks, dependencies, ASL preview
 polyris-output --graph           # the DAG as an ASCII graph
 polyris-output --mermaid         # a Mermaid diagram you can paste anywhere
-polyris-output --json            # the full Step Functions definition (ASL)
+polyris-output --json            # the Step Functions definition and its task specs
 ```
 
 Each `@task.sfn` invokes an existing Step Functions state machine, so the ARNs

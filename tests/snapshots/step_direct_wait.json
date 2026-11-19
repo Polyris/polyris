@@ -13,7 +13,7 @@
             "S": "step_direct_wait"
           }
         },
-        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution",
+        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution, spec_id = :spec_id, task_count = :task_count",
         "ExpressionAttributeNames": {
           "#description": "description",
           "#tasks": "tasks",
@@ -44,6 +44,12 @@
           },
           ":last_execution": {
             "S": "{% $states.context.Execution.Name %}"
+          },
+          ":spec_id": {
+            "S": "step_direct_wait#e258e23d731d18a82a8c77d58318b6eaf2e032551b7b089032a04a2fd90817de"
+          },
+          ":task_count": {
+            "N": "1"
           }
         }
       },
@@ -63,6 +69,13 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "States.DataLimitExceeded"
+          ],
+          "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
+          "Next": "Warn_Registration_Failed"
+        },
         {
           "ErrorEquals": [
             "States.ALL"

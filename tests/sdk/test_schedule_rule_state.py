@@ -26,6 +26,8 @@ History, in order:
    get_schedule/update_schedule instead of the classic events client's
    enable_rule/disable_rule, since Scheduler has no simple toggle API.
 """
+import pytest
+
 from polyris import DAG, task
 from polyris.deploy import _generate_cfn_template, deploy_pipeline
 
@@ -131,8 +133,21 @@ _SAM_OUTPUTS = [
     {"OutputKey": "PipelineRegistryTable", "OutputValue": "registry"},
     {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},
     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
+    {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
     {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
 ]
+
+
+#: The platform's DynamoDB, on moto (conftest.platform_dynamodb): deploy writes and reads back the specs.
+_PLATFORM: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _platform_tables(platform_dynamodb):
+    _PLATFORM["dynamodb"] = platform_dynamodb
+    yield
+    _PLATFORM.clear()
+
 
 
 def _sam_stack_response():
@@ -201,7 +216,7 @@ class TestPostDeployScheduleStateEnforcement:
         scheduler.get_schedule.return_value = _fake_current_schedule(current_schedule_state)
 
         def _client(name, **_kw):
-            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
+            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, **_PLATFORM}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
 
@@ -289,7 +304,7 @@ class TestPostDeployScheduleStateEnforcement:
         scheduler.get_schedule.side_effect = Exception("ThrottlingException")
 
         def _client(name, **_kw):
-            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
+            return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, **_PLATFORM}.get(
                 name, mocker.MagicMock())
         session.client.side_effect = _client
 

@@ -386,5 +386,6 @@ class TestSamStackOutputKeys:
             "PipelineRegistryTable",
             "PipelineTokensTable",
             "AssetSubscriptionsTable",
+            "PipelineSpecsTable",
             "ResultsBucket",
         )

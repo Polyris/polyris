@@ -10,7 +10,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 - [Inventory by service](#inventory-by-service)
   - [Step Functions state machines (13)](#step-functions-state-machines-13)
   - [Lambda functions (8)](#lambda-functions-8)
-  - [DynamoDB tables (7)](#dynamodb-tables-7)
+  - [DynamoDB tables (8)](#dynamodb-tables-8)
   - [S3 buckets (2)](#s3-buckets-2)
   - [Cognito (1 user pool + 1 client)](#cognito-1-user-pool--1-client)
   - [CloudFront + API Gateway (Console UI)](#cloudfront--api-gateway-console-ui)
@@ -26,7 +26,7 @@ Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* r
 
 Two categories of AWS resources end up in your account.
 
-**A. Polyris wrappers.** The fixed set the SAM stack creates. Every install has exactly these — 13 state machines, 8 Lambdas, 7 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. They wait for dependencies, decide when to run something, call an AWS service, record what happened, and notify downstream. They do not do your ETL work.
+**A. Polyris wrappers.** The fixed set the SAM stack creates. Every install has exactly these — 13 state machines, 8 Lambdas, 8 DDB tables, 2 S3 buckets, 1 Cognito pool, 1 CloudFront distribution + HTTP API Gateway for the Console UI, plus IAM and logs. Purpose: **orchestrate**. They wait for dependencies, decide when to run something, call an AWS service, record what happened, and notify downstream. They do not do your ETL work.
 
 **B. Your workloads.** Whatever your pipelines invoke. Every `@task.lambda_function(function_name="my-etl")` points at a Lambda in your account that YOU created outside polyris. Same for `@task.glue_job`, `@task.ecs_task`, `@task.batch_job`, `@task.athena_query`, `@task.sfn`, `@task.emr_step`. Polyris does not deploy or manage these — see [DSL.md](../features/DSL.md#how-polyris-relates-to-aws).
 
@@ -86,19 +86,20 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Copies the prebuilt Console UI from the artifacts bucket into `ConsoleUiBucket`, deletes files of the previous build, writes `config.js` from the stack's values, invalidates CloudFront. Absent on a from-source `sam deploy` (there `ui/deploy.sh` uploads the UI) |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
 
-### DynamoDB tables (7)
+### DynamoDB tables (8)
 
 | Logical name | Contents |
 |--------------|----------|
 | `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output, and the coordination rows the sweeper keeps (`_engine_health`, `_sweeper_lease`, warnings). Its sparse `attention-index` lists the rows that need attention by due time: waiting tasks, tasks held in their pause wait, push retries, warnings. Hottest table |
-| `polyris-pipeline-registry` | One row per deployed pipeline. Holds the DAG snapshot the Console renders |
+| `polyris-pipeline-registry` | One row per deployed pipeline: its state machine, schedule, the spec version it runs (`spec_id`, `task_count`) and the format it was deployed with |
+| `polyris-pipeline-specs` | Every task's spec, which `polyris-deploy` writes before the pipeline's stack: each spec text once under `{pipeline}#text` by its sha256, and each version under `{pipeline}#{fingerprint}` naming its tasks' texts. Never changes, never expires. The Console draws a pipeline's graph from it |
 | `polyris-dep-subscriptions` | One pointer per waiting task and per thing it waits on (an upstream task of its run, or a `wait_for` asset). Read by `query-subscriptions` and asset-fanout; deleted once the task is signalled |
 | `polyris-task-events` | Append-only audit trail of task lifecycle events (queued, started, succeeded, failed, restarted, manually-resolved). Feeds the Console's per-task History tab |
 | `polyris-asset-events` | Append-only asset facts, one per materialisation, with the partition each belongs to (`asset-partition-index` finds them by partition date). Its stream feeds asset-fanout, which wakes `wait_for` tasks and starts asset-scheduled pipelines |
 | `polyris-asset-subscriptions` | (asset, downstream_pipeline) edges — the asset-DAG's dependency graph |
 | `polyris-api-tokens` | Personal access tokens for the Console REST API (alternative to Cognito login) |
 
-All tables are on-demand billing, so idle cost is $0. Point-in-time recovery is enabled by default on the operational tables.
+All tables are on-demand billing, so idle cost is $0. Point-in-time recovery is enabled by default on the operational tables; `pipeline-specs` has none, since a redeploy writes its items again.
 
 ### S3 buckets (2)
 
@@ -174,7 +175,7 @@ A common admin/developer question during an incident. Table maps concepts to con
 |----------|-----------|
 | "Which task is stuck?" | Console UI → pipeline → run, or `polyris-pipeline-tokens` DDB table (partition key = execution name) |
 | "Why did the wrapper fail?" | `/aws/states/polyris-dependency-wrapper` log group, filter by execution ARN |
-| "What's the current DAG for this pipeline?" | `polyris-pipeline-registry` DDB (partition key = pipeline name) |
+| "What's the current DAG for this pipeline?" | `polyris-pipeline-registry` DDB (partition key = pipeline name) names its `spec_id`; `polyris-pipeline-specs` holds the specs (partition key = `spec_id`), or run `polyris-output --json` |
 | "What did the upstream task return?" | `polyris-pipeline-tokens` DDB, key = `output#{pipeline}#{task}#{date}`, field `result` — or the Console UI's Task Detail → Output tab |
 | "Where's the large XCom payload the task pushed?" | `polyris-results` S3 bucket, at the `_s3_ref` path the DDB `result` field points to |
 | "Why did the Console API return 500?" | `/aws/lambda/polyris-console-api` log group, filter by request ID from the browser response |
@@ -209,6 +210,7 @@ Key outputs:
 | `PipelineRegistryTable` | Console API, notify Lambda |
 | `PipelineTokensTable` | Every wrapper execution, Console API, notify Lambda |
 | `AssetSubscriptionsTable` | polyris-deploy |
+| `PipelineSpecsTable` | polyris-deploy — writes every task's spec before the pipeline's stack |
 | `ResultsBucket` | xcom S3 spill, Console API sign-URL flow |
 | `ConsoleUiBucket`, `ConsoleUiDistributionId`, `ConsoleUiUrl` | UI `deploy.sh` |
 | `ConsoleApiUrl` | UI runtime config |

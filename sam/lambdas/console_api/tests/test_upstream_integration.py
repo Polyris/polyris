@@ -1,7 +1,9 @@
 """Unit tests for upstream_integration (ADR #88 Phase 2).
 
 Covers the registry->AssetGraph builder, the exists adapter, the Phase 2/3
-boundary helper, and plan serialization. Pure — no DDB.
+boundary helper, and plan serialization. Pure — no DDB: the tasks of each
+registry record are given to the builder, as ``specs_repo.deployed_tasks`` reads them
+from the task specs (that read is covered in tests/dal/test_specs_repo.py).
 """
 
 from upstream_integration import (
@@ -14,8 +16,11 @@ from polyris.upstream_resolver import resolve_plan
 
 
 def _pipe(name, tasks, dag_hash=None):
-    import json
-    return {'pipeline_name': name, 'tasks': json.dumps(tasks), 'dag_hash': dag_hash}
+    return {'pipeline_name': name, 'dag_hash': dag_hash, '_tasks': tasks}
+
+
+def _graph(pipes):
+    return build_asset_graph(pipes, lambda pipeline: pipeline['_tasks'])
 
 
 # ── build_asset_graph ────────────────────────────────────────────────────
@@ -25,7 +30,7 @@ class TestBuildAssetGraph:
         pipes = [
             _pipe('p_raw', [{'task_id': 't', 'outlets': [{'name': 'raw', 'granularity': 'daily'}]}], 'h1'),
         ]
-        g = build_asset_graph(pipes)
+        g = _graph(pipes)
         assert 'raw' in g.nodes
         assert g.nodes['raw'].pipeline == 'p_raw'
         assert g.nodes['raw'].granularity == 'daily'
@@ -37,7 +42,7 @@ class TestBuildAssetGraph:
             _pipe('p_cat', [{'task_id': 't2', 'outlets': [{'name': 'catalog'}],
                              'inlets': [{'name': 'raw'}]}]),
         ]
-        g = build_asset_graph(pipes)
+        g = _graph(pipes)
         edges = g.upstream_edges('catalog')
         assert len(edges) == 1
         assert edges[0].upstream == 'raw'
@@ -50,7 +55,7 @@ class TestBuildAssetGraph:
                 {'task_id': 't2', 'outlets': [{'name': 'catalog'}], 'inlets': [{'name': 'raw'}]},
             ]),
         ]
-        g = build_asset_graph(pipes)
+        g = _graph(pipes)
         assert g.upstream_edges('catalog') == []  # DAG handles it, ADR #88
 
     def test_external_upstream_ignored(self):
@@ -59,7 +64,7 @@ class TestBuildAssetGraph:
             _pipe('p_cat', [{'task_id': 't', 'outlets': [{'name': 'catalog'}],
                              'inlets': [{'name': 'external'}]}]),
         ]
-        g = build_asset_graph(pipes)
+        g = _graph(pipes)
         assert g.upstream_edges('catalog') == []
 
     def test_bare_string_outlets_inlets(self):
@@ -67,13 +72,12 @@ class TestBuildAssetGraph:
             _pipe('p_raw', [{'task_id': 't1', 'outlets': ['raw']}]),
             _pipe('p_cat', [{'task_id': 't2', 'outlets': ['catalog'], 'inlets': ['raw']}]),
         ]
-        g = build_asset_graph(pipes)
+        g = _graph(pipes)
         assert 'raw' in g.nodes
         assert g.upstream_edges('catalog')[0].upstream == 'raw'
 
-    def test_malformed_tasks_skipped(self):
-        pipes = [{'pipeline_name': 'bad', 'tasks': 'not json{{'}]
-        g = build_asset_graph(pipes)  # must not raise
+    def test_a_pipeline_without_tasks_adds_nothing(self):
+        g = _graph([_pipe('not-redeployed', [])])
         assert g.nodes == {}
 
 

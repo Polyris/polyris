@@ -517,7 +517,8 @@ def _validate_dags(dags: list, verbose: bool) -> Tuple[bool, List[str]]:
 
 def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
     """Validate a single DAG object."""
-    from polyris.generators import generate_step_function_json, validate_asl
+    from polyris.generators import build_spec_version, generate_step_function_json, validate_asl
+    from polyris import limits
     from polyris.config import config
     from polyris.coordination import trigger_rules
     import json as _json
@@ -592,8 +593,13 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
         asl_json = generate_step_function_json(dag)
         asl = _json.loads(asl_json)
         is_valid, errors, warnings = validate_asl(asl)
-        errors = role_errors + trigger_rule_errors + placeholder_errors + errors
-        is_valid = is_valid and not role_errors and not trigger_rule_errors and not placeholder_errors
+        # The limits of ADR #137 §8, measured on the specs polyris-deploy writes.
+        specs = build_spec_version(dag)
+        limit_errors = limits.spec_errors(specs)
+        warnings = warnings + limits.spec_warnings(specs)
+        errors = role_errors + trigger_rule_errors + placeholder_errors + limit_errors + errors
+        is_valid = (is_valid and not role_errors and not trigger_rule_errors and not placeholder_errors
+                    and not limit_errors)
 
         if verbose:
             print(f"  Schedule: {_c(str(dag.schedule), CYAN) if dag.schedule else 'manual'}")
@@ -603,7 +609,7 @@ def validate_asl_from_dag(dag, verbose: bool = False) -> tuple:
                 print(_c(f"  ❌ Errors ({len(errors)}):", RED))
                 for e in errors:
                     print(f"     • {e}")
-            if warnings:  # pragma: no cover -- generated ASL for a DSL DAG has no warnings
+            if warnings:
                 print(_c(f"  ⚠️  Warnings ({len(warnings)}):", YELLOW))
                 for w in warnings:
                     print(f"     • {w}")

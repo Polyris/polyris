@@ -1014,6 +1014,7 @@ def _make_deploy_mocks(mocker, *, resource_result: ResourceCheckResult):
                     {"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"},
                     {"OutputKey": "PipelineTokensTable", "OutputValue": "tok"},
                     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset"},
+                    {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
                 ],
                 "Parameters": [],
             }
