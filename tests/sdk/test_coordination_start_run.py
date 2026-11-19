@@ -1,0 +1,223 @@
+"""What Start_Run writes, and the conditions of its writes (ADR #137 §1, §3)."""
+
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from polyris.coordination import attention, deadlines, run_input, run_row, start_run, task_row, task_spec
+
+NOW = datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc)
+EXECUTION = "orders-run-2026-11-19-abcd1234"
+START = "2026-11-19T06:00:00.123Z"
+
+
+def spec(**fields):
+    base = {"task_id": "t", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"}
+    text = task_spec.canonical_json({**base, **fields})
+    return task_spec.parse(text, expected_hash=task_spec.text_hash(text))
+
+
+SPECS = {
+    "extract": spec(task_id="extract"),
+    "watch": spec(task_id="watch", wait_for=[{"asset_name": "s3/orders"}]),
+    "load": spec(task_id="load", dependencies=["extract"], orchestration_timeout=3600),
+    "audit": spec(task_id="audit", dependencies=["extract"]),
+}
+
+
+def call(**changes):
+    payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64, "task_count": 4,
+               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_start": START,
+               "token": "token-1", "retry_count": 0, "redrive_count": 0,
+               "input": {"current_date": "2026-11-18", "skip_tasks": ["audit"], "triggered_by": "schedule"}}
+    payload.update(changes)
+    return start_run.call_from(payload)
+
+
+# ── the call ─────────────────────────────────────────────────────────
+
+def test_a_format_this_platform_does_not_run_is_refused_first_with_the_fix():
+    with pytest.raises(start_run.FormatError, match="redeploy it with polyris-deploy"):
+        call(format_version=0, spec_id=None)
+
+
+@pytest.mark.parametrize("change,problem", [({"spec_id": None, "token": None}, "malformed"),
+                                            ({"retry_count": "x"}, "malformed"), ({"task_count": 0}, "no task")])
+def test_a_malformed_call_is_refused(change, problem):
+    payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "s", "task_count": 1, "pipeline_name": "p",
+               "execution_name": "e", "execution_start": START, "token": "t", "retry_count": 0, **change}
+    if change.get("token", "") is None:
+        payload.pop("token")
+    with pytest.raises(ValueError, match=problem):
+        start_run.call_from(payload)
+
+
+@pytest.mark.parametrize("given,date", [
+    ({"variables": {"current_date": "2026-01-01"}, "current_date": "2026-02-02"}, "2026-01-01"),
+    ({"current_date": "2026-02-02", "scheduled_time": "2026-03-03T06:00:00Z"}, "2026-02-02"),
+    ({"scheduled_time": "2026-03-03T06:00:00Z"}, "2026-03-03"),
+    ({}, "2026-11-19"),                                          # the execution's start
+])
+def test_the_runs_date_is_read_in_the_generators_order(given, date):
+    assert start_run.run_date(given, START) == date
+
+
+# ── the rows Start_Run writes ────────────────────────────────────────
+
+def items_by_task():
+    return {item["task_name"]: item for item in start_run.task_items(call(), SPECS, now=NOW)}
+
+
+def test_each_task_gets_a_row_of_its_run_with_its_decision_fields_and_spec():
+    rows = items_by_task()
+    load = rows["load"]
+    assert load[task_row.TABLE_KEY] == task_row.key("load", "2026-11-18", EXECUTION)
+    assert (load["status"], load["generation"], load["run_start"]) == ("waiting", 1, START)
+    assert json.loads(load["decision"]) == SPECS["load"].decision_fields()
+    assert load["spec_hash"] == SPECS["load"].text_hash and load["task_date"] == "2026-11-18"
+
+
+def test_a_task_the_run_skips_is_skipped_with_the_run_as_its_origin():
+    audit = items_by_task()["audit"]
+    assert (audit["status"], audit["skip_origin"]) == ("skipped", "run")
+    assert attention.KEY not in audit
+
+
+def test_a_skip_list_naming_an_unknown_task_is_refused():
+    with pytest.raises(ValueError, match=r"does not have: \['ghost'\]"):
+        start_run.task_items(call(input={"skip_tasks": ["ghost"]}), SPECS, now=NOW)
+
+
+def test_only_a_row_with_a_time_of_its_own_is_due():
+    rows = items_by_task()
+    assert rows["watch"][attention.DUE] == "2026-11-26T06:00:00.000Z"   # a root task's wait_for: 7 days
+    assert rows["load"][attention.DUE] == "2026-11-19T07:00:00.000Z"    # its orchestration_timeout
+    assert attention.KEY not in rows["extract"]                          # it waits for nothing with a limit
+    times = task_row.row_times(rows["watch"])
+    assert deadlines.due_time(times, ()) == NOW + deadlines.WAIT_FOR_LIMIT
+
+
+def test_a_waiting_task_with_wait_for_gets_its_asset_pointers():
+    assert start_run.pointer_items(call(), SPECS) == [
+        {"dependency_key": "asset:s3/orders", "subscriber": task_row.key("watch", "2026-11-18", EXECUTION)}]
+
+
+def test_the_runs_input_item_carries_its_execution():
+    item = start_run.input_item(call(input={"variables": {"limit": 1.0}, "cascade_all": True}), now=NOW)
+    assert run_input.from_item(item) == run_input.RunInput({"limit": 1.0}, (), "all")
+    assert task_row.of_run(item, EXECUTION, START)
+
+
+# ── the conditions, as DynamoDB evaluates them (moto) ────────────────
+
+@pytest.fixture
+def table():
+    import boto3
+    from moto import mock_aws
+
+    with mock_aws():
+        yield boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="tokens", KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST")
+
+
+def write_run_row(table, the_call):
+    from botocore.exceptions import ClientError
+
+    try:
+        table.update_item(**start_run.run_row_write(the_call, now=NOW))
+        return True
+    except ClientError as exc:
+        assert exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
+        return False
+
+
+def run_item(table):
+    return table.get_item(Key={"execution_name": run_row.key(EXECUTION)})["Item"]
+
+
+def test_the_run_row_is_written_creating_with_its_token_and_due_at_once(table):
+    assert write_run_row(table, call())
+    row = run_item(table)
+    assert (row["status"], row["run_token"], row["run_version"]) == ("creating", "token-1", 1)
+    assert (row["start_day"], row["started_at"], row["attention_at"]) == ("2026-11-19", START, "2026-11-19T06:00:00.000Z")
+
+
+def test_a_later_attempt_replaces_the_token_and_clears_the_answer_and_an_earlier_one_cannot(table):
+    assert write_run_row(table, call(retry_count=2, token="token-3"))
+    table.update_item(Key={"execution_name": run_row.key(EXECUTION)}, UpdateExpression="SET answered_order = :o",
+                      ExpressionAttributeValues={":o": 2})
+    assert write_run_row(table, call(redrive_count=1, retry_count=0, token="token-r"))
+    assert not write_run_row(table, call(retry_count=1, token="token-2"))
+    row = run_item(table)
+    assert row["run_token"] == "token-r" and "answered_order" not in row and row["run_version"] == 2
+
+
+def test_the_run_row_never_goes_back_to_creating(table):
+    write_run_row(table, call())
+    table.update_item(**start_run.activation(call()))
+    assert write_run_row(table, call(redrive_count=1, token="token-r"))
+    assert run_item(table)["status"] == "active"
+
+
+@pytest.mark.parametrize("existing,accepted", [
+    ({"run_execution": EXECUTION, "started_at": START, "step_failure": {"step": "notify"}}, True),  # a step's mark
+    ({"run_execution": "orders-run-2026-11-19-ffffffff", "started_at": START}, False),           # another run
+    ({"run_execution": EXECUTION, "started_at": START, "stop": {"by": "engine"}}, False),         # stopped
+])
+def test_the_run_row_accepts_only_its_own_run_and_no_stopped_one(table, existing, accepted):
+    table.put_item(Item={"execution_name": run_row.key(EXECUTION), **existing})
+    assert write_run_row(table, call()) is accepted
+
+
+def test_a_task_row_already_there_is_accepted_only_from_this_run(table):
+    from botocore.exceptions import ClientError
+
+    item = items_by_task()["load"]
+    table.put_item(Item=item, **start_run.task_condition())
+    with pytest.raises(ClientError) as refused:
+        table.put_item(Item=item, **start_run.task_condition())
+    old = refused.value.response.get("Item")
+    from boto3.dynamodb.types import TypeDeserializer
+    existing = {k: TypeDeserializer().deserialize(v) for k, v in old.items()}
+    start_run.accept_existing(existing, call(), "load's row")                         # a retry of this run
+    with pytest.raises(start_run.OtherRun, match="belongs to another run"):
+        start_run.accept_existing({**existing, "run_start": "2026-11-19T07:00:00.000Z"}, call(), "load's row")
+
+
+def test_activation_marks_the_run_active_once_and_never_a_stopped_one(table):
+    from botocore.exceptions import ClientError
+
+    write_run_row(table, call())
+    table.update_item(**start_run.activation(call()))
+    assert run_item(table)["status"] == "active" and run_item(table)["run_version"] == 2
+    with pytest.raises(ClientError):
+        table.update_item(**start_run.activation(call()))                              # a retry: already active
+    assert start_run.activation_refused(run_item(table), call()) is True
+    table.update_item(Key={"execution_name": run_row.key(EXECUTION)}, UpdateExpression="SET #s = :c, #stop = :m",
+                      ExpressionAttributeNames={"#s": "status", "#stop": "stop"},
+                      ExpressionAttributeValues={":c": "creating", ":m": {"by": "engine"}})
+    with pytest.raises(ClientError):
+        table.update_item(**start_run.activation(call()))
+    assert start_run.activation_refused(run_item(table), call()) is False
+    with pytest.raises(start_run.OtherRun):
+        start_run.activation_refused({**run_item(table), "run_execution": "another"}, call())
+
+
+def test_the_rows_key_takes_the_runs_last_20_characters_without_dots_and_colons():
+    assert task_row.short("orders-run-2026-11-19.123:45") == "un-2026-11-1912345"
+    assert task_row.key("load", "2026-11-19", "orders-run-2026-11-19.123:45") == "load-2026-11-19-un-2026-11-1912345"
+
+
+def test_a_retry_after_one_day_would_still_name_its_rows_by_the_runs_date():
+    late = call(execution_start="2026-11-20T00:10:00.000Z", input={})
+    assert late.date == "2026-11-20" and start_run.task_items(late, {"extract": SPECS["extract"]},
+                                                             now=NOW + timedelta(days=1))[0]["date"] == "2026-11-20"
+
+
+def test_a_backfill_runs_rows_name_their_backfill():
+    rows = start_run.task_items(call(input={"backfill_id": "bf-2026-11-18"}), {"extract": SPECS["extract"]}, now=NOW)
+    assert rows[0]["backfill_id"] == "bf-2026-11-18"
+    assert "backfill_id" not in start_run.task_items(call(input={}), {"extract": SPECS["extract"]}, now=NOW)[0]
