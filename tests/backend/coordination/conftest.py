@@ -47,6 +47,7 @@ def world():
         built = World(boto3.client("dynamodb", region_name="us-east-1"))
         try:
             yield built
-            built.settle()                   # once more, so the end state is reached
+            built.settle()                   # once more, so the end state is checked too
+            assert built.violations == [], "ADR #137 invariants broken (row_invariants.py)"
         finally:
             built.close()

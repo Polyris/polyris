@@ -22,6 +22,9 @@ from botocore.exceptions import ClientError
 from bindings import Bindings
 from boundary import Boundary, acting_as, as_component
 from platform_stack import Stack
+from row_invariants import CHECKS, STAGE_OF
+import rows_view
+from rows_view import Observer, StackView
 from sfn_runtime import ACCOUNT, REGION, Execution, client_error
 from streams import StreamAdapter
 
@@ -127,6 +130,14 @@ class World:
                                                        table="PipelineTokensTable", key="execution_name")
         #: The rows a pass may decide before its budget runs out (shrink_pass_budget); None: no limit.
         self._pass_rows: Optional[int] = None
+        #: What ADR #137's invariants read that no table keeps (rows_view.py), and what they found.
+        import dispatcher
+
+        self._reader = boto3.client("dynamodb", region_name="us-east-1")    # no hook sees its reads
+        self._observer = Observer(self._read_row, self._run_items, self.boundary.log)
+        self._observer.install(self.runtime, self.stack.machine_arn("RunTaskHelperSfn"), dispatcher._DISPATCHER)
+        self.boundary.watch(self.stack.tables["PipelineTokensTable"], self._read_row)
+        self.violations: List[str] = []
 
     def close(self) -> None:
         self.bindings.close()
@@ -184,9 +195,42 @@ class World:
         return Run(pipeline, name, str(started["startDate"])[:10], started["executionArn"])
 
     def settle(self) -> None:
-        """Run every execution until it waits. ADR #130's invariants retired with its engine (D115); the
-        checks of row_invariants.py run from the stage that builds each mechanism."""
+        """Run every execution until it waits, then check ADR #137's invariants of the bound stages
+        (row_invariants.py, stages.py). ADR #130's invariants retired with its engine (D115)."""
         self.runtime.run()
+        for violation in self.check_invariants():
+            if violation not in self.violations:
+                self.violations.append(violation)
+
+    def check_invariants(self) -> List[str]:
+        from stages import BOUND_STAGES
+
+        view = self.rows_view()
+        return [v for n, check in sorted(CHECKS.items()) if STAGE_OF.get(n) in BOUND_STAGES for v in check(view)]
+
+    def rows_view(self) -> StackView:
+        """The stack as ADR #137's invariants read it, now."""
+        return StackView(self.clock.now, self._items(), list(self.runtime.executions.values()),
+                         self.stack.machine_arn("RunTaskHelperSfn"), self._observer)
+
+    def _read_row(self, key: str) -> Optional[Dict[str, Any]]:
+        item = self._reader.get_item(TableName=self.stack.tables["PipelineTokensTable"],
+                                     Key={"execution_name": {"S": key}}, ConsistentRead=True).get("Item")
+        return rows_view.plain(item)
+
+    def _items(self) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = {"TableName": self.stack.tables["PipelineTokensTable"], "ConsistentRead": True}
+        items: List[Dict[str, Any]] = []
+        while True:
+            page = self._reader.scan(**kwargs)
+            items += [rows_view.plain(i) or {} for i in page.get("Items", [])]
+            if "LastEvaluatedKey" not in page:
+                return items
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    def _run_items(self, run: str) -> List[Dict[str, Any]]:
+        return [i for i in self._items() if i.get("pipeline_execution") == run and "generation" in i
+                and not str(i["execution_name"]).startswith("_")]
 
     # ── tasks ──────────────────────────────────────────────────────────
 

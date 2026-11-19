@@ -12,6 +12,9 @@ hooks on both, so no production code carries a hook (Principles #11 and #14).
 - `between` runs an action after a read returns and before its caller goes on,
   or before a write is sent, so a scenario can order a race.
 - `unprocess` answers a BatchGetItem with part of its keys left unprocessed.
+- `watch` records, for each write to one table, the rows it touched as they
+  stood before and after it, read by a reader of the World's that no hook sees:
+  what ADR #137's invariants call a row's write (rows_view.py).
 """
 
 from __future__ import annotations
@@ -54,6 +57,8 @@ class Call:
     sent: bool = False             # it reached DynamoDB; a hook that raises first leaves it unsent
     error: Optional[str] = None    # the error code DynamoDB answered with
     answered: bool = False         # its caller got the answer: a write whose answer is lost was sent, not answered
+    rows_before: Optional[Dict[str, Optional[Dict[str, Any]]]] = None   # the watched rows, before a write
+    rows_after: Optional[Dict[str, Optional[Dict[str, Any]]]] = None    # and after it, when it went in
 
     @property
     def ok(self) -> bool:
@@ -95,6 +100,8 @@ class Boundary:
     log: List[Call] = field(default_factory=list)
     _interleaves: List[_Interleave] = field(default_factory=list)
     _unprocess: List[_Unprocess] = field(default_factory=list)
+    _watched: Optional[str] = None
+    _read_row: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
 
     def __post_init__(self) -> None:
         # Per operation: botocore calls the hooks of a more specific event first, and the World's own
@@ -121,6 +128,10 @@ class Boundary:
         back as UnprocessedKeys, as DynamoDB answers a batch it throttled or cut at 16 MB."""
         self._unprocess.append(_Unprocess(table, keys, keep, times))
 
+    def watch(self, table: str, read_row: Callable[[str], Optional[Dict[str, Any]]]) -> None:
+        """Record the rows each write to `table` touches, before and after; `read_row` reads one by its key."""
+        self._watched, self._read_row = table, read_row
+
     def calls(self, *, component: Optional[str] = None, operations: Optional[frozenset] = None) -> List[Call]:
         return [c for c in self.log if (component is None or c.component == component)
                 and (operations is None or c.operation in operations)]
@@ -136,6 +147,9 @@ class Boundary:
         context["harness_call"] = call
         if call.operation in WRITES:
             self._interleave("before_write", call)
+            keys = self._watched_keys(call)
+            if keys:
+                call.rows_before = {key: self._read_row(key) for key in keys}   # type: ignore[misc]
 
     def _sent(self, parsed: Dict[str, Any], context: Optional[Dict[str, Any]] = None, **_: Any) -> None:
         call = context.get("harness_call") if context is not None else None
@@ -151,10 +165,31 @@ class Boundary:
         call.answered = True
         if not call.ok:
             return
+        if call.rows_before is not None:
+            call.rows_after = {key: self._read_row(key) for key in call.rows_before}   # type: ignore[misc]
         if call.operation == "BatchGetItem":
             self._cut(parsed)
         if call.operation in READS:
             self._interleave("after_read", call)
+
+    def _watched_keys(self, call: Call) -> List[str]:
+        """The keys of the watched table's rows a write touches; a transaction's ConditionCheck touches none."""
+        if self._watched is None or self._watched not in call.tables:
+            return []
+        params, keys = call.params, []
+        bodies: List[Dict[str, Any]] = []
+        if call.operation == "TransactWriteItems":
+            bodies = [body for item in params["TransactItems"] for kind, body in item.items() if kind != "ConditionCheck"]
+        elif call.operation == "BatchWriteItem":
+            bodies = [{"TableName": self._watched, **next(iter(r.values()))}
+                      for r in params["RequestItems"].get(self._watched, [])]
+        else:
+            bodies = [params]
+        for body in bodies:
+            if body.get("TableName") == self._watched:
+                key = (body.get("Key") or body.get("Item") or {}).get("execution_name")
+                keys.append(str(key["S"] if isinstance(key, dict) else key))
+        return keys
 
     def _interleave(self, phase: str, call: Call) -> None:
         for step in self._interleaves:
