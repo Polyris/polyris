@@ -227,3 +227,20 @@ def test_a_failure_decided_by_an_operator_ends_the_run_once_its_rows_are_final(e
     assert _item(engine.stack, f"load-2026-11-12-{RUN[-20:]}")["status"]["S"] == "upstream_failed"
     assert (execution.status, execution.error) == ("FAILED", run_row.FAILED_RUN_ERROR)
     assert "2 tasks failed" in execution.cause
+
+
+def test_a_late_start_run_retry_of_a_run_nobody_stopped_makes_it_active(world):
+    """Start_Run's attempt that died after its run row's write leaves the run creating; its late retry
+    takes the row over with its own token and makes the run active (ADR #137 §1)."""
+    from dags import chain
+
+    orders = world.deploy(chain("orders", "extract"))
+    world.hold_start_run_retry(orders)
+    run = world.start_run(orders, "2026-11-18")
+    [creating] = world.rows_view().runs()
+    assert (creating.status, world.status(run, "extract")) == ("creating", None)    # nothing starts before
+    world.release_start_run_retry(orders)
+    world.deliver_task_hints()
+    [active] = world.rows_view().runs()
+    assert (active.status, active.token != creating.token) == ("active", True)
+    assert world.running_tasks(run) == ["extract"]

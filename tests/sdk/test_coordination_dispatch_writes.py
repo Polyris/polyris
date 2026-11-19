@@ -223,6 +223,20 @@ def test_a_summary_never_replaces_one_from_a_later_read(ddb):
     assert written["summary"] == {"success": 1} and written["run_version"] == 3
 
 
+def test_a_finished_runs_summary_replaces_one_a_clock_ahead_wrote_unless_the_run_changed(ddb):
+    seed(ddb)
+    unfinished = dispatch.run_outcome(run(), {"load": S.RUNNING.value})
+    ahead = NOW + timedelta(seconds=2)                    # another Lambda's clock runs ahead
+    assert send(ddb, [{"Update": dispatch_writes.summary(run(), unfinished, table=TABLE, read_at=ahead)}])
+    finished = dispatch.run_outcome(run(), {"load": S.SUCCESS.value})
+    assert send(ddb, [{"Update": dispatch_writes.summary(run(), finished, table=TABLE, read_at=NOW)}])
+    written = get(ddb, run().key)
+    assert written["summary"] == {"success": 1} and written["run_version"] == 3    # the last count stays
+    restarted = dispatch.run_outcome(run(version=2), {"load": S.FAILED.value})       # read before a restart
+    assert not send(ddb, [{"Update": dispatch_writes.summary(run(version=2), restarted, table=TABLE,
+                                                                 read_at=ahead + timedelta(seconds=1))}])
+
+
 def test_a_pass_that_left_rows_makes_its_run_row_due_at_once(ddb):
     seed(ddb)
     assert send(ddb, [{"Update": dispatch_writes.due_now(run(), table=TABLE, now=NOW, left=True)}])

@@ -149,11 +149,20 @@ def answered(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
 
 
 def summary(run: RunView, end: RunEnd, *, table: str, read_at: datetime) -> Dict[str, Any]:
-    """The run's summary, unless a pass that began reading later has written one (§4); it keeps ``run_version``."""
+    """The run's summary, unless a pass that began reading later has written one (§4); it keeps ``run_version``.
+
+    The summary of a finished run is written on the ``run_version`` the pass read instead: no later pass comes
+    to replace it, so a count a clock running behind would refuse must not stay stale. No row leaves a final
+    status without an action or a request, and each of them raises ``run_version``.
+    """
+    names = {"#summary": run_row.SUMMARY, "#summary_at": run_end.SUMMARY_AT}
+    values: Dict[str, Any] = {":summary": dict(end.summary), ":read_at": format_utc(read_at)}
+    if end.finished:
+        return _run_update(run, table=table, expression="SET #summary = :summary, #summary_at = :read_at",
+                           condition=run_row.VERSION_UNCHANGED, names={**names, **run_row.VERSION_NAMES},
+                           values={**values, ":rv": run.version})
     return _run_update(run, table=table, expression="SET #summary = :summary, #summary_at = :read_at",
-                       condition=run_end.SUMMARY_CONDITION,
-                       names={"#summary": run_row.SUMMARY, "#summary_at": run_end.SUMMARY_AT},
-                       values={":summary": dict(end.summary), ":read_at": format_utc(read_at)})
+                       condition=run_end.SUMMARY_CONDITION, names=names, values=values)
 
 
 def due_now(run: RunView, *, table: str, now: datetime, left: bool) -> Dict[str, Any]:

@@ -405,12 +405,23 @@ class World:
                              Key={"execution_name": {"S": run_row.key(run.name)}})
 
     def hold_start_run_retry(self, pipeline: Pipeline) -> None:
-        """Start_Run's next first attempt writes its run as creating and dies; its retry waits for release."""
-        raise NeedsBinding("rows-core", "Start_Run")
+        """Start_Run's next attempt writes its run as creating and dies, as a Lambda that times out after its
+        first write; Step Functions retries it, and the retry waits for `release_start_run_retry`."""
+
+        def die() -> None:
+            failure = RuntimeError("Sandbox.Timedout (injected): the attempt died after writing its run row")
+            failure.states_error = "Sandbox.Timedout"  # type: ignore[attr-defined]
+            raise failure
+
+        # Start_Run's first put follows its run row's write: the run's input.
+        self.boundary.between(then=die, before_write=lambda call: call.component == "lambda:start-run"
+                              and call.operation == "PutItem")
+        self.runtime.hold_retries(pipeline.arn, "Start_Run")
 
     def release_start_run_retry(self, pipeline: Pipeline) -> None:
         """The retry `hold_start_run_retry` held goes on, late."""
-        raise NeedsBinding("rows-core", "Start_Run")
+        self.runtime.release_retries(pipeline.arn, "Start_Run")
+        self.settle()
 
     def shrink_pass_budget(self, *, rows: int) -> None:
         """A pass's budget runs out after `rows` rows, as a large run's does at the declared maximum.

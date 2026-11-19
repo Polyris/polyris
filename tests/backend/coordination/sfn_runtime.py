@@ -8,8 +8,8 @@ change from phase to phase.
 
 Modelled: Pass, Task, Choice, Parallel, Map, Wait (instant), Succeed, Fail;
 Arguments / Output / Assign / Items / ItemSelector / Condition; variables
-copied into Parallel branches and Map iterations; Retry (immediate) and
-Catch; task tokens (`.waitForTaskToken`), `.sync` children, express
+copied into Parallel branches and Map iterations; Retry (immediate, or
+held until a test releases it, as a retry that comes late) and Catch; task tokens (`.waitForTaskToken`), `.sync` children, express
 `startSyncExecution`, fire-and-forget starts, stops and timeouts on request.
 The runtime also serves the Step Functions API calls the Lambdas make
 (`send_task_success`, `describe_execution`, ...): one object is both the
@@ -32,7 +32,7 @@ import hashlib
 import itertools
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import jsonata
 from botocore.exceptions import ClientError
@@ -212,6 +212,8 @@ class Runtime:
         self.runnable: List[Frame] = []
         #: Machines whose new executions wait to take their first step: {arn: their frames}.
         self.held: Dict[str, List[Frame]] = {}
+        #: States whose retries wait to take their step: {(machine arn, state): their frames}.
+        self.held_retries: Dict[Tuple[str, str], List[Frame]] = {}
         self.tokens: Dict[str, Frame] = {}
         self.jobs: Dict[str, ExternalJob] = {}
         self.side_effects: List[Dict[str, Any]] = []
@@ -307,6 +309,13 @@ class Runtime:
 
     def release(self, machine_arn: str) -> None:
         self.runnable.extend(self.held.pop(machine_arn, []))
+
+    def hold_retries(self, machine_arn: str, state: str) -> None:
+        """A retry of `state` in an execution of `machine_arn` waits until `release_retries`: it comes late."""
+        self.held_retries.setdefault((machine_arn, state), [])
+
+    def release_retries(self, machine_arn: str, state: str) -> None:
+        self.runnable.extend(self.held_retries.pop((machine_arn, state), []))
 
     def release_newest(self, machine_arn: str) -> None:
         """Let only the newest held execution of `machine_arn` go on; the others stay held."""
@@ -512,7 +521,8 @@ class Runtime:
                 used = frame.attempts.get(index, 0)
                 if used < retrier.get("MaxAttempts", 3):
                     frame.attempts[index] = used + 1
-                    self.runnable.append(frame)
+                    held = self.held_retries.get((frame.execution.machine.arn, frame.state))
+                    (held if held is not None else self.runnable).append(frame)
                     return
                 break
         for catcher in state.get("Catch", []):

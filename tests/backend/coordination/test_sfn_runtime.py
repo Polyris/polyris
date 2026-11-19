@@ -100,6 +100,31 @@ def test_retry_then_catch(rt):
     assert len(calls) == 3 and ex.output["Error"] == "RuntimeError"
 
 
+def test_a_held_retry_waits_for_its_release_and_then_runs_with_its_count(rt):
+    calls = []
+
+    def dies_once(event, context):
+        calls.append(event)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return {"attempt": len(calls)}
+
+    rt.lambdas["dies_once"] = dies_once
+    m = rt.add_machine("m", machine({
+        "A": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke",
+              "Arguments": {"FunctionName": "arn:aws:lambda:us-east-1:1:function:dies_once",
+                            "Payload": {"retry": "{% $states.context.State.RetryCount %}"}},
+              "Output": "{% $states.result.Payload %}",
+              "Retry": [{"ErrorEquals": ["RuntimeError"], "MaxAttempts": 2}], "End": True}}))
+    rt.hold_retries(m.arn, "A")
+    ex = rt.executions[rt.start_execution(stateMachineArn=m.arn, input="{}")["executionArn"]]
+    rt.run()
+    assert (len(calls), ex.status) == (1, "RUNNING")          # the retry waits: it comes late
+    rt.release_retries(m.arn, "A")
+    rt.run()
+    assert (calls[1], ex.status, ex.output) == ({"retry": 1}, "SUCCEEDED", {"attempt": 2})
+
+
 def test_an_uncaught_error_fails_the_execution(rt):
     ex = run(rt, machine({"A": {"Type": "Fail", "Error": "Bad", "Cause": "{% 'because ' & $states.input.why %}"}}),
              {"why": "x"})
