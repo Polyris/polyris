@@ -1,6 +1,8 @@
 """A stand-in for 1.3's run_task, until TR-5 rewrites run_task (ADR #137 §1).
 
-It keeps run_task's contract with the rows and nothing more: its first state
+It runs as the stack's run_task state machine (``RunTaskHelperSfn``), which the
+dispatcher starts by name as the template's ``RUN_TASK_ARN`` names it. It keeps
+run_task's contract with the rows and nothing more: its first state
 moves the row from ``deps_ready`` to ``running`` under the generation it was
 started with, and a raised generation ends it quietly (Rule 47). Then it waits
 for the user's work, an external job that the test ends with ``finish_job``,
@@ -15,7 +17,6 @@ from typing import Any, Callable, Dict
 from polyris.coordination import attention
 from polyris.coordination.times import format_utc
 
-NAME = "acme-dev-polyris-run-task-stub"
 CLAIM = "run-task-stub-claim"
 FINISH = "run-task-stub-finish"
 #: The global decision timeout's default (``__global_settings__``, ADR #114).

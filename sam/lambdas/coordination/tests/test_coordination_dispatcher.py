@@ -428,3 +428,16 @@ def test_the_stream_handler_runs_the_dispatcher_of_the_environment(world, monkey
     monkeypatch.setattr(module, "_DISPATCHER", None)
     monkeypatch.setattr(env, "_stepfunctions", world.sfn)
     assert isinstance(module._dispatcher(), Dispatcher)
+
+
+def test_a_passs_budget_goes_on_work_so_each_pass_moves_past_the_rows_that_need_nothing(world):
+    """Deciding a row is pure: a pass spends its budget on reads of facts, writes and starts (Rule 52)."""
+    import itertools
+
+    start(world, [spec("a"), spec("b"), spec("c")])
+    ticks = itertools.count()
+    world.dispatcher.monotonic = lambda: float(next(ticks))       # one second per reading of the clock
+    one_write = lambda: RESERVE_MS + 1000                          # noqa: E731 — room for one piece of work
+    results = [world.dispatcher.full_pass(RUN_KEY, source="test", remaining_ms=one_write) for _ in range(3)]
+    assert [r["started"] for r in results] == [1, 1, 1] and [r["left"] for r in results] == [True, True, False]
+    assert {item(world, key(t))["status"] for t in "abc"} == {"deps_ready"}

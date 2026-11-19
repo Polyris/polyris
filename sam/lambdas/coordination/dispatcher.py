@@ -14,8 +14,11 @@ goes the other way, dependants first (§4).
   leaves the run's end to the next full pass (§7).
 - A refused write is decided again once from a new read of the run row, the row
   and its upstreams; a ``TransactionConflict`` is tried again after a short
-  random backoff. Every pass has a time budget: a pass that leaves rows makes its
-  run row due at once and sets ``left_at``, which wakes the next pass (§7, Rule 52).
+  random backoff. Every pass has a time budget, spent on what takes time: the
+  reads of a row's facts, its writes and its start. Deciding a row is pure, so a
+  pass moves past the rows that need nothing to the ones that do. A pass that
+  leaves rows makes its run row due at once and sets ``left_at``, which wakes the
+  next pass (§7, Rule 52).
 - A transient AWS error raises ``CoordinationTransient``: the stream or the
   caller tries again. Anything else ends in a row or in a warning, so one bad run
   never holds up a shard (Rules 51, 52). An ``AccessDeniedException`` fails no
@@ -213,23 +216,32 @@ class Dispatcher:
     def _row(self, state: _Pass, name: str, *, stop: bool = False) -> None:
         """Decide one row and send what was decided; decide it again once from new reads if refused."""
         for attempt in range(2):
-            if self.monotonic() > state.deadline:
-                raise _Left()
             row = state.rows[name]
             judgment = self._judge(state, name, stop=stop)
-            if self._write(state, row, judgment):
+            items = dispatch_writes.task_write(row, judgment, state.run, table=self.tokens_table, now=state.now)
+            if not items and not judgment.start and not judgment.warning:
+                return                                         # nothing to send: no time spent
+            self._within_budget(state)
+            if not items or self._send_items(items):
                 self._after(state, name, row, judgment)
                 return
             if attempt == 0:
                 self._read_again(state, name)
         state.left = True                                          # refused twice: the next pass takes it (§7)
 
+    def _within_budget(self, state: _Pass) -> None:
+        if self.monotonic() > state.deadline:
+            raise _Left()
+
     def _judge(self, state: _Pass, name: str, *, stop: bool) -> dispatch.Judgment:
         row = state.rows[name]
         if stop:
             return dispatch.stop(row, now=state.now, cause=_stop_cause(state.run))
         upstreams = {d: state.rows.get(d) for d in row.dependencies}
-        assets = self._assets(state, name) if dispatch.needs_assets(row, upstreams) else None
+        assets = None
+        if dispatch.needs_assets(row, upstreams):
+            self._within_budget(state)                         # reading the facts takes time
+            assets = self._assets(state, name)
         return dispatch.judge(row, upstreams, state.run, now=state.now, assets=assets)
 
     def _after(self, state: _Pass, name: str, row: dispatch.RowView, judgment: dispatch.Judgment) -> None:

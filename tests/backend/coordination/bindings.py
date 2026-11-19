@@ -157,10 +157,11 @@ class Bindings:
         return handler
 
     def run_task_stub(self) -> str:
-        """The stand-in for run_task until TR-5 (run_task_stub.py), on the stack's clock; returns its ARN."""
+        """The stand-in for run_task until TR-5 (run_task_stub.py), on the stack's clock, as the stack's run_task
+        state machine; returns its ARN."""
         import run_task_stub as stub
 
-        machine = self.stack.runtime.add_machine(stub.NAME, stub.DEFINITION)
+        machine = self.stack.runtime.add_machine(self.stack.machine_names["RunTaskHelperSfn"], stub.DEFINITION)
         for name, handler in stub.handlers(self.stack.ddb, self.stack.tables["PipelineTokensTable"],
                                            self.clock).items():
             self.stack.runtime.lambdas[name] = as_component(f"lambda:{name}", handler)
@@ -178,7 +179,7 @@ class Bindings:
             specs_table=tables["PipelineSpecsTable"], asset_events_table=tables["AssetEventsTable"],
             pipelines_table=tables["PipelineRegistryTable"], run_task_arn=run_task_arn, clock=self.clock,
             sleep=lambda _: None))
-        handler = as_component("lambda:dispatcher", module.handler)
+        handler = as_component("lambda:reconcile", module.handler)
         self.stack.bind_lambda("ReconcileFunction", handler)
         return handler
 

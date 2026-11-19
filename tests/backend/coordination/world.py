@@ -21,7 +21,6 @@ from botocore.exceptions import ClientError
 
 from bindings import Bindings
 from boundary import Boundary, acting_as, as_component
-from invariants import Invariants
 from platform_stack import Stack
 from sfn_runtime import ACCOUNT, REGION, Execution, client_error
 from streams import StreamAdapter
@@ -123,8 +122,11 @@ class World:
         self._producers: Dict[str, Pipeline] = {}
         self._stream = StreamAdapter.for_mapping(self.stack, "AssetEventsFanoutMapping", table="AssetEventsTable",
                                                  key="asset_name")
-        #: ADR #130 invariants 1, 3, 4, 5 and 10, checked each time the stack settles (invariants.py).
-        self.invariants = Invariants(ddb_client, self.runtime, self.stack.tables)
+        #: The tasks table's stream, which wakes the dispatcher (ADR #137 §7); scenarios deliver it.
+        self._tasks_stream = StreamAdapter.for_mapping(self.stack, "TasksDispatchMapping",
+                                                       table="PipelineTokensTable", key="execution_name")
+        #: The rows a pass may decide before its budget runs out (shrink_pass_budget); None: no limit.
+        self._pass_rows: Optional[int] = None
 
     def close(self) -> None:
         self.bindings.close()
@@ -182,8 +184,9 @@ class World:
         return Run(pipeline, name, str(started["startDate"])[:10], started["executionArn"])
 
     def settle(self) -> None:
+        """Run every execution until it waits. ADR #130's invariants retired with its engine (D115); the
+        checks of row_invariants.py run from the stage that builds each mechanism."""
         self.runtime.run()
-        self.invariants.observe()
 
     # ── tasks ──────────────────────────────────────────────────────────
 
@@ -352,7 +355,10 @@ class World:
 
     def delete_run_row(self, run: Run) -> None:
         """Someone deletes `run`'s run row by hand."""
-        raise NeedsBinding("rows-core", "the run row")
+        from polyris.coordination import run_row
+
+        self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
+                             Key={"execution_name": {"S": run_row.key(run.name)}})
 
     def hold_start_run_retry(self, pipeline: Pipeline) -> None:
         """Start_Run's next first attempt writes its run as creating and dies; its retry waits for release."""
@@ -363,8 +369,15 @@ class World:
         raise NeedsBinding("rows-core", "Start_Run")
 
     def shrink_pass_budget(self, *, rows: int) -> None:
-        """A pass's budget runs out after `rows` rows, as a large run's does at the declared maximum."""
-        raise NeedsBinding("rows-core", "the dispatcher's pass budget")
+        """A pass's budget runs out after `rows` rows, as a large run's does at the declared maximum.
+
+        The dispatcher checks its budget before each row: its clock ticks one second per reading, and
+        each invocation gets `rows` seconds above the reserve it keeps."""
+        import dispatcher
+
+        ticks = itertools.count()
+        self.bindings._set(dispatcher._DISPATCHER, "monotonic", lambda: float(next(ticks)))
+        self._pass_rows = rows
 
     def run_to_the_end(self) -> None:
         """Move the clock past every deadline and sweep until nothing changes; then check liveness
@@ -384,24 +397,45 @@ class World:
     def deliver_task_hints(self, run: Optional["Run"] = None) -> None:
         """Deliver the tasks table's stream to the dispatcher, every record or `run`'s, until none is left:
         a pass's own writes, such as `left_at`, wake the passes after it."""
-        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+        select = None if run is None else (lambda record: _run_of(record) == run.name)
+        for _ in range(10_000):
+            self.runtime.run()
+            if not self._tasks_stream.deliver(self._dispatch_in_budget, select=select):
+                return
+        raise AssertionError("the tasks table's stream never ran dry")
+
+    def _dispatch_in_budget(self, event: Any, _: Any) -> Any:
+        from dispatcher import RESERVE_MS
+
+        rows = self._pass_rows
+        remaining = (lambda: RESERVE_MS + rows * 1000) if rows is not None else (lambda: 10 ** 9)
+        return self._dispatch(event, _Invocation(remaining))
 
     def lose_task_hint(self, run: "Run", task: str) -> None:
         """The next record of `task`'s row in `run` that the mapping would deliver is lost."""
-        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+        name = run.execution_name(task)
+        self._tasks_stream.drop(lambda record: _key_of(record) == name, times=1)
 
     def delay_task_hint(self, run: "Run", task: str) -> None:
         """The next record of `task`'s row in `run` that the mapping would deliver waits for `release_task_hints`."""
-        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+        name = run.execution_name(task)
+        self._tasks_stream.delay(lambda record: _key_of(record) == name, times=1)
 
     def release_task_hints(self) -> None:
         """The delayed stream records arrive, after the ones delivered meanwhile."""
-        raise NeedsBinding("rows-core", "the tasks table's stream and its mapping")
+        self._tasks_stream.release()
 
     def two_passes_at_once(self, run: "Run") -> None:
         """Two passes over `run` at once, as when two shards of the stream carry records of one run:
         the second runs between the first's read and its first write."""
-        raise NeedsBinding("rows-core", "the dispatcher's pass")
+        import dispatcher
+        from polyris.coordination import run_row
+
+        def second() -> None:
+            dispatcher._DISPATCHER.full_pass(run_row.key(run.name), source="second", remaining_ms=lambda: 10 ** 9)
+
+        self.boundary.between(then=second, after_read=lambda call: call.component == "lambda:reconcile"
+                              and call.operation == "BatchGetItem")
 
     def sweep(self) -> None:
         """One scheduled run of the sweeper, at the clock's current time."""
@@ -596,3 +630,25 @@ class World:
         if not found:
             raise AssertionError(f"no wrapper execution {name}")
         return found[0]
+
+
+@dataclass
+class _Invocation:
+    """The Lambda context the tasks stream's mapping hands the dispatcher: its time left."""
+    get_remaining_time_in_millis: Callable[[], int]
+
+
+def _key_of(record: Dict[str, Any]) -> str:
+    return str(record["dynamodb"]["Keys"]["execution_name"]["S"])
+
+
+def _run_of(record: Dict[str, Any]) -> Optional[str]:
+    """The run a tasks-table record belongs to: the run row's own, or a task row's `pipeline_execution`."""
+    from polyris.coordination import run_row
+
+    key = _key_of(record)
+    if run_row.is_run_row(key):
+        return key[len(run_row.KEY_PREFIX):]
+    image = record["dynamodb"].get("NewImage") or record["dynamodb"].get("OldImage") or {}
+    value = image.get("pipeline_execution", {}).get("S")
+    return str(value) if value else None
