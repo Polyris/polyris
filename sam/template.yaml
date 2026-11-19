@@ -1255,6 +1255,9 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          # Its narrow passes run the dispatcher in this process (ADR #137 §7).
+          SPECS_TABLE: !Ref PipelineSpecsTable
+          RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
 
   # ADR #130 §6.1. Retries until the record is handled (records live for the
   # stream's 24 h); a record AssetFanout cannot handle becomes a warning in

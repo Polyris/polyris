@@ -187,7 +187,9 @@ class Bindings:
         import asset_fanout
         import reconcile
 
-        fanout = asset_fanout.AssetFanout(reconcile._RECONCILER,
+        import dispatcher
+
+        fanout = asset_fanout.AssetFanout(reconcile._RECONCILER, dispatcher=dispatcher._DISPATCHER,
                                           subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
                                           consumers_table=self.stack.tables["AssetSubscriptionsTable"])
         self._set(asset_fanout, "_FANOUT", fanout)
@@ -198,8 +200,10 @@ class Bindings:
         import reconcile
         import sweeper
 
+        import dispatcher
+
         self._set(sweeper, "_SWEEPER", sweeper.Sweeper(
-            reconcile._RECONCILER, owner="harness",
+            reconcile._RECONCILER, owner="harness", dispatcher=dispatcher._DISPATCHER,
             subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
             consumers_table=self.stack.tables["AssetSubscriptionsTable"],
             lambda_client=_LambdaClient(self.stack),

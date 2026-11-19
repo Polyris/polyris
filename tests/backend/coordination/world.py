@@ -115,6 +115,7 @@ class World:
         self.bindings = Bindings(self.stack, self.resource, self.clock.read)
         self.bindings.reconcile()
         self.bindings.start_run()
+        self._dispatch = self.bindings.dispatcher(self.bindings.run_task_stub())
         self.bindings.query_subscriptions()
         self._fanout = as_component("lambda:asset-fanout", self.bindings.asset_fanout())
         self._console = self.bindings.console()

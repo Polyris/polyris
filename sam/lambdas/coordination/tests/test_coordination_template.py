@@ -168,34 +168,15 @@ def test_every_fact_a_decision_rests_on_is_read_consistently(
     assert ("BatchGetItem", "PipelineTokensTable", None, True) in reads
 
 
-def _walk_the_dispatcher(ddb, monkeypatch) -> Tuple[Set[Call], Set[Read]]:
+def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     """The dispatcher's paths over a run Start_Run wrote: a start, a fact that wakes a row, the run's end."""
-    import boto3
+    from polyris.coordination import run_row
 
     run = "orders-run-2026-11-12-dddd0001"          # not RUN: the old reconciler's walk wrote 1.2 rows under it
-
-    import start_run
-    from dispatcher import Dispatcher
-    from polyris.coordination import run_row, spec_store, task_spec
-
-    client = boto3.client("dynamodb", region_name="us-east-1")
-    monkeypatch.setattr(env, "_dynamodb", ddb)
-    monkeypatch.setattr(env, "_dynamodb_client", client)
-    version = task_spec.build_version("orders", [
-        {"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
-        {"task_id": "load", "task_type": "sfn", "dependencies": ["extract"], "trigger_rule": "all_success",
-         "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
-    spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
-    start_run.handler({"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 2,
-                       "pipeline_name": "orders", "execution_name": run, "execution_start": STARTED_AT,
-                       "token": "run-token", "retry_count": 0, "redrive_count": 0, "date": "2026-11-12",
-                       "input": {}}, None)
-    sfn = FakeSfn()
-    dispatcher = Dispatcher(client, sfn, resource=ddb, tokens_table=TABLES["TOKENS_TABLE"][1],
-                            subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1],
-                            specs_table=TABLES["SPECS_TABLE"][1], asset_events_table=TABLES["ASSET_EVENTS_TABLE"][1],
-                            pipelines_table=TABLES["PIPELINES_TABLE"][1], run_task_arn="arn:run-task",
-                            clock=lambda: NOW, sleep=lambda _: None)
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
+                {"task_id": "load", "task_type": "sfn", "dependencies": ["extract"], "trigger_rule": "all_success",
+                 "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}], execution=run)
+    client, dispatcher, sfn = rows.client, rows.dispatcher, rows.dispatcher.sfn
     tokens = TABLES["TOKENS_TABLE"][1]
     run_key = run_row.key(run)
     calls: Set[Call] = set()
@@ -231,10 +212,10 @@ def _walk_the_dispatcher(ddb, monkeypatch) -> Tuple[Set[Call], Set[Read]]:
 
 
 def test_reconcile_role_allows_exactly_the_calls_the_code_makes(
-        resources, reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb, monkeypatch):
-    """The old reconciler and the dispatcher share the policy until the sweeper and AssetFanout move (TR-4c)."""
+        resources, reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb, rows):
+    """The old reconciler and the dispatcher share the policy until the sweeper moves (TR-4c)."""
     used = _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb)
-    dispatched, _ = _walk_the_dispatcher(ddb, monkeypatch)
+    dispatched, _ = _walk_the_dispatcher(rows, ddb)
     used |= dispatched
     granted = _dynamodb_grants(_statements(resources))
     assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
@@ -244,9 +225,9 @@ def test_reconcile_role_allows_exactly_the_calls_the_code_makes(
     assert set(stream["Action"]) == STREAM_ACTIONS and stream["Resource"] == [{"!GetAtt": "PipelineTokensTable.StreamArn"}]
 
 
-def test_every_read_of_the_dispatcher_is_consistent(ddb, monkeypatch):
+def test_every_read_of_the_dispatcher_is_consistent(ddb, rows):
     """A pass decides from consistent reads by key, with no index on the decision path (ADR #137 §7)."""
-    _, reads = _walk_the_dispatcher(ddb, monkeypatch)
+    _, reads = _walk_the_dispatcher(rows, ddb)
     decisions = {r for r in reads if r[1] in {"PipelineTokensTable", "PipelineSpecsTable"}}
     assert decisions and {r for r in decisions if not r[3] or r[2] is not None} == set()
 
@@ -286,23 +267,24 @@ def test_the_dispatcher_starts_the_run_task_machine_by_its_name(resources):
 
 
 def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
-        resources, reconciler, tokens, subscriptions, asset_events, consumers, sfn, ddb, mocker):
+        resources, reconciler, rows, tokens, asset_events, consumers, sfn, ddb, mocker):
     import asset_fanout
     from coordination_testkit import client_error, fact
 
-    fanout = asset_fanout.AssetFanout(reconciler, subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1])
-    tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "freshness_hours": None}]))
-    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": execution_name("load")})
+    fanout = asset_fanout.AssetFanout(reconciler, dispatcher=rows.dispatcher,
+                                      subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1])
+    rows.start([{"task_id": "load", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success",
+                 "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
     consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})  # destroyed
     item = fact("ns/orders", "2026-11-12")
     record = {"eventName": "INSERT",
               "dynamodb": {"SequenceNumber": "1", "NewImage": {k: _serialize(v) for k, v in item.items()}}}
     asset_events.put_item(Item=item)
-    with recording(ddb) as used:
+    with recording(ddb, rows.client) as used:
         assert fanout.handle([record], lambda: 10 ** 6) == {"batchItemFailures": []}
         mocker.patch.object(fanout.subscriptions, "query", side_effect=client_error("AccessDeniedException", "Query"))
         fanout.handle([record], lambda: 10 ** 6)           # a non-transient failure writes a warning
-    assert sfn.succeeded, "the walk must wake the task"
+    assert sfn.started, "the walk must start the task its fact woke"
     assert "Item" not in consumers.get_item(Key={"asset_name": "ns/orders", "pipeline_name": "gone"})
     assert used - _dynamodb_grants(_statements(resources, "AssetFanoutRole")) == set()
     own = _dynamodb_grants(_statements(resources, "AssetFanoutRole", managed=False))

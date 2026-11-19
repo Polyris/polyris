@@ -1,9 +1,11 @@
-"""AssetFanout: wake the tasks that wait on a new asset fact (ADR #130 §6.1).
+"""AssetFanout: wake the tasks that wait on a new asset fact (ADR #130 §6.1, ADR #137 §7).
 
 An event source mapping feeds it the asset-events stream (INSERT records
-only). For each new fact it asks the reconciler about every task subscribed
-to `asset:{name}`, passing the fact itself as a known event, so the decision
-does not depend on how quickly the partition index catches up.
+only). For each new fact it makes one narrow pass of the dispatcher over each
+run with a task subscribed to `asset:{name}`: the rows its pointers name in
+that run and their direct upstreams. The pass reads recent facts from the base
+table with a consistent read, so the decision does not depend on how quickly
+the partition index catches up.
 
 It also starts the pipelines scheduled on the asset (push): each consumer's
 whole `schedule=[...]` is evaluated for the fact's own partition with the
@@ -12,8 +14,8 @@ consumer is started under a deterministic name — one run per date for an
 AND schedule, one per event for OR or `cascade='all'` — so a repeated
 record never starts a second run.
 
-Pull wakes are hints: a reconcile call that fails is logged and left to the
-sweeper. A failure for one consumer never fails the record: a transient
+Pull wakes are hints: a pass that fails transiently is logged and left to its
+run row's next check. A failure for one consumer never fails the record: a transient
 start failure becomes a push retry row for the sweeper, anything else a
 warning. A record is reported back for redelivery only when its subscribers
 could not be read (transiently), when even a retry row could not be
@@ -36,6 +38,8 @@ from polyris.coordination.run_name import KIND_AND, KIND_EVENT, run_name
 from polyris.coordination.times import parse_utc
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient, reraise_transient
 from logger import log
+from dispatcher import Dispatcher
+from polyris.coordination import run_row, start_run
 from reconcile import Reconciler
 from stores import FactStore, Registry
 
@@ -54,9 +58,11 @@ def fact_of(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class AssetFanout:
-    def __init__(self, reconciler: Reconciler, *, subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
+    def __init__(self, reconciler: Reconciler, *, dispatcher: Dispatcher,
+                 subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
                  consumers_table: str = env.ASSET_SUBSCRIPTIONS_TABLE):
         self.reconciler = reconciler
+        self.dispatcher = dispatcher
         self.subscriptions = reconciler.resource.Table(subscriptions_table)
         self.consumers = reconciler.resource.Table(consumers_table)
         self.registry_table = reconciler.resource.Table(reconciler.pipelines_table)
@@ -104,29 +110,49 @@ class AssetFanout:
         return {"batchItemFailures": [{"itemIdentifier": str(r["dynamodb"]["SequenceNumber"])} for r in records]}
 
     def fan_out(self, fact: Dict[str, Any], *, remaining_ms: Optional[Callable[[], int]] = None) -> Dict[str, int]:
-        """Reconcile every task waiting on the fact's asset. Raises only CoordinationTransient."""
+        """A narrow pass over each run with a task waiting on the fact's asset. Raises only CoordinationTransient."""
         asset = str(fact["asset_name"])
-        subscribers = self._subscribers(asset)
-        woken = lost = 0
-        for index, name in enumerate(subscribers):
-            if remaining_ms is not None and remaining_ms() < RECORD_RESERVE_MS:
-                lost += len(subscribers) - index
-                # Principle #41: a lost hint delays the task; the sweeper re-checks it from facts.
-                log.error("asset_fanout", "time budget reached inside a record; the sweeper re-checks the rest",
-                          asset_name=asset, left=len(subscribers) - index)
+        pointers = self._subscribers(asset)
+        runs: Dict[str, List[str]] = {}
+        for subscriber, run_key in pointers:
+            run_key = run_key or self._run_of(asset, subscriber)
+            if run_key:
+                runs.setdefault(run_key, []).append(subscriber)
+        passed = lost = 0
+        budget: Callable[[], int] = remaining_ms or (lambda: 10 ** 9)
+        for index, (run_key, keys) in enumerate(runs.items()):
+            if budget() < RECORD_RESERVE_MS:
+                lost += len(runs) - index
+                # Principle #41: a lost hint delays the task; its run row's next check decides it from facts.
+                log.error("asset_fanout", "time budget reached inside a record; the runs' next checks take the rest",
+                          asset_name=asset, left=len(runs) - index)
                 break
             try:
-                result = self.reconciler.reconcile(name, source="asset_fanout", known_events=[fact])
-                woken += result["action"] == "signalled"
+                self.dispatcher.narrow_pass(run_key, keys, source="asset_fanout", remaining_ms=budget)
+                passed += 1
             except CoordinationTransient as exc:
                 lost += 1
-                # Principle #41: a lost hint delays the task; the sweeper re-checks it from facts.
-                log.error("asset_fanout", "reconcile failed transiently; the sweeper re-checks the task",
-                          execution_name=name, asset_name=asset, error=str(exc))
-        counts = {"subscribers": len(subscribers), "woken": woken, "lost": lost}
+                log.error("asset_fanout", "a pass failed transiently; the run's next check decides its rows",
+                          run=run_key, asset_name=asset, error=str(exc))
+        counts = {"subscribers": len(pointers), "runs": len(runs), "passed": passed, "lost": lost}
         log.info("asset_fanout", "fanned out", asset_name=asset,
                  partition_key=str(fact.get("partition_key", fact.get("execution_date", ""))), **counts)
         return counts
+
+    def _run_of(self, asset: str, subscriber: str) -> Optional[str]:
+        """The run of a pointer that names none, which 1.2 wrote: its row's run. A pointer whose row is gone is
+        deleted (Rule 40); a row without a run row is then stopped by the pass (ADR #137 invariant 11)."""
+        try:
+            row = self.reconciler.tasks.get(subscriber)
+            if row is None:
+                self.subscriptions.delete_item(Key={start_run.POINTER_KEY: f"asset:{asset}",
+                                                    start_run.POINTER_SUBSCRIBER: subscriber})
+                return None
+        except (ClientError, BotoCoreError) as exc:
+            reraise_transient(exc)
+            log.error("asset_fanout", "the row of a pointer could not be read", subscriber=subscriber, error=str(exc))
+            return None
+        return run_row.key(str(row["pipeline_execution"])) if row.get("pipeline_execution") else None
 
     def push(self, fact: Dict[str, Any], *, remaining_ms: Optional[Callable[[], int]] = None) -> Dict[str, int]:
         """Start every push consumer the fact completes. Raises only CoordinationTransient."""
@@ -309,20 +335,22 @@ class AssetFanout:
             self._warn(f"asset:{asset}", f"push consumers of asset {asset} could not be read: {type(exc).__name__}: {exc}")
             return []
 
-    def _subscribers(self, asset: str) -> List[str]:
-        """execution_names subscribed to `asset:{asset}` (consistent, all pages)."""
+    def _subscribers(self, asset: str) -> List[Tuple[str, Optional[str]]]:
+        """The rows subscribed to `asset:{asset}`, with their runs' keys (consistent, all pages)."""
         kwargs: Dict[str, Any] = {
-            "KeyConditionExpression": Key("dependency_key").eq(f"asset:{asset}"),
+            "KeyConditionExpression": Key(start_run.POINTER_KEY).eq(f"asset:{asset}"),
             "ConsistentRead": True,
-            "ProjectionExpression": "subscriber",
+            "ProjectionExpression": "#subscriber, #run",
+            "ExpressionAttributeNames": {"#subscriber": start_run.POINTER_SUBSCRIBER, "#run": start_run.POINTER_RUN},
         }
-        names: List[str] = []
+        found: List[Tuple[str, Optional[str]]] = []
         try:
             while True:
                 response = self.subscriptions.query(**kwargs)
-                names.extend(str(item["subscriber"]) for item in response.get("Items", []))
+                found.extend((str(item[start_run.POINTER_SUBSCRIBER]), item.get(start_run.POINTER_RUN))
+                             for item in response.get("Items", []))
                 if "LastEvaluatedKey" not in response:
-                    return names
+                    return found
                 kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
         except (ClientError, BotoCoreError) as exc:
             reraise_transient(exc)
@@ -348,7 +376,9 @@ _FANOUT: Optional[AssetFanout] = None
 def _fanout() -> AssetFanout:
     global _FANOUT
     if _FANOUT is None:
-        _FANOUT = AssetFanout(Reconciler(env.dynamodb(), env.stepfunctions()))
+        import dispatcher
+
+        _FANOUT = AssetFanout(Reconciler(env.dynamodb(), env.stepfunctions()), dispatcher=dispatcher._dispatcher())
     return _FANOUT
 
 

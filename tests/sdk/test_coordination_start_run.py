@@ -112,7 +112,8 @@ def test_only_a_row_with_a_time_of_its_own_is_due():
 
 def test_a_waiting_task_with_wait_for_gets_its_asset_pointers():
     assert start_run.pointer_items(call(), SPECS) == [
-        {"dependency_key": "asset:s3/orders", "subscriber": task_row.key("watch", "2026-11-18", EXECUTION)}]
+        {"dependency_key": "asset:s3/orders", "subscriber": task_row.key("watch", "2026-11-18", EXECUTION),
+         "run": run_row.key(EXECUTION)}]
 
 
 def test_the_runs_input_item_carries_its_execution():

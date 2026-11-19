@@ -180,7 +180,8 @@ def test_a_rows_pointers_are_those_start_run_wrote():
                                 "task_count": 1, "pipeline_name": "orders", "execution_name": "orders-run-1",
                                 "execution_start": RUN_START, "token": "t", "retry_count": 0, "date": "2026-11-19"})
     [item] = start_run.task_items(call, {"load": spec}, now=NOW)
-    assert dispatch_writes.pointers(item) == start_run.pointer_items(call, {"load": spec})
+    assert dispatch_writes.pointers(item) == [{k: p[k] for k in (start_run.POINTER_KEY, start_run.POINTER_SUBSCRIBER)}
+                                              for p in start_run.pointer_items(call, {"load": spec})]
     assert dispatch_writes.pointers({**item, task_row.DECISION: task_spec.decision_text(_spec())}) == []
 
 

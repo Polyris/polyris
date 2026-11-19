@@ -34,6 +34,8 @@ from .times import format_utc, parse_utc
 #: The table of per-run pointers that AssetFanout reads (DependencySubscriptionsTable) and its keys.
 POINTER_KEY = "dependency_key"
 POINTER_SUBSCRIBER = "subscriber"
+#: The run row's key of the subscriber's run, by which AssetFanout passes over each run once (§7).
+POINTER_RUN = "run"
 ASSET_POINTER_PREFIX = "asset:"
 
 
@@ -231,13 +233,14 @@ def pointer_items(call: Call, specs: Mapping[str, TaskSpec]) -> List[Dict[str, s
     for task_id, spec in sorted(specs.items()):
         wait_for = spec.fields.get(TaskSpecKey.WAIT_FOR)
         if wait_for and task_id not in skip:
-            pointers += asset_pointers(task_row.key(task_id, call.date, call.execution), wait_for)
+            subscriber = task_row.key(task_id, call.date, call.execution)
+            pointers += [{**key, POINTER_RUN: run_row.key(call.execution)} for key in asset_pointer_keys(subscriber, wait_for)]
     return pointers
 
 
-def asset_pointers(subscriber: str, wait_for: Any) -> List[Dict[str, str]]:
-    """The pointers of one row: one per asset its ``wait_for`` names. The dispatcher deletes them once the row
-    has left the wait (Rule 40)."""
+def asset_pointer_keys(subscriber: str, wait_for: Any) -> List[Dict[str, str]]:
+    """The keys of one row's pointers: one per asset its ``wait_for`` names. The dispatcher deletes them once the
+    row has left the wait (Rule 40)."""
     return [{POINTER_KEY: f"{ASSET_POINTER_PREFIX}{name}", POINTER_SUBSCRIBER: subscriber}
             for name in sorted(asset_spec.asset_names(asset_spec.parse(wait_for)))]
 

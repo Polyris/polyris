@@ -36,6 +36,7 @@ from polyris.coordination.records import FACT_VERSION, fact_from_item, warning_i
 from polyris.coordination.statuses import RECONCILABLE, WAITING_PAUSED
 from polyris.coordination.times import format_utc, parse_utc
 import env
+import dispatcher as dispatching
 from asset_fanout import AssetFanout
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient
 from logger import log
@@ -52,14 +53,17 @@ class Sweeper:
                  monotonic: Callable[[], float] = time.monotonic,
                  subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
                  consumers_table: str = env.ASSET_SUBSCRIPTIONS_TABLE,
-                 lambda_client: Any = None, fanout_function: str = env.ASSET_FANOUT_FUNCTION):
+                 lambda_client: Any = None, fanout_function: str = env.ASSET_FANOUT_FUNCTION,
+                 dispatcher: Optional[dispatching.Dispatcher] = None):
         self.reconciler = reconciler
         self.lambda_client = lambda_client
         self.fanout_function = fanout_function
         self.tasks = reconciler.tasks
         self.owner = owner or uuid.uuid4().hex
         self.monotonic = monotonic
-        self.fanout = AssetFanout(reconciler, subscriptions_table=subscriptions_table, consumers_table=consumers_table)
+        # The catch-up pushes through AssetFanout; its passes over runs come with TR-4c.
+        self.fanout = AssetFanout(reconciler, dispatcher=dispatcher or dispatching.from_env(),
+                                  subscriptions_table=subscriptions_table, consumers_table=consumers_table)
         self.consumers = reconciler.resource.Table(consumers_table)
         self.facts = reconciler.resource.Table(reconciler.asset_events_table)
 

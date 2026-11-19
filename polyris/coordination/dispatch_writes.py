@@ -120,9 +120,9 @@ def start_request(row: RowView, run: RunView, *, state_machine: str, input_text:
 
 
 def pointers(item: Mapping[str, Any]) -> List[Dict[str, str]]:
-    """The ``asset:{name}`` pointers of a row read back, which go once it has left the wait (Rule 40)."""
+    """The keys of the ``asset:{name}`` pointers of a row read back, which go once it has left the wait (Rule 40)."""
     wait_for = task_spec.decision_from_text(str(item[task_row.DECISION])).get(TaskSpecKey.WAIT_FOR.value)
-    return start_run.asset_pointers(str(item[task_row.TABLE_KEY]), wait_for) if wait_for else []
+    return start_run.asset_pointer_keys(str(item[task_row.TABLE_KEY]), wait_for) if wait_for else []
 
 
 def answer(run: RunView, end: RunEnd) -> Tuple[str, Dict[str, str]]:

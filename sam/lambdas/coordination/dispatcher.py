@@ -546,13 +546,18 @@ def _redeliver(groups: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
 _DISPATCHER: Optional[Dispatcher] = None
 
 
+def from_env() -> Dispatcher:
+    """A dispatcher over the function's environment: its tables and the run_task state machine."""
+    return Dispatcher(env.dynamodb_client(), env.stepfunctions(), resource=env.dynamodb(),
+                      tokens_table=env.TOKENS_TABLE, subscriptions_table=env.SUBSCRIPTIONS_TABLE,
+                      specs_table=env.SPECS_TABLE, asset_events_table=env.ASSET_EVENTS_TABLE,
+                      pipelines_table=env.PIPELINES_TABLE, run_task_arn=env.RUN_TASK_ARN)
+
+
 def _dispatcher() -> Dispatcher:
     global _DISPATCHER
     if _DISPATCHER is None:
-        _DISPATCHER = Dispatcher(env.dynamodb_client(), env.stepfunctions(), resource=env.dynamodb(),
-                                 tokens_table=env.TOKENS_TABLE, subscriptions_table=env.SUBSCRIPTIONS_TABLE,
-                                 specs_table=env.SPECS_TABLE, asset_events_table=env.ASSET_EVENTS_TABLE,
-                                 pipelines_table=env.PIPELINES_TABLE, run_task_arn=env.RUN_TASK_ARN)
+        _DISPATCHER = from_env()
     return _DISPATCHER
 
 
