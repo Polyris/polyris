@@ -1,10 +1,10 @@
-"""The wake contract between the reconciler and the state machines (ADR #130 §3, §6).
+"""The wake contract between the coordination Lambdas and the state machines (ADR #130 §3, §6).
 
 The dependency wrapper routes on the signal names. The registration helper
-and the reconciler fail a wait with COORDINATION_ERROR, a name the wrapper's
-Retry never matches. The state machines retry the reconciler on
-TRANSIENT_ERROR, the error name its Lambda reports for a transient failure.
-Contract tests compare these values with the templates.
+fails a wait with COORDINATION_ERROR, a name the wrapper's Retry never
+matches. The state machines retry a coordination Lambda on TRANSIENT_ERROR,
+the error name it reports for a transient failure. Contract tests compare
+these values with the templates.
 """
 
 DEPS_READY = "deps_ready"

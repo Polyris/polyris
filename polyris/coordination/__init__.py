@@ -1,8 +1,8 @@
-"""Pure coordination logic (ADR #130).
+"""Pure coordination logic (ADR #130, ADR #137).
 
-Decides whether a waiting task is ready from facts: dependency statuses, asset
-facts and the pause flag. Nothing here calls AWS; the reconciler Lambda loads
-the facts and acts on the decision.
+Decides each row of a run from facts: dependency statuses, asset facts, the
+run's pauses and its stop. Nothing here calls AWS; the coordination Lambdas
+load the facts and write what was decided.
 
 The coordination Lambda and console_api import this package from the polyris
 release their ``requirements.txt`` pins (ADR #102, ADR #130 §10), so every

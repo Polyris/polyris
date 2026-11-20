@@ -1,7 +1,7 @@
 """The readiness decision for one waiting task (ADR #130 §3).
 
-A pure function of facts the reconciler has already read. It never touches
-AWS; the reconciler turns the verdict into an action.
+A pure function of facts a pass of the dispatcher has already read. It never
+touches AWS; the pass turns the verdict into a write (``dispatch``).
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ class TaskView:
     """The fields of a task row the decision reads."""
 
     status: str
-    has_pause_token: bool
     trigger_rule: str
     dependencies: Tuple[str, ...]
     has_asset_conditions: bool
@@ -57,15 +56,13 @@ def decide(
     ``dep_statuses`` is aligned with ``task.dependencies``, and so is
     ``skip_origins``: the ``skip_origin`` of a skipped dependency. ``assets`` may be
     omitted when the task has no asset conditions, or when the dependencies
-    already decide the outcome (pending, or never satisfiable): the reconciler
-    skips the asset reads in those cases.
+    already decide the outcome (pending, or never satisfiable): a pass of the
+    dispatcher skips the asset reads in those cases.
     """
     if task is None:
         return Decision(NOOP, ("task row not found",))
     if task.status not in RECONCILABLE:
         return Decision(NOOP, (f"status {task.status!r} is not a waiting status",))
-    if task.has_pause_token:
-        return Decision(NOOP, ("held by pause_waiter at run start",))
     if len(dep_statuses) != len(task.dependencies):
         raise ValueError(
             f"{len(dep_statuses)} dependency statuses for {len(task.dependencies)} dependencies"

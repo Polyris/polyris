@@ -16,7 +16,7 @@ __all__ = [
     "SKIPPED", "WAITING", "WAITING_PAUSED", "ABORTED", "FAILED", "WARNING_KINDS",
 ]
 
-#: The reconciler acts only on rows in these statuses.
+#: The waiting statuses: a decision moves a task row only from one of these.
 RECONCILABLE = frozenset(RECONCILABLE_STATUSES)
 #: Statuses after which a task never changes on its own.
 TERMINAL = frozenset(TERMINAL_STATUSES)

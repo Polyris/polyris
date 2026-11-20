@@ -8,8 +8,8 @@ from polyris.coordination import decide as d
 from polyris.coordination.asset_conditions import AssetResult, Evaluation, Fact
 
 
-def task(status="waiting", *, pause_token=False, rule="all_success", deps=(), assets=False):
-    return d.TaskView(status, pause_token, rule, tuple(deps), assets)
+def task(status="waiting", *, rule="all_success", deps=(), assets=False):
+    return d.TaskView(status, rule, tuple(deps), assets)
 
 
 READY_ASSETS = Evaluation(True, (AssetResult("ns/a", "latest", True, "ok"),))
@@ -23,9 +23,6 @@ class TestNoop:
     @pytest.mark.parametrize("status", ["deps_ready", "waiting_delay", "waiting_decision", "running", "success", "stopped"])
     def test_rows_owned_by_someone_else(self, status):
         assert d.decide(task(status)).verdict == d.NOOP
-
-    def test_rows_held_by_pause_waiter(self):
-        assert d.decide(task("waiting_paused", pause_token=True)).verdict == d.NOOP
 
 
 class TestDependencies:
@@ -96,14 +93,14 @@ def test_every_verdict_is_listed():
 @pytest.mark.parametrize("dependencies", [(), ("extract",)])
 def test_an_unknown_rule_fails_its_task_a_root_task_included(dependencies):
     """ADR #138 §2: not evaluated as all_success, whatever the upstreams' statuses."""
-    view = d.TaskView(status="waiting", has_pause_token=False, trigger_rule="always",
+    view = d.TaskView(status="waiting", trigger_rule="always",
                       dependencies=dependencies, has_asset_conditions=True)
     decision = d.decide(view, dep_statuses=["success"] * len(dependencies))
     assert decision.verdict == d.FAIL and "remove the dependency" in decision.reasons[0]
 
 
 def test_a_dependencys_skip_origin_reaches_its_rule():
-    view = d.TaskView(status="waiting", has_pause_token=False, trigger_rule="all_success",
+    view = d.TaskView(status="waiting", trigger_rule="all_success",
                       dependencies=("extract",), has_asset_conditions=False)
     assert d.decide(view, dep_statuses=["skipped"], skip_origins=["rule"]).verdict == d.SKIP
     assert d.decide(view, dep_statuses=["skipped"], skip_origins=["manual"]).verdict == d.READY

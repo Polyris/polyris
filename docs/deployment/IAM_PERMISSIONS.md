@@ -292,9 +292,9 @@ Twelve IAM roles the stack creates during Install. Every role's `RoleName` start
 | `polyris-ui-bootstrap-role` | Lambda | One-off role for the CustomResource that copies UI assets into the CloudFront-fronted S3 bucket at Install |
 | `polyris-bucket-cleanup-role` | Lambda | One-off role for the CustomResource that empties S3 buckets on Remove |
 
-Three AWS::IAM::ManagedPolicy resources the stack also creates. One is the reconciler's own:
+Three AWS::IAM::ManagedPolicy resources the stack also creates. One is the dispatcher's own:
 
-- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher and the reconciler read and write: run rows, task rows and the run's input, asset facts, warnings, and a run's spec version in `pipeline-specs`. A decision is one transaction, so `dynamodb:ConditionCheckItem` too. `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
+- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs: run rows, task rows and the run's input, asset facts, warnings, and a run's spec version in `pipeline-specs`. A decision is one transaction, so `dynamodb:ConditionCheckItem` too. `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
 
 Two are published for user pipeline tasks that need them:
 

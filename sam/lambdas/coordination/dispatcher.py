@@ -543,7 +543,7 @@ class Dispatcher:
                 state.rows.pop(name, None)
 
     def _assets(self, state: _Pass, name: str) -> Evaluation:
-        """The evaluation of the row's facts, read as AssetFanout's reconciler read them (ADR #130 §4)."""
+        """The evaluation of the row's facts, read through ``stores.FactStore`` (ADR #130 §4)."""
         wait_for = task_spec.decision_from_text(str(state.items[name][task_row.DECISION])).get(
             TaskSpecKey.WAIT_FOR.value)
         registry = Registry(self.resource, self.pipelines_table)

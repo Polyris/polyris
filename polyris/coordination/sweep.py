@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-#: What a task row's ``source`` says when the sweeper asks the reconciler.
+#: The ``source`` of the sweeper's passes, as the dispatcher logs it.
 SOURCE = "sweeper"
 #: The row that holds the lease; ``_``-prefixed rows are internal (CLAUDE.md).
 LEASE_KEY = "_sweeper_lease"
@@ -21,22 +21,13 @@ LEASE_KEY = "_sweeper_lease"
 LEASE = timedelta(seconds=270)
 #: The work budget of one run, inside the function's 240 s timeout.
 BUDGET = timedelta(seconds=200)
-#: A row adopted from an older platform version may have no orchestration
-#: timeout; the SDK's default (a task's 24-hour execution timeout) stands in.
-DEFAULT_ORCHESTRATION_TIMEOUT = timedelta(hours=24)
-#: The engine's own row: the self-check, catch-up progress and the adoption cursors.
+#: The engine's own row: the self-check and the catch-up's progress.
 HEALTH_KEY = "_engine_health"
 #: A push start that keeps failing transiently is given up after this long, with a warning.
 PUSH_RETRY_WINDOW = timedelta(hours=24)
 #: How often the catch-up replays the push branch for recent facts, and how far back it reads.
 CATCH_UP_EVERY = timedelta(hours=1)
 CATCH_UP_WINDOW = timedelta(hours=48)
-#: The row shapes the adoption scans bring older rows to (ADR #130 §8). Raise it when
-#: a release changes what a task row or a fact must carry; the scans then run again.
-ADOPTION_GENERATION = 1
-#: After the task-row scan first finishes, it repeats for this long: rows the old
-#: definitions wrote while the stack update was still running get adopted too.
-ADOPTION_REPEAT = timedelta(hours=1)
 
 #: DescribeExecution is eventually consistent: a wrapper that registered less than this long ago may
 #: not be visible yet, so "does not exist" means gone only for an older row.
@@ -68,24 +59,6 @@ STEPS = {
 }
 #: How many task names a run's lost-hint warning lists (ADR #137 §7).
 LOST_HINT_NAMES = 5
-
-
-#: A wrapper started before the upgrade retries its dependency wait twice on a
-#: timeout, so it may wait three timeouts; a current wrapper waits one (D41).
-LEGACY_WAITS = 3
-
-
-def liveness_deadline(started_at: datetime, orchestration_timeout_seconds: Optional[float], *,
-                      legacy: bool = False) -> datetime:
-    """When a waiting task's wrapper is checked even without a signal (ADR #130 §3).
-
-    The wrapper's dependency wait lasts one orchestration timeout, or three for
-    a ``legacy`` (pre-upgrade) wrapper that still retries it. The extra hour
-    covers a wait that started just before the row's ``started_at`` was written.
-    """
-    timeout = (timedelta(seconds=float(orchestration_timeout_seconds)) if orchestration_timeout_seconds
-               else DEFAULT_ORCHESTRATION_TIMEOUT)
-    return started_at + (LEGACY_WAITS if legacy else 1) * timeout + timedelta(hours=1)
 
 
 #: A row whose stream pass may still be under way is no lost hint: longer than the stream's batching
@@ -398,8 +371,3 @@ def _task_delivery(report: Mapping[str, Any], now: datetime, *, stale: bool,
             fix=f"Turn the stream on again (view type NEW_AND_OLD_IMAGES). That makes a new stream: add a trigger on "
                 f"it to {the_dispatcher} as the template defines it, then delete the trigger on the old one."))
     return findings
-
-
-def primary_path_missed(enabled_at: Optional[datetime], due: datetime) -> bool:
-    """Whether the task could run before the sweeper's due time, so its wake-up hint was lost."""
-    return enabled_at is not None and enabled_at < due

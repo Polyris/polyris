@@ -115,7 +115,6 @@ class World:
         self.boundary = Boundary([self.ddb, self.resource.meta.client])
         self._run_ids = itertools.count(0xABCD0000)
         self.bindings = Bindings(self.stack, self.resource, self.clock.read)
-        self.bindings.reconcile()
         self.bindings.start_run()
         self._dispatch = self.bindings.dispatcher(self.bindings.run_task_stub())
         self.bindings.query_subscriptions()

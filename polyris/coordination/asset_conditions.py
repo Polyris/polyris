@@ -10,7 +10,8 @@ For a target date D:
 * ``a.consecutive(days=N)``: facts exist for each of the N dates ending at D.
 
 Groups combine members with AND / OR. Facts come from a ``FactReader``; the
-reconciler's DAL implements it over the partition index and recent writes.
+coordination Lambdas' ``stores.FactStore`` implements it over the partition
+index and recent writes.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """What one pass of the dispatcher decides for each row of a run, and for the run (ADR #137 §1, §4, §5).
 
-The dispatcher (``sam/lambdas/coordination/reconcile.py``) reads the run row, the
+The dispatcher (``sam/lambdas/coordination/dispatcher.py``) reads the run row, the
 rows of its set with their direct upstreams, and the facts a ready row waits
 for; these functions say what to write. They are pure and read no clock: ``now``
 is the pass's time. Each judges a row from the row itself (§1):
@@ -263,7 +263,7 @@ def _wait(row: RowView, upstreams: Mapping[str, Optional[RowView]], run: RunView
     if evaluation.verdict == trigger_rules.UPSTREAM_FAILED:
         return _final(row, "block", now, reasons=(evaluation.reason,), since=decided)
     enabled = decided if evaluation.verdict == trigger_rules.READY else None
-    decision = dc.decide(dc.TaskView(row.status, False, row.trigger_rule, row.dependencies, row.has_wait_for),
+    decision = dc.decide(dc.TaskView(row.status, row.trigger_rule, row.dependencies, row.has_wait_for),
                          dep_statuses=statuses, skip_origins=origins, assets=assets)
     if decision.verdict == dc.READY and enabled is not None:
         ready_at = max(enabled, assets.enabled_at) if assets is not None and assets.enabled_at else enabled

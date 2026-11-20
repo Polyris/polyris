@@ -23,7 +23,6 @@ ASSET_FANOUT_FUNCTION = os.environ.get("ASSET_FANOUT_FUNCTION", "asset-fanout")
 #: The function the tasks table's stream feeds (the dispatcher); the sweeper checks its event source mapping.
 DISPATCHER_FUNCTION = os.environ.get("DISPATCHER_FUNCTION", "reconcile")
 
-PIPELINE_EXECUTION_INDEX = "pipeline-execution-index"
 
 #: Asset facts written this recently are also read from the base table with a
 #: consistent read, closing the partition index's propagation lag (ADR #130 §4).

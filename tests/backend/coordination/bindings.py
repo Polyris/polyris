@@ -124,22 +124,6 @@ class Bindings:
         self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))
         return main
 
-    def reconcile(self) -> Callable[[Any, Any], Any]:
-        import reconcile
-
-        tables = self.stack.tables
-        self._set(reconcile, "_RECONCILER", reconcile.Reconciler(
-            self.resource, self.stack.runtime,
-            tokens_table=tables["PipelineTokensTable"],
-            subscriptions_table=tables["DependencySubscriptionsTable"],
-            asset_events_table=tables["AssetEventsTable"],
-            pipelines_table=tables["PipelineRegistryTable"],
-            clock=self.clock,
-        ))
-        handler = as_component("lambda:reconcile", reconcile.handler)
-        self.stack.bind_lambda("ReconcileFunction", handler)
-        return handler
-
     def start_run(self) -> Callable[[Any, Any], Any]:
         """Start_Run over the stack's tables, on the stack's clock (ADR #137 §1)."""
         import env

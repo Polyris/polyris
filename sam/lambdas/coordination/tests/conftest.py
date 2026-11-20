@@ -39,13 +39,6 @@ def sfn() -> FakeSfn:
 
 
 @pytest.fixture
-def reconciler(ddb, sfn):
-    from reconcile import Reconciler
-
-    return Reconciler(ddb, sfn, clock=lambda: NOW)
-
-
-@pytest.fixture
 def tokens(ddb):
     return ddb.Table(TABLES["TOKENS_TABLE"][1])
 
