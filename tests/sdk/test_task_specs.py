@@ -200,6 +200,14 @@ def test_a_task_id_in_bytes():
         f"Task '{long_id}': its task_id takes 130 bytes, over the limit of {run_row.TASK_ID_MAX} bytes"]
 
 
+def test_a_task_id_may_not_start_with_an_underscore():
+    """A row keyed by `_run_…` reads as a run row, and the console skips `_`-prefixed rows (the review of TR-4)."""
+    assert limits.spec_errors(_version([_spec("_run_export")])) == [
+        "Task '_run_export': a task_id may not start with '_', which the platform's own rows use (a run row starts "
+        "with '_run_')"]
+    assert limits.spec_errors(_version([_spec("run_export")])) == []
+
+
 def test_a_spec_in_bytes_as_written():
     big = _spec("t", task_config={"payload": "x" * run_task_input.PAYLOAD_LIMIT})
     size = len(task_spec.canonical_json(big).encode())

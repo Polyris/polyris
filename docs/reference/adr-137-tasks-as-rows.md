@@ -749,7 +749,7 @@ The harness comes first, before the code it tests, and each test comes before th
 
 | Decision or invariant | Test | Where |
 |---|---|---|
-| Invariants 1–12, both directions of 8, liveness | a check each in `test_invariants.py` | harness |
+| Invariants 1–12, both directions of 8, liveness | a check each in `test_row_invariants.py` | harness |
 | Transitions, writers and wake-ups (§3, §7) | `test_task_row_writers.py`, with every writer of the run row and whether it raises `run_version`; every transition through the template's `FilterCriteria` and the predicate, with fixture records | unit |
 | Contracts and pure functions (§9) | a parity test per contract; a test per clause | unit |
 | Due times (invariant 9, §9) | the due-time function, with no clock among its inputs: none for a row that waits only for other rows, nor in a pause for a held row or a limit. A decision deadline far in the future in a pause | unit |

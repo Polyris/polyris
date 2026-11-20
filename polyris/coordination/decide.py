@@ -11,18 +11,15 @@ from typing import Optional, Sequence, Tuple
 
 from . import trigger_rules
 from .asset_conditions import Evaluation
-from .statuses import RECONCILABLE
 
-NOOP = "noop"
 SKIP = trigger_rules.SKIP
 UPSTREAM_FAILED = trigger_rules.UPSTREAM_FAILED
 WAIT = trigger_rules.WAIT
-PAUSED = "paused"
 READY = trigger_rules.READY
 #: A rule the engine does not know: the task fails with the cause (ADR #138 §2).
 FAIL = trigger_rules.FAIL
 
-VERDICTS = frozenset({NOOP, SKIP, UPSTREAM_FAILED, WAIT, PAUSED, READY, FAIL})
+VERDICTS = frozenset({SKIP, UPSTREAM_FAILED, WAIT, READY, FAIL})
 
 
 @dataclass(frozen=True)
@@ -44,12 +41,11 @@ class Decision:
 
 
 def decide(
-    task: Optional[TaskView],
+    task: TaskView,
     *,
     dep_statuses: Sequence[str] = (),
     skip_origins: Optional[Sequence[Optional[str]]] = None,
     assets: Optional[Evaluation] = None,
-    paused: bool = False,
 ) -> Decision:
     """Decide what to do with ``task``.
 
@@ -59,10 +55,6 @@ def decide(
     already decide the outcome (pending, or never satisfiable): a pass of the
     dispatcher skips the asset reads in those cases.
     """
-    if task is None:
-        return Decision(NOOP, ("task row not found",))
-    if task.status not in RECONCILABLE:
-        return Decision(NOOP, (f"status {task.status!r} is not a waiting status",))
     if len(dep_statuses) != len(task.dependencies):
         raise ValueError(
             f"{len(dep_statuses)} dependency statuses for {len(task.dependencies)} dependencies"
@@ -88,6 +80,4 @@ def decide(
 
     if reasons:
         return Decision(WAIT, tuple(reasons), deps, assets)
-    if paused:
-        return Decision(PAUSED, ("pipeline is paused",), deps, assets)
     return Decision(READY, ("all conditions met",), deps, assets)

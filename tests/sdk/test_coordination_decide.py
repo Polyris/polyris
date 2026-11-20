@@ -1,4 +1,4 @@
-"""The readiness decision table (ADR #130 §3)."""
+"""The readiness decision of a waiting row, which a pass of the dispatcher makes (ADR #130 §3, ADR #137 §1)."""
 
 from datetime import date, datetime, timezone
 
@@ -14,15 +14,6 @@ def task(status="waiting", *, rule="all_success", deps=(), assets=False):
 
 READY_ASSETS = Evaluation(True, (AssetResult("ns/a", "latest", True, "ok"),))
 MISSING_ASSETS = Evaluation(False, (AssetResult("ns/a", "latest", False, "no_fact"),))
-
-
-class TestNoop:
-    def test_missing_row(self):
-        assert d.decide(None).verdict == d.NOOP
-
-    @pytest.mark.parametrize("status", ["deps_ready", "waiting_delay", "waiting_decision", "running", "success", "stopped"])
-    def test_rows_owned_by_someone_else(self, status):
-        assert d.decide(task(status)).verdict == d.NOOP
 
 
 class TestDependencies:
@@ -79,15 +70,12 @@ class TestAssets:
 
 
 class TestPause:
-    def test_ready_but_paused(self):
-        assert d.decide(task(), paused=True).verdict == d.PAUSED
-
     def test_waiting_paused_row_wakes_when_unpaused(self):
         assert d.decide(task("waiting_paused")).verdict == d.READY
 
 
 def test_every_verdict_is_listed():
-    assert {d.NOOP, d.SKIP, d.UPSTREAM_FAILED, d.WAIT, d.PAUSED, d.READY, d.FAIL} == d.VERDICTS
+    assert {d.SKIP, d.UPSTREAM_FAILED, d.WAIT, d.READY, d.FAIL} == d.VERDICTS
 
 
 @pytest.mark.parametrize("dependencies", [(), ("extract",)])

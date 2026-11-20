@@ -45,7 +45,7 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 
 | World verb | What it does |
 |---|---|
-| `deploy(dag, before_upgrade=)`, `start_run(pipeline, date, **inputs)` | generate the pipeline's ASL and start a run; `before_upgrade=True` starts its tasks on the v1.1.4 wrapper (`legacy/`), as runs in flight across the upgrade do |
+| `deploy(dag, before_upgrade=)`, `start_run(pipeline, date, **inputs)` | generate the pipeline's ASL and start a run; `before_upgrade=True`, a pipeline generated before 1.3, raises `NeedsBinding("rows-migration")` until the upgrade from 1.2 is built |
 | `fire_schedule(pipeline, scheduled_time)`, `start_bare(pipeline)` | start a run as EventBridge Scheduler does, with the input `polyris-deploy` gives the schedule; or with an empty input |
 | `complete(run, task, status=, output=)` | finish the user's work for a task, a success with `output` |
 | `write_event(asset, partition, writer=)`, `deliver_hints(asset=)` | record a fact, by `run_task` or as an older version stored it (`writer="older version"`); deliver its stream record separately, so tests choose the interleaving |

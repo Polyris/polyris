@@ -355,7 +355,7 @@ When adding a paid feature:
 
 Serverless data pipeline orchestration on AWS Step Functions. Python DSL → generates ASL → deploys via CloudFormation (`polyris-deploy`).
 
-Core idea: each task = one `dependency_wrapper` SFN execution that waits for deps, runs the task, then signals downstream tasks via `notify_dependents`.
+Core idea (ADR #137): a run is one pipeline execution whose `Start_Run` writes one row per task. The dispatcher, woken by the tasks table's stream, decides each row from the rows and facts, starts its `run_task`, and answers the run once every row is final; the sweeper checks every run on a schedule, so a lost wake-up only delays a task.
 
 ---
 
@@ -674,13 +674,13 @@ The row carries no `date`: the bell reads it from `attention-index` (`warn#{h}`)
 - `_pause_{pipeline_execution}` — pause state
 - `_notify_warn_{kind}_{execution_name}` — infrastructure warning (`records.warning_item`)
 
-**CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The coordination store reads only rows in a reconcilable status, which no internal row has.)
+**CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The dispatcher reads its run's rows by key, and the sweeper only the due entries of the `waiting` and `decision` kinds, so neither meets an internal row.)
 ```python
 for item in items:
     if should_skip_token_row(item):
         continue
 ```
-Internal rows are `_`-prefixed (`_pause_`, `_notify_warn_`, `_retry_push_`), the stores `output#` and `input#`, and the run's DAG snapshot `dag_snapshot::{run}`. Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs. A `_`-only check let the snapshot, which shares the run's `pipeline_execution`, through: a task without a status, and an empty `/api/execution-children` for every run.
+Internal rows are `_`-prefixed (the run row `_run_{execution}` and its input `_run_{execution}#input`, `_pause_`, `_notify_warn_`, `_retry_push_`, `_engine_health`, `_sweeper_lease`), the stores `output#` and `input#`, and the run's DAG snapshot `dag_snapshot::{run}`. Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs. A `_`-only check let the snapshot, which shares the run's `pipeline_execution`, through: a task without a status, and an empty `/api/execution-children` for every run.
 
 **SFN templates:** `Catch` blocks must preserve `$states.errorOutput` in Output. A state after a point of no return has a Catch that reaches the bell: restart stops the old wrapper first, so a failed hand-over or wrapper start left the task dead while the console said "Task restarted" (`Warn_Restart_Failed`). A catch on a write of the task's facts, or on its run's callback, after the task's own success writes a warning row: the row already says `success`, so nothing else shows the failure. A fact `run_task` could not record once left its consumers waiting with no trace (`Warn_Facts_Not_Recorded`).
 

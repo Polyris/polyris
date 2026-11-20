@@ -1,8 +1,10 @@
 """Pure coordination logic (ADR #130, ADR #137).
 
 Decides each row of a run from facts: dependency statuses, asset facts, the
-run's pauses and its stop. Nothing here calls AWS; the coordination Lambdas
-load the facts and write what was decided.
+run's pauses and its stop. Nothing here builds an AWS client or reads the
+clock: ``spec_store`` reads and writes ``pipeline-specs`` with the client its
+caller passes, and the coordination Lambdas load the facts and write what was
+decided.
 
 The coordination Lambda and console_api import this package from the polyris
 release their ``requirements.txt`` pins (ADR #102, ADR #130 §10), so every

@@ -98,7 +98,7 @@ polyris/
 ├── sam/     # AWS Infrastructure
 │   ├── lambdas/          # Lambda function code
 │   │   ├── console_api/  # REST API (27 free endpoints)
-│   │   ├── coordination/ # Reconciler and asset fan-out (ADR #130)
+│   │   ├── coordination/ # Start_Run, the dispatcher, the sweeper and asset fan-out (ADR #137)
 │   │   ├── query_subscriptions/     # Downstream subscriber lookup
 │   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
 │   ├── sfn_templates/    # Step Functions ASL templates
@@ -168,7 +168,7 @@ cd sam/lambdas/coordination
 PYTHONPATH=. pytest tests/ -v
 
 # One file
-PYTHONPATH=. pytest tests/test_coordination_reconcile.py -v
+PYTHONPATH=. pytest tests/test_coordination_dispatcher.py -v
 ```
 
 ---

@@ -417,7 +417,7 @@ def my_task():
 | Outlets per task | 98 | A task's success is recorded in one DynamoDB transaction of at most 100 items |
 | A task's spec | 256 KB | A task starts with its spec as its input, which Step Functions caps at 256 KB |
 | The specs together | 16 MB | A run's first step reads every spec of the pipeline at once |
-| `task_id` | 128 bytes | Operator requests name a task in full |
+| `task_id` | 128 bytes, and no leading `_` | Operator requests name a task in full; `_` starts the platform's own rows |
 | The definition | 1 MB | Step Functions' limit, measured as `polyris-deploy` sends it |
 
 `polyris-output --json` shows each task's spec and the definition.

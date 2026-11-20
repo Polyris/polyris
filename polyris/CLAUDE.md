@@ -177,8 +177,9 @@ template) fails `tests/sdk/test_task_config_contract.py`.
 ## A new task field goes through the task's spec (ADR #137 §8, §9)
 
 A run's tasks are rows that `Start_Run` writes from the pipeline's task specs; no task
-field travels through the pipeline's state machine any more. A field that must reach
-the engine changes these places in the same commit:
+field reaches a task through the pipeline's state machine any more (its registration still
+copies task metadata into the registry's `tasks` and `dag` until those go, ADR #137 §8).
+A field that must reach the engine changes these places in the same commit:
 
 1. `polyris/constants.py` → `TaskSpecKey` (then `python -m polyris.codegen.sync_enums`),
    and `generators._task_spec` / `_step_spec`, which write it.

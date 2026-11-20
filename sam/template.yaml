@@ -429,8 +429,8 @@ Resources:
           Projection:
             ProjectionType: ALL
         # ADR #130 §4, §7: asset conditions read facts by partition, newest
-        # first. Sparse: facts written before ADR #130 get `partition_date`
-        # during sweeper adoption.
+        # first. Sparse: facts written before ADR #130 got `partition_date`
+        # from the 1.2 sweeper's adoption, before an upgrade to 1.3.
         - IndexName: asset-partition-index
           KeySchema:
             - AttributeName: asset_name
@@ -1648,8 +1648,8 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # AssetFanout runs the reconciler in-process; beyond its policy it reads
-  # the asset-events stream and the asset:{name} subscriptions.
+  # AssetFanout runs the dispatcher's narrow passes in-process; beyond its policy it
+  # reads the asset-events stream and the asset:{name} subscriptions.
   AssetFanoutRole:
     Type: AWS::IAM::Role
     Properties:

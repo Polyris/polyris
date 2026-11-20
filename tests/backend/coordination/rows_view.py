@@ -80,8 +80,7 @@ class Observer:
             result = pass_over(run_key, targets, **kwargs)
             calls = self.log[first:]
             reads = [c for c in calls if c.operation in ("GetItem", "BatchGetItem", "Query") and not c.ok]
-            closes = [c for c in calls if c.ok and c.operation == "UpdateItem" and _is_run_row(c)
-                      and "REMOVE #att, #due, #left" in str(c.params.get("UpdateExpression", ""))]
+            closes = [c for c in calls if c.ok and _closes_a_run_row(c)]
             self.passes.append(Pass(f"{run_key}#{next(self._ids)}", unresolved_read_failures=len(reads),
                                     starts=int((result or {}).get("started", 0)), closes=len(closes),
                                     answers=len(self.answers) - answered))
@@ -218,5 +217,10 @@ def _value(call: Call, name: str) -> Optional[int]:
     return None
 
 
-def _is_run_row(call: Call) -> bool:
-    return any(_key_of(body).startswith("_run_") for body in _updates(call))
+def _closes_a_run_row(call: Call) -> bool:
+    """A write that took a run row's due time away, read from the row before and after it, whatever the
+    expression's wording (the review of TR-4)."""
+    before, after = call.rows_before or {}, call.rows_after or {}
+    return any(key.startswith("_run_") and (before.get(key) or {}).get("attention_at") is not None
+               and after.get(key) is not None and "attention_at" not in (after.get(key) or {})
+               for key in after)

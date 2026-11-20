@@ -7,7 +7,7 @@ directory's conftest can own the module name `conftest`.
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import yaml
 from botocore.exceptions import ClientError
@@ -45,7 +45,6 @@ FUNCTION_ENV = {
 
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
 RUN = "orders-run-2026-11-12-abcdef12"
-SHORT = RUN[-20:]   # "-2026-11-12-abcdef12", as the generated pipeline SFN derives it
 DATE = "2026-11-12"
 STARTED_AT = "2026-11-12T05:00:00.000Z"
 
@@ -146,30 +145,6 @@ class FakeSfn:
 
 def execution_name(task: str, run: str = RUN, date: str = DATE) -> str:
     return f"{task}-{date}-{run[-20:]}"
-
-
-def task_row(task: str, *, deps: Optional[List[str]] = None, wait_for: Optional[List[Any]] = None,
-             status: str = "waiting", trigger_rule: str = "all_success", **extra: Any) -> Dict[str, Any]:
-    """A task row as the registration SFN's Save_Task_Record writes it."""
-    name = execution_name(task)
-    row: Dict[str, Any] = {
-        "execution_name": name,
-        "task_name": task,
-        "status": status,
-        "dependencies": json.dumps(deps or []),
-        "wait_for": json.dumps(wait_for or []),
-        "trigger_rule": trigger_rule,
-        "date": DATE,
-        "started_at": STARTED_AT,
-        "pipeline_name": "orders",
-        "pipeline_execution": RUN,
-        "pipeline_execution_short": SHORT,
-        "wait_token": f"token-{task}",
-        "orchestration_token": f"orchestration-{task}",
-        "wrapper_execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:wrapper:{name}",
-    }
-    row.update(extra)
-    return row
 
 
 def fact(asset: str, key: str, *, event_time: str = "2026-11-12T04:00:00.000Z", **extra: Any) -> Dict[str, Any]:

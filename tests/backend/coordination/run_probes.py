@@ -44,9 +44,12 @@ def main() -> int:
                 path.write_text(text.replace(edit.old, edit.new))
             result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", probe.scenario],
                                     cwd=REPO_ROOT, capture_output=True, text=True)
-            caught = result.returncode != 0
+            # pytest's 1 is a failed test. Any other code (an error while collecting, an interrupt, no test
+            # found) means the scenario never judged the probe, which is no catch (the review of TR-4).
+            caught = result.returncode == 1
             problems += not caught
-            print(f"{'CAUGHT  ' if caught else 'SURVIVED'} {probe.defect}: {probe.scenario}")
+            verdict = "CAUGHT  " if caught else ("SURVIVED" if result.returncode == 0 else f"NOT RUN (exit {result.returncode})")
+            print(f"{verdict} {probe.defect}: {probe.scenario}")
         except LookupError as exc:
             problems += 1
             print(f"STALE    {probe.defect}: {exc}")

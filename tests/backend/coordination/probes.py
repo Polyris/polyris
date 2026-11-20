@@ -107,22 +107,6 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-P1", (Edit(EXECUTIONS_ROUTE, "            'reconcile': _reconcile_run(pipeline_execution),\n",
                         "            'reconcile': {},\n"),),
           f"{SCENARIOS}::test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume"),
-    # Two guards: the reconciler parks only a task that is otherwise ready, and resume signals
-    # nothing without asking it. The old code parked any task whose deps finished during the
-    # pause and signalled every parked task deps_ready through its wait_token; the probe does both.
-    Probe("B-P2", (
-        Edit("polyris/coordination/decide.py",
-             "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"
-             "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n",
-             "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n"
-             "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"),
-        Edit(EXECUTIONS_ROUTE, "        if item.get('status') == 'waiting_paused' and item.get('pause_token')\n",
-             "        if item.get('status') == 'waiting_paused' and (item.get('pause_token') or item.get('wait_token'))\n"),
-        Edit(EXECUTIONS_ROUTE,
-             "                sfn.send_task_success(taskToken=item['pause_token'], output=json.dumps({'resumed': True}))\n",
-             "                sfn.send_task_success(taskToken=item.get('pause_token') or item['wait_token'],\n"
-             "                                      output=json.dumps({'signal': 'deps_ready', 'reason': 'resume'}))\n"),
-    ), f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
     # The old warning rows were found by partition date, not by write time: older ones never reached the bell.
     # The old pause waiter saved the token without an attention entry, so only resume could release it.
     Probe("B-P3", (

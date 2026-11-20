@@ -29,8 +29,8 @@ PUSH_RETRY_WINDOW = timedelta(hours=24)
 CATCH_UP_EVERY = timedelta(hours=1)
 CATCH_UP_WINDOW = timedelta(hours=48)
 
-#: DescribeExecution is eventually consistent: a wrapper that registered less than this long ago may
-#: not be visible yet, so "does not exist" means gone only for an older row.
+#: DescribeExecution is eventually consistent: an execution started less than this long ago may not be
+#: visible yet, so "does not exist" means gone only for an older row or run.
 EXECUTION_VISIBLE_AFTER = timedelta(minutes=2)
 #: The console calls the engine unhealthy when the sweeper has not reported for this long,
 STALE_AFTER = timedelta(minutes=15)

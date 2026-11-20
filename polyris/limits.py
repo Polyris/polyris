@@ -48,6 +48,9 @@ def spec_errors(version: task_spec.Version) -> List[str]:
         errors.append(f"Pipeline '{version.pipeline}': its task specs take {total:,} bytes together, over the limit "
                       f"of {task_spec.MAX_VERSION_BYTES:,} bytes (16 MB) that Start_Run reads at a run's start")
     for task_id, text in sorted(version.texts.items()):
+        if task_id.startswith("_"):
+            errors.append(f"Task '{task_id}': a task_id may not start with '_', which the platform's own rows use "
+                          f"(a run row starts with '_run_')")
         id_bytes = len(task_id.encode("utf-8"))
         if id_bytes > run_row.TASK_ID_MAX:
             errors.append(f"Task '{task_id}': its task_id takes {id_bytes} bytes, over the limit of "
