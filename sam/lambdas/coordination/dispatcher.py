@@ -23,14 +23,22 @@ goes the other way, dependants first (§4).
   caller tries again. Anything else ends in a row or in a warning, so one bad run
   never holds up a shard (Rules 51, 52). An ``AccessDeniedException`` fails no
   row: it warns, and the row waits for its next check (§7).
+- The sweeper's passes alone (``full_pass(check=True)``) judge executions through
+  DescribeExecution (§1, §4): the ``run_task`` of a ``deps_ready`` or ``running``
+  row whose liveness check has come, and the run's own execution, which ended
+  before its answer or never made the run active; the engine then stops the run.
+  They also report the rows whose wait ended on a lost hint (§7).
+- A row whose run row is missing is stopped with the cause (invariant 11), a row
+  that a 1.2 run left in flight included (*Migration*).
 
 Entry points: ``handler`` for the tasks table's stream, ``full_pass`` for the
-sweeper, ``narrow_pass`` for AssetFanout.
+sweeper, ``narrow_pass`` for AssetFanout, ``stop_orphans`` for the sweeper's
+rows whose run row is missing.
 """
 
 import random
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
@@ -42,8 +50,9 @@ import failures
 from failures import CoordinationTransient
 from logger import log
 from polyris.constants import TaskSpecKey, TaskStatus, WarningKind
-from polyris.coordination import asset_spec, dispatch, dispatch_writes, records, run_input, run_row, run_task_input
-from polyris.coordination import spec_store, task_row, task_spec, transitions
+from polyris.coordination import asset_spec, dispatch, dispatch_writes, pauses, records, run_input, run_row
+from polyris.coordination import run_name, run_task_input, spec_store, sweep, task_row, task_spec, transitions
+from polyris.coordination.times import format_utc
 from polyris.coordination.asset_conditions import Evaluation
 from polyris.coordination.asset_conditions import evaluate as evaluate_assets
 from polyris.coordination.partition import partition_date
@@ -63,6 +72,11 @@ SPEC_CACHE = 64
 ACCESS_DENIED = frozenset({"AccessDeniedException", "AccessDenied"})
 #: The cancellation reason of a transaction that met another one (§7).
 CONFLICT = "TransactionConflict"
+#: What DescribeExecution answers for an execution it does not know.
+NO_EXECUTION = "ExecutionDoesNotExist"
+#: The registry field of a pipeline's state machine, from which its executions' ARNs follow.
+REGISTRY_KEY = "pipeline_name"
+REGISTRY_SFN_ARN = "sfn_arn"
 
 _deserializer = TypeDeserializer()
 _serializer = TypeSerializer()
@@ -94,6 +108,9 @@ class _Pass:
     started: int = 0
     left: bool = False
     inputs: Optional[run_input.RunInput] = None
+    check: bool = False                    # the sweeper's pass: liveness, the engine's stop, lost hints (§7)
+    left_read: bool = False                # the run row carried left_at when the pass read it
+    lost: List[str] = field(default_factory=list)
 
 
 class Dispatcher:
@@ -117,9 +134,16 @@ class Dispatcher:
 
     # ── entry points ─────────────────────────────────────────────────────
 
-    def full_pass(self, run_key: str, *, source: str, remaining_ms: Callable[[], int]) -> Dict[str, Any]:
-        """A pass over every row of the run, which also decides the run's end (§4)."""
-        return self._pass(run_key, None, source=source, remaining_ms=remaining_ms)
+    def full_pass(self, run_key: str, *, source: str, remaining_ms: Callable[[], int], check: bool = False,
+                  orphan_keys: Sequence[str] = ()) -> Dict[str, Any]:
+        """A pass over every row of the run, which also decides the run's end (§4).
+
+        ``check`` makes it the sweeper's check of the run: it judges executions and
+        reports in ``lost`` the rows whose wait ended on a lost hint (§7).
+        ``orphan_keys`` are rows to stop if the run row is missing (invariant 11).
+        """
+        return self._pass(run_key, None, source=source, remaining_ms=remaining_ms, orphan_keys=set(orphan_keys),
+                          check=check)
 
     def narrow_pass(self, run_key: str, task_keys: Sequence[str], *, source: str,
                     remaining_ms: Callable[[], int]) -> Dict[str, Any]:
@@ -161,11 +185,11 @@ class Dispatcher:
     # ── a pass ───────────────────────────────────────────────────────────
 
     def _pass(self, run_key: str, targets: Optional[Set[str]], *, source: str, remaining_ms: Callable[[], int],
-              orphan_keys: Optional[Set[str]] = None) -> Dict[str, Any]:
+              orphan_keys: Optional[Set[str]] = None, check: bool = False) -> Dict[str, Any]:
         deadline = self.monotonic() + max(0, remaining_ms() - RESERVE_MS) / 1000
         try:
             return self._run_pass(run_key, targets, source=source, deadline=deadline,
-                                  orphan_keys=orphan_keys or set(targets or ()))
+                                  orphan_keys=orphan_keys or set(targets or ()), check=check)
         except CoordinationTransient:
             raise
         except (ClientError, BotoCoreError) as exc:
@@ -175,12 +199,14 @@ class Dispatcher:
             return self._failed(run_key, source, exc)
 
     def _run_pass(self, run_key: str, targets: Optional[Set[str]], *, source: str, deadline: float,
-                  orphan_keys: Set[str]) -> Dict[str, Any]:
+                  orphan_keys: Set[str], check: bool) -> Dict[str, Any]:
         now = self.clock()
         run_item = self._get(run_key)
         if run_item is None:
-            return self._orphans(run_key, sorted(orphan_keys), source=source, now=now)
+            return self.stop_orphans(run_key, sorted(orphan_keys), source=source)
         run = dispatch.run_view(run_item)
+        if check and run.status == run_row.CREATING:
+            run = self._engine_check(run, now, finished=False) or run     # it never became active (§4)
         if not run.active and not run.stopping:
             return {"run": run_key, "source": source, "action": "creating"}    # nothing starts before (§1)
         specs = self._spec_version(run_item)
@@ -191,27 +217,38 @@ class Dispatcher:
         else:
             judged = {name for name, key in keys.items() if key in targets}
             wanted = judged | {d for name in judged for d in specs[name].fields[TaskSpecKey.DEPENDENCIES]}
-        state = _Pass(run, {}, {}, specs, deadline, source, now)
+        state = _Pass(run, {}, {}, specs, deadline, source, now, check=check, left_read=run.left_at is not None)
         self._read_rows(state, {name: keys[name] for name in wanted})
         try:
             if run.stopping:
-                for name in dispatch.stop_order({n: r for n, r in state.rows.items() if n in judged}):
-                    self._row(state, name, stop=True)
+                self._stop_rows(state, judged)
             else:
                 for name in _upstreams_first(judged, specs):
                     if name in state.rows:
                         self._row(state, name)
             if targets is None:
-                self._run_end(state, keys)
+                end = self._run_end(state, keys)
+                stopped = self._engine_check(state.run, now, finished=end.finished) if check else None
+                if stopped is not None:                    # its execution ended before its answer (§4)
+                    state.run = stopped
+                    self._stop_rows(state, judged)
+                    self._run_end(state, keys)
         except _Left:
             state.left = True
         if state.left:
             self._send(dispatch_writes.due_now(state.run, table=self.tokens_table, now=now,
                                                left=bool(state.changed) or state.run.left_at is None), quiet=True)
-        result = {"run": run_key, "source": source, "rows": len(state.rows), "changed": state.changed,
-                  "started": state.started, "left": state.left}
+        result: Dict[str, Any] = {"run": run_key, "source": source, "rows": len(state.rows), "changed": state.changed,
+                                  "started": state.started, "left": state.left}
+        if check:
+            result["lost"] = sorted(state.lost)
         log.info("dispatcher", "pass", **result)
         return result
+
+    def _stop_rows(self, state: _Pass, judged: Set[str]) -> None:
+        """Every unfinished row of the set stopped, dependants first (§4)."""
+        for name in dispatch.stop_order({n: r for n, r in state.rows.items() if n in judged}):
+            self._row(state, name, stop=True)
 
     def _row(self, state: _Pass, name: str, *, stop: bool = False) -> None:
         """Decide one row and send what was decided; decide it again once from new reads if refused."""
@@ -237,6 +274,11 @@ class Dispatcher:
         row = state.rows[name]
         if stop:
             return dispatch.stop(row, now=state.now, cause=_stop_cause(state.run))
+        if state.check and dispatch.liveness_due(row, state.run, now=state.now):
+            execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
+                                       state.run, subject=row.key)
+            if execution is not None:                  # an unknown state judges nothing (invariant 10)
+                return dispatch.liveness(row, state.run, now=state.now, execution=execution)
         upstreams = {d: state.rows.get(d) for d in row.dependencies}
         assets = None
         if dispatch.needs_assets(row, upstreams):
@@ -260,6 +302,12 @@ class Dispatcher:
                 finished_at=state.now if final else row.finished_at)
         if judgment.leaves_wait and row.has_wait_for:
             self._drop_pointers(state.items[name])
+        if state.check and judgment.since is not None:
+            countdown = row.times.countdown_end
+            if sweep.lost_hint(judgment.since, state.now, left_at=state.left_read,
+                               countdown_ended=countdown is not None and countdown <= state.now,
+                               resumed_at=pauses.resumed_at(state.run.pauses)):
+                state.lost.append(name)
         if judgment.warning:
             self._warn(state.run, subject=row.key, task=name, item=state.items[name], error=judgment.warning)
         if judgment.start:
@@ -279,12 +327,12 @@ class Dispatcher:
 
     # ── the run's end ────────────────────────────────────────────────────
 
-    def _run_end(self, state: _Pass, keys: Mapping[str, str]) -> None:
+    def _run_end(self, state: _Pass, keys: Mapping[str, str]) -> dispatch.RunEnd:
         """The summary, the answer, the stop done and the run row's due time (§3, §4)."""
         statuses = {name: (state.rows[name].status if name in state.rows else None) for name in keys}
         end = dispatch.run_outcome(state.run, statuses)
         run = state.run
-        if end.missing:
+        if end.missing and run.active:          # a run that never became active may lack rows: Start_Run warned
             self._warn(run, subject=f"{run.key}-missing", task="", item={},
                        error=f"rows of the run are missing, and count as failed: {', '.join(end.missing)}")
         if dispatch.summary_changed(run, end):
@@ -296,8 +344,68 @@ class Dispatcher:
             if run.stopping and self._send(dispatch_writes.stop_done(run, table=self.tokens_table, now=state.now)):
                 run = replace(run, version=run.version + 1, stop_done=True)
             if not run.stopping and not run.requests:
-                self._send(dispatch_writes.close(run, table=self.tokens_table), quiet=True)
+                self._send(dispatch_writes.close(run, table=self.tokens_table, now=state.now), quiet=True)
         state.run = run
+        return end
+
+    # ── executions: the sweeper's checks (§1, §4) ────────────────────────
+
+    def _engine_check(self, run: dispatch.RunView, now: datetime, *, finished: bool) -> Optional[dispatch.RunView]:
+        """The engine's stop of a run whose execution ended before its answer, or that never became active (§4).
+
+        Returns the run as the stop mark left it, or None when the run goes on or
+        the mark's write was refused: another write raised ``run_version``, or a
+        Stop of the run came first; the next check decides again.
+        """
+        if not dispatch.engine_check_due(run, now=now, finished=finished):
+            return None
+        cause = dispatch.engine_stop_cause(run, now=now, execution=self._describe_run(run), finished=finished)
+        if cause is None:
+            return None
+        if not self._send(dispatch_writes.engine_stop(run, table=self.tokens_table, cause=cause, now=now)):
+            return None
+        log.info("dispatcher", "the engine stops the run", run=run.key, cause=cause)
+        mark = run_row.stop_mark(by=run_row.ENGINE, reason=cause, at=format_utc(now))
+        return replace(run, version=run.version + 1, stop=mark)
+
+    def _describe_run(self, run: dispatch.RunView) -> Optional[dispatch.Execution]:
+        """The run's execution, from its pipeline's state machine in the registry (CLAUDE.md, "Stop pipeline
+        hierarchy"); a pipeline no longer registered has no execution any more. None when unknown."""
+        try:
+            entry = self.client.get_item(TableName=self.pipelines_table, Key={REGISTRY_KEY: {"S": run.pipeline}},
+                                         ConsistentRead=True).get("Item")
+        except (ClientError, BotoCoreError) as exc:
+            failures.reraise_transient(exc)
+            self._warn(run, subject=f"{run.key}-execution", task="", item={},
+                       error=f"the run's execution could not be checked: the registry could not be read: {exc}")
+            return None
+        if entry is None:
+            return dispatch.Execution(None, cause=f"the pipeline {run.pipeline} is no longer registered")
+        machine = _plain(entry).get(REGISTRY_SFN_ARN)
+        if not machine:
+            self._warn(run, subject=f"{run.key}-execution", task="", item={},
+                       error=f"the run's execution cannot be checked: the registry names no state machine for "
+                             f"{run.pipeline}; deploy the pipeline again")
+            return None
+        return self._describe(_arn_of(str(machine), run.execution), run, subject=run.key)
+
+    def _describe(self, arn: str, run: dispatch.RunView, *, subject: str) -> Optional[dispatch.Execution]:
+        """What DescribeExecution says of ``arn``; None when it could not say, which decides nothing (invariant 10)."""
+        try:
+            response = self.sfn.describe_execution(executionArn=arn)
+        except ClientError as exc:
+            code = failures.error_code(exc)
+            if code == NO_EXECUTION:
+                return dispatch.Execution(None)
+            log.error("dispatcher", "an execution could not be described", execution=arn, error=str(exc))
+            if not failures.is_transient(exc):
+                self._warn(run, subject=f"{subject}-describe", task="", item={},
+                           error=f"the execution {arn} could not be checked: {code}: {exc}")
+            return None
+        except BotoCoreError as exc:
+            log.error("dispatcher", "an execution could not be described", execution=arn, error=str(exc))
+            return None
+        return dispatch.Execution(str(response.get("status") or ""), response.get("error"), response.get("cause"))
 
     def _answer(self, run: dispatch.RunView, end: dispatch.RunEnd) -> bool:
         """Answer the run's token; a closed token counts as answered (§4)."""
@@ -323,6 +431,9 @@ class Dispatcher:
         failure = self._start_failure(state, name, item, started)
         if failure is None:
             state.started += 1
+            done = dispatch.started(started, state.run, now=state.now)
+            if self._write(state, started, done):      # earlier attempts failed: liveness counts from now
+                self._after(state, name, started, done)
             return
         if self._write(state, started, failure):
             self._after(state, name, started, replace(failure, start=False))
@@ -364,14 +475,16 @@ class Dispatcher:
 
     # ── rows whose run row is missing ────────────────────────────────────
 
-    def _orphans(self, run_key: str, keys: Sequence[str], *, source: str, now: datetime) -> Dict[str, Any]:
-        """Each row a change woke, stopped with the cause: its run row is missing (invariant 11)."""
+    def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str) -> Dict[str, Any]:
+        """Each row named, stopped with the cause: its run row is missing (invariant 11). A row that a 1.2 run
+        left in flight has no decision fields; its stop needs only its status and generation (*Migration*)."""
+        now = self.clock()
         stopped = 0
         for key in keys:
             item = self._get(key)
-            if item is None or task_row.DECISION not in item:
+            if item is None or task_row.STATUS not in item:
                 continue
-            row = dispatch.row_view(item)
+            row = dispatch.stop_view(item)
             judgment = dispatch.stop(row, now=now, cause="its run row is missing")
             items = dispatch_writes.task_write(row, judgment, None, table=self.tokens_table, now=now)
             if items and self._send_items(items):
@@ -515,6 +628,16 @@ class Dispatcher:
         self._warn(run, subject=f"{run_key}-pass", task="", item={},
                    error=f"a pass over the run failed: {type(exc).__name__}: {exc}")
         return {"run": run_key, "source": source, "action": "failed", "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _arn_of(state_machine: str, execution: str) -> str:
+    """An execution's ARN from its state machine's (CLAUDE.md, "Stop pipeline hierarchy")."""
+    return f"{state_machine.replace(':stateMachine:', ':execution:')}:{execution}"
+
+
+def _execution_arn(run_task_arn: str, row_key: str, run: dispatch.RunView, generation: int) -> str:
+    """The ARN of a row's run_task execution of ``generation``, under its derived name (invariant 4)."""
+    return _arn_of(run_task_arn, run_name.run_task_name(row_key, run.run_start, generation))
 
 
 def _stop_cause(run: dispatch.RunView) -> str:

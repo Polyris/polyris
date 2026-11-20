@@ -50,7 +50,9 @@ SECRETS = (ACCOUNT, ROLE, FUNCTION, REQUEST)
 #: The names the sweeper writes into its report.
 NAMES = {"sweeper_function": "acme-prod-polyris-sweeper", "fanout_function": "acme-prod-polyris-asset-fanout",
          "events_table": "acme-prod-polyris-asset-events",
-         "fanout_mapping_uuid": "48529b7b-abda-4306-8550-8d3bbc1391c3", "region": "eu-west-1"}
+         "fanout_mapping_uuid": "48529b7b-abda-4306-8550-8d3bbc1391c3", "region": "eu-west-1",
+         "dispatcher_function": "acme-prod-polyris-reconcile", "tasks_table": "acme-prod-polyris-pipeline-tokens",
+         "dispatch_mapping_uuid": "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b"}
 CHECKS = {"dynamodb", "stepfunctions", "recent_failures", "circuit_breakers", "coordination"}
 WORDS = {"healthy", "degraded", "unhealthy"}
 
@@ -114,13 +116,13 @@ def _pat(*, revoked: bool = False) -> str:
 
 
 def _engine(**fields) -> None:
-    """A sweeper report that names every resource: silent for 30 minutes, the mapping and the stream off."""
+    """A sweeper report that names every resource: silent for 30 minutes, both mappings and both streams off."""
     from dal import executions_repo
 
     executions_repo.put({"execution_name": sweep.HEALTH_KEY,
                          "checked_at": format_utc(datetime.now(timezone.utc) - timedelta(minutes=30)),
                          "fanout_mapping": "Disabled", "fanout_result": "OK", "stream": "DISABLED",
-                         "oldest_overdue": "", "failed_steps": [], **NAMES, **fields})
+                         "dispatch_mapping": "Disabled", "tasks_stream": "DISABLED", "oldest_overdue": "", "failed_steps": [], **NAMES, **fields})
 
 
 def _get(path: str = "/api/health", token=None) -> dict:
@@ -227,7 +229,8 @@ def test_a_valid_pat_gets_the_details_and_the_findings(aws):
     assert (resp["statusCode"], body["status"], body["detail"]) == (200, "degraded", "full")
     assert [f["title"] for f in body["findings"]] == [
         "The periodic re-check is not running", "Asset event delivery is off",
-        "Asset events are not recorded for delivery"]
+        "Asset events are not recorded for delivery", "Task delivery is off",
+        "Task changes are not recorded for delivery"]
     assert body["findings"][1]["command"] == (
         "aws lambda update-event-source-mapping --uuid 48529b7b-abda-4306-8550-8d3bbc1391c3 --enabled "
         "--region eu-west-1")
@@ -238,13 +241,14 @@ def test_a_valid_pat_gets_the_details_and_the_findings(aws):
 def test_a_valid_cognito_token_gets_the_details(aws, jwks):
     _engine()
     body = json.loads(_get(token=_jwt(expires_in=3600))["body"])
-    assert body["detail"] == "full" and len(body["findings"]) == 3
+    assert body["detail"] == "full" and len(body["findings"]) == 5
     assert jwks.call_count == 1                                     # verified against the pool's key
 
 
 def test_with_auth_off_anyone_gets_the_details(aws, monkeypatch):
     monkeypatch.setenv("AUTH_ENABLED", "false")
-    _engine(checked_at=format_utc(datetime.now(timezone.utc)), fanout_mapping="Enabled", stream="ENABLED")
+    _engine(checked_at=format_utc(datetime.now(timezone.utc)), fanout_mapping="Enabled", stream="ENABLED",
+            dispatch_mapping="Enabled", tasks_stream="ENABLED")
 
     resp = _get()
 
@@ -321,7 +325,8 @@ def test_an_unreachable_dynamodb_is_a_503_whose_full_body_names_it(aws):
 
 
 def test_an_unreachable_step_functions_is_a_503_whose_full_body_names_it(aws):
-    _engine(checked_at=format_utc(datetime.now(timezone.utc)), fanout_mapping="Enabled", stream="ENABLED")
+    _engine(checked_at=format_utc(datetime.now(timezone.utc)), fanout_mapping="Enabled", stream="ENABLED",
+            dispatch_mapping="Enabled", tasks_stream="ENABLED")
     _deny_every_call(aws.sfn)
 
     resp = _get(token=_pat())

@@ -77,6 +77,7 @@ def largest_run_row():
             run_row.RESET_DEPENDANTS: run_row.request(by=who, at=ISO, task="t" * run_row.TASK_ID_MAX),
         },
         run_row.PAUSES: pauses.to_item(intervals),
+        run_row.CHECKS: 99_999_999,
         run_row.TTL: 1_830_000_000,
         attention.KEY: attention.attention(attention.WAITING, run_row.key(pipeline_execution)),
         attention.DUE: ISO,

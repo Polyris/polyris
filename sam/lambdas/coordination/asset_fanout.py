@@ -39,8 +39,8 @@ from polyris.coordination.times import parse_utc
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient, reraise_transient
 from logger import log
 from dispatcher import Dispatcher
+from polyris.constants import WarningKind
 from polyris.coordination import run_row, start_run
-from reconcile import Reconciler
 from stores import FactStore, Registry
 
 #: Stop starting new records with this much of the invocation left.
@@ -58,14 +58,16 @@ def fact_of(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class AssetFanout:
-    def __init__(self, reconciler: Reconciler, *, dispatcher: Dispatcher,
-                 subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
+    """The fan-out of one fact, with the dispatcher whose tables, clients and clock it shares."""
+
+    def __init__(self, dispatcher: Dispatcher, *, subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
                  consumers_table: str = env.ASSET_SUBSCRIPTIONS_TABLE):
-        self.reconciler = reconciler
         self.dispatcher = dispatcher
-        self.subscriptions = reconciler.resource.Table(subscriptions_table)
-        self.consumers = reconciler.resource.Table(consumers_table)
-        self.registry_table = reconciler.resource.Table(reconciler.pipelines_table)
+        resource = dispatcher.resource
+        self.tasks = resource.Table(dispatcher.tokens_table)
+        self.subscriptions = resource.Table(subscriptions_table)
+        self.consumers = resource.Table(consumers_table)
+        self.registry_table = resource.Table(dispatcher.pipelines_table)
 
     def handle(self, records: List[Dict[str, Any]], remaining_ms: Callable[[], int]) -> Dict[str, Any]:
         """Process records in stream order; return the ones to redeliver.
@@ -83,8 +85,8 @@ class AssetFanout:
             try:
                 fact = fact_of(record)
                 if fact.get("fact_version") != FACT_VERSION:
-                    # An older version wrote it and started its own consumers; adoption takes it (ADR #130 §8).
-                    log.info("asset_fanout", "a fact of an older version; left to adoption", sequence=sequence,
+                    # A writer before ADR #130 wrote it, and started its own consumers then.
+                    log.info("asset_fanout", "a fact of a version before ADR #130; skipped", sequence=sequence,
                              asset_name=str(fact.get("asset_name", "")))
                     continue
                 fact_from_item(fact, declared_granularity="daily")     # a fact nobody could read is poison
@@ -143,7 +145,7 @@ class AssetFanout:
         """The run of a pointer that names none, which 1.2 wrote: its row's run. A pointer whose row is gone is
         deleted (Rule 40); a row without a run row is then stopped by the pass (ADR #137 invariant 11)."""
         try:
-            row = self.reconciler.tasks.get(subscriber)
+            row = self.tasks.get_item(Key={run_row.TABLE_KEY: subscriber}, ConsistentRead=True).get("Item")
             if row is None:
                 self.subscriptions.delete_item(Key={start_run.POINTER_KEY: f"asset:{asset}",
                                                     start_run.POINTER_SUBSCRIBER: subscriber})
@@ -198,7 +200,7 @@ class AssetFanout:
         cutover = row.get("subscribed_at") or (entry or {}).get("registered_at")
         if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):
             return 0
-        registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
+        registry = Registry(self.dispatcher.resource, self.dispatcher.pipelines_table)
         evidence = registry.fact(fact)
         schedule, scheduled = self._schedule(entry, consumer)
         if not scheduled or (schedule is not None and asset not in sp.asset_names(schedule)):
@@ -209,8 +211,8 @@ class AssetFanout:
             return 0             # unreadable: warned, and the row stays until the schedule is fixed
         every_event = fact.get("cascade") == "all" or schedule.operator == sp.OR
         if fact.get("cascade") != "all":
-            reader = FactStore(self.reconciler.resource, self.reconciler.asset_events_table, registry,
-                               self.reconciler.clock(), on_unreadable=self.reconciler.unreadable_fact)
+            reader = FactStore(self.dispatcher.resource, self.dispatcher.asset_events_table, registry,
+                               self.dispatcher.clock(), on_unreadable=self.unreadable_fact)
             # The schedule is judged as it stood when the triggering fact arrived: `.within()` as of its time,
             # and no fact recorded after it, so a retry, a late record or the catch-up gives the same answer.
             evaluation = evaluate_assets(schedule, target=evidence.partition_date, now=evidence.event_time,
@@ -232,7 +234,7 @@ class AssetFanout:
             "variables": {"current_date": day, "PARTITION_ARG": day},
         })
         try:
-            self.reconciler.signals.client.start_execution(stateMachineArn=sfn_arn, name=name, input=run_input)
+            self.dispatcher.sfn.start_execution(stateMachineArn=sfn_arn, name=name, input=run_input)
         except (ClientError, BotoCoreError) as exc:
             code = error_code(exc)
             if code == "ExecutionAlreadyExists":
@@ -303,10 +305,10 @@ class AssetFanout:
 
     def _retry_later(self, name: str, consumer: str, sfn_arn: str, run_input: str, error: str) -> None:
         item = push_retry_item(run_name=name, consumer=consumer, sfn_arn=sfn_arn, run_input=run_input,
-                               error=error, now=self.reconciler.clock())
+                               error=error, now=self.dispatcher.clock())
         try:
             # A row for the same run may exist already: keep it, with its first failure time.
-            self.reconciler.tasks.table.put_item(Item=item, ConditionExpression="attribute_not_exists(execution_name)")
+            self.tasks.put_item(Item=item, ConditionExpression="attribute_not_exists(execution_name)")
         except (ClientError, BotoCoreError) as exc:
             if error_code(exc) == "ConditionalCheckFailedException":
                 return
@@ -358,14 +360,21 @@ class AssetFanout:
             self._warn(f"asset:{asset}", f"subscribers of asset {asset} could not be read: {type(exc).__name__}: {exc}")
             return []
 
+    def unreadable_fact(self, item: Dict[str, Any], exc: Exception) -> None:
+        """A fact no reader can use, met while a push consumer's schedule is judged: one warning per fact
+        (repeated reads rewrite it), as the dispatcher writes for one met by a pass."""
+        asset, recorded = str(item.get("asset_name", "")), str(item.get("event_time", ""))
+        self._warn(f"fact-{asset}-{recorded}", f"The fact of asset {asset} recorded at {recorded} cannot be read, "
+                                               f"so it counts for no task: {exc}")
+
     def _warn(self, subject: str, error: str) -> None:
         log.error("asset_fanout", "non-transient failure", subject=subject, error=error)
-        kind = "push" if subject.startswith("push:") else "coordination"
+        kind = WarningKind.PUSH if subject.startswith("push:") else WarningKind.COORDINATION
         item = warning_item(kind=kind, execution_name=subject, task_name="",
                             pipeline_name="", pipeline_execution="", task_date="", error=error,
-                            now=self.reconciler.clock())
+                            now=self.dispatcher.clock())
         try:
-            self.reconciler.tasks.put(item)
+            self.tasks.put_item(Item=item)
         except (ClientError, BotoCoreError) as exc:
             log.error("asset_fanout", "could not write the warning row", warning=item["execution_name"], error=str(exc))
 
@@ -378,7 +387,7 @@ def _fanout() -> AssetFanout:
     if _FANOUT is None:
         import dispatcher
 
-        _FANOUT = AssetFanout(Reconciler(env.dynamodb(), env.stepfunctions()), dispatcher=dispatcher._dispatcher())
+        _FANOUT = AssetFanout(dispatcher._dispatcher())
     return _FANOUT
 
 

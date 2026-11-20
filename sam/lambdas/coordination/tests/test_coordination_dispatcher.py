@@ -12,7 +12,8 @@ import env
 import start_run as start_run_lambda
 from coordination_testkit import TABLES, FakeSfn, client_error, fact
 from dispatcher import RESERVE_MS, Dispatcher
-from polyris.coordination import run_name, run_row, spec_store, task_row, task_spec
+from polyris.coordination import attention, run_name, run_row, spec_store, start_run, sweep, task_row, task_spec
+from polyris.coordination.times import format_utc
 
 NOW = datetime(2026, 11, 12, 6, 0, 5, tzinfo=timezone.utc)
 EXECUTION = "orders-run-2026-11-12-abcd1234"
@@ -215,13 +216,18 @@ def test_an_access_denied_start_warns_and_counts_toward_no_deadline(world):
     assert "access denied" in warning["error"]
 
 
-def test_a_start_made_already_counts_as_done(world):
+def test_a_start_made_already_counts_as_done_and_its_liveness_counts_from_then(world):
+    """Its failed attempts go, so its run_task is judged at its liveness check, not retried until 6 hours."""
     start(world, CHAIN)
     full(world)
     update(world, key("extract"), start_failures=1, start_failed_first="2026-11-12T05:59:00.000Z",
-           start_failed_last="2026-11-12T05:59:00.000Z")                 # its answer was lost
+           start_failed_last="2026-11-12T05:59:00.000Z", error="ThrottlingException: lost answer")
     full(world)
-    assert len(world.sfn.started) == 1 and item(world, key("extract"))["start_failures"] == 1
+    extract = item(world, key("extract"))
+    assert len(world.sfn.started) == 1
+    assert not {"start_failures", "start_failed_first", "start_failed_last", "error"} & set(extract)
+    assert extract["status_since"] == format_utc(NOW)
+    assert extract["attention_at"] == format_utc(NOW + attention.FIRST_DUE)
 
 
 def test_a_start_refused_for_good_fails_the_row(world):
@@ -441,3 +447,221 @@ def test_a_passs_budget_goes_on_work_so_each_pass_moves_past_the_rows_that_need_
     results = [world.dispatcher.full_pass(RUN_KEY, source="test", remaining_ms=one_write) for _ in range(3)]
     assert [r["started"] for r in results] == [1, 1, 1] and [r["left"] for r in results] == [True, True, False]
     assert {item(world, key(t))["status"] for t in "abc"} == {"deps_ready"}
+
+
+# ── the sweeper's check of a run (ADR #137 §1, §4, §7) ─────────────────────
+
+PIPELINE_MACHINE = "arn:aws:states:us-east-1:123456789012:stateMachine:acme-dev-polyris-orders"
+PIPELINE_EXECUTION = f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:{EXECUTION}"
+
+
+def registered(world, status: Any = "RUNNING") -> None:
+    """The pipeline in the registry, and its execution as DescribeExecution shows it."""
+    world.client.put_item(TableName=table("PIPELINES_TABLE"),
+                          Item={"pipeline_name": {"S": "orders"}, "sfn_arn": {"S": PIPELINE_MACHINE}})
+    world.sfn.executions[PIPELINE_EXECUTION] = status
+
+
+def check(world, **kwargs: Any) -> Dict[str, Any]:
+    return world.dispatcher.full_pass(RUN_KEY, source="sweeper", remaining_ms=lambda: 60_000, check=True, **kwargs)
+
+
+def run_task_execution(task: str, generation: int = 1) -> str:
+    return f"arn:aws:states:us-east-1:123456789012:execution:run-task:{run_name.run_task_name(key(task), START, generation)}"
+
+
+def warnings(world) -> List[Dict[str, Any]]:
+    items = world.client.scan(TableName=table("TOKENS_TABLE"))["Items"]
+    return [w for w in ({k: _de.deserialize(v) for k, v in i.items()} for i in items)
+            if w["execution_name"].startswith("_notify_warn_")]
+
+
+def test_only_the_sweepers_pass_judges_a_run_task_and_each_check_backs_off(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    world.sfn.executions[run_task_execution("extract")] = "RUNNING"
+    world.clock.at = NOW + timedelta(minutes=11)
+    full(world)
+    assert world.sfn.described == []                                   # a stream pass calls no DescribeExecution
+    check(world)
+    assert world.sfn.described == [run_task_execution("extract"), PIPELINE_EXECUTION]
+    extract = item(world, key("extract"))
+    assert (extract["status"], extract["checks"], extract["last_check"]) == ("deps_ready", 1, format_utc(world.clock.at))
+    assert extract["attention_at"] == format_utc(world.clock.at + timedelta(minutes=20))
+    check(world)
+    assert world.sfn.described.count(run_task_execution("extract")) == 1     # not before its next check
+
+
+def test_a_run_task_that_ended_without_an_outcome_fails_its_row_with_how_it_ended(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    update(world, key("extract"), status="running", status_since=format_utc(NOW))
+    world.sfn.executions[run_task_execution("extract")] = {"status": "FAILED", "error": "States.Runtime",
+                                                           "cause": "the Lambda was deleted"}
+    world.clock.at = NOW + timedelta(minutes=11)
+    check(world)
+    extract = item(world, key("extract"))
+    assert extract["status"] == "failed"
+    assert extract["error"] == ("its run_task execution ended FAILED (States.Runtime: the Lambda was deleted) "
+                                "without recording an outcome")
+    assert extract["attention"].startswith("failed#")
+    assert item(world, key("load"))["status"] == "upstream_failed"    # decided in the same pass (ADR #138)
+
+
+def test_a_ready_row_whose_run_task_does_not_exist_is_started_again_under_its_name(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    world.sfn.started.clear()                                          # the start never reached Step Functions
+    world.clock.at = NOW + timedelta(minutes=11)
+    check(world)
+    [again] = world.sfn.started
+    assert again["name"] == run_name.run_task_name(key("extract"), START, 1)
+    assert item(world, key("extract"))["checks"] == 1
+
+
+def test_a_running_row_whose_run_task_does_not_exist_fails(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    update(world, key("extract"), status="running", status_since=format_utc(NOW))
+    world.clock.at = NOW + timedelta(minutes=11)
+    check(world)
+    assert item(world, key("extract"))["error"] == "its run_task execution does not exist"
+
+
+@pytest.mark.parametrize("code,warned", [("ThrottlingException", False), ("AccessDeniedException", True)])
+def test_an_execution_that_cannot_be_described_judges_nothing(world, code, warned):
+    """No read failure leads to a start, a close or a run's answer (invariant 10)."""
+    start(world, CHAIN)
+    full(world)
+    registered(world, "ABORTED")
+    world.sfn.errors["describe_execution"] = client_error(code, "DescribeExecution")
+    world.clock.at = NOW + timedelta(minutes=11)
+    check(world)
+    extract, run = item(world, key("extract")), item(world, RUN_KEY)
+    assert extract["status"] == "deps_ready" and "last_check" not in extract and "stop" not in run
+    assert bool(warnings(world)) is warned
+    world.sfn.errors["describe_execution"] = client_error("ThrottlingException", "DescribeExecution")
+
+
+def test_a_run_whose_execution_ended_before_its_answer_is_stopped_with_the_cause(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world, {"status": "ABORTED"})
+    world.sfn.executions[run_task_execution("extract")] = "RUNNING"
+    world.clock.at = NOW + timedelta(minutes=3)
+    check(world)
+    run = item(world, RUN_KEY)
+    assert run["stop"]["by"] == "the engine" and run["stop"]["reason"] == "its execution ended ABORTED before the run's answer"
+    assert {item(world, key(t))["status"] for t in ("extract", "load")} == {"stopped"}
+    [answer] = world.sfn.failed
+    assert answer["token"] == "run-token" and "stop_done" in run
+
+
+def test_a_run_whose_execution_runs_goes_on(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    world.clock.at = NOW + timedelta(minutes=3)
+    check(world)
+    assert "stop" not in item(world, RUN_KEY) and world.sfn.failed == []
+
+
+def test_a_run_whose_pipeline_is_no_longer_registered_is_stopped(world):
+    start(world, CHAIN)
+    full(world)
+    world.clock.at = NOW + timedelta(minutes=3)
+    check(world)
+    assert item(world, RUN_KEY)["stop"]["reason"] == (
+        "its execution does not exist (the pipeline orders is no longer registered)")
+
+
+def test_a_registry_entry_without_its_state_machine_warns_and_stops_nothing(world):
+    start(world, CHAIN)
+    full(world)
+    world.client.put_item(TableName=table("PIPELINES_TABLE"), Item={"pipeline_name": {"S": "orders"}})
+    world.clock.at = NOW + timedelta(minutes=3)
+    check(world)
+    assert "stop" not in item(world, RUN_KEY)
+    [warning] = warnings(world)
+    assert "names no state machine for orders" in warning["error"]
+
+
+def test_a_run_still_creating_after_start_runs_retry_window_is_stopped_with_its_executions_error(world):
+    start(world, CHAIN)
+    update(world, RUN_KEY, status="creating")
+    registered(world, {"status": "FAILED", "error": "States.TaskFailed", "cause": "Start_Run timed out"})
+    assert check(world)["action"] == "creating" and world.sfn.described == []      # within its window
+    world.clock.at = NOW + start_run.retry_window()
+    check(world)
+    run = item(world, RUN_KEY)
+    assert run["stop"]["reason"] == (f"Start_Run did not make the run active within its retry window of "
+                                     f"{start_run.retry_window()}; its execution FAILED (States.TaskFailed: "
+                                     "Start_Run timed out)")
+    assert {item(world, key(t))["status"] for t in ("extract", "load")} == {"stopped"}
+    assert world.sfn.failed and "attention" not in item(world, RUN_KEY) and warnings(world) == []
+
+
+def test_a_creating_run_whose_execution_runs_past_the_window_is_stopped_too(world):
+    start(world, CHAIN)
+    update(world, RUN_KEY, status="creating")
+    registered(world)
+    world.clock.at = NOW + start_run.retry_window()
+    check(world)
+    assert item(world, RUN_KEY)["stop"]["reason"] == (
+        f"Start_Run did not make the run active within its retry window of {start_run.retry_window()}")
+
+
+def test_a_check_reports_the_rows_whose_wait_ended_on_a_lost_hint(world):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    finish(world, "extract")                                           # its stream record never came
+    world.clock.at = NOW + sweep.LOST_HINT_GRACE + timedelta(seconds=1)
+    assert check(world)["lost"] == ["load"]
+    assert item(world, key("load"))["status"] == "deps_ready"
+
+
+@pytest.mark.parametrize("left_at", [False, True])
+def test_a_row_within_the_grace_or_left_by_a_pass_is_no_lost_hint(world, left_at):
+    start(world, CHAIN)
+    full(world)
+    registered(world)
+    finish(world, "extract")
+    if left_at:
+        update(world, RUN_KEY, left_at=format_utc(NOW))
+        world.clock.at = NOW + timedelta(minutes=30)
+    else:
+        world.clock.at = NOW + sweep.LOST_HINT_GRACE
+    assert check(world)["lost"] == []
+    assert item(world, key("load"))["status"] == "deps_ready"
+
+
+def test_a_countdown_that_ended_at_the_check_is_no_lost_hint(world):
+    start(world, [spec("extract"), spec("load", ["extract"], wait_before=600)])
+    full(world)
+    registered(world)
+    finish(world, "extract")
+    full(world)                                                        # load counts down
+    world.clock.at = NOW + timedelta(minutes=11)
+    assert check(world)["lost"] == []
+    assert item(world, key("load"))["status"] == "deps_ready"
+
+
+@pytest.mark.parametrize("generation,raised", [(None, 1), (0, 1), (3, 4)])
+def test_a_row_a_12_run_left_in_flight_is_stopped_without_decision_fields(world, generation, raised):
+    """1.2 rows name no spec version; their stop needs only the status and the generation (*Migration*)."""
+    old = "load-2026-11-12-run-2026-11-12-0ld0ld01"
+    row = {"execution_name": old, "task_name": "load", "status": "waiting", "pipeline_execution": "old-run",
+           "attention": attention.attention(attention.WAITING, old), "attention_at": "2026-11-12T05:00:00.000Z",
+           **({"generation": generation} if generation is not None else {})}
+    world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in row.items()})
+    result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
+                                        check=True, orphan_keys=[old, "gone-2026-11-12-x"])
+    assert (result["action"], result["stopped"]) == ("orphans", 1)
+    stopped = item(world, old)
+    assert (stopped["status"], stopped["generation"], stopped["error"]) == ("stopped", raised, "its run row is missing")
+    assert "attention" not in stopped

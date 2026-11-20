@@ -36,6 +36,8 @@ POINTER_KEY = "dependency_key"
 POINTER_SUBSCRIBER = "subscriber"
 #: The run row's key of the subscriber's run, by which AssetFanout passes over each run once (§7).
 POINTER_RUN = "run"
+#: The pointer table's TTL attribute (sam/template.yaml, DependencySubscriptionsTable).
+POINTER_TTL = "ttl"
 ASSET_POINTER_PREFIX = "asset:"
 
 
@@ -226,15 +228,20 @@ def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> L
     return items
 
 
-def pointer_items(call: Call, specs: Mapping[str, TaskSpec]) -> List[Dict[str, str]]:
-    """The ``asset:{name}`` pointers of the waiting tasks with ``wait_for``, for AssetFanout (§7)."""
+def pointer_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> List[Dict[str, Any]]:
+    """The ``asset:{name}`` pointers of the waiting tasks with ``wait_for``, for AssetFanout (§7).
+
+    They are part of the run's history, so they carry its TTL (§5, invariant 11).
+    """
     skip = set(skipped(call))
-    pointers = []
+    ttl = retention.ttl(now, retention.HISTORY)
+    pointers: List[Dict[str, Any]] = []
     for task_id, spec in sorted(specs.items()):
         wait_for = spec.fields.get(TaskSpecKey.WAIT_FOR)
         if wait_for and task_id not in skip:
             subscriber = task_row.key(task_id, call.date, call.execution)
-            pointers += [{**key, POINTER_RUN: run_row.key(call.execution)} for key in asset_pointer_keys(subscriber, wait_for)]
+            pointers += [{**key, POINTER_RUN: run_row.key(call.execution), POINTER_TTL: ttl}
+                         for key in asset_pointer_keys(subscriber, wait_for)]
     return pointers
 
 
@@ -267,15 +274,18 @@ def accept_existing(existing: Mapping[str, Any], call: Call, what: str) -> None:
                        f"started {existing.get(task_row.RUN_START)!r}): this run cannot start")
 
 
-def activation(call: Call) -> Dict[str, Any]:
-    """The update that marks the run ``active``, unless the run row carries the stop mark (§4)."""
+def activation(call: Call, *, now: datetime) -> Dict[str, Any]:
+    """The update that marks the run ``active``, unless the run row carries the stop mark (§4). Like every
+    write of the run row, it renews the history TTL (§5)."""
     return {
         "Key": {run_row.TABLE_KEY: run_row.key(call.execution)},
-        "UpdateExpression": f"SET #status = :active, {run_row.VERSION_RAISE}",
+        "UpdateExpression": f"SET #status = :active, #ttl = :ttl, {run_row.VERSION_RAISE}",
         "ConditionExpression": "#status = :creating AND attribute_not_exists(#stop) AND run_execution = :execution",
-        "ExpressionAttributeNames": {"#status": run_row.STATUS, "#stop": run_row.STOP, **run_row.VERSION_NAMES},
+        "ExpressionAttributeNames": {"#status": run_row.STATUS, "#stop": run_row.STOP, "#ttl": run_row.TTL,
+                                     **run_row.VERSION_NAMES},
         "ExpressionAttributeValues": {":active": run_row.ACTIVE, ":creating": run_row.CREATING,
-                                      ":execution": call.execution, **run_row.VERSION_RAISE_VALUES},
+                                      ":execution": call.execution, ":ttl": retention.ttl(now, retention.HISTORY),
+                                      **run_row.VERSION_RAISE_VALUES},
     }
 
 

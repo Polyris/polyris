@@ -20,6 +20,8 @@ SPECS_TABLE = os.environ.get("SPECS_TABLE", "pipeline-specs")
 RUN_TASK_ARN = os.environ.get("RUN_TASK_ARN", "run-task")
 #: The function the asset-events stream feeds; the sweeper checks its event source mapping.
 ASSET_FANOUT_FUNCTION = os.environ.get("ASSET_FANOUT_FUNCTION", "asset-fanout")
+#: The function the tasks table's stream feeds (the dispatcher); the sweeper checks its event source mapping.
+DISPATCHER_FUNCTION = os.environ.get("DISPATCHER_FUNCTION", "reconcile")
 
 PIPELINE_EXECUTION_INDEX = "pipeline-execution-index"
 

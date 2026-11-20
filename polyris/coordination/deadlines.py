@@ -163,14 +163,16 @@ def due_time(row: RowTimes, intervals: Sequence[Interval]) -> Optional[datetime]
         start = start_deadlines(row, intervals)
         if start is not None:
             return start.next_try
-        return _check(row)
+        return liveness_check(row)
     if row.status == S.RUNNING.value:
-        return _check(row)
+        return liveness_check(row)
     if row.status == S.WAITING_DECISION.value:
         return decision_deadline(row, intervals)
     return None
 
 
-def _check(row: RowTimes) -> Optional[datetime]:
+def liveness_check(row: RowTimes) -> Optional[datetime]:
+    """When the execution of a ``deps_ready`` or ``running`` row is next judged: on the backoff of
+    ``attention.next_due``, from its latest check, or from when it took its status (§1)."""
     since = row.last_check or row.status_since
     return attention.next_due(since, row.checks) if since is not None else None

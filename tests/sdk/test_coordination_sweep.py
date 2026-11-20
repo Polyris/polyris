@@ -47,9 +47,12 @@ def test_the_catch_up_runs_hourly_and_at_once_when_it_never_ran():
 #: The names the sweeper writes into its report, as a deployed stack has them.
 NAMES = {"sweeper_function": "acme-dev-polyris-sweeper", "fanout_function": "acme-dev-polyris-asset-fanout",
          "events_table": "acme-dev-polyris-asset-events",
-         "fanout_mapping_uuid": "48529b7b-abda-4306-8550-8d3bbc1391c3", "region": "eu-west-1"}
+         "fanout_mapping_uuid": "48529b7b-abda-4306-8550-8d3bbc1391c3", "region": "eu-west-1",
+         "dispatcher_function": "acme-dev-polyris-reconcile", "tasks_table": "acme-dev-polyris-pipeline-tokens",
+         "dispatch_mapping_uuid": "7d0c1f52-2e5a-4bb1-9d5e-0b9f0e3c6a10"}
 SWEEPER_LOGS = "aws logs tail /aws/lambda/acme-dev-polyris-sweeper --region eu-west-1 --since 1h"
 FANOUT_LOGS = "aws logs tail /aws/lambda/acme-dev-polyris-asset-fanout --region eu-west-1 --since 1h"
+DISPATCHER_LOGS = "aws logs tail /aws/lambda/acme-dev-polyris-reconcile --region eu-west-1 --since 1h"
 LATE = ("Tasks that wait for an asset start up to 40 minutes late, and pipelines scheduled on an asset "
         "up to an hour late.")
 NOT_STARTING = ("Tasks that wait for an asset, and pipelines scheduled on an asset, do not start while the "
@@ -61,7 +64,8 @@ BEHIND = "2026-11-12T03:00:00.000Z"          # 2 hours before STARTED: past BEHI
 def _report(**fields):
     """A fresh report of a healthy engine, as the sweeper writes it, with `fields` changed."""
     base = {"checked_at": "2026-11-12T04:58:00.000Z", "fanout_mapping": "Enabled", "fanout_result": "OK",
-            "stream": "ENABLED", "oldest_overdue": "", "failed_steps": [], **NAMES}
+            "stream": "ENABLED", "dispatch_mapping": "Enabled", "dispatch_result": "OK", "tasks_stream": "ENABLED",
+            "lost_hint_runs": 0, "oldest_overdue": "", "failed_steps": [], **NAMES}
     return {**base, **fields}
 
 
@@ -109,8 +113,8 @@ def test_2_a_silent_re_check_names_its_last_run_and_both_commands():
     assert sweep.engine_findings(_report(checked_at=SILENT), STARTED) == [{
         "title": "The periodic re-check is not running",
         "resource": "The last run of acme-dev-polyris-sweeper was 20 min ago. It runs every 5 minutes.",
-        "impact": "Tasks still start from their signals. A task that missed its signal is not re-checked "
-                  "and waits until it times out.",
+        "impact": "Tasks still start from the streams. A task whose wake-up was lost waits, and no limit, countdown "
+                  "or decision timeout ends, until the check runs again.",
         "fix": "Check that its schedule in EventBridge Scheduler is enabled. If it is, read the function's logs.",
         "command": "aws scheduler get-schedule --name acme-dev-polyris-sweeper --region eu-west-1 --query State\n"
                    + SWEEPER_LOGS,
@@ -250,14 +254,19 @@ def test_7_each_failed_step_is_one_finding_named_in_words():
 
 def test_findings_come_in_the_order_of_the_clauses():
     report = _report(checked_at=SILENT, fanout_mapping="Disabled", fanout_result="PROBLEM: x", stream="DISABLED",
-                     oldest_overdue=BEHIND, failed_steps=["adopt: KeyError: 'k'"])
+                     dispatch_mapping="Disabled", dispatch_result="PROBLEM: y", tasks_stream="DISABLED",
+                     oldest_overdue=BEHIND, lost_hint_runs=3, failed_steps=["due_runs: 3 of 4 passes over runs failed"])
     assert [f["title"] for f in sweep.engine_findings(report, STARTED)] == [
         "The periodic re-check is not running",
         "Asset event delivery is off",
         "Asset event delivery is failing",
         "Asset events are not recorded for delivery",
+        "Task delivery is off",
+        "Task delivery is failing",
+        "Task changes are not recorded for delivery",
         "Waiting tasks are behind their checks",
-        "The periodic re-check could not finish adopting rows an older version wrote",
+        "Runs missed their wake-ups",
+        "The periodic re-check could not finish checking the runs that are due",
     ]
 
 
@@ -302,7 +311,12 @@ COMMANDS = [
     ({"fanout_result": "PROBLEM: x"}, {"fanout_function", "region"}),
     ({"stream": "unknown (Throttling)"}, {"sweeper_function", "region"}),
     ({"oldest_overdue": BEHIND}, {"sweeper_function", "region"}),
-    ({"failed_steps": ["adopt: x"]}, {"sweeper_function", "region"}),
+    ({"failed_steps": ["due_runs: x"]}, {"sweeper_function", "region"}),
+    ({"dispatch_mapping": "Disabled"}, {"dispatch_mapping_uuid", "region"}),
+    ({"dispatch_mapping": "unknown (Throttling)"}, {"sweeper_function", "region"}),
+    ({"dispatch_result": "PROBLEM: x"}, {"dispatcher_function", "region"}),
+    ({"tasks_stream": "unknown (Throttling)"}, {"sweeper_function", "region"}),
+    ({"lost_hint_runs": 2}, {"dispatcher_function", "region"}),
 ]
 
 
@@ -351,3 +365,138 @@ def test_a_hint_lost_before_a_resume_counts_from_the_resume():
                                                     (2, 2, True), (0, 0, False)])
 def test_a_sweep_reports_a_failed_step_when_most_of_its_passes_failed_and_at_least_two(passes, failed, reported):
     assert sweep.failed_step(passes, failed) is reported
+
+
+def test_the_failed_step_of_failed_passes_counts_them_and_names_the_first_cause():
+    assert sweep.failed_passes(5, 3, "ValueError: bad spec") == (
+        "3 of 5 passes over runs failed; the first: ValueError: bad spec")
+
+
+def test_a_runs_lost_hint_warning_counts_its_tasks_and_names_a_few():
+    assert sweep.lost_hints_warning(["load"]) == (
+        "The periodic check found 1 task of this run that could have been decided earlier: load. Their wake-up "
+        "hint was lost on the way, so they waited for this check.")
+    many = [f"t{i}" for i in range(7, 0, -1)]
+    assert sweep.lost_hints_warning(many).startswith(
+        "The periodic check found 7 tasks of this run that could have been decided earlier: t1, t2, t3, t4, t5 "
+        "and 2 more.")
+    with pytest.raises(ValueError):
+        sweep.lost_hints_warning([])
+
+
+# ── ADR #137 §6: the tasks table's stream and its mapping, and the runs with lost hints ──
+
+TASKS_LATE = ("Finished tasks start their dependants, and runs end, only at their run's periodic check, up to 30 "
+              "minutes late.")
+
+
+def test_8_a_missing_task_mapping_says_how_to_recreate_it():
+    assert sweep.engine_findings(_report(dispatch_mapping=sweep.MAPPING_MISSING), STARTED) == [{
+        "title": "Task delivery is not set up",
+        "resource": "There is no stream mapping for acme-dev-polyris-reconcile.",
+        "impact": TASKS_LATE,
+        "fix": "Recreate the trigger as the platform template defines it (TasksDispatchMapping): in the Lambda "
+               "console, open acme-dev-polyris-reconcile, then Add trigger → DynamoDB → the stream of "
+               "acme-dev-polyris-pipeline-tokens, starting position Trim horizon, batch size 10, with the template's "
+               "four filters. Deploying the same version again does not restore it.",
+    }]
+    # A report written before 1.3 has no reading of it, which reads as no mapping.
+    [finding] = sweep.engine_findings(_without(_report(), "dispatch_mapping"), STARTED)
+    assert finding["title"] == "Task delivery is not set up"
+
+
+def test_8b_a_disabled_task_mapping_names_when_it_changed_and_how_to_enable_it():
+    report = _report(dispatch_mapping="Disabled", dispatch_mapping_changed_at="2026-11-12T04:22:00.000Z")
+    assert sweep.engine_findings(report, STARTED) == [{
+        "title": "Task delivery is off",
+        "resource": "The stream mapping of acme-dev-polyris-reconcile is Disabled.",
+        "changed_at": "2026-11-12T04:22:00.000Z",
+        "impact": TASKS_LATE,
+        "fix": "Re-enable the mapping: in the Lambda console, open acme-dev-polyris-reconcile, then "
+               "Configuration → Triggers.",
+        "command": "aws lambda update-event-source-mapping --uuid 7d0c1f52-2e5a-4bb1-9d5e-0b9f0e3c6a10 --enabled "
+                   "--region eu-west-1",
+    }]
+
+
+@pytest.mark.parametrize("state", sorted(sweep.MAPPING_SETTLING))
+def test_8c_a_task_mapping_that_settles_after_a_deploy_is_no_finding_until_it_stays(state):
+    recent = _report(dispatch_mapping=state, dispatch_mapping_changed_at="2026-11-12T04:50:00.000Z")
+    stuck = _report(dispatch_mapping=state, dispatch_mapping_changed_at=SILENT)
+    assert sweep.engine_findings(recent, STARTED) == []
+    assert [f["title"] for f in sweep.engine_findings(stuck, STARTED)] == ["Task delivery is off"]
+
+
+def test_8d_a_task_mapping_that_could_not_be_read_or_failed_its_last_call():
+    unread = sweep.engine_findings(_report(dispatch_mapping=sweep.unknown_state("AccessDeniedException")), STARTED)
+    assert unread == [{
+        "title": "Task delivery could not be checked",
+        "resource": "Reading the stream mapping of acme-dev-polyris-reconcile failed (AccessDeniedException).",
+        "impact": "If delivery is off, tasks start late.",
+        "fix": "Check that the sweeper's role may call lambda:ListEventSourceMappings, then read the re-check's logs.",
+        "command": SWEEPER_LOGS,
+    }]
+    failing = sweep.engine_findings(_report(dispatch_result="PROBLEM: Function call failed"), STARTED)
+    assert failing == [{
+        "title": "Task delivery is failing",
+        "resource": "The last call of the stream mapping of acme-dev-polyris-reconcile failed: "
+                    "PROBLEM: Function call failed.",
+        "impact": "Tasks of the runs in the failing records start late, at their run's periodic check. The failed "
+                  "records are retried until they succeed or expire after 24 hours.",
+        "fix": "Read the logs of acme-dev-polyris-reconcile: the error there names the cause.",
+        "command": DISPATCHER_LOGS,
+    }]
+
+
+def test_8e_a_silent_re_check_says_that_nothing_decides_the_tasks_then():
+    findings = sweep.engine_findings(_report(checked_at=SILENT, dispatch_mapping="Disabled"), STARTED)
+    assert findings[1]["impact"] == ("Finished tasks do not start their dependants, and runs do not end, while the "
+                                     "periodic check is also not running.")
+
+
+@pytest.mark.parametrize("stream,shown", [("DISABLED", "DISABLED"), ("", "missing")])
+def test_9_a_tasks_stream_that_is_off_is_named(stream, shown):
+    assert sweep.engine_findings(_report(tasks_stream=stream), STARTED) == [{
+        "title": "Task changes are not recorded for delivery",
+        "resource": f"The stream of acme-dev-polyris-pipeline-tokens is {shown}.",
+        "impact": "Finished tasks wake no dependant. The periodic check still decides them, up to 30 minutes late.",
+        "fix": "Turn the stream on again (view type NEW_AND_OLD_IMAGES). That makes a new stream: add a trigger on "
+               "it to acme-dev-polyris-reconcile as the template defines it, then delete the trigger on the old one.",
+    }]
+
+
+def test_9b_a_tasks_stream_that_could_not_be_read_is_named_as_not_checked():
+    report = _report(tasks_stream=sweep.unknown_state("AccessDeniedException"))
+    assert sweep.engine_findings(report, STARTED) == [{
+        "title": "Task changes could not be checked",
+        "resource": "Reading the stream of acme-dev-polyris-pipeline-tokens failed (AccessDeniedException).",
+        "impact": "If the stream is off, tasks start late.",
+        "fix": "Check that the sweeper's role may call dynamodb:DescribeTable, then read the re-check's logs.",
+        "command": SWEEPER_LOGS,
+    }]
+
+
+@pytest.mark.parametrize("runs,said", [(1, "1 run"), (4, "4 runs")])
+def test_10_runs_with_lost_hints_show_in_the_system_status(runs, said):
+    """A shard held by a record that keeps failing shows here, though LastProcessingResult may read OK (TR-0)."""
+    assert sweep.engine_findings(_report(lost_hint_runs=runs), STARTED) == [{
+        "title": "Runs missed their wake-ups",
+        "resource": f"The last check found {said} with tasks whose wake-up was lost.",
+        "impact": "Those tasks started or finished at their run's periodic check, up to 30 minutes late. A record "
+                  "that keeps failing in the tasks stream holds back the runs of its shard for up to 24 hours.",
+        "fix": "Read the logs of acme-dev-polyris-reconcile, which the tasks stream calls: a record that keeps "
+               "failing names its cause there. The bell names the runs.",
+        "command": DISPATCHER_LOGS,
+    }]
+
+
+@pytest.mark.parametrize("fields,field,text", [
+    ({"dispatch_mapping": "Disabled"}, "resource", "The stream mapping of the dispatcher function is Disabled."),
+    ({"tasks_stream": "DISABLED"}, "resource", "The stream of the tasks table is DISABLED."),
+    ({"lost_hint_runs": 1}, "fix", "Read the logs of the dispatcher function, which the tasks stream calls: a record "
+                                   "that keeps failing names its cause there. The bell names the runs."),
+])
+def test_without_the_task_names_it_reads_them_in_words(fields, field, text):
+    report = _without(_report(**fields), "dispatcher_function", "tasks_table")
+    [finding] = sweep.engine_findings(report, STARTED)
+    assert finding[field] == text

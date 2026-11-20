@@ -1,8 +1,8 @@
 """
 Unit tests for dal.api_tokens_repo.ApiTokensRepo (ADR #65).
 
-Pattern follows test_backfills_repo.py — mock the .table property to short-
-circuit the dynamodb.Table(...) lookup. No moto, no AWS calls.
+The .table property is mocked to short-circuit the dynamodb.Table(...)
+lookup. No moto, no AWS calls.
 """
 
 

@@ -53,7 +53,7 @@ def test_a_run_gets_its_rows_and_its_pointers_and_becomes_active(stack):
     assert (load["status"], load["run_start"]) == ("waiting", START)
     pointers = ddb.Table(TABLES["SUBSCRIPTIONS_TABLE"][1]).scan()["Items"]
     assert pointers == [{"dependency_key": "asset:s3/orders", "subscriber": load["execution_name"],
-                         "run": run_row.key(EXECUTION)}]
+                         "run": run_row.key(EXECUTION), "ttl": load["ttl"]}]     # the run's history TTL (§5)
     assert tokens(ddb).get_item(Key={"execution_name": run_row.input_key(EXECUTION)})["Item"]["run_start"] == START
 
 

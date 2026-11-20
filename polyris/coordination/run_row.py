@@ -50,13 +50,14 @@ SUMMARY = "summary"              # the count of the run's rows per status (§4)
 STEP_FAILURE = "step_failure"    # the mark of a failed direct step (§1)
 REQUESTS = "requests"            # the heavy actions in progress, by kind (§3)
 PAUSES = "pauses"                # the pause intervals, at most ten (§5)
+CHECKS = "checks"                # how many checks of the sweeper moved its due time, from which the next backs off
 TTL = "ttl"
 
 #: Every field of the run row besides its key, its summary's time and its due time; a test builds the
 #: largest row from it, so a field added here is measured.
 FIELDS = (STATUS, TOKEN, TOKEN_ORDER, ANSWERED, STOP, STOP_DONE, RUN_VERSION, LEFT_AT, EXECUTION, RUN_START, PIPELINE,
           RUN_DATE, START_DAY, STARTED_AT, FINISHED_AT, TRIGGERED_BY, SPEC_ID, TASK_COUNT, FORMAT, SUMMARY,
-          STEP_FAILURE, REQUESTS, PAUSES, TTL)
+          STEP_FAILURE, REQUESTS, PAUSES, CHECKS, TTL)
 
 # The run row stays under SIZE_MAX (§3, D114): a Step Functions token takes up to 2,048 characters, and
 # every other free-text field is capped in UTF-8 bytes, as DynamoDB counts them, by the builders below.
@@ -141,6 +142,11 @@ def clip(text: str, limit: int) -> str:
     if len(raw) <= limit:
         return text
     return raw[:limit - 3].decode("utf-8", errors="ignore") + "…"
+
+
+#: Who the stop mark names when the engine stops a run: its execution ended before its answer, or it never
+#: became active (§4).
+ENGINE = "the engine"
 
 
 def stop_mark(*, by: str, reason: str, at: str) -> Dict[str, str]:

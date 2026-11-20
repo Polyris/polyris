@@ -13,6 +13,8 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - `polyris-deploy` reads the platform's `StartRunFunctionArn` output instead of `DependencyWrapperArn`, so deploy a pipeline only to a platform of your polyris version. Against an older platform it stops before it changes anything and says to upgrade with `polyris-up`.
 - `polyris-output --json` prints `{"definition": ..., "specs": ...}`: the definition, which names its spec version, and the task specs. Before, it printed the definition alone.
 - **A Stop is final for the dependants (ADR #138).** A `one_failed` dependant runs at once, and an `all_success` dependant becomes `upstream_failed` once its other upstreams have finished. Until then, a Restart or Mark Successful of the stopped task still counts. Before, the dependants waited for the stopped task and followed it.
+- **Backfill records are found through `pipeline-date-index` (ADR #137 §5).** The console no longer scans the whole tasks table for them; a record carries `date`, the day it started. A record written before the upgrade has no `date`, so the console no longer lists it, and it expires 30 days after it was created, as before.
+- `bulk_backfill` waits for each run as long as the run lives; its limit of 24 hours per run is gone (ADR #137 §5).
 
 ### Changed
 
@@ -21,6 +23,10 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - A trigger rule that the platform does not know fails its task with the cause; before, the task ran as `all_success` (ADR #138).
 - `polyris-validate` and `polyris-deploy` reject `one_done`, `all_done_min_one_success`, `always` and `all_done_setup_success`, each with the rule to use instead; any other unknown name gets the list of the nine rules.
 - `polyris-local` evaluates trigger rules with the engine's code, so a mock run records `upstream_failed` where a deployed run does, and fails a task whose rule it does not know.
+- **The sweeper checks runs with the dispatcher (ADR #137 §7).** Every 5 minutes it takes the due entries, run rows included, and makes one full pass of the dispatcher over each of their runs. Its passes alone ask Step Functions about executions: a task whose `run_task` ended without an outcome fails with how it ended, a `deps_ready` task whose `run_task` does not exist is started again under its name, and the engine stops a run whose execution ended before its answer, or that never became active, with the cause. It stops the rows of a run whose run row is missing, the rows a 1.2 run left in flight included. After each check it moves the run's due time on by the backoff, at most 30 minutes, also after a pass that failed, which warns once per run. It writes one `sweeper` warning per run whose tasks lost their wake-up, instead of one per task. It no longer releases pause waits or adopts rows an older version wrote.
+- **The System status covers task delivery (ADR #137 §6).** The sweeper's self-check reads the tasks table's stream and its mapping to the dispatcher, as it reads AssetFanout's, and counts the runs whose check found lost wake-ups. The System status names each problem: task delivery not set up, off or failing, task changes not recorded, runs that missed their wake-ups, and a sweep whose passes mostly failed.
+- **Lifetimes (ADR #137 §5).** A backfill record lives as long as a run's history while its backfill runs, and 90 days once its final status is written; before, 30 days from its creation, so a backfill longer than a month lost its record mid-run. The `asset:{name}` pointers of a run carry the history's lifetime, and the activation of a run renews its run row's, as every other write of it does.
+- The health check's count of recent failures counts task rows only, not backfill records.
 
 ### Added
 

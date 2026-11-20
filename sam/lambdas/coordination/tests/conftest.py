@@ -71,6 +71,11 @@ def registry(ddb):
 
 
 @pytest.fixture
+def specs(ddb):
+    return ddb.Table(TABLES["SPECS_TABLE"][1])
+
+
+@pytest.fixture
 def rows(ddb, sfn, monkeypatch):
     """1.3 runs as Start_Run writes them, and the dispatcher over them (ADR #137), on the testkit's clock."""
     from datetime import datetime

@@ -15,8 +15,8 @@ OTHER = "orders-run-2026-11-12-0000ffff"
 
 
 @pytest.fixture
-def fanout(reconciler, rows):
-    return asset_fanout.AssetFanout(reconciler, dispatcher=rows.dispatcher,
+def fanout(rows):
+    return asset_fanout.AssetFanout(rows.dispatcher,
                                     subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1],
                                     consumers_table=TABLES["ASSET_SUBSCRIPTIONS_TABLE"][1])
 
@@ -104,7 +104,7 @@ def test_a_pointer_whose_row_is_gone_is_deleted(fanout, subscriptions, asset_eve
 def test_a_pointer_whose_row_cannot_be_read_is_left(fanout, subscriptions, asset_events, stream, mocker):
     subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": "x"})
     asset_events.put_item(Item=fact("ns/orders", DATE))
-    mocker.patch.object(fanout.reconciler.tasks, "get", side_effect=client_error("AccessDeniedException", "GetItem"))
+    mocker.patch.object(fanout.tasks, "get_item", side_effect=client_error("AccessDeniedException", "GetItem"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
     assert len(subscriptions.scan()["Items"]) == 1
 
@@ -141,7 +141,7 @@ def test_a_non_transient_read_failure_becomes_a_warning_not_a_retry(fanout, toke
 def test_a_warning_that_cannot_be_written_is_logged(fanout, tokens, asset_events, stream, mocker, capsys):
     asset_events.put_item(Item=fact("ns/orders", DATE))
     mocker.patch.object(fanout.subscriptions, "query", side_effect=client_error("AccessDeniedException", "Query"))
-    mocker.patch.object(fanout.reconciler.tasks.table, "put_item", side_effect=client_error("AccessDeniedException"))
+    mocker.patch.object(fanout.tasks, "put_item", side_effect=client_error("AccessDeniedException"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
     assert "could not write the warning row" in capsys.readouterr().out
 
@@ -241,6 +241,18 @@ def pushed(consumers, registry):
 def _push(fanout, asset_events, item):
     asset_events.put_item(Item=item)
     return fanout.push(item)
+
+
+def test_an_unreadable_fact_a_schedule_reads_counts_for_nothing_and_warns_once(fanout, asset_events, pushed, sfn,
+                                                                               tokens):
+    pushed({"operator": "AND", "assets": ["ns/a", "ns/b"]})
+    asset_events.put_item(Item=fact("ns/b", DATE, event_time="2026-11-12T03:00:00.000Z", granularity="fortnightly"))
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:05:00.000Z"))
+    assert sfn.started == []
+    [warning] = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_coordination_fact-")]
+    assert warning["execution_name"].endswith("fact-ns/b-2026-11-12T03:00:00.000Z")
+    assert "cannot be read, so it counts for no task" in warning["error"]
 
 
 def test_an_and_schedule_starts_once_per_date_when_complete(fanout, asset_events, pushed, sfn):
@@ -402,7 +414,7 @@ def test_a_retry_row_keeps_its_first_failure(fanout, asset_events, pushed, sfn, 
     sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
     _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
     [row] = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_retry_push_")]
-    fanout.reconciler.clock = lambda: NOW_LATER
+    fanout.dispatcher.clock = lambda: NOW_LATER
     _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:10:00.000Z"))
     [again] = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_retry_push_")]
     assert again["first_failed_at"] == row["first_failed_at"]
@@ -411,7 +423,7 @@ def test_a_retry_row_keeps_its_first_failure(fanout, asset_events, pushed, sfn, 
 def test_a_retry_row_out_of_reach_redelivers_the_record(fanout, asset_events, pushed, sfn, mocker):
     pushed({"operator": "AND", "assets": ["ns/a"]})
     sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
-    mocker.patch.object(fanout.reconciler.tasks.table, "put_item", side_effect=client_error("ThrottlingException"))
+    mocker.patch.object(fanout.tasks, "put_item", side_effect=client_error("ThrottlingException"))
     with pytest.raises(CoordinationTransient):
         _push(fanout, asset_events, fact("ns/a", DATE))
 
@@ -451,7 +463,7 @@ def test_a_poison_record_is_reported_and_the_shard_moves_on(fanout, rows, tokens
     assert len(warning) == 1 and "not-a-partition" in warning[0]["error"]
 
 
-def test_a_fact_an_older_version_wrote_is_left_to_adoption(fanout, rows, tokens, asset_events, stream, pushed, sfn):
+def test_a_fact_written_before_adr_130_starts_nothing(fanout, rows, tokens, asset_events, stream, pushed, sfn):
     """It started its own consumers when it was written; pushing it again would start them twice."""
     from coordination_testkit import legacy_fact
 
@@ -489,6 +501,6 @@ def test_one_consumers_failure_does_not_stop_the_others(fanout, asset_events, pu
 def test_a_retry_row_denied_becomes_a_warning_not_a_blocked_shard(fanout, asset_events, pushed, sfn, mocker, capsys):
     pushed({"operator": "AND", "assets": ["ns/a"]})
     sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
-    mocker.patch.object(fanout.reconciler.tasks.table, "put_item", side_effect=client_error("AccessDeniedException"))
+    mocker.patch.object(fanout.tasks, "put_item", side_effect=client_error("AccessDeniedException"))
     assert _push(fanout, asset_events, fact("ns/a", DATE)) == {"consumers": 1, "started": 0}
     assert "its retry row could not be written" in capsys.readouterr().out

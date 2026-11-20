@@ -16,7 +16,9 @@ and touch no AWS:
 - ``deps_ready`` records the name of the row's ``run_task`` execution, the name it
   is started under (``run_name.run_task_name``, invariant 4);
 - the run's answer and its mark, the summary, the run row's due time and its
-  removal, and the stop done, each with the condition of §3 and §4.
+  removal, the stop done and the engine's stop mark, each with the condition of
+  §3 and §4, and each renewing the run row's history TTL (§5);
+- the sweeper's move of the run row's due time after its check (§3).
 """
 
 from __future__ import annotations
@@ -28,13 +30,16 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from boto3.dynamodb.types import TypeSerializer
 
 from ..constants import ExecutionStatus, TaskSpecKey
-from . import attention, retention, run_end, run_name, run_row, start_run, task_row, task_spec, transitions
+from . import attention, ownership, retention, run_end, run_name, run_row, start_run, task_row, task_spec, transitions
 from .dispatch import Judgment, RowView, RunEnd, RunView
 from .times import format_utc
 
 _serializer = TypeSerializer()
 #: A task row's write is conditional on what the pass read of it.
 ROW_CONDITION = "#status = :read AND #g = :g"
+#: The same for a row that a 1.2 run left with no generation or with 0, which 1.2's templates write when their
+#: input has none (``ownership.is_legacy``); only its stop writes such a row.
+LEGACY_ROW_CONDITION = "#status = :read AND (attribute_not_exists(#g) OR #g = :legacy)"
 
 
 def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, table: str,
@@ -52,8 +57,9 @@ def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, tabl
     status = judgment.status or row.status
     names = {"#status": task_row.STATUS, "#g": task_row.GENERATION, "#ttl": task_row.TTL,
              "#att": attention.KEY, "#due": attention.DUE}
-    values: Dict[str, Any] = {":read": row.status, ":g": row.generation,
-                              ":ttl": retention.ttl(now, retention.HISTORY)}
+    legacy = row.generation == ownership.LEGACY
+    values: Dict[str, Any] = {":read": row.status, ":ttl": retention.ttl(now, retention.HISTORY),
+                              **({":legacy": ownership.LEGACY} if legacy else {":g": row.generation})}
     sets = ["#ttl = :ttl"]
     removes: List[str] = []
     fields = dict(judgment.fields)
@@ -82,7 +88,8 @@ def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, tabl
         sets += ["#att = :att", "#due = :due"]
     update = {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": row.key}},
               "UpdateExpression": "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else ""),
-              "ConditionExpression": ROW_CONDITION, "ExpressionAttributeNames": names,
+              "ConditionExpression": LEGACY_ROW_CONDITION if legacy else ROW_CONDITION,
+              "ExpressionAttributeNames": names,
               "ExpressionAttributeValues": _typed(values)}
     items: List[Dict[str, Any]] = [{"Update": update}]
     if run is not None and (judgment.transition or _pause_moves_due(row, judgment, run)):
@@ -140,7 +147,8 @@ def answered(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
     """The answer's mark: the order of the token answered, while that token is still the current one (§4)."""
     if run.token_order is None:
         raise ValueError(f"{run.key}: a run row without a token has no answer to mark")
-    return _run_update(run, table=table, expression=f"SET #answered = :order, #finished = :now, {run_row.VERSION_NEXT}",
+    return _run_update(run, table=table, now=now,
+                       expression=f"SET #answered = :order, #finished = :now, {run_row.VERSION_NEXT}",
                        condition=f"{run_row.VERSION_UNCHANGED} AND #order = :order",
                        names={**run_row.VERSION_NAMES, "#answered": run_row.ANSWERED, "#order": run_row.TOKEN_ORDER,
                               "#finished": run_row.FINISHED_AT},
@@ -157,12 +165,14 @@ def summary(run: RunView, end: RunEnd, *, table: str, read_at: datetime) -> Dict
     """
     names = {"#summary": run_row.SUMMARY, "#summary_at": run_end.SUMMARY_AT}
     values: Dict[str, Any] = {":summary": dict(end.summary), ":read_at": format_utc(read_at)}
+    expression = "SET #summary = :summary, #summary_at = :read_at"
     if end.finished:
-        return _run_update(run, table=table, expression="SET #summary = :summary, #summary_at = :read_at",
+        return _run_update(run, table=table, now=read_at, expression=expression,
                            condition=run_row.VERSION_UNCHANGED, names={**names, **run_row.VERSION_NAMES},
                            values={**values, ":rv": run.version})
-    return _run_update(run, table=table, expression="SET #summary = :summary, #summary_at = :read_at",
-                       condition=run_end.SUMMARY_CONDITION, names=names, values=values)
+    return _run_update(run, table=table, now=read_at, expression=expression,
+                       condition=f"attribute_exists(#key) AND ({run_end.SUMMARY_CONDITION})",
+                       names={**names, "#key": run_row.TABLE_KEY}, values=values)
 
 
 def due_now(run: RunView, *, table: str, now: datetime, left: bool) -> Dict[str, Any]:
@@ -170,14 +180,16 @@ def due_now(run: RunView, *, table: str, now: datetime, left: bool) -> Dict[str,
     expression = "SET #att = :att, #due = :now" + (", #left = :now" if left else "")
     names = {"#att": attention.KEY, "#due": attention.DUE, "#key": run_row.TABLE_KEY,
              **({"#left": run_row.LEFT_AT} if left else {})}
-    return _run_update(run, table=table, expression=expression, condition="attribute_exists(#key)", names=names,
+    return _run_update(run, table=table, now=now, expression=expression, condition="attribute_exists(#key)",
+                       names=names,
                        values={":att": attention.attention(attention.WAITING, run.key), ":now": format_utc(now)})
 
 
-def close(run: RunView, *, table: str) -> Dict[str, Any]:
+def close(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
     """The run row's due time removed, on the ``run_version`` the pass read (§3): a new token, an action or a
     request that lands meanwhile keeps it."""
-    return _run_update(run, table=table, expression="REMOVE #att, #due, #left", condition=run_row.VERSION_UNCHANGED,
+    return _run_update(run, table=table, now=now, expression="REMOVE #att, #due, #left",
+                       condition=run_row.VERSION_UNCHANGED,
                        names={**run_row.VERSION_NAMES, "#att": attention.KEY, "#due": attention.DUE,
                               "#left": run_row.LEFT_AT},
                        values={":rv": run.version})
@@ -185,16 +197,49 @@ def close(run: RunView, *, table: str) -> Dict[str, Any]:
 
 def stop_done(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
     """The stop recorded as done, once every row is final and the answer is marked (§4)."""
-    return _run_update(run, table=table, expression=f"SET #done = :now, {run_row.VERSION_NEXT}",
+    return _run_update(run, table=table, now=now, expression=f"SET #done = :now, {run_row.VERSION_NEXT}",
                        condition=run_row.VERSION_UNCHANGED, names={**run_row.VERSION_NAMES, "#done": run_row.STOP_DONE},
                        values={**run_row.version_values(run.version), ":now": format_utc(now)})
 
 
-def _run_update(run: RunView, *, table: str, expression: str, condition: str, names: Mapping[str, str],
-                values: Mapping[str, Any]) -> Dict[str, Any]:
+def engine_stop(run: RunView, *, table: str, cause: str, now: datetime) -> Dict[str, Any]:
+    """The engine's stop mark, with the cause (§4): only while no stop mark is set, which keeps who asked for a
+    Stop of the run and why, and on the ``run_version`` the pass read, which it raises."""
+    mark = run_row.stop_mark(by=run_row.ENGINE, reason=cause, at=format_utc(now))
+    return _run_update(run, table=table, now=now, expression=f"SET #stop = :mark, {run_row.VERSION_NEXT}",
+                       condition=f"{run_row.VERSION_UNCHANGED} AND attribute_not_exists(#stop)",
+                       names={**run_row.VERSION_NAMES, "#stop": run_row.STOP},
+                       values={**run_row.version_values(run.version), ":mark": mark})
+
+
+def checked(run_key: str, *, table: str, due_read: str, version_read: int, checks: int,
+            now: datetime) -> Dict[str, Any]:
+    """After the sweeper's check of a run: its due time moved on by the backoff (``attention.next_due``, at most
+    30 minutes) and ``left_at`` cleared (§3). Conditional on the due time and the ``run_version`` the sweeper read:
+    it never postpones a check that a request, a pass or an action set meanwhile, and after a write that raised
+    ``run_version`` the run row stays due for the next sweep. It keeps ``run_version``."""
+    return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run_key}},
+            "UpdateExpression": "SET #due = :next, #checks = :checks, #ttl = :ttl REMOVE #left",
+            "ConditionExpression": f"#due = :read_due AND {run_row.VERSION_UNCHANGED}",
+            "ExpressionAttributeNames": {"#due": attention.DUE, "#checks": run_row.CHECKS, "#ttl": run_row.TTL,
+                                         "#left": run_row.LEFT_AT, **run_row.VERSION_NAMES},
+            "ExpressionAttributeValues": _typed({
+                ":next": format_utc(attention.next_due(now, checks)), ":checks": checks + 1,
+                ":ttl": retention.ttl(now, retention.HISTORY), ":read_due": due_read, ":rv": version_read})}
+
+
+def _run_update(run: RunView, *, table: str, now: datetime, expression: str, condition: str,
+                names: Mapping[str, str], values: Mapping[str, Any]) -> Dict[str, Any]:
+    """An update of the run row, which also renews its history TTL (§5); each is conditional on the row."""
+    sets, _, removes = expression.partition("REMOVE ")
+    sets = sets.strip()
+    renew = "#ttl = :ttl"
+    expression = f"{sets}, {renew}" if sets else f"SET {renew}"
+    if removes:
+        expression += f" REMOVE {removes}"
     return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run.key}}, "UpdateExpression": expression,
-            "ConditionExpression": condition, "ExpressionAttributeNames": dict(names),
-            "ExpressionAttributeValues": _typed(values)}
+            "ConditionExpression": condition, "ExpressionAttributeNames": {**names, "#ttl": run_row.TTL},
+            "ExpressionAttributeValues": _typed({**values, ":ttl": retention.ttl(now, retention.HISTORY)})}
 
 
 def _typed(values: Mapping[str, Any]) -> Dict[str, Any]:

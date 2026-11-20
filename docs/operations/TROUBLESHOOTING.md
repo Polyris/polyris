@@ -256,13 +256,17 @@ While a problem shows, tasks may start late. The panel tells you what to do; the
 | Problem | What still works, and what else to know |
 |---------|-----------------------------------------|
 | No check has run yet | Normal for the first 5 minutes after an install or upgrade. Tasks still start from their signals |
-| The periodic re-check is not running | Tasks still start from their signals. Only a task that missed its signal waits until its timeout. A sweeper that fails on every run shows its error in its logs |
+| The periodic re-check is not running | Tasks still start from the streams. A task whose wake-up was lost waits, and no limit, countdown or decision timeout ends, until the check runs again. A sweeper that fails on every run shows its error in its logs |
 | Asset event delivery is off, or is not set up | The sweeper still starts waiting tasks at their checks, up to 40 minutes late, and its hourly catch-up starts asset-scheduled pipelines. A mapping that a deploy is creating or updating counts only once it stays so for 15 minutes. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
 | Asset event delivery is failing | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Records wait in the stream for 24 hours, and the sweeper still wakes waiting tasks at their checks |
 | Asset events are not recorded for delivery | The stream of the asset-events table was turned off outside polyris. Turning it on again makes a new stream, so asset-fanout needs a new trigger on it, and the old trigger goes |
 | Asset event delivery, or asset event recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
 | Waiting tasks are behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
-| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step |
+| Task delivery is off, is not set up, or is failing | Finished tasks start their dependants, and runs end, only at their run's periodic check, up to 30 minutes late. A record that keeps failing holds back the runs of its shard until it leaves the stream after 24 hours; the dispatcher's logs (the `reconcile` function) name its cause. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
+| Task changes are not recorded for delivery | The stream of the tasks table was turned off outside polyris. The periodic check still decides every task, up to 30 minutes late. Turning the stream on again makes a new stream, so the dispatcher needs a new trigger on it, and the old trigger goes |
+| Task delivery, or task change recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
+| Runs missed their wake-ups | The last check found runs whose tasks waited for it although they could have gone on earlier. The bell names each run once. Many runs at every check point to a stream record that keeps failing: read the dispatcher's logs |
+| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step. For checking the runs that are due, it means that most passes over runs failed: the bell names each run, and the sweeper's logs the cause |
 | The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
 | The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
 

@@ -1318,8 +1318,8 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # ADR #130 §8: every 5 minutes, re-checks the waiting tasks that are due, so a
-  # lost wake-up hint delays a task and never loses it.
+  # ADR #130 §8, ADR #137 §7: every 5 minutes, one full pass of the dispatcher over each run that is
+  # due, so a lost wake-up hint delays a task and never loses it.
   SweeperFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1342,6 +1342,11 @@ Resources:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           ASSET_FANOUT_FUNCTION: !Ref AssetFanoutFunction
+          # Its passes run the dispatcher in this process (ADR #137 §7); the self-check reads the
+          # dispatcher's stream mapping (§6).
+          SPECS_TABLE: !Ref PipelineSpecsTable
+          RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
+          DISPATCHER_FUNCTION: !Ref ReconcileFunction
 
   # No Scheduler retry: a missed run is covered by the next one, 5 minutes later. Lambda may
   # retry a failed asynchronous invoke on its own; the lease and idempotent steps make that harmless.
@@ -1523,13 +1528,7 @@ Resources:
               - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
-          # Resume: candidate rows of one run.
-          - Effect: Allow
-            Action:
-              - dynamodb:Query
-            Resource:
-              - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
-          # Pointers are deleted once the signal was accepted.
+          # Pointers are deleted once the row has left the wait (Rule 40).
           - Effect: Allow
             Action:
               - dynamodb:DeleteItem
@@ -1542,7 +1541,7 @@ Resources:
             Resource:
               - !GetAtt AssetEventsTable.Arn
               - !Sub "${AssetEventsTable.Arn}/index/asset-partition-index"
-          # Declared granularity of facts written before ADR #130.
+          # Declared granularity of facts written before ADR #130; a pipeline's state machine.
           - Effect: Allow
             Action:
               - dynamodb:GetItem
@@ -1567,12 +1566,6 @@ Resources:
               - states:SendTaskSuccess
               - states:SendTaskFailure
             Resource: "*"
-          # Dead-token check on the task's wrapper execution.
-          - Effect: Allow
-            Action:
-              - states:DescribeExecution
-            Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-dependency-wrapper:*"
 
   ReconcileRole:
     Type: AWS::IAM::Role
@@ -1713,8 +1706,8 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # The sweeper runs the reconciler in-process; beyond its policy it reads the
-  # due rows from the attention index and keeps its lease row.
+  # The sweeper runs the dispatcher in-process; beyond its policy it reads the due
+  # entries from the attention index, keeps its lease row, judges executions and checks the streams.
   SweeperRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1734,12 +1727,19 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Waiting rows that are due (ADR #130 §7).
+              # The entries that are due (ADR #137 §6).
               - Effect: Allow
                 Action:
                   - dynamodb:Query
                 Resource:
                   - !Sub "${PipelineTokensTable.Arn}/index/attention-index"
+              # Its passes alone judge executions (ADR #137 §1, §4): a started row's run_task, and the
+              # run's own execution; both state machines are named ${Namespace}-${Stage}-polyris-*.
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-*:*"
               # Releasing the lease row and dropping push retry rows; writes the policy allows.
               - Effect: Allow
                 Action:
@@ -1761,20 +1761,14 @@ Resources:
                   - states:StartExecution
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-              # Adoption: scans for rows an older version wrote; old facts get their partition fields.
+              # Self-check: are the streams of the asset-events and tasks tables on (ADR #130 §9, ADR #137 §6)?
               - Effect: Allow
                 Action:
-                  - dynamodb:Scan
-                Resource:
-                  - !GetAtt PipelineTokensTable.Arn
-                  - !GetAtt AssetEventsTable.Arn
-              - Effect: Allow
-                Action:
-                  - dynamodb:UpdateItem
                   - dynamodb:DescribeTable
                 Resource:
                   - !GetAtt AssetEventsTable.Arn
-              # Self-check: is the asset-events stream mapping enabled (ADR #130 §9)?
+                  - !GetAtt PipelineTokensTable.Arn
+              # Self-check: are the stream mappings to AssetFanout and to the dispatcher enabled?
               # ListEventSourceMappings does not support resource-level permissions.
               - Effect: Allow
                 Action:

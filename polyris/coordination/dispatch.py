@@ -17,8 +17,14 @@ is the pass's time. Each judges a row from the row itself (§1):
 - a ``deps_ready`` row whose start failed is started again at its next try and
   fails past ``START_FAIL_AFTER``; ``start_failed`` records a failed attempt;
 - a ``waiting_decision`` row fails at its decision deadline;
+- in the sweeper's passes only, a ``deps_ready`` or ``running`` row whose
+  liveness check has come has its ``run_task`` execution judged (``liveness``):
+  ended without an outcome, it fails; not visible yet, it is no dead one; a
+  ``deps_ready`` row whose execution does not exist is started again;
 - a run being stopped has every unfinished row stopped, dependants first (§4),
   and so has a row whose run row is missing (invariant 11);
+- the engine stops a run that never became active, or whose execution ended
+  before its answer (``engine_stop_cause``, §4);
 - once every row is final, the run's outcome answers its token (§4), and the
   summary is written when its counts changed.
 
@@ -33,7 +39,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..constants import ExecutionStatus, SkipOrigin, TaskSpecKey, TaskStatus
-from . import attention, deadlines, pauses, run_end, run_row, task_row, task_spec, transitions, trigger_rules
+from . import attention, deadlines, ownership, pauses, run_end, run_row, start_run, sweep, task_row, task_spec
+from . import transitions, trigger_rules
 from . import decide as dc
 from .asset_conditions import Evaluation
 from .deadlines import RowTimes
@@ -66,6 +73,8 @@ class RunView:
     date: str = ""                         # the run's date, by which its rows are keyed
     left_at: Optional[str] = None          # when a pass last left rows (§7)
     requests: bool = False                 # a heavy action waits on the run (§3)
+    pipeline: str = ""
+    started_at: Optional[datetime] = None  # the execution's StartTime
 
     @property
     def active(self) -> bool:
@@ -99,7 +108,8 @@ def run_view(item: Mapping[str, Any]) -> RunView:
         token_order=_int(item.get(run_row.TOKEN_ORDER)), answered_order=_int(item.get(run_row.ANSWERED)),
         summary={str(k): int(v) for k, v in summary.items()} if isinstance(summary, Mapping) else None,
         date=str(item.get(run_row.RUN_DATE, "")), left_at=item.get(run_row.LEFT_AT),
-        requests=bool(item.get(run_row.REQUESTS)),
+        requests=bool(item.get(run_row.REQUESTS)), pipeline=str(item.get(run_row.PIPELINE, "")),
+        started_at=_moment(item.get(run_row.STARTED_AT)),
     )
 
 
@@ -127,6 +137,8 @@ class RowView:
 
 def row_view(item: Mapping[str, Any]) -> RowView:
     """A task row read back; its due time is the ``waiting`` or ``decision`` entry it holds, if any."""
+    if task_row.DECISION not in item:
+        raise ValueError(f"{item.get(task_row.TABLE_KEY)}: a task row of 1.3 carries its decision fields")
     decision = task_spec.decision_from_text(str(item[task_row.DECISION]))
     entry = str(item.get(attention.KEY, ""))
     due = item.get(attention.DUE) if entry.split("#", 1)[0] in (attention.WAITING, attention.DECISION) else None
@@ -141,6 +153,23 @@ def row_view(item: Mapping[str, Any]) -> RowView:
     )
 
 
+def stop_view(item: Mapping[str, Any]) -> RowView:
+    """A row read back for its stop alone, when its run row is missing (invariant 11).
+
+    A row that a 1.2 run left in flight has no decision fields, and may have no
+    generation, which then reads as ``ownership.LEGACY``: a stop needs only the
+    status and the generation (*Migration*).
+    """
+    if task_row.DECISION in item:
+        return row_view(item)
+    status = str(item[task_row.STATUS])
+    generation = item.get(task_row.GENERATION)
+    return RowView(task_id=str(item.get(task_row.TASK_NAME) or item[task_row.TABLE_KEY]),
+                   key=str(item[task_row.TABLE_KEY]), status=status,
+                   generation=ownership.LEGACY if generation is None or generation == "" else int(generation),
+                   trigger_rule="", dependencies=(), times=RowTimes(status=status), error=item.get(task_row.ERROR))
+
+
 @dataclass(frozen=True)
 class Judgment:
     """What a pass writes for one row: a transition, fields, and its due time after the write.
@@ -148,6 +177,9 @@ class Judgment:
     ``due`` is the time of the row's ``waiting`` or ``decision`` entry after the
     write (``deadlines.due_time``); the dispatcher writes it when it differs
     from the row's. A ``failed`` row's entry follows from its status (§6).
+    ``since`` is set when the judgment ends the row's wait from its upstreams or
+    its facts: from when that outcome could have been decided, which the
+    sweeper's check of a lost hint reads (§7).
     """
     task_id: str
     transition: Optional[str] = None
@@ -157,6 +189,7 @@ class Judgment:
     start: bool = False
     cause: Optional[str] = None
     warning: Optional[str] = None
+    since: Optional[datetime] = None
 
     @property
     def status(self) -> Optional[str]:
@@ -223,14 +256,13 @@ def _wait(row: RowView, upstreams: Mapping[str, Optional[RowView]], run: RunView
             return _ready(row, run, now)                   # from its upstreams alone: no .within() again
     if evaluation.verdict == trigger_rules.FAIL:
         return _final(row, "fail_wait", now, cause=evaluation.reason)
+    allowed = trigger_rules.enabled_at(row.trigger_rule, statuses, [u.finished_at for u in ups if u], origins)
+    decided = deadlines.enabled_since(allowed, row.times.waiting_since or now)
     if evaluation.verdict == trigger_rules.SKIP:
-        return _final(row, "skip_by_rule", now, reasons=(evaluation.reason,))
+        return _final(row, "skip_by_rule", now, reasons=(evaluation.reason,), since=decided)
     if evaluation.verdict == trigger_rules.UPSTREAM_FAILED:
-        return _final(row, "block", now, reasons=(evaluation.reason,))
-    enabled: Optional[datetime] = None
-    if evaluation.verdict == trigger_rules.READY:
-        since = trigger_rules.enabled_at(row.trigger_rule, statuses, [u.finished_at for u in ups if u], origins)
-        enabled = deadlines.enabled_since(since, row.times.waiting_since or now)
+        return _final(row, "block", now, reasons=(evaluation.reason,), since=decided)
+    enabled = decided if evaluation.verdict == trigger_rules.READY else None
     decision = dc.decide(dc.TaskView(row.status, False, row.trigger_rule, row.dependencies, row.has_wait_for),
                          dep_statuses=statuses, skip_origins=origins, assets=assets)
     if decision.verdict == dc.READY and enabled is not None:
@@ -238,7 +270,7 @@ def _wait(row: RowView, upstreams: Mapping[str, Optional[RowView]], run: RunView
         end = deadlines.countdown_end(ready_at, row.wait_before)
         if end is not None and end > now:
             return _waiting(row, run, now, enabled=enabled, reasons=(COUNTING_DOWN,), countdown=end)
-        return _ready(row, run, now, enabled=enabled)
+        return _ready(row, run, now, enabled=enabled, since=ready_at)
     return _waiting(row, run, now, enabled=enabled, reasons=decision.reasons, countdown=None)
 
 
@@ -262,8 +294,12 @@ def _waiting(row: RowView, run: RunView, now: datetime, *, enabled: Optional[dat
     return Judgment(row.task_id, transition, fields, tuple(removed), due=deadlines.due_time(times, run.pauses))
 
 
-def _ready(row: RowView, run: RunView, now: datetime, *, enabled: Optional[datetime] = None) -> Judgment:
-    """The row may start: ``deps_ready`` and its start, or ``waiting_paused`` while the run is paused (§5)."""
+def _ready(row: RowView, run: RunView, now: datetime, *, enabled: Optional[datetime] = None,
+           since: Optional[datetime] = None) -> Judgment:
+    """The row may start: ``deps_ready`` and its start, or ``waiting_paused`` while the run is paused (§5).
+
+    ``since`` is when it became ready; a countdown's end gives none, since the sweeper is how a countdown ends.
+    """
     fields: Dict[str, Any] = {}
     removed: List[str] = []
     if enabled is not None:
@@ -279,7 +315,7 @@ def _ready(row: RowView, run: RunView, now: datetime, *, enabled: Optional[datet
                               task_row.CHECKS, task_row.ERROR))
     times = RowTimes(status=S.DEPS_READY.value, status_since=now)
     return Judgment(row.task_id, "ready", fields, tuple(removed), due=deadlines.due_time(times, run.pauses),
-                    start=True)
+                    start=True, since=since)
 
 
 def _start(row: RowView, run: RunView, now: datetime) -> Judgment:
@@ -334,6 +370,119 @@ def start_failed(row: RowView, run: RunView, *, now: datetime, error: str, kind:
                              if warn else None))
 
 
+def started(row: RowView, run: RunView, *, now: datetime) -> Judgment:
+    """A start that went through, or found its execution there already, on a ``deps_ready`` row whose earlier
+    attempts failed: the failures go, and its liveness counts from this start (§1, §5). Nothing for any other row."""
+    if row.status != S.DEPS_READY.value or row.times.start_failures < 1:
+        return Judgment(row.task_id, due=row.due)
+    times = replace(row.times, start_failed_first=None, start_failed_last=None, start_failures=0, status_since=now,
+                    last_check=None, checks=0)
+    removed = _present(row, (task_row.START_FAILED_FIRST, task_row.START_FAILED_LAST, task_row.START_FAILURES,
+                             task_row.LAST_CHECK, task_row.CHECKS, task_row.ERROR))
+    return Judgment(row.task_id, fields={task_row.STATUS_SINCE: format_utc(now)}, removed=tuple(removed),
+                    due=deadlines.due_time(times, run.pauses))
+
+
+#: The statuses DescribeExecution gives an execution that has ended.
+ENDED = frozenset({"SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"})
+
+
+@dataclass(frozen=True)
+class Execution:
+    """What DescribeExecution said of an execution; ``status`` None: it does not exist."""
+    status: Optional[str]
+    error: Optional[str] = None
+    cause: Optional[str] = None
+
+    @property
+    def ended(self) -> bool:
+        return self.status in ENDED
+
+    def account(self) -> str:
+        """How it ended, in words: its status, then its error and cause when it has them."""
+        detail = ": ".join(str(part) for part in (self.error, self.cause) if part)
+        return f"{self.status or 'missing'}" + (f" ({detail})" if detail else "")
+
+
+def liveness_due(row: RowView, run: RunView, *, now: datetime) -> bool:
+    """Whether a pass of the sweeper judges the row's ``run_task`` execution now (§1, §7).
+
+    A ``running`` row is judged at its liveness check; a ``deps_ready`` row too,
+    unless a start of it failed (its next try is due instead) or its run is
+    paused, which holds its start.
+    """
+    if row.status == S.DEPS_READY.value:
+        if run.paused or row.times.start_failures > 0:
+            return False
+    elif row.status != S.RUNNING.value:
+        return False
+    check = deadlines.liveness_check(row.times)
+    return check is not None and check <= now
+
+
+def liveness(row: RowView, run: RunView, *, now: datetime, execution: Execution) -> Judgment:
+    """What the sweeper's pass writes after it judged the row's ``run_task`` execution (§1, §3, invariant 10).
+
+    - It ended, and the row still waits for its outcome: the row fails with how it ended.
+    - It does not exist within ``sweep.EXECUTION_VISIBLE_AFTER`` of the row's status: it may
+      not be visible yet, so the row is no dead one.
+    - It does not exist after that: a ``deps_ready`` row is started again under its derived
+      name (invariant 3), and a ``running`` row, which ``run_task`` itself wrote, fails.
+    - Otherwise it runs. Each check that does not end the row records its time and number,
+      from which the next one backs off.
+    """
+    times = replace(row.times, last_check=now, checks=row.times.checks + 1)
+    checked = Judgment(row.task_id, fields={task_row.LAST_CHECK: format_utc(now), task_row.CHECKS: times.checks},
+                       due=deadlines.due_time(times, run.pauses))
+    if execution.ended:
+        return _final(row, "fail_dead", now,
+                      cause=f"its run_task execution ended {execution.account()} without recording an outcome")
+    if execution.status is not None:
+        return checked
+    since = row.times.status_since
+    if since is None or now - since < sweep.EXECUTION_VISIBLE_AFTER:
+        return checked
+    if row.status == S.DEPS_READY.value:
+        return replace(checked, start=True)
+    return _final(row, "fail_dead", now, cause="its run_task execution does not exist")
+
+
+def engine_check_due(run: RunView, *, now: datetime, finished: bool) -> bool:
+    """Whether the run's check reads its execution: no stop mark, no answer marked and a row not final, and
+    either ``active``, or ``creating`` past ``Start_Run``'s retry window (§4). Only then may the engine stop it."""
+    if run.stop is not None or run.answered or finished or run.started_at is None:
+        return False
+    if run.status == run_row.CREATING:
+        return now - run.started_at >= start_run.retry_window()
+    return run.status == run_row.ACTIVE
+
+
+def engine_stop_cause(run: RunView, *, now: datetime, execution: Optional[Execution], finished: bool) -> Optional[str]:
+    """Why the engine stops the run at its check, or None (§4).
+
+    ``execution`` is what DescribeExecution said of the run's execution; None when
+    it could not be read, which stops nothing (invariant 10). No run is stopped
+    that carries a stop mark, whose answer is marked, or whose rows are all final:
+    its end answers it.
+
+    - A run still ``creating`` after ``Start_Run``'s retry window never became
+      active; the cause names how its execution ended, if it did.
+    - An ``active`` run whose execution ended before the answer, or does not
+      exist once ``sweep.EXECUTION_VISIBLE_AFTER`` has passed since its start.
+    """
+    if execution is None or run.started_at is None or not engine_check_due(run, now=now, finished=finished):
+        return None
+    if run.status == run_row.CREATING:
+        ended = f"; its execution {execution.account()}" if execution.ended or execution.status is None else ""
+        return f"Start_Run did not make the run active within its retry window of {start_run.retry_window()}{ended}"
+    age = now - run.started_at
+    if execution.ended:
+        return f"its execution ended {execution.account()} before the run's answer"
+    if execution.status is None and age >= sweep.EXECUTION_VISIBLE_AFTER:
+        return f"its execution does not exist ({execution.cause})" if execution.cause else "its execution does not exist"
+    return None
+
+
 def stop(row: RowView, *, now: datetime, cause: str) -> Judgment:
     """A stop of the run (§4), or of a row whose run row is missing (invariant 11): ``stopped`` unless final."""
     if row.status in transitions.FINAL:
@@ -360,7 +509,8 @@ def stop_order(rows: Mapping[str, RowView]) -> List[str]:
 
 
 def _final(row: RowView, transition: str, now: datetime, *, cause: Optional[str] = None,
-           reasons: Optional[Sequence[str]] = None, warning: Optional[str] = None) -> Judgment:
+           reasons: Optional[Sequence[str]] = None, warning: Optional[str] = None,
+           since: Optional[datetime] = None) -> Judgment:
     fields: Dict[str, Any] = {task_row.STATUS_SINCE: format_utc(now), task_row.FINISHED_AT: format_utc(now)}
     removed = _present(row, (task_row.COUNTDOWN_END,))
     if transition == "skip_by_rule":
@@ -371,7 +521,7 @@ def _final(row: RowView, transition: str, now: datetime, *, cause: Optional[str]
         fields[task_row.REASONS] = list(reasons)
     elif row.reasons:
         removed.append(task_row.REASONS)
-    return Judgment(row.task_id, transition, fields, tuple(removed), cause=cause, warning=warning)
+    return Judgment(row.task_id, transition, fields, tuple(removed), cause=cause, warning=warning, since=since)
 
 
 @dataclass(frozen=True)

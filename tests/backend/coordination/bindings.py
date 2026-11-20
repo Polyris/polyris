@@ -184,31 +184,30 @@ class Bindings:
         return handler
 
     def asset_fanout(self) -> Any:
-        """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
+        """AssetFanout over the bound dispatcher; the stream adapter in world.py feeds it."""
         import asset_fanout
-        import reconcile
 
         import dispatcher
 
-        fanout = asset_fanout.AssetFanout(reconcile._RECONCILER, dispatcher=dispatcher._DISPATCHER,
+        fanout = asset_fanout.AssetFanout(dispatcher._DISPATCHER,
                                           subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
                                           consumers_table=self.stack.tables["AssetSubscriptionsTable"])
         self._set(asset_fanout, "_FANOUT", fanout)
         return asset_fanout.handler
 
     def sweeper(self) -> Callable[[Any, Any], Any]:
-        """The sweeper over the bound reconciler; World.sweep runs one scheduled invocation."""
-        import reconcile
+        """The sweeper over the bound dispatcher; World.sweep runs one scheduled invocation."""
         import sweeper
 
         import dispatcher
 
         self._set(sweeper, "_SWEEPER", sweeper.Sweeper(
-            reconcile._RECONCILER, owner="harness", dispatcher=dispatcher._DISPATCHER,
+            dispatcher._DISPATCHER, owner="harness",
             subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
             consumers_table=self.stack.tables["AssetSubscriptionsTable"],
             lambda_client=_LambdaClient(self.stack),
-            fanout_function=self.stack.functions["AssetFanoutFunction"]))
+            fanout_function=self.stack.functions["AssetFanoutFunction"],
+            dispatcher_function=self.stack.functions["ReconcileFunction"]))
         return sweeper.handler
 
     def query_subscriptions(self) -> Callable[[Any, Any], Any]:

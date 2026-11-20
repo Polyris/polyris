@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from polyris.coordination import attention, deadlines, records, run_input, run_row, start_run, task_row, task_spec
+from polyris.coordination import attention, deadlines, records, retention, run_input, run_row, start_run, task_row, task_spec
 
 NOW = datetime(2026, 11, 19, 6, 0, tzinfo=timezone.utc)
 EXECUTION = "orders-run-2026-11-19-abcd1234"
@@ -110,10 +110,11 @@ def test_only_a_row_with_a_time_of_its_own_is_due():
     assert deadlines.due_time(times, ()) == NOW + deadlines.WAIT_FOR_LIMIT
 
 
-def test_a_waiting_task_with_wait_for_gets_its_asset_pointers():
-    assert start_run.pointer_items(call(), SPECS) == [
+def test_a_waiting_task_with_wait_for_gets_its_asset_pointers_with_the_history_ttl():
+    """The pointers are part of the run's history and live as long (ADR #137 §5, invariant 11)."""
+    assert start_run.pointer_items(call(), SPECS, now=NOW) == [
         {"dependency_key": "asset:s3/orders", "subscriber": task_row.key("watch", "2026-11-18", EXECUTION),
-         "run": run_row.key(EXECUTION)}]
+         "run": run_row.key(EXECUTION), "ttl": retention.ttl(NOW, retention.HISTORY)}]
 
 
 def test_the_runs_input_item_carries_its_execution():
@@ -170,7 +171,7 @@ def test_a_later_attempt_replaces_the_token_and_clears_the_answer_and_an_earlier
 
 def test_the_run_row_never_goes_back_to_creating(table):
     write_run_row(table, call())
-    table.update_item(**start_run.activation(call()))
+    table.update_item(**start_run.activation(call(), now=NOW))
     assert write_run_row(table, call(redrive_count=1, token="token-r"))
     assert run_item(table)["status"] == "active"
 
@@ -205,16 +206,17 @@ def test_activation_marks_the_run_active_once_and_never_a_stopped_one(table):
     from botocore.exceptions import ClientError
 
     write_run_row(table, call())
-    table.update_item(**start_run.activation(call()))
+    table.update_item(**start_run.activation(call(), now=NOW + timedelta(seconds=3)))
     assert run_item(table)["status"] == "active" and run_item(table)["run_version"] == 2
+    assert run_item(table)["ttl"] == retention.ttl(NOW + timedelta(seconds=3), retention.HISTORY)   # renewed (§5)
     with pytest.raises(ClientError):
-        table.update_item(**start_run.activation(call()))                              # a retry: already active
+        table.update_item(**start_run.activation(call(), now=NOW))                              # a retry: already active
     assert start_run.activation_refused(run_item(table), call()) is True
     table.update_item(Key={"execution_name": run_row.key(EXECUTION)}, UpdateExpression="SET #s = :c, #stop = :m",
                       ExpressionAttributeNames={"#s": "status", "#stop": "stop"},
                       ExpressionAttributeValues={":c": "creating", ":m": {"by": "engine"}})
     with pytest.raises(ClientError):
-        table.update_item(**start_run.activation(call()))
+        table.update_item(**start_run.activation(call(), now=NOW))
     assert start_run.activation_refused(run_item(table), call()) is False
     with pytest.raises(start_run.OtherRun):
         start_run.activation_refused({**run_item(table), "run_execution": "another"}, call())

@@ -138,7 +138,7 @@ Start
         → run_task fails → the task is marked failed with the cause
 ```
 
-Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback. Resume sends it; if resume misses the task, because the token was saved while resume ran or the release failed, the sweeper sends it once the run is no longer paused (ADR #130 §8).
+Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback. Resume sends it.
 
 ### polyris-failure-handler
 
@@ -279,17 +279,16 @@ Reads the `asset_events` stream, new facts only (ADR #130 §6.1).
 
 ### 5. sweeper
 
-An EventBridge schedule runs it every 5 minutes (ADR #130 §8). One run at a time holds the `_sweeper_lease` row.
+An EventBridge schedule runs it every 5 minutes (ADR #130 §8, ADR #137 §7). One run at a time holds the `_sweeper_lease` row, within a time budget.
 
-- Takes the waiting rows whose due time has come from `attention-index`, earliest first, and reconciles each in-process
-- A task that still waits is due again later: 10, 20, then every 30 minutes
-- A task it wakes although it could run before its due time had its hint lost: it writes a `sweeper` warning
-- Releases a task held in run_task's pause wait (`paused#` rows) once its run is no longer paused: a pause token resume missed; also with a `sweeper` warning
-- Past a task's liveness deadline (`started_at` + `orchestration_timeout` + 1 h; three timeouts for a wrapper started before the upgrade), it checks the wrapper and aborts a task nothing can wake
+- Takes the due entries of the `waiting` and `decision` kinds from `attention-index`, run rows included, earliest first, groups them by run and makes one full pass of the dispatcher over each run, in its own process. The pass judges every row of the run from the row itself: a countdown that ended, a limit, a decision deadline, a start to try again
+- Its passes alone judge executions (`DescribeExecution`): a `deps_ready` or `running` row whose `run_task` ended without an outcome fails, one whose execution does not exist yet is no dead one, and a `deps_ready` row whose execution does not exist after 2 minutes is started again under its name. The engine stops a run whose execution ended before its answer, or that is still `creating` after `Start_Run`'s retry window, with the cause
+- After each check it moves the run row's due time on by the backoff (10, 20, then every 30 minutes) and clears `left_at`. A pass that fails moves it too, and warns once per run (`coordination`); a sweep in which most passes failed, and at least two, reports a failed step
+- A row whose wait the pass ended more than 5 minutes after it could have been decided had its hint lost: one `sweeper` warning per run and check, with the count and a few task names. A countdown that ended, and a row found while the run row carries `left_at`, are no lost hints
+- Rows whose run row is missing, such as those a 1.2 run left in flight, are stopped with the cause
 - Retries the push starts that failed transiently (`retry#` rows), from 5 minutes up to every hour; gives up after 24 h with a `push` warning
 - Hourly, replays the push branch for every fact of the last 48 h (a lost stream record); `_engine_health` keeps its progress
-- Adopts rows an older version wrote (waiting tasks without an attention entry, under `paused#` when they hold a pause token; facts without partition fields), resumably, once per adoption generation
-- Ends with a self-check in `_engine_health`: stream and mapping state, when the mapping last changed, the oldest overdue waiting or paused task, and the push retry backlog. It also records the names the console's findings use: its own function, asset-fanout and its mapping, the asset-events table, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
+- Ends with a self-check in `_engine_health`: the state of both streams and of their mappings (to asset-fanout and to the dispatcher), when each mapping last changed and its last result, the oldest overdue entry (a run row included), the number of runs whose check found lost hints, and the push retry backlog. It also records the names the console's findings use: its own function, asset-fanout, the dispatcher and their mappings, the asset-events and tasks tables, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
 
 ---
 

@@ -51,11 +51,11 @@ def _start(call: core.Call, now: datetime) -> Dict[str, Any]:
     items = core.task_items(call, specs, now=now)
     for item in items:
         _put(tokens, item, call, f"the row of {item['task_name']}")
-    pointers = core.pointer_items(call, specs)
+    pointers = core.pointer_items(call, specs, now=now)
     subscriptions = ddb.Table(env.SUBSCRIPTIONS_TABLE)
     for pointer in pointers:
         subscriptions.put_item(Item=pointer)
-    _activate(tokens, call)
+    _activate(tokens, call, now)
     log.info("start_run", "run active", execution=call.execution, tasks=len(items), pointers=len(pointers))
     return {"run": call.execution, "started": True, "tasks": len(items)}
 
@@ -92,9 +92,9 @@ def _put(tokens: Any, item: Mapping[str, Any], call: core.Call, what: str) -> No
         core.accept_existing({k: _deserializer.deserialize(v) for k, v in old.items()}, call, what)
 
 
-def _activate(tokens: Any, call: core.Call) -> None:
+def _activate(tokens: Any, call: core.Call, now: datetime) -> None:
     try:
-        tokens.update_item(**core.activation(call))
+        tokens.update_item(**core.activation(call, now=now))
     except ClientError as exc:
         if not failures.is_condition_failed(exc):
             raise

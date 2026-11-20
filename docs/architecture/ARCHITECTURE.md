@@ -148,8 +148,7 @@ Run_Task Helper SFN
      │
      ├─ Check_Pause ─────────────► pipeline_tokens _pause_{run} [getItem]
      │    └─ if paused ──────────► pause_waiter SFN (waitForTaskToken): saves the
-     │                             token with a paused# entry; resume, or the
-     │                             sweeper once the run is no longer paused, releases it
+     │                             token with a paused# entry; resume releases it
      │
      ├─ Update_Status_Running ───► pipeline_tokens [updateItem]
      ├─ Emit_Task_Started ───────► task_events [putItem]
@@ -491,7 +490,7 @@ No always-on control plane, so idle cost is near zero.
                                   └───────────────────────┘
 ```
 
-A task of a paused run waits as `waiting_paused` at one of two points: before its dependency signal, where the reconciler parks it, or at the start of run_task, where it holds a pause token. Resume releases both; the sweeper releases a pause token resume missed (ADR #130).
+A task of a paused run waits as `waiting_paused` at one of two points: before its dependency signal, where the reconciler parks it, or at the start of run_task, where it holds a pause token. Resume releases both.
 
 **Terminal statuses:** success, failed, skipped, aborted, upstream_failed
 

@@ -81,7 +81,7 @@ class Observer:
             calls = self.log[first:]
             reads = [c for c in calls if c.operation in ("GetItem", "BatchGetItem", "Query") and not c.ok]
             closes = [c for c in calls if c.ok and c.operation == "UpdateItem" and _is_run_row(c)
-                      and str(c.params.get("UpdateExpression", "")).startswith("REMOVE")]
+                      and "REMOVE #att, #due, #left" in str(c.params.get("UpdateExpression", ""))]
             self.passes.append(Pass(f"{run_key}#{next(self._ids)}", unresolved_read_failures=len(reads),
                                     starts=int((result or {}).get("started", 0)), closes=len(closes),
                                     answers=len(self.answers) - answered))

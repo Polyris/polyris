@@ -30,14 +30,15 @@ FUNCTION_TABLES = {
     "AssetFanoutFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
                             "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
     "SweeperFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
-                        "ASSET_SUBSCRIPTIONS_TABLE"),
+                        "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
     "StartRunFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
 }
 #: Environment a function reads beyond its tables.
 #: The run_task state machine by its name: a !Ref would close a dependency cycle (ADR #137 §1).
 RUN_TASK_ARN = {"!Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"}
 FUNCTION_ENV = {
-    "SweeperFunction": {"ASSET_FANOUT_FUNCTION": {"!Ref": "AssetFanoutFunction"}},
+    "SweeperFunction": {"ASSET_FANOUT_FUNCTION": {"!Ref": "AssetFanoutFunction"}, "RUN_TASK_ARN": RUN_TASK_ARN,
+                        "DISPATCHER_FUNCTION": {"!Ref": "ReconcileFunction"}},
     "ReconcileFunction": {"RUN_TASK_ARN": RUN_TASK_ARN},
     "AssetFanoutFunction": {"RUN_TASK_ARN": RUN_TASK_ARN},
 }
@@ -102,7 +103,8 @@ class FakeSfn:
         self.started: List[Dict[str, Any]] = []
         self.failed: List[Dict[str, Any]] = []
         self.dead_tokens: set = set()
-        self.executions: Dict[str, str] = {}
+        self.executions: Dict[str, Any] = {}
+        self.described: List[str] = []
         self.errors: Dict[str, Exception] = {}
 
     def _raise_if_set(self, operation: str) -> None:
@@ -133,10 +135,13 @@ class FakeSfn:
         return {"executionArn": f"{stateMachineArn}:{name}"}
 
     def describe_execution(self, *, executionArn: str) -> Dict[str, Any]:
+        """``executions`` maps an ARN to its status, or to the status with its ``error`` and ``cause``."""
         self._raise_if_set("describe_execution")
+        self.described.append(executionArn)
         if executionArn not in self.executions:
             raise client_error("ExecutionDoesNotExist", "DescribeExecution")
-        return {"executionArn": executionArn, "status": self.executions[executionArn]}
+        known = self.executions[executionArn]
+        return {"executionArn": executionArn, **(known if isinstance(known, dict) else {"status": known})}
 
 
 def execution_name(task: str, run: str = RUN, date: str = DATE) -> str:

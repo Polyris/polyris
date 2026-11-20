@@ -181,7 +181,7 @@ def test_a_rows_pointers_are_those_start_run_wrote():
                                 "execution_start": RUN_START, "token": "t", "retry_count": 0, "date": "2026-11-19"})
     [item] = start_run.task_items(call, {"load": spec}, now=NOW)
     assert dispatch_writes.pointers(item) == [{k: p[k] for k in (start_run.POINTER_KEY, start_run.POINTER_SUBSCRIBER)}
-                                              for p in start_run.pointer_items(call, {"load": spec})]
+                                              for p in start_run.pointer_items(call, {"load": spec}, now=NOW)]
     assert dispatch_writes.pointers({**item, task_row.DECISION: task_spec.decision_text(_spec())}) == []
 
 
@@ -251,8 +251,8 @@ def test_a_pass_that_left_rows_makes_its_run_row_due_at_once(ddb):
 def test_the_run_rows_due_time_goes_only_on_the_version_the_pass_read(ddb):
     seed(ddb)
     send(ddb, [{"Update": dispatch_writes.due_now(run(), table=TABLE, now=NOW, left=True)}])
-    assert not send(ddb, [{"Update": dispatch_writes.close(run(version=2), table=TABLE)}])
-    assert send(ddb, [{"Update": dispatch_writes.close(run(), table=TABLE)}])
+    assert not send(ddb, [{"Update": dispatch_writes.close(run(version=2), table=TABLE, now=NOW)}])
+    assert send(ddb, [{"Update": dispatch_writes.close(run(), table=TABLE, now=NOW)}])
     assert not {"attention", "attention_at", "left_at"} & set(get(ddb, run().key))
 
 
@@ -262,3 +262,69 @@ def test_the_stop_done_raises_the_run_version_on_the_one_read(ddb):
     assert send(ddb, [{"Update": dispatch_writes.stop_done(run(), table=TABLE, now=NOW)}])
     written = get(ddb, run().key)
     assert (written["stop_done"], written["run_version"]) == (format_utc(NOW), 4)
+
+
+# ── ADR #137 §4, §5: the engine's stop, the sweeper's move, the history TTL ──
+
+def test_the_engines_stop_mark_names_the_engine_and_raises_the_version_only_without_a_mark(ddb):
+    seed(ddb)
+    cause = "its execution ended ABORTED before the run's answer"
+    assert not send(ddb, [{"Update": dispatch_writes.engine_stop(run(version=2), table=TABLE, cause=cause, now=NOW)}])
+    assert send(ddb, [{"Update": dispatch_writes.engine_stop(run(), table=TABLE, cause=cause, now=NOW)}])
+    written = get(ddb, run().key)
+    assert written["stop"] == {"by": run_row.ENGINE, "reason": cause, "at": format_utc(NOW)}
+    assert written["run_version"] == 4
+    # A Stop of the run that came first keeps who asked and why.
+    put(ddb, {**written, "stop": {"by": "ops", "reason": "wrong date", "at": format_utc(NOW)}})
+    assert not send(ddb, [{"Update": dispatch_writes.engine_stop(run(version=4), table=TABLE, cause=cause, now=NOW)}])
+    assert get(ddb, run().key)["stop"]["by"] == "ops"
+
+
+def test_the_sweepers_move_backs_off_clears_left_at_and_keeps_the_version(ddb):
+    seed(ddb)
+    due = format_utc(NOW - timedelta(minutes=1))
+    put(ddb, {**get(ddb, run().key), "attention_at": due, "left_at": due, "checks": 1})
+    assert send(ddb, [{"Update": dispatch_writes.checked(run().key, table=TABLE, due_read=due, version_read=3,
+                                                         checks=1, now=NOW)}])
+    written = get(ddb, run().key)
+    assert (written["attention_at"], written["checks"], written["run_version"]) == (
+        format_utc(NOW + timedelta(minutes=20)), 2, 3)
+    assert "left_at" not in written and written["ttl"] == retention.ttl(NOW, retention.HISTORY)
+
+
+@pytest.mark.parametrize("due_read,version_read", [("2026-11-19T11:00:00.000Z", 3), (None, 2)])
+def test_the_sweepers_move_never_postpones_a_check_set_meanwhile_or_after_a_raise(ddb, due_read, version_read):
+    """A request, a pass or an action that set the due time, or a write that raised run_version, keeps it (§3)."""
+    seed(ddb)
+    due = format_utc(NOW - timedelta(minutes=1))
+    put(ddb, {**get(ddb, run().key), "attention_at": due})
+    assert not send(ddb, [{"Update": dispatch_writes.checked(run().key, table=TABLE, due_read=due_read or due,
+                                                             version_read=version_read, checks=0, now=NOW)}])
+    assert get(ddb, run().key)["attention_at"] == due
+
+
+def test_every_write_of_the_run_row_renews_its_history_ttl_and_never_makes_a_row_of_the_key_alone(ddb):
+    seed(ddb)
+    later = NOW + timedelta(days=30)
+    end = dispatch.RunEnd({"success": 1}, None)
+    writes = [dispatch_writes.summary(run(), end, table=TABLE, read_at=later),
+              dispatch_writes.due_now(run(), table=TABLE, now=later, left=False)]
+    for update in writes:
+        assert send(ddb, [{"Update": update}])
+        assert get(ddb, run().key)["ttl"] == retention.ttl(later, retention.HISTORY)
+    ddb.delete_item(TableName=TABLE, Key={"execution_name": {"S": run().key}})
+    for update in writes:
+        assert not send(ddb, [{"Update": update}])
+    assert get(ddb, run().key) == {}
+
+
+def test_a_row_a_12_run_left_without_a_generation_is_stopped_on_its_absence(ddb):
+    """Its stop is conditional on the status read and on no generation, and gives it the first (*Migration*)."""
+    put(ddb, {"execution_name": KEY, "status": "waiting"})
+    item = {"execution_name": KEY, "task_name": "load", "status": "waiting"}
+    legacy = dispatch.stop_view(item)
+    judgment = dispatch.stop(legacy, now=NOW, cause="its run row is missing")
+    assert send(ddb, dispatch_writes.task_write(legacy, judgment, None, table=TABLE, now=NOW))
+    stopped = get(ddb, KEY)
+    assert (stopped["status"], stopped["generation"]) == ("stopped", 1)
+    assert not send(ddb, dispatch_writes.task_write(legacy, judgment, None, table=TABLE, now=NOW))   # raised now
