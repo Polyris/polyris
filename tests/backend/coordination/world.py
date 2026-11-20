@@ -523,13 +523,18 @@ class World:
         self.settle()
 
     def _finish_jobs(self) -> None:
-        """The user's work still running ends well: the jobs of run_task's stand-in."""
+        """The user's work still running ends well: the jobs of run_task's stand-in, and the jobs their ends let
+        start, until none is left, so a chain of any length ends within one round."""
         run_task = self.stack.machine_arn("RunTaskHelperSfn")
-        jobs = [job for job in self.runtime.jobs.values() if job.frame.execution.machine.arn == run_task]
-        for job in jobs:
-            self.runtime.finish_job(job.id, output={"Output": {}, "Status": "SUCCEEDED"})
-        if jobs:
+        for _ in range(100_000):
+            jobs = [job for job in self.runtime.jobs.values() if job.frame.execution.machine.arn == run_task]
+            if not jobs:
+                return
+            for job in jobs:
+                self.runtime.finish_job(job.id, output={"Output": {}, "Status": "SUCCEEDED"})
             self.settle()
+            self.deliver_task_hints()
+        raise AssertionError("the user's work never ran out")
 
     def _next_due(self, *, latest: bool = False, rows_only: bool = False) -> Optional[datetime]:
         """The earliest (or ``latest``) due time of the entries the sweeper takes: the waiting and decision

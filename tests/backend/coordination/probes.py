@@ -348,6 +348,7 @@ PROBES: Tuple[Probe, ...] = (
           f"{ROWS}::test_a_denied_start_warns_at_once_and_counts_toward_no_limit"),
     # A waiting row whose upstream's row is gone fails with the cause; the probe leaves it waiting for good.
     Probe("R-T1", (Edit("polyris/coordination/dispatch.py",
+                        '        cause = f"the row of its upstream {missing[0]} is missing"\n'
                         '        return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")\n',
                         "        return Judgment(row.task_id, due=row.due)\n"),),
           f"{ROWS}::test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause"),

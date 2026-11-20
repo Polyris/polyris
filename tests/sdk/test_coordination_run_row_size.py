@@ -59,6 +59,8 @@ def largest_run_row():
         run_row.RUN_VERSION: 99_999_999,
         run_row.LEFT_AT: ISO,
         run_row.EXECUTION: pipeline_execution,
+        # An execution ARN: the state machine's name and the execution's, 80 characters each at most.
+        run_row.EXECUTION_ARN: f"arn:aws:states:ap-southeast-2:123456789012:execution:{'m' * 80}:{'e' * 80}",
         run_row.RUN_START: "2026-11-18T06:00:00.123456+00:00",
         run_row.PIPELINE: "p" * 56,
         run_row.RUN_DATE: "2026-11-18",

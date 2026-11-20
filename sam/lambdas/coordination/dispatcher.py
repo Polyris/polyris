@@ -36,6 +36,7 @@ sweeper, ``narrow_pass`` for AssetFanout, ``stop_orphans`` for the sweeper's
 rows whose run row is missing.
 """
 
+import json
 import random
 import time
 from dataclasses import dataclass, field, replace
@@ -74,9 +75,6 @@ ACCESS_DENIED = frozenset({"AccessDeniedException", "AccessDenied"})
 CONFLICT = "TransactionConflict"
 #: What DescribeExecution answers for an execution it does not know.
 NO_EXECUTION = "ExecutionDoesNotExist"
-#: The registry field of a pipeline's state machine, from which its executions' ARNs follow.
-REGISTRY_KEY = "pipeline_name"
-REGISTRY_SFN_ARN = "sfn_arn"
 
 _deserializer = TypeDeserializer()
 _serializer = TypeSerializer()
@@ -111,6 +109,7 @@ class _Pass:
     check: bool = False                    # the sweeper's pass: liveness, the engine's stop, lost hints (§7)
     left_read: bool = False                # the run row carried left_at when the pass read it
     lost: List[str] = field(default_factory=list)
+    facts: Dict[str, Evaluation] = field(default_factory=dict)    # one evaluation per wait_for a pass
 
 
 class Dispatcher:
@@ -223,9 +222,10 @@ class Dispatcher:
             if run.stopping:
                 self._stop_rows(state, judged)
             else:
-                for name in _upstreams_first(judged, specs):
+                dependencies = {name: specs[name].fields[TaskSpecKey.DEPENDENCIES] for name in judged}
+                for name in dispatch.upstreams_first(judged, dependencies):
                     if name in state.rows:
-                        self._row(state, name)
+                        self._decide(state, name)
             if targets is None:
                 end = self._run_end(state, keys)
                 stopped = self._engine_check(state.run, now, finished=end.finished) if check else None
@@ -248,7 +248,42 @@ class Dispatcher:
     def _stop_rows(self, state: _Pass, judged: Set[str]) -> None:
         """Every unfinished row of the set stopped, dependants first (§4)."""
         for name in dispatch.stop_order({n: r for n, r in state.rows.items() if n in judged}):
-            self._row(state, name, stop=True)
+            self._decide(state, name, stop=True)
+
+    def _decide(self, state: _Pass, name: str, *, stop: bool = False) -> None:
+        """One row decided and written. A row that cannot be decided fails with the cause if it waits, or warns,
+        and the pass goes on to the other rows (§3, Rule 51): one bad row never holds up its run."""
+        try:
+            self._row(state, name, stop=stop)
+        except (_Left, CoordinationTransient):
+            raise
+        except (ClientError, BotoCoreError) as exc:
+            failures.reraise_transient(exc)
+            self._undecidable(state, name, exc)
+        except Exception as exc:  # noqa: BLE001 — one row that cannot be decided never holds up its run (Rule 51)
+            self._undecidable(state, name, exc)
+
+    def _undecidable(self, state: _Pass, name: str, exc: BaseException) -> None:
+        cause = f"it could not be decided: {type(exc).__name__}: {exc}"
+        log.error("dispatcher", "a row could not be decided", run=state.run.key, task=name, error=str(exc))
+        row = state.rows.get(name)
+        if row is None:
+            return
+        if failures.error_code(exc) in ACCESS_DENIED:              # it waits for the permission (§7)
+            self._warn(state.run, subject=row.key, task=name, item=state.items.get(name, {}), error=f"{name}: {cause}")
+            return
+        judgment = dispatch.undecidable(row, now=state.now, cause=cause)
+        try:
+            written = self._write(state, row, judgment)
+        except (ClientError, BotoCoreError) as write_exc:
+            failures.reraise_transient(write_exc)
+            self._warn(state.run, subject=row.key, task=name, item=state.items.get(name, {}),
+                       error=f"{name}: {cause}; its failure could not be written: {write_exc}")
+            return
+        if written:
+            self._after(state, name, row, judgment)
+        else:
+            state.left = True                                      # it moved meanwhile: the next pass decides it
 
     def _row(self, state: _Pass, name: str, *, stop: bool = False) -> None:
         """Decide one row and send what was decided; decide it again once from new reads if refused."""
@@ -275,6 +310,7 @@ class Dispatcher:
         if stop:
             return dispatch.stop(row, now=state.now, cause=_stop_cause(state.run))
         if state.check and dispatch.liveness_due(row, state.run, now=state.now):
+            self._within_budget(state)                         # judging an execution takes a call
             execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
                                        state.run, subject=row.key)
             if execution is not None:                  # an unknown state judges nothing (invariant 10)
@@ -282,7 +318,6 @@ class Dispatcher:
         upstreams = {d: state.rows.get(d) for d in row.dependencies}
         assets = None
         if dispatch.needs_assets(row, upstreams):
-            self._within_budget(state)                         # reading the facts takes time
             assets = self._assets(state, name)
         return dispatch.judge(row, upstreams, state.run, now=state.now, assets=assets)
 
@@ -292,14 +327,9 @@ class Dispatcher:
             state.changed += 1
             log.info("dispatcher", "row", run=state.run.key, task=name, status=judgment.status or row.status,
                      transition=judgment.transition, cause=judgment.cause)
-        if judgment.transition:
-            target = str(judgment.status)
-            final = target in transitions.FINAL
-            state.rows[name] = replace(
-                row, status=target, times=replace(row.times, status=target),
-                generation=row.generation + 1 if judgment.transition == "stop" else row.generation,
-                skip_origin=judgment.fields.get(task_row.SKIP_ORIGIN, row.skip_origin),
-                finished_at=state.now if final else row.finished_at)
+        # The row as its write left it: its status, generation, times and due time (dispatch_writes.applied).
+        state.items[name] = dispatch_writes.applied(state.items[name], row, judgment, state.run, now=state.now)
+        state.rows[name] = dispatch.row_view(state.items[name])
         if judgment.leaves_wait and row.has_wait_for:
             self._drop_pointers(state.items[name])
         if state.check and judgment.since is not None:
@@ -318,7 +348,13 @@ class Dispatcher:
         run_item = self._get(state.run.key)
         if run_item is None:
             raise _Left()
-        state.run = dispatch.run_view(run_item)
+        fresh = dispatch.run_view(run_item)
+        moved = fresh.version != state.run.version
+        state.run = fresh
+        if moved:
+            # An action, a stop mark or a request came after the pass's read: what it decided from that read no
+            # longer holds, so the next pass decides the rest from new reads (§1, §3, §4).
+            raise _Left()
         row = state.rows[name]
         keys = {n: task_row.key(n, state.run.date, state.run.execution) for n in (name, *row.dependencies)}
         self._read_rows(state, keys)
@@ -369,25 +405,13 @@ class Dispatcher:
         return replace(run, version=run.version + 1, stop=mark)
 
     def _describe_run(self, run: dispatch.RunView) -> Optional[dispatch.Execution]:
-        """The run's execution, from its pipeline's state machine in the registry (CLAUDE.md, "Stop pipeline
-        hierarchy"); a pipeline no longer registered has no execution any more. None when unknown."""
-        try:
-            entry = self.client.get_item(TableName=self.pipelines_table, Key={REGISTRY_KEY: {"S": run.pipeline}},
-                                         ConsistentRead=True).get("Item")
-        except (ClientError, BotoCoreError) as exc:
-            failures.reraise_transient(exc)
-            self._warn(run, subject=f"{run.key}-execution", task="", item={},
-                       error=f"the run's execution could not be checked: the registry could not be read: {exc}")
+        """The run's execution, by the ARN Start_Run recorded on the run row ($states.context.Execution.Id): the
+        engine's check needs no registry entry, which a large pipeline's registration may not have written (the
+        review of TR-4). None when unknown, which stops nothing (invariant 10)."""
+        if not run.execution_arn:
+            log.error("dispatcher", "a run row names no execution ARN; its execution is not checked", run=run.key)
             return None
-        if entry is None:
-            return dispatch.Execution(None, cause=f"the pipeline {run.pipeline} is no longer registered")
-        machine = _plain(entry).get(REGISTRY_SFN_ARN)
-        if not machine:
-            self._warn(run, subject=f"{run.key}-execution", task="", item={},
-                       error=f"the run's execution cannot be checked: the registry names no state machine for "
-                             f"{run.pipeline}; deploy the pipeline again")
-            return None
-        return self._describe(_arn_of(str(machine), run.execution), run, subject=run.key)
+        return self._describe(run.execution_arn, run, subject=run.key)
 
     def _describe(self, arn: str, run: dispatch.RunView, *, subject: str) -> Optional[dispatch.Execution]:
         """What DescribeExecution says of ``arn``; None when it could not say, which decides nothing (invariant 10)."""
@@ -448,6 +472,10 @@ class Dispatcher:
             if stored is None:
                 raise ValueError(f"{run.key}: the run's input item is missing")
             state.inputs = run_input.from_item(stored)
+        missing = sorted(d for d in row.dependencies if d not in state.rows)
+        if missing:
+            return dispatch.start_failed(row, run, now=state.now, error=f"the row of its upstream {missing[0]} is missing",
+                                         kind=dispatch.REFUSED)
         upstreams = {d: (state.rows[d].status, state.rows[d].skip_origin) for d in row.dependencies}
         try:
             text = run_task_input.build(
@@ -535,9 +563,17 @@ class Dispatcher:
                                             "attempts")
         for key, name in by_key.items():
             read = found.get(key)
+            view = None
             if read is not None and task_row.of_run(read, state.run.execution, state.run.run_start):
+                try:
+                    view = dispatch.row_view(read)
+                except (ValueError, KeyError, TypeError) as exc:
+                    # Rule 51: a row no reader can parse counts as missing, and the bell says so.
+                    self._warn(state.run, subject=key, task=name, item=read,
+                               error=f"{name}: its row cannot be read, so it counts as missing: {exc}")
+            if view is not None:
                 state.items[name] = read
-                state.rows[name] = dispatch.row_view(read)
+                state.rows[name] = view
             else:
                 state.items.pop(name, None)
                 state.rows.pop(name, None)
@@ -546,11 +582,18 @@ class Dispatcher:
         """The evaluation of the row's facts, read through ``stores.FactStore`` (ADR #130 §4)."""
         wait_for = task_spec.decision_from_text(str(state.items[name][task_row.DECISION])).get(
             TaskSpecKey.WAIT_FOR.value)
+        text = json.dumps(wait_for, sort_keys=True)
+        known = state.facts.get(text)
+        if known is not None:
+            return known                                       # the rows that wait for the same facts read them once
+        self._within_budget(state)                             # reading the facts takes time
         registry = Registry(self.resource, self.pipelines_table)
         reader = FactStore(self.resource, self.asset_events_table, registry, state.now,
                            on_unreadable=lambda item, exc: self._unreadable_fact(state.run, item, exc))
-        return evaluate_assets(asset_spec.parse(wait_for), target=partition_date(state.run.date), now=state.now,
-                               reader=reader)
+        evaluation = evaluate_assets(asset_spec.parse(wait_for), target=partition_date(state.run.date), now=state.now,
+                                     reader=reader)
+        state.facts[text] = evaluation
+        return evaluation
 
     # ── writes ───────────────────────────────────────────────────────────
 
@@ -572,22 +615,26 @@ class Dispatcher:
                     return False
                 if failures.error_code(exc) == "TransactionCanceledException":
                     reasons = [str(r.get("Code", "")) for r in exc.response.get("CancellationReasons", [])]
+                    if "ThrottlingError" in reasons:
+                        raise CoordinationTransient(f"a transaction was throttled: {exc}") from exc
                     if CONFLICT in reasons and attempt + 1 < CONFLICT_ATTEMPTS:
                         self.sleep(random.uniform(*CONFLICT_BACKOFF_SECONDS))
                         continue
-                    if CONFLICT not in reasons and not any(r == "ThrottlingError" for r in reasons):
-                        return False                           # a condition: decided again from new reads
+                    # A condition, or other writes met again and again: decided again from new reads, or left to
+                    # the next pass (§7). Neither is a failure.
+                    return False
                 failures.reraise_transient(exc)
                 raise
         return False
 
     def _send(self, update: Dict[str, Any], *, quiet: bool = False) -> bool:
-        """A write of the run row; a refused condition is no error (another pass or an action came first)."""
+        """A write of the run row; a refused condition, or a transaction on the row at the same moment, is no
+        error: another pass or an action came first, and the next pass or check writes it again."""
         try:
             self.client.update_item(**update)
             return True
         except ClientError as exc:
-            if failures.is_condition_failed(exc):
+            if failures.is_condition_failed(exc) or failures.error_code(exc) == "TransactionConflictException":
                 return False
             failures.reraise_transient(exc)
             if quiet:
@@ -644,25 +691,6 @@ def _stop_cause(run: dispatch.RunView) -> str:
     stop = run.stop or {}
     reason = str(stop.get("reason") or "no reason given")
     return f"the run was stopped by {stop.get('by') or 'the engine'}: {reason}"
-
-
-def _upstreams_first(names: Set[str], specs: Mapping[str, task_spec.TaskSpec]) -> List[str]:
-    """``names`` in an order where each comes after its upstreams among them (the specs form a DAG)."""
-    order: List[str] = []
-    seen: Set[str] = set()
-
-    def visit(name: str) -> None:
-        if name in seen:
-            return
-        seen.add(name)
-        for upstream in sorted(specs[name].fields[TaskSpecKey.DEPENDENCIES]):
-            if upstream in names:
-                visit(upstream)
-        order.append(name)
-
-    for name in sorted(names):
-        visit(name)
-    return order
 
 
 def _images(record: Mapping[str, Any]):

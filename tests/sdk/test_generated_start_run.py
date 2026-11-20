@@ -84,8 +84,11 @@ def test_no_retry_matches_a_failed_runs_answer_which_the_first_catch_takes_witho
     assert first["ErrorEquals"] == [run_row.FAILED_RUN_ERROR] and first["Next"] == "Run_Ended_Failed"
     assert data_limit["ErrorEquals"] == ["States.DataLimitExceeded"] and every["ErrorEquals"] == ["States.ALL"]
     assert data_limit["Next"] == every["Next"] == "Warn_Start_Run_Failed"
-    recorded = evaluate(first["Output"], error_output={"Error": run_row.FAILED_RUN_ERROR, "Cause": "load failed"})
-    assert recorded == {BRANCH_ERROR: {"branch": "Start_Run", "error": run_row.FAILED_RUN_ERROR, "cause": "load failed"}}
+    recorded = evaluate(first["Output"], input={"variables": {"current_date": "2026-11-18"}}, context=CONTEXT,
+                        error_output={"Error": run_row.FAILED_RUN_ERROR, "Cause": "load failed"})
+    # The run's date travels with the error, for the warning the states after the Catch write (the review of TR-4).
+    assert recorded == {BRANCH_ERROR: {"branch": "Start_Run", "error": run_row.FAILED_RUN_ERROR, "cause": "load failed",
+                                       "date": "2026-11-18"}}
 
 
 def test_the_retry_of_start_run_is_the_window_the_sweeper_waits_for(states):
@@ -177,7 +180,7 @@ def _mark(client, states, *, run: str = RUN, start: str = START) -> bool:
 
 def _call(**changes: Any) -> start_run.Call:
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64, "task_count": 2,
-               "pipeline_name": "orders", "execution_name": RUN, "execution_start": START, "token": "token-1",
+               "pipeline_name": "orders", "execution_name": RUN, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{RUN}", "execution_start": START, "token": "token-1",
                "retry_count": 0, "redrive_count": 0, "date": "2026-11-18", **changes}
     return start_run.call_from(payload)
 

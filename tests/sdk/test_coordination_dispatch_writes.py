@@ -178,7 +178,7 @@ def test_a_rows_pointers_are_those_start_run_wrote():
     spec = _spec(wait_for=[{"asset_name": "lake/prices"}])
     call = start_run.call_from({"format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64,
                                 "task_count": 1, "pipeline_name": "orders", "execution_name": "orders-run-1",
-                                "execution_start": RUN_START, "token": "t", "retry_count": 0, "date": "2026-11-19"})
+                                "execution_arn": "arn:aws:states:us-east-1:123456789012:execution:orders:orders-run-1", "execution_start": RUN_START, "token": "t", "retry_count": 0, "date": "2026-11-19"})
     [item] = start_run.task_items(call, {"load": spec}, now=NOW)
     assert dispatch_writes.pointers(item) == [{k: p[k] for k in (start_run.POINTER_KEY, start_run.POINTER_SUBSCRIBER)}
                                               for p in start_run.pointer_items(call, {"load": spec}, now=NOW)]
@@ -328,3 +328,37 @@ def test_a_row_a_12_run_left_without_a_generation_is_stopped_on_its_absence(ddb)
     stopped = get(ddb, KEY)
     assert (stopped["status"], stopped["generation"]) == ("stopped", 1)
     assert not send(ddb, dispatch_writes.task_write(legacy, judgment, None, table=TABLE, now=NOW))   # raised now
+
+
+# ── the row as a write leaves it (dispatch_writes.applied) ──────────────────
+
+def _cases():
+    due = NOW + timedelta(minutes=30)
+    start_failed = dispatch.start_failed(row(S.DEPS_READY.value), run(), now=NOW, error="ThrottlingException: slow",
+                                         kind=dispatch.TRANSIENT)
+    return {
+        "ready": (S.WAITING.value, None, ready()),
+        "stop": (S.RUNNING.value, None, dispatch.stop(row(S.RUNNING.value), now=NOW, cause="stopped by ops: wrong")),
+        "a start that failed": (S.DEPS_READY.value, None, start_failed),
+        "a wait that loses its due time": (S.WAITING.value, due, dispatch.Judgment("load", fields={
+            task_row.REASONS: ["waiting for its upstreams"]}, due=None)),
+    }
+
+
+@pytest.mark.parametrize("case", sorted(_cases()))
+def test_a_pass_reads_a_row_after_its_write_as_dynamodb_holds_it(ddb, case):
+    """The rest of a pass reads the row from ``applied``, not from DynamoDB: they must agree (the review of TR-4)."""
+    status, due, judgment = _cases()[case]
+    before: Dict[str, Any] = {"execution_name": KEY, "status": status, "generation": 1, "reasons": ["waiting"]}
+    if due is not None:
+        before.update({attention.KEY: attention.attention(attention.WAITING, KEY), attention.DUE: format_utc(due)})
+    put(ddb, before)
+    put(ddb, {"execution_name": run().key, "status": "active", "run_version": 3, "token_order": 2})
+    view = dispatch.RowView(**{**row(status).__dict__, "due": due})
+    assert send(ddb, dispatch_writes.task_write(view, judgment, run(), table=TABLE, now=NOW))
+    assert get(ddb, KEY) == dispatch_writes.applied(before, view, judgment, run(), now=NOW)
+
+
+def test_a_row_is_made_ready_only_within_its_run_in_what_a_pass_reads_too():
+    with pytest.raises(ValueError, match="made ready only within its run"):
+        dispatch_writes.applied({"execution_name": KEY}, row(), ready(), None, now=NOW)

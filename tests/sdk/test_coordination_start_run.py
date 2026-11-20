@@ -1,6 +1,7 @@
 """What Start_Run writes, and the conditions of its writes (ADR #137 §1, §3)."""
 
 import json
+from typing import Any, Dict, Set
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -28,7 +29,7 @@ SPECS = {
 
 def call(**changes):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64, "task_count": 4,
-               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_start": START,
+               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{EXECUTION}", "execution_start": START,
                "token": "token-1", "retry_count": 0, "redrive_count": 0, "date": "2026-11-18",
                "input": {"skip_tasks": ["audit"], "triggered_by": "schedule"}}
     payload.update(changes)
@@ -47,7 +48,7 @@ def test_a_format_this_platform_does_not_run_is_refused_first_with_the_fix():
                                             ({"date": None}, "malformed"), ({"date": ""}, "no date")])
 def test_a_malformed_call_is_refused(change, problem):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": "s", "task_count": 1, "pipeline_name": "p",
-               "execution_name": "e", "execution_start": START, "token": "t", "retry_count": 0,
+               "execution_name": "e", "execution_arn": "arn:aws:states:us-east-1:123456789012:execution:orders:e", "execution_start": START, "token": "t", "retry_count": 0,
                "date": "2026-11-19", **change}
     for key in [k for k, v in change.items() if v is None]:
         payload.pop(key)
@@ -117,10 +118,58 @@ def test_a_waiting_task_with_wait_for_gets_its_asset_pointers_with_the_history_t
          "run": run_row.key(EXECUTION), "ttl": retention.ttl(NOW, retention.HISTORY)}]
 
 
-def test_the_runs_input_item_carries_its_execution():
+def test_the_runs_input_item_names_its_run_as_the_run_row_does():
     item = start_run.input_item(call(input={"variables": {"limit": 1.0}, "cascade_all": True}), now=NOW)
     assert run_input.from_item(item) == run_input.RunInput({"limit": 1.0}, (), "all")
-    assert task_row.of_run(item, EXECUTION, START)
+    assert start_run.is_this_run(item, call()) and task_row.PIPELINE_EXECUTION not in item
+
+
+def test_a_run_date_that_is_no_partition_key_is_refused_before_any_write():
+    """A pass could read no fact for such a date (the review of TR-4)."""
+    with pytest.raises(ValueError, match="no partition key"):
+        call(date="2026/11/18")
+
+
+def _index_keys() -> Dict[str, Set[str]]:
+    """The key attributes of each index of the tasks table (sam/template.yaml): an item enters an index only
+    when it carries every one of them."""
+    from pathlib import Path
+
+    from cfnlint.decode import decode
+
+    template, matches = decode(str(Path(__file__).resolve().parents[2] / "sam" / "template.yaml"))
+    assert template is not None, matches
+    [table] = [res["Properties"] for res in template["Resources"].values()
+               if res.get("Type") == "AWS::DynamoDB::Table" and "pipeline-tokens" in str(res["Properties"].get("TableName"))]
+    return {index["IndexName"]: {k["AttributeName"] for k in index["KeySchema"]}
+            for index in table["GlobalSecondaryIndexes"]}
+
+
+def _set_names(update: Dict[str, Any]) -> Set[str]:
+    """The attributes an UpdateExpression's SET clause writes."""
+    import re
+
+    names = update.get("ExpressionAttributeNames", {})
+    clause = update["UpdateExpression"].split(" REMOVE ")[0].removeprefix("SET ")
+    return {names.get(left.strip(), left.strip()) for left in re.findall(r"(#?\w+)\s*=", clause)}
+
+
+def test_each_item_start_run_writes_enters_only_the_indexes_meant_for_it():
+    """§3: the run's input enters no index; the run row only attention-index and run-start-index; a task row the
+    indexes of a run's rows and of a date (the review of TR-4)."""
+    indexes = _index_keys()
+
+    def entered(attributes: Set[str]) -> Set[str]:
+        return {name for name, keys in indexes.items() if keys <= attributes}
+
+    the_call = call()
+    assert entered(set(start_run.input_item(the_call, now=NOW))) == set()
+    run_indexes = entered(_set_names(start_run.run_row_write(the_call, now=NOW)))
+    assert run_indexes <= {"attention-index", "run-start-index"} and "attention-index" in run_indexes
+    for item in start_run.task_items(the_call, SPECS, now=NOW):
+        assert {"pipeline-execution-index", "date-pipeline-index", "pipeline-date-index"} <= entered(set(item))
+        assert entered(set(item)) - {"pipeline-execution-index", "date-pipeline-index", "pipeline-date-index",
+                                     "attention-index"} == set()
 
 
 # ── the conditions, as DynamoDB evaluates them (moto) ────────────────

@@ -34,9 +34,10 @@ writes take their condition from it and check the run row's ``run_version``.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..constants import ExecutionStatus, SkipOrigin, TaskSpecKey, TaskStatus
 from . import attention, deadlines, ownership, pauses, run_end, run_row, start_run, sweep, task_row, task_spec
@@ -75,6 +76,7 @@ class RunView:
     requests: bool = False                 # a heavy action waits on the run (§3)
     pipeline: str = ""
     started_at: Optional[datetime] = None  # the execution's StartTime
+    execution_arn: str = ""                # the execution's ARN, which the engine's check describes (§4)
 
     @property
     def active(self) -> bool:
@@ -109,7 +111,7 @@ def run_view(item: Mapping[str, Any]) -> RunView:
         summary={str(k): int(v) for k, v in summary.items()} if isinstance(summary, Mapping) else None,
         date=str(item.get(run_row.RUN_DATE, "")), left_at=item.get(run_row.LEFT_AT),
         requests=bool(item.get(run_row.REQUESTS)), pipeline=str(item.get(run_row.PIPELINE, "")),
-        started_at=_moment(item.get(run_row.STARTED_AT)),
+        started_at=_moment(item.get(run_row.STARTED_AT)), execution_arn=str(item.get(run_row.EXECUTION_ARN, "")),
     )
 
 
@@ -479,7 +481,7 @@ def engine_stop_cause(run: RunView, *, now: datetime, execution: Optional[Execut
     if execution.ended:
         return f"its execution ended {execution.account()} before the run's answer"
     if execution.status is None and age >= sweep.EXECUTION_VISIBLE_AFTER:
-        return f"its execution does not exist ({execution.cause})" if execution.cause else "its execution does not exist"
+        return "its execution does not exist"
     return None
 
 
@@ -491,21 +493,57 @@ def stop(row: RowView, *, now: datetime, cause: str) -> Judgment:
 
 
 def stop_order(rows: Mapping[str, RowView]) -> List[str]:
-    """The rows in the order a stop writes them: every dependant before its upstreams (§4)."""
+    """The rows in the order a stop writes them: every dependant before its upstreams (§4).
+
+    Iterative, with the dependants counted once: a chain as long as a pipeline may be (2,000 tasks) never
+    meets Python's recursion limit (polyris/CLAUDE.md, "Graph traversal")."""
+    dependants: Dict[str, int] = {name: 0 for name in rows}
+    for row in rows.values():
+        for upstream in set(row.dependencies):
+            if upstream in dependants:
+                dependants[upstream] += 1
+    ready = [name for name, count in dependants.items() if count == 0]
+    heapq.heapify(ready)
     order: List[str] = []
-    seen: set = set()
+    while ready:
+        name = heapq.heappop(ready)
+        order.append(name)
+        for upstream in set(rows[name].dependencies):
+            if upstream in dependants:
+                dependants[upstream] -= 1
+                if dependants[upstream] == 0:
+                    heapq.heappush(ready, upstream)
+    return order + sorted(set(rows) - set(order))         # a cycle cannot come from a deploy; its rows go last
 
-    def visit(task_id: str) -> None:
-        if task_id in seen:
-            return
-        seen.add(task_id)
-        for dependant in sorted(t for t, r in rows.items() if task_id in r.dependencies):
-            visit(dependant)
-        order.append(task_id)
 
-    for task_id in sorted(rows):
-        visit(task_id)
-    return order
+def upstreams_first(names: Iterable[str], dependencies: Mapping[str, Sequence[str]]) -> List[str]:
+    """``names`` in an order where each comes after its upstreams among them, so a pass decides a row after the
+    rows it reads. Iterative, like ``stop_order``."""
+    chosen = set(names)
+    waiting = {name: len(set(dependencies.get(name, ())) & chosen) for name in chosen}
+    after: Dict[str, List[str]] = {name: [] for name in chosen}
+    for name in chosen:
+        for upstream in set(dependencies.get(name, ())) & chosen:
+            after[upstream].append(name)
+    ready = [name for name, count in waiting.items() if count == 0]
+    heapq.heapify(ready)
+    order: List[str] = []
+    while ready:
+        name = heapq.heappop(ready)
+        order.append(name)
+        for dependant in after[name]:
+            waiting[dependant] -= 1
+            if waiting[dependant] == 0:
+                heapq.heappush(ready, dependant)
+    return order + sorted(chosen - set(order))            # a cycle cannot come from a deploy; its rows go last
+
+
+def undecidable(row: RowView, *, now: datetime, cause: str) -> Judgment:
+    """What a pass writes on a row it could not decide (§3, Rule 51): a waiting row fails with the cause, as on a
+    CoordinationError, so its run goes on; any other row keeps its state, and the cause goes to the bell."""
+    if row.status in transitions.task_transition("fail_wait").sources:
+        return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")
+    return Judgment(row.task_id, due=row.due, warning=f"{row.task_id}: {cause}")
 
 
 def _final(row: RowView, transition: str, now: datetime, *, cause: Optional[str] = None,

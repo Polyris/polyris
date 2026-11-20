@@ -467,6 +467,7 @@
                   "task_count": 1,
                   "pipeline_name": "asset_triggered",
                   "execution_name": "{% $states.context.Execution.Name %}",
+                  "execution_arn": "{% $states.context.Execution.Id %}",
                   "execution_start": "{% $states.context.Execution.StartTime %}",
                   "token": "{% $states.context.Task.Token %}",
                   "retry_count": "{% $states.context.State.RetryCount %}",
@@ -510,7 +511,8 @@
                     "_polyris_branch_error": {
                       "branch": "Start_Run",
                       "error": "{% $states.errorOutput.Error %}",
-                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}"
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
                     }
                   },
                   "Next": "Run_Ended_Failed"
@@ -523,7 +525,8 @@
                     "_polyris_branch_error": {
                       "branch": "Start_Run",
                       "error": "{% $states.errorOutput.Error %}",
-                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}"
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
                     }
                   },
                   "Next": "Warn_Start_Run_Failed"
@@ -536,7 +539,8 @@
                     "_polyris_branch_error": {
                       "branch": "Start_Run",
                       "error": "{% $states.errorOutput.Error %}",
-                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}"
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
                     }
                   },
                   "Next": "Warn_Start_Run_Failed"
@@ -567,7 +571,7 @@
                     "S": "{% $states.context.Execution.Name %}"
                   },
                   "task_date": {
-                    "S": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    "S": "{% $states.input._polyris_branch_error.date %}"
                   },
                   "status": {
                     "S": "failed"

@@ -31,7 +31,7 @@ def stack(ddb, monkeypatch):
 
 def event(version, **changes):
     payload = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": version.task_count,
-               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_start": START, "token": "token-1",
+               "pipeline_name": "orders", "execution_name": EXECUTION, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{EXECUTION}", "execution_start": START, "token": "token-1",
                "retry_count": 0, "redrive_count": 0, "date": "2026-11-18", "input": {"triggered_by": "schedule"}}
     payload.update(changes)
     return payload
@@ -109,5 +109,41 @@ def test_a_throttled_write_is_transient_so_the_states_retry_repeats_it(stack):
         raise client_error("ProvisionedThroughputExceededException", "PutItem")
 
     ddb.meta.client.meta.events.register("before-call.dynamodb.PutItem", throttle)
+    with pytest.raises(failures.CoordinationTransient):
+        lambda_start_run.handler(event(version), None)
+
+
+# ── from the review of TR-4 ─────────────────────────────────────────────────
+
+def test_a_retry_after_the_activation_records_its_token_and_writes_no_row_or_pointer_again(stack):
+    """A pointer of a row past its wait must not come back: nothing would delete it (Rule 40)."""
+    ddb, version = stack
+    lambda_start_run.handler(event(version), None)
+    pointers = ddb.Table(TABLES["SUBSCRIPTIONS_TABLE"][1])
+    for pointer in pointers.scan()["Items"]:                       # the dispatcher deleted them: load left its wait
+        pointers.delete_item(Key={"dependency_key": pointer["dependency_key"], "subscriber": pointer["subscriber"]})
+    answer = lambda_start_run.handler(event(version, token="token-2", retry_count=1), None)
+    assert answer["started"] is True and run_item(ddb)["run_token"] == "token-2"
+    assert pointers.scan()["Items"] == []
+
+
+def test_a_skip_list_naming_no_task_is_refused_before_any_write(stack):
+    ddb, version = stack
+    with pytest.raises(ValueError, match="skip_tasks names tasks the pipeline does not have"):
+        lambda_start_run.handler(event(version, input={"skip_tasks": ["no_such_task"]}), None)
+    assert "Item" not in tokens(ddb).get_item(Key={"execution_name": run_row.key(EXECUTION)})
+    assert "Item" not in tokens(ddb).get_item(Key={"execution_name": run_row.input_key(EXECUTION)})
+
+
+def test_specs_dynamodb_leaves_unread_are_transient_so_the_states_retry_repeats_the_start(stack, monkeypatch):
+    """ADR #137 §8: throttling never counts as a missing spec."""
+    _, version = stack
+    client = env._dynamodb_client
+
+    def throttled(**kwargs):                                       # every key comes back unprocessed
+        return {"Responses": {}, "UnprocessedKeys": kwargs["RequestItems"]}
+
+    monkeypatch.setattr(client, "batch_get_item", throttled)
+    monkeypatch.setattr(spec_store, "_backoff", lambda attempt: 0.0)       # the waits between rounds, not the rounds
     with pytest.raises(failures.CoordinationTransient):
         lambda_start_run.handler(event(version), None)

@@ -86,7 +86,7 @@ def _spec(**fields: Any) -> task_spec.TaskSpec:
 SPECS = {"extract": _spec(task_id="extract"), "audit": _spec(task_id="audit", dependencies=["extract"])}
 CALL = start_run.call_from({
     "format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64, "task_count": len(SPECS),
-    "pipeline_name": "orders", "execution_name": EXECUTION, "execution_start": RUN.run_start, "token": "token-1",
+    "pipeline_name": "orders", "execution_name": EXECUTION, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{EXECUTION}", "execution_start": RUN.run_start, "token": "token-1",
     "retry_count": 0, "redrive_count": 0, "date": "2026-11-18", "input": {"skip_tasks": ["audit"]}})
 
 

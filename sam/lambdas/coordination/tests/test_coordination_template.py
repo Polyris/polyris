@@ -340,7 +340,7 @@ def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_i
                                                   "wait_for": [{"asset_name": "ns/orders"}]}])
     spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
     event = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 1,
-             "pipeline_name": "orders", "execution_name": RUN, "execution_start": STARTED_AT, "token": "t1",
+             "pipeline_name": "orders", "execution_name": RUN, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{RUN}", "execution_start": STARTED_AT, "token": "t1",
              "retry_count": 0, "redrive_count": 0, "date": "2026-11-12", "input": {}}
     with recording(ddb, client) as used, reading(ddb, client) as reads:
         assert start_run.handler(event, None)["started"]

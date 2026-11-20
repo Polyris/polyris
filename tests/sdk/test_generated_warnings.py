@@ -40,7 +40,10 @@ def states() -> Dict[str, Any]:
 
 
 def _branch_error(branch):
-    return {BRANCH_ERROR: {"branch": branch, "error": "DynamoDB.AccessDeniedException", "cause": "not allowed"}}
+    """What a branch's Catch records: the error, and the run's date read from the state's input (the input of the
+    states after it is this record, not the run's input)."""
+    return {BRANCH_ERROR: {"branch": branch, "error": "DynamoDB.AccessDeniedException", "cause": "not allowed",
+                           "date": "2026-10-13"}}
 
 
 @pytest.mark.parametrize("state,kind,subject,task_name,error_input", [

@@ -115,7 +115,7 @@ _STANDARD_DYNAMODB_RETRY: Dict[str, Any] = {
 
 
 def _warning_item(subject: str, task_name: str, dag_id: str, error: str, *,
-                  kind: str = WarningKind.COORDINATION) -> Dict[str, Any]:
+                  kind: str = WarningKind.COORDINATION, task_date: str = JSONATA_DATE) -> Dict[str, Any]:
     """A DynamoDB-typed warning row, the shape of records.warning_item (ADR #130 §9).
 
     `subject` and `error` are JSONata fragments. The row carries no `date`:
@@ -128,7 +128,7 @@ def _warning_item(subject: str, task_name: str, dag_id: str, error: str, *,
         "task_name": {"S": task_name},
         "pipeline_name": {"S": dag_id},
         "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-        "task_date": {"S": JSONATA_DATE},
+        "task_date": {"S": task_date},
         "status": {"S": "failed"},
         "error": {"S": f"{{% {error} %}}"},
         "finished_at": {"S": JSONATA_NOW},
@@ -982,12 +982,18 @@ _JSONATA_EXECUTION_START = "{% $states.context.Execution.StartTime %}"
 _KEEP_INPUT = "{% $states.input %}"
 
 
+#: The run's date in a warning written after a Catch: the date ``_branch_error`` recorded from the state's input.
+_BRANCH_ERROR_DATE = f"{{% $states.input.{BRANCH_ERROR}.date %}}"
+
+
 def _branch_error(branch: str) -> Dict[str, Any]:
-    """A Catch's Output that records the caught error under BRANCH_ERROR, naming its branch."""
+    """A Catch's Output that records the caught error under BRANCH_ERROR, naming its branch, with the run's date
+    read from the state's input: the states after the Catch read the error, not the run's input."""
     return {BRANCH_ERROR: {
         "branch": branch,
         "error": "{% $states.errorOutput.Error %}",
         "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+        "date": JSONATA_DATE,
     }}
 
 
@@ -1037,6 +1043,7 @@ def _start_run_branch(dag: DAG, specs: task_spec.Version, start_run_function_arn
         Arg.TASK_COUNT: specs.task_count,
         Arg.PIPELINE_NAME: dag.dag_id,
         Arg.EXECUTION_NAME: JSONATA_EXECUTION_NAME,
+        Arg.EXECUTION_ARN: "{% $states.context.Execution.Id %}",
         Arg.EXECUTION_START: _JSONATA_EXECUTION_START,
         Arg.TOKEN: JSONATA_TOKEN,
         Arg.RETRY_COUNT: "{% $states.context.State.RetryCount %}",
@@ -1086,7 +1093,7 @@ def _start_run_branch(dag: DAG, specs: task_spec.Version, start_run_function_arn
                 "Item": _warning_item(
                     "$states.context.Execution.Name & '-start_run'", "Start_Run", dag.dag_id,
                     f"'Start_Run failed, so no task of the run started: ' & $states.input.{BRANCH_ERROR}.error "
-                    f"& ': ' & $states.input.{BRANCH_ERROR}.cause"),
+                    f"& ': ' & $states.input.{BRANCH_ERROR}.cause", task_date=_BRANCH_ERROR_DATE),
             },
             "Output": _KEEP_INPUT,
             "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1165,7 +1172,7 @@ def _direct_step_branch(step: Step, number: int, dag: DAG, tokens_table: str, *,
                 step.step_id, dag.dag_id,
                 f"'The direct step ' & $states.input.{BRANCH_ERROR}.branch & ' failed: ' "
                 f"& $states.input.{BRANCH_ERROR}.error & ': ' & $states.input.{BRANCH_ERROR}.cause",
-                kind=WarningKind.STEP),
+                kind=WarningKind.STEP, task_date=_BRANCH_ERROR_DATE),
         },
         "Output": _KEEP_INPUT,
         "Retry": [_STANDARD_DYNAMODB_RETRY],
@@ -1641,6 +1648,7 @@ def _build_registration_chain(
 
 def generate_step_function_json(
     dag: DAG,
+    *,
     start_run_function_arn: Optional[str] = None,
     registry_table: Optional[str] = None,
     tokens_table: Optional[str] = None,

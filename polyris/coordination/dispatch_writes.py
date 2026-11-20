@@ -103,6 +103,33 @@ def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, tabl
     return items
 
 
+def applied(item: Mapping[str, Any], row: RowView, judgment: Judgment, run: Optional[RunView], *,
+            now: datetime) -> Dict[str, Any]:
+    """The row's item as ``task_write``'s update leaves it, so the rest of the pass reads what is written: its
+    status, generation, times and due time. A test compares it with the item DynamoDB holds after the write."""
+    after = dict(item)
+    status = judgment.status or row.status
+    after[task_row.TTL] = retention.ttl(now, retention.HISTORY)
+    if judgment.transition:
+        after[task_row.STATUS] = status
+        if judgment.transition == "ready":
+            if run is None:
+                raise ValueError(f"{row.key}: a row is made ready only within its run")
+            after[task_row.TASK_RUN_ID] = run_name.run_task_name(row.key, run.run_start, row.generation)
+        if judgment.transition == "stop":
+            after[task_row.GENERATION] = row.generation + 1
+    after.update(judgment.fields)
+    for name in judgment.removed:
+        after.pop(name, None)
+    entry = _entry(status, judgment.due, now, row.key)
+    if entry is None:
+        after.pop(attention.KEY, None)
+        after.pop(attention.DUE, None)
+    else:
+        after[attention.KEY], after[attention.DUE] = entry
+    return after
+
+
 def _entry(status: str, due: Optional[datetime], now: datetime, key: str) -> Optional[Tuple[str, str]]:
     """A row's entry in ``attention-index`` after a write: its kind by status, at its due time, or when it failed."""
     kind = transitions.attention_kind(status)

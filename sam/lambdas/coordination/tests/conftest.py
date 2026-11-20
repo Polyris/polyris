@@ -98,7 +98,7 @@ def rows(ddb, sfn, monkeypatch):
         spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
         start_run.handler({"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id,
                            "task_count": version.task_count, "pipeline_name": pipeline, "execution_name": execution,
-                           "execution_start": STARTED_AT, "token": f"{execution}-token", "retry_count": 0,
+                           "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:{execution}", "execution_start": STARTED_AT, "token": f"{execution}-token", "retry_count": 0,
                            "redrive_count": 0, "date": DATE, "input": inputs}, None)
         return version
 

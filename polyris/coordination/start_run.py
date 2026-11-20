@@ -27,7 +27,8 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Tuple
 
 from ..constants import SkipOrigin, TaskSpecKey, TaskStatus
-from . import asset_spec, attention, deadlines, ownership, records, retention, run_input, run_row, task_row, wake
+from . import asset_spec, attention, deadlines, ownership, partition, records, retention, run_input, run_row, task_row
+from . import wake
 from .task_spec import FORMAT_VERSION, MAX_TASKS, TaskSpec, decision_text
 from .times import format_utc, parse_utc
 
@@ -48,6 +49,7 @@ class Arg:
     TASK_COUNT = "task_count"
     PIPELINE_NAME = "pipeline_name"
     EXECUTION_NAME = "execution_name"      # $states.context.Execution.Name
+    EXECUTION_ARN = "execution_arn"        # $states.context.Execution.Id
     EXECUTION_START = "execution_start"    # $states.context.Execution.StartTime
     TOKEN = "token"                        # $states.context.Task.Token
     RETRY_COUNT = "retry_count"            # $states.context.State.RetryCount
@@ -107,6 +109,7 @@ class Call:
     task_count: int
     pipeline: str
     execution: str              # $states.context.Execution.Name
+    execution_arn: str          # $states.context.Execution.Id
     execution_start: str        # $states.context.Execution.StartTime
     token: str                  # $states.context.Task.Token
     retry_count: int            # $states.context.State.RetryCount
@@ -129,6 +132,7 @@ def call_from(payload: Mapping[str, Any]) -> Call:
         call = Call(
             format_version=int(version), spec_id=str(payload[Arg.SPEC_ID]), task_count=int(payload[Arg.TASK_COUNT]),
             pipeline=str(payload[Arg.PIPELINE_NAME]), execution=str(payload[Arg.EXECUTION_NAME]),
+            execution_arn=str(payload[Arg.EXECUTION_ARN]),
             execution_start=str(payload[Arg.EXECUTION_START]), token=str(payload[Arg.TOKEN]),
             retry_count=int(payload[Arg.RETRY_COUNT]), redrive_count=int(payload.get(Arg.REDRIVE_COUNT) or 0),
             date=str(payload[Arg.DATE]), execution_input=dict(payload.get(Arg.INPUT) or {}),
@@ -137,6 +141,11 @@ def call_from(payload: Mapping[str, Any]) -> Call:
         raise ValueError(f"Start_Run's payload is malformed: {exc!r}") from exc
     if not call.date:
         raise ValueError(f"{call.pipeline}: Start_Run's payload is malformed: the run has no date")
+    try:
+        partition.partition_date(call.date)
+    except ValueError as exc:
+        # Checked before any write: a pass could not read a fact for such a date (the review of TR-4).
+        raise ValueError(f"{call.pipeline}: the run's date {call.date!r} is no partition key: {exc}") from exc
     if call.task_count < 1:
         raise ValueError(f"{call.pipeline}: a run of no task has no Start_Run")
     return call
@@ -155,6 +164,7 @@ def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
     index_keys = run_row.index_keys(started)
     values: Dict[str, Any] = {
         ":creating": run_row.CREATING, ":token": call.token, ":order": call.order, ":execution": call.execution,
+        ":execution_arn": call.execution_arn,
         ":run_start": call.execution_start,
         ":started_at": index_keys[run_row.STARTED_AT], ":start_day": index_keys[run_row.START_DAY],
         ":pipeline": call.pipeline, ":run_date": call.date,
@@ -169,7 +179,8 @@ def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
         "Key": {run_row.TABLE_KEY: key},
         "UpdateExpression": (
             "SET #status = if_not_exists(#status, :creating), run_token = :token, #order = :order, "
-            "run_execution = :execution, run_start = :run_start, started_at = :started_at, start_day = :start_day, "
+            "run_execution = :execution, run_execution_arn = :execution_arn, run_start = :run_start, "
+            "started_at = :started_at, start_day = :start_day, "
             "pipeline_name = :pipeline, run_date = :run_date, triggered_by = :triggered_by, spec_id = :spec_id, "
             "task_count = :task_count, format_version = :format, #ttl = :ttl, "
             f"attention = :attention, attention_at = :due, {run_row.VERSION_RAISE} REMOVE answered_order"),
@@ -177,6 +188,8 @@ def run_row_write(call: Call, *, now: datetime) -> Dict[str, Any]:
                                 "OR (run_execution = :execution AND run_start = :run_start))"),
         "ExpressionAttributeNames": names,
         "ExpressionAttributeValues": values,
+        # The row before the write: a run already active means a retry after its activation (start_run.py).
+        "ReturnValues": "ALL_OLD",
     }
 
 
@@ -186,7 +199,9 @@ def input_item(call: Call, *, now: datetime) -> Dict[str, Any]:
     item = run_input.to_item(
         run_input.RunInput(dict(given.get(RunArg.VARIABLES) or {}), skipped(call), records.cascade_of(given)),
         pipeline_execution=call.execution, ttl=retention.ttl(now, retention.HISTORY))
-    return {**item, task_row.PIPELINE_EXECUTION: call.execution, task_row.RUN_START: call.execution_start}
+    # Named as the run row names its run, so the item enters no index (§3): not pipeline_execution, which is
+    # the key of pipeline-execution-index (the review of TR-4).
+    return {**item, run_row.EXECUTION: call.execution, run_row.RUN_START: call.execution_start}
 
 
 def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> List[Dict[str, Any]]:
@@ -269,7 +284,7 @@ def task_condition() -> Dict[str, Any]:
 
 def accept_existing(existing: Mapping[str, Any], call: Call, what: str) -> None:
     """A row that a condition refused: this run's, written by an earlier attempt, or another run's."""
-    if not task_row.of_run(existing, call.execution, call.execution_start):
+    if not (task_row.of_run(existing, call.execution, call.execution_start) or is_this_run(existing, call)):
         raise OtherRun(f"{what} belongs to another run ({existing.get(task_row.PIPELINE_EXECUTION)!r}, "
                        f"started {existing.get(task_row.RUN_START)!r}): this run cannot start")
 

@@ -327,6 +327,57 @@ def test_a_stop_writes_dependants_before_their_upstreams():
     assert order.index("report") < order.index("load") < order.index("extract") and set(order) == set(rows)
 
 
+def _chain(n: int) -> Dict[str, dispatch.RowView]:
+    return {f"t{i:05d}": row(f"t{i:05d}", deps=[f"t{i - 1:05d}"] if i else []) for i in range(n)}
+
+
+def test_a_pass_orders_and_stops_a_chain_of_2000_without_recursion():
+    """polyris/CLAUDE.md, "Graph traversal": the gate is a recursion limit of 100 (the review of TR-4)."""
+    import sys
+
+    rows = _chain(2000)
+    dependencies = {name: r.dependencies for name, r in rows.items()}
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(100)
+    try:
+        forward = dispatch.upstreams_first(set(rows), dependencies)
+        backward = dispatch.stop_order(rows)
+    finally:
+        sys.setrecursionlimit(limit)
+    assert forward == sorted(rows) and backward == sorted(rows, reverse=True)
+
+
+def test_a_pass_decides_each_row_after_its_upstreams_among_those_it_decides():
+    dependencies = {"report": ["load", "extract"], "load": ["extract"], "extract": [], "audit": ["missing"]}
+    order = dispatch.upstreams_first({"report", "load", "extract", "audit"}, dependencies)
+    assert order.index("extract") < order.index("load") < order.index("report") and set(order) == set(dependencies)
+    assert dispatch.upstreams_first({"report", "load"}, dependencies) == ["load", "report"]    # extract not decided
+
+
+def test_a_cycle_no_deploy_makes_still_orders_every_row_once():
+    rows = {"a": row("a", deps=["b"]), "b": row("b", deps=["a"]), "c": row("c")}
+    assert sorted(dispatch.stop_order(rows)) == ["a", "b", "c"]
+    assert sorted(dispatch.upstreams_first(set(rows), {n: r.dependencies for n, r in rows.items()})) == ["a", "b", "c"]
+
+
+def test_a_waiting_row_a_pass_cannot_decide_fails_with_the_cause_and_warns():
+    """ADR #137 §3: fail_wait on a CoordinationError, so the run goes on (Rule 51)."""
+    judgment = dispatch.undecidable(row(), now=NOW, cause="it could not be decided: ValueError: no partition")
+    assert judgment.transition == "fail_wait" and judgment.status == S.FAILED.value
+    assert judgment.fields[task_row.ERROR] == "it could not be decided: ValueError: no partition"
+    assert judgment.warning == "load: it could not be decided: ValueError: no partition"
+    assert_dispatcher_may(S.WAITING.value, judgment)
+
+
+@pytest.mark.parametrize("status", [S.DEPS_READY.value, S.RUNNING.value, S.WAITING_DECISION.value])
+def test_any_other_row_a_pass_cannot_decide_keeps_its_state_and_warns(status):
+    due = NOW + timedelta(minutes=10)
+    view = dispatch.RowView(**{**row(status=status).__dict__, "due": due})
+    judgment = dispatch.undecidable(view, now=NOW, cause="it could not be decided: KeyError: 'x'")
+    assert (judgment.transition, judgment.fields, judgment.due) == (None, {}, due)
+    assert judgment.warning == "load: it could not be decided: KeyError: 'x'"
+
+
 # ── the run ─────────────────────────────────────────────────────────────────
 
 def test_a_run_with_an_unfinished_row_has_no_outcome_yet():
@@ -371,7 +422,7 @@ def test_a_row_start_run_wrote_reads_back_as_the_pass_judges_it():
 
     call = start_run.call_from({"format_version": task_spec.FORMAT_VERSION, "spec_id": "orders#" + "f" * 64,
                                 "task_count": 1, "pipeline_name": "orders", "execution_name": "orders-run-1",
-                                "execution_start": "2026-11-19T06:00:00.000Z", "token": "t", "retry_count": 0,
+                                "execution_arn": "arn:aws:states:us-east-1:123456789012:execution:orders:orders-run-1", "execution_start": "2026-11-19T06:00:00.000Z", "token": "t", "retry_count": 0,
                                 "date": "2026-11-19"})
     [item] = start_run.task_items(call, {"load": spec(task_id="load", dependencies=["extract"], wait_before=600,
                                                       trigger_rule="one_success", wait_for=[{"asset_name": "a"}],
@@ -578,9 +629,6 @@ def test_an_active_run_whose_execution_does_not_exist_is_stopped_once_it_would_b
     assert dispatch.engine_stop_cause(young, now=NOW, execution=dispatch.Execution(None), finished=False) is None
     assert dispatch.engine_stop_cause(LIVE, now=NOW, execution=dispatch.Execution(None), finished=False) == (
         "its execution does not exist")
-    gone = dispatch.Execution(None, cause="the pipeline orders is no longer registered")
-    assert dispatch.engine_stop_cause(LIVE, now=NOW, execution=gone, finished=False) == (
-        "its execution does not exist (the pipeline orders is no longer registered)")
 
 
 def test_a_run_still_creating_after_start_runs_retry_window_never_became_active():
