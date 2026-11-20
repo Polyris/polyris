@@ -52,6 +52,12 @@ def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, tabl
     """
     if judgment.task_id != row.task_id:
         raise ValueError(f"a judgment of {judgment.task_id!r} cannot write the row of {row.task_id!r}")
+    if judgment.transition:
+        move = transitions.task_transition(judgment.transition)
+        if row.status not in move.sources or transitions.Writer.DISPATCHER not in move.writers:
+            # Invariant 7: a pass moves a row only as the table gives the move to the dispatcher.
+            raise ValueError(f"{row.key}: the transition table gives the dispatcher no {judgment.transition!r} "
+                             f"from {row.status!r}")
     if not judgment.transition and not judgment.fields and not judgment.removed and judgment.due == row.due:
         return []
     status = judgment.status or row.status
