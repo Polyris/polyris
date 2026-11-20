@@ -55,7 +55,6 @@ def test_a_lost_hint_heals_at_its_run_rows_next_check_with_one_warning(world):
     world.run_to_the_end()
 
 
-@needs_binding("rows-core")
 @defect("R-S1")
 def test_a_pass_out_of_budget_leaves_the_rest_to_the_next_pass_at_once(world):
     world.shrink_pass_budget(rows=50)
@@ -64,7 +63,6 @@ def test_a_pass_out_of_budget_leaves_the_rest_to_the_next_pass_at_once(world):
     assert left_waiting(world, run) == []          # all 200 started, without waiting for the sweeper
 
 
-@needs_binding("rows-core")
 @defect("R-S2")
 def test_a_late_start_run_attempt_cannot_revive_a_run_the_engine_stopped(world):
     orders = world.deploy(chain("orders", "extract"))
@@ -78,7 +76,6 @@ def test_a_late_start_run_attempt_cannot_revive_a_run_the_engine_stopped(world):
     assert warnings_of(world, WarningKind.COORDINATION)
 
 
-@needs_binding("rows-core")
 @defect("R-S3")
 def test_a_throttled_start_warns_after_15_minutes_and_fails_after_6_hours(world):
     world.fail_starts("RunTaskHelperSfn", "ThrottlingException", times=100_000)
@@ -96,7 +93,6 @@ def test_a_throttled_start_warns_after_15_minutes_and_fails_after_6_hours(world)
     assert world.status(run, "extract") == "failed"
 
 
-@needs_binding("rows-core")
 @defect("R-S3")
 def test_a_denied_start_warns_at_once_and_counts_toward_no_limit(world):
     world.fail_starts("RunTaskHelperSfn", "AccessDeniedException", times=100_000)
@@ -132,7 +128,6 @@ def test_a_restart_with_dependants_inside_a_passs_read_reruns_the_dependant(worl
     assert world.running_tasks(run) == ["load"]
 
 
-@needs_binding("rows-core")
 @defect("R-D1")
 def test_two_passes_at_once_start_each_task_once(world):
     run = world.start_run(world.deploy(pipeline("wide", [(f"t{i}", {}) for i in range(5)])), DATE)
@@ -194,7 +189,6 @@ def test_a_run_whose_answer_was_lost_is_answered_at_its_next_check(world):
     assert world.pipeline_status(run) == "SUCCEEDED"
 
 
-@needs_binding("rows-core")
 @defect("R-T1")
 def test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)

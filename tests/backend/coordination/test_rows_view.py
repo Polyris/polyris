@@ -61,3 +61,4 @@ def test_a_write_that_takes_a_row_out_of_its_wait_without_the_dispatcher_is_caug
                               ExpressionAttributeValues={":s": {"S": "deps_ready"}})
     found = CHECKS[2](world.rows_view())
     assert found == [f"invariant 2: {run.execution_name('load')} left waiting for deps_ready by a other write"]
+    world.plant(found[0])

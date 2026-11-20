@@ -330,4 +330,25 @@ PROBES: Tuple[Probe, ...] = (
                         "    digest = _digest(key, run_start, str(int(generation)), str(__import__('time').time_ns()), "
                         "length=RUN_TASK_HASH)")),
           f"{ROWS}::test_two_passes_at_once_start_each_task_once"),
+    # Two guards keep a late Start_Run attempt from reviving a run the engine stopped: the write of its token
+    # and its activation are each conditioned on no stop mark. The probe removes both.
+    Probe("R-S2", (Edit("polyris/coordination/run_row.py",
+                        'TOKEN_CONDITION = "attribute_not_exists(#stop) AND (attribute_not_exists(#order) OR '
+                        '#order <= :order)"',
+                        'TOKEN_CONDITION = "(attribute_not_exists(#stop) OR attribute_exists(#stop)) AND '
+                        '(attribute_not_exists(#order) OR #order <= :order)"'),
+                   Edit("polyris/coordination/start_run.py",
+                        '"#status = :creating AND attribute_not_exists(#stop) AND run_execution = :execution"',
+                        '"#status = :creating AND (attribute_not_exists(#stop) OR attribute_exists(#stop)) '
+                        'AND run_execution = :execution"')),
+          f"{ROWS}::test_a_late_start_run_attempt_cannot_revive_a_run_the_engine_stopped"),
+    # An access denied counts toward no limit: it waits for the permission. The probe counts it as throttling.
+    Probe("R-S3", (Edit("polyris/coordination/dispatch.py", "    if kind == DENIED:\n",
+                        "    if kind == DENIED and False:\n"),),
+          f"{ROWS}::test_a_denied_start_warns_at_once_and_counts_toward_no_limit"),
+    # A waiting row whose upstream's row is gone fails with the cause; the probe leaves it waiting for good.
+    Probe("R-T1", (Edit("polyris/coordination/dispatch.py",
+                        '        return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")\n',
+                        "        return Judgment(row.task_id, due=row.due)\n"),),
+          f"{ROWS}::test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause"),
 )

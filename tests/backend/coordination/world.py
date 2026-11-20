@@ -137,6 +137,13 @@ class World:
         self._observer.install(self.runtime, self.stack.machine_arn("RunTaskHelperSfn"), dispatcher._DISPATCHER)
         self.boundary.watch(self.stack.tables["PipelineTokensTable"], self._read_row)
         self.violations: List[str] = []
+        #: Violations a test makes on purpose, to see a check find them (``plant``).
+        self.planted: List[str] = []
+
+    def plant(self, violation: str) -> None:
+        """A violation this test made on purpose, to see a check find it: the end of the scenario does not
+        count it."""
+        self.planted.append(violation)
 
     def close(self) -> None:
         self.bindings.close()

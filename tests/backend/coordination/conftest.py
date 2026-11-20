@@ -48,6 +48,7 @@ def world():
         try:
             yield built
             built.settle()                   # once more, so the end state is checked too
-            assert built.violations == [], "ADR #137 invariants broken (row_invariants.py)"
+            unplanted = [v for v in built.violations if v not in built.planted]
+            assert unplanted == [], "ADR #137 invariants broken (row_invariants.py)"
         finally:
             built.close()
