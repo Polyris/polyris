@@ -138,6 +138,9 @@ def test_a_version_is_read_page_by_page(platform_dynamodb):
     paged = _Recording(platform_dynamodb, {"query": lambda method, kwargs: method(**kwargs, Limit=2)})
     assert len(spec_store.read(paged, TABLE, version.spec_id, expected_count=5)) == 5
     assert paged.calls.count("query") == 3
+    names = _Recording(platform_dynamodb, {"query": lambda method, kwargs: method(**kwargs, Limit=2)})
+    assert len(spec_store.read_names(names, TABLE, version.spec_id, expected_count=5)) == 5     # a pass's read too
+    assert names.calls == ["query"] * 3
 
 
 @pytest.mark.parametrize("fault,problem", [
@@ -168,3 +171,22 @@ def test_a_version_of_no_tasks_reads_back_empty(platform_dynamodb):
     version = _version()
     spec_store.write(platform_dynamodb, TABLE, version)
     assert spec_store.read(platform_dynamodb, TABLE, version.spec_id, expected_count=0) == {}
+
+
+def test_a_pass_reads_a_versions_names_alone_and_a_start_one_text_by_its_hash(platform_dynamodb):
+    """D117: no whole version in the dispatcher's memory."""
+    version = _version(_spec("extract"), _spec("load", dependencies=["extract"]))
+    spec_store.write(platform_dynamodb, TABLE, version)
+    names = spec_store.read_names(platform_dynamodb, TABLE, version.spec_id, expected_count=2)
+    assert set(names) == {"extract", "load"}
+    load = spec_store.read_text(platform_dynamodb, TABLE, "orders", names["load"])
+    assert load.fields == _spec("load", dependencies=["extract"]) and load.text_hash == names["load"]
+
+
+def test_names_that_are_not_what_was_written_or_a_missing_text_are_refused(platform_dynamodb):
+    version = _version(_spec("extract"))
+    spec_store.write(platform_dynamodb, TABLE, version)
+    with pytest.raises(task_spec.SpecError, match="expected 2"):
+        spec_store.read_names(platform_dynamodb, TABLE, version.spec_id, expected_count=2)
+    with pytest.raises(task_spec.SpecError, match="is missing"):
+        spec_store.read_text(platform_dynamodb, TABLE, "orders", "0" * 64)

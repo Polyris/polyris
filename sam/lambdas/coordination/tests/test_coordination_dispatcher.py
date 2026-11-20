@@ -853,3 +853,37 @@ def test_a_row_whose_fact_is_there_is_reached_behind_rows_that_still_wait(world)
     # Each pass spends its budget on work: the waiting rows' first writes, and one read of the facts they share.
     # So every pass moves on, and the row whose fact is there is reached, instead of never (the review of TR-4).
     assert all(p["changed"] > 0 for p in passes) and item(world, key("z_ready"))["status"] == "deps_ready"
+
+
+# ── what a pass reads of the specs (D117) ───────────────────────────────────
+
+def _spec_calls(world) -> List[str]:
+    calls: List[str] = []
+
+    def record(params: Dict[str, Any], model: Any, **_: Any) -> None:
+        tables = {params.get("TableName")} | set((params.get("RequestItems") or {}).keys())
+        if table("SPECS_TABLE") in tables:
+            calls.append(model.name)
+
+    world.client.meta.events.register("provide-client-params.dynamodb.*", record)
+    return calls
+
+
+def test_a_pass_keeps_the_task_names_and_a_start_reads_its_spec_text_by_the_rows_hash(world):
+    """D117: no pass loads a whole spec version; the names are read once per version, a text once per start."""
+    start(world, CHAIN)
+    calls = _spec_calls(world)
+    full(world)                                                   # extract starts
+    finish(world, "extract")
+    full(world)                                                   # load starts
+    assert calls == ["Query", "GetItem", "GetItem"] and len(world.sfn.started) == 2
+
+
+def test_the_spec_texts_a_container_keeps_are_bounded_by_bytes(world, monkeypatch):
+    import dispatcher
+
+    monkeypatch.setattr(dispatcher, "TEXTS_CACHE_BYTES", 1)        # no two texts fit: the older one goes
+    start(world, [spec("a"), spec("b")])
+    calls = _spec_calls(world)
+    full(world)
+    assert calls.count("GetItem") == 2 and len(world.dispatcher._texts) == 1

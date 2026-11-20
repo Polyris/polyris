@@ -137,6 +137,34 @@ def read_items(client: Any, table: str, version_id: str, *,
     return items, texts
 
 
+def read_names(client: Any, table: str, version_id: str, *, expected_count: int) -> Dict[str, str]:
+    """A version's task ids and their texts' hashes, with a consistent paginated query of its items alone,
+    checked against its count and its fingerprint (``task_spec.check_names``): what a pass keeps (D117)."""
+    items: List[Dict[str, str]] = []
+    request: Dict[str, Any] = {"TableName": table, "ConsistentRead": True,
+                               "KeyConditionExpression": "#pk = :pk", "ProjectionExpression": "#sk, #hash",
+                               "ExpressionAttributeNames": {"#pk": PK, "#sk": SK, "#hash": VERSION_HASH},
+                               "ExpressionAttributeValues": {":pk": {"S": version_id}}}
+    while True:
+        response = client.query(**request)
+        items.extend(_plain(item) for item in response.get("Items", []))
+        if not response.get("LastEvaluatedKey"):
+            break
+        request["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    return task_spec.check_names(version_id, items, expected_count=expected_count)
+
+
+def read_text(client: Any, table: str, pipeline: str, digest: str) -> TaskSpec:
+    """One task's spec by its text's hash, with one consistent GetItem: what a start reads (D117)."""
+    item = client.get_item(TableName=table, Key={PK: {"S": task_spec.text_partition(pipeline)}, SK: {"S": digest}},
+                           ConsistentRead=True, ProjectionExpression="#text",
+                           ExpressionAttributeNames={"#text": TEXT}).get("Item")
+    text = _plain(item or {}).get(TEXT)
+    if text is None:
+        raise SpecError(f"the spec text {digest} of pipeline {pipeline!r} is missing")
+    return task_spec.parse(text, expected_hash=digest)
+
+
 def read(client: Any, table: str, version_id: str, *, expected_count: int,
          sleep: Sleep = time.sleep) -> Dict[str, TaskSpec]:
     """Every spec of a version, checked against its count, each text's hash and the fingerprint."""

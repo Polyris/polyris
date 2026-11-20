@@ -69,7 +69,10 @@ CONFLICT_BACKOFF_SECONDS = (0.05, 0.25)
 READ_ATTEMPTS = 8
 READ_BATCH = 100
 #: The spec versions a container keeps by spec_id: a version never changes (§3).
-SPEC_CACHE = 64
+#: The task names a container keeps across invocations, by spec version: a pass keeps no spec text (D117).
+NAMES_CACHE = 20_000
+#: The bytes of spec texts a container keeps across invocations; a start reads its task's text by hash (D117).
+TEXTS_CACHE_BYTES = 32 * 1024 * 1024
 ACCESS_DENIED = frozenset({"AccessDeniedException", "AccessDenied"})
 #: The cancellation reason of a transaction that met another one (§7).
 CONFLICT = "TransactionConflict"
@@ -98,7 +101,7 @@ class _Pass:
     run: dispatch.RunView
     items: Dict[str, Dict[str, Any]]
     rows: Dict[str, dispatch.RowView]
-    specs: Mapping[str, task_spec.TaskSpec]
+    names: Mapping[str, str]               # the run's task ids and their spec texts' hashes (D117)
     deadline: float
     source: str
     now: datetime
@@ -129,7 +132,9 @@ class Dispatcher:
         self.clock = clock
         self.monotonic = monotonic
         self.sleep = sleep
-        self._specs: Dict[str, Dict[str, task_spec.TaskSpec]] = {}
+        self._names: Dict[str, Dict[str, str]] = {}
+        self._texts: Dict[str, task_spec.TaskSpec] = {}
+        self._texts_bytes: Dict[str, int] = {}
 
     # ── entry points ─────────────────────────────────────────────────────
 
@@ -208,21 +213,23 @@ class Dispatcher:
             run = self._engine_check(run, now, finished=False) or run     # it never became active (§4)
         if not run.active and not run.stopping:
             return {"run": run_key, "source": source, "action": "creating"}    # nothing starts before (§1)
-        specs = self._spec_version(run_item)
-        keys = {name: task_row.key(name, run.date, run.execution) for name in specs}
+        names = self._spec_names(run_item)
+        keys = {name: task_row.key(name, run.date, run.execution) for name in names}
         if targets is None:
-            judged = set(specs)
-            wanted = set(specs)
+            judged = set(names)
         else:
             judged = {name for name, key in keys.items() if key in targets}
-            wanted = judged | {d for name in judged for d in specs[name].fields[TaskSpecKey.DEPENDENCIES]}
-        state = _Pass(run, {}, {}, specs, deadline, source, now, check=check, left_read=run.left_at is not None)
-        self._read_rows(state, {name: keys[name] for name in wanted})
+        state = _Pass(run, {}, {}, names, deadline, source, now, check=check, left_read=run.left_at is not None)
+        self._read_rows(state, {name: keys[name] for name in judged})
+        if targets is not None:
+            # A narrow pass also reads the upstreams its rows name (D117: the rows hold the dependencies).
+            upstreams = {d for name in judged if name in state.rows for d in state.rows[name].dependencies} - judged
+            self._read_rows(state, {name: keys[name] for name in upstreams if name in keys})
         try:
             if run.stopping:
                 self._stop_rows(state, judged)
             else:
-                dependencies = {name: specs[name].fields[TaskSpecKey.DEPENDENCIES] for name in judged}
+                dependencies = {name: state.rows[name].dependencies for name in judged if name in state.rows}
                 for name in dispatch.upstreams_first(judged, dependencies):
                     if name in state.rows:
                         self._decide(state, name)
@@ -482,7 +489,7 @@ class Dispatcher:
                 execution_name=row.key, generation=row.generation, task_name=name,
                 pipeline_name=str(item.get(task_row.PIPELINE, "")), pipeline_execution=run.execution,
                 date=run.date, triggered_by=str(item.get(task_row.TRIGGERED_BY) or "unknown"),
-                backfill_id=item.get(task_row.BACKFILL_ID), spec=state.specs[name],
+                backfill_id=item.get(task_row.BACKFILL_ID), spec=self._spec_text(item, name),
                 variables=state.inputs.variables, cascade=state.inputs.cascade, upstreams=upstreams)
         except run_task_input.InputTooLarge as exc:
             return dispatch.start_failed(row, run, now=state.now, error=str(exc), kind=dispatch.REFUSED)
@@ -523,16 +530,34 @@ class Dispatcher:
 
     # ── reads ────────────────────────────────────────────────────────────
 
-    def _spec_version(self, run_item: Mapping[str, Any]) -> Dict[str, task_spec.TaskSpec]:
+    def _spec_names(self, run_item: Mapping[str, Any]) -> Mapping[str, str]:
+        """The run's task ids and their texts' hashes, read once per spec version and kept (D117)."""
         spec_id = str(run_item[run_row.SPEC_ID])
-        cached = self._specs.get(spec_id)
-        if cached is None:
-            cached = spec_store.read(self.client, self.specs_table, spec_id,
-                                     expected_count=int(run_item[run_row.TASK_COUNT]))
-            if len(self._specs) >= SPEC_CACHE:
-                self._specs.clear()
-            self._specs[spec_id] = cached
-        return cached
+        known = self._names.get(spec_id)
+        if known is None:
+            known = spec_store.read_names(self.client, self.specs_table, spec_id,
+                                          expected_count=int(run_item[run_row.TASK_COUNT]))
+            while self._names and sum(map(len, self._names.values())) + len(known) > NAMES_CACHE:
+                self._names.pop(next(iter(self._names)))           # the oldest version goes first
+            self._names[spec_id] = known
+        return known
+
+    def _spec_text(self, item: Mapping[str, Any], name: str) -> task_spec.TaskSpec:
+        """A task's spec, read by the hash its row carries with one GetItem, and kept within TEXTS_CACHE_BYTES:
+        a pass loads no whole version, whatever the pipeline's size (D117)."""
+        digest = str(item[task_row.SPEC_HASH])
+        known = self._texts.get(digest)
+        if known is None:
+            known = spec_store.read_text(self.client, self.specs_table, str(item[task_row.PIPELINE]), digest)
+            size = len(task_spec.canonical_json(dict(known.fields)).encode("utf-8"))
+            while self._texts and sum(self._texts_bytes.values()) + size > TEXTS_CACHE_BYTES:
+                oldest = next(iter(self._texts))
+                self._texts.pop(oldest)
+                self._texts_bytes.pop(oldest)
+            self._texts[digest], self._texts_bytes[digest] = known, size
+        if known.task_id != name:
+            raise task_spec.SpecError(f"the row of {name} names the spec of {known.task_id}")
+        return known
 
     def _get(self, key: str) -> Optional[Dict[str, Any]]:
         response = self.client.get_item(TableName=self.tokens_table, Key={task_row.TABLE_KEY: {"S": key}},

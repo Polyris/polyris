@@ -208,6 +208,18 @@ def test_a_spec_in_bytes_as_written():
         f"of a task's input"]
 
 
+def test_the_specs_together_in_bytes_which_start_run_reads_at_once(monkeypatch):
+    """D117: a pass keeps no spec text, but Start_Run reads the whole version."""
+    monkeypatch.setattr(task_spec, "MAX_VERSION_BYTES", 400)
+    specs = [_spec(f"t{i}") for i in range(5)]
+    total = sum(len(task_spec.canonical_json(s).encode()) for s in specs)
+    assert total > 400
+    assert limits.spec_errors(_version(specs)) == [
+        f"Pipeline 'p': its task specs take {total:,} bytes together, over the limit of 400 bytes (16 MB) that "
+        f"Start_Run reads at a run's start"]
+    assert limits.spec_errors(_version(specs[:1])) == []
+
+
 def test_the_definition_is_measured_as_deploy_sends_it():
     """Indented, as generate_step_function_json writes it: measured compact, 230 tasks validated
     at 937 KB and deployed at 1.11 MB (ADR #137 §8)."""

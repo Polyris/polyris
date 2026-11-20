@@ -1547,11 +1547,11 @@ Resources:
               - dynamodb:GetItem
             Resource:
               - !GetAtt PipelineRegistryTable.Arn
-          # A run's spec version (ADR #137 §8): its version items and their texts.
+          # A run's spec version (ADR #137 §8, D117): a pass queries its task names, a start gets one text.
           - Effect: Allow
             Action:
               - dynamodb:Query
-              - dynamodb:BatchGetItem
+              - dynamodb:GetItem
             Resource:
               - !GetAtt PipelineSpecsTable.Arn
           # A ready row's run_task, under its derived name (invariant 4); by name, as !Ref would close a cycle.

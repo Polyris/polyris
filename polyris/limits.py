@@ -37,11 +37,16 @@ def definition_warnings(definition: str) -> List[str]:
 
 
 def spec_errors(version: task_spec.Version) -> List[str]:
-    """The tasks per pipeline, each task_id's bytes, each task's outlets and each spec's bytes."""
+    """The tasks per pipeline, the specs' bytes together, each task_id's bytes, each task's outlets and each
+    spec's bytes."""
     errors: List[str] = []
     if version.task_count > task_spec.MAX_TASKS:
         errors.append(f"Pipeline '{version.pipeline}' has {version.task_count} tasks, over the limit of "
                       f"{task_spec.MAX_TASKS} tasks per pipeline")
+    total = sum(len(text.encode("utf-8")) for text in version.texts.values())
+    if total > task_spec.MAX_VERSION_BYTES:
+        errors.append(f"Pipeline '{version.pipeline}': its task specs take {total:,} bytes together, over the limit "
+                      f"of {task_spec.MAX_VERSION_BYTES:,} bytes (16 MB) that Start_Run reads at a run's start")
     for task_id, text in sorted(version.texts.items()):
         id_bytes = len(task_id.encode("utf-8"))
         if id_bytes > run_row.TASK_ID_MAX:

@@ -100,6 +100,8 @@ VERSION_HASH = ROW_TEXT_HASH
 #: The declared maximum of tasks per pipeline. TR-7 measures the real number; Start_Run's
 #: timeout and the sweeper's window for a ``creating`` run row derive from it (§1).
 MAX_TASKS = 2000
+#: A pipeline's specs together, in UTF-8 bytes: Start_Run reads them all into one Lambda at a run's start (D117).
+MAX_VERSION_BYTES = 16 * 1024 * 1024
 #: A task's outlets: run_task's success is one transaction of at most 100 items, the
 #: status, the output and one fact per outlet; Mark Successful writes the same.
 MAX_OUTLETS = 98
@@ -160,13 +162,13 @@ def build_version(pipeline: str, specs: Iterable[Mapping[str, Any]]) -> Version:
     return Version(pipeline, texts)
 
 
-def check_version(version_id: str, items: Sequence[Mapping[str, Any]], texts: Mapping[str, str], *,
-                  expected_count: Optional[int] = None) -> Dict[str, "TaskSpec"]:
-    """Every spec of a version read back, checked: its count, each text's hash and the fingerprint.
+def check_names(version_id: str, items: Sequence[Mapping[str, Any]], *,
+                expected_count: Optional[int] = None) -> Dict[str, str]:
+    """A version's task ids and their texts' hashes, checked against its count and its fingerprint.
 
-    ``items`` are the version's items as read (``SK`` and ``VERSION_HASH``), ``texts`` the texts
-    read for them, by hash. Raises ``SpecError`` with the cause on any mismatch, so a reader
-    never runs or draws a version that is not the one that was written.
+    ``items`` are the version's items as read (``SK`` and ``VERSION_HASH``). This is all a pass of the
+    dispatcher keeps of a version; a start reads its task's text by the hash (D117). Raises ``SpecError``
+    with the cause on any mismatch.
     """
     if expected_count is not None and len(items) != expected_count:
         raise SpecError(f"spec version {version_id} has {len(items)} task(s), expected {expected_count}")
@@ -183,8 +185,20 @@ def check_version(version_id: str, items: Sequence[Mapping[str, Any]], texts: Ma
         raise SpecError(f"spec version {version_id}: {exc}") from exc
     if actual != expected_fingerprint:
         raise SpecError(f"spec version {version_id} does not match its fingerprint: its items hash to {actual}")
+    return dict(pairs)
+
+
+def check_version(version_id: str, items: Sequence[Mapping[str, Any]], texts: Mapping[str, str], *,
+                  expected_count: Optional[int] = None) -> Dict[str, "TaskSpec"]:
+    """Every spec of a version read back, checked: its count, each text's hash and the fingerprint.
+
+    ``items`` are the version's items as read (``SK`` and ``VERSION_HASH``), ``texts`` the texts
+    read for them, by hash. Raises ``SpecError`` with the cause on any mismatch, so a reader
+    never runs or draws a version that is not the one that was written.
+    """
+    names = check_names(version_id, items, expected_count=expected_count)
     specs: Dict[str, TaskSpec] = {}
-    for task_id, digest in pairs:
+    for task_id, digest in names.items():
         if digest not in texts:
             raise SpecError(f"spec version {version_id}: the text {digest} of task {task_id!r} is missing")
         spec = parse(texts[digest], expected_hash=digest)
