@@ -62,3 +62,17 @@ def test_a_write_that_takes_a_row_out_of_its_wait_without_the_dispatcher_is_caug
     found = CHECKS[2](world.rows_view())
     assert found == [f"invariant 2: {run.execution_name('load')} left waiting for deps_ready by a other write"]
     world.plant(found[0])
+    # The rogue row has no run_task and no due time, so nothing starts it: liveness finds the run that cannot end.
+    stuck = f"liveness: {run.name} neither ended nor is paused, and no row waits for a decision"
+    assert world.run_to_the_end() == [stuck]
+    world.plant(stuck)
+
+
+def test_a_template_expression_that_failed_fails_the_scenario_even_when_a_catch_took_it(world):
+    """D107: a Catch can hide an expression that failed, so the World reports every one at each step, those of
+    KNOWN_FAILING_EXPRESSIONS aside."""
+    world.runtime.expression_errors.append({"machine": "acme-dev-polyris-orders", "state": "Warn_Start_Run_Failed",
+                                            "cause": "undefined is not a value"})
+    found = [v for v in world.check_invariants() if v.startswith("expression failed")]
+    assert found == ["expression failed in acme-dev-polyris-orders.Warn_Start_Run_Failed: undefined is not a value"]
+    world.plant(found[0])

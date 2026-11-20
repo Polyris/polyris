@@ -22,11 +22,13 @@ from botocore.exceptions import ClientError
 from bindings import Bindings
 from boundary import Boundary, acting_as, as_component
 from platform_stack import Stack
-from row_invariants import CHECKS, STAGE_OF
+from row_invariants import CHECKS, STAGE_OF, liveness
 import rows_view
 from rows_view import Observer, StackView
 from sfn_runtime import ACCOUNT, REGION, Execution, client_error
 from streams import StreamAdapter
+
+from polyris.coordination.times import format_utc
 
 TASK_ARN = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:user-{{}}"
 _deserializer = TypeDeserializer()
@@ -139,6 +141,8 @@ class World:
         self.violations: List[str] = []
         #: Violations a test makes on purpose, to see a check find them (``plant``).
         self.planted: List[str] = []
+        #: What ends each failure a scenario injected (``run_to_the_end`` heals the world before liveness).
+        self._healers: List[Callable[[], None]] = []
 
     def plant(self, violation: str) -> None:
         """A violation this test made on purpose, to see a check find it: the end of the scenario does not
@@ -202,17 +206,29 @@ class World:
 
     def settle(self) -> None:
         """Run every execution until it waits, then check ADR #137's invariants of the bound stages
-        (row_invariants.py, stages.py). ADR #130's invariants retired with its engine (D115)."""
+        (row_invariants.py, stages.py) and that no template expression failed (D107). ADR #130's
+        invariants retired with its engine (D115)."""
         self.runtime.run()
         for violation in self.check_invariants():
             if violation not in self.violations:
                 self.violations.append(violation)
 
     def check_invariants(self) -> List[str]:
+        """ADR #137's invariants of the bound stages, and every template expression that failed (D107)."""
         from stages import BOUND_STAGES
 
         view = self.rows_view()
-        return [v for n, check in sorted(CHECKS.items()) if STAGE_OF.get(n) in BOUND_STAGES for v in check(view)]
+        return ([v for n, check in sorted(CHECKS.items()) if STAGE_OF.get(n) in BOUND_STAGES for v in check(view)]
+                + self._expression_failures())
+
+    def _expression_failures(self) -> List[str]:
+        """A template expression that failed, caught or not (D107): always a template bug, and a Catch can hide
+        it. ``KNOWN_FAILING_EXPRESSIONS`` names the few in templates ADR #137 removes, and nothing else."""
+        from invariants import KNOWN_FAILING_EXPRESSIONS
+
+        return [f"expression failed in {failure['machine']}.{failure['state']}: {failure['cause']}"
+                for failure in self.runtime.expression_errors
+                if (failure["machine"].rsplit("polyris-", 1)[-1], failure["state"]) not in KNOWN_FAILING_EXPRESSIONS]
 
     def rows_view(self) -> StackView:
         """The stack as ADR #137's invariants read it, now."""
@@ -440,10 +456,93 @@ class World:
         self.bindings._set(dispatcher._DISPATCHER, "monotonic", lambda: float(next(ticks)))
         self._pass_rows = rows
 
-    def run_to_the_end(self) -> None:
-        """Move the clock past every deadline and sweep until nothing changes; then check liveness
-        (row_invariants.liveness): every run ended or is paused, or a row waits for a decision."""
-        raise NeedsBinding("rows-core", "the liveness check over the rows")
+    #: At most this many rounds of ``run_to_the_end``: a round that changes nothing ends it sooner.
+    END_ROUNDS = 30
+
+    def run_to_the_end(self) -> List[str]:
+        """Heal the world, move the clock past every deadline and sweep until nothing changes; then check
+        liveness (row_invariants.liveness): every run ended or is paused, or a row waits for a decision.
+
+        Each round finishes the user's work still running, delivers both streams, moves the clock to the
+        earliest entry the sweeper takes and sweeps. A round that changes nothing moves the clock past the
+        latest due time of a row, so that every deadline passes, and sweeps once more; when that changes
+        nothing either, nothing more happens on its own. A liveness violation fails the scenario at its
+        end, as an invariant's does (ADR #137, Tests); the violations are also returned."""
+        self._heal()
+        for _ in range(self.END_ROUNDS):
+            before = self._state()
+            self._finish_jobs()
+            self.deliver_hints()
+            self.deliver_task_hints()
+            due = self._next_due()
+            if due is None:
+                break
+            self._sweep_at(due)
+            if self._state() != before:
+                continue
+            last = self._next_due(latest=True, rows_only=True)
+            if last is None or last <= self.clock.now:
+                break
+            self._sweep_at(last)
+            if self._state() == before:
+                break
+        found = liveness(self.rows_view())
+        for violation in found:
+            if violation not in self.violations:
+                self.violations.append(violation)
+        return found
+
+    def _sweep_at(self, when: datetime) -> None:
+        if when > self.clock.now:
+            self.clock.jump_to(format_utc(when))
+        self.sweep()
+
+    def _state(self) -> Any:
+        """What ``run_to_the_end`` watches for a change: each row's status and generation, the marks of the
+        run rows, the warnings, and each execution's status."""
+        rows = sorted((str(i["execution_name"]), str(i.get("status")), str(i.get("generation")),
+                       str(i.get("stop")), str(i.get("stop_done")), str(i.get("answered_order")))
+                      for i in self._items())
+        executions = sorted((e.arn, e.status) for e in self.runtime.executions.values())
+        return rows, executions
+
+    def _heal(self) -> None:
+        """Every failure a scenario injected ends, and whatever it held goes on: executions, Start_Run's
+        retries, stream records, arranged interleavings and a shrunk pass budget. A lost record stays lost."""
+        for heal in self._healers:
+            heal()
+        self._healers.clear()
+        self.boundary.heal()
+        self._stream.heal()
+        self._tasks_stream.heal()
+        self._pass_rows = None
+        for machine in list(self.runtime.held):
+            self.runtime.release(machine)
+        for machine, state in list(self.runtime.held_retries):
+            self.runtime.release_retries(machine, state)
+        self.settle()
+
+    def _finish_jobs(self) -> None:
+        """The user's work still running ends well: the jobs of run_task's stand-in."""
+        run_task = self.stack.machine_arn("RunTaskHelperSfn")
+        jobs = [job for job in self.runtime.jobs.values() if job.frame.execution.machine.arn == run_task]
+        for job in jobs:
+            self.runtime.finish_job(job.id, output={"Output": {}, "Status": "SUCCEEDED"})
+        if jobs:
+            self.settle()
+
+    def _next_due(self, *, latest: bool = False, rows_only: bool = False) -> Optional[datetime]:
+        """The earliest (or ``latest``) due time of the entries the sweeper takes: the waiting and decision
+        kinds and the push retries, and the run rows' unless ``rows_only``."""
+        from polyris.coordination import attention as att
+        from polyris.coordination import run_row
+        from polyris.coordination.times import parse_utc
+
+        kinds = (att.WAITING, att.DECISION, att.RETRY)
+        dues = [parse_utc(str(item[att.DUE])) for item in self._items()
+                if str(item.get(att.KEY, "")).split("#", 1)[0] in kinds and item.get(att.DUE)
+                and not (rows_only and run_row.is_run_row(str(item["execution_name"])))]
+        return (max if latest else min)(dues, default=None)
 
     def restart_with_dependants(self, run: Run, task: str) -> None:
         """The console's Restart of `task` and of its dependants that failed or were skipped by a rule."""
@@ -565,6 +664,7 @@ class World:
             client.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
             if after:
                 client.meta.events.register(f"after-call.dynamodb.{operation}", fail_answer)
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_starts(self, target: Union[Pipeline, str], code: str, *, times: int) -> None:
         """The next `times` starts of `target` fail with `code` (e.g. throttling): a Lambda's
@@ -582,6 +682,7 @@ class World:
             return real(machine_arn, name, payload)
 
         runtime._start = _start  # type: ignore[method-assign]
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_signals(self, code: str, *, times: int, call: str = "send_task_success",
                      when: Optional[Callable[[Dict[str, Any]], bool]] = None) -> None:
@@ -597,6 +698,7 @@ class World:
             return real(**kwargs)
 
         setattr(runtime, call, send)
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_stops(self, code: str, *, times: int) -> None:
         """The next `times` StopExecution calls fail with `code`, as a throttled stop would."""
@@ -609,6 +711,7 @@ class World:
             return real(**kwargs)
 
         runtime.stop_execution = stop_execution
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_invokes(self, function: str, *, times: int, error: str = "CoordinationTransient") -> None:
         """The next `times` invocations of a platform function (logical id) by a state machine fail
@@ -630,6 +733,7 @@ class World:
             return real(event, context)
 
         self.runtime.lambdas[name] = handler
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def hold(self, machine: str) -> None:
         """New executions of a platform state machine (logical id) wait to take a step until `release`."""

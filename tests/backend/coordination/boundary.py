@@ -128,6 +128,11 @@ class Boundary:
         back as UnprocessedKeys, as DynamoDB answers a batch it throttled or cut at 16 MB."""
         self._unprocess.append(_Unprocess(table, keys, keep, times))
 
+    def heal(self) -> None:
+        """The interleavings and cut batches a scenario arranged and that have not happened go (World.run_to_the_end)."""
+        self._interleaves.clear()
+        self._unprocess.clear()
+
     def watch(self, table: str, read_row: Callable[[str], Optional[Dict[str, Any]]]) -> None:
         """Record the rows each write to `table` touches, before and after; `read_row` reads one by its key."""
         self._watched, self._read_row = table, read_row

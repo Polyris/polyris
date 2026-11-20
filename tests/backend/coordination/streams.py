@@ -88,6 +88,12 @@ class StreamAdapter:
             self.pending[self._shard(record)].append(record)
         self.delayed = []
 
+    def heal(self) -> None:
+        """No more records are lost or held, and the held ones arrive (World.run_to_the_end); a lost one stays lost."""
+        self._drops.clear()
+        self._delays.clear()
+        self.release()
+
     def mark_expired(self, keys: Set[str]) -> None:
         """The deletions of these partition keys are TTL's own."""
         self._expired |= keys

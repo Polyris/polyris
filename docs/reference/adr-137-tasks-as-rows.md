@@ -745,7 +745,7 @@ The harness comes first, before the code it tests, and each test comes before th
   - It can drop or delay a record of the tasks table's stream, expire TTL rows with their `REMOVE` records, return a partial `BatchGetItem`, and run two passes over one run at once.
   - It models `State.RetryCount`, `Execution.RedriveCount` and `States.DataLimitExceeded`.
 - **Invariants are staged.** Each invariant is checked from the step of the build that adds its mechanism. A scenario that needs a later mechanism is skipped until then, with that reason (`needs_binding`). Every check is shown to flag a planted violation, and invariant 8 is checked in both directions (§2).
-- **Liveness at the end of a scenario.** The harness moves the clock past every deadline and sweeps until nothing changes. Then every run has ended or is paused, or a row waits for a decision with a due time.
+- **Liveness at the end of a scenario.** The harness ends the failures the scenario injected and finishes the work still running, then moves the clock past every deadline and sweeps until nothing changes. Then every run has ended or is paused, or a row waits for a decision with a due time.
 
 | Decision or invariant | Test | Where |
 |---|---|---|

@@ -47,6 +47,8 @@ def world():
         built = World(boto3.client("dynamodb", region_name="us-east-1"))
         try:
             yield built
+            if "rows-core" in BOUND_STAGES:
+                built.run_to_the_end()       # liveness at the end of every scenario (ADR #137, Tests)
             built.settle()                   # once more, so the end state is checked too
             unplanted = [v for v in built.violations if v not in built.planted]
             assert unplanted == [], "ADR #137 invariants broken (row_invariants.py)"
