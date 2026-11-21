@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Mapping, Tuple
 from ..constants import SkipOrigin, TaskSpecKey, TaskStatus
 from . import asset_spec, attention, deadlines, ownership, partition, records, retention, run_input, run_row, task_row
 from . import wake
-from .task_spec import FORMAT_VERSION, MAX_TASKS, TaskSpec, decision_text
+from .task_spec import FORMAT_VERSION, MAX_TASKS, TaskSpec, readiness_text
 from .times import format_utc, parse_utc
 
 #: The table of per-run pointers that AssetFanout reads (DependencySubscriptionsTable) and its keys.
@@ -219,7 +219,7 @@ def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> L
             task_row.PIPELINE_EXECUTION: call.execution, task_row.RUN_START: call.execution_start,
             task_row.DATE: date, task_row.TASK_DATE: date,
             task_row.GENERATION: ownership.FIRST,
-            task_row.SPEC_ID: call.spec_id, task_row.SPEC_HASH: spec.text_hash, task_row.DECISION: decision_text(spec),
+            task_row.SPEC_ID: call.spec_id, task_row.SPEC_HASH: spec.text_hash, task_row.READINESS: readiness_text(spec),
             task_row.TASK_TYPE: spec.fields[TaskSpecKey.TASK_TYPE],
             task_row.TRIGGERED_BY: triggered_by(call),
             task_row.TTL: retention.ttl(now, retention.HISTORY),

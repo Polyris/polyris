@@ -512,7 +512,7 @@ class Dispatcher:
 
     def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str) -> Dict[str, Any]:
         """Each row named, stopped with the cause: its run row is missing (invariant 11). A row that a 1.2 run
-        left in flight has no decision fields; its stop needs only its status and generation (*Migration*)."""
+        left in flight has no readiness fields; its stop needs only its status and generation (*Migration*)."""
         now = self.clock()
         stopped = 0
         for key in keys:
@@ -605,7 +605,7 @@ class Dispatcher:
 
     def _assets(self, state: _Pass, name: str) -> Evaluation:
         """The evaluation of the row's facts, read through ``stores.FactStore`` (ADR #130 §4)."""
-        wait_for = task_spec.decision_from_text(str(state.items[name][task_row.DECISION])).get(
+        wait_for = task_spec.readiness_from_text(str(state.items[name][task_row.READINESS])).get(
             TaskSpecKey.WAIT_FOR.value)
         text = json.dumps(wait_for, sort_keys=True)
         known = state.facts.get(text)

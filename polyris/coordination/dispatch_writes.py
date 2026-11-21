@@ -36,7 +36,7 @@ from .times import format_utc
 
 _serializer = TypeSerializer()
 #: A task row's write is conditional on what the pass read of it.
-ROW_CONDITION = "#status = :read AND #g = :g"
+ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"
 #: The same for a row that a 1.2 run left with no generation or with 0, which 1.2's templates write when their
 #: input has none (``ownership.is_legacy``); only its stop writes such a row.
 LEGACY_ROW_CONDITION = "#status = :read AND (attribute_not_exists(#g) OR #g = :legacy)"
@@ -76,9 +76,12 @@ def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, tabl
             if run is None:
                 raise ValueError(f"{row.key}: a row is made ready only within its run")
             fields[task_row.TASK_RUN_ID] = run_name.run_task_name(row.key, run.run_start, row.generation)
-        if judgment.transition == "stop":
+        move = transitions.task_transition(judgment.transition)
+        if move.raises_generation:
             sets.append("#g = :g_next")
             values[":g_next"] = row.generation + 1
+        if move.skip_origin is not None:
+            fields[task_row.SKIP_ORIGIN] = move.skip_origin           # from the table, not from the writer
     for i, (name, value) in enumerate(sorted(fields.items())):
         names[f"#f{i}"] = name
         values[f":f{i}"] = value
@@ -116,8 +119,11 @@ def applied(item: Mapping[str, Any], row: RowView, judgment: Judgment, run: Opti
             if run is None:
                 raise ValueError(f"{row.key}: a row is made ready only within its run")
             after[task_row.TASK_RUN_ID] = run_name.run_task_name(row.key, run.run_start, row.generation)
-        if judgment.transition == "stop":
+        move = transitions.task_transition(judgment.transition)
+        if move.raises_generation:
             after[task_row.GENERATION] = row.generation + 1
+        if move.skip_origin is not None:
+            after[task_row.SKIP_ORIGIN] = move.skip_origin
     after.update(judgment.fields)
     for name in judgment.removed:
         after.pop(name, None)
@@ -161,7 +167,7 @@ def start_request(row: RowView, run: RunView, *, state_machine: str, input_text:
 
 def pointers(item: Mapping[str, Any]) -> List[Dict[str, str]]:
     """The keys of the ``asset:{name}`` pointers of a row read back, which go once it has left the wait (Rule 40)."""
-    wait_for = task_spec.decision_from_text(str(item[task_row.DECISION])).get(TaskSpecKey.WAIT_FOR.value)
+    wait_for = task_spec.readiness_from_text(str(item[task_row.READINESS])).get(TaskSpecKey.WAIT_FOR.value)
     return start_run.asset_pointer_keys(str(item[task_row.TABLE_KEY]), wait_for) if wait_for else []
 
 

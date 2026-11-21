@@ -54,6 +54,9 @@ class TaskTransition:
     writers: FrozenSet[str]
     wakes: bool
     skip_origin: Optional[str] = None
+    #: An action that ends the row's ownership raises its generation in the same write (§3, invariant 6): every
+    #: write of the console, and the dispatcher's for a stop or a request. A writer takes it from here.
+    raises_generation: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,8 +71,8 @@ class RunTransition:
 
 
 def _task(name: str, sources: Iterable[Optional[str]], target: str, writers: Iterable[str], wakes: bool,
-          skip_origin: Optional[str] = None) -> TaskTransition:
-    return TaskTransition(name, frozenset(sources), target, frozenset(writers), wakes, skip_origin)
+          skip_origin: Optional[str] = None, *, raises: bool = False) -> TaskTransition:
+    return TaskTransition(name, frozenset(sources), target, frozenset(writers), wakes, skip_origin, raises)
 
 
 def _run(name: str, sources: Iterable[Optional[str]], target: Optional[str], writers: Iterable[str],
@@ -95,14 +98,14 @@ TASK_TRANSITIONS: Tuple[TaskTransition, ...] = (
     _task("ask", {S.RUNNING.value}, S.WAITING_DECISION.value, {_R}, True),
     _task("fail_dead", {S.DEPS_READY.value, S.RUNNING.value}, S.FAILED.value, {_D}, True),  # execution ended, no outcome
     _task("fail_undecided", {S.WAITING_DECISION.value}, S.FAILED.value, {_D}, True),      # the decision timeout
-    _task("skip", _NO_OUTCOME_YET, S.SKIPPED.value, {_C}, True, SkipOrigin.MANUAL),
-    _task("mark_success", _NO_OUTCOME_YET, S.SUCCESS.value, {_C}, True),
-    _task("fail", NOT_FINAL, S.FAILED.value, {_C}, True),
-    _task("stop", NOT_FINAL, S.STOPPED.value, {_C, _D}, True),    # dispatcher: a Stop of the run, a run row gone
-    _task("restart", FINAL | {S.WAITING_DECISION.value}, S.WAITING.value, {_C}, True),
+    _task("skip", _NO_OUTCOME_YET, S.SKIPPED.value, {_C}, True, SkipOrigin.MANUAL, raises=True),
+    _task("mark_success", _NO_OUTCOME_YET, S.SUCCESS.value, {_C}, True, raises=True),
+    _task("fail", NOT_FINAL, S.FAILED.value, {_C}, True, raises=True),
+    _task("stop", NOT_FINAL, S.STOPPED.value, {_C, _D}, True, raises=True),    # dispatcher: a Stop of the run, a run row gone
+    _task("restart", FINAL | {S.WAITING_DECISION.value}, S.WAITING.value, {_C}, True, raises=True),
     # Restart with dependants: the descendants that a failure or a Stop decided, upstream_failed or skipped by a
     # rule (the dispatcher builds the set from its reads; an operator's or a run's skip stays).
-    _task("reset", {S.UPSTREAM_FAILED.value, S.SKIPPED.value}, S.WAITING.value, {_D}, True),
+    _task("reset", {S.UPSTREAM_FAILED.value, S.SKIPPED.value}, S.WAITING.value, {_D}, True, raises=True),
 )
 
 RUN_TRANSITIONS: Tuple[RunTransition, ...] = (

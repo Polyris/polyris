@@ -11,7 +11,7 @@ dispatcher and the console all call these functions, so no parity test is needed
 ``parse`` reads a text back: it checks the hash, then rejects a key that
 ``TaskSpecKey`` does not know, as the parser of asset conditions does, and a
 field the dispatcher decides on that has the wrong type. ``Start_Run`` writes a
-task's ``decision_fields`` on its row (§8).
+task's ``readiness_fields`` on its row (§8).
 """
 
 from __future__ import annotations
@@ -80,9 +80,9 @@ def text_partition(pipeline: str) -> str:
 
 #: The task row's field that names its spec text in ``pipeline-specs``; ``run_row.SPEC_ID`` names the version.
 ROW_TEXT_HASH = "spec_hash"
-#: The task row's field that holds its decision fields as canonical JSON text: as attributes, boto3's
+#: The task row's field that holds its readiness fields as canonical JSON text: as attributes, boto3's
 #: resource would give their numbers back as ``Decimal``, which the parser of asset conditions refuses.
-ROW_DECISION = "decision"
+ROW_READINESS = "readiness"
 
 # ── The items of ``pipeline-specs`` (§8) ─────────────────────────────────────
 # Both kinds share the table's two string keys. A text: ``PK`` = ``text_partition(pipeline)``,
@@ -108,7 +108,7 @@ MAX_OUTLETS = 98
 #: Every spec names these; the other keys of ``TaskSpecKey`` may be absent.
 REQUIRED = frozenset({K.TASK_ID, K.TASK_TYPE, K.DEPENDENCIES, K.TRIGGER_RULE})
 #: What a task row carries for the dispatcher, which decides on these alone (§8).
-DECISION_KEYS = (K.DEPENDENCIES, K.TRIGGER_RULE, K.ORCHESTRATION_TIMEOUT, K.WAIT_BEFORE, K.WAIT_FOR)
+READINESS_KEYS = (K.DEPENDENCIES, K.TRIGGER_RULE, K.ORCHESTRATION_TIMEOUT, K.WAIT_BEFORE, K.WAIT_FOR)
 _KNOWN = frozenset(k.value for k in TaskSpecKey)
 
 
@@ -218,9 +218,9 @@ class TaskSpec:
     def task_id(self) -> str:
         return str(self.fields[K.TASK_ID])
 
-    def decision_fields(self) -> Dict[str, Any]:
-        """The fields ``Start_Run`` writes on the task's row: those of ``DECISION_KEYS`` that the spec has."""
-        return {key.value: self.fields[key] for key in DECISION_KEYS if key in self.fields}
+    def readiness_fields(self) -> Dict[str, Any]:
+        """The fields ``Start_Run`` writes on the task's row: those of ``READINESS_KEYS`` that the spec has."""
+        return {key.value: self.fields[key] for key in READINESS_KEYS if key in self.fields}
 
 
 def parse(text: str, *, expected_hash: str) -> TaskSpec:
@@ -274,22 +274,22 @@ def _check(fields: Mapping[str, Any], name: Any) -> None:
             raise fail(f"wait_for: {exc}") from exc
 
 
-def decision_text(spec: TaskSpec) -> str:
-    """What ``Start_Run`` writes in the task row's ``ROW_DECISION``."""
-    return canonical_json(spec.decision_fields())
+def readiness_text(spec: TaskSpec) -> str:
+    """What ``Start_Run`` writes in the task row's ``ROW_READINESS``."""
+    return canonical_json(spec.readiness_fields())
 
 
-def decision_from_text(text: str) -> Dict[str, Any]:
-    """The decision fields a task row holds, checked as ``parse`` checks a spec's."""
+def readiness_from_text(text: str) -> Dict[str, Any]:
+    """The readiness fields a task row holds, checked as ``parse`` checks a spec's."""
     try:
         fields = json.loads(text)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise SpecError(f"a task row's decision fields are not JSON: {exc}") from exc
+        raise SpecError(f"a task row's readiness fields are not JSON: {exc}") from exc
     if not isinstance(fields, dict):
-        raise SpecError(f"a task row's decision fields must be a JSON object, got {type(fields).__name__}")
-    unknown = set(fields) - {k.value for k in DECISION_KEYS}
+        raise SpecError(f"a task row's readiness fields must be a JSON object, got {type(fields).__name__}")
+    unknown = set(fields) - {k.value for k in READINESS_KEYS}
     missing = {K.DEPENDENCIES.value, K.TRIGGER_RULE.value} - set(fields)
     if unknown or missing:
-        raise SpecError(f"a task row's decision fields: unknown {sorted(unknown)}, missing {sorted(missing)}")
+        raise SpecError(f"a task row's readiness fields: unknown {sorted(unknown)}, missing {sorted(missing)}")
     _check({**fields, K.TASK_ID.value: "row", K.TASK_TYPE.value: "row"}, "row")
     return fields

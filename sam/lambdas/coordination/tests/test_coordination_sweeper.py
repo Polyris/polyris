@@ -310,7 +310,7 @@ def test_the_engine_stops_a_run_still_creating_after_start_runs_retry_window(mak
 
 
 def test_rows_of_a_run_whose_run_row_is_missing_are_stopped_with_the_cause(make, tokens, clock):
-    """1.2 rows left in flight: no run row, no decision fields; each due one is stopped (invariant 11)."""
+    """1.2 rows left in flight: no run row, no readiness fields; each due one is stopped (invariant 11)."""
     for task in ("extract", "load"):
         name = f"{task}-{DATE}{RUN[-20:]}"
         tokens.put_item(Item={"execution_name": name, "task_name": task, "status": "waiting", "generation": 1,

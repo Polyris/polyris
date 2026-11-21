@@ -183,8 +183,8 @@ A field that must reach the engine changes these places in the same commit:
 
 1. `polyris/constants.py` → `TaskSpecKey` (then `python -m polyris.codegen.sync_enums`),
    and `generators._task_spec` / `_step_spec`, which write it.
-2. If the dispatcher decides on it: `task_spec.DECISION_KEYS`, so `Start_Run` copies it
-   onto each task row's `decision`.
+2. If the dispatcher decides on it: `task_spec.READINESS_KEYS`, so `Start_Run` copies it
+   onto each task row's `readiness`.
 3. If `run_task` needs it: `run_task_input.Key` and `run_task_input.build`.
 
 Each definition names its spec version by a fingerprint of the specs, so a spec change

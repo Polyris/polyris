@@ -72,14 +72,14 @@ def parsed(spec):
 def test_a_spec_reads_back_with_the_fields_the_dispatcher_decides_on():
     spec = parsed(LOAD)
     assert spec.task_id == "load" and spec.text_hash == stored(LOAD)[1]
-    assert spec.decision_fields() == {"dependencies": ["extract"], "trigger_rule": "all_success",
+    assert spec.readiness_fields() == {"dependencies": ["extract"], "trigger_rule": "all_success",
                                       "orchestration_timeout": 3600, "wait_before": 0,
                                       "wait_for": [{"asset_name": "s3/orders", "freshness_hours": 24}]}
 
 
 def test_a_spec_without_its_optional_keys_carries_only_the_required_decisions():
     spec = parsed({"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"})
-    assert spec.decision_fields() == {"dependencies": [], "trigger_rule": "all_success"}
+    assert spec.readiness_fields() == {"dependencies": [], "trigger_rule": "all_success"}
 
 
 def test_a_text_that_does_not_match_its_hash_is_refused():
@@ -122,7 +122,7 @@ def test_a_spec_without_a_required_key_is_refused_with_the_names():
 
 def test_a_rule_this_platform_does_not_know_is_left_to_the_dispatcher():
     """ADR #138 §2: it fails its task at run time, not Start_Run: validation refuses it before a deploy."""
-    assert parsed({**LOAD, "trigger_rule": "none_failed_or_skipped"}).decision_fields()["trigger_rule"] == \
+    assert parsed({**LOAD, "trigger_rule": "none_failed_or_skipped"}).readiness_fields()["trigger_rule"] == \
         "none_failed_or_skipped"
 
 
@@ -131,9 +131,9 @@ def test_the_decision_fields_survive_dynamodb_as_text():
     from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
     spec = parsed({**LOAD, "wait_for": [{"asset_name": "s3/orders", "freshness_hours": 1.5}]})
-    stored = TypeSerializer().serialize(task_spec.decision_text(spec))
-    fields = task_spec.decision_from_text(TypeDeserializer().deserialize(stored))
-    assert fields == spec.decision_fields()
+    stored = TypeSerializer().serialize(task_spec.readiness_text(spec))
+    fields = task_spec.readiness_from_text(TypeDeserializer().deserialize(stored))
+    assert fields == spec.readiness_fields()
     assert fields["wait_for"][0]["freshness_hours"] == 1.5 and isinstance(fields["orchestration_timeout"], int)
 
 
@@ -144,10 +144,10 @@ def test_the_decision_fields_survive_dynamodb_as_text():
 ])
 def test_decision_fields_of_another_shape_are_refused(text, problem):
     with pytest.raises(task_spec.SpecError, match=problem):
-        task_spec.decision_from_text(text)
+        task_spec.readiness_from_text(text)
 
 
 def test_the_parser_knows_exactly_the_spec_keys():
-    assert {k.value for k in task_spec.REQUIRED} | {k.value for k in task_spec.DECISION_KEYS} <= {
+    assert {k.value for k in task_spec.REQUIRED} | {k.value for k in task_spec.READINESS_KEYS} <= {
         k.value for k in TaskSpecKey}
     assert parsed({k.value: LOAD.get(k.value, False) for k in TaskSpecKey if k.value in LOAD}).task_id == "load"

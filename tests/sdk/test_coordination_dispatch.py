@@ -85,17 +85,19 @@ def test_the_enabling_time_is_never_before_the_wait_began():
     assert judgment.fields[task_row.ENABLED_AT] == format_utc(WAITING_SINCE)
 
 
-@pytest.mark.parametrize("rule,upstream,origin,transition,extra", [
-    ("all_success", S.FAILED.value, None, "block", {}),
-    ("all_success", S.SKIPPED.value, SkipOrigin.RULE, "skip_by_rule", {task_row.SKIP_ORIGIN: SkipOrigin.RULE}),
-    ("all_failed", S.SUCCESS.value, None, "skip_by_rule", {task_row.SKIP_ORIGIN: SkipOrigin.RULE}),
+@pytest.mark.parametrize("rule,upstream,origin,transition,skip_origin", [
+    ("all_success", S.FAILED.value, None, "block", None),
+    ("all_success", S.SKIPPED.value, SkipOrigin.RULE, "skip_by_rule", SkipOrigin.RULE),
+    ("all_failed", S.SUCCESS.value, None, "skip_by_rule", SkipOrigin.RULE),
 ])
-def test_an_outcome_its_rule_cannot_run_after_ends_the_row_with_the_reason(rule, upstream, origin, transition, extra):
+def test_an_outcome_its_rule_cannot_run_after_ends_the_row_with_the_reason(rule, upstream, origin, transition,
+                                                                          skip_origin):
     judgment = dispatch.judge(row(deps=["extract"], rule=rule, reasons=["waiting for its upstreams"]),
                               {"extract": up("extract", upstream, origin=origin)}, RUN, now=NOW)
     assert judgment.transition == transition and judgment.due is None and not judgment.start
     assert judgment.fields[task_row.FINISHED_AT] == format_utc(NOW) and len(judgment.fields[task_row.REASONS]) == 1
-    assert {k: judgment.fields[k] for k in extra} == extra
+    # The skip origin comes from the transition table, which the write takes it from (dispatch_writes).
+    assert transitions.task_transition(transition).skip_origin == skip_origin
     assert_dispatcher_may(S.WAITING.value, judgment)
 
 
@@ -467,13 +469,13 @@ def test_a_row_without_decision_fields_reads_back_for_its_stop_alone():
                                  task_row.STATUS: S.WAITING.value, task_row.GENERATION: 2})
     assert (raised.task_id, raised.generation) == ("load", 2)
     assert dispatch.stop(legacy, now=NOW, cause="its run row is missing").transition == "stop"
-    with pytest.raises(ValueError, match="decision fields"):
+    with pytest.raises(ValueError, match="readiness fields"):
         dispatch.row_view({task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value})
 
 
 def test_a_row_of_13_reads_back_for_its_stop_as_any_pass_reads_it():
     item = {task_row.TABLE_KEY: "load-k", task_row.TASK_NAME: "load", task_row.STATUS: S.WAITING.value,
-            task_row.GENERATION: 1, task_row.DECISION: task_spec.decision_text(task_spec.parse(_SPEC_TEXT,
+            task_row.GENERATION: 1, task_row.READINESS: task_spec.readiness_text(task_spec.parse(_SPEC_TEXT,
                                                                                             expected_hash=_SPEC_HASH))}
     assert dispatch.stop_view(item) == dispatch.row_view(item)
 

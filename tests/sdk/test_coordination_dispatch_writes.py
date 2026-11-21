@@ -182,7 +182,7 @@ def test_a_rows_pointers_are_those_start_run_wrote():
     [item] = start_run.task_items(call, {"load": spec}, now=NOW)
     assert dispatch_writes.pointers(item) == [{k: p[k] for k in (start_run.POINTER_KEY, start_run.POINTER_SUBSCRIBER)}
                                               for p in start_run.pointer_items(call, {"load": spec}, now=NOW)]
-    assert dispatch_writes.pointers({**item, task_row.DECISION: task_spec.decision_text(_spec())}) == []
+    assert dispatch_writes.pointers({**item, task_row.READINESS: task_spec.readiness_text(_spec())}) == []
 
 
 # ── the run row ─────────────────────────────────────────────────────────────
@@ -340,6 +340,8 @@ def _cases():
         "ready": (S.WAITING.value, None, ready()),
         "stop": (S.RUNNING.value, None, dispatch.stop(row(S.RUNNING.value), now=NOW, cause="stopped by ops: wrong")),
         "a start that failed": (S.DEPS_READY.value, None, start_failed),
+        "a skip by its rule": (S.WAITING.value, None, dispatch.Judgment("load", "skip_by_rule", {
+            task_row.STATUS_SINCE: format_utc(NOW), task_row.FINISHED_AT: format_utc(NOW)})),
         "a wait that loses its due time": (S.WAITING.value, due, dispatch.Judgment("load", fields={
             task_row.REASONS: ["waiting for its upstreams"]}, due=None)),
     }

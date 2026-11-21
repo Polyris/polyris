@@ -3,7 +3,7 @@
 ``Start_Run`` writes one per task, the dispatcher decides from it and
 ``run_task`` records the work under its generation. Besides its status and
 generation, a row carries only what the dispatcher decides on, as one JSON
-text (``DECISION``), the spec version and its text's hash, the times its
+text (``READINESS``), the spec version and its text's hash, the times its
 deadlines read (``row_times``), and the fields the console shows. Every row
 carries its run's execution name and ``StartTime``: a pass or a stop acts only
 on the rows of its own run, and ``Start_Run`` accepts an existing row only when
@@ -34,7 +34,10 @@ DATE = "date"
 TASK_DATE = "task_date"                     # the date again: attention-index projects it, and not `date` (§6)
 SPEC_ID = run_row.SPEC_ID
 SPEC_HASH = task_spec.ROW_TEXT_HASH
-DECISION = task_spec.ROW_DECISION
+READINESS = task_spec.ROW_READINESS
+#: The fence of every write of a task row (ADR #137 §3, Rule 47): under the generation the writer holds. No branch
+#: for a row without a generation, which 1.2's fence (ownership.FENCE) had.
+FENCE = "#g = :g"
 TRIGGERED_BY = "triggered_by"
 BACKFILL_ID = "backfill_id"
 TASK_TYPE = "task_type"
@@ -75,14 +78,14 @@ def of_run(item: Mapping[str, Any], pipeline_execution: str, run_start: str) -> 
 
 def row_times(item: Mapping[str, Any]) -> RowTimes:
     """What a row read back gives its deadlines (``deadlines.due_time``)."""
-    decision = task_spec.decision_from_text(str(item[DECISION]))
-    timeout = decision.get("orchestration_timeout")
+    readiness = task_spec.readiness_from_text(str(item[READINESS]))
+    timeout = readiness.get("orchestration_timeout")
     decision_timeout = item.get(DECISION_TIMEOUT)
     return RowTimes(
         status=str(item[STATUS]),
         waiting_since=_moment(item, WAITING_SINCE),
         enabled_at=_moment(item, ENABLED_AT),
-        has_wait_for=bool(decision.get("wait_for")),
+        has_wait_for=bool(readiness.get("wait_for")),
         orchestration_timeout=None if timeout is None else timedelta(seconds=int(timeout)),
         countdown_end=_moment(item, COUNTDOWN_END),
         start_failed_first=_moment(item, START_FAILED_FIRST),

@@ -82,12 +82,12 @@ def items_by_task():
     return {item["task_name"]: item for item in start_run.task_items(call(), SPECS, now=NOW)}
 
 
-def test_each_task_gets_a_row_of_its_run_with_its_decision_fields_and_spec():
+def test_each_task_gets_a_row_of_its_run_with_its_readiness_fields_and_spec():
     rows = items_by_task()
     load = rows["load"]
     assert load[task_row.TABLE_KEY] == task_row.key("load", "2026-11-18", EXECUTION)
     assert (load["status"], load["generation"], load["run_start"]) == ("waiting", 1, START)
-    assert json.loads(load["decision"]) == SPECS["load"].decision_fields()
+    assert json.loads(load[task_row.READINESS]) == SPECS["load"].readiness_fields()
     assert load["spec_hash"] == SPECS["load"].text_hash and load["task_date"] == "2026-11-18"
 
 

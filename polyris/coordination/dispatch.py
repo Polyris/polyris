@@ -39,7 +39,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from ..constants import ExecutionStatus, SkipOrigin, TaskSpecKey, TaskStatus
+from ..constants import ExecutionStatus, TaskSpecKey, TaskStatus
 from . import attention, deadlines, ownership, pauses, run_end, run_row, start_run, sweep, task_row, task_spec
 from . import transitions, trigger_rules
 from . import decide as dc
@@ -117,7 +117,7 @@ def run_view(item: Mapping[str, Any]) -> RunView:
 
 @dataclass(frozen=True)
 class RowView:
-    """A task row as a pass reads it: its status, its decision fields and its times."""
+    """A task row as a pass reads it: its status, its readiness fields and its times."""
     task_id: str
     key: str
     status: str
@@ -139,16 +139,16 @@ class RowView:
 
 def row_view(item: Mapping[str, Any]) -> RowView:
     """A task row read back; its due time is the ``waiting`` or ``decision`` entry it holds, if any."""
-    if task_row.DECISION not in item:
-        raise ValueError(f"{item.get(task_row.TABLE_KEY)}: a task row of 1.3 carries its decision fields")
-    decision = task_spec.decision_from_text(str(item[task_row.DECISION]))
+    if task_row.READINESS not in item:
+        raise ValueError(f"{item.get(task_row.TABLE_KEY)}: a task row of 1.3 carries its readiness fields")
+    readiness = task_spec.readiness_from_text(str(item[task_row.READINESS]))
     entry = str(item.get(attention.KEY, ""))
     due = item.get(attention.DUE) if entry.split("#", 1)[0] in (attention.WAITING, attention.DECISION) else None
     return RowView(
         task_id=str(item[task_row.TASK_NAME]), key=str(item[task_row.TABLE_KEY]), status=str(item[task_row.STATUS]),
-        generation=int(item[task_row.GENERATION]), trigger_rule=str(decision[K.TRIGGER_RULE.value]),
-        dependencies=tuple(str(d) for d in decision[K.DEPENDENCIES.value]), times=task_row.row_times(item),
-        wait_before=timedelta(seconds=int(decision.get(K.WAIT_BEFORE.value, 0))),
+        generation=int(item[task_row.GENERATION]), trigger_rule=str(readiness[K.TRIGGER_RULE.value]),
+        dependencies=tuple(str(d) for d in readiness[K.DEPENDENCIES.value]), times=task_row.row_times(item),
+        wait_before=timedelta(seconds=int(readiness.get(K.WAIT_BEFORE.value, 0))),
         reasons=tuple(str(r) for r in item.get(task_row.REASONS) or ()),
         due=parse_utc(str(due)) if due else None, skip_origin=item.get(task_row.SKIP_ORIGIN),
         finished_at=_moment(item.get(task_row.FINISHED_AT)), error=item.get(task_row.ERROR),
@@ -158,11 +158,11 @@ def row_view(item: Mapping[str, Any]) -> RowView:
 def stop_view(item: Mapping[str, Any]) -> RowView:
     """A row read back for its stop alone, when its run row is missing (invariant 11).
 
-    A row that a 1.2 run left in flight has no decision fields, and may have no
+    A row that a 1.2 run left in flight has no readiness fields, and may have no
     generation, which then reads as ``ownership.LEGACY``: a stop needs only the
     status and the generation (*Migration*).
     """
-    if task_row.DECISION in item:
+    if task_row.READINESS in item:
         return row_view(item)
     status = str(item[task_row.STATUS])
     generation = item.get(task_row.GENERATION)
@@ -551,8 +551,6 @@ def _final(row: RowView, transition: str, now: datetime, *, cause: Optional[str]
            since: Optional[datetime] = None) -> Judgment:
     fields: Dict[str, Any] = {task_row.STATUS_SINCE: format_utc(now), task_row.FINISHED_AT: format_utc(now)}
     removed = _present(row, (task_row.COUNTDOWN_END,))
-    if transition == "skip_by_rule":
-        fields[task_row.SKIP_ORIGIN] = SkipOrigin.RULE
     if cause is not None:
         fields[task_row.ERROR] = cause
     if reasons is not None:

@@ -65,9 +65,14 @@ def test_a_pass_moves_a_task_row_only_as_the_table_gives_the_move_to_the_dispatc
         return
     update, check = write()
     values = update["Update"]["ExpressionAttributeValues"]
+    names = set(update["Update"]["ExpressionAttributeNames"].values())
     assert update["Update"]["ConditionExpression"] == dispatch_writes.ROW_CONDITION       # on what the pass read
+    assert task_row.FENCE in update["Update"]["ConditionExpression"]                       # under its generation
     assert (values[":read"], values[":g"], values[":status"]) == ({"S": status}, {"N": "2"}, {"S": move.target})
     assert check == dispatch_writes.version_check(RUN, table=TOKENS)                       # a decision (§1)
+    # The table says which moves end an ownership and which skip origin a move records (§3, invariant 6).
+    assert (values.get(":g_next") == {"N": "3"}) is move.raises_generation
+    assert (task_row.SKIP_ORIGIN in names) is (move.skip_origin is not None)
 
 
 def test_a_pass_that_keeps_a_rows_status_writes_no_status_and_still_on_what_it_read():

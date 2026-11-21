@@ -307,8 +307,9 @@ PROBES: Tuple[Probe, ...] = (
           f"{ROWS}::test_a_pass_out_of_budget_leaves_the_rest_to_the_next_pass_at_once"),
     # Two guards keep two passes at once from starting a task twice: each decision's write is conditioned
     # on the status it read, and run_task's name is derived from the row. The probe removes both.
-    Probe("R-D1", (Edit("polyris/coordination/dispatch_writes.py", 'ROW_CONDITION = "#status = :read AND #g = :g"',
-                        'ROW_CONDITION = "(#status = :read OR attribute_exists(#status)) AND #g = :g"'),
+    Probe("R-D1", (Edit("polyris/coordination/dispatch_writes.py",
+                        'ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"',
+                        'ROW_CONDITION = f"(#status = :read OR attribute_exists(#status)) AND {task_row.FENCE}"'),
                    Edit("polyris/coordination/run_name.py",
                         "    digest = _digest(key, run_start, str(int(generation)), length=RUN_TASK_HASH)",
                         "    digest = _digest(key, run_start, str(int(generation)), str(__import__('time').time_ns()), "
