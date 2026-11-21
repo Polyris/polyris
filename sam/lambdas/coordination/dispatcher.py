@@ -488,7 +488,7 @@ class Dispatcher:
             text = run_task_input.build(
                 execution_name=row.key, generation=row.generation, task_name=name,
                 pipeline_name=str(item.get(task_row.PIPELINE, "")), pipeline_execution=run.execution,
-                date=run.date, triggered_by=str(item.get(task_row.TRIGGERED_BY) or "unknown"),
+                date=run.date, partition_arg=state.inputs.partition_arg,
                 backfill_id=item.get(task_row.BACKFILL_ID), spec=self._spec_text(item, name),
                 variables=state.inputs.variables, cascade=state.inputs.cascade, upstreams=upstreams)
         except run_task_input.InputTooLarge as exc:

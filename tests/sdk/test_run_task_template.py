@@ -16,7 +16,6 @@ import re
 from pathlib import Path
 
 import pytest
-from polyris.coordination import ownership
 
 TEMPLATE_PATH = Path(__file__).parent.parent.parent / "sam" / "sfn_templates" / "helpers" / "run_task" / "sfn.tpl.json"
 
@@ -34,100 +33,75 @@ def test_jsonata_mode(template):
     assert template.get("QueryLanguage") == "JSONata"
 
 
-def test_start_state_is_skip_check(template):
-    """The very first state must be the skip_tasks check — otherwise
-    skipped tasks would still write status=running, fetch dependencies,
-    etc., before being noped out. Regression for ADR #51 task_subset."""
-    assert template["StartAt"] == "Check_Should_Skip_Task", (
-        f"StartAt must be Check_Should_Skip_Task; got: {template['StartAt']}"
-    )
+RUN_ARN = "arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-run-task-helper:run-abc"
 
 
-def test_skip_tasks_choice_exists(template):
-    """run_task must have a Choice state at the start that compares
-    task_name against the skip_tasks list."""
+def _context(run_input):
+    return {"Execution": {"Input": run_input, "Id": RUN_ARN, "Name": "run-abc"}}
+
+
+def _catches(state):
+    return {error: c["Next"] for c in state.get("Catch", []) for error in c["ErrorEquals"]}
+
+
+def test_the_first_state_claims_the_row_under_its_generation(template):
+    """deps_ready -> running under the generation the dispatcher started it with (ADR #137 §1, invariant 5)."""
+    from polyris.coordination import task_row
+    assert template["StartAt"] == "Claim"
+    arguments = template["States"]["Claim"]["Arguments"]
+    assert arguments["ConditionExpression"] == f"#s = :deps_ready AND {task_row.FENCE}"
+    assert arguments["ExpressionAttributeNames"]["#g"] == task_row.GENERATION
+    values = arguments["ExpressionAttributeValues"]
+    assert (values[":deps_ready"], values[":running"]) == ({"S": "deps_ready"}, {"S": "running"})
+    assert "attempt = if_not_exists(attempt, :zero) + :one" in arguments["UpdateExpression"]
+    assert arguments["ReturnValues"] == "UPDATED_NEW"
+
+
+def test_the_claim_keeps_the_liveness_check_the_start_put_on_the_row(template):
+    """The start made the row due at its first liveness check, counted from status_since; a claim that wrote
+    status_since would leave that due time stale, and a pass would rewrite every started row once."""
+    expression = template["States"]["Claim"]["Arguments"]["UpdateExpression"]
+    assert "status_since" not in expression and "attention" not in expression
+
+
+def test_a_claim_whose_answer_was_lost_goes_on_and_another_owners_ends_quietly(template):
     states = template["States"]
-    assert "Check_Should_Skip_Task" in states, (
-        "Check_Should_Skip_Task missing — task_subset backfill ignored."
-    )
-    choice = states["Check_Should_Skip_Task"]
-    assert choice["Type"] == "Choice"
-    cond = choice["Choices"][0]["Condition"]
-    assert "skip_tasks" in cond, f"Condition must reference skip_tasks: {cond}"
-    assert "task_name" in cond, f"Condition must reference task_name: {cond}"
-    # Must guard against missing field (no NPE for scheduled runs)
-    assert "$exists" in cond, (
-        f"Condition must use $exists to guard missing skip_tasks: {cond}"
-    )
+    assert _catches(states["Claim"])["DynamoDB.ConditionalCheckFailedException"] == "Read_Claim"
+    run_input = {"generation": 3, "execution_name": "load-2026-11-18-x"}
+
+    def output(item):
+        jsonata = pytest.importorskip("jsonata")
+        expression = jsonata.Jsonata(states["Read_Claim"]["Output"][2:-2].strip())
+        expression.assign("states", {"input": {}, "result": {"Item": item} if item is not None else {},
+                                     "context": _context(run_input)})
+        return expression.evaluate(None)["claimed"]
+
+    mine = {"status": {"S": "running"}, "generation": {"N": "3"}, "run_task_helper_arn": {"S": RUN_ARN}}
+    assert output(mine) is True
+    assert output({**mine, "generation": {"N": "4"}}) is False                # a raised generation (Rule 47)
+    assert output({**mine, "run_task_helper_arn": {"S": RUN_ARN + "-2"}}) is False
+    assert output({**mine, "status": {"S": "stopped"}}) is False
+    assert output(None) is False                                               # the row is gone
+    route = states["Claimed_Before"]
+    assert route["Choices"][0]["Next"] == "Emit_Task_Started" and route["Default"] == "Superseded"
 
 
-def test_task_skipped_terminal_state(template):
-    """Skipped task must reach a terminal state (End: true) emitting
-    a synthetic 'skipped' status. Downstream tasks with trigger_rule
-    'all_done' rely on this."""
+def test_a_claim_that_cannot_be_written_fails_the_execution_for_the_dispatcher_to_judge(template):
+    """The row stays deps_ready; the dispatcher fails it with the execution's error at its liveness check."""
     states = template["States"]
-    assert "Task_Skipped" in states
-    skipped = states["Task_Skipped"]
-    assert skipped["Type"] == "Pass"
-    assert skipped.get("End") is True
-    output_expr = skipped["Output"]
-    assert "'skipped'" in output_expr, (
-        f"Skipped output must include status='skipped': {output_expr}"
-    )
-    assert "task_name" in output_expr
+    assert _catches(states["Claim"])["States.ALL"] == "Claim_Failed"
+    assert _catches(states["Read_Claim"])["States.ALL"] == "Claim_Failed"
+    assert states["Claim_Failed"]["Type"] == "Fail"
 
 
-def test_skip_check_default_preserves_existing_flow(template):
-    """Critical for backward compat: when skip_tasks empty/missing,
-    Default branch must continue to the existing entry point. Otherwise
-    every scheduled pipeline run would break."""
-    choice = template["States"]["Check_Should_Skip_Task"]
-    assert choice["Default"] == "Check_Execution_Paused", (
-        f"Default branch must preserve existing flow; got: {choice['Default']}"
-    )
-
-
-def test_pause_check_still_runs_for_normal_tasks(template):
-    """After the skip check, normal tasks must still hit Check_Execution_Paused
-    so pause/resume semantics are preserved."""
-    states = template["States"]
-    assert "Check_Execution_Paused" in states
-    # Route_Pause_Check still leads to Update_Status_Running (existing flow)
-    assert states["Route_Pause_Check"]["Default"] == "Update_Status_Running"
-
-
-def test_update_status_running_has_attempt_guard(template):
-    """Update_Status_Running must carry a ConditionExpression that blocks a
-    ghost (prior-attempt) execution from overwriting run_task_helper_arn or
-    resetting the attempt counter for the current attempt.
-
-    Without this guard a delayed ghost can clobber run_task_helper_arn with its
-    own dead ARN, causing future restarts' Stop_Old_Inner_Wrapper to target the
-    wrong execution. A ConditionalCheckFailedException on the ghost must route
-    to Stale_Attempt_Superseded, not continue execution."""
-    state = template["States"]["Update_Status_Running"]
-    cond = state["Arguments"].get("ConditionExpression", "")
-    assert "attempt" in cond, (
-        "Update_Status_Running must guard on 'attempt' to block ghost writes; "
-        f"got ConditionExpression: {cond!r}"
-    )
-    assert ":expectedAttempt" in state["Arguments"]["ExpressionAttributeValues"], (
-        "Update_Status_Running must bind :expectedAttempt for the ConditionExpression"
-    )
-    # Ghost-rejection path must route to Stale_Attempt_Superseded, not continue
-    catches = {e: c["Next"] for c in state.get("Catch", []) for e in c["ErrorEquals"]}
-    assert catches.get("DynamoDB.ConditionalCheckFailedException") == "Stale_Attempt_Superseded", (
-        "ConditionalCheckFailedException from Update_Status_Running must go to "
-        f"Stale_Attempt_Superseded; catch table: {catches}"
-    )
-
-
-def test_update_status_running_drops_the_pause_entry(template):
-    """A task released from its pause wait leaves the attention index as it starts:
-    run_task, the receiver of the release, owns that write (Principle #43)."""
-    expression = template["States"]["Update_Status_Running"]["Arguments"]["UpdateExpression"]
-    removed = {name.strip() for name in expression.split("REMOVE", 1)[1].split(",")}
-    assert {"pause_token", "attention", "attention_at"} <= removed
+def test_run_task_only_runs_the_work(template):
+    """It no longer skips, checks the pause, waits for a decision, notifies dependants or answers the run (§1)."""
+    text = TEMPLATE_PATH.read_text()
+    for gone in ("skip_tasks", "pause_waiter_arn", "notify_dependents_helper_arn", "sendTaskSuccess",
+                 "sendTaskFailure", "waitForTaskToken", "orchestration_token"):
+        assert gone not in text, gone
+    assert not [n for n, s in template["States"].items() if s["Type"] == "Wait" and n != "Wait_Before_Retry"
+                and n != "Wait_Before_Recording_Again"]
 
 
 def test_no_orphan_states(template):
@@ -170,6 +144,10 @@ def test_no_orphan_states(template):
                 for c in ss.get("Choices", []):
                     if isinstance(c.get("Next"), str):
                         walk_sub(c["Next"])
+            for name, ss in sub_states.items():
+                for c in ss.get("Catch", []):
+                    if name in sub_reachable or name == sub_start:
+                        sub_reachable.add(c["Next"])
             walk_sub(sub_start)
             unreachable_sub = set(sub_states.keys()) - sub_reachable
             assert not unreachable_sub, (
@@ -195,18 +173,23 @@ def test_no_orphan_states(template):
 # asserts a known field first as a binding guard.
 # ---------------------------------------------------------------------------
 
-def _wrapper_input_for(build):
-    """Build a one-task DAG via the real SDK and return what run_task reads of the task: its
-    spec's name, type, ARN, role and task_config (ADR #137 §8), the fields 1.2's wrapper passed on."""
+def _wrapper_input_for(build, *, upstreams=None):
+    """Build a one-task DAG via the real SDK and return run_task's input as the dispatcher builds it from
+    the task's spec (run_task_input.build, ADR #137 §8, §9)."""
     from polyris import DAG
-    from polyris.constants import TaskSpecKey as K
+    from polyris.coordination import run_task_input, task_spec
     from polyris.generators import build_task_specs
     with DAG(dag_id="contract", schedule="@daily") as dag:
         build(dag)
-    spec = build_task_specs(dag)[0]
-    return {"task_name": spec[K.TASK_ID], "task_type": spec[K.TASK_TYPE], "task_arn": spec[K.TASK_ARN],
-            "cross_account_role": spec[K.CROSS_ACCOUNT_ROLE], "task_config": spec[K.TASK_CONFIG],
-            "pipeline_name": dag.dag_id, "date": "2026-11-12", "current_date": "2026-11-12"}
+    text = task_spec.canonical_json(build_task_specs(dag)[0])
+    spec = task_spec.parse(text, expected_hash=task_spec.text_hash(text))
+    if upstreams:
+        text = task_spec.canonical_json({**spec.fields, "dependencies": sorted(upstreams)})
+        spec = task_spec.parse(text, expected_hash=task_spec.text_hash(text))
+    return json.loads(run_task_input.build(
+        execution_name=f"{spec.task_id}-2026-11-12-contract-run-x", generation=1, task_name=spec.task_id,
+        pipeline_name=dag.dag_id, pipeline_execution="contract-run-2026-11-12-x", date="2026-11-12",
+        partition_arg="", backfill_id=None, spec=spec, variables={}, cascade="auto", upstreams=upstreams or {}))
 
 
 def _resolve_arguments(template, state_name, wrapper_input, context_execution_id=None):
@@ -217,9 +200,11 @@ def _resolve_arguments(template, state_name, wrapper_input, context_execution_id
     reads this — otherwise JSONata drops it as undefined and the key disappears).
     """
     jsonata = pytest.importorskip("jsonata")
-    states_binding = {"input": wrapper_input}
+    # run_task reads its input from the execution's context (run_task_input.Key) and what changes from its
+    # state; one dict serves as both here.
+    states_binding = {"input": wrapper_input, "context": {"Execution": {"Input": wrapper_input}}}
     if context_execution_id is not None:
-        states_binding["context"] = {"Execution": {"Id": context_execution_id}}
+        states_binding["context"]["Execution"]["Id"] = context_execution_id
 
     def resolve(node):
         if isinstance(node, str) and node.startswith("{%") and node.endswith("%}"):
@@ -675,21 +660,27 @@ def test_lambda_user_payload_merges_under_orchestration(template):
             pass
 
     sdk_input = _wrapper_input_for(build)
-    # simulate the runtime $states.input after Prepare_Task_Input populated context
+    # run_task's input as the dispatcher builds it, and its state after Prepare_Task_Input
     runtime_input = {
         "task_arn": "arn:aws:lambda:us-east-1:111111111111:function:fn",
-        "current_date": "2026-01-01",
-        "PARTITION_ARG": "2026-01-01",
+        "date": "2026-01-01",
+        "partition_arg": "2026-01-01",
+        "pipeline_name": "contract",
         "variables": {"myvar": "x"},
-        "upstream": {"up": {"output": {"k": "v"}, "status": "success"}},
+        "upstreams": {"up": {"status": "success", "skip_origin": None},
+                      "audit": {"status": "failed", "skip_origin": None}},
+        "upstream_outputs": {"up": {"k": "v"}},
         "task_config": sdk_input["task_config"],
     }
     resolved = _resolve_arguments(template, "Run_Task_Lambda", runtime_input)
     payload = resolved["Payload"]
 
     assert payload["current_date"] == "2026-01-01"  # binding guard + orchestration wins
+    assert payload["PARTITION_ARG"] == "2026-01-01"
     assert payload.get("my_key") == "v"             # custom user key flows through
-    assert payload["upstream"]["up"]["output"]["k"] == "v"  # XCom-in protected
+    assert payload["upstream"]["up"] == {"status": "success", "skip_origin": None, "output": {"k": "v"}}
+    # an upstream that failed reaches the task as its status alone, never an older run's output (§1)
+    assert payload["upstream"]["audit"] == {"status": "failed", "skip_origin": None}
 
 
 # --- role: cross-account Credentials must apply to ALL wrapper-routed types (G6) ---
@@ -704,7 +695,7 @@ def _resolve_role_arn(template, state_name, wrapper_input):
     jsonata = pytest.importorskip("jsonata")
     expr = template["States"][state_name]["Credentials"]["RoleArn"]
     j = jsonata.Jsonata(expr[2:-2].strip())
-    j.assign("states", {"input": wrapper_input})
+    j.assign("states", {"input": wrapper_input, "context": {"Execution": {"Input": wrapper_input}}})
     return j.evaluate({})
 
 
@@ -748,7 +739,7 @@ def _eval_jsonata(expr, wrapper_input, variables=None):
     jsonata = pytest.importorskip("jsonata")
     body = expr[2:-2].strip() if expr.startswith("{%") else expr
     j = jsonata.Jsonata(body)
-    j.assign("states", {"input": wrapper_input})
+    j.assign("states", {"input": wrapper_input, "context": {"Execution": {"Input": wrapper_input}}})
     for k, v in (variables or {}).items():
         j.assign(k, v)
     return j.evaluate({})
@@ -809,7 +800,8 @@ def test_retry_wait_reads_retry_delay(template):
 def test_retry_loop_closes_back_to_dispatch(template):
     """The retry path must form a terminating loop. Current shape (ADR #125):
     Check_Should_Retry → Prepare_Retry_Wait → Save_Retry_Wait_Delay → Wait_Before_Retry
-    → Increment_Retry → Save_Retry_Attempt → Emit_Task_Retry_Started → Check_Task_Type.
+    → Increment_Retry → Save_Retry_Attempt → Emit_Task_Retry_Started → Read_Upstream_Outputs: each attempt
+    reads its upstreams' outputs again, since a failed read is a failed attempt too.
     """
     states = template["States"]
     assert states["Check_Should_Retry"]["Choices"][0]["Next"] == "Prepare_Retry_Wait"
@@ -820,7 +812,7 @@ def test_retry_loop_closes_back_to_dispatch(template):
     assert inc["Next"] == "Save_Retry_Attempt"      # ADR #125 bookkeeping before dispatch
     assert "retry_attempt" in inc["Assign"]         # counter bump => loop terminates
     assert states["Save_Retry_Attempt"]["Next"] == "Emit_Task_Retry_Started"
-    assert states["Emit_Task_Retry_Started"]["Next"] == "Check_Task_Type"  # re-dispatch
+    assert states["Emit_Task_Retry_Started"]["Next"] == "Read_Upstream_Outputs"  # re-dispatch
 
 
 def test_decorators_reject_unknown_kwargs():
@@ -1147,23 +1139,20 @@ def _sfn_parse_fn():
     return _parse
 
 
-def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task"):
-    """Evaluate Get_Dep_Output.Output with a simulated DDB getItem result.
+def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task", *, cap=25000, status="success"):
+    """Evaluate Get_Dep_Output.Output with a simulated DDB getItem result (None: no output# item).
 
-    Simulates what the inner Map processor sees: $states.result is the DDB
-    getItem response shape and $states.input.dep is the upstream task name.
-    Registers $parse as an AWS SFN extension (not in standard jsonata-python).
+    The inner Map processor's input is one item of Read_Upstream_Outputs' Items: the upstream's name, its
+    status and the size up to which its output is inlined. Registers $parse as Step Functions has it.
     """
     jsonata = pytest.importorskip("jsonata")
     inner_states = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]
     expr = inner_states["Get_Dep_Output"]["Output"]
-    body = expr[2:-2].strip()
-    j = jsonata.Jsonata(body)
+    j = jsonata.Jsonata(expr[2:-2].strip())
     j.register_lambda("parse", _sfn_parse_fn())
-    j.assign("states", {
-        "result": {"Item": {"result": {"S": ddb_raw_value}, "status": {"S": "success"}}},
-        "input": {"dep": dep_name},
-    })
+    item = {"result": {"S": ddb_raw_value}} if ddb_raw_value is not None else None
+    j.assign("states", {"result": {"Item": item} if item else {},
+                        "input": {"name": dep_name, "status": status, "cap": cap}})
     return j.evaluate({})
 
 
@@ -1184,9 +1173,68 @@ def test_get_dep_output_parses_primitive_values(template):
     ]
     for raw, expected in cases:
         result = _eval_get_dep_output(template, raw)
-        assert result["output"] == expected, (
-            f"raw={raw!r}: expected {expected!r}, got {result['output']!r}"
+        assert result["found"] is True and result["output"] == expected, (
+            f"raw={raw!r}: expected {expected!r}, got {result.get('output')!r}"
         )
+
+
+def test_an_output_over_its_share_of_the_budget_reaches_the_task_as_a_marker(template):
+    """xcom reads a marked output from the table; below 64 characters a share holds no marker either."""
+    big = '{"rows": "' + "x" * 300 + '"}'
+    assert _eval_get_dep_output(template, big, cap=100)["output"] == {"_truncated": True, "_size": len(big)}
+    assert "output" not in _eval_get_dep_output(template, big, cap=63)
+    assert _eval_get_dep_output(template, None) == {"name": "dep_task", "status": "success", "found": False}
+
+
+def test_an_output_over_256_kb_is_found_and_left_for_xcom_to_read(template):
+    """xcom.push may store up to 350 KB, which the read cannot carry: the item counts as found (D109)."""
+    get = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]["Get_Dep_Output"]
+    catch = [c for c in get["Catch"] if c["ErrorEquals"] == ["States.DataLimitExceeded"]]
+    assert catch and catch[0]["Next"] == "Dep_Output_Too_Large"
+    from sfn_jsonata import evaluate
+    assert evaluate(catch[0]["Output"], input={"name": "extract", "status": "success", "cap": 1}) == {
+        "name": "extract", "status": "success", "found": True}
+
+
+def _items(template, run_input):
+    from sfn_jsonata import evaluate
+    return evaluate(template["States"]["Read_Upstream_Outputs"]["Items"], input={},
+                    context={"Execution": {"Input": run_input}})
+
+
+def test_only_an_upstream_that_succeeded_or_was_skipped_by_an_operator_or_the_run_is_read(template):
+    """ADR #137 §1: any other upstream reaches the task as its status alone, so a task that runs after a
+    failure never reads an older run's output of the same date."""
+    from polyris.constants import SkipOrigin
+    upstreams = {"a": {"status": "success", "skip_origin": None},
+                 "b": {"status": "skipped", "skip_origin": SkipOrigin.MANUAL},
+                 "c": {"status": "skipped", "skip_origin": SkipOrigin.RUN},
+                 "d": {"status": "skipped", "skip_origin": SkipOrigin.RULE},
+                 "e": {"status": "failed", "skip_origin": None},
+                 "f": {"status": "upstream_failed", "skip_origin": None},
+                 "g": {"status": "stopped", "skip_origin": None}}
+    items = _items(template, {"upstreams": upstreams, "pipeline_name": "p", "date": "2026-11-18"})
+    assert sorted((i["name"], i["status"]) for i in items) == [("a", "success"), ("b", "skipped"),
+                                                                ("c", "skipped")]
+    assert _items(template, {"upstreams": {}}) == []
+
+
+def test_the_outputs_inlined_share_a_budget_with_the_input(template):
+    """The state and the work's arguments carry the input and the inlined outputs, under 256 KB together."""
+    upstreams = {f"up{i}": {"status": "success", "skip_origin": None} for i in range(4)}
+    small = _items(template, {"upstreams": upstreams})
+    assert {i["cap"] for i in small} == {25000}                              # 1.2's cap per output
+    padded = {"upstreams": upstreams, "variables": {"blob": "x" * 150000}}
+    cap = _items(template, padded)[0]["cap"]
+    assert cap == (200000 - len(json.dumps(padded, separators=(",", ":")))) // 4
+    assert _items(template, {"upstreams": upstreams, "variables": {"blob": "x" * 250000}})[0]["cap"] == 0
+
+
+def _after_map(template, results, state_input=None):
+    jsonata = pytest.importorskip("jsonata")
+    j = jsonata.Jsonata(template["States"]["Read_Upstream_Outputs"]["Output"][2:-2].strip())
+    j.assign("states", {"result": results, "input": state_input or {}})
+    return j.evaluate({})
 
 
 def test_two_producers_one_consumer(template):
@@ -1199,78 +1247,52 @@ def test_two_producers_one_consumer(template):
     Pattern from scenario-4/dag.py:
         [extract_core_sales(), enrich_customer_segments()] >> daily_report()
     """
-    jsonata = pytest.importorskip("jsonata")
-
-    # Step 1: simulate Get_Dep_Output for each upstream dep
     dep1 = _eval_get_dep_output(template, '{"sales_count": 100}', dep_name="extract_core_sales")
     dep2 = _eval_get_dep_output(template, '{"segments": ["vip", "new"]}', dep_name="enrich_customer_segments")
+    after_map = _after_map(template, [dep1, dep2])
+    assert after_map == {"upstream_outputs": {"extract_core_sales": {"sales_count": 100},
+                                              "enrich_customer_segments": {"segments": ["vip", "new"]}},
+                         "missing": []}
 
-    # Step 2: evaluate Read_Upstream_Outputs Map Output with both results
-    base_input = {
-        "pipeline_name": "scenario-4",
-        "task_name": "daily_report",
-        "date": "2026-01-01",
-        "current_date": "2026-01-01",
-    }
-    map_output_expr = template["States"]["Read_Upstream_Outputs"]["Output"]
-    body = map_output_expr[2:-2].strip()
-    j = jsonata.Jsonata(body)
-    j.assign("states", {"result": [dep1, dep2], "input": base_input})
-    after_map = j.evaluate({})
-
-    upstream = after_map.get("upstream", {})
-    assert "extract_core_sales" in upstream, (
-        f"extract_core_sales missing from merged upstream: {list(upstream)}"
-    )
-    assert "enrich_customer_segments" in upstream, (
-        f"enrich_customer_segments missing from merged upstream: {list(upstream)}"
-    )
-    assert upstream["extract_core_sales"]["output"] == {"sales_count": 100}
-    assert upstream["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}
-
-    # Step 3: verify both keys appear in the downstream Lambda Payload
     runtime_input = {
         **after_map,
         "task_arn": "arn:aws:lambda:us-east-1:111111111111:function:polyris-test-lambda",
-        "task_config": {"payload": {}},
-        "variables": {},
-        "PARTITION_ARG": "2026-01-01",
+        "task_config": {"payload": {}}, "variables": {}, "partition_arg": "2026-01-01", "date": "2026-01-01",
+        "pipeline_name": "scenario-4",
+        "upstreams": {"extract_core_sales": {"status": "success", "skip_origin": None},
+                      "enrich_customer_segments": {"status": "success", "skip_origin": None}},
     }
-    resolved = _resolve_arguments(template, "Run_Task_Lambda", runtime_input)
-    payload = resolved["Payload"]
+    payload = _resolve_arguments(template, "Run_Task_Lambda", runtime_input)["Payload"]
     assert payload["upstream"]["extract_core_sales"]["output"] == {"sales_count": 100}
     assert payload["upstream"]["enrich_customer_segments"]["output"] == {"segments": ["vip", "new"]}
 
 
-# ── SFN template split: Save_Task_Input → Init_Output_Row + Save_Input_Record ──
+def test_an_upstream_that_succeeded_without_its_output_fails_the_task_without_retries(template):
+    """D109: its success wrote the output in the same transaction, so a missing one is not transient."""
+    states = template["States"]
+    found = _eval_get_dep_output(template, '{"k": 1}', dep_name="extract")
+    lost = _eval_get_dep_output(template, None, dep_name="load")
+    skipped = _eval_get_dep_output(template, None, dep_name="audit", status="skipped")
+    after = _after_map(template, [found, lost, skipped], {"variables": {}})
+    assert after["missing"] == ["load"]                       # a skipped upstream may have none
+    assert states["Check_Upstream_Outputs"]["Choices"][0]["Next"] == "Missing_Upstream_Output"
+    from sfn_jsonata import evaluate
+    failed = evaluate(states["Missing_Upstream_Output"]["Output"], input=after)
+    assert failed["error_obj"]["Error"] == "UpstreamOutputMissing" and "load" in failed["error"]
+    assert states["Missing_Upstream_Output"]["Next"] == "Get_Decision_Timeout"
+
+
+def test_a_failed_read_of_the_outputs_is_a_failed_attempt(template):
+    catches = _catches(template["States"]["Read_Upstream_Outputs"])
+    assert catches["States.ALL"] == catches["States.DataLimitExceeded"] == "Check_Should_Retry"
 
 
 def test_save_task_input_state_removed(template):
-    """The old monolithic Save_Task_Input is gone — replaced by two states."""
-    assert "Save_Task_Input" not in template["States"], (
-        "Save_Task_Input has been split into Init_Output_Row + Save_Input_Record "
-        "in 1.0.0. If this test fails, the old state was "
-        "reintroduced accidentally."
-    )
-
-
-def test_init_output_row_and_save_input_record_exist(template):
-    """Both new states must be present in the template."""
-    assert "Init_Output_Row" in template["States"]
+    """The old monolithic Save_Task_Input is gone, and so is Init_Output_Row: the success transaction
+    clears a stale push marker itself."""
+    assert "Save_Task_Input" not in template["States"]
+    assert "Init_Output_Row" not in template["States"]
     assert "Save_Input_Record" in template["States"]
-
-
-def test_init_output_row_removes_stale_push_marker_fields(template):
-    """B1 fix: REMOVE clause wipes _pushed_by_task/pushed_at/pushed_run_id at
-    task start so Check_Task_Pushed never sees a marker from a prior same-date run.
-    """
-    state = template["States"]["Init_Output_Row"]
-    update_expr = state["Arguments"]["UpdateExpression"]
-    assert "REMOVE" in update_expr
-    assert "#pushed_marker" in update_expr
-    assert "pushed_at" in update_expr
-    assert "pushed_run_id" in update_expr
-    assert state["Arguments"]["ExpressionAttributeNames"]["#pushed_marker"] == "_pushed_by_task"
 
 
 def test_save_input_record_uses_input_key_prefix(template):
@@ -1309,33 +1331,23 @@ def test_save_input_record_uses_task_date_not_date(template):
         )
 
 
-def test_save_canonical_output_no_task_input_field(template):
-    """§1.3: task_input moved to separate input# record — must not be duplicated here."""
-    item = template["States"]["Save_Canonical_Output"]["Arguments"]["Item"]
-    assert "task_input" not in item, (
-        "Save_Canonical_Output must not write task_input anymore; it lives in the "
-        "input# record populated by Save_Input_Record."
-    )
+def test_the_input_record_lives_90_days_from_each_write(template):
+    """D82/D108: input# keeps 90 days, counted from its latest write (retention.INPUT)."""
+    arguments = template["States"]["Save_Input_Record"]["Arguments"]
+    assert "#ttl = :ttl" in arguments["UpdateExpression"] and "if_not_exists" not in arguments["UpdateExpression"]
+    assert "input_ttl_seconds" in arguments["ExpressionAttributeValues"][":ttl"]["N"]
 
 
-def test_prepare_task_input_chains_to_init_output_row(template):
-    """Wiring: Prepare_Task_Input -> Init_Output_Row -> Save_Input_Record -> Check_Task_Type."""
-    assert template["States"]["Prepare_Task_Input"]["Next"] == "Init_Output_Row"
-    assert template["States"]["Init_Output_Row"]["Next"] == "Save_Input_Record"
+def test_prepare_task_input_chains_to_save_input_record(template):
+    """Wiring: Prepare_Task_Input -> Save_Input_Record -> Check_Task_Type."""
+    assert template["States"]["Prepare_Task_Input"]["Next"] == "Save_Input_Record"
     assert template["States"]["Save_Input_Record"]["Next"] == "Check_Task_Type"
-
-
-def test_init_output_row_catch_falls_through_to_save_input_record(template):
-    """Best-effort: DDB failure on Init_Output_Row must NOT skip Save_Input_Record
-    (task_input recording is independent of marker cleanup)."""
-    catch = template["States"]["Init_Output_Row"]["Catch"]
-    assert catch[0]["Next"] == "Save_Input_Record"
 
 
 def test_save_input_record_catch_falls_through_to_check_task_type(template):
     """Best-effort: DDB failure on the input write must not block dispatch."""
-    catch = template["States"]["Save_Input_Record"]["Catch"]
-    assert catch[0]["Next"] == "Check_Task_Type"
+    catches = _catches(template["States"]["Save_Input_Record"])
+    assert catches["States.ALL"] == catches["States.DataLimitExceeded"] == "Check_Task_Type"
 
 
 # ── Push detection: Check_Task_Pushed + Save_Success_Preserve ────────
@@ -1447,70 +1459,130 @@ def test_check_task_pushed_marker_false_no_push(template):
     assert output["_task_pushed"] is False
 
 
-def test_check_task_pushed_ddb_failure_safe_default(template):
-    """Catch: DDB error → _task_pushed = false (safe: wrapper writes result as usual)."""
-    catch = template["States"]["Check_Task_Pushed"]["Catch"]
-    assert len(catch) == 1
-    fallback_out = catch[0]["Output"]
-    assert "'_task_pushed': false" in fallback_out
-    assert catch[0]["Next"] == "Route_Save_Success"
+def test_a_push_check_that_fails_counts_as_a_success_not_recorded(template):
+    """Writing the work's return over an output the task pushed would lose it: the operator decides."""
+    assert _catches(template["States"]["Check_Task_Pushed"])["States.ALL"] == "Success_Not_Recorded"
+    assert template["States"]["Check_Task_Pushed"]["Next"] == "Record_Success"
 
 
-def test_route_save_success_defaults_to_current_when_not_pushed(template):
-    """Choice Default → Save_Success (current behavior for non-pushed tasks)."""
-    choice = template["States"]["Route_Save_Success"]
-    assert choice["Type"] == "Choice"
-    assert choice["Default"] == "Save_Success"
+# ── The success transaction (ADR #137 §1, invariant 12) ──────────────
+
+SUCCESS_RUN = {"execution_name": "load-2026-11-18-orders-run-x", "generation": 3, "task_name": "load",
+               "pipeline_name": "orders", "pipeline_execution": "orders-run-2026-11-18-x", "date": "2026-11-18",
+               "cascade": "auto", "outlets": [{"name": "ns/orders", "uri": "s3://bucket/orders"},
+                                              {"name": "ns/daily", "granularity": "daily"}],
+               "output_ttl_seconds": 31536000, "history_ttl_seconds": 39312000}
 
 
-def test_route_save_success_routes_to_preserve_when_pushed(template):
-    """Only condition: _task_pushed == true → Save_Success_Preserve."""
-    choice = template["States"]["Route_Save_Success"]
-    assert len(choice["Choices"]) == 1
-    branch = choice["Choices"][0]
-    assert "_task_pushed" in branch["Condition"]
-    assert branch["Next"] == "Save_Success_Preserve"
+def _transaction(template, *, pushed=False, run=None, output='{"rows": 3}'):
+    from sfn_jsonata import evaluate
+    state = {"task_output": output, "task_execution_arn": "jr_1", "_task_pushed": pushed}
+    return evaluate(template["States"]["Record_Success"]["Arguments"], input=state,
+                    context=_context(run or SUCCESS_RUN))["TransactItems"]
 
 
-def test_save_success_preserve_never_sets_result(template):
-    """The whole point: the pushed result must survive. NEVER SET #r/result."""
-    state = template["States"]["Save_Success_Preserve"]
-    update_expr = state["Arguments"]["UpdateExpression"]
-    assert "result" not in update_expr, (
-        "Save_Success_Preserve must NOT SET result — the pushed value must survive. "
-        f"UpdateExpression={update_expr!r}"
-    )
-    assert "#r" not in update_expr
+def test_the_success_is_one_transaction_of_the_status_the_output_and_the_facts(template):
+    from sfn_jsonata import NOW, plain
+    from polyris.coordination import retention, task_row
+    from polyris.coordination.times import format_utc
+    row, output, *facts = _transaction(template)
+    update = row["Update"]
+    assert update["Key"] == {"execution_name": {"S": SUCCESS_RUN["execution_name"]}}
+    assert update["ConditionExpression"] == f"#s = :running AND {task_row.FENCE}"
+    values = update["ExpressionAttributeValues"]
+    assert (values[":running"], values[":success"], values[":g"]) == ({"S": "running"}, {"S": "success"}, {"N": "3"})
+    assert "REMOVE #att, #due" in update["UpdateExpression"]                    # no attention entry on success
+    assert values[":ttl"] == {"N": str(retention.ttl(NOW, retention.HISTORY))}
+    out = output["Update"]
+    assert out["Key"] == {"execution_name": {"S": "output#orders#load#2026-11-18"}}
+    assert out["ExpressionAttributeValues"][":r"] == {"S": '{"rows": 3}'}
+    assert out["ExpressionAttributeValues"][":ttl"] == {"N": str(retention.ttl(NOW, retention.OUTPUT))}
+    assert [plain(f["Put"]["Item"])["asset_name"] for f in facts] == ["ns/orders", "ns/daily"]
+    assert {f["Put"]["ConditionExpression"] for f in facts} == {"attribute_not_exists(event_time)"}
+    assert {plain(f["Put"]["Item"])["event_time"] for f in facts} == {format_utc(NOW)}
 
 
-def test_save_success_preserve_keeps_stale_attempt_guard(template):
-    """Same attempt-based rejection as Save_Success — restart safety preserved."""
-    state = template["States"]["Save_Success_Preserve"]
-    assert state["Arguments"]["ConditionExpression"] == f"(attempt = :expectedAttempt) AND {ownership.FENCE}"
-    catch = {e: c["Next"] for c in state["Catch"] for e in c["ErrorEquals"]}
-    assert catch["DynamoDB.ConditionalCheckFailedException"] == "Stale_Attempt_Superseded"
+def test_a_fact_in_the_transaction_has_the_shape_of_asset_fact_item(template):
+    from sfn_jsonata import NOW, plain
+    from polyris.coordination.records import asset_fact_item
+    _, _, fact, daily = _transaction(template)
+    expected = asset_fact_item(asset_name="ns/orders", partition_key="2026-11-18", granularity="daily",
+                               cascade="auto", source_dag="orders", source_task="load", uri="s3://bucket/orders",
+                               now=NOW, ttl_days=365)
+    written = plain(fact["Put"]["Item"])
+    assert {k: v for k, v in written.items() if k != "ttl"} == {k: v for k, v in expected.items() if k != "ttl"}
+    assert plain(daily["Put"]["Item"])["uri"] == ""
 
 
-def test_save_success_preserve_next_is_canonical_preserve(template):
-    assert template["States"]["Save_Success_Preserve"]["Next"] == "Save_Canonical_Output_Preserve"
+def test_a_task_without_outlets_records_its_status_and_output_alone(template):
+    assert len(_transaction(template, run={**SUCCESS_RUN, "outlets": []})) == 2
 
 
-def test_save_canonical_output_preserve_uses_updateitem_not_putitem(template):
-    """putItem here would clobber the pushed 'result'. updateItem only touches status/updated_at."""
-    state = template["States"]["Save_Canonical_Output_Preserve"]
-    assert state["Resource"] == "arn:aws:states:::dynamodb:updateItem"
+def test_an_output_the_task_pushed_survives_its_success(template):
+    """xcom.push by this execution wrote the result: the success writes the status around it. Otherwise the
+    work's return replaces the result, and a stale push marker of an earlier run goes."""
+    pushed = _transaction(template, pushed=True)[1]["Update"]
+    assert "#r" not in pushed["UpdateExpression"] and ":r" not in pushed["ExpressionAttributeValues"]
+    assert "REMOVE" not in pushed["UpdateExpression"]
+    returned = _transaction(template)[1]["Update"]
+    assert "#r = :r" in returned["UpdateExpression"]
+    assert "REMOVE #p, pushed_at, pushed_run_id, push_count" in returned["UpdateExpression"]
+    assert returned["ExpressionAttributeNames"]["#p"] == "_pushed_by_task"
 
 
-def test_save_canonical_output_preserve_never_writes_result(template):
-    state = template["States"]["Save_Canonical_Output_Preserve"]
-    update_expr = state["Arguments"]["UpdateExpression"]
-    assert "result" not in update_expr
-    assert "#r" not in update_expr
+def _after_cancel(template, item):
+    jsonata = pytest.importorskip("jsonata")
+    j = jsonata.Jsonata(template["States"]["Read_After_Cancel"]["Output"][2:-2].strip())
+    j.assign("states", {"input": {}, "result": {"Item": item} if item else {},
+                        "context": _context(SUCCESS_RUN)})
+    return j.evaluate(None)
 
 
-def test_save_canonical_output_preserve_next_is_finished_success(template):
-    """Rejoins the shared success flow."""
-    assert template["States"]["Save_Canonical_Output_Preserve"]["Next"] == "Emit_Task_Finished_Success"
+def _route(template, state, record_tries):
+    from sfn_jsonata import evaluate
+    choice = template["States"]["Route_After_Cancel"]
+    for rule in choice["Choices"]:
+        if evaluate(rule["Condition"], input=state, variables={"record_tries": record_tries}):
+            return rule["Next"]
+    return choice["Default"]
+
+
+def test_a_cancelled_transaction_reads_the_row_and_branches_on_it(template):
+    """ADR #137 §1: its own success under its generation is a lost answer; a raised generation ends it quietly;
+    any other cause tries again, with a new time for each fact, and then waits for a decision."""
+    states = template["States"]
+    assert _catches(states["Record_Success"])["DynamoDb.TransactionCanceledException"] == "Read_After_Cancel"
+    succeeded = _after_cancel(template, {"status": {"S": "success"}, "generation": {"N": "3"}})
+    running = _after_cancel(template, {"status": {"S": "running"}, "generation": {"N": "3"}})
+    raised = _after_cancel(template, {"status": {"S": "stopped"}, "generation": {"N": "4"}})
+    assert _route(template, succeeded, 1) == "Emit_Task_Finished_Success"
+    assert _route(template, running, 1) == "Wait_Before_Recording_Again"
+    assert _route(template, running, 5) == "Success_Not_Recorded"
+    assert _route(template, raised, 1) == "Superseded"
+    assert _route(template, _after_cancel(template, None), 1) == "Superseded"   # the row is gone
+    assert states["Wait_Before_Recording_Again"]["Next"] == "Record_Success"
+
+
+def test_a_success_that_cannot_be_recorded_waits_for_a_decision_with_its_cause(template):
+    """The transaction's Catch names States.DataLimitExceeded too (TR-0 B2); the work runs again only if an
+    operator restarts it."""
+    from sfn_jsonata import evaluate
+    states = template["States"]
+    catches = _catches(states["Record_Success"])
+    assert catches["States.DataLimitExceeded"] == catches["States.ALL"] == "Success_Not_Recorded"
+    waiting = evaluate(states["Success_Not_Recorded"]["Output"],
+                       input={"record_error": {"Error": "States.DataLimitExceeded", "Cause": "too large"},
+                              "task_output": "x"})
+    assert waiting["error_obj"]["Error"] == "SuccessNotRecorded" and "too large" in waiting["error"]
+    assert "task_output" not in waiting
+    assert states["Success_Not_Recorded"]["Next"] == "Get_Decision_Timeout"
+
+
+def test_the_success_retries_name_the_sdk_integrations_errors(template):
+    """The SDK integration names errors after the SDK's exceptions (DynamoDb.*), not DynamoDB.* (TR-0 B3)."""
+    errors = {e for r in template["States"]["Record_Success"]["Retry"] for e in r["ErrorEquals"]}
+    assert errors and all(e.startswith("DynamoDb.") for e in errors)
+    assert "DynamoDb.TransactionCanceledException" not in errors
 
 
 def test_all_run_task_states_route_to_check_task_pushed(template):
@@ -1688,16 +1760,15 @@ class TestRetryVisibility:
             "Add `\"retry_attempt\": {\"N\": ...}` to each Item (ADR #125 regression gate)."
         )
 
-    def test_save_retry_attempt_has_stale_attempt_guard(self):
-        """A ghost retry from a wrapper that was superseded by Restart writes with
-        an old :expectedAttempt — the ConditionExpression must reject it so the
-        new wrapper's state is never clobbered mid-flight (ADR #125 + ADR #107)."""
+    def test_save_retry_attempt_is_fenced_by_the_generation(self):
+        """A run_task whose row an operator took over (a raised generation) writes nothing more and ends
+        quietly (ADR #137 invariant 5, Rule 47)."""
+        from polyris.coordination import task_row
         s = self.rt["States"]["Save_Retry_Attempt"]
-        assert s["Arguments"]["ConditionExpression"] == f"(attempt = :expectedAttempt) AND {ownership.FENCE}"
-        # And the stale-write Catch must terminate quietly, not continue the loop.
+        assert s["Arguments"]["ConditionExpression"] == f"#s = :running AND {task_row.FENCE}"
         catches = s["Catch"]
         guard_catch = next(c for c in catches if "DynamoDB.ConditionalCheckFailedException" in c["ErrorEquals"])
-        assert guard_catch["Next"] == "Stale_Attempt_Superseded"
+        assert guard_catch["Next"] == "Superseded"
 
     def test_save_retry_attempt_throttle_fallthrough_routes_to_emit(self):
         """On DDB throttle, Save_Retry_Attempt must fall through to
@@ -1733,15 +1804,12 @@ class TestRetryVisibility:
         emit = self.rt["States"]["Emit_Task_Retry_Started"]
         assert emit["Arguments"]["Item"]["event_type"]["S"] == "TASK_RETRY_STARTED"
 
-    def test_update_status_running_resets_retry_attempt(self):
-        """A fresh wrapper (initial dispatch or manual Restart) must begin with
-        retry_attempt=0 so the UI badge and the row agree. Without the reset a
-        Restart would inherit the previous wrapper's retry_attempt and show a
-        stale value until the first retry (ADR #125)."""
-        us = self.rt["States"]["Update_Status_Running"]
-        update_expr = us["Arguments"]["UpdateExpression"]
-        assert "retry_attempt = :ra0" in update_expr
-        assert us["Arguments"]["ExpressionAttributeValues"][":ra0"] == {"N": "0"}
+    def test_the_claim_resets_retry_attempt(self):
+        """Each start (the first, or after a Restart) begins with retry_attempt=0 so the UI badge and the
+        row agree; a Restart would otherwise inherit the previous start's count (ADR #125)."""
+        claim = self.rt["States"]["Claim"]
+        assert "retry_attempt = :zero" in claim["Arguments"]["UpdateExpression"]
+        assert claim["Arguments"]["ExpressionAttributeValues"][":zero"] == {"N": "0"}
 
     def test_save_retry_wait_delay_writes_countdown_fields(self):
         """The retry Wait must surface via the same wait_delay_until_ms /
@@ -1774,3 +1842,168 @@ class TestRetryVisibility:
         assert "'error'" in output
         assert "'error_obj'" in output
         assert "'task_execution_arn'" in output
+
+
+# =============================================================================
+# ADR #137 §1 — run_task only runs the work
+# =============================================================================
+
+WORK_STATES = ("Run_Task_SFN", "Run_Task_Lambda", "Run_Task_Glue", "Run_Task_ECS", "Run_Task_Athena",
+               "Run_Task_EMR", "Run_Task_Batch")
+
+
+def test_run_task_reads_only_the_keys_of_its_input_and_every_one_of_them():
+    """ADR #137 §9: the dispatcher builds the input from run_task_input.Key; the template reads it from its
+    execution's context, so a key on one side only is a contract drift."""
+    from polyris.coordination import run_task_input
+    read = set(re.findall(r"\$states\.context\.Execution\.Input\.([a-zA-Z_]+)", TEMPLATE_PATH.read_text()))
+    assert read == run_task_input.KEYS
+
+
+def test_each_attempt_has_the_tasks_time_limit_and_a_timeout_is_not_retried_by_the_state(template):
+    """execution_timeout bounds one attempt (§1); a timeout goes through the task's retries, so the work
+    states no longer retry States.Timeout themselves, which ran one attempt up to three times."""
+    from sfn_jsonata import evaluate
+    for name in WORK_STATES:
+        state = template["States"][name]
+        assert evaluate(state["TimeoutSeconds"], context=_context({"execution_timeout": 900})) == 900
+        assert evaluate(state["TimeoutSeconds"], context=_context({})) == 99999999       # no limit of its own
+        assert "States.Timeout" not in {e for r in state.get("Retry", []) for e in r["ErrorEquals"]}, name
+        assert _catches(state)["States.ALL"] == _catches(state)["States.DataLimitExceeded"] == "Check_Should_Retry"
+
+
+@pytest.mark.parametrize("error,delay,expected", [("States.Timeout", 5, 60), ("States.Timeout", 90, 90),
+                                                  ("States.TaskFailed", 5, 5)])
+def test_a_retry_after_a_timeout_waits_a_minute_at_least(template, error, delay, expected):
+    """Step Functions stops a timed-out .sync job within 15 to 60 seconds (TR-0 B5): two copies of the work
+    must not overlap."""
+    from sfn_jsonata import evaluate
+    assign = template["States"]["Prepare_Retry_Wait"]["Assign"]["retry_wait_seconds"]
+    run = {"task_config": {"retries": 2, "retry_delay": delay}}
+    assert evaluate(assign, input={"error_obj": {"Error": error}}, context=_context(run),
+                    variables={"retry_attempt": 0}) == expected
+
+
+def test_a_task_that_fails_after_its_retries_waits_for_a_decision_and_run_task_ends(template):
+    """running -> waiting_decision with the cause, the time the wait began and the timeout in force; its
+    attention entry falls due at the deadline (ADR #137 §1, §6). No process waits for the decision."""
+    from datetime import timedelta
+    from sfn_jsonata import NOW, evaluate
+    from polyris.coordination import attention, retention, task_row
+    from polyris.coordination.times import format_utc
+    states = template["States"]
+    assert states["Check_Should_Retry"]["Default"] == "Get_Decision_Timeout"
+    assert states["Get_Decision_Timeout"]["Next"] == "Ask"
+    arguments = states["Ask"]["Arguments"]
+    assert arguments["ConditionExpression"] == f"#s = :running AND {task_row.FENCE}"
+    run = {"execution_name": "load-2026-11-18-orders-run-x", "generation": 3, "history_ttl_seconds": 39312000}
+    values = evaluate(arguments["ExpressionAttributeValues"], input={"error": "boom"}, context=_context(run),
+                      variables={"decision_timeout_seconds": 600})
+    assert values[":waiting_decision"] == {"S": "waiting_decision"} and values[":error"] == {"S": "boom"}
+    assert values[":entry"] == {"S": attention.attention(attention.DECISION, run["execution_name"])}
+    assert values[":deadline"] == {"S": format_utc(NOW + timedelta(seconds=600))}
+    assert values[":now"] == {"S": format_utc(NOW)} and values[":timeout"] == {"N": "600"}
+    assert values[":ttl"] == {"N": str(retention.ttl(NOW, retention.HISTORY))}
+    for name in ("#att", "#due"):
+        assert arguments["ExpressionAttributeNames"][name] in (attention.KEY, attention.DUE)
+    assert _catches(states["Ask"]) == {"DynamoDB.ConditionalCheckFailedException": "Superseded",
+                                       "States.ALL": "Ask_Failed"}
+    assert states["Ask_Failed"]["Type"] == "Fail"
+    assert states["Send_PagerDuty_Alert"]["Next"] == states["Check_Is_Backfill"]["Choices"][0]["Next"] \
+        == "Waiting_For_Decision"
+    assert states["Waiting_For_Decision"]["Type"] == "Succeed"
+
+
+def test_the_decision_timeout_falls_back_to_the_consoles_default(template):
+    """ADR #114: __global_settings__ holds the timeout; both sides read 5 hours when it holds none."""
+    repo = (TEMPLATE_PATH.parents[3] / "lambdas" / "console_api" / "dal" / "pipelines_repo.py").read_text()
+    default = int(re.search(r"DEFAULT_DECISION_TIMEOUT_SECONDS = (\d+)", repo).group(1))
+    state = template["States"]["Get_Decision_Timeout"]
+    jsonata = pytest.importorskip("jsonata")
+    expression = jsonata.Jsonata(state["Assign"]["decision_timeout_seconds"][2:-2].strip())
+    expression.assign("states", {"result": {}})
+    assert expression.evaluate(None) == default == state["Catch"][0]["Assign"]["decision_timeout_seconds"]
+
+
+@pytest.mark.parametrize("state,kind", [("Run_Task_Glue", "glue"), ("Run_Task_ECS", "ecs"),
+                                        ("Run_Task_Batch", "batch")])
+def test_a_glue_ecs_or_batch_task_gets_its_upstreams_statuses_for_xcom(template, state, kind):
+    """POLYRIS_UPSTREAM_STATUSES carries what run_task_input.upstream_statuses_env builds (§9, Principle #28)."""
+    from polyris import task
+    from polyris.coordination import run_task_input
+    from polyris.xcom import ENV_UPSTREAM_STATUSES
+    upstreams = {"extract": ("failed", None), "audit": ("skipped", "manual")}
+
+    def build(dag):
+        if kind == "glue":
+            @task.glue_job(job_name="etl")
+            def load():
+                pass
+        elif kind == "ecs":
+            @task.ecs_task(cluster="c", task_definition="td", subnets=["s-1"],
+                           container_overrides={"ContainerOverrides": [{"Name": "app"}]})
+            def load():
+                pass
+        else:
+            @task.batch_job(job_definition="jd", job_queue="jq")
+            def load():
+                pass
+
+    resolved = _resolve_arguments(template, state, _wrapper_input_for(build, upstreams=upstreams),
+                                  context_execution_id=RUN_ARN)
+    if kind == "glue":
+        value = resolved["Arguments"][f"--{ENV_UPSTREAM_STATUSES}"]
+    else:
+        env = (resolved["Overrides"]["ContainerOverrides"][0] if kind == "ecs" else resolved["ContainerOverrides"])
+        value = {e["Name"]: e["Value"] for e in env["Environment"]}[ENV_UPSTREAM_STATUSES]
+    assert value == run_task_input.upstream_statuses_env(upstreams)
+
+
+def test_the_notify_calls_pass_their_fields_explicitly(template):
+    """1.2's Resolve_PagerDuty read fields its input never carried, so it never ran: each call names them."""
+    from sfn_jsonata import evaluate
+    run = {"pipeline_name": "orders", "task_name": "load", "execution_name": "load-2026-11-18-x",
+           "date": "2026-11-18"}
+    for name in ("Interactive_Slack", "Send_PagerDuty_Alert", "Resolve_PagerDuty"):
+        payload = evaluate(template["States"][name]["Arguments"]["Payload"], input={}, context=_context(run))
+        assert payload["pipeline_name"] == "orders", name
+        assert {k: payload["failure"][k] for k in run} == run, name
+    resolve = template["States"]["Should_Resolve"]
+    assert resolve["Choices"][0]["Next"] == "Resolve_PagerDuty" and resolve["Default"] == "Done"
+    assert evaluate(resolve["Choices"][0]["Condition"], variables={"attempt": 1}) is False
+    assert evaluate(resolve["Choices"][0]["Condition"], variables={"attempt": 2}) is True
+
+
+def test_every_write_of_the_row_renews_its_history_and_every_event_keeps_90_days(template):
+    """D108: a row lives a year and 90 days from its latest write; the timeline 90 days (retention)."""
+    for name, state in template["States"].items():
+        arguments = state.get("Arguments")
+        if not isinstance(arguments, dict):
+            continue
+        if arguments.get("TableName") == "0" and arguments.get("Key", {}).get("execution_name", {}).get(
+                "S", "").endswith("Input.execution_name %}") and "UpdateExpression" in arguments:
+            assert "#ttl = :ttl" in arguments["UpdateExpression"], name
+            assert "history_ttl_seconds" in arguments["ExpressionAttributeValues"][":ttl"]["N"], name
+        if state.get("Resource") == "arn:aws:states:::dynamodb:putItem":
+            item = arguments["Item"]
+            assert "timeline_ttl_seconds" in item["ttl"]["N"], name
+            assert item["task_run_id"] == {"S": "{% $states.context.Execution.Name %}"}, name
+
+
+def test_the_deploy_counts_the_environment_run_task_adds_to_an_ecs_task(template):
+    """D118: polyris-deploy measures an ECS task's overrides with what Run_Task_ECS adds (limits.PLATFORM_ENV)."""
+    from polyris import limits, task
+
+    def build(dag):
+        @task.ecs_task(cluster="c", task_definition="td", subnets=["s-1"],
+                       container_overrides={"ContainerOverrides": [{"Name": "app"}]})
+        def load():
+            pass
+
+    resolved = _resolve_arguments(template, "Run_Task_ECS", _wrapper_input_for(build),
+                                  context_execution_id=RUN_ARN)
+    env = resolved["Overrides"]["ContainerOverrides"][0]["Environment"]
+    assert [e["Name"] for e in env] == list(limits.PLATFORM_ENV)
+    by_name = {e["Name"]: e["Value"] for e in env}
+    assert len(by_name["POLYRIS_RUN_DATE"]) <= limits.PLATFORM_ENV["POLYRIS_RUN_DATE"]
+    assert len(RUN_ARN) <= limits.PLATFORM_ENV["POLYRIS_WRAPPER_RUN_ID"]

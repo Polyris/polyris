@@ -95,9 +95,11 @@ def _evaluate(condition: str, skip_tasks, task_name):
 
 
 def test_skip_task_conditions_exist():
-    """Guard the guard: at least the run_task + dependency_wrapper checks."""
+    """Guard the guard: the dependency wrapper's check, until TR-8 removes the wrapper. run_task no longer
+    checks skip_tasks: Start_Run writes such a task skipped (ADR #137 §3)."""
     conds = _skip_task_conditions()
-    assert len(conds) >= 2, f"expected >=2 skip-task conditions, found {conds}"
+    assert conds, f"expected a skip-task condition, found {conds}"
+    assert not [c for c in conds if "run_task" in c[0]]
 
 
 @pytest.mark.parametrize("desc,skip_tasks,task_name,expected", CASES)

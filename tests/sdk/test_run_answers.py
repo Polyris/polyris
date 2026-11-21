@@ -1,12 +1,10 @@
 """Who tells a pipeline run how its task ended (ADR #135).
 
-A run waits for each task on a token. run_task answers it when the task
-succeeds, and on its own failure paths. The failure handler answers it whenever
-the wrapper fails, without guessing whether run_task already did. The
-reconciler answers it when it aborts a task whose wrapper is gone
-(sam/lambdas/coordination/tests). A token that is already closed is fine; any
-other error reaches the bell, because the run would stay RUNNING with nothing
-to show for it.
+A run of 1.2 waits for each task on a token. The 1.2 wrapper and its failure
+handler, which TR-8 removes, answer it. In 1.3 run_task answers no run: the
+dispatcher answers a run once every row is final (ADR #137 §1, §4). A token
+that is already closed is fine; any other error reaches the bell, because the
+run would stay RUNNING with nothing to show for it.
 """
 
 from pathlib import Path
@@ -24,11 +22,7 @@ ROW = {"execution_name": "load-2026-11-12--2026-11-12-abcdef12", "task_name": "l
 #: Every template state that answers a run's token, and where it goes once the run is answered.
 #: An answer that warns itself when it cannot get through to the run.
 ANSWERS = [("dependency_wrapper/sfn.tpl.json", "Auto_Skip_Send_Success", "Done"),
-           ("helpers/failure_handler/sfn.tpl.json", "Send_Task_Failure", "Failure_Complete"),
-           ("helpers/run_task/sfn.tpl.json", "Send_Pipeline_Success", "Done")]
-#: An answer the failure handler backs: run_task's failure path ends in Fail_State, and the
-#: wrapper's catch runs the failure handler, which answers again or warns.
-BACKED = [("helpers/run_task/sfn.tpl.json", "Send_Pipeline_Failure", "Fail_State")]
+           ("helpers/failure_handler/sfn.tpl.json", "Send_Task_Failure", "Failure_Complete")]
 
 
 def _walk(states):
@@ -51,20 +45,13 @@ def test_every_answer_to_a_run_has_a_role():
             if str(state.get("Resource", "")).endswith(("sendTaskSuccess", "sendTaskFailure")) and \
                     "orchestration_token" in str(state.get("Arguments", {}).get("TaskToken", "")):
                 found.add((template, name))
-    assert found == {(t, s) for t, s, _ in ANSWERS + BACKED}
+    assert found == {(t, s) for t, s, _ in ANSWERS}
 
 
-@pytest.mark.parametrize("template,state,done", ANSWERS + BACKED)
+@pytest.mark.parametrize("template,state,done", ANSWERS)
 def test_a_closed_token_is_never_retried(template, state, done):
     closed_retry = _states(template)[state]["Retry"][0]
     assert (sorted(closed_retry["ErrorEquals"]), closed_retry["MaxAttempts"]) == (CLOSED, 0)
-
-
-@pytest.mark.parametrize("template,state,done", BACKED)
-def test_a_backed_answer_ends_where_the_failure_handler_takes_over(template, state, done):
-    states = _states(template)
-    assert states[state]["Next"] == done and all(c["Next"] == done for c in states[state]["Catch"])
-    assert states[done]["Type"] == "Fail"
 
 
 def _states(template):

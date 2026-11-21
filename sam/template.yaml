@@ -2325,15 +2325,11 @@ Resources:
         tokens_table: !Ref PipelineTokensTable
         pipeline_registry_table: !Ref PipelineRegistryTable
         task_events_table: !Ref TaskEventsTable
-        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
         asset_events_table: !Ref AssetEventsTable
         notify_function_arn: !GetAtt NotifyFunction.Arn
         console_api_endpoint: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
-        pause_waiter_arn: !Ref PauseWaiterSfn
         asset_event_ttl_days: "365"
-        pause_heartbeat_seconds: "43200"
         same_account_role_arn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-default-task-role"
-        aws_region: !Ref AWS::Region
       DefinitionUri: sfn_templates/helpers/run_task/sfn.tpl.json
       Tags:
         polyris:namespace: !Ref Namespace

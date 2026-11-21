@@ -22,6 +22,8 @@ from .task_spec import canonical_json
 VARIABLES = "variables"
 SKIP_TASKS = "skip_tasks"
 CASCADE = "cascade"
+#: The run's partition key as 1.2 gave it to each task (``PARTITION_ARG``): its variables', its input's, or its date.
+PARTITION_ARG = "partition_arg"
 _CASCADES = frozenset(v for k, v in vars(BackfillCascade).items() if not k.startswith("_"))
 
 
@@ -30,6 +32,7 @@ class RunInput:
     variables: Mapping[str, Any] = field(default_factory=dict)
     skip_tasks: Tuple[str, ...] = ()
     cascade: str = BackfillCascade.AUTO
+    partition_arg: str = ""            # empty in an item written before it was kept: the run's date stands in
 
 
 def to_item(run_input: RunInput, *, pipeline_execution: str, ttl: int) -> Dict[str, Any]:
@@ -38,6 +41,7 @@ def to_item(run_input: RunInput, *, pipeline_execution: str, ttl: int) -> Dict[s
             VARIABLES: canonical_json(dict(run_input.variables)),
             SKIP_TASKS: canonical_json(list(run_input.skip_tasks)),
             CASCADE: run_input.cascade,
+            PARTITION_ARG: run_input.partition_arg,
             run_row.TTL: ttl}
 
 
@@ -52,7 +56,10 @@ def from_item(item: Mapping[str, Any]) -> RunInput:
     cascade = item.get(CASCADE)
     if cascade not in _CASCADES:
         raise ValueError(f"a run's cascade must be one of {sorted(_CASCADES)}, got {cascade!r}")
-    return RunInput(variables, tuple(skip_tasks), str(cascade))
+    partition_arg = item.get(PARTITION_ARG, "")
+    if not isinstance(partition_arg, str):
+        raise ValueError(f"a run's partition_arg must be text, got {type(partition_arg).__name__}")
+    return RunInput(variables, tuple(skip_tasks), str(cascade), partition_arg)
 
 
 def _json(item: Mapping[str, Any], name: str) -> Any:

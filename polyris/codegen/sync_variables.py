@@ -32,14 +32,15 @@ TEMPLATE_PATH = REPO_ROOT / "sam" / "sfn_templates" / "helpers" / "run_task" / "
 _OUTPUT_RE = re.compile(r'"(\{%[^"]*\$dateVars[^"]*%\})"')
 
 # Fixed JSONata scaffolding around the generated object. ``$cd`` / ``$dt`` are the
-# logical-date locals the registry expressions reference; the suffix merges the
-# computed vars with any user-supplied ``variables`` and preserves ``upstream``.
-_PREFIX = ("{% ( $cd := $states.input.current_date; "
+# logical-date locals the registry expressions reference, from run_task's input
+# (``run_task_input.Key``, read from the execution's context); the suffix merges the
+# computed vars with the run's own ``variables``, which win.
+_INPUT = "$states.context.Execution.Input"
+_PREFIX = ("{% ( $cd := " + _INPUT + ".date; "
            "$dt := $toMillis($cd & 'T00:00:00Z'); $dateVars := { ")
-_SUFFIX = (" }; $vars := $exists($states.input.variables) ? $states.input.variables : {}; "
+_SUFFIX = (" }; $vars := $exists(" + _INPUT + ".variables) ? " + _INPUT + ".variables : {}; "
            "$merged := $merge([$dateVars, $vars]); "
-           "$states.input ~> |$| {'variables': $merged, "
-           "'upstream': $exists($states.input.upstream) ? $states.input.upstream : {}} | ) %}")
+           "$states.input ~> |$| {'variables': $merged} | ) %}")
 
 
 def render_output() -> str:

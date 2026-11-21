@@ -66,6 +66,7 @@ class RunArg:
     SUPPRESS_ASSET_EVENT = "_suppress_asset_event"
     TRIGGERED_BY = "triggered_by"
     BACKFILL_ID = "backfill_id"
+    PARTITION_ARG = "PARTITION_ARG"                # the run's partition key, as 1.2 computed it for its tasks
 
 
 #: The errors on which the Start_Run state tries again (Principle #53): Lambda's own failures, its
@@ -197,7 +198,8 @@ def input_item(call: Call, *, now: datetime) -> Dict[str, Any]:
     """The run's input item: variables, skip list and cascade, with the execution that wrote it."""
     given = call.execution_input
     item = run_input.to_item(
-        run_input.RunInput(dict(given.get(RunArg.VARIABLES) or {}), skipped(call), records.cascade_of(given)),
+        run_input.RunInput(dict(given.get(RunArg.VARIABLES) or {}), skipped(call), records.cascade_of(given),
+                           str(given.get(RunArg.PARTITION_ARG) or call.date)),
         pipeline_execution=call.execution, ttl=retention.ttl(now, retention.HISTORY))
     # Named as the run row names its run, so the item enters no index (§3): not pipeline_execution, which is
     # the key of pipeline-execution-index (the review of TR-4).

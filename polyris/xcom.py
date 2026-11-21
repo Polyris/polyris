@@ -17,7 +17,7 @@ environment variables the runtime injects, so inside a task body you just call
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional, TYPE_CHECKING, TypeGuard
+from typing import Any, Dict, Optional, TYPE_CHECKING, TypeGuard
 
 if TYPE_CHECKING:
     from .task import TaskInstance
@@ -39,6 +39,18 @@ ENV_RUN_ID = "POLYRIS_WRAPPER_RUN_ID"        # SFN wrapper execution ARN — use
 # renaming it here requires the matching template edit in the same commit.
 _PUSH_MARKER_FIELD = "_pushed_by_task"
 
+# xcom.py imports nothing else of polyris: polyris-build-lambda copies it alone into a Lambda's package. The
+# values below are polyris.constants' (TaskStatus, FAILURE_STATUSES, SkipOrigin); a parity test pins them.
+#: An upstream that ended with one of these failed finally in this run (ADR #138 §2): run_task never reads its
+#: output, so a task that runs after it never sees an older run's output of the same date (ADR #137 §1).
+#: ``stopped`` is final too (ADR #138); ``aborted`` rows were written before 1.3.
+_FAILED_FINALLY = frozenset({"failed", "upstream_failed", "aborted", "stopped"})
+_SKIPPED = "skipped"
+#: The skips whose output a task reads: an operator's, or its run's (``skip_tasks``), which keep the output an
+#: earlier run of the date wrote. A skip by a trigger rule leaves no output in this run. run_task's template
+#: reads the same set (``Read_Upstream_Outputs``).
+_READABLE_SKIPS = frozenset({"manual", "run"})
+
 
 class XComError(RuntimeError):
     """Base class for all XCom errors."""
@@ -47,26 +59,29 @@ class XComError(RuntimeError):
 class XComMissingError(XComError):
     """Upstream task has no stored output (never ran, was skipped, or didn't return anything)."""
 
-    def __init__(self, task_name: str, pipeline: Optional[str] = None, date: Optional[str] = None):
+    def __init__(self, task_name: str, pipeline: Optional[str] = None, date: Optional[str] = None, *,
+                 reason: Optional[str] = None):
         self.task_name = task_name
         self.pipeline = pipeline
         self.date = date
         msg = f"no output stored for task '{task_name}'"
         if pipeline and date:
             msg += f" (pipeline '{pipeline}', date '{date}')"
-        msg += " — did the task run and return anything?"
+        msg += f" — {reason}" if reason else " — did the task run and return anything?"
         super().__init__(msg)
 
 
 class XComUpstreamFailedError(XComError):
-    """Upstream task did not succeed (skipped/failed/aborted). Caller opted for loud errors."""
+    """Upstream task failed finally in this run (failed, upstream_failed, stopped); it has no output to read.
+
+    ``status`` stays readable on the exception. Caller opted for loud errors."""
 
     def __init__(self, task_name: str, status: str):
         self.task_name = task_name
         self.status = status
         super().__init__(
-            f"upstream '{task_name}' did not succeed (status: {status}). "
-            f"Pass raise_on_failure=False to xcom.get() to read its output anyway."
+            f"upstream '{task_name}' did not succeed (status: {status}), so it has no output in this run. "
+            f"Pass raise_on_failure=False to xcom.get() to get None instead."
         )
 
 
@@ -208,6 +223,38 @@ class XComArg:
         return f"XComArg({self.task_id}.{self.key})"
 
 
+def _env_upstream(task_name: str) -> Optional[Dict[str, Any]]:
+    """The upstream's status and skip origin from ``POLYRIS_UPSTREAM_STATUSES``, which run_task gives a Glue, ECS
+    or Batch task (ADR #137 §9); None when the runtime gave none (a Lambda, an EMR step, an older runtime) or
+    the name is not a direct upstream."""
+    text = os.environ.get(ENV_UPSTREAM_STATUSES)
+    if not text:
+        return None
+    try:
+        statuses = json.loads(text)
+    except ValueError as exc:
+        raise XComError(f"{ENV_UPSTREAM_STATUSES} is not JSON: {exc}") from exc
+    if not isinstance(statuses, dict):
+        raise XComError(f"{ENV_UPSTREAM_STATUSES} must be a JSON object, got {type(statuses).__name__}")
+    entry = statuses.get(task_name)
+    return entry if isinstance(entry, dict) else None
+
+
+def _readable(task_name: str, status: Any, skip_origin: Any, *, raise_on_failure: bool,
+              raise_on_missing: bool) -> bool:
+    """Whether an upstream's output may be read in this run (ADR #137 §1); raises, or says no, for one that has
+    none: a final failure, or a skip by a trigger rule."""
+    if status in _FAILED_FINALLY:
+        if raise_on_failure:
+            raise XComUpstreamFailedError(task_name, str(status))
+        return False
+    if status == _SKIPPED and skip_origin not in _READABLE_SKIPS:
+        if raise_on_missing:
+            raise XComMissingError(task_name, reason="its trigger rule skipped it in this run")
+        return False
+    return True
+
+
 def _resolve(value: Optional[str], context: dict, keys: tuple, env: str, what: str) -> str:
     """Resolve a context field: explicit arg > task input (context) > env var."""
     if value is None:
@@ -307,6 +354,11 @@ def pull(
         XComManuallyResolvedError: the stored row is a Console-written manual-
             resolution marker (subject to ``raise_on_manual``).
     """
+    known = _env_upstream(task_name)
+    if known is not None:
+        # Never an older run's output of the same date for an upstream that has none in this run (ADR #137 §1).
+        _readable(task_name, known.get("status"), known.get("skip_origin"), raise_on_failure=True,
+                  raise_on_missing=True)
     ctx = context or {}
     pipeline = _resolve(pipeline, ctx, ("pipeline_name", "pipeline"), ENV_PIPELINE, "pipeline name")
     date = _resolve(date, ctx, ("date", "current_date"), ENV_DATE, "run date")
@@ -458,28 +510,28 @@ def get(
             status = entry.get("status", "unknown")
             output = entry.get("output")
 
-            # Missing dep: Get_Dep_Output writes {"output": {}, "status": "unknown"}
-            # when the upstream DDB row is absent (dep didn't run, was skipped, etc.).
-            # Only checks status here — an empty {} with status="success" is a valid
-            # user-returned value and must NOT be treated as missing.
+            # Missing dep: a 1.2 run_task wrote {"output": {}, "status": "unknown"} when the
+            # upstream DDB row was absent. Only checks status here — an empty {} with
+            # status="success" is a valid user-returned value and must NOT be treated as missing.
             if status == "unknown":
                 if raise_on_missing:
                     raise XComMissingError(task_name)
                 return None
 
-            # Manual-resolution marker check runs BEFORE the status check.
-            # A human's Mark success / Skip / Fail / Stop is the story either
-            # way — reporting "status: skip" for a manual skip is less useful
-            # than "manually resolved (skip) by <operator>". Marker-first lets
-            # the caller catch a single, more informative error type.
+            # A final failure, or a skip by a trigger rule, has no output in this run: run_task
+            # passes its status alone (ADR #137 §1).
+            if not _readable(task_name, status, entry.get("skip_origin"), raise_on_failure=raise_on_failure,
+                             raise_on_missing=raise_on_missing):
+                return None
+
+            # An output run_task did not inline, past its share of the state's budget: the table has it.
+            if "output" not in entry:
+                return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing, raise_on_manual)
+
+            # A human's Mark success / Skip is the story either way — reporting "status: skipped"
+            # for a manual skip is less useful than "manually resolved (skip) by <operator>".
             if raise_on_manual and _is_manual_marker(output):
                 _raise_manual(task_name, output)
-
-            # Non-success upstream (all_done trigger path)
-            if status != "success":
-                if raise_on_failure:
-                    raise XComUpstreamFailedError(task_name, status)
-                # else: fall through and return whatever output was recorded
 
             # Truncated in inject path — try DDB, which may hold the full value
             # (runtime injection cap is ~25KB per dep; DDB result field allows ~350KB)
@@ -499,7 +551,12 @@ def get(
 
             return output
 
-    # 2. Fallback: read from DDB (Glue/ECS/Batch/EMR, or undeclared Lambda dep)
+    # 2. Fallback: read from DDB (Glue/ECS/Batch/EMR, or undeclared Lambda dep). A Glue, ECS or Batch
+    #    task knows its upstreams' statuses from POLYRIS_UPSTREAM_STATUSES (ADR #137 §9).
+    known = _env_upstream(task_name)
+    if known is not None and not _readable(task_name, known.get("status"), known.get("skip_origin"),
+                                           raise_on_failure=raise_on_failure, raise_on_missing=raise_on_missing):
+        return None
     return _get_from_ddb(task_name, event, ddb_client, s3_client, raise_on_missing, raise_on_manual)
 
 

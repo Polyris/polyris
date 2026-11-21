@@ -216,6 +216,40 @@ def test_a_spec_in_bytes_as_written():
         f"of a task's input"]
 
 
+def test_a_wide_fan_in_against_the_input_of_run_task():
+    """D118: one status per upstream reaches the task's run_task, which Step Functions caps at 256 KB."""
+    deps = [f"upstream_{i:04d}_" + "x" * 100 for i in range(1999)]
+    [error] = limits.spec_errors(_version([_spec("report", dependencies=deps)]))
+    assert error.startswith("Task 'report': its run_task input takes ")
+    assert error.endswith(f"bytes with the statuses of its 1999 upstreams, over the limit of "
+                          f"{run_task_input.PAYLOAD_LIMIT:,} bytes of a task's input; split the fan-in")
+    assert limits.spec_errors(_version([_spec("report", dependencies=deps[:500])])) == []
+
+
+def test_the_worst_status_of_an_upstream_takes_the_most_bytes():
+    from polyris.constants import SkipOrigin, TaskStatus
+    worst = run_task_input.upstream_statuses_env(limits.worst_upstreams(["u"]))
+    final = [(s.value, None) for s in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.UPSTREAM_FAILED,
+                                       TaskStatus.STOPPED)]
+    skips = [(TaskStatus.SKIPPED.value, o) for o in (SkipOrigin.MANUAL, SkipOrigin.RUN, SkipOrigin.RULE)]
+    for outcome in final + skips:                    # only a skip carries an origin (ADR #138 §3)
+        assert len(run_task_input.upstream_statuses_env({"u": outcome})) <= len(worst)
+
+
+def test_an_ecs_tasks_overrides_with_the_environment_run_task_adds():
+    """D118: run_task adds the platform's environment, the upstreams' statuses included, to each container
+    override; ECS caps the overrides at 8,192 characters."""
+    deps = [f"u{i:03d}" for i in range(200)]
+    overrides = {"ContainerOverrides": [{"Name": "app", "Environment": [{"Name": "MODE", "Value": "full"}]}]}
+    ecs = _spec("load", task_type="ecs", dependencies=deps, task_config={"overrides": overrides})
+    [error] = limits.spec_errors(_version([ecs]))
+    assert error.startswith("Task 'load': its container overrides take ")
+    assert error.endswith("characters with the environment run_task adds, the statuses of its 200 upstreams "
+                          "included, over ECS's 8,192")
+    assert limits.spec_errors(_version([{**ecs, "dependencies": deps[:20]}])) == []
+    assert limits.spec_errors(_version([{**ecs, "task_config": {}}])) == []         # no override, no environment
+
+
 def test_the_specs_together_in_bytes_which_start_run_reads_at_once(monkeypatch):
     """D117: a pass keeps no spec text, but Start_Run reads the whole version."""
     monkeypatch.setattr(task_spec, "MAX_VERSION_BYTES", 400)

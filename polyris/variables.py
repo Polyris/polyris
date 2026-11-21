@@ -13,7 +13,8 @@ To add a variable: add one entry below, then run ``make generate-variables``. CI
 Expressions run inside the JSONata scaffolding emitted by the codegen, where two
 locals are bound from the run's logical date:
 
-* ``$cd`` — ``$states.input.current_date`` (the logical run date, ``YYYY-MM-DD``)
+* ``$cd`` — the run's date, ``YYYY-MM-DD`` (``date`` of run_task's input, read from
+  ``$states.context.Execution.Input``, whose keys are ``run_task_input.Key``)
 * ``$dt`` — ``$toMillis($cd & 'T00:00:00Z')`` (that date as epoch millis)
 """
 from typing import Dict, TypedDict
@@ -30,8 +31,8 @@ class VariableSpec(TypedDict):
 VARIABLES: Dict[str, VariableSpec] = {
     "current_date":          {"expr": "$cd",
                               "description": "YYYY-MM-DD (logical run date)"},
-    "PARTITION_ARG":         {"expr": "$exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : $cd",
-                              "description": "Alias for Hive partitioning; defaults to current_date"},
+    "PARTITION_ARG":         {"expr": "$states.context.Execution.Input.partition_arg",
+                              "description": "Alias for Hive partitioning: the run's PARTITION_ARG, or current_date"},
     "date_iso":              {"expr": "$cd",
                               "description": "YYYY-MM-DD (same as current_date)"},
     "date_compact":          {"expr": "$replace($cd, '-', '')",
@@ -62,12 +63,13 @@ VARIABLES: Dict[str, VariableSpec] = {
                               "description": "YYYYMMDD of minus_7_days"},
     "minus_30_days_compact": {"expr": f"$replace($fromMillis($dt - 2592000000, {_DATE_FMT}), '-', '')",
                               "description": "YYYYMMDD of minus_30_days"},
-    "partition_key":         {"expr": "$exists($states.input.partition_key) ? $states.input.partition_key : $cd",
-                              "description": "Explicit partition key; defaults to current_date"},
-    "backfill_id":           {"expr": "$exists($states.input.backfill_id) ? $states.input.backfill_id : ''",
+    "partition_key":         {"expr": "$cd",
+                              "description": "The run's partition key: the same as current_date"},
+    "backfill_id":           {"expr": "$exists($states.context.Execution.Input.backfill_id) ? "
+                                      "$states.context.Execution.Input.backfill_id : ''",
                               "description": "Backfill run id, or empty string"},
-    "is_backfill":           {"expr": "$exists($states.input.is_backfill) ? $states.input.is_backfill : false",
-                              "description": "Whether this run is a backfill"},
+    "is_backfill":           {"expr": "false",
+                              "description": "Legacy flag, false unless the run's own variables set it"},
     "ALLOW_UNSUCCESSFUL_SPIDER_RUN": {"expr": "'True'",
                               "description": "Legacy flag, always 'True'"},
 }

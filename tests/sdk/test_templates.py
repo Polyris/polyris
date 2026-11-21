@@ -333,19 +333,6 @@ def test_run_task_all_task_states_have_catch():
     assert not missing_catch, f"Task states without Catch: {missing_catch}"
 
 
-def test_run_task_callback_states_have_retry():
-    """Send_Pipeline_Success/Failure have Retry."""
-    template_path = os.path.join(
-        REPO_ROOT, 'sam', 'sfn_templates', 'helpers', 'run_task', 'sfn.tpl.json'
-    )
-    data = load_template(template_path)
-
-    for name in ['Send_Pipeline_Success', 'Send_Pipeline_Failure']:
-        assert name in data['States'], f"Missing state: {name}"
-        state = data['States'][name]
-        assert 'Retry' in state, f"{name} missing Retry"
-
-
 # ============================================================
 # Default task-role policy — Athena/Glue permissions parity
 # ============================================================
@@ -446,7 +433,6 @@ if __name__ == '__main__':
         test_route_table_handlers_callable,
         # run_task resilience
         test_run_task_all_task_states_have_catch,
-        test_run_task_callback_states_have_retry,
         # default task policy — Athena/Glue parity
         test_default_task_policy_grants_glue_catalog_access_for_athena_etl,
         # api.js

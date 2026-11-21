@@ -376,7 +376,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
-| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. Unset, the work has no limit |
+| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work. Unset, the work has no limit |
 | `orchestration_timeout` | timedelta | none | A cap on all of the task's waiting, until it is ready. It never falls back to `execution_timeout`. Unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
@@ -416,6 +416,8 @@ def my_task():
 | Tasks per pipeline | 2,000 | The declared maximum the platform is tested at |
 | Outlets per task | 98 | A task's success is recorded in one DynamoDB transaction of at most 100 items |
 | A task's spec | 256 KB | A task starts with its spec as its input, which Step Functions caps at 256 KB |
+| A task's spec with its upstreams' statuses | 256 KB | The input also carries each upstream's status, about 50 bytes and its name per upstream, so a wide fan-in counts |
+| An ECS task's container overrides | 8,192 characters | ECS's limit, measured with the environment the platform adds to each container override, the upstreams' statuses included |
 | The specs together | 16 MB | A run's first step reads every spec of the pipeline at once |
 | `task_id` | 128 bytes, and no leading `_` | Operator requests name a task in full; `_` starts the platform's own rows |
 | The definition | 1 MB | Step Functions' limit, measured as `polyris-deploy` sends it |
@@ -459,6 +461,7 @@ A trigger rule decides when a task runs, from the outcomes of its **declared dir
 - **Final outcomes.** An upstream is final once it succeeded, was skipped, ended `upstream_failed`, failed finally or was stopped. A task that exhausts its retries waits for a human decision first (ADR #114): retry, mark successful, skip or fail. Until that decision, or the decision timeout (5 hours by default), it is pending for every rule, so `one_failed` runs after the decision, not at the first error. The console bell shows the failure at once.
 - **Final failures** are `failed`, `upstream_failed` and `stopped`. A Stop is final: the stopped task's dependants are decided as after a Fail. Until a dependant is decided, a Restart or Mark Successful of the stopped task still counts for it.
 - **When a rule decides.** A rule runs its task as soon as its condition holds: `one_success` at the first success, `one_failed` at the first final failure, every other rule once all its upstreams are final. It skips the task, or ends it `upstream_failed`, only once every upstream is final.
+- **What the task then reads.** A rule reads statuses; the task it runs reads outputs. It gets an upstream's output only when that upstream succeeded or an operator or the run skipped it, and otherwise its status alone, so it never reads an older run's output of the same date. Through `xcom`, the output of an upstream that failed finally raises `XComUpstreamFailedError` ([DATA_PASSING.md](DATA_PASSING.md#reading-upstream-xcomget)).
 - **`skipped` or `upstream_failed`.** A rule that needs success or no failure (`all_success`, `one_success`, `none_failed`, `none_failed_min_one_success`) ends its task `upstream_failed` when a final failure blocks it. Any other rule that can no longer be met ends its task `skipped`: the condition never occurred, which is not an error (ADR #115).
 
 ### Skips and who made them

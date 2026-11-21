@@ -85,21 +85,6 @@ PROBES: Tuple[Probe, ...] = (
                         '    tail = f"-{_clean(date)}-{kind}-{_digest(pipeline, date, kind, discriminator, length=8)}"',
                         '    tail = f"-{_clean(date)}-asset-and"'),),
           f"{SCENARIOS}::test_two_push_consumers_with_the_same_task_id_on_one_day_both_run"),
-    # Three guards: notify_dependents swallows a failed query, run_task does not wait for its
-    # result, and run_task's catch only warns. The probe couples the producer to all three again.
-    Probe("B-F1", (
-        Edit("sam/sfn_templates/helpers/notify_dependents/sfn.tpl.json",
-             '            "States.ALL"\n          ],\n          "Comment": "Hints lost; the sweeper re-checks the waiting tasks.",',
-             '            "Probe.NeverMatches"\n          ],\n          "Comment": "Hints lost; the sweeper re-checks the waiting tasks.",'),
-        Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
-             '            "Comment": "Notify waiting tasks via SFN helper (sync - ensure delivery)",\n'
-             '            "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",',
-             '            "Comment": "Notify waiting tasks via SFN helper (sync - ensure delivery)",\n'
-             '            "Resource": "arn:aws:states:::states:startExecution.sync:2",'),
-        Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
-             '                    "Output": "{% $states.input %}",\n                    "Next": "Warn_Notify_Dependents_Failed"',
-             '                    "Output": "{% $states.input %}",\n                    "Next": "Notify_Dependents_Failed"'),
-    ), f"{SCENARIOS}::test_a_failed_fan_out_does_not_fail_the_producer"),
     Probe("B-M1", (Edit(TASKS_ROUTE, "    partition_key = item.get('date')\n",
                         "    partition_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')\n"),),
           f"{SCENARIOS}::test_mark_success_writes_the_fact_for_the_marked_runs_partition"),
@@ -224,11 +209,10 @@ PROBES: Tuple[Probe, ...] = (
                         '        "Error": "Superseded",'),),
           f"{SCENARIOS}::test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided"),
     # run_task's running write without the generation fence takes the row back from an operator's decision.
+    # A run_task whose generation an operator raised claims the row of the newer generation (Rule 47).
     Probe("B-O4", (Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
-                        '"ConditionExpression": "(attribute_not_exists(attempt) OR attempt <= :expectedAttempt) AND '
-                        '(generation = :g OR attribute_not_exists(generation))",',
-                        '"ConditionExpression": "(attribute_not_exists(attempt) OR attempt <= :expectedAttempt) AND '
-                        '(generation = :g OR attribute_exists(execution_name))",'),),
+                        '"ConditionExpression": "#s = :deps_ready AND #g = :g",',
+                        '"ConditionExpression": "#s = :deps_ready AND (#g = :g OR attribute_exists(execution_name))",'),),
           f"{SCENARIOS}::test_run_task_never_starts_a_task_an_operator_decided_after_its_wait"),
     # The pause wait's heartbeat retry saved its token over an operator's decision, unconditionally.
     Probe("B-O5", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
@@ -274,8 +258,9 @@ PROBES: Tuple[Probe, ...] = (
                          "        executions_repo.put(warning_item(\n            kind='coordination', execution_name=execution_name,",
                          "        (lambda _row: None)(warning_item(\n            kind='coordination', execution_name=execution_name,"),),
           f"{SCENARIOS}::test_a_console_action_whose_run_cannot_be_told_says_so"),
+    # A success recorded without its facts: no consumer would ever see the partition (invariant 12).
     Probe("B-F3", (Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
-                        '"Next": "Warn_Facts_Not_Recorded"', '"Next": "Notify_Dependents_Failed"'),),
+                        "{'TransactItems': $append([$row, $output], $facts)}", "{'TransactItems': [$row, $output]}"),),
           f"{SCENARIOS}::test_a_fact_that_cannot_be_recorded_reaches_the_bell"),
     Probe("B-U4", (Edit("sam/lambdas/coordination/asset_fanout.py",
                         "known_facts=[evidence], recorded_by=evidence.event_time)", "known_facts=[evidence])"),),

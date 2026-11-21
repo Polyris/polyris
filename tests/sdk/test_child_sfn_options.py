@@ -43,66 +43,12 @@ def run_task_template() -> dict:
 # ───────────────────────────────────────────────────────────────────────────
 
 
-def test_skip_tasks_check_state_exists(run_task_template):
-    """run_task must check skip_tasks list before doing any real work.
-
-    Without this, options.tasks (subset backfill) would be silently
-    ignored — child execution would run every task regardless of subset.
-    """
-    states = run_task_template["States"]
-    assert "Check_Should_Skip_Task" in states, (
-        "Missing Check_Should_Skip_Task — task_subset backfill is broken."
-    )
-    assert "Task_Skipped" in states, "Missing Task_Skipped Pass state."
-
-
-def test_skip_tasks_is_start_state(run_task_template):
-    """Check_Should_Skip_Task must be the first state so we don't
-    waste DDB writes / SFN transitions on tasks that should be skipped."""
-    assert run_task_template["StartAt"] == "Check_Should_Skip_Task", (
-        f"Wrong StartAt; should skip first: got {run_task_template['StartAt']!r}"
-    )
-
-
-def test_skip_tasks_choice_reads_correct_field(run_task_template):
-    """The Choice must read input.skip_tasks (array) and check membership
-    with input.task_name (string) using the JSONata `in` operator.
-
-    v0.80.1 (ADR #85): previously used $contains(skip_tasks, task_name),
-    but $contains is a string function — passing the skip_tasks array threw
-    States.QueryEvaluationError on any non-empty list. Array membership must
-    use `in`, matching the dependency_wrapper template.
-    """
-    state = run_task_template["States"]["Check_Should_Skip_Task"]
-    condition = state["Choices"][0]["Condition"]
-    assert "skip_tasks" in condition
-    assert "task_name" in condition
-    assert "in $states.input.skip_tasks" in condition, (
-        f"Choice must use the `in` operator for array membership: {condition}"
-    )
-    assert "$contains" not in condition, (
-        f"$contains is a string function — must not wrap the skip_tasks "
-        f"array (use `in`): {condition}"
-    )
-
-
-def test_skip_tasks_safe_default(run_task_template):
-    """If skip_tasks is missing/empty, default branch routes to existing
-    flow. This is the backwards-compatibility guarantee — scheduled
-    runs without backfill input behave identically as before."""
-    state = run_task_template["States"]["Check_Should_Skip_Task"]
-    assert state["Default"] == "Check_Execution_Paused", (
-        "Default must route to existing Check_Execution_Paused flow."
-    )
-
-
-def test_task_skipped_emits_skipped_status(run_task_template):
-    """Task_Skipped Pass state must emit status='skipped' so downstream
-    tasks with trigger_rule 'all_done' proceed correctly. Without this,
-    skipped tasks would block the rest of the DAG."""
-    state = run_task_template["States"]["Task_Skipped"]
-    assert state["Type"] == "Pass"
-    assert "'skipped'" in state["Output"]
+def test_a_task_in_skip_tasks_never_reaches_run_task(run_task_template):
+    """1.3 (ADR #137 §3): Start_Run writes a task named in the run's skip_tasks as skipped, with
+    skip_origin = run, so no run_task starts for it and run_task checks no skip list
+    (test_coordination_start_run.py covers the write)."""
+    assert "skip_tasks" not in json.dumps(run_task_template)
+    assert run_task_template["StartAt"] == "Claim"
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -122,10 +68,11 @@ def test_task_skipped_emits_skipped_status(run_task_template):
 
 def test_cascade_all_is_recorded_on_the_fact(run_task_template):
     """cascade='all' reaches the push consumers through the fact itself: AssetFanout
-    starts them regardless of their schedule (ADR #130 §6.1). The mapping is
-    evaluated in test_run_task_facts.py; here, that run_task reads the flag."""
-    emit = run_task_template["States"]["Emit_Asset_Events"]
-    assert "cascade_all" in emit["Items"] and "'all'" in emit["Items"]
+    starts them regardless of their schedule (ADR #130 §6.1). Start_Run keeps the run's
+    cascade (records.cascade_of) and the dispatcher passes it on; here, that the facts of
+    the success transaction carry it (test_run_task_facts.py evaluates them)."""
+    record = run_task_template["States"]["Record_Success"]["Arguments"]
+    assert "'cascade': {'S': $states.context.Execution.Input.cascade}" in record
 
 
 # ───────────────────────────────────────────────────────────────────────────

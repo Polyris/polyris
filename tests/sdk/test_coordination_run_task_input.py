@@ -22,7 +22,7 @@ def spec(fields):
 def build(**overrides):
     arguments = dict(execution_name="load-2026-11-18-abcd1234", generation=3, task_name="load",
                      pipeline_name="orders", pipeline_execution="orders-run-2026-11-18-abcd1234",
-                     date="2026-11-18", triggered_by="schedule", backfill_id=None, spec=spec(LOAD),
+                     date="2026-11-18", partition_arg="2026-11-18", backfill_id=None, spec=spec(LOAD),
                      variables={"region": "eu"}, cascade="auto",
                      upstreams={"extract": ("failed", None), "audit": ("skipped", "manual")})
     arguments.update(overrides)
@@ -31,7 +31,7 @@ def build(**overrides):
 
 def test_the_input_is_the_canonical_text_that_was_measured_and_a_decimal_generation_is_a_number():
     text = rti.build(execution_name="load-x", generation=Decimal(3), task_name="load", pipeline_name="orders",
-                     pipeline_execution="orders-run-x", date="2026-11-18", triggered_by="schedule",
+                     pipeline_execution="orders-run-x", date="2026-11-18", partition_arg="",
                      backfill_id=None, spec=spec(LOAD), variables={"name": "Kyiv – Київ"}, cascade="auto",
                      upstreams={"extract": ("failed", None), "audit": ("skipped", "manual")})
     assert json.loads(text)["generation"] == 3
@@ -57,6 +57,13 @@ def test_the_lifetimes_come_from_retention_so_the_template_keeps_no_copy():
     assert payload["output_ttl_seconds"] == retention.OUTPUT.total_seconds()
     assert payload["input_ttl_seconds"] == retention.INPUT.total_seconds()
     assert payload["history_ttl_seconds"] == retention.HISTORY.total_seconds()
+    assert payload["timeline_ttl_seconds"] == retention.TIMELINE.total_seconds()
+
+
+def test_the_partition_arg_of_a_run_that_has_none_is_its_date():
+    """1.2 gave each task PARTITION_ARG: the run's own, or its date (generators.JSONATA_PARTITION)."""
+    assert build(partition_arg="")["partition_arg"] == "2026-11-18"
+    assert build(partition_arg="2026-W47")["partition_arg"] == "2026-W47"
 
 
 def test_optional_fields_appear_only_when_there_is_something_to_say():

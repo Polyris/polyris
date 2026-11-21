@@ -37,8 +37,16 @@ def test_the_cascade_is_the_one_records_derives_from_the_starters_flags():
     ({"skip_tasks": '"audit"'}, "JSON list of task names"),
     ({"skip_tasks": "[1]"}, "JSON list of task names"),
     ({"cascade": "sometimes"}, "cascade must be one of"),
+    ({"partition_arg": 20261118}, "partition_arg must be text"),
 ])
 def test_an_item_of_another_shape_is_refused(change, problem):
     item = {**run_input.to_item(run_input.RunInput(), pipeline_execution=RUN, ttl=1), **change}
     with pytest.raises(ValueError, match=problem):
         run_input.from_item(item)
+
+
+def test_an_item_written_before_the_partition_arg_was_kept_reads_as_none():
+    """The run's date stands in for it then (run_task_input.build)."""
+    item = run_input.to_item(run_input.RunInput(), pipeline_execution=RUN, ttl=1)
+    del item[run_input.PARTITION_ARG]
+    assert run_input.from_item(item).partition_arg == ""

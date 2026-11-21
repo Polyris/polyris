@@ -1,18 +1,20 @@
-"""run_task records asset facts as polyris.coordination.records shapes them (ADR #130 §1, §6).
+"""run_task records asset facts as polyris.coordination.records shapes them (ADR #130 §1, §6; ADR #137 §1).
 
-Two writers produce facts — run_task's JSONata and the console's
-write_fact — and one reader evaluates them. These tests evaluate run_task's
-expressions and compare them with the Python the console and the reader use.
+Two writers produce facts — run_task's success transaction, in JSONata, and the
+console's write_fact — and one reader evaluates them. These tests evaluate
+run_task's transaction and compare its facts with the Python the console and the
+reader use.
 """
 
 from datetime import date, timedelta
 
 import pytest
-from sfn_jsonata import NOW, evaluate, find_state, load_template, plain
+from sfn_jsonata import NOW, evaluate, load_template, plain
 
-from polyris.coordination.records import asset_fact_item, warning_item
+from polyris.coordination.records import asset_fact_item
 
 TTL_DAYS = 365
+CASCADES = ("auto", "all", "none")
 
 
 @pytest.fixture(scope="module")
@@ -32,11 +34,22 @@ def _partition_keys():
     return keys
 
 
-def _record(states, key, *, granularity="", cascade="auto"):
-    record = find_state(states, "Record_Asset_Event")["Arguments"]["Item"]
-    run = {"date": key, "task_name": "build", "pipeline_name": "producer"}
-    item = {"name": "ns/orders", "uri": "s3://bucket/orders", "granularity": granularity, "cascade": cascade}
-    return plain(evaluate(record, input=item, context={"Execution": {"Input": run}}))
+def _transaction(states, key="2026-11-12", *, outlets=None, cascade="auto"):
+    run = {"execution_name": f"build-{key}-producer-run-x", "generation": 2, "task_name": "build",
+           "pipeline_name": "producer", "date": key, "cascade": cascade,
+           "outlets": outlets if outlets is not None else [{"name": "ns/orders", "uri": "s3://bucket/orders"}],
+           "output_ttl_seconds": 31536000, "history_ttl_seconds": 39312000}
+    arguments = states["Record_Success"]["Arguments"]
+    return evaluate(arguments, input={"task_output": "{}", "_task_pushed": False},
+                    context={"Execution": {"Input": run, "Id": "arn:run-task", "Name": "run-task"}})["TransactItems"]
+
+
+def _record(states, key, *, granularity=None, cascade="auto"):
+    outlet = {"name": "ns/orders", "uri": "s3://bucket/orders"}
+    if granularity is not None:
+        outlet["granularity"] = granularity
+    _, _, fact = _transaction(states, key, outlets=[outlet], cascade=cascade)
+    return plain(fact["Put"]["Item"])
 
 
 @pytest.mark.parametrize("key", _partition_keys())
@@ -53,112 +66,51 @@ def test_a_fact_has_the_shape_of_asset_fact_item(states, key):
 ])
 def test_without_a_declared_granularity_the_key_format_decides(states, key, granularity):
     assert _record(states, key)["granularity"] == granularity
+    assert _record(states, key, granularity="")["granularity"] == granularity
 
 
 def test_the_declared_granularity_wins(states):
     assert _record(states, "2026-11-10", granularity="weekly")["granularity"] == "weekly"
 
 
-@pytest.mark.parametrize("flags,cascade", [
-    ({}, "auto"), ({"cascade_all": True}, "all"), ({"_suppress_asset_event": True}, "none"),
-    ({"_suppress_asset_event": True, "cascade_all": True}, "none"),
-])
-def test_cascade_follows_the_run(states, flags, cascade):
-    emit = find_state(states, "Emit_Asset_Events")
-    outlets = [{"name": "ns/a", "uri": "s3://a", "granularity": "weekly"}, {"name": "ns/b"}]
-    items = evaluate(emit["Items"], input={"outlets": outlets, **flags})
-    assert items == [{"name": "ns/a", "uri": "s3://a", "granularity": "weekly", "cascade": cascade},
-                     {"name": "ns/b", "uri": "", "granularity": "", "cascade": cascade}]
+@pytest.mark.parametrize("cascade", CASCADES)
+def test_the_facts_carry_the_cascade_of_their_run(states, cascade):
+    """Start_Run keeps the run's cascade (records.cascade_of, as Mark Successful computes it, ADR #57) and the
+    dispatcher passes it to run_task: one cascade per run, whoever records its facts."""
+    facts = _transaction(states, outlets=[{"name": "ns/a"}, {"name": "ns/b"}], cascade=cascade)[2:]
+    assert [plain(f["Put"]["Item"])["cascade"] for f in facts] == [cascade, cascade]
 
 
 def test_a_suppressed_run_still_records_its_facts(states):
     """cascade='none' (ADR #57) suppresses push consumers only: pull consumers of the partition see the fact.
     run_task records it with cascade 'none'; AssetFanout starts nothing for it."""
-    [rule] = states["Check_Has_Outlets"]["Choices"]
-    outlets = [{"name": "ns/a"}]
-    assert evaluate(rule["Condition"], input={"outlets": outlets, "_suppress_asset_event": True}) is True
-    assert rule["Next"] == "Emit_Asset_Events"
+    assert len(_transaction(states, cascade="none")) == 3
 
 
-def test_run_task_starts_no_consumer_itself(states):
-    """Push consumers start from the fact, in AssetFanout: none can fail the producer (B-F1)."""
-    processor = states["Emit_Asset_Events"]["ItemProcessor"]["States"]
-    assert set(processor) == {"Record_Asset_Event"}
-    assert processor["Record_Asset_Event"].get("End") is True
-
-
-def test_waiting_tasks_are_woken_by_the_stream_not_by_run_task(states):
+def test_run_task_starts_no_consumer_and_wakes_no_dependant_itself(states):
+    """Push consumers start from the fact, in AssetFanout, and waiting tasks wake through the streams: none
+    can fail the producer (B-F1, ADR #137 §7)."""
+    calls = {s.get("Resource", "") for s in states.values()}
+    assert not [r for r in calls if "startSyncExecution" in r or r.startswith("arn:aws:states:::states:")
+                and not r.endswith(".sync:2")]
     lambdas = [s["Arguments"].get("FunctionName", "") for s in states.values()
                if s.get("Resource") == "arn:aws:states:::lambda:invoke"]
-    assert not any("notify_asset_subscribers" in f for f in lambdas)
-    assert states["Emit_Asset_Events"]["Next"] == "Check_Orchestration_Token_Success"
+    assert not any("notify_asset_subscribers" in f or "query_subscriptions" in f for f in lambdas)
 
 
-def test_a_failed_notify_dependents_never_fails_the_producer(states):
-    """ADR #130 §6.2 (B-F1): the warning reaches the bell, the producer finishes."""
-    [catch] = states["Notify_Dependents"]["Catch"]
-    assert catch["Next"] == "Warn_Notify_Dependents_Failed"
-    warn = states["Warn_Notify_Dependents_Failed"]
-    assert warn["Next"] == "Check_Has_Outlets"
-    assert all(c["Next"] == "Check_Has_Outlets" for c in warn["Catch"])
-
-
-def test_the_notify_warning_has_the_shape_of_warning_item(states):
-    row = {"execution_name": "build-2026-11-12--2026-11-12-abcdef12", "task_name": "build",
-           "pipeline_name": "producer", "pipeline_execution": "producer-run-2026-11-12-abcdef12",
-           "date": "2026-11-12"}
-    error = {"Error": "StepFunctions.ExecutionLimitExceeded", "Cause": "too many"}
-    written = plain(evaluate(states["Warn_Notify_Dependents_Failed"]["Arguments"]["Item"],
-                             input=row, variables={"notify_error": error}))
-    expected = warning_item(kind="notify", execution_name=row["execution_name"], task_name="build",
-                            pipeline_name="producer", pipeline_execution=row["pipeline_execution"],
-                            task_date="2026-11-12", error=written["error"], now=NOW)
-    assert written == expected
-    assert "StepFunctions.ExecutionLimitExceeded" in written["error"]
-
-
-def test_facts_that_cannot_be_recorded_reach_the_bell(states):
-    """The work is done, so the row stays success; the facts are not, so no consumer
-    will start, and the bell says which and why (external review, 1.2.0)."""
-    [catch] = states["Emit_Asset_Events"]["Catch"]
-    assert catch["Next"] == "Warn_Facts_Not_Recorded"
-    warn = states["Warn_Facts_Not_Recorded"]
-    assert warn["Next"] == "Notify_Dependents_Failed"
-    assert all(c["Next"] == "Notify_Dependents_Failed" for c in warn["Catch"])
-
-
-@pytest.mark.parametrize("names", [["ns/orders"], ["ns/orders", "ns/customers"]])
-def test_the_fact_warning_has_the_shape_of_warning_item(states, names):
-    row = {"execution_name": "build-2026-11-12--2026-11-12-abcdef12", "task_name": "build",
-           "pipeline_name": "producer", "pipeline_execution": "producer-run-2026-11-12-abcdef12",
-           "date": "2026-11-12", "outlets": [{"name": n, "uri": f"s3://bucket/{n}"} for n in names],
-           "error": {"Error": "EmitAssetEventsFailed",
-                     "Cause": '{"Error":"DynamoDB.AmazonDynamoDBException","Cause":"not authorized"}'}}
-    written = plain(evaluate(states["Warn_Facts_Not_Recorded"]["Arguments"]["Item"], input=row))
-    expected = warning_item(kind="fact", execution_name=row["execution_name"], task_name="build",
-                            pipeline_name="producer", pipeline_execution=row["pipeline_execution"],
-                            task_date="2026-11-12", error=written["error"], now=NOW)
-    assert written == expected
-    assert f"could not record all of its asset facts ({', '.join(names)})" in written["error"]
-    assert "not authorized" in written["error"] and "restart the task" in written["error"]
-
-
-@pytest.mark.parametrize("flags", [{}, {"_suppress_asset_event": True}, {"cascade_all": True},
-                                   {"_suppress_asset_event": True, "cascade_all": True},
-                                   {"_suppress_asset_event": False, "cascade_all": False}])
-def test_run_task_and_the_console_give_a_run_s_facts_one_cascade(states, flags):
-    """Mark Successful uses records.cascade_of; run_task computes the same in JSONata (ADR #57)."""
-    from polyris.coordination.records import cascade_of
-    items = evaluate(states["Emit_Asset_Events"]["Items"], input={"outlets": [{"name": "ns/orders"}], **flags})
-    [item] = items if isinstance(items, list) else [items]
-    assert item["cascade"] == cascade_of(flags)
+def test_a_success_never_lacks_its_facts(states):
+    """The facts are in the success's own transaction (invariant 12): if it cannot be written, the row waits
+    for a decision with the cause instead of succeeding without them."""
+    record = states["Record_Success"]
+    catches = {e: c["Next"] for c in record["Catch"] for e in c["ErrorEquals"]}
+    assert catches["States.ALL"] == catches["States.DataLimitExceeded"] == "Success_Not_Recorded"
+    assert "Emit_Asset_Events" not in states and "Warn_Facts_Not_Recorded" not in states
 
 
 def test_a_fact_never_overwrites_another_of_the_same_millisecond(states):
-    """The key is (asset_name, event_time): an overwrite would lose a fact and, being a
-    MODIFY, never reach the INSERT-only stream mapping. A collision retries with a later $now()."""
-    record = find_state(states, "Record_Asset_Event")
-    assert record["Arguments"]["ConditionExpression"] == "attribute_not_exists(event_time)"
-    first = record["Retry"][0]
-    assert first["ErrorEquals"] == ["DynamoDB.ConditionalCheckFailedException"]
-    assert first["IntervalSeconds"] >= 1          # a later attempt evaluates $now() again
+    """The key is (asset_name, event_time): an overwrite would lose a fact and, being a MODIFY, never reach
+    the INSERT-only stream mapping. A collision cancels the transaction, which runs again with a later $now()."""
+    facts = _transaction(states, outlets=[{"name": "ns/a"}, {"name": "ns/b"}])[2:]
+    assert {f["Put"]["ConditionExpression"] for f in facts} == {"attribute_not_exists(event_time)"}
+    assert states["Wait_Before_Recording_Again"]["Next"] == "Record_Success"
+    assert evaluate(states["Wait_Before_Recording_Again"]["Seconds"], variables={"record_tries": 1}) >= 1

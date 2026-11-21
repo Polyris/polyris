@@ -120,8 +120,15 @@ def test_a_waiting_task_with_wait_for_gets_its_asset_pointers_with_the_history_t
 
 def test_the_runs_input_item_names_its_run_as_the_run_row_does():
     item = start_run.input_item(call(input={"variables": {"limit": 1.0}, "cascade_all": True}), now=NOW)
-    assert run_input.from_item(item) == run_input.RunInput({"limit": 1.0}, (), "all")
+    assert run_input.from_item(item) == run_input.RunInput({"limit": 1.0}, (), "all", "2026-11-18")
     assert start_run.is_this_run(item, call()) and task_row.PIPELINE_EXECUTION not in item
+
+
+def test_the_runs_input_keeps_the_partition_arg_its_tasks_get():
+    """1.2 gave each task PARTITION_ARG: the run's own, or its date (generators.JSONATA_PARTITION)."""
+    given = start_run.input_item(call(input={start_run.RunArg.PARTITION_ARG: "2026-W47"}), now=NOW)
+    assert run_input.from_item(given).partition_arg == "2026-W47"
+    assert run_input.from_item(start_run.input_item(call(input={}), now=NOW)).partition_arg == "2026-11-18"
 
 
 def test_a_run_date_that_is_no_partition_key_is_refused_before_any_write():

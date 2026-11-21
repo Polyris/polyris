@@ -17,6 +17,8 @@ new writer fails here until it is given a role.
 """
 
 import ast
+import functools
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -170,6 +172,64 @@ def test_the_coordination_lambdas_write_task_rows_and_the_run_row_only_through_t
             ast.unparse(node)
 
 
+# ── 1.3: run_task's writes of its row (ADR #137 §1, invariant 5) ────────────
+
+RUN_TASK = "helpers/run_task"
+#: Each write run_task makes of its row: the move it makes, or None for a write of fields alone.
+RUN_TASK_WRITES = {"Claim": "run", "Record_Success": "succeed", "Ask": "ask",
+                   "Save_Retry_Wait_Delay": None, "Save_Retry_Attempt": None, "Save_Slack_Failed": None}
+
+
+@functools.lru_cache(maxsize=None)
+def _run_task_row_writes() -> Dict[str, dict]:
+    """run_task's updates of its row: its updateItem states, and the row's item of the success transaction."""
+    from sfn_jsonata import evaluate
+    states = load_template(f"{RUN_TASK}/sfn.tpl.json", {"tokens_table": TOKENS})["States"]
+    found = {name: state["Arguments"] for name, state in _writes(states)
+             if state["Arguments"].get("TableName") == TOKENS
+             and "Input.execution_name" in json.dumps(state["Arguments"].get("Key", {}))}
+    run = {"execution_name": "load-2026-11-19-x", "generation": 2, "task_name": "load", "pipeline_name": "orders",
+           "date": "2026-11-19", "cascade": "auto", "outlets": [], "output_ttl_seconds": 1, "history_ttl_seconds": 1}
+    items = evaluate(states["Record_Success"]["Arguments"], input={"task_output": "{}", "_task_pushed": False},
+                     context={"Execution": {"Input": run, "Id": "arn", "Name": "n"}})["TransactItems"]
+    [row] = [i["Update"] for i in items if i["Update"]["Key"]["execution_name"]["S"] == run["execution_name"]]
+    found["Record_Success"] = row
+    return found
+
+
+def test_run_task_writes_its_row_only_as_listed():
+    assert set(_run_task_row_writes()) == set(RUN_TASK_WRITES)
+
+
+@pytest.mark.parametrize("name", sorted(RUN_TASK_WRITES))
+def test_run_task_writes_its_row_only_under_its_generation_and_as_the_table_gives_it_the_move(name):
+    """Every write is conditional on the status run_task expects and on its generation (task_row.FENCE); a
+    write that moves the row is a move the table gives run_task, from the status it is conditional on."""
+    arguments = _run_task_row_writes()[name]
+    condition, values = arguments["ConditionExpression"], arguments["ExpressionAttributeValues"]
+    names = arguments["ExpressionAttributeNames"]
+    expected, fence = condition.split(" AND ")
+    assert fence == task_row.FENCE and names["#g"] == task_row.GENERATION, name
+    left, right = expected.split(" = ")
+    assert names[left] == task_row.STATUS, name
+    read = values[right]["S"]
+    move = RUN_TASK_WRITES[name]
+    sets_status = "#s = " in arguments["UpdateExpression"].split("REMOVE")[0]
+    if move is None:
+        assert not sets_status and read in (TaskStatus.RUNNING.value, TaskStatus.WAITING_DECISION.value), name
+        return
+    transition = transitions.task_transition(move)
+    assert transitions.Writer.RUN_TASK in transition.writers and read in transition.sources, name
+    target = arguments["UpdateExpression"].split("#s = ", 1)[1].split(",")[0].strip()
+    assert values[target] == {"S": transition.target}, name
+    assert not transition.raises_generation and "#g =" not in arguments["UpdateExpression"], name
+
+
+def test_every_move_the_table_gives_run_task_has_its_write():
+    moves = {t.name for t in transitions.TASK_TRANSITIONS if transitions.Writer.RUN_TASK in t.writers}
+    assert moves == {m for m in RUN_TASK_WRITES.values() if m}
+
+
 # ── 1.2: the state machines' writes of a task row (ADR #130 §2.1, D40) ──────
 
 #: A key that starts with one of these is a row of its own kind, not a task row.
@@ -198,6 +258,8 @@ def _template_task_row_writes() -> Dict[Tuple[str, str], dict]:
     found = {}
     for path in sorted(TEMPLATES.rglob("sfn.tpl.json")):
         machine = str(path.parent.relative_to(TEMPLATES))
+        if machine == RUN_TASK:
+            continue                                        # 1.3's writer: the census above
         states = load_template(str(path.relative_to(TEMPLATES)), {"tokens_table": TOKENS})["States"]
         for name, state in _writes(states):
             arguments = state.get("Arguments", {})
@@ -215,7 +277,7 @@ TEMPLATE_WRITES = _template_task_row_writes()
 
 def test_the_census_finds_the_writers_it_should():
     assert {("dependency_wrapper", f"Claim_{c}") for c in ("Deps_Ready", "Skipped", "Upstream_Failed")} <= set(TEMPLATE_WRITES)
-    assert {("helpers/run_task", "Update_Status_Running"), ("helpers/pause_waiter", "Save_Pause_Token"),
+    assert {("helpers/pause_waiter", "Save_Pause_Token"),
             ("helpers/failure_handler", "Update_Status_Failed"), ("helpers/restart_task", "Hand_Over_Ownership"),
             ("helpers/registration", "Save_Task_Record")} <= set(TEMPLATE_WRITES)
 

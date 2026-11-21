@@ -1056,6 +1056,7 @@ def _start_run_branch(dag: DAG, specs: task_spec.Version, start_run_function_arn
             RunArg.CASCADE_ALL: JSONATA_CASCADE_ALL,
             RunArg.SUPPRESS_ASSET_EVENT: JSONATA_SUPPRESS_ASSET_EVENT,
             RunArg.TRIGGERED_BY: JSONATA_TRIGGERED_BY,
+            RunArg.PARTITION_ARG: JSONATA_PARTITION,
             # From the execution's own input: Define_Inputs passes on only the fields it lists.
             RunArg.BACKFILL_ID: ("{% $exists($states.context.Execution.Input.backfill_id) "
                                  "? $states.context.Execution.Input.backfill_id : null %}"),

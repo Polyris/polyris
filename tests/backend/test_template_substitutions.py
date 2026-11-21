@@ -27,3 +27,10 @@ def test_all_run_task_placeholders_are_substituted():
     provided = _run_task_substitutions()
     missing = used - provided
     assert not missing, f"run_task template uses unsubstituted placeholders: {sorted(missing)}"
+
+
+def test_every_run_task_substitution_is_used():
+    """The reverse: a substitution the template no longer reads is dead configuration (1.3 dropped the pause
+    waiter and notify_dependents from run_task, ADR #137 §1)."""
+    used = set(re.findall(r"\$\{([a-z_]+)\}", _TPL.read_text()))
+    assert _run_task_substitutions() == used

@@ -73,20 +73,43 @@ That's the whole mental model. The rest of this page is the specification.
 
 ```python
 xcom.get(event, task_name, *,
-         raise_on_missing=True,     # dep with no output → XComMissingError
-         raise_on_failure=True,     # upstream status != success → XComUpstreamFailedError
+         raise_on_missing=True,     # dep with no output in this run → XComMissingError
+         raise_on_failure=True,     # upstream failed finally → XComUpstreamFailedError
          raise_on_manual=True,      # upstream manually resolved via UI → XComManuallyResolvedError
          ddb_client=None,           # injected for tests
          s3_client=None)            # injected for tests
 ```
 
+**What a task reads of its upstreams.** A task reads an upstream's output only
+when that upstream succeeded in this run, or an operator or the run skipped it.
+A skip by the run (`skip_tasks`) keeps the output an earlier run of the same date
+wrote. Any other upstream reaches the task as its status alone, so a task that
+runs after a failure never reads an older run's output of the same date:
+
+- After a final failure (`failed`, `upstream_failed`, `stopped`), `get()` raises
+  `XComUpstreamFailedError`, or returns `None` with `raise_on_failure=False`.
+- After a skip by a trigger rule, `get()` raises `XComMissingError`, or returns
+  `None` with `raise_on_missing=False`.
+
+An upstream that succeeded always has its output, because the output is written
+together with the success. If it is missing anyway, the task fails with that
+cause before its work starts, and waits for an operator's decision.
+
+A Lambda or `@task.sfn` task gets each upstream in `event["upstream"][name]`:
+its `status`, its `skip_origin`, and its `output` when the task reads it. A Glue,
+ECS or Batch task gets the statuses in `POLYRIS_UPSTREAM_STATUSES`, beside
+`POLYRIS_TASK_NAME`. An EMR step gets neither: after an upstream failed, `xcom`
+in an EMR step can return an older run's output of the same date.
+
 **Lookup order:**
 
 1. If `event.upstream[task_name]` exists (Lambda / SFN pre-fetched inject) → use it.
    Auto-resolves `{"_s3_ref": "s3://..."}` pointers. On a `{"_truncated": true}`
-   marker, falls back to DDB automatically (25 KB inject cap vs 350 KB DDB row).
+   marker, or an entry without `output`, falls back to DDB automatically (see
+   [Size limits](#size-limits)).
 2. Otherwise → reads DDB directly via `pull()`. Works with `event=None` for
-   Glue / ECS / Batch / EMR.
+   Glue / ECS / Batch / EMR. A Glue, ECS or Batch task checks the upstream's
+   status in `POLYRIS_UPSTREAM_STATUSES` first.
 
 **Optional upstream** with `trigger_rule="all_done"`:
 
@@ -173,7 +196,10 @@ upstream-failure guard, and inject → DDB fallback on top of the same reader.
 
 - No `raise_on_missing` / `raise_on_failure` — missing rows raise
   `XComMissingError` (aliased as `PullError`) unconditionally; the row's status
-  is not consulted.
+  is not consulted. In a Glue, ECS or Batch task, an upstream that failed
+  finally raises `XComUpstreamFailedError`, and one a trigger rule skipped
+  raises `XComMissingError`, from `POLYRIS_UPSTREAM_STATUSES`; use `get()` to
+  receive `None` instead.
 - Truncated rows raise `XComMissingError` (via `PullError`), not
   `XComTruncatedError`. `get()` upgrades the error type when it detects the
   truncation marker.
@@ -186,8 +212,8 @@ Every reader error inherits `XComError`, which inherits `RuntimeError`.
 
 | Error | Raised when | Suppress with |
 |-------|-------------|---------------|
-| `XComMissingError` | no output stored (dep didn't run, was skipped, or returned nothing) | `raise_on_missing=False` — returns `None` |
-| `XComUpstreamFailedError` | upstream status is `skipped`, `failed`, `aborted`, etc. (`get()` only) | `raise_on_failure=False` — returns whatever output was recorded |
+| `XComMissingError` | no output stored (dep didn't run, a trigger rule skipped it, or it returned nothing) | `raise_on_missing=False` — returns `None` |
+| `XComUpstreamFailedError` | upstream failed finally in this run: `failed`, `upstream_failed` or `stopped`; its `status` attribute says which | `raise_on_failure=False` — returns `None` |
 | `XComTruncatedError` | both the event inject and the DDB row came back truncated (`get()` only) | not suppressible — see [Claim Check pattern](#large-outputs--claim-check-pattern) |
 | `XComManuallyResolvedError` | upstream carries a Console-written manual-resolution marker | `raise_on_manual=False` — returns the marker dict as-is |
 | `PullError` | back-compat alias for `XComMissingError` — existing `except PullError:` code continues to work | same as `XComMissingError` |
@@ -195,30 +221,21 @@ Every reader error inherits `XComError`, which inherits `RuntimeError`.
 **Ordering when multiple opt-outs interact.** In `xcom.get()` the checks fire
 in this exact order for a dep that exists in `event.upstream`:
 
-1. **Missing check** — status `"unknown"` → `XComMissingError` (subject to
-   `raise_on_missing`).
+1. **Failure check** — a final failure → `XComUpstreamFailedError` (subject to
+   `raise_on_failure`); a skip by a trigger rule → `XComMissingError` (subject
+   to `raise_on_missing`). Neither has an output in this run.
 2. **Manual-resolution check** — `_is_manual_marker(output)` →
-   `XComManuallyResolvedError` (subject to `raise_on_manual`). This runs
-   *before* the status check because a human's Mark success / Skip / Fail /
-   Stop is more informative than the status the action produced.
-3. **Failure check** — `status != "success"` → `XComUpstreamFailedError`
-   (subject to `raise_on_failure`).
-4. **Truncation** → transparent DDB fallback → `XComTruncatedError` if the DDB
+   `XComManuallyResolvedError` (subject to `raise_on_manual`). A Mark Successful
+   or a Skip by an operator leaves the marker as the upstream's output.
+3. **Truncation** → transparent DDB fallback → `XComTruncatedError` if the DDB
    row is also truncated.
 
-**Concrete matrix — the four `raise_on_manual` × `raise_on_failure` combinations
-on a task the operator manually failed** (status = `failed`, output = marker):
+**Concrete matrix — an upstream the operator resolved:**
 
-| `raise_on_manual` | `raise_on_failure` | Result |
-|-------------------|-------------------|--------|
-| `True` (default) | `True` (default) | `XComManuallyResolvedError` — manual check wins |
-| `True` (default) | `False` | `XComManuallyResolvedError` — manual check wins |
-| `False` | `True` (default) | `XComUpstreamFailedError` — marker skipped, status check fires |
-| `False` | `False` | returns the marker dict (`{"_manually_resolved": True, "_resolution": "fail", …}`) |
-
-Silencing `raise_on_manual` alone still surfaces the failed status via
-`XComUpstreamFailedError` — you have to silence both to receive the marker
-verbatim.
+| Operator's action | Default | `raise_on_manual=False` | `raise_on_failure=False` |
+|-------------------|---------|-------------------------|--------------------------|
+| Mark Successful, Skip | `XComManuallyResolvedError` | returns the marker dict (`{"_manually_resolved": True, "_resolution": "skip", …}`) | `XComManuallyResolvedError` |
+| Fail, Stop | `XComUpstreamFailedError` | `XComUpstreamFailedError` | returns `None` |
 
 ## `XComManuallyResolvedError` — reading the marker for diagnostics
 
@@ -302,7 +319,7 @@ see the wrong value.
 
 | Constraint | Limit | Fix at the limit |
 |-----------|-------|------------------|
-| Runtime inject per dep | 25 KB | Use `xcom.get()` — auto-falls-back to DDB (~350 KB). |
+| Runtime inject per dep | 25 KB, and all of a task's upstreams share about 200 KB with its input | Use `xcom.get()` — auto-falls-back to DDB (~350 KB). |
 | DDB `result` field | 350 KB | Use [Claim Check pattern](#large-outputs--claim-check-pattern). |
 | Console preview (`task_input`) | ~380 KB | New in 1.0.0 — separate `input#` DDB record. |
 | DDB item hard limit (AWS) | 400 KB | AWS constraint. |

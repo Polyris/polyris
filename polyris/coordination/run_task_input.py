@@ -3,9 +3,9 @@
 The dispatcher builds it when it starts a task, from the task's row, its spec
 (one ``GetItem`` on ``pipeline-specs``), the run's input item and the statuses
 of the task's direct upstreams as its pass read them. ``run_task`` reads only
-the keys of ``Key``: today it reads 39 keys of the wrapper's state, and the
-rewrite of ``run_task`` (TR-5) adds the parity test with its template. The
-lifetimes come in the input, so the template keeps no copy of them.
+the keys of ``Key``, from its execution's context; a parity test compares them
+with its template. The lifetimes come in the input, so the template keeps no
+copy of them.
 
 ``build`` returns the JSON text to send as the execution's input, and measures
 that text: an input over Step Functions' 256 KB refuses the start for good, and
@@ -36,7 +36,7 @@ class Key:
     PIPELINE_NAME = "pipeline_name"
     PIPELINE_EXECUTION = "pipeline_execution"
     DATE = "date"
-    TRIGGERED_BY = "triggered_by"
+    PARTITION_ARG = "partition_arg"              # the run's partition key, which a task gets as PARTITION_ARG
     BACKFILL_ID = "backfill_id"
     TASK_TYPE = "task_type"
     TASK_ARN = "task_arn"
@@ -50,6 +50,7 @@ class Key:
     OUTPUT_TTL = "output_ttl_seconds"
     INPUT_TTL = "input_ttl_seconds"
     HISTORY_TTL = "history_ttl_seconds"
+    TIMELINE_TTL = "timeline_ttl_seconds"        # the task's timeline events
 
 
 KEYS = frozenset(v for k, v in vars(Key).items() if not k.startswith("_"))
@@ -58,9 +59,13 @@ KEYS = frozenset(v for k, v in vars(Key).items() if not k.startswith("_"))
 class InputTooLarge(ValueError):
     """``run_task``'s input passes Step Functions' 256 KB: the start is refused for good."""
 
+    def __init__(self, message: str, size: int):
+        super().__init__(message)
+        self.size = size
+
 
 def build(*, execution_name: str, generation: Union[int, Decimal], task_name: str, pipeline_name: str,
-          pipeline_execution: str, date: str, triggered_by: str, backfill_id: Optional[str],
+          pipeline_execution: str, date: str, partition_arg: str, backfill_id: Optional[str],
           spec: TaskSpec, variables: Mapping[str, Any], cascade: str,
           upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> str:
     """The input text of the task's ``run_task``; ``upstreams`` maps each direct upstream to its status and
@@ -79,7 +84,7 @@ def build(*, execution_name: str, generation: Union[int, Decimal], task_name: st
         Key.PIPELINE_NAME: pipeline_name,
         Key.PIPELINE_EXECUTION: pipeline_execution,
         Key.DATE: date,
-        Key.TRIGGERED_BY: triggered_by,
+        Key.PARTITION_ARG: partition_arg or date,
         Key.TASK_TYPE: fields[TaskSpecKey.TASK_TYPE],
         Key.TASK_CONFIG: fields.get(TaskSpecKey.TASK_CONFIG, {}),
         Key.OUTLETS: fields.get(TaskSpecKey.OUTLETS, []),
@@ -89,6 +94,7 @@ def build(*, execution_name: str, generation: Union[int, Decimal], task_name: st
         Key.OUTPUT_TTL: int(retention.OUTPUT.total_seconds()),
         Key.INPUT_TTL: int(retention.INPUT.total_seconds()),
         Key.HISTORY_TTL: int(retention.HISTORY.total_seconds()),
+        Key.TIMELINE_TTL: int(retention.TIMELINE.total_seconds()),
     }
     for key, spec_key in ((Key.TASK_ARN, TaskSpecKey.TASK_ARN), (Key.CROSS_ACCOUNT_ROLE, TaskSpecKey.CROSS_ACCOUNT_ROLE),
                           (Key.EXECUTION_TIMEOUT, TaskSpecKey.EXECUTION_TIMEOUT)):
@@ -99,7 +105,8 @@ def build(*, execution_name: str, generation: Union[int, Decimal], task_name: st
     text = canonical_json(payload)
     size = len(text.encode("utf-8"))
     if size > PAYLOAD_LIMIT:
-        raise InputTooLarge(f"{task_name}: run_task's input takes {size} bytes, over Step Functions' {PAYLOAD_LIMIT}")
+        raise InputTooLarge(f"{task_name}: run_task's input takes {size} bytes, over Step Functions' {PAYLOAD_LIMIT}",
+                            size)
     return text
 
 
