@@ -16,6 +16,7 @@ environment variables the runtime injects, so inside a task body you just call
 """
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, TYPE_CHECKING, TypeGuard
 
@@ -46,9 +47,10 @@ _PUSH_MARKER_FIELD = "_pushed_by_task"
 #: ``stopped`` is final too (ADR #138); ``aborted`` rows were written before 1.3.
 _FAILED_FINALLY = frozenset({"failed", "upstream_failed", "aborted", "stopped"})
 _SKIPPED = "skipped"
+_SUCCESS = "success"
 #: The skips whose output a task reads: an operator's, or its run's (``skip_tasks``), which keep the output an
-#: earlier run of the date wrote. A skip by a trigger rule leaves no output in this run. run_task's template
-#: reads the same set (``Read_Upstream_Outputs``).
+#: earlier run of the date wrote. A skip by a trigger rule leaves no output in this run. With ``success`` this is
+#: the set run_task's template reads (``Read_Upstream_Outputs``); a parity test compares the two.
 _READABLE_SKIPS = frozenset({"manual", "run"})
 
 
@@ -223,11 +225,28 @@ class XComArg:
         return f"XComArg({self.task_id}.{self.key})"
 
 
+def _platform_value(name: str) -> Optional[str]:
+    """A value run_task gives the task: an environment variable of an ECS or Batch task, or the job argument
+    ``--NAME`` of a Glue job, which reaches the script on its command line only (``getResolvedOptions`` reads it
+    there). None when the task has neither."""
+    value = os.environ.get(name)
+    if value:
+        return value
+    flag = f"--{name}"
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == flag and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith(flag + "="):
+            return arg[len(flag) + 1:]
+    return None
+
+
 def _env_upstream(task_name: str) -> Optional[Dict[str, Any]]:
     """The upstream's status and skip origin from ``POLYRIS_UPSTREAM_STATUSES``, which run_task gives a Glue, ECS
     or Batch task (ADR #137 §9); None when the runtime gave none (a Lambda, an EMR step, an older runtime) or
     the name is not a direct upstream."""
-    text = os.environ.get(ENV_UPSTREAM_STATUSES)
+    text = _platform_value(ENV_UPSTREAM_STATUSES)
     if not text:
         return None
     try:
@@ -240,19 +259,35 @@ def _env_upstream(task_name: str) -> Optional[Dict[str, Any]]:
     return entry if isinstance(entry, dict) else None
 
 
+def _known_upstream(task_name: str, context: Optional[dict]) -> Optional[Dict[str, Any]]:
+    """The upstream's status in this run: from the task's event (a Lambda, a state machine), else from
+    ``POLYRIS_UPSTREAM_STATUSES`` (Glue, ECS, Batch); None when neither names it."""
+    upstream = (context or {}).get("upstream")
+    if isinstance(upstream, dict):
+        entry = upstream.get(task_name)
+        if isinstance(entry, dict) and "status" in entry:
+            return entry
+    return _env_upstream(task_name)
+
+
 def _readable(task_name: str, status: Any, skip_origin: Any, *, raise_on_failure: bool,
               raise_on_missing: bool) -> bool:
-    """Whether an upstream's output may be read in this run (ADR #137 §1); raises, or says no, for one that has
-    none: a final failure, or a skip by a trigger rule."""
+    """Whether an upstream's output may be read in this run (ADR #137 §1): it succeeded, or an operator or the
+    run skipped it. Any other upstream has no output in this run, while the table may hold an older run's of
+    the same date: a final failure raises XComUpstreamFailedError, anything else (a skip by a trigger rule, an
+    upstream still waiting or running beside a ``one_success`` task) XComMissingError, each naming the status;
+    with its flag off, the answer is no."""
+    if status == _SUCCESS or (status == _SKIPPED and skip_origin in _READABLE_SKIPS):
+        return True
     if status in _FAILED_FINALLY:
         if raise_on_failure:
             raise XComUpstreamFailedError(task_name, str(status))
         return False
-    if status == _SKIPPED and skip_origin not in _READABLE_SKIPS:
-        if raise_on_missing:
-            raise XComMissingError(task_name, reason="its trigger rule skipped it in this run")
-        return False
-    return True
+    if raise_on_missing:
+        reason = ("its trigger rule skipped it in this run" if status == _SKIPPED
+                  else f"it has not succeeded in this run (status: {status})")
+        raise XComMissingError(task_name, reason=reason)
+    return False
 
 
 def _resolve(value: Optional[str], context: dict, keys: tuple, env: str, what: str) -> str:
@@ -263,12 +298,12 @@ def _resolve(value: Optional[str], context: dict, keys: tuple, env: str, what: s
                 value = context[k]
                 break
     if value is None:
-        value = os.environ.get(env)
+        value = _platform_value(env)
     if not value:
         raise PullError(
             f"pull() needs the {what}. In a Lambda pass the event "
-            f"(`xcom.pull('t', event)`); in ECS/Glue the runtime sets ${env}. "
-            "You can also pass it explicitly."
+            f"(`xcom.pull('t', event)`); run_task gives an ECS or Batch task ${env}, "
+            f"and a Glue job the argument --{env}. You can also pass it explicitly."
         )
     return value
 
@@ -330,8 +365,13 @@ def pull(
 
     * **Lambda** — pass the handler event: ``xcom.pull("upstream", event)``.
       (Its context lives in the event, since Lambda env is fixed at deploy.)
-    * **ECS / Glue** — just ``xcom.pull("upstream")``; the runtime provides the
-      context via environment.
+    * **ECS / Batch / Glue** — just ``xcom.pull("upstream")``; run_task provides
+      the context in the environment (a Glue job: in its arguments).
+
+    An upstream that has no output in this run (a final failure, a skip by a
+    trigger rule, one still waiting or running) raises instead of returning an
+    older run's output of the same date: its status comes from the event, or
+    from ``POLYRIS_UPSTREAM_STATUSES``.
 
     Args:
         task_name: the upstream task to read the output of (a declared dependency).
@@ -350,11 +390,14 @@ def pull(
         The upstream task's output (parsed JSON), whatever its size.
 
     Raises:
-        PullError: if the task stored nothing, or its output is unavailable.
+        PullError: if the task stored nothing, or its output is unavailable;
+            also (as ``XComMissingError``) for an upstream with no output in
+            this run.
+        XComUpstreamFailedError: the upstream failed finally in this run.
         XComManuallyResolvedError: the stored row is a Console-written manual-
             resolution marker (subject to ``raise_on_manual``).
     """
-    known = _env_upstream(task_name)
+    known = _known_upstream(task_name, context)
     if known is not None:
         # Never an older run's output of the same date for an upstream that has none in this run (ADR #137 §1).
         _readable(task_name, known.get("status"), known.get("skip_origin"), raise_on_failure=True,
@@ -383,11 +426,14 @@ def pull(
         )
 
     try:
-        data: Any = json.loads(item["result"]["S"])
-    except (ValueError, KeyError) as e:
-        raise PullError(
-            f"stored output for task '{task_name}' is not readable JSON: {e}"
-        ) from e
+        text = item["result"]["S"]
+    except KeyError as e:
+        raise PullError(f"stored output for task '{task_name}' is not a string: {e}") from e
+    try:
+        data: Any = json.loads(text)
+    except ValueError:
+        # A 1.2 run_task stored a string result as it was ("ok", not "\"ok\""); that string is the output.
+        data = text
 
     # Large outputs are offloaded to S3 and stored as an _s3_ref pointer — resolve it (matches console_api's retrieve_result).
     if isinstance(data, dict) and "_s3_ref" in data:
@@ -443,12 +489,14 @@ def get(
         event: Lambda handler event, or ``None`` for service tasks.
         task_name: upstream ``task_id`` to read.
         raise_on_missing: raise :class:`XComMissingError` for a dep with no
-            recorded output (default ``True``). Pass ``False`` to get ``None``
-            for a soft check.
+            output in this run — none recorded, a skip by its trigger rule, or
+            one still waiting or running beside a ``one_success`` task
+            (default ``True``). Pass ``False`` to get ``None`` for a soft check.
         raise_on_failure: raise :class:`XComUpstreamFailedError` when the
-            upstream's status != ``"success"`` (default ``True``). Pass
-            ``False`` when using ``trigger_rule="all_done"`` and you want to
-            read output regardless of upstream outcome.
+            upstream failed finally in this run (``failed``,
+            ``upstream_failed``, ``stopped``; default ``True``). Pass
+            ``False`` with ``trigger_rule="all_done"`` to get ``None`` for it
+            instead. An older run's output of the same date is never returned.
         raise_on_manual: raise :class:`XComManuallyResolvedError` when the
             upstream was resolved by an operator via Console UI (mark_success /
             skip / fail / stop) — its recorded "output" is the synthetic
@@ -465,7 +513,7 @@ def get(
     Raises:
         ValueError: ``task_name`` was not provided.
         XComMissingError: dep has no recorded output (subject to ``raise_on_missing``).
-        XComUpstreamFailedError: upstream status != ``"success"``
+        XComUpstreamFailedError: upstream failed finally in this run
             (subject to ``raise_on_failure``).
         XComTruncatedError: both the event inject and DDB rows returned
             truncation markers — the actual data is unavailable through this
@@ -487,7 +535,8 @@ def get(
 
             def handler(event, context):
                 sales = xcom.get(event, "extract_sales")
-                bonus = xcom.get(event, "bonus", raise_on_failure=False) or {}
+                bonus = xcom.get(event, "bonus", raise_on_failure=False,
+                                 raise_on_missing=False) or {}
 
         Glue / ECS / Batch task (no event to pass)::
 
@@ -507,21 +556,13 @@ def get(
             if not isinstance(entry, dict):
                 return entry
 
-            status = entry.get("status", "unknown")
             output = entry.get("output")
 
-            # Missing dep: a 1.2 run_task wrote {"output": {}, "status": "unknown"} when the
-            # upstream DDB row was absent. Only checks status here — an empty {} with
-            # status="success" is a valid user-returned value and must NOT be treated as missing.
-            if status == "unknown":
-                if raise_on_missing:
-                    raise XComMissingError(task_name)
-                return None
-
-            # A final failure, or a skip by a trigger rule, has no output in this run: run_task
-            # passes its status alone (ADR #137 §1).
-            if not _readable(task_name, status, entry.get("skip_origin"), raise_on_failure=raise_on_failure,
-                             raise_on_missing=raise_on_missing):
+            # Only a success, or a skip by an operator or the run, has an output in this run: run_task
+            # passes any other upstream's status alone (ADR #137 §1). An empty {} from a success is a
+            # value the task returned, never "missing".
+            if not _readable(task_name, entry.get("status"), entry.get("skip_origin"),
+                             raise_on_failure=raise_on_failure, raise_on_missing=raise_on_missing):
                 return None
 
             # An output run_task did not inline, past its share of the state's budget: the table has it.

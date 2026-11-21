@@ -465,7 +465,10 @@ def get_task_output(task_name: str, event: Dict) -> Dict:
             output_row_run_id = store_item.get('run_id')
             raw = store_item.get('result')
             if raw:
-                parsed = json.loads(raw)
+                try:
+                    parsed = json.loads(raw)
+                except ValueError:
+                    parsed = raw    # a string result a 1.2 run_task stored as it was, not as JSON
                 if isinstance(parsed, dict) and parsed.get('_truncated'):
                     truncated = True
                 else:

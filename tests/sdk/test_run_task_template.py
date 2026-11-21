@@ -1114,32 +1114,28 @@ def test_jitter_config_threaded_only_when_enabled():
 
 # --- primitive value parsing (S3 fix) and multi-upstream merge (S4) ---
 
-def _sfn_parse_fn():
-    """Return a $parse stub compatible with AWS SFN semantics.
+def _step_functions_parse(model):
+    """$parse as Step Functions may have it (sfn_jsonata.parse_json): JSON null stays null. A text that is no JSON
+    fails the state ("throws", the model every other test uses) or gives undefined; which one AWS does is
+    checked live in TR-7, and run_task must hold for both."""
+    from sfn_jsonata import parse_json
 
-    AWS SFN's $parse is equivalent to JSON.parse: returns the parsed value for
-    valid JSON, undefined for invalid JSON. jsonata-python maps Python None to
-    undefined and uses Utils.NULL_VALUE for JSONata null — so we convert
-    json.loads()'s None to NULL_VALUE and let exceptions return None (undefined).
-    """
-    import json
-    try:
-        from jsonata.utils import Utils
-        null_sentinel = Utils.NULL_VALUE
-    except ImportError:
-        null_sentinel = None
-
-    def _parse(s):
+    def _parse(text):
         try:
-            result = json.loads(s)
-            return null_sentinel if result is None else result
-        except Exception:
-            return None  # undefined — $exists() returns False
+            return parse_json(text)
+        except ValueError:
+            if model == "throws":
+                raise
+            return None
 
     return _parse
 
 
-def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task", *, cap=25000, status="success"):
+PARSE_MODELS = ("throws", "gives_undefined")
+
+
+def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task", *, cap=25000, status="success",
+                         parse="throws"):
     """Evaluate Get_Dep_Output.Output with a simulated DDB getItem result (None: no output# item).
 
     The inner Map processor's input is one item of Read_Upstream_Outputs' Items: the upstream's name, its
@@ -1149,33 +1145,53 @@ def _eval_get_dep_output(template, ddb_raw_value, dep_name="dep_task", *, cap=25
     inner_states = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]
     expr = inner_states["Get_Dep_Output"]["Output"]
     j = jsonata.Jsonata(expr[2:-2].strip())
-    j.register_lambda("parse", _sfn_parse_fn())
+    j.register_lambda("parse", _step_functions_parse(parse))
     item = {"result": {"S": ddb_raw_value}} if ddb_raw_value is not None else None
     j.assign("states", {"result": {"Item": item} if item else {},
                         "input": {"name": dep_name, "status": status, "cap": cap}})
     return j.evaluate({})
 
 
-def test_get_dep_output_parses_primitive_values(template):
-    """$parse()-based fix (S3): primitives and number arrays must parse correctly,
-    not fall through to the {'_raw': ...} wrapper.
+@pytest.mark.parametrize("parse", PARSE_MODELS)
+@pytest.mark.parametrize("raw, expected", [
+    ('{"k": 1}', {"k": 1}), ('[1, 2, 3]', [1, 2, 3]), ('null', None), ('true', True), ('42', 42),
+    ('"ok"', "ok"),                    # a string result, as 1.3 stores it
+    ('ok', "ok"), ('', ""),            # ... and as a 1.2 run_task stored it: no JSON, so never parsed
+])
+def test_an_upstream_output_reaches_the_task_as_the_value_its_task_returned(template, parse, raw, expected):
+    """The review of TR-5: a string result stored as it was failed $parse, and its dependant never ran."""
+    result = _eval_get_dep_output(template, raw, parse=parse)
+    assert result["found"] is True and result["output"] == expected
 
-    The old $isJson heuristic only recognised plain objects and arrays of
-    strings/objects — everything else (null, true, 42, [1,2,3]) got wrapped.
-    """
-    cases = [
-        ('{"k": 1}', {"k": 1}),              # object — correct before and after fix
-        ('[1, 2, 3]', [1, 2, 3]),             # array of numbers — was broken
-        ('null', None),                        # null — was broken
-        ('true', True),                        # boolean — was broken
-        ('42', 42),                            # integer — was broken
-        ('invalid json', {'_raw': 'invalid json'}),  # non-JSON stays wrapped
-    ]
-    for raw, expected in cases:
-        result = _eval_get_dep_output(template, raw)
-        assert result["found"] is True and result["output"] == expected, (
-            f"raw={raw!r}: expected {expected!r}, got {result.get('output')!r}"
-        )
+
+def test_a_text_that_starts_like_json_and_is_not_reaches_the_task_without_an_output(template):
+    """A 1.2 row's string result such as "[INFO] done": $parse fails the state or gives undefined. Either way the
+    item is found without an output, and xcom reads the table, which returns the string."""
+    from sfn_jsonata import evaluate
+    assert "output" not in _eval_get_dep_output(template, "[INFO] done", parse="gives_undefined")
+    with pytest.raises(Exception, match="Expecting"):
+        _eval_get_dep_output(template, "[INFO] done", parse="throws")
+    states = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]
+    [catch] = [c for c in states["Get_Dep_Output"]["Catch"] if c["ErrorEquals"] == ["States.QueryEvaluationError"]]
+    assert states[catch["Next"]] == {"Type": "Pass", "End": True}
+    assert evaluate(catch["Output"], input={"name": "extract", "status": "success", "cap": 100}) == {
+        "name": "extract", "status": "success", "found": True}
+
+
+@pytest.mark.parametrize("state, field", [("Run_Task_SFN", "Output"), ("Run_Task_Lambda", "Payload")])
+@pytest.mark.parametrize("value, stored", [("ok", '"ok"'), ("", '""'), ('say "hi"', '"say \\"hi\\""'),
+                                           ({"rows": 1}, '{"rows":1}'), ([1, "a"], '[1,"a"]'), (42, "42"),
+                                           (True, "true"), (None, "null")])
+def test_a_result_is_stored_as_json_a_string_included(template, state, field, value, stored):
+    """A string result stored as it was ("ok") is no JSON, and no reader could parse it (the review of TR-5)."""
+    from jsonata.utils import Utils
+    from sfn_jsonata import evaluate
+    result = {field: Utils.NULL_VALUE if value is None else value}
+    out = evaluate(template["States"][state]["Output"], input={"upstream_outputs": {}}, context=_context({}),
+                   result=result)
+    assert out["task_output"] == stored and json.loads(out["task_output"]) == value
+    assert evaluate(template["States"][state]["Output"], input={}, context=_context({}), result={})[
+        "task_output"] == "{}"
 
 
 def test_an_output_over_its_share_of_the_budget_reaches_the_task_as_a_marker(template):
@@ -1186,14 +1202,15 @@ def test_an_output_over_its_share_of_the_budget_reaches_the_task_as_a_marker(tem
     assert _eval_get_dep_output(template, None) == {"name": "dep_task", "status": "success", "found": False}
 
 
-def test_an_output_over_256_kb_is_found_and_left_for_xcom_to_read(template):
-    """xcom.push may store up to 350 KB, which the read cannot carry: the item counts as found (D109)."""
+def test_an_output_over_256_kb_reaches_the_task_as_a_marker(template):
+    """xcom.push may store up to 350 KB, which the read cannot carry: the item counts as found (D109), and the
+    marker sends xcom, of 1.3 or of an older bundle, to the table."""
     get = template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]["Get_Dep_Output"]
     catch = [c for c in get["Catch"] if c["ErrorEquals"] == ["States.DataLimitExceeded"]]
     assert catch and catch[0]["Next"] == "Dep_Output_Too_Large"
     from sfn_jsonata import evaluate
     assert evaluate(catch[0]["Output"], input={"name": "extract", "status": "success", "cap": 1}) == {
-        "name": "extract", "status": "success", "found": True}
+        "name": "extract", "status": "success", "found": True, "output": {"_truncated": True}}
 
 
 def _items(template, run_input):
@@ -1217,6 +1234,19 @@ def test_only_an_upstream_that_succeeded_or_was_skipped_by_an_operator_or_the_ru
     assert sorted((i["name"], i["status"]) for i in items) == [("a", "success"), ("b", "skipped"),
                                                                 ("c", "skipped")]
     assert _items(template, {"upstreams": {}}) == []
+
+
+def test_the_set_run_task_reads_is_the_set_xcom_reads(template):
+    """Principle #28: an upstream whose output run_task does not read must be one xcom refuses to read from the
+    table, or a task would get an older run's output of the date (the review of TR-5)."""
+    from polyris.constants import SkipOrigin, TaskStatus
+    from polyris.xcom import _readable
+    for status in [s.value for s in TaskStatus] + ["unknown", None]:
+        for origin in [SkipOrigin.MANUAL, SkipOrigin.RUN, SkipOrigin.RULE, None]:
+            upstreams = {"u": {"status": status, "skip_origin": origin}}
+            read = bool(_items(template, {"upstreams": upstreams}))
+            assert read == _readable("u", status, origin, raise_on_failure=False, raise_on_missing=False), (
+                status, origin)
 
 
 def test_the_outputs_inlined_share_a_budget_with_the_input(template):

@@ -22,6 +22,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
 
 
+_ABSENT = object()
+
+
+def parse_json(text: str) -> Any:
+    """Step Functions' $parse, as the tests model it: JSON.parse, so JSON null stays null (jsonata-python's
+    NULL_VALUE; its None means undefined), and a text that is no JSON fails the state. tests/backend/coordination
+    registers the same. What AWS does with such a text is checked live in TR-7; run_task holds either way."""
+    from jsonata.utils import Utils
+
+    value = json.loads(text)
+    return Utils.NULL_VALUE if value is None else value
+
+
 #: What a state that invokes a coordination Lambda retries (Principle #53): the Lambda service's own
 #: failures, a function timeout (Sandbox.Timedout) or crash (Lambda.Unknown), and CoordinationTransient.
 LAMBDA_TRANSIENT = frozenset({"Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException",
@@ -54,29 +67,33 @@ def find_state(states: Dict[str, Any], name: str) -> Dict[str, Any]:
 
 
 def evaluate(value: Any, *, input: Any = None, context: Optional[Dict[str, Any]] = None,
-             variables: Optional[Dict[str, Any]] = None, now: datetime = NOW, error_output: Any = None) -> Any:
+             variables: Optional[Dict[str, Any]] = None, now: datetime = NOW, error_output: Any = None,
+             result: Any = _ABSENT) -> Any:
     """Evaluate every `{% ... %}` string in `value` as Step Functions would.
 
-    `error_output` is `$states.errorOutput`, which a Catch's Output can read.
+    `error_output` is `$states.errorOutput`, which a Catch's Output can read, and `result` is a Task state's
+    `$states.result`, which its Output reads.
     """
     jsonata = pytest.importorskip("jsonata")
     if isinstance(value, dict):
-        return {k: evaluate(v, input=input, context=context, variables=variables, now=now, error_output=error_output)
-                for k, v in value.items()}
+        return {k: evaluate(v, input=input, context=context, variables=variables, now=now, error_output=error_output,
+                            result=result) for k, v in value.items()}
     if isinstance(value, list):
-        return [evaluate(v, input=input, context=context, variables=variables, now=now, error_output=error_output)
-                for v in value]
+        return [evaluate(v, input=input, context=context, variables=variables, now=now, error_output=error_output,
+                         result=result) for v in value]
     if not (isinstance(value, str) and value.strip().startswith("{%") and value.strip().endswith("%}")):
         return value
     compiled = jsonata.Jsonata(value.strip()[2:-2].strip())
     states: Dict[str, Any] = {"input": input, "context": context or {}}
     if error_output is not None:
         states["errorOutput"] = error_output
+    if result is not _ABSENT:
+        states["result"] = result
     compiled.assign("states", states)
     for name, val in (variables or {}).items():
         compiled.assign(name, val)
     compiled.register_lambda("now", lambda: format_utc(now))
-    compiled.register_lambda("parse", json.loads)
+    compiled.register_lambda("parse", parse_json)
     compiled.register_lambda("hash", lambda text, alg: hashlib.new(
         str(alg).replace("-", "").lower(), str(text).encode("utf-8")).hexdigest())
     return compiled.evaluate(None)

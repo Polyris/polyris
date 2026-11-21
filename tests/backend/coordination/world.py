@@ -31,6 +31,8 @@ from streams import StreamAdapter
 from polyris.coordination.times import format_utc
 
 TASK_ARN = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:user-{{}}"
+#: A work that returns JSON null (`World.complete`'s None means an empty object).
+JSON_NULL = object()
 _deserializer = TypeDeserializer()
 
 
@@ -277,13 +279,14 @@ class World:
 
     def complete(self, run: Run, task: str, *, status: str = "success", output: Any = None) -> None:
         """Finish the user's work for `task`; `status` is "success", "failed" or "timed_out" (the attempt reached
-        its execution_timeout), and a success returns `output` (an empty object when None)."""
+        its execution_timeout), and a success returns `output` (an empty object when None, null for JSON_NULL)."""
         name = run.execution_name(task)
         job = next((j for j in self.runtime.jobs.values() if self._job_owner(j) == name), None)
         if job is None:
             raise AssertionError(f"{task} is not running in {run.name}; running: {self.running_tasks(run)}")
         if status == "success":
-            self.runtime.finish_job(job.id, output={"Output": {} if output is None else output, "Status": "SUCCEEDED"})
+            returned = {} if output is None else None if output is JSON_NULL else output
+            self.runtime.finish_job(job.id, output={"Output": returned, "Status": "SUCCEEDED"})
         elif status == "failed":
             self.runtime.finish_job(job.id, error="States.TaskFailed", cause="the user's task failed")
         elif status == "timed_out":
@@ -318,6 +321,12 @@ class World:
             raise AssertionError(f"{task} is not running in {run.name}; running: {self.running_tasks(run)}")
         payload = job.arguments.get("Input", {})
         return json.loads(payload) if isinstance(payload, str) else dict(payload)
+
+    def xcom_get(self, run: Run, task: str, upstream: str, **flags: Any) -> Any:
+        """What `task`'s code gets from `xcom.get(event, upstream, **flags)`, `event` being what its work was given."""
+        from polyris import xcom
+
+        return xcom.get(self.work_input(run, task), upstream, ddb_client=self.ddb, **flags)
 
     @staticmethod
     def _job_owner(job: Any) -> Optional[str]:
@@ -452,6 +461,11 @@ class World:
         """Someone deletes `task`'s row of `run` by hand (invariant 11's missing row)."""
         self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
                              Key={"execution_name": {"S": run.execution_name(task)}})
+
+    def write_output(self, pipeline: Pipeline, task: str, date: str, text: str) -> None:
+        """`task`'s output of `date` as an older version left it: `text` is the stored result, as it was written."""
+        self.ddb.put_item(TableName=self.stack.tables["PipelineTokensTable"],
+                          Item={"execution_name": {"S": f"output#{pipeline.name}#{task}#{date}"}, "result": {"S": text}})
 
     def delete_output(self, run: Run, task: str) -> None:
         """`task`'s output for `run`'s date is gone, as when it expired a year after its last write (D109)."""

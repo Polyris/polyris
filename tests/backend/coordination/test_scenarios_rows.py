@@ -10,12 +10,14 @@ scenario asserts only what its class needs. The classes are in defects.py
 Once a scenario runs, test_meta.py asks for a probe that brings its bug back.
 """
 
+import json
 from datetime import timedelta
 
 import pytest
 
 from dags import asset, chain, pipeline, waits_for
 from polyris.constants import WarningKind
+from world import JSON_NULL
 
 DATE = "2026-11-18"
 defect = pytest.mark.defect
@@ -317,6 +319,60 @@ def test_a_task_after_a_final_failure_gets_its_status_and_never_an_older_runs_ou
     world.deliver_task_hints()
     assert world.status(second, "extract") == "failed"
     assert world.work_input(second, "report")["upstream"] == {"extract": {"status": "failed", "skip_origin": None}}
+
+
+@defect("R-J1")
+@pytest.mark.parametrize("returned", ["ok", "", JSON_NULL, 42, ["a", 1], {"rows": 1}],
+                         ids=["string", "empty-string", "null", "number", "list", "object"])
+def test_a_dependant_reads_whatever_its_upstream_returned_a_string_included(world, returned):
+    """The review of TR-5: a string result stored as it was ("ok") is no JSON, the dependant's read failed at every
+    attempt, and it never ran. A result is stored as JSON, and reaches the dependant as it was returned."""
+    value = None if returned is JSON_NULL else returned
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract", output=returned)
+    world.deliver_task_hints()
+    assert json.loads(world.stores(run, "extract")["output"]["result"]) == value
+    assert world.running_tasks(run) == ["load"]
+    assert world.work_input(run, "load")["upstream"]["extract"]["output"] == value
+
+
+@defect("R-J1")
+def test_a_string_result_a_1_2_run_task_stored_reaches_the_dependant_as_that_string(world):
+    """1.2 stored a string result as it was; a run that skips the task (skip_tasks) reads that row of the date."""
+    orders = world.deploy(chain("orders", "extract", "load"))
+    world.write_output(orders, "extract", DATE, "ok")
+    run = world.start_run(orders, DATE, skip_tasks=["extract"])
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["load"]
+    assert world.work_input(run, "load")["upstream"]["extract"]["output"] == "ok"
+
+
+@defect("R-N3")
+def test_a_task_beside_an_upstream_that_still_runs_never_reads_its_older_output(world):
+    """one_success starts its task at the first success while the other upstream still runs, and that upstream's
+    output# of the date holds what an earlier run wrote: xcom refuses it, naming the status (the review of TR-5)."""
+    from polyris import xcom
+
+    orders = world.deploy(pipeline("orders", [("fast", {}), ("slow", {}), ("pick", {"trigger_rule": "one_success"})],
+                                   [("fast", "pick"), ("slow", "pick")]))
+    first = world.start_run(orders, DATE)
+    world.deliver_task_hints()
+    world.complete(first, "fast")
+    world.complete(first, "slow", output={"rows": "of the first run"})
+    world.deliver_task_hints()
+    world.complete(first, "pick")
+    world.deliver_task_hints()
+    second = world.start_run(orders, DATE)
+    world.deliver_task_hints()
+    world.complete(second, "fast")
+    world.deliver_task_hints()
+    assert sorted(world.running_tasks(second)) == ["pick", "slow"]
+    event = world.work_input(second, "pick")
+    assert event["upstream"]["slow"] == {"status": "running", "skip_origin": None}
+    with pytest.raises(xcom.XComMissingError, match="status: running"):
+        world.xcom_get(second, "pick", "slow")
+    assert world.xcom_get(second, "pick", "slow", raise_on_missing=False) is None
 
 
 @defect("R-T2")

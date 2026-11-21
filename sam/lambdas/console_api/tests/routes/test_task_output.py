@@ -146,11 +146,13 @@ def test_no_pipeline_name_returns_null(mocker):
     assert body["output"] is None
 
 
-def test_result_read_error_is_swallowed(mocker):
-    _patch(mocker, store={"result": "not-valid-json{"})
-    body = _body(get_task_output("extract", _event()))
-    assert body["output"] is None
-    assert body["truncated"] is False
+def test_a_result_that_is_no_json_is_the_string_an_older_run_task_stored(mocker):
+    """1.2 stored a string result as it was ("ok"); 1.3 stores it as JSON ("\"ok\""). Both show as the string."""
+    for stored, shown in (("not-valid-json{", "not-valid-json{"), ("ok", "ok"), (json.dumps("ok"), "ok")):
+        _patch(mocker, store={"result": stored})
+        body = _body(get_task_output("extract", _event()))
+        assert body["output"] == shown
+        assert body["truncated"] is False
 
 
 # ── Split records: prefer input# record, fall back to legacy field (§3.2) ────

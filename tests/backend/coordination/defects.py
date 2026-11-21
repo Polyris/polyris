@@ -37,6 +37,11 @@ DEFECTS = {
     "R-N2": "A task that runs after a final failure reads an older run's output of the same date; the upstream "
             "must reach it as its status alone (ADR #137 §1, ADR #138 §2)",
     "R-T2": "A timed-out attempt ends the task without its retries; a timeout is a failed attempt (ADR #137 §1)",
+    "R-J1": "A task whose work returns a string blocks its dependant: the result was stored as it was (\"ok\"), "
+            "which no reader can parse; a result is stored as JSON, and a 1.2 row's string reaches the dependant "
+            "as that string (the review of TR-5)",
+    "R-N3": "A task beside an upstream that has not succeeded yet in this run (one_success) reads that upstream's "
+            "older output of the same date through xcom (the review of TR-5)",
     "R-C1": "A success transaction that DynamoDB cancels (a conflict, a throttled item, a fact time already "
             "taken) loses the success; run_task must read its row and try again with a new time for each fact",
     "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "

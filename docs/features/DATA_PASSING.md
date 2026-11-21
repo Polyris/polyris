@@ -9,14 +9,12 @@ end-to-end design rationale, see
 
 ## Requires
 
-`polyris >= 1.0.0` in your task deployment bundles (Lambda zip, Glue
-`--additional-python-modules`, ECS container install, etc.). The `xcom.get()`
-/ `xcom.push()` API and the typed `XCom*Error` hierarchy ship in that version.
-
-Older SDK versions keep working with the legacy
-`event["upstream"][X]["output"]` / `xcom.pull()` patterns — they just don't get
-the new typed errors, transparent truncation fallback, or the manual-resolution
-guard. See [Migration from 0.99](#migration-from-099).
+`polyris >= 1.3.0` in your task deployment bundles: a Lambda's package
+(`polyris-build-lambda`), a Glue job's wheel (`--extra-py-files`), an ECS or
+Batch image. Rebuild them when you upgrade to 1.3. An older copy of `xcom`
+returns `None` for an upstream whose output the task's input could not hold (a
+fan-in over about 1,500 upstreams), raises for an upstream the run skipped, and
+can read an older run's output of the same date after an upstream failed.
 
 ## Contents
 
@@ -90,15 +88,26 @@ runs after a failure never reads an older run's output of the same date:
   `XComUpstreamFailedError`, or returns `None` with `raise_on_failure=False`.
 - After a skip by a trigger rule, `get()` raises `XComMissingError`, or returns
   `None` with `raise_on_missing=False`.
+- Beside an upstream that has not succeeded yet in this run (it still waits or
+  runs when a `one_success` or `one_failed` task starts), `get()` raises
+  `XComMissingError` naming the status, or returns `None` with
+  `raise_on_missing=False`.
+
+A task's result is stored as JSON, a string result included (`"ok"`, with its
+quotes), and reaches its dependants as the value the task returned. A string
+result that an older version stored as it was reaches them as that string.
 
 An upstream that succeeded always has its output, because the output is written
 together with the success. If it is missing anyway, the task fails with that
 cause before its work starts, and waits for an operator's decision.
 
 A Lambda or `@task.sfn` task gets each upstream in `event["upstream"][name]`:
-its `status`, its `skip_origin`, and its `output` when the task reads it. A Glue,
-ECS or Batch task gets the statuses in `POLYRIS_UPSTREAM_STATUSES`, beside
-`POLYRIS_TASK_NAME`. An EMR step gets neither: after an upstream failed, `xcom`
+its `status`, its `skip_origin`, and its `output` when the task reads it. An ECS
+or Batch task gets the statuses in the environment variable
+`POLYRIS_UPSTREAM_STATUSES`, beside `POLYRIS_TASK_NAME`. A Glue job gets them as
+the job argument `--POLYRIS_UPSTREAM_STATUSES`; `xcom` reads it, and every other
+`--POLYRIS_*` argument, from the job's command line, so the script copies none
+of them into the environment. An EMR step gets neither: after an upstream failed, `xcom`
 in an EMR step can return an older run's output of the same date.
 
 **Lookup order:**
@@ -195,11 +204,12 @@ upstream-failure guard, and inject → DDB fallback on top of the same reader.
 **Behaviour differences from `get()`:**
 
 - No `raise_on_missing` / `raise_on_failure` — missing rows raise
-  `XComMissingError` (aliased as `PullError`) unconditionally; the row's status
-  is not consulted. In a Glue, ECS or Batch task, an upstream that failed
-  finally raises `XComUpstreamFailedError`, and one a trigger rule skipped
-  raises `XComMissingError`, from `POLYRIS_UPSTREAM_STATUSES`; use `get()` to
-  receive `None` instead.
+  `XComMissingError` (aliased as `PullError`) unconditionally. The upstream's
+  status is checked as `get()` checks it: from the event in a Lambda
+  (`xcom.pull(name, event)`), from `POLYRIS_UPSTREAM_STATUSES` in Glue, ECS or
+  Batch. An upstream that failed finally raises `XComUpstreamFailedError`, and
+  any other upstream without an output in this run `XComMissingError`; use
+  `get()` to receive `None` instead.
 - Truncated rows raise `XComMissingError` (via `PullError`), not
   `XComTruncatedError`. `get()` upgrades the error type when it detects the
   truncation marker.

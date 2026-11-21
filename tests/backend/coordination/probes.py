@@ -255,6 +255,17 @@ PROBES: Tuple[Probe, ...] = (
     Probe("R-N2", (Edit(RUN_TASK, "$u.status = 'success' or ($u.status = 'skipped'",
                         "$u.status in ['success', 'failed'] or ($u.status = 'skipped'"),),
           f"{ROWS}::test_a_task_after_a_final_failure_gets_its_status_and_never_an_older_runs_output"),
+    # The read parses every stored text: a 1.2 row's string result fails it, and the dependant gets no output.
+    Probe("R-J1", (Edit(RUN_TASK, "($substring($trim($raw), 0, 1) in ['{', '[', '\\\"', '-', '0', '1', '2', '3', '4', "
+                                  "'5', '6', '7', '8', '9', 't', 'f', 'n'] ? ($p := $parse($raw); $exists($p) ? "
+                                  "{'output': $p} : {}) : {'output': $raw})",
+                        "($p := $parse($raw); $exists($p) ? {'output': $p} : {})"),),
+          f"{ROWS}::test_a_string_result_a_1_2_run_task_stored_reaches_the_dependant_as_that_string"),
+    # xcom refuses only a final failure and a rule's skip, as TR-5b did: an upstream still running is read.
+    Probe("R-N3", (Edit("polyris/xcom.py",
+                        "    if status == _SUCCESS or (status == _SKIPPED and skip_origin in _READABLE_SKIPS):\n",
+                        "    if (status not in _FAILED_FINALLY and status != _SKIPPED) or skip_origin in _READABLE_SKIPS:\n"),),
+          f"{ROWS}::test_a_task_beside_an_upstream_that_still_runs_never_reads_its_older_output"),
     # A timeout skips the task's retries, as execution_timeout did in 1.2 (the review of ADR #136, B4).
     Probe("R-T2", (Edit(RUN_TASK, '"Condition": "{% $retry_attempt < (',
                         '"Condition": "{% $states.input.error_obj.Error != \'States.Timeout\' and $retry_attempt < ('),),

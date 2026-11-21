@@ -38,6 +38,14 @@ import jsonata
 from botocore.exceptions import ClientError
 from jsonata.utils import Utils
 
+
+def _parse_json(text: str) -> Any:
+    """Step Functions' $parse as the tests model it (tests/sdk/sfn_jsonata.parse_json): JSON.parse, so JSON null
+    stays null (Utils.NULL_VALUE; None is undefined), and a text that is no JSON fails the state. What AWS does
+    with such a text is checked live in TR-7."""
+    value = json.loads(text)
+    return Utils.NULL_VALUE if value is None else value
+
 from boundary import acting_as
 
 ACCOUNT = "123456789012"
@@ -118,7 +126,7 @@ class Expressions:
         for name, val in variables.items():
             compiled.assign(name, val)
         compiled.register_lambda("now", self.now)
-        compiled.register_lambda("parse", json.loads)
+        compiled.register_lambda("parse", _parse_json)
         compiled.register_lambda("hash", lambda text, algorithm: hashlib.new(
             str(algorithm).replace("-", "").lower(), str(text).encode("utf-8")).hexdigest())
         compiled.register_lambda("uuid", lambda: f"00000000-0000-4000-8000-{next(self._uuids):012d}")
