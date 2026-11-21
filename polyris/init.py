@@ -41,7 +41,7 @@ Commands (run from this directory):
     polyris-local --mock          # Simulate execution with mock results
     polyris-validate              # Validate pipeline
     polyris-validate -v           # Verbose validation
-    polyris-output --json         # Generate ASL JSON
+    polyris-output --json         # The definition and its task specs
     polyris-output --mermaid      # Generate Mermaid diagram
     polyris-output --graph        # Show DAG as ASCII graph
 
@@ -108,7 +108,7 @@ Commands (run from this directory):
     polyris-local --mock          # Simulate execution with mock results
     polyris-validate              # Validate pipeline
     polyris-validate -v           # Verbose validation
-    polyris-output --json         # Generate ASL JSON
+    polyris-output --json         # The definition and its task specs
     polyris-output --mermaid      # Generate Mermaid diagram
     polyris-output --graph        # Show DAG as ASCII graph
 
@@ -492,7 +492,7 @@ Try it now:
   cd {pipeline_dir}
   polyris-validate              # Validate pipeline
   polyris-validate -v           # Verbose output
-  polyris-output --json         # Full Step Functions JSON
+  polyris-output --json         # The definition and its task specs
   polyris-output --mermaid      # Generate diagram
   polyris-output --graph        # Show DAG as ASCII graph
 """)

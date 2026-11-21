@@ -16,6 +16,7 @@ from types import ModuleType
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from boundary import as_component
 from platform_stack import Stack
 
 LAMBDAS = Path(__file__).resolve().parents[3] / "sam" / "lambdas"
@@ -123,43 +124,74 @@ class Bindings:
         self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))
         return main
 
-    def reconcile(self) -> Callable[[Any, Any], Any]:
-        import reconcile
+    def start_run(self) -> Callable[[Any, Any], Any]:
+        """Start_Run over the stack's tables, on the stack's clock (ADR #137 §1)."""
+        import env
+        import start_run
 
         tables = self.stack.tables
-        self._set(reconcile, "_RECONCILER", reconcile.Reconciler(
-            self.resource, self.stack.runtime,
-            tokens_table=tables["PipelineTokensTable"],
-            subscriptions_table=tables["DependencySubscriptionsTable"],
-            asset_events_table=tables["AssetEventsTable"],
-            pipelines_table=tables["PipelineRegistryTable"],
-            clock=self.clock,
-        ))
-        self.stack.bind_lambda("ReconcileFunction", reconcile.handler)
-        return reconcile.handler
+        self._set(env, "_dynamodb", self.resource)
+        self._set(env, "_dynamodb_client", self.stack.ddb)
+        self._set(env, "TOKENS_TABLE", tables["PipelineTokensTable"])
+        self._set(env, "SUBSCRIPTIONS_TABLE", tables["DependencySubscriptionsTable"])
+        self._set(env, "SPECS_TABLE", tables["PipelineSpecsTable"])
+        self._set(start_run, "datetime", _clocked_datetime(self.clock))
+        handler = as_component("lambda:start-run", start_run.handler)
+        self.stack.bind_lambda("StartRunFunction", handler)
+        return handler
+
+    def run_task_stub(self) -> str:
+        """The stand-in for run_task until TR-5 (run_task_stub.py), on the stack's clock, as the stack's run_task
+        state machine; returns its ARN."""
+        import run_task_stub as stub
+
+        machine = self.stack.runtime.add_machine(self.stack.machine_names["RunTaskHelperSfn"], stub.DEFINITION)
+        for name, handler in stub.handlers(self.stack.ddb, self.stack.tables["PipelineTokensTable"],
+                                           self.clock).items():
+            self.stack.runtime.lambdas[name] = as_component(f"lambda:{name}", handler)
+        return machine.arn
+
+    def dispatcher(self, run_task_arn: str) -> Callable[[Any, Any], Any]:
+        """The dispatcher over the stack's tables, on the stack's clock, under reconcile's function as the
+        template binds it (ADR #137 §7); returns the handler the tasks stream's adapter feeds."""
+        import dispatcher as module
+
+        tables = self.stack.tables
+        self._set(module, "_DISPATCHER", module.Dispatcher(
+            self.stack.ddb, self.stack.runtime, resource=self.resource,
+            tokens_table=tables["PipelineTokensTable"], subscriptions_table=tables["DependencySubscriptionsTable"],
+            specs_table=tables["PipelineSpecsTable"], asset_events_table=tables["AssetEventsTable"],
+            pipelines_table=tables["PipelineRegistryTable"], run_task_arn=run_task_arn, clock=self.clock,
+            sleep=lambda _: None))
+        handler = as_component("lambda:reconcile", module.handler)
+        self.stack.bind_lambda("ReconcileFunction", handler)
+        return handler
 
     def asset_fanout(self) -> Any:
-        """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
+        """AssetFanout over the bound dispatcher; the stream adapter in world.py feeds it."""
         import asset_fanout
-        import reconcile
 
-        fanout = asset_fanout.AssetFanout(reconcile._RECONCILER,
+        import dispatcher
+
+        fanout = asset_fanout.AssetFanout(dispatcher._DISPATCHER,
                                           subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
                                           consumers_table=self.stack.tables["AssetSubscriptionsTable"])
         self._set(asset_fanout, "_FANOUT", fanout)
         return asset_fanout.handler
 
     def sweeper(self) -> Callable[[Any, Any], Any]:
-        """The sweeper over the bound reconciler; World.sweep runs one scheduled invocation."""
-        import reconcile
+        """The sweeper over the bound dispatcher; World.sweep runs one scheduled invocation."""
         import sweeper
 
+        import dispatcher
+
         self._set(sweeper, "_SWEEPER", sweeper.Sweeper(
-            reconcile._RECONCILER, owner="harness",
+            dispatcher._DISPATCHER, owner="harness",
             subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
             consumers_table=self.stack.tables["AssetSubscriptionsTable"],
             lambda_client=_LambdaClient(self.stack),
-            fanout_function=self.stack.functions["AssetFanoutFunction"]))
+            fanout_function=self.stack.functions["AssetFanoutFunction"],
+            dispatcher_function=self.stack.functions["ReconcileFunction"]))
         return sweeper.handler
 
     def query_subscriptions(self) -> Callable[[Any, Any], Any]:
@@ -168,5 +200,6 @@ class Bindings:
 
         self._set(qs_dal, "_dynamodb", self.resource)
         self._set(qs_dal.subscriptions_repo, "_explicit_table_name", self.stack.tables["DependencySubscriptionsTable"])
-        self.stack.bind_lambda("QuerySubscriptionsFunction", module.handler)
-        return module.handler
+        handler = as_component("lambda:query-subscriptions", module.handler)
+        self.stack.bind_lambda("QuerySubscriptionsFunction", handler)
+        return handler

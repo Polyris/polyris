@@ -18,9 +18,11 @@ assert _spec and _spec.loader
 kit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(kit)
 
+from tests.specs_kit import deploy_specs, spec, use_specs_table
+
 ITEM = {"execution_name": "extract-2026-11-12--2026-11-12-abcdef12", "pipeline_name": "orders",
         "pipeline_execution": "orders-run-2026-11-12-abcdef12", "date": "2026-11-12"}
-NODES = [{"id": "extract", "outlets": [{"name": "lake/sales"}, {"name": "lake/prices"}]}]
+SPECS = [spec("extract", outlets=[{"name": "lake/sales"}, {"name": "lake/prices"}])]
 
 
 @pytest.fixture
@@ -35,7 +37,8 @@ def tables(mocker):
         mocker.patch.object(config, "_dynamodb", resource)
         mocker.patch.object(executions_repo, "_table_name", tokens_name)
         mocker.patch.object(pipelines_repo, "_table_name", registry_name)
-        resource.Table(registry_name).put_item(Item={"pipeline_name": "orders", "dag": json.dumps({"nodes": NODES})})
+        use_specs_table(mocker, resource)
+        resource.Table(registry_name).put_item(Item={"pipeline_name": "orders", **deploy_specs(resource, "orders", SPECS)})
         yield resource.Table(tokens_name)
 
 
@@ -62,14 +65,14 @@ def test_a_fact_that_cannot_be_recorded_becomes_a_fact_warning(tables, mocker):
 
 
 def test_the_runs_own_outlets_come_from_the_task_row(tables, mocker):
-    """A wrapper step is no node of the registry's dag: its row says it has no outlets, so nothing is
-    owed and nothing is warned; a row that names outlets is used as it is, without the registry."""
+    """A row that says it has no outlets owes no fact and warns of none; a row that names outlets
+    is used as it is, without the task's spec."""
     from routes import tasks
 
     write_fact = mocker.patch.object(tasks.asset_events_repo, "write_fact")
     step = {**ITEM, "execution_name": "notify_team-2026-11-12--2026-11-12-abcdef12", "outlets": "[]"}
     assert tasks.record_manual_success_facts(step, "notify_team") == {}
-    reader = mocker.patch.object(tasks, "_read_dag_node")
+    reader = mocker.patch.object(tasks, "_read_task_spec")
     assert tasks.record_manual_success_facts({**ITEM, "outlets": json.dumps([{"name": "lake/orders"}])}, "extract") == {}
     reader.assert_not_called()
     assert [c.kwargs["asset_name"] for c in write_fact.call_args_list] == ["lake/orders"]
@@ -91,6 +94,7 @@ def test_a_row_without_a_date_warns_for_every_outlet(tables, mocker):
     ("unreadable", "the pipeline registry could not be read"),
     ("missing", "pipeline orders is not in the registry"),
     ("no node", "task extract is not in the deployed pipeline orders"),
+    ("not redeployed", "the task specs of orders cannot be read: pipeline orders names no task specs"),
 ])
 def test_outlets_that_cannot_be_read_are_a_warning_too(tables, mocker, registry, reason):
     """B-M2: when the registry cannot say which facts the task produces, the missing facts are not silent."""
@@ -102,8 +106,12 @@ def test_outlets_that_cannot_be_read_are_a_warning_too(tables, mocker, registry,
                             side_effect=ClientError({"Error": {"Code": "ThrottlingException"}}, "GetItem"))
     elif registry == "missing":
         mocker.patch.object(tasks.pipelines_repo, "get", return_value=None)
+    elif registry == "not redeployed":
+        mocker.patch.object(tasks.pipelines_repo, "get", return_value={"pipeline_name": "orders"})
     else:
-        mocker.patch.object(tasks.pipelines_repo, "get", return_value={"dag": json.dumps({"nodes": []})})
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        mocker.patch.object(tasks.pipelines_repo, "get", return_value={
+            "pipeline_name": "orders", **deploy_specs(resource, "orders", [spec("load")])})
     write = mocker.patch.object(tasks.asset_events_repo, "write_fact")
 
     failed = tasks.record_manual_success_facts(dict(ITEM), "extract")

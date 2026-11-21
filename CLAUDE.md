@@ -304,7 +304,7 @@ Code computes engine health on demand and shows it in the console (ADR #130 §9)
 A template test enforces this rule. Adding any of them needs an explicit maintainer decision recorded in an ADR.
 
 **48. A value an ADR defines clause by clause is one pure function with a test per clause**
-The enabling time (ADR #130 §9) has four clauses: latest required dependency, earliest success for `one_*`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
+The enabling time (ADR #130 §9, ADR #138 §2) has five clauses: latest required dependency, earliest success for `one_success`, earliest final failure for `one_failed`, earliest ready member of an OR group, never before the resume. Computed inline in the reconciler, three of them were missing, and the sweeper reported false misses after every resume over budget. Put such a definition in `polyris/coordination/` (here `trigger_rules.enabled_at`, `Evaluation.enabled_at`) and test each clause.
 
 **53. A Lambda's AWS calls fail inside the Lambda's timeout**
 botocore's defaults (ten DynamoDB attempts, a 60 s read timeout) outlast a 30 s function, and a function that times out cannot report its own transient error, so the caller sees `Sandbox.Timedout`. A read of an index that is still being built answers `ValidationException` "Cannot read from backfilling global secondary index"; `failures.is_transient` counts it as transient, because an upgrade that adds an index reaches the Lambdas first (the 1.2.0 upgrade rehearsal failed a `wait_for` task on it). Build clients with a short retry and timeout config (`env._config` in the coordination Lambdas), and let the caller's `Retry`/`Catch` treat the platform's own failures (`Sandbox.Timedout`, `Lambda.Unknown`) and any HTTP 5xx as transient.
@@ -355,7 +355,7 @@ When adding a paid feature:
 
 Serverless data pipeline orchestration on AWS Step Functions. Python DSL → generates ASL → deploys via CloudFormation (`polyris-deploy`).
 
-Core idea: each task = one `dependency_wrapper` SFN execution that waits for deps, runs the task, then signals downstream tasks via `notify_dependents`.
+Core idea (ADR #137): a run is one pipeline execution whose `Start_Run` writes one row per task. The dispatcher, woken by the tasks table's stream, decides each row from the rows and facts, starts its `run_task`, and answers the run once every row is final; the sweeper checks every run on a schedule, so a lost wake-up only delays a task.
 
 ---
 
@@ -380,7 +380,7 @@ sam/
       restart_wrapper/sfn.tpl.json
       pause_waiter/sfn.tpl.json
   lambdas/
-    console_api/      # REST API (28 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
+    console_api/      # REST API (27 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
     coordination/     # reconcile, asset-fanout, sweeper (ADR #130): decide readiness, signal wrappers, start push consumers, re-check
     query_subscriptions/  # Finds downstream subscribers for a completed task
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
@@ -454,13 +454,14 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130) |
 | `subscriptions_repo` (query_subscriptions `qs_dal`) | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
+| `specs_repo` (reads only; `polyris-deploy` writes) | `pipeline-specs` | `pk` | `sk` | — |
 | `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index`, `asset-partition-index` (sparse, ADR #130) |
 | `task_events_repo` | `task-events` | `task_run_id` | `event_time` | `run-index`, `execution-name-index` |
 | `asset_subscriptions_repo` | `asset-subscriptions` | `asset_name` | `pipeline_name` | — |
 | `api_tokens_repo` | `api-tokens` | `token_id` | — | `hash-index`, `owner-index` |
 
 **Two separate subscription tables, split by semantics (not by consumer):**
-- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5): a task dependency (`dependency_key = "{upstream}-{pipeline_execution_short}"`) or a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name` and no token. Writer: the registration SFN. Readers: `query_subscriptions` (for `notify_dependents`) and `AssetFanout`, both consistent. The reconciler deletes a task's pointers after its signal was accepted (Principle #40).
+- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5): a task dependency (`dependency_key = "{upstream}-{pipeline_execution_short}"`, 1.2 runs only) or a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name`, `run` = its run row's key (ADR #137 §7) and no token. Writers: `Start_Run`, and for 1.2 runs the registration SFN. Readers: `query_subscriptions` (for `notify_dependents`) and `AssetFanout`, which groups the pointers by `run` into one narrow pass per run; both consistent. The dispatcher deletes a row's pointers once it has left the wait (Principle #40).
 - `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Push consumers only (`schedule=[asset]`): one row per (asset, consumer pipeline). Writer: the pipeline's own registration chain (`Register_Asset_Subscriptions`, at deploy and on every run). Reader: `AssetFanout`, which evaluates the consumer's schedule from its registry entry (ADR #130 §6.1).
 
 The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while dep/wait_for subscriptions are per-(upstream, subscriber-task-execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
@@ -551,9 +552,10 @@ In `template.yaml`, always verify:
 |----------|---------|-------------|
 | `console-api` | All REST API endpoints | `TOKENS_TABLE`, `REGISTRY_TABLE`, etc. |
 | `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
-| `reconcile` | Decide whether a waiting task is ready and signal its wrapper (ADR #130 §3) | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE` |
-| `asset-fanout` | Read the `asset-events` stream (INSERT only) and reconcile every task waiting on the new fact's asset (ADR #130 §6.1) | the same as `reconcile` |
-| `sweeper` | Every 5 minutes (EventBridge Scheduler): re-check the waiting tasks that are due, warn about lost hints, abort zombies past their liveness deadline, release tasks a resume missed from their pause wait, retry failed push starts, hourly push catch-up, adopt rows an older version wrote, write the engine self-check to `_engine_health` (ADR #130 §8) | the same as `asset-fanout`, plus `ASSET_FANOUT_FUNCTION` |
+| `reconcile` | The dispatcher (ADR #137 §1, §7; handler `dispatcher.handler`): woken by the tasks table's stream, it passes over a run's rows, decides each, starts `run_task` and answers the run | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE`, `SPECS_TABLE` → `PipelineSpecsTable`, `RUN_TASK_ARN` |
+| `asset-fanout` | Read the `asset-events` stream (INSERT only), make one narrow pass of the dispatcher over each run with a task waiting on the new fact's asset (ADR #137 §7), and start the pipelines scheduled on it (ADR #130 §6.1) | the same as `reconcile`, plus `ASSET_SUBSCRIPTIONS_TABLE` |
+| `sweeper` | Every 5 minutes (EventBridge Scheduler): one full pass of the dispatcher over each due run (ADR #137 §7), whose passes alone judge executions; the engine stops a run whose execution ended before its answer or that never became active; stop rows whose run row is missing; warn about lost hints once per run; retry failed push starts, hourly push catch-up, write the engine self-check to `_engine_health` (ADR #130 §8, ADR #137 §6) | the same as `asset-fanout`, plus `ASSET_FANOUT_FUNCTION` and `DISPATCHER_FUNCTION` |
+| `start-run` | A run's first state (`lambda:invoke.waitForTaskToken`, ADR #137 §1): read the run's task specs, write the run row with the run's token, the run's input, one row per task and the `asset:` pointers, then mark the run active | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `SPECS_TABLE` → `PipelineSpecsTable` |
 | `ui-bootstrap` | Custom resource on `polyris-up` stacks: copy prebuilt UI into the console bucket, prune old files, render `config.js`, invalidate CloudFront | — |
 
 **Structured logging:** Lambda handlers use `polyris/logger.py` (`log.info`/`log.warn`/`log.error`) for JSON lines CloudWatch can parse. CLI tools (`cli.py`, `register.py`, `init.py`, `output.py`) use `print()` — correct, they are the event stream consumer. Known gap: `ui_bootstrap` still uses bare `print()` — migrate opportunistically.
@@ -579,7 +581,7 @@ After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums
 
 Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `register(router)`; `main.py` exposes the assembled `ROUTES` table `(METHOD, '/api/path') → (handler_fn, 'param_key')`.
 
-**Surface (ADR #98, #110):** 28 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
+**Surface (ADR #98, #110):** 27 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
@@ -650,7 +652,7 @@ Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
 ## Error Visibility (ADR #38)
 
 **Lambda rules:**
-- Never swallow `AccessDeniedException` — always `raise`
+- Never swallow `AccessDeniedException` — always `raise`. Exception: a stream consumer (the dispatcher, AssetFanout). Its mapping retries a failed batch without end, so a raise would hold up the shard for 24 hours; it writes a `coordination` warning and leaves the row to its next check instead (ADR #137 §7)
 - Every `except Exception` must log `error=str(e)` with function context
 - If an error blocks downstream tasks → write `_notify_warn_` record to `pipeline-tokens`
 - A catch on a wake-up path (subscription write/query, `send_task_success`, a fail-open fallback) logs at `log.error`, never `log.warn` — a swallowed WARN is what hid the historical `wait_for` subscription-table schema mismatch for months (DAL wrote `dependency_key`/`subscriber`, env var pointed at `AssetSubscriptionsTable` which keyed on `asset_name`/`pipeline_name`); the ValidationException was caught and logged as warning
@@ -672,13 +674,13 @@ The row carries no `date`: the bell reads it from `attention-index` (`warn#{h}`)
 - `_pause_{pipeline_execution}` — pause state
 - `_notify_warn_{kind}_{execution_name}` — infrastructure warning (`records.warning_item`)
 
-**CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The coordination store reads only rows in a reconcilable status, which no internal row has.)
+**CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The dispatcher reads its run's rows by key, and the sweeper only the due entries of the `waiting` and `decision` kinds, so neither meets an internal row.)
 ```python
 for item in items:
     if should_skip_token_row(item):
         continue
 ```
-Internal rows are `_`-prefixed (`_pause_`, `_notify_warn_`, `_retry_push_`), the stores `output#` and `input#`, and the run's DAG snapshot `dag_snapshot::{run}`. Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs. A `_`-only check let the snapshot, which shares the run's `pipeline_execution`, through: a task without a status, and an empty `/api/execution-children` for every run.
+Internal rows are `_`-prefixed (the run row `_run_{execution}` and its input `_run_{execution}#input`, `_pause_`, `_notify_warn_`, `_retry_push_`, `_engine_health`, `_sweeper_lease`), the stores `output#` and `input#`, and the run's DAG snapshot `dag_snapshot::{run}`. Violating this → `_notify_warn_` appears in All Tasks / pipeline status / runs. A `_`-only check let the snapshot, which shares the run's `pipeline_execution`, through: a task without a status, and an empty `/api/execution-children` for every run.
 
 **SFN templates:** `Catch` blocks must preserve `$states.errorOutput` in Output. A state after a point of no return has a Catch that reaches the bell: restart stops the old wrapper first, so a failed hand-over or wrapper start left the task dead while the console said "Task restarted" (`Warn_Restart_Failed`). A catch on a write of the task's facts, or on its run's callback, after the task's own success writes a warning row: the row already says `success`, so nothing else shows the failure. A fact `run_task` could not record once left its consumers waiting with no trace (`Warn_Facts_Not_Recorded`).
 
@@ -756,6 +758,7 @@ make test-cov
 - **Lambda suites are hermetic too.** `make test-lambdas` runs them with no AWS profile, region or credentials (`HERMETIC_AWS`), as CI does. A suite whose module builds a boto3 client at import sets `AWS_DEFAULT_REGION` (and fake credentials for moto) before importing it; `bucket_cleanup` passed locally and failed in CI on `NoRegionError`.
 - **Every Lambda test suite runs in CI.** The `lambdas` job in `ci.yml` lists each suite as its own step, and `make test-lambdas` runs the same suites locally. A Lambda with `tests/` or `test_*.py` needs both, or its tests silently never run; `tests/sdk/test_ci_runs_every_suite.py` fails until it has them, and also until every `testpaths` directory in `pyproject.toml` runs from a make target that `ci.yml` calls and `make test` includes.
 - Coverage floor is a ratchet — raise the floor when you raise coverage (#22)
+- **A harness check that retires keeps its guards.** ADR #130's invariants also failed a scenario on any template expression error, caught or not (D107). When the World moved onto 1.3's rows and stopped running them, that check stopped too, silently, while this file still promised it. Before you stop running a check, list everything it checks; each guard the docs still promise moves to what runs now, with a test that it fails a scenario (`test_rows_view.py`).
 - **`dal/__init__.py` submodule shadowing:** `from dal.executions_repo import executions_repo` replaces the submodule attribute on the `dal` package with the singleton instance. Tests patching module-level globals on a `dal` submodule must use `importlib.import_module('dal.executions_repo')` to get the actual module object.
 
 ---
@@ -767,7 +770,7 @@ make test-cov
 3. **DefinitionUri vs inline** — always edit `sfn_templates/`, never inline in `template.yaml`.
 4. **pipeline_execution_short** — last 20 chars of `pipeline_execution`, with `.` and `:` stripped. Format: `-{date}-{hex8}`.
 5. **dependency_key** — `{task_name}-{pipeline_execution_short}`. Must match exactly between writer (registration) and reader (query_subscriptions).
-6. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`).
+6. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`). A field whose expression evaluates to undefined fails the state with `States.QueryEvaluationError`, since JSON cannot represent undefined, and a `Catch` on `States.ALL` hides that: `Failure_Complete` read fields its input no longer carried, and the failure handler failed live while every scenario passed (1.2.0, CR-7). Never let an expression error steer a template: test the field with `$exists` in a `Choice`. The coordination harness fails like AWS on undefined, and a scenario fails on any expression error, caught or not (D107; defect `B-Q1`).
 7. **Whoever ends a task answers its run, and a closed token is fine (ADR #135).** Never skip the answer because a flag says another state machine gave it. `helper_failed` claimed that `run_task` had answered, and twice it had not: F16, and a pause token that could not be saved. A zombie that the reconciler closed had no answer at all, and the wrapper's skip answer and the console's task actions swallowed a failed one. Retry nothing on the closed-token codes (`DEAD_TOKEN_CODES`), and turn any other error into a warning (`Warn_Run_Left_Running` in a template, `routes.tasks.answer_run` in the console). The one exception is a superseded owner: a restart handed its token on, and the new owner answers. `tests/sdk/test_run_answers.py` fails until a new template answer has a role, and harness invariant 10 fails a scenario that leaves a run `RUNNING` after its tasks have finished.
 
 ---

@@ -8,40 +8,19 @@
 
 import ast
 import re
-from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set
 
 from defects import DEFECTS
 from probes import PROBES
+from invariants import KNOWN_FAILING_EXPRESSIONS
+from row_invariants import CHECKS, ELSEWHERE, PENDING, STAGE_OF
+from scenario_marks import REPO_ROOT, SCENARIO_FILES, scenarios
 from stages import BOUND_STAGES, STAGES
 
-HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[2]
-SCENARIO_FILES = sorted(HERE.glob("test_scenarios*.py"))
-
-
-def _marks(decorator: ast.expr) -> Tuple[str, str]:
-    """('defect', 'B-P1') for @defect("B-P1") or @pytest.mark.defect("B-P1")."""
-    if isinstance(decorator, ast.Call) and decorator.args and isinstance(decorator.args[0], ast.Constant):
-        func = decorator.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        return name, str(decorator.args[0].value)
-    return "", ""
 
 
 def _scenarios() -> Dict[str, Dict[str, List[str]]]:
-    """{nodeid: {"defect": [...], "needs_binding": [...]}} for every scenario function."""
-    found: Dict[str, Dict[str, List[str]]] = {}
-    for path in SCENARIO_FILES:
-        for node in ast.parse(path.read_text()).body:
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
-                marks: Dict[str, List[str]] = {"defect": [], "needs_binding": []}
-                for decorator in node.decorator_list:
-                    kind, value = _marks(decorator)
-                    if kind in marks:
-                        marks[kind].append(value)
-                found[f"{path.relative_to(REPO_ROOT)}::{node.name}"] = marks
-    return found
+    return scenarios()
 
 
 def test_every_defect_has_a_scenario_and_every_scenario_names_a_known_defect():
@@ -96,3 +75,25 @@ def test_scenarios_build_state_only_through_the_world():
     for path in SCENARIO_FILES:
         for number, line in enumerate(path.read_text().splitlines(), 1):
             assert not forbidden.search(line), f"{path.name}:{number}: write through a World verb, not to a table"
+
+
+def test_known_failing_expressions_are_only_in_templates_the_adr_removes():
+    """The expression check's exceptions may only name templates 1.3 deletes, so the list cannot grow
+    into a place where a template bug hides (D107)."""
+    adr = (REPO_ROOT / "docs/reference/adr-137-tasks-as-rows.md").read_text()
+    removed = next(line for line in adr.splitlines() if line.startswith("| State machines (8 of 13) |"))
+    for (machine, state), template in KNOWN_FAILING_EXPRESSIONS.items():
+        assert f"`{template}`" in removed, f"{machine}.{state}: {template} is not a template ADR #137 removes"
+
+
+
+def test_every_invariant_of_adr_137_has_one_home():
+    """Each of invariants 1-12 has a check here, a test elsewhere, or a named reason it waits (ADR #137, Tests)."""
+    homes = [set(CHECKS), set(ELSEWHERE), set(PENDING)]
+    assert set().union(*homes) == set(range(1, 13))
+    assert sum(len(h) for h in homes) == 12, "an invariant has two homes"
+
+
+def test_every_row_check_runs_from_a_known_stage():
+    assert set(STAGE_OF) == set(CHECKS)
+    assert set(STAGE_OF.values()) <= set(STAGES)

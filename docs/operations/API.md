@@ -105,14 +105,6 @@ POST /api/pipeline-run?name={pipeline_name}
 
 Body (optional): `{"variables": {"custom_var": "value"}}`
 
-### Register Pipeline
-
-```http
-POST /api/pipeline-register
-```
-
-Body: `{"pipeline_name": "...", "sfn_arn": "...", "dag": {...}}`
-
 ## Tasks
 
 ### List All Tasks

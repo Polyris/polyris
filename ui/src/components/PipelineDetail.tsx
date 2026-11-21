@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, lazy, Suspense } from 'react';
 import { Button } from '@/components/ui/button';
 import { DatePicker } from './DatePicker';
+import { REDEPLOY_HINT } from '../utils/pipelineSidebar';
 import { RefreshButton } from './RefreshButton';
 import { 
     DAGGraph, 
@@ -279,6 +280,11 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                         {pipeline.registered_at && (
                                             <span title={pipeline.registered_at}>
                                                 {' · '}Deployed {formatRelativeTime(pipeline.registered_at)}
+                                            </span>
+                                        )}
+                                        {pipeline.needs_redeploy && (
+                                            <span className="pd-redeploy" title={REDEPLOY_HINT}>
+                                                {' · '}Redeploy needed
                                             </span>
                                         )}
                                       </>

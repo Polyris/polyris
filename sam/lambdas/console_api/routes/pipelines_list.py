@@ -21,6 +21,7 @@ from polyris.constants import ACCESS_DENIED_CODES
 
 from config import sfn
 from dal import executions_repo, pipelines_repo
+from dal.specs_repo import needs_redeploy
 from constants import Limits, normalize_execution_status, derive_execution_status, reconcile_execution_status, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TaskStatus
 from feed import feed_dates
 from response import cors_response
@@ -72,6 +73,9 @@ def list_pipelines(event: Dict) -> Dict:
                     'schedule': item.get('schedule', ''),
                     'asset_schedule': asset_schedule,
                     'registered_at': item.get('registered_at', ''),
+                    # Deployed with an older format than this console reads, or before 1.3
+                    # (ADR #137, *Migration*): its runs fail until polyris-deploy runs again.
+                    'needs_redeploy': needs_redeploy(item),
                     'status': 'idle',
                     'paused': False,
                     'sla': None,
@@ -101,6 +105,7 @@ def list_pipelines(event: Dict) -> Dict:
                         'name': name,
                         'arn': '',
                         'description': '',
+                        'needs_redeploy': True,  # it has no registry entry, so no format either
                         'status': 'idle',
                         'paused': False,
                         'sla': None,

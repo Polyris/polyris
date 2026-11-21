@@ -71,7 +71,7 @@ cd my-pipeline
 
 polyris-validate              # Validate structure
 polyris-validate -v           # Verbose: tasks, deps, ASL preview
-polyris-output --json         # Full Step Functions JSON
+polyris-output --json         # The definition and its task specs
 polyris-output --mermaid      # Mermaid diagram source
 polyris-output --graph        # ASCII graph
 ```
@@ -130,7 +130,7 @@ hello-world through assets and lineage.
 │
 ├── sam/                          # Shared AWS infrastructure
 │   ├── template.yaml             # SAM template — all AWS resources
-│   ├── lambdas/                  # 8 Lambda functions
+│   ├── lambdas/                  # 9 Lambda functions
 │   └── sfn_templates/            # 13 SFN definitions (10 orchestration + 3 test)
 │
 ├── polyris/                      # Python DSL library

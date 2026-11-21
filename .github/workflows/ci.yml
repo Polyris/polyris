@@ -289,8 +289,8 @@ jobs:
         env:
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          for fn in ReconcileFunction AssetFanoutFunction SweeperFunction; do
-            (cd "build/sam/$fn" && python -c "import reconcile, asset_fanout, sweeper")
+          for fn in ReconcileFunction StartRunFunction AssetFanoutFunction SweeperFunction; do
+            (cd "build/sam/$fn" && python -c "import dispatcher, start_run, asset_fanout, sweeper")
           done
           (cd build/sam/ConsoleApiFunction && python -c "import main")
 

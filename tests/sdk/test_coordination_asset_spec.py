@@ -3,7 +3,7 @@
 import pytest
 
 from polyris.assets import Asset
-from polyris.coordination.spec import AND, OR, AssetGroup, AssetLeaf, asset_names, parse, parse_schedule
+from polyris.coordination.asset_spec import AND, OR, AssetGroup, AssetLeaf, asset_names, parse, parse_schedule
 from polyris.generators import _serialize_wait_for
 
 a, b, c = Asset("ns/a"), Asset("ns/b"), Asset("ns/c")

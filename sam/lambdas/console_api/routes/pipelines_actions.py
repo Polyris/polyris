@@ -1,4 +1,4 @@
-"""Pipeline action routes (free / open-core) — register and run.
+"""Pipeline action routes (free / open-core) — run.
 
 Team mutations (pause, restart) live in ee/team/pipelines_actions.py — ADR #98.
 """
@@ -11,33 +11,6 @@ from config import sfn
 from dal import pipelines_repo
 from response import cors_response, safe_parse_body
 from logger import log
-
-
-def register_pipeline(event: Dict) -> Dict:
-    """Register a new pipeline in the registry."""
-    body, err = safe_parse_body(event)
-    if err:
-        return err
-    pipeline_name = body.get('name')
-    
-    if not pipeline_name:
-        return cors_response(400, {'error': 'Pipeline name is required'})
-    
-    item = {
-        'pipeline_name': pipeline_name,
-        'arn': body.get('arn', ''),
-        'description': body.get('description', ''),
-        'pipeline_group': body.get('group', ''),
-        'tasks': body.get('tasks', []),
-        'created_at': datetime.now(timezone.utc).isoformat()
-    }
-    
-    pipelines_repo.put(item)
-    
-    return cors_response(200, {
-        'message': f'Pipeline {pipeline_name} registered',
-        'pipeline': item
-    })
 
 
 def run_pipeline(pipeline_name: str, event: Dict) -> Dict:
@@ -161,4 +134,3 @@ def run_pipeline(pipeline_name: str, event: Dict) -> Dict:
 def register(router) -> None:
     """Register the free pipeline action routes (register, run). See ADR #97."""
     router.add('POST', '/api/pipeline-run', run_pipeline, 'name')
-    router.add('POST', '/api/pipeline-register', register_pipeline)

@@ -1,10 +1,10 @@
-"""ReconcileFunction and ReconcileRole in sam/template.yaml match the code (Principle #13).
+"""The coordination functions and roles in sam/template.yaml match the code (Principle #13).
 
-The IAM test records every DynamoDB call the reconciler makes while it walks
-each of its paths, then compares that set with the role: a call the role
-does not allow would be an AccessDenied in production, and a grant no call
-uses is privilege the function does not need. The same walk checks that every
-read of a fact a decision rests on is consistent (ADR #130 §3).
+The IAM tests record every DynamoDB call a function makes while it walks each of
+its paths, then compare that set with its role: a call the role does not allow
+would be an AccessDenied in production, and a grant no call uses is privilege
+the function does not need. The dispatcher's walk also checks that every read a
+decision rests on is consistent and uses no index (ADR #137 §7).
 """
 
 import json
@@ -17,19 +17,17 @@ from coordination_testkit import (
     LAMBDA_ROOT,
     NOW,
     RUN,
-    SHORT,
+    STARTED_AT,
     TABLES,
     FUNCTION_ENV,
     FUNCTION_TABLES,
     FakeSfn,
     execution_name,
     legacy_fact,
-    task_row,
     template,
 )
 
 import env
-import reconcile
 
 LOGICAL = {name: logical for logical, name in TABLES.values()}
 Call = Tuple[str, str, Optional[str]]   # (IAM action, table logical id, index or None)
@@ -43,24 +41,33 @@ def resources() -> Dict[str, Any]:
 
 
 @contextmanager
-def recording(ddb) -> Iterator[Set[Call]]:
+def recording(ddb, *clients: Any) -> Iterator[Set[Call]]:
+    """Every DynamoDB call made through ``ddb`` and through the low-level ``clients``."""
     calls: Set[Call] = set()
 
     def before(params: Dict[str, Any], model: Any, **_: Any) -> None:
+        if model.name == "TransactWriteItems":       # IAM authorizes each item's own action
+            for item in params["TransactItems"]:
+                [(kind, request)] = item.items()
+                action = "ConditionCheckItem" if kind == "ConditionCheck" else f"{kind}Item"
+                calls.add((f"dynamodb:{action}", LOGICAL[request["TableName"]], None))
+            return
         tables = params["RequestItems"] if model.name == "BatchGetItem" else [params["TableName"]]
         for table in tables:
             calls.add((f"dynamodb:{model.name}", LOGICAL[table], params.get("IndexName")))
 
-    events = ddb.meta.client.meta.events
-    events.register("before-parameter-build.dynamodb", before, unique_id="coordination-iam")
+    every = [ddb.meta.client.meta.events, *(client.meta.events for client in clients)]
+    for events in every:
+        events.register("before-parameter-build.dynamodb", before, unique_id="coordination-iam")
     try:
         yield calls
     finally:
-        events.unregister("before-parameter-build.dynamodb", unique_id="coordination-iam")
+        for events in every:
+            events.unregister("before-parameter-build.dynamodb", unique_id="coordination-iam")
 
 
 @contextmanager
-def reading(ddb) -> Iterator[Set[Read]]:
+def reading(ddb, *clients: Any) -> Iterator[Set[Read]]:
     """Every DynamoDB read, with whether it is consistent (per table for BatchGetItem)."""
     reads: Set[Read] = set()
 
@@ -74,12 +81,14 @@ def reading(ddb) -> Iterator[Set[Read]]:
         reads.add((model.name, LOGICAL[params["TableName"]], params.get("IndexName"),
                    bool(params.get("ConsistentRead"))))
 
-    events = ddb.meta.client.meta.events
-    events.register("before-parameter-build.dynamodb", before, unique_id="coordination-reads")
+    every = [ddb.meta.client.meta.events, *(client.meta.events for client in clients)]
+    for events in every:
+        events.register("before-parameter-build.dynamodb", before, unique_id="coordination-reads")
     try:
         yield reads
     finally:
-        events.unregister("before-parameter-build.dynamodb", unique_id="coordination-reads")
+        for events in every:
+            events.unregister("before-parameter-build.dynamodb", unique_id="coordination-reads")
 
 
 def _resource(value: Any) -> Tuple[str, Optional[str]]:
@@ -110,79 +119,119 @@ STREAM_ACTIONS = {"dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:Ge
                   "dynamodb:ListStreams"}
 
 
-def _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb) -> Set[Call]:
-    load, report = execution_name("load"), execution_name("report")
-    tokens.put_item(Item=task_row("extract", status="success"))
-    tokens.put_item(Item=task_row("load", deps=["extract"], wait_for=[{"asset_name": "ns/orders", "freshness_hours": None}]))
-    subscriptions.put_item(Item={"dependency_key": f"extract-{SHORT}", "subscriber": load})
-    registry.put_item(Item={"pipeline_name": "producer", "dag": json.dumps({"nodes": []})})
-    asset_events.put_item(Item=legacy_fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:55:00.000Z"))
-    with recording(ddb) as calls:
-        assert reconciler.reconcile(load, source="registration")["action"] == "signalled"
+def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
+    """The dispatcher's paths over a run Start_Run wrote: a start, a fact that wakes a row, the run's end."""
+    from polyris.coordination import run_row
 
-    tokens.put_item(Item={"execution_name": f"_pause_{RUN}", "paused": True})
-    tokens.put_item(Item=task_row("report"))
-    with recording(ddb) as more:
-        assert reconciler.reconcile(report, source="registration")["action"] == "parked"
-    calls |= more
+    run = "orders-run-2026-11-12-dddd0001"
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
+                {"task_id": "load", "task_type": "sfn", "dependencies": ["extract"], "trigger_rule": "all_success",
+                 "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}], execution=run)
+    client, dispatcher, sfn = rows.client, rows.dispatcher, rows.dispatcher.sfn
+    tokens = TABLES["TOKENS_TABLE"][1]
+    run_key = run_row.key(run)
+    calls: Set[Call] = set()
+    reads: Set[Read] = set()
 
-    zombie = task_row("zombie")
-    tokens.put_item(Item=zombie)
-    tokens.delete_item(Key={"execution_name": f"_pause_{RUN}"})
-    sfn.dead_tokens.add(zombie["wait_token"])
-    with recording(ddb) as more:
-        assert reconciler.reconcile(zombie["execution_name"], source="sweeper")["action"] == "aborted"
-    calls |= more
+    def walk(step: Any) -> None:
+        with recording(ddb, client) as made, reading(ddb, client) as read:
+            step()
+        calls.update(made)
+        reads.update(read)
 
-    tokens.put_item(Item=task_row("done", status="success", attention="waiting#1", attention_at="t"))
-    tokens.put_item(Item=task_row("late", attention="waiting#1", attention_at="t"))
-    with recording(ddb) as more:
-        assert reconciler.reconcile(execution_name("done"), source="sweeper")["action"] == "attention_cleared"
-        reconcile.Reconciler(ddb, sfn, clock=lambda: NOW, budget_seconds=0).reconcile_run(RUN, source="resume")
-    return calls | more
+    def pass_over(narrow: bool = False) -> Any:
+        if narrow:
+            return lambda: dispatcher.narrow_pass(run_key, [execution_name("load", run)], source="asset",
+                                                  remaining_ms=lambda: 60_000)
+        return lambda: dispatcher.full_pass(run_key, source="test", remaining_ms=lambda: 60_000)
 
-
-def test_every_fact_a_decision_rests_on_is_read_consistently(
-        reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb):
-    """Task rows, dependency rows, the pause flag and recent asset facts come from base
-    tables with ConsistentRead; an index only finds candidates: the run's rows for resume,
-    and asset facts by partition, whose lag the consistent read of recent writes covers."""
-    with reading(ddb) as reads:
-        _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb)
-    facts = {"PipelineTokensTable", "AssetEventsTable"}
-    assert {r for r in reads if r[1] in facts and r[2] is None and not r[3]} == set()
-    assert {r[2] for r in reads if r[2] is not None} == {"pipeline-execution-index", "asset-partition-index"}
-    assert ("GetItem", "PipelineTokensTable", None, True) in reads          # the walk did read facts
-    assert ("BatchGetItem", "PipelineTokensTable", None, True) in reads
+    walk(pass_over())                                                            # extract starts
+    client.update_item(TableName=tokens, Key={"execution_name": {"S": execution_name("extract", run)}},
+                       UpdateExpression="SET #s = :s, finished_at = :f", ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":s": {"S": "success"}, ":f": {"S": "2026-11-12T05:59:00.000Z"}})
+    ddb.Table(TABLES["ASSET_EVENTS_TABLE"][1]).put_item(Item=legacy_fact("ns/orders", "2026-11-12",
+                                                                         event_time="2026-11-12T05:55:00.000Z"))
+    walk(pass_over(narrow=True))                                                 # the fact starts load
+    client.update_item(TableName=tokens, Key={"execution_name": {"S": execution_name("load", run)}},
+                       UpdateExpression="SET #s = :s", ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":s": {"S": "success"}})
+    walk(pass_over())                                                            # the run's end
+    client.delete_item(TableName=tokens, Key={"execution_name": {"S": execution_name("load", run)}})
+    walk(pass_over())                                                            # a missing row warns
+    assert len(sfn.started) == 2 and sfn.succeeded, "the walk must start both rows and answer the run"
+    return calls, reads
 
 
-def test_reconcile_role_allows_exactly_the_calls_the_code_makes(
-        resources, reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb):
-    used = _walk_every_path(reconciler, tokens, subscriptions, asset_events, registry, sfn, ddb)
+def test_reconcile_role_allows_exactly_the_calls_the_code_makes(resources, ddb, rows):
+    """The dispatcher's role: its managed policy, which AssetFanout and the sweeper attach too, and the stream."""
+    used, _ = _walk_the_dispatcher(rows, ddb)
     granted = _dynamodb_grants(_statements(resources))
     assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
     assert granted - used == set(), "grants no call uses (drop them, or walk the path that needs them)"
-    assert "Policies" not in resources["ReconcileRole"]["Properties"], "the reconciler's grants live in its policy"
+    [own] = resources["ReconcileRole"]["Properties"]["Policies"]
+    [stream] = own["PolicyDocument"]["Statement"]
+    assert set(stream["Action"]) == STREAM_ACTIONS and stream["Resource"] == [{"!GetAtt": "PipelineTokensTable.StreamArn"}]
+
+
+def test_every_read_of_the_dispatcher_is_consistent(ddb, rows):
+    """A pass decides from consistent reads by key, with no index on the decision path (ADR #137 §7)."""
+    _, reads = _walk_the_dispatcher(rows, ddb)
+    decisions = {r for r in reads if r[1] in {"PipelineTokensTable", "PipelineSpecsTable"}}
+    assert decisions and {r for r in decisions if not r[3] or r[2] is not None} == set()
+
+
+def test_the_tasks_stream_wakes_the_dispatcher_through_the_transition_tables_filters(resources):
+    """ADR #137 §7: both images, from the start, retried until handled, no failure destination, and the
+    filters the transition table generates."""
+    from polyris.coordination import transitions
+
+    tokens = resources["PipelineTokensTable"]["Properties"]
+    assert tokens["StreamSpecification"] == {"StreamViewType": "NEW_AND_OLD_IMAGES"}
+    mapping = {k: v for k, v in resources["TasksDispatchMapping"]["Properties"].items() if k != "Tags"}
+    filters = mapping.pop("FilterCriteria")["Filters"]
+    assert mapping == {
+        "EventSourceArn": {"!GetAtt": "PipelineTokensTable.StreamArn"},
+        "FunctionName": {"!Ref": "ReconcileFunction"},
+        "StartingPosition": "TRIM_HORIZON",
+        "BatchSize": 10,
+        "MaximumBatchingWindowInSeconds": 1,
+        "ParallelizationFactor": 2,
+        "MaximumRetryAttempts": -1,
+        "MaximumRecordAgeInSeconds": -1,
+        "BisectBatchOnFunctionError": True,
+        "FunctionResponseTypes": ["ReportBatchItemFailures"],
+    }
+    assert [json.loads(f["Pattern"]) for f in filters] == transitions.filter_patterns()
+    assert len(filters) <= 4, "Lambda allows five filters per mapping by default; the ADR keeps one spare"
+
+
+def test_the_dispatcher_starts_the_run_task_machine_by_its_name(resources):
+    from coordination_testkit import RUN_TASK_ARN
+
+    name = resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"]
+    assert RUN_TASK_ARN["!Sub"].endswith(f":stateMachine:{name}") and "${AWS::Region}" in RUN_TASK_ARN["!Sub"]
+    [start] = [s for s in _statements(resources) if s["Action"] == ["states:StartExecution"]]
+    assert start["Resource"] == [RUN_TASK_ARN]
 
 
 def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
-        resources, reconciler, tokens, subscriptions, asset_events, consumers, sfn, ddb, mocker):
+        resources, rows, tokens, asset_events, consumers, sfn, ddb, mocker):
     import asset_fanout
     from coordination_testkit import client_error, fact
 
-    fanout = asset_fanout.AssetFanout(reconciler, subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1])
-    tokens.put_item(Item=task_row("load", wait_for=[{"asset_name": "ns/orders", "freshness_hours": None}]))
-    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": execution_name("load")})
+    fanout = asset_fanout.AssetFanout(rows.dispatcher, subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1])
+    rows.start([{"task_id": "load", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success",
+                 "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
     consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})  # destroyed
     item = fact("ns/orders", "2026-11-12")
     record = {"eventName": "INSERT",
               "dynamodb": {"SequenceNumber": "1", "NewImage": {k: _serialize(v) for k, v in item.items()}}}
     asset_events.put_item(Item=item)
-    with recording(ddb) as used:
+    with recording(ddb, rows.client) as used:
         assert fanout.handle([record], lambda: 10 ** 6) == {"batchItemFailures": []}
         mocker.patch.object(fanout.subscriptions, "query", side_effect=client_error("AccessDeniedException", "Query"))
         fanout.handle([record], lambda: 10 ** 6)           # a non-transient failure writes a warning
-    assert sfn.succeeded, "the walk must wake the task"
+    assert sfn.started, "the walk must start the task its fact woke"
     assert "Item" not in consumers.get_item(Key={"asset_name": "ns/orders", "pipeline_name": "gone"})
     assert used - _dynamodb_grants(_statements(resources, "AssetFanoutRole")) == set()
     own = _dynamodb_grants(_statements(resources, "AssetFanoutRole", managed=False))
@@ -190,50 +239,117 @@ def test_asset_fanout_role_allows_every_call_and_its_own_grants_are_all_used(
 
 
 def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
-        resources, tokens, asset_events, consumers, registry, sfn, ddb):
+        resources, rows, tokens, asset_events, consumers, registry, sfn, ddb):
+    """The sweeper's paths: a due run, its liveness and execution checks and the engine's stop; a run whose run row
+    is missing; a lost hint; a push retry, the catch-up's push and a stale subscription; the self-check."""
     from datetime import timedelta
 
     import sweeper
+    from dispatcher import Dispatcher
     from polyris.coordination import attention as att
+    from polyris.coordination import run_row
+    from polyris.coordination.records import push_retry_item
     from polyris.coordination.times import format_utc
     from coordination_testkit import fact
 
-    clock = NOW + timedelta(hours=74)
-    reconciler = reconcile.Reconciler(ddb, sfn, clock=lambda: clock)
-    wait_for = [{"asset_name": "ns/orders", "freshness_hours": None}]
-    for task in ("load", "zombie"):
-        name = execution_name(task)
-        tokens.put_item(Item=task_row(task, wait_for=wait_for, attention=att.attention(att.WAITING, name),
-                                      attention_at=format_utc(clock - timedelta(minutes=5))))
-    sfn.executions[f"arn:aws:states:us-east-1:123456789012:execution:wrapper:{execution_name('load')}"] = "RUNNING"
-    from coordination_testkit import legacy_fact
-    asset_events.put_item(Item=legacy_fact("ns/old", "2026-11-12", event_time="2026-11-12T04:00:00.000Z"))
-    with recording(ddb) as used:
-        sweeper.Sweeper(reconciler, owner="me").run()            # the lease, a re-check, a zombie
-    asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time="2026-11-12T05:10:00.000Z"))
-    tokens.update_item(Key={"execution_name": execution_name("load")}, UpdateExpression="SET #due = :d",
-                       ExpressionAttributeNames={"#due": att.DUE},
-                       ExpressionAttributeValues={":d": format_utc(clock - timedelta(minutes=5))})
+    clock = NOW + timedelta(hours=1)
+    dispatcher = Dispatcher(rows.client, sfn, resource=ddb, tokens_table=TABLES["TOKENS_TABLE"][1],
+                            subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1], specs_table=TABLES["SPECS_TABLE"][1],
+                            asset_events_table=TABLES["ASSET_EVENTS_TABLE"][1],
+                            pipelines_table=TABLES["PIPELINES_TABLE"][1], run_task_arn="arn:run-task",
+                            clock=lambda: clock, sleep=lambda _: None)
+
+    class Mappings:
+        def list_event_source_mappings(self, *, FunctionName: str) -> Dict[str, Any]:
+            return {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK", "UUID": "u"}]}
+
+    def sweep_once() -> None:
+        sweeper.Sweeper(dispatcher, owner="me", lambda_client=Mappings(),
+                        consumers_table=TABLES["ASSET_SUBSCRIPTIONS_TABLE"][1]).run()
+
+    # A run whose activation's pass was lost, whose execution ended: its check starts extract, finds the lost hint,
+    # then the engine stops the run, stops its rows, answers it and closes its run row.
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
+                {"task_id": "load", "task_type": "sfn", "dependencies": ["extract"], "trigger_rule": "all_success",
+                 "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}])
+    registry.put_item(Item={"pipeline_name": "orders", "sfn_arn": "arn:aws:states:us-east-1:1:stateMachine:orders"})
+    sfn.executions[f"arn:aws:states:us-east-1:1:execution:orders:{RUN}"] = "ABORTED"
+    # A row a 1.2 run left in flight: no run row.
+    old = execution_name("old", "orders-run-2026-11-12-0ld0ld01")
+    tokens.put_item(Item={"execution_name": old, "status": "waiting", "generation": 1,
+                          "pipeline_execution": "orders-run-2026-11-12-0ld0ld01",
+                          att.KEY: att.attention(att.WAITING, old), att.DUE: format_utc(clock - timedelta(minutes=5))})
+    # A push retry, the catch-up's push, and a subscription its pipeline no longer has.
     consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "pushed", "sfn_arn": "arn:pushed"})
-    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})  # destroyed
+    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "gone", "sfn_arn": "arn:gone"})
     registry.put_item(Item={"pipeline_name": "pushed",
                             "asset_schedule": json.dumps({"operator": "AND", "assets": ["ns/orders"]})})
-    from polyris.coordination.records import push_retry_item
     retry = push_retry_item(run_name="pushed-retry", consumer="pushed", sfn_arn="arn:pushed", run_input="{}",
                             error="ThrottlingException", now=clock - timedelta(hours=1))
     retry[att.DUE] = format_utc(clock - timedelta(minutes=1))
     tokens.put_item(Item=retry)
-    tokens.delete_item(Key={"execution_name": "_engine_health"})       # make the catch-up due again
     asset_events.put_item(Item=fact("ns/orders", "2026-11-12", event_time=format_utc(clock - timedelta(hours=1))))
-    with recording(ddb) as more:
-        # A woken task with a lost hint, a push retry, and the catch-up's push.
-        sweeper.Sweeper(reconciler, owner="me").run()
-    used |= more
-    assert sfn.succeeded, "the walk must wake the task"
-    assert {s["name"] for s in sfn.started} >= {"pushed-retry"} and len(sfn.started) == 2
+    with recording(ddb, rows.client) as used:
+        sweep_once()
+    stopped = tokens.get_item(Key={"execution_name": run_row.key(RUN)})["Item"]
+    assert stopped["stop"]["by"] == "the engine" and sfn.failed, "the walk must stop the run its execution left"
+    assert tokens.get_item(Key={"execution_name": old})["Item"]["status"] == "stopped"
+    assert {s["name"] for s in sfn.started} >= {"pushed-retry"}
+    assert "Item" not in consumers.get_item(Key={"asset_name": "ns/orders", "pipeline_name": "gone"})
     assert used - _dynamodb_grants(_statements(resources, "SweeperRole")) == set()
     own = _dynamodb_grants(_statements(resources, "SweeperRole", managed=False))
     assert own - used == set(), "the sweeper's own grants that no call uses"
+
+
+def test_the_sweeper_judges_only_the_platforms_executions(resources):
+    """DescribeExecution is the sweeper's alone, on run_task's executions and the pipelines', which polyris-deploy
+    names ${Namespace}-${Stage}-polyris-{dag_id} (ADR #137 §1, §4)."""
+    from polyris import DAG, task
+    from polyris.deploy import _generate_cfn_template
+
+    [statement] = [s for s in _statements(resources, "SweeperRole", managed=False)
+                   if s["Action"] == ["states:DescribeExecution"]]
+    [arn] = statement["Resource"]
+    prefix = "${Namespace}-${Stage}-polyris-"
+    assert arn["!Sub"] == "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:" + prefix + "*:*"
+    assert resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"].startswith(prefix)
+    with DAG("orders") as dag:
+        @task.lambda_function(function_name="extract")
+        def extract() -> None:
+            return None
+        extract()
+    pipeline = _generate_cfn_template(dag, namespace="acme", stage="dev", region="us-east-1",
+                                      role_arn="arn:aws:iam::1:role/r", start_run_function_arn="arn:start-run",
+                                      registry_table="r", tokens_table="t", asset_subscriptions_table="a")
+    assert pipeline["Resources"]["PipelineStateMachine"]["Properties"]["StateMachineName"] == "acme-dev-polyris-orders"
+
+
+def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_is_consistent(
+        resources, ddb, monkeypatch):
+    """Start_Run's paths: a first attempt, a retry that finds its rows, an earlier attempt that arrives late."""
+    import boto3
+
+    import start_run
+    from polyris.coordination import spec_store, task_spec
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    monkeypatch.setattr(env, "_dynamodb", ddb)
+    monkeypatch.setattr(env, "_dynamodb_client", client)
+    version = task_spec.build_version("orders", [{"task_id": "load", "task_type": "sfn", "dependencies": [],
+                                                  "trigger_rule": "all_success",
+                                                  "wait_for": [{"asset_name": "ns/orders"}]}])
+    spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+    event = {"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id, "task_count": 1,
+             "pipeline_name": "orders", "execution_name": RUN, "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:orders:{RUN}", "execution_start": STARTED_AT, "token": "t1",
+             "retry_count": 0, "redrive_count": 0, "date": "2026-11-12", "input": {}}
+    with recording(ddb, client) as used, reading(ddb, client) as reads:
+        assert start_run.handler(event, None)["started"]
+        assert start_run.handler({**event, "retry_count": 2, "token": "t3"}, None)["started"]
+        assert not start_run.handler({**event, "retry_count": 1, "token": "t2"}, None)["started"]
+    granted = _dynamodb_grants(_statements(resources, "StartRunRole"))
+    assert used - granted == set(), "calls the role does not allow (AccessDenied in production)"
+    assert granted - used == set(), "grants no call uses (drop them, or walk the path that needs them)"
+    assert {read for read in reads if not read[3]} == set(), "a read that may miss a write just made"
 
 
 def test_the_sweeper_runs_every_5_minutes_without_retries(resources):
@@ -258,7 +374,8 @@ def test_the_sweeper_schedule_is_named_after_its_function(resources):
 
 
 @pytest.mark.parametrize("function,log_group", [("SweeperFunction", "SweeperLogGroup"),
-                                                ("AssetFanoutFunction", "AssetFanoutLogGroup")])
+                                                ("AssetFanoutFunction", "AssetFanoutLogGroup"),
+                                                ("StartRunFunction", "StartRunLogGroup")])
 def test_a_function_logs_to_the_group_the_console_commands_tail(resources, function, log_group):
     """`aws logs tail /aws/lambda/<name>` in the console's findings reads the function's own log group."""
     props = resources[function]["Properties"]
@@ -301,29 +418,20 @@ def test_step_functions_actions_per_role(resources):
     def actions(role):
         return {a for s in _statements(resources, role) for a in s["Action"] if a.startswith("states:")}
 
-    reconciler = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:DescribeExecution"}
-    assert actions("ReconcileRole") == reconciler
-    assert actions("AssetFanoutRole") == reconciler | {"states:StartExecution"}
-    assert actions("SweeperRole") == reconciler | {"states:StartExecution"}
+    dispatcher = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:StartExecution"}
+    assert actions("ReconcileRole") == dispatcher
+    assert actions("AssetFanoutRole") == dispatcher
+    assert actions("SweeperRole") == dispatcher | {"states:DescribeExecution"}
     # The fake implements exactly the calls the code makes.
     assert {"states:" + "".join(p.title() for p in m.split("_")) for m in vars(FakeSfn) if not m.startswith("_")} \
-        == reconciler | {"states:StartExecution"}
-
-
-def test_describe_execution_is_scoped_to_wrapper_executions(resources):
-    wrapper = next(r for r in resources.values()
-                   if r["Type"] == "AWS::Serverless::StateMachine"
-                   and r["Properties"]["Name"]["!Sub"].endswith("-polyris-dependency-wrapper"))
-    statement = next(s for s in _statements(resources) if s["Action"] == ["states:DescribeExecution"])
-    [arn] = statement["Resource"]
-    assert arn["!Sub"].endswith(f":execution:{wrapper['Properties']['Name']['!Sub']}:*")
-    assert "${AWS::Region}" in arn["!Sub"]      # not the AwsRegion parameter, which can drift
+        == dispatcher | {"states:DescribeExecution"}
 
 
 @pytest.mark.parametrize("function,module_name,role", [
-    ("ReconcileFunction", "reconcile", "ReconcileRole"),
+    ("ReconcileFunction", "dispatcher", "ReconcileRole"),
     ("AssetFanoutFunction", "asset_fanout", "AssetFanoutRole"),
     ("SweeperFunction", "sweeper", "SweeperRole"),
+    ("StartRunFunction", "start_run", "StartRunRole"),
 ])
 def test_function_wiring(resources, function, module_name, role):
     import importlib
@@ -343,9 +451,14 @@ def test_function_wiring(resources, function, module_name, role):
 
 def test_time_budgets_fit_their_timeouts(resources):
     import asset_fanout
+    import dispatcher
+    from polyris.coordination import start_run as start_run_core
 
-    # Resume's budget fits inside the timeout with room for the last row.
-    assert reconcile.RESUME_BUDGET_SECONDS + 5 <= resources["ReconcileFunction"]["Properties"]["Timeout"]
+    # Start_Run's retry window counts every attempt at the function's timeout (ADR #137 §1).
+    assert resources["StartRunFunction"]["Properties"]["Timeout"] == start_run_core.TIMEOUT.total_seconds()
+
+    # A pass keeps RESERVE_MS in hand below the dispatcher's timeout, and has time left to work (Rule 52).
+    assert dispatcher.RESERVE_MS * 2 <= resources["ReconcileFunction"]["Properties"]["Timeout"] * 1000
     # AssetFanout stops starting records with RESERVE_MS left: one record's work fits in that reserve.
     assert asset_fanout.RESERVE_MS / 1000 < resources["AssetFanoutFunction"]["Properties"]["Timeout"]
     # The sweeper works within its budget, and its lease outlives a run that dies at the timeout

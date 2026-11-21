@@ -2,7 +2,7 @@
 polyris-output — Generate pipeline artifacts.
 
 Reads dag.py from current directory and outputs:
-  --json      Step Functions ASL JSON
+  --json      The Step Functions definition and the task specs it names
   --mermaid   Mermaid diagram
   --graph     ASCII DAG graph
   --assets    Asset registry JSON (for asset-triggered pipelines)
@@ -46,12 +46,31 @@ def _select_dag(dags, select_id=None):
     return dags[0]
 
 
+def definition_and_specs(dag) -> dict:
+    """What polyris-deploy sends for ``dag``: the definition, which names its spec version
+    instead of holding the specs, and that version's task specs (ADR #137 §8)."""
+    import json
+    from polyris.coordination import task_spec
+    from polyris.generators import build_spec_version, generate_step_function_json
+
+    version = build_spec_version(dag)
+    return {
+        "definition": json.loads(generate_step_function_json(dag)),
+        "specs": {
+            "format_version": task_spec.FORMAT_VERSION,
+            "spec_id": version.spec_id,
+            "task_count": version.task_count,
+            "tasks": {task_id: json.loads(text) for task_id, text in sorted(version.texts.items())},
+        },
+    }
+
+
 def main():
     """
     CLI entry point for polyris-output command.
 
     Usage:
-        polyris-output --json       # Generate ASL JSON
+        polyris-output --json       # The definition and the task specs
         polyris-output --mermaid    # Generate Mermaid diagram
         polyris-output --graph      # Show ASCII DAG graph
         polyris-output --assets     # Generate asset registry JSON
@@ -63,7 +82,7 @@ def main():
         description="Generate pipeline artifacts from dag.py",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  polyris-output --json           # Generate ASL JSON for deployment
+  polyris-output --json           # The definition and the task specs polyris-deploy writes
   polyris-output --mermaid        # Generate Mermaid diagram
   polyris-output --graph          # Show DAG as ASCII graph
   polyris-output --assets         # Generate asset registry JSON
@@ -73,7 +92,7 @@ def main():
 
     output_group = parser.add_mutually_exclusive_group(required=True)
     output_group.add_argument("--json", action="store_true",
-                              help="Generate Step Functions ASL JSON")
+                              help="The Step Functions definition and the task specs it names")
     output_group.add_argument("--mermaid", action="store_true",
                               help="Generate Mermaid diagram")
     output_group.add_argument("--graph", action="store_true",
@@ -100,8 +119,8 @@ def main():
     dag = _select_dag(dags, args.select)
 
     if args.json:
-        from polyris.generators import generate_step_function_json
-        print(generate_step_function_json(dag))
+        import json
+        print(json.dumps(definition_and_specs(dag), indent=2, ensure_ascii=False))
 
     elif args.mermaid:
         from polyris.generators import generate_mermaid

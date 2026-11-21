@@ -182,7 +182,7 @@ polyris-validate --json
 Generate pipeline artifacts. Run from pipeline directory.
 
 ```bash
-# Generate Step Functions ASL JSON
+# The Step Functions definition and the task specs it names
 polyris-output --json
 
 # Generate Mermaid diagram
@@ -203,7 +203,7 @@ polyris-output --json --select my-dag-id
 
 | Option | Description |
 |--------|-------------|
-| `--json` | Generate Step Functions ASL JSON |
+| `--json` | The Step Functions definition (`definition`) and the task specs polyris-deploy writes to `pipeline-specs` (`specs`: `spec_id`, `task_count`, `format_version` and each task's spec) |
 | `--mermaid` | Generate Mermaid diagram |
 | `--graph` | Show DAG as ASCII graph |
 | `--assets` | Generate asset registry JSON |

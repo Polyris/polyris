@@ -206,7 +206,7 @@ class TestGeneratorOutputs:
 
         asl = json.loads(generate_step_function_json(
             dag,
-            wrapper_arn=ARN,
+            start_run_function_arn=ARN,
             registry_table="my-registry",
             tokens_table="my-tokens",
             asset_subscriptions_table="my-real-asset-subscriptions-table",

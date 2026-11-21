@@ -1009,11 +1009,12 @@ def _make_deploy_mocks(mocker, *, resource_result: ResourceCheckResult):
         "Stacks": [
             {
                 "Outputs": [
-                    {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
+                    {"OutputKey": "StartRunFunctionArn", "OutputValue": "arn:wrapper"},
                     {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
                     {"OutputKey": "PipelineRegistryTable", "OutputValue": "reg"},
                     {"OutputKey": "PipelineTokensTable", "OutputValue": "tok"},
                     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset"},
+                    {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
                 ],
                 "Parameters": [],
             }
@@ -1118,7 +1119,7 @@ def test_deploy_destroy_skips_resource_check(mocker):
         "Stacks": [
             {
                 "Outputs": [
-                    {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
+                    {"OutputKey": "StartRunFunctionArn", "OutputValue": "arn:wrapper"},
                     {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
                 ],
                 "Parameters": [],
@@ -2207,7 +2208,7 @@ def test_deploy_destroy_skips_override_check(mocker):
         "Stacks": [
             {
                 "Outputs": [
-                    {"OutputKey": "DependencyWrapperArn", "OutputValue": "arn:wrapper"},
+                    {"OutputKey": "StartRunFunctionArn", "OutputValue": "arn:wrapper"},
                     {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:role"},
                 ],
                 "Parameters": [],

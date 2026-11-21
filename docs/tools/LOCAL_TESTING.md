@@ -101,7 +101,8 @@ def test_mock():
 
 ## Trigger rule note
 
-`run(dag, mock=True)` is a plain Python loop — it does not reproduce the deployed pipeline's
-`Parallel`-based execution or its pause-on-failure behaviour. A green mock run does not guarantee
-identical behaviour in production. See `docs/features/DSL.md#trigger-rules` for what each
-trigger rule does in a live deployment.
+`run(dag, mock=True)` evaluates each trigger rule with the engine's own code, so it records
+`skipped` or `upstream_failed` where a deployed run does, and fails a task whose rule it does not
+know. It is still a plain Python loop: a failed task does not wait for a human decision, and every
+skip in it counts as a rule's skip. A green mock run does not guarantee identical behaviour in
+production. See `docs/features/DSL.md#trigger-rules` for what each trigger rule does.

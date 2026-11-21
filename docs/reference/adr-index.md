@@ -6,7 +6,7 @@ always have — this index is the map so you never have to guess where one is:
 - **Inline** in [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) — the majority, especially earlier ones.
 - **Standalone** `adr-NN-*.md` files — used for larger or self-contained decisions.
 
-_107 rows indexed (81 inline, 26 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
+_109 rows indexed (81 inline, 28 standalone). Actual ADR count is higher — ADRs 67–93 exist in `DESIGN_DECISIONS.md` but are not yet backfilled into this index. Regenerate with the snippet in this repo's docs tooling; do not hand-edit rows._
 
 | # | Title | Where |
 |---|-------|-------|
@@ -96,8 +96,8 @@ _107 rows indexed (81 inline, 26 standalone). Actual ADR count is higher — ADR
 | 113 | History feed pages on a `started_at` cursor; `next` is the only end-of-feed signal | inline |
 | 114 | Intervention-first failure model | [`adr-114-intervention-first-failure-model.md`](adr-114-intervention-first-failure-model.md) |
 | 115 | Canonical trigger rules and skip semantics | [`adr-115-canonical-trigger-rules-and-skip-semantics.md`](adr-115-canonical-trigger-rules-and-skip-semantics.md) |
-| 116 | Cleanup via scoped de-abort (deferred to Phase 2) | [`adr-116-cleanup-scoped-deabort.md`](adr-116-cleanup-scoped-deabort.md) |
-| 117 | Trigger rules trimmed from 11 to 5 (removes 4 duplicates + 2 never-satisfiable) | [`adr-117-trigger-rule-trim-11-to-5.md`](adr-117-trigger-rule-trim-11-to-5.md) |
+| 116 | Cleanup via scoped de-abort (superseded by ADR #138) | [`adr-116-cleanup-scoped-deabort.md`](adr-116-cleanup-scoped-deabort.md) |
+| 117 | Trigger rules trimmed from 11 to 5 (superseded by ADR #138) | [`adr-117-trigger-rule-trim-11-to-5.md`](adr-117-trigger-rule-trim-11-to-5.md) |
 | 118 | `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories | inline |
 | 119 | Unified DAG visualization node/edge builder (`generate_dag_json` + `_build_pipeline_metadata`) | inline |
 | 120 | Manual task actions: recorded input, synthetic output markers, asset events on Mark Successful, and safe direct Restart from `waiting_decision` | inline |
@@ -116,4 +116,6 @@ _107 rows indexed (81 inline, 26 standalone). Actual ADR count is higher — ADR
 | 134 | A config the user names is used, or the command stops | inline |
 | 135 | A run is told how its task ended by whoever ends it | inline |
 | 136 | The pipelines list says what its statuses rest on, and groups only what a DAG names | inline |
+| 137 | Tasks as rows: one dispatcher starts the tasks, one token per run | [`adr-137-tasks-as-rows.md`](adr-137-tasks-as-rows.md) |
+| 138 | Trigger rules after the run-end change: nine rules over final outcomes | [`adr-138-trigger-rules-after-run-end-change.md`](adr-138-trigger-rules-after-run-end-change.md) |
 | 139 | One loader runs a pipeline file for every command | inline |

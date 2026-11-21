@@ -1,15 +1,14 @@
 """Fan-out / fan-in with a trigger rule.
 
 Three extracts run in parallel; a final `merge` task depends on all three.
-`trigger_rule="all_done"` means merge runs once every upstream task has
-reached a terminal state — success or skip. (A genuine failure pauses for a
-human decision first, ADR #114, so `all_done` reacting to that specifically
-isn't part of this yet — see docs/features/DSL.md#trigger-rules.)
+`trigger_rule="all_done"` means merge runs once every upstream task is
+final, whatever the outcome. A task that fails first waits for a human
+decision, so `merge` runs after that decision, not while a retry is still
+possible.
 
-polyris supports 5 trigger rules in total (ADR #117): `all_success` (the
-default), `one_success`, `all_done`, `all_skipped`, `none_skipped` — see
-example 09 (`09_trigger_rules`) for all five side by side, and
-docs/features/DSL.md#trigger-rules for the full analysis.
+polyris has nine trigger rules; `all_success` is the default. Example 09
+(`09_trigger_rules`) shows all nine side by side, and
+docs/features/DSL.md#trigger-rules explains each one.
 
 Run it locally (no AWS):  polyris-output --graph
 """

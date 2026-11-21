@@ -9,7 +9,7 @@ import { formatSchedule } from '../utils/formatters';
 import { connectionProblem } from '../utils/api';
 import { logger } from '../utils/logger';
 import { HISTORY_WINDOW_DAYS } from '../utils/historyWindow';
-import { buildSidebarLines, groupKey, isFailure, needsAttention, UNGROUPED } from '../utils/pipelineSidebar';
+import { buildSidebarLines, groupKey, isFailure, needsAttention, REDEPLOY_HINT, UNGROUPED } from '../utils/pipelineSidebar';
 import type { SidebarLine, SidebarSection } from '../utils/pipelineSidebar';
 import config from '../lib/config';
 import { useAppStore } from '../stores/useAppStore';
@@ -455,7 +455,7 @@ export function PipelinesSidebar() {
 }
 
 /**
- * PipelineRow - one pipeline: latest-run status, name, last runs, schedule.
+ * PipelineRow - one pipeline: latest-run status, name, a redeploy mark, last runs, schedule.
  */
 function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFocus, onSelect }: PipelineRowProps) {
     // `status` is the latest run within the window /api/pipelines reads; 'idle' means none there.
@@ -467,14 +467,15 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
     const schedule = formatSchedule(p.schedule, p.asset_schedule);
     const fullSchedule = formatSchedule(p.schedule, p.asset_schedule, { full: true });
     const runs = (p.recent_runs ?? []).slice(0, SPARK_SLOTS);
+    const redeploy = p.needs_redeploy ? ', redeploy needed' : '';
     return (
         <button
             ref={buttonRef}
             type="button"
             className={`sb-row${indented ? ' sb-row--indented' : ''}${current ? ' sb-row--selected' : ''}`}
             aria-current={current ? 'page' : undefined}
-            aria-label={`${p.name}, last run: ${lastRun}, ${describeRuns(runs)}, schedule: ${fullSchedule}`}
-            title={`${p.name}\nSchedule: ${fullSchedule}`}
+            aria-label={`${p.name}${redeploy}, last run: ${lastRun}, ${describeRuns(runs)}, schedule: ${fullSchedule}`}
+            title={`${p.name}${p.needs_redeploy ? `\n${REDEPLOY_HINT}` : ''}\nSchedule: ${fullSchedule}`}
             tabIndex={tabIndex}
             onFocus={onFocus}
             onClick={onSelect}
@@ -485,6 +486,7 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
                     : <StatusIcon status={waitingOn ?? status} size={14} />}
             </span>
             <span className="sb-row__name">{p.name}</span>
+            {p.needs_redeploy && <span className="sb-row__redeploy" aria-hidden="true">redeploy</span>}
             <RunSparkline runs={runs} />
             <span className="sb-row__schedule">{schedule}</span>
         </button>

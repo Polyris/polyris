@@ -17,13 +17,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from boto3.dynamodb.types import TypeDeserializer
-from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from bindings import Bindings
-from invariants import Invariants
+from boundary import Boundary, acting_as, as_component
 from platform_stack import Stack
+from row_invariants import CHECKS, STAGE_OF, liveness
+import rows_view
+from rows_view import Observer, StackView
 from sfn_runtime import ACCOUNT, REGION, Execution, client_error
+from streams import StreamAdapter
+
+from polyris.coordination.times import format_utc
 
 TASK_ARN = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:user-{{}}"
 _deserializer = TypeDeserializer()
@@ -91,57 +96,6 @@ class Run:
         return f"{task}-{self.date}-{self.short}"
 
 
-class StreamAdapter:
-    """The asset-events stream as the event source mapping delivers it (template settings applied).
-
-    Records are read from moto's stream, filtered with the mapping's
-    FilterCriteria, and handed to the handler in batches of its BatchSize.
-    Records the handler reports as failed stay pending and are delivered again.
-    """
-
-    def __init__(self, stack: Stack):
-        import boto3
-
-        props = stack.resources["AssetEventsFanoutMapping"]["Properties"]
-        self.batch_size = int(props["BatchSize"])
-        self.patterns = [json.loads(f["Pattern"]) for f in props["FilterCriteria"]["Filters"]]
-        table = stack.tables["AssetEventsTable"]
-        self.arn = stack.ddb.describe_table(TableName=table)["Table"]["LatestStreamArn"]
-        # The regional endpoint: botocore 1.44.4 sends Streams calls to {account}.streams-ddb.{region},
-        # which moto (5.2.5) does not serve yet, and answers 404 "Not yet implemented".
-        self.streams = boto3.client("dynamodbstreams", region_name="us-east-1",
-                                    config=Config(account_id_endpoint_mode="disabled"))
-        self.seen: set = set()
-        self.pending: List[Dict[str, Any]] = []
-
-    def _matches(self, record: Dict[str, Any]) -> bool:
-        return any(all(record.get(key) in values for key, values in pattern.items()) for pattern in self.patterns)
-
-    def _read(self) -> None:
-        for shard in self.streams.describe_stream(StreamArn=self.arn)["StreamDescription"]["Shards"]:
-            iterator = self.streams.get_shard_iterator(StreamArn=self.arn, ShardId=shard["ShardId"],
-                                                       ShardIteratorType="TRIM_HORIZON")["ShardIterator"]
-            for record in self.streams.get_records(ShardIterator=iterator)["Records"]:
-                sequence = record["dynamodb"]["SequenceNumber"]
-                if sequence not in self.seen:
-                    self.seen.add(sequence)
-                    if self._matches(record):
-                        self.pending.append({**record, "eventSourceARN": self.arn})
-
-    def deliver(self, handler: Callable[[Any, Any], Any], *, asset: Optional[str] = None) -> None:
-        self._read()
-        chosen = [r for r in self.pending
-                  if asset is None or r["dynamodb"]["NewImage"]["asset_name"]["S"] == asset]
-        held = [r for r in self.pending if r not in chosen]
-        failed: List[Dict[str, Any]] = []
-        for start in range(0, len(chosen), self.batch_size):
-            batch = chosen[start:start + self.batch_size]
-            result = handler({"Records": batch}, None)
-            ids = {f["itemIdentifier"] for f in result.get("batchItemFailures", [])}
-            failed += [r for r in batch if r["dynamodb"]["SequenceNumber"] in ids]
-        self.pending = held + failed
-
-
 class World:
     clock: Clock
     stack: Stack
@@ -149,6 +103,7 @@ class World:
     ddb: Any
     resource: Any
     bindings: Bindings
+    boundary: Boundary
 
     def __init__(self, ddb_client: Any, *, start: Optional[datetime] = None):
         import boto3
@@ -158,17 +113,41 @@ class World:
         self.runtime = self.stack.runtime
         self.ddb = ddb_client
         self.resource = boto3.resource("dynamodb", region_name="us-east-1")
+        #: Every DynamoDB call a component makes, and the races scenarios order (boundary.py).
+        self.boundary = Boundary([self.ddb, self.resource.meta.client])
         self._run_ids = itertools.count(0xABCD0000)
         self.bindings = Bindings(self.stack, self.resource, self.clock.read)
-        self.bindings.reconcile()
+        self.bindings.start_run()
+        self._dispatch = self.bindings.dispatcher(self.bindings.run_task_stub())
         self.bindings.query_subscriptions()
-        self._fanout = self.bindings.asset_fanout()
+        self._fanout = as_component("lambda:asset-fanout", self.bindings.asset_fanout())
         self._console = self.bindings.console()
-        self._sweeper = self.bindings.sweeper()
+        self._sweeper = as_component("lambda:sweeper", self.bindings.sweeper())
         self._producers: Dict[str, Pipeline] = {}
-        self._stream = StreamAdapter(self.stack)
-        #: ADR #130 invariants 1, 3, 4, 5 and 10, checked each time the stack settles (invariants.py).
-        self.invariants = Invariants(ddb_client, self.runtime, self.stack.tables)
+        self._stream = StreamAdapter.for_mapping(self.stack, "AssetEventsFanoutMapping", table="AssetEventsTable",
+                                                 key="asset_name")
+        #: The tasks table's stream, which wakes the dispatcher (ADR #137 §7); scenarios deliver it.
+        self._tasks_stream = StreamAdapter.for_mapping(self.stack, "TasksDispatchMapping",
+                                                       table="PipelineTokensTable", key="execution_name")
+        #: The rows a pass may decide before its budget runs out (shrink_pass_budget); None: no limit.
+        self._pass_rows: Optional[int] = None
+        #: What ADR #137's invariants read that no table keeps (rows_view.py), and what they found.
+        import dispatcher
+
+        self._reader = boto3.client("dynamodb", region_name="us-east-1")    # no hook sees its reads
+        self._observer = Observer(self._read_row, self._run_items, self.boundary.log)
+        self._observer.install(self.runtime, self.stack.machine_arn("RunTaskHelperSfn"), dispatcher._DISPATCHER)
+        self.boundary.watch(self.stack.tables["PipelineTokensTable"], self._read_row)
+        self.violations: List[str] = []
+        #: Violations a test makes on purpose, to see a check find them (``plant``).
+        self.planted: List[str] = []
+        #: What ends each failure a scenario injected (``run_to_the_end`` heals the world before liveness).
+        self._healers: List[Callable[[], None]] = []
+
+    def plant(self, violation: str) -> None:
+        """A violation this test made on purpose, to see a check find it: the end of the scenario does not
+        count it."""
+        self.planted.append(violation)
 
     def close(self) -> None:
         self.bindings.close()
@@ -179,11 +158,11 @@ class World:
         """Deploy as polyris-deploy does: load the machine, then run it register_only, so the
         real registration states write the registry entry and any push subscriptions.
 
-        `before_upgrade`: the pipeline's tasks start the wrapper as v1.1.4 defined it, as runs
-        in flight across the upgrade do; every helper they call is the current one.
+        `before_upgrade`: a pipeline generated before 1.3, whose run is in flight across the upgrade.
         """
-        wrapper_arn = self.stack.legacy_wrapper_arn() if before_upgrade else None
-        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag, wrapper_arn=wrapper_arn))
+        if before_upgrade:
+            raise NeedsBinding("rows-migration", "a pipeline generated before 1.3")
+        pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag))
         # A fresh name per deploy, as polyris-deploy does, so a pipeline can be deployed again.
         self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register-{next(self._run_ids):08x}",
                                      input=json.dumps({"register_only": True}))
@@ -206,7 +185,7 @@ class World:
         template = _generate_cfn_template(
             pipeline.dag, namespace="acme", stage="dev", region="us-east-1",
             role_arn="arn:aws:iam::123456789012:role/acme-dev-polyris-orchestration-role",
-            wrapper_arn=self.stack.machine_arn("DependencyWrapperSfn"),
+            start_run_function_arn=self.stack.function_arn("StartRunFunction"),
             registry_table=self.stack.tables["PipelineRegistryTable"],
             tokens_table=self.stack.tables["PipelineTokensTable"],
             asset_subscriptions_table=self.stack.tables["AssetSubscriptionsTable"],
@@ -226,8 +205,54 @@ class World:
         return Run(pipeline, name, str(started["startDate"])[:10], started["executionArn"])
 
     def settle(self) -> None:
+        """Run every execution until it waits, then check ADR #137's invariants of the bound stages
+        (row_invariants.py, stages.py) and that no template expression failed (D107). ADR #130's
+        invariants retired with its engine (D115)."""
         self.runtime.run()
-        self.invariants.observe()
+        for violation in self.check_invariants():
+            if violation not in self.violations:
+                self.violations.append(violation)
+
+    def check_invariants(self) -> List[str]:
+        """ADR #137's invariants of the bound stages, and every template expression that failed (D107)."""
+        from stages import BOUND_STAGES
+
+        view = self.rows_view()
+        return ([v for n, check in sorted(CHECKS.items()) if STAGE_OF.get(n) in BOUND_STAGES for v in check(view)]
+                + self._expression_failures())
+
+    def _expression_failures(self) -> List[str]:
+        """A template expression that failed, caught or not (D107): always a template bug, and a Catch can hide
+        it. ``KNOWN_FAILING_EXPRESSIONS`` names the few in templates ADR #137 removes, and nothing else."""
+        from invariants import KNOWN_FAILING_EXPRESSIONS
+
+        return [f"expression failed in {failure['machine']}.{failure['state']}: {failure['cause']}"
+                for failure in self.runtime.expression_errors
+                if (failure["machine"].rsplit("polyris-", 1)[-1], failure["state"]) not in KNOWN_FAILING_EXPRESSIONS]
+
+    def rows_view(self) -> StackView:
+        """The stack as ADR #137's invariants read it, now."""
+        return StackView(self.clock.now, self._items(), list(self.runtime.executions.values()),
+                         self.stack.machine_arn("RunTaskHelperSfn"), self._observer)
+
+    def _read_row(self, key: str) -> Optional[Dict[str, Any]]:
+        item = self._reader.get_item(TableName=self.stack.tables["PipelineTokensTable"],
+                                     Key={"execution_name": {"S": key}}, ConsistentRead=True).get("Item")
+        return rows_view.plain(item)
+
+    def _items(self) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = {"TableName": self.stack.tables["PipelineTokensTable"], "ConsistentRead": True}
+        items: List[Dict[str, Any]] = []
+        while True:
+            page = self._reader.scan(**kwargs)
+            items += [rows_view.plain(i) or {} for i in page.get("Items", [])]
+            if "LastEvaluatedKey" not in page:
+                return items
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    def _run_items(self, run: str) -> List[Dict[str, Any]]:
+        return [i for i in self._items() if i.get("pipeline_execution") == run and "generation" in i
+                and not str(i["execution_name"]).startswith("_")]
 
     # ── tasks ──────────────────────────────────────────────────────────
 
@@ -243,14 +268,15 @@ class World:
         names = {run.execution_name(t.task_id): t.task_id for t in run.pipeline.dag.tasks}
         return sorted(names[n] for n in (self._job_owner(j) for j in self.runtime.jobs.values()) if n in names)
 
-    def complete(self, run: Run, task: str, *, status: str = "success") -> None:
-        """Finish the user's work for `task`; `status` is "success" or "failed"."""
+    def complete(self, run: Run, task: str, *, status: str = "success", output: Any = None) -> None:
+        """Finish the user's work for `task`; `status` is "success" or "failed", and a success returns
+        `output` (an empty object when None)."""
         name = run.execution_name(task)
         job = next((j for j in self.runtime.jobs.values() if self._job_owner(j) == name), None)
         if job is None:
             raise AssertionError(f"{task} is not running in {run.name}; running: {self.running_tasks(run)}")
         if status == "success":
-            self.runtime.finish_job(job.id, output={"Output": {}, "Status": "SUCCEEDED"})
+            self.runtime.finish_job(job.id, output={"Output": {} if output is None else output, "Status": "SUCCEEDED"})
         elif status == "failed":
             self.runtime.finish_job(job.id, error="States.TaskFailed", cause="the user's task failed")
         else:
@@ -323,7 +349,9 @@ class World:
 
     def deliver_hints(self, asset: Any = None) -> None:
         """Deliver the stream records not yet delivered — all of them, or `asset`'s only."""
-        self._stream.deliver(self._fanout, asset=None if asset is None else asset.name)
+        name = None if asset is None else asset.name
+        self._stream.deliver(self._fanout, select=None if name is None
+                             else lambda r: r["dynamodb"]["NewImage"]["asset_name"]["S"] == name)
         self.settle()
 
     def _call_console(self, path: str, *, query: Dict[str, str], body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -332,7 +360,8 @@ class World:
             "rawPath": path, "headers": {}, "queryStringParameters": query, "body": json.dumps(body or {}),
             "requestContext": {"http": {"method": "POST"}, "requestId": "harness", "stage": "$default"},
         }
-        response = self._console.handler(event, None)
+        with acting_as("console"):
+            response = self._console.handler(event, None)
         if response["statusCode"] >= 300:
             raise AssertionError(f"POST {path} → {response['statusCode']}: {response.get('body')}")
         self.settle()
@@ -353,6 +382,227 @@ class World:
     def stop_run(self, run: Run) -> Dict[str, Any]:
         """The console's Stop of a whole run."""
         return self._call_console("/api/execution-stop", query={"pipeline_execution": run.name})
+
+    def expire_ttl(self, table: str = "PipelineTokensTable") -> List[str]:
+        """DynamoDB's TTL deletes every row of `table` (a logical id) whose `ttl` has passed on the clock.
+
+        The deletions are the service's: a stream adapter on that table marks their REMOVE records with
+        TTL's `userIdentity`. Returns the keys of the rows deleted.
+        """
+        name = self.stack.tables[table]
+        now = self.clock.read().timestamp()
+        schema = self.ddb.describe_table(TableName=name)["Table"]["KeySchema"]
+        expired, kwargs = [], {"TableName": name, "ConsistentRead": True}
+        while True:
+            page = self.ddb.scan(**kwargs)
+            expired += [i for i in page.get("Items", []) if "ttl" in i and float(i["ttl"]["N"]) <= now]
+            if "LastEvaluatedKey" not in page:
+                break
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+        hash_key = next(k["AttributeName"] for k in schema if k["KeyType"] == "HASH")
+        keys = [next(iter(item[hash_key].values())) for item in expired]
+        if self._stream.table == name:
+            self._stream.mark_expired(set(keys))
+        for item in expired:
+            self.ddb.delete_item(TableName=name, Key={k["AttributeName"]: item[k["AttributeName"]] for k in schema})
+        return keys
+
+    def delete_row(self, run: Run, task: str) -> None:
+        """Someone deletes `task`'s row of `run` by hand (invariant 11's missing row)."""
+        self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
+                             Key={"execution_name": {"S": run.execution_name(task)}})
+
+    def delete_output(self, run: Run, task: str) -> None:
+        """`task`'s output for `run`'s date is gone, as when it expired a year after its last write (D109)."""
+        self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
+                             Key={"execution_name": {"S": f"output#{run.pipeline.name}#{task}#{run.date}"}})
+
+    # ── tasks as rows (ADR #137): wired by the phases of 1.3 ──────────
+
+    def delete_run_row(self, run: Run) -> None:
+        """Someone deletes `run`'s run row by hand."""
+        from polyris.coordination import run_row
+
+        self.ddb.delete_item(TableName=self.stack.tables["PipelineTokensTable"],
+                             Key={"execution_name": {"S": run_row.key(run.name)}})
+
+    def hold_start_run_retry(self, pipeline: Pipeline) -> None:
+        """Start_Run's next attempt writes its run as creating and dies, as a Lambda that times out after its
+        first write; Step Functions retries it, and the retry waits for `release_start_run_retry`."""
+
+        def die() -> None:
+            failure = RuntimeError("Sandbox.Timedout (injected): the attempt died after writing its run row")
+            failure.states_error = "Sandbox.Timedout"  # type: ignore[attr-defined]
+            raise failure
+
+        # Start_Run's first put follows its run row's write: the run's input.
+        self.boundary.between(then=die, before_write=lambda call: call.component == "lambda:start-run"
+                              and call.operation == "PutItem")
+        self.runtime.hold_retries(pipeline.arn, "Start_Run")
+
+    def release_start_run_retry(self, pipeline: Pipeline) -> None:
+        """The retry `hold_start_run_retry` held goes on, late."""
+        self.runtime.release_retries(pipeline.arn, "Start_Run")
+        self.settle()
+
+    def shrink_pass_budget(self, *, rows: int) -> None:
+        """A pass's budget runs out after `rows` rows, as a large run's does at the declared maximum.
+
+        The dispatcher checks its budget before each row: its clock ticks one second per reading, and
+        each invocation gets `rows` seconds above the reserve it keeps."""
+        import dispatcher
+
+        ticks = itertools.count()
+        self.bindings._set(dispatcher._DISPATCHER, "monotonic", lambda: float(next(ticks)))
+        self._pass_rows = rows
+
+    #: At most this many rounds of ``run_to_the_end``: a round that changes nothing ends it sooner.
+    END_ROUNDS = 30
+
+    def run_to_the_end(self) -> List[str]:
+        """Heal the world, move the clock past every deadline and sweep until nothing changes; then check
+        liveness (row_invariants.liveness): every run ended or is paused, or a row waits for a decision.
+
+        Each round finishes the user's work still running, delivers both streams, moves the clock to the
+        earliest entry the sweeper takes and sweeps. A round that changes nothing moves the clock past the
+        latest due time of a row, so that every deadline passes, and sweeps once more; when that changes
+        nothing either, nothing more happens on its own. A liveness violation fails the scenario at its
+        end, as an invariant's does (ADR #137, Tests); the violations are also returned."""
+        self._heal()
+        for _ in range(self.END_ROUNDS):
+            before = self._state()
+            self._finish_jobs()
+            self.deliver_hints()
+            self.deliver_task_hints()
+            due = self._next_due()
+            if due is None:
+                break
+            self._sweep_at(due)
+            if self._state() != before:
+                continue
+            last = self._next_due(latest=True, rows_only=True)
+            if last is None or last <= self.clock.now:
+                break
+            self._sweep_at(last)
+            if self._state() == before:
+                break
+        found = liveness(self.rows_view())
+        for violation in found:
+            if violation not in self.violations:
+                self.violations.append(violation)
+        return found
+
+    def _sweep_at(self, when: datetime) -> None:
+        if when > self.clock.now:
+            self.clock.jump_to(format_utc(when))
+        self.sweep()
+
+    def _state(self) -> Any:
+        """What ``run_to_the_end`` watches for a change: each row's status and generation, the marks of the
+        run rows, the warnings, and each execution's status."""
+        rows = sorted((str(i["execution_name"]), str(i.get("status")), str(i.get("generation")),
+                       str(i.get("stop")), str(i.get("stop_done")), str(i.get("answered_order")))
+                      for i in self._items())
+        executions = sorted((e.arn, e.status) for e in self.runtime.executions.values())
+        return rows, executions
+
+    def _heal(self) -> None:
+        """Every failure a scenario injected ends, and whatever it held goes on: executions, Start_Run's
+        retries, stream records, arranged interleavings and a shrunk pass budget. A lost record stays lost."""
+        for heal in self._healers:
+            heal()
+        self._healers.clear()
+        self.boundary.heal()
+        self._stream.heal()
+        self._tasks_stream.heal()
+        self._pass_rows = None
+        for machine in list(self.runtime.held):
+            self.runtime.release(machine)
+        for machine, state in list(self.runtime.held_retries):
+            self.runtime.release_retries(machine, state)
+        self.settle()
+
+    def _finish_jobs(self) -> None:
+        """The user's work still running ends well: the jobs of run_task's stand-in, and the jobs their ends let
+        start, until none is left, so a chain of any length ends within one round."""
+        run_task = self.stack.machine_arn("RunTaskHelperSfn")
+        for _ in range(100_000):
+            jobs = [job for job in self.runtime.jobs.values() if job.frame.execution.machine.arn == run_task]
+            if not jobs:
+                return
+            for job in jobs:
+                self.runtime.finish_job(job.id, output={"Output": {}, "Status": "SUCCEEDED"})
+            self.settle()
+            self.deliver_task_hints()
+        raise AssertionError("the user's work never ran out")
+
+    def _next_due(self, *, latest: bool = False, rows_only: bool = False) -> Optional[datetime]:
+        """The earliest (or ``latest``) due time of the entries the sweeper takes: the waiting and decision
+        kinds and the push retries, and the run rows' unless ``rows_only``."""
+        from polyris.coordination import attention as att
+        from polyris.coordination import run_row
+        from polyris.coordination.times import parse_utc
+
+        kinds = (att.WAITING, att.DECISION, att.RETRY)
+        dues = [parse_utc(str(item[att.DUE])) for item in self._items()
+                if str(item.get(att.KEY, "")).split("#", 1)[0] in kinds and item.get(att.DUE)
+                and not (rows_only and run_row.is_run_row(str(item["execution_name"])))]
+        return (max if latest else min)(dues, default=None)
+
+    def restart_with_dependants(self, run: Run, task: str) -> None:
+        """The console's Restart of `task` and of its dependants that failed or were skipped by a rule."""
+        raise NeedsBinding("rows-ops", "Restart with dependants")
+
+    def upgrade_platform(self) -> None:
+        """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are."""
+        raise NeedsBinding("rows-migration", "the upgrade from 1.2")
+
+    # ── the tasks table's stream (ADR #137 §7): wired with the dispatcher in TR-4 ──
+
+    def deliver_task_hints(self, run: Optional["Run"] = None) -> None:
+        """Deliver the tasks table's stream to the dispatcher, every record or `run`'s, until none is left:
+        a pass's own writes, such as `left_at`, wake the passes after it."""
+        select = None if run is None else (lambda record: _run_of(record) == run.name)
+        for _ in range(10_000):
+            self.runtime.run()
+            if not self._tasks_stream.deliver(self._dispatch_in_budget, select=select):
+                return
+        raise AssertionError("the tasks table's stream never ran dry")
+
+    def _dispatch_in_budget(self, event: Any, _: Any) -> Any:
+        from dispatcher import RESERVE_MS
+
+        rows = self._pass_rows
+        remaining = (lambda: RESERVE_MS + rows * 1000) if rows is not None else (lambda: 10 ** 9)
+        return self._dispatch(event, _Invocation(remaining))
+
+    def lose_task_hint(self, run: "Run", task: str) -> None:
+        """The next record of `task`'s row in `run` that the mapping would deliver is lost."""
+        name = run.execution_name(task)
+        self._tasks_stream.drop(lambda record: _key_of(record) == name, times=1)
+
+    def delay_task_hint(self, run: "Run", task: str) -> None:
+        """The next record of `task`'s row in `run` that the mapping would deliver waits for `release_task_hints`."""
+        name = run.execution_name(task)
+        self._tasks_stream.delay(lambda record: _key_of(record) == name, times=1)
+
+    def release_task_hints(self) -> None:
+        """The delayed stream records arrive, after the ones delivered meanwhile."""
+        self._tasks_stream.release()
+
+    def two_passes_at_once(self, run: "Run") -> None:
+        """Two passes over `run` at once, as when two shards of the stream carry records of one run:
+        the second runs between the first's read and its first write."""
+        import dispatcher
+        from polyris.coordination import run_row
+
+        def second() -> None:
+            dispatcher._DISPATCHER.full_pass(run_row.key(run.name), source="second", remaining_ms=lambda: 10 ** 9)
+
+        tokens = self.stack.tables["PipelineTokensTable"]
+        # The read of the run's task rows: a pass's first read of its spec version comes earlier.
+        self.boundary.between(then=second, after_read=lambda call: call.component == "lambda:reconcile"
+                              and call.operation == "BatchGetItem" and call.tables == [tokens])
 
     def sweep(self) -> None:
         """One scheduled run of the sweeper, at the clock's current time."""
@@ -419,6 +669,7 @@ class World:
             client.meta.events.register(f"before-parameter-build.dynamodb.{operation}", fail)
             if after:
                 client.meta.events.register(f"after-call.dynamodb.{operation}", fail_answer)
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_starts(self, target: Union[Pipeline, str], code: str, *, times: int) -> None:
         """The next `times` starts of `target` fail with `code` (e.g. throttling): a Lambda's
@@ -436,6 +687,7 @@ class World:
             return real(machine_arn, name, payload)
 
         runtime._start = _start  # type: ignore[method-assign]
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_signals(self, code: str, *, times: int, call: str = "send_task_success",
                      when: Optional[Callable[[Dict[str, Any]], bool]] = None) -> None:
@@ -451,6 +703,7 @@ class World:
             return real(**kwargs)
 
         setattr(runtime, call, send)
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_stops(self, code: str, *, times: int) -> None:
         """The next `times` StopExecution calls fail with `code`, as a throttled stop would."""
@@ -463,6 +716,7 @@ class World:
             return real(**kwargs)
 
         runtime.stop_execution = stop_execution
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def fail_invokes(self, function: str, *, times: int, error: str = "CoordinationTransient") -> None:
         """The next `times` invocations of a platform function (logical id) by a state machine fail
@@ -484,6 +738,7 @@ class World:
             return real(event, context)
 
         self.runtime.lambdas[name] = handler
+        self._healers.append(lambda: left.__setitem__(0, 0))
 
     def hold(self, machine: str) -> None:
         """New executions of a platform state machine (logical id) wait to take a step until `release`."""
@@ -547,3 +802,25 @@ class World:
         if not found:
             raise AssertionError(f"no wrapper execution {name}")
         return found[0]
+
+
+@dataclass
+class _Invocation:
+    """The Lambda context the tasks stream's mapping hands the dispatcher: its time left."""
+    get_remaining_time_in_millis: Callable[[], int]
+
+
+def _key_of(record: Dict[str, Any]) -> str:
+    return str(record["dynamodb"]["Keys"]["execution_name"]["S"])
+
+
+def _run_of(record: Dict[str, Any]) -> Optional[str]:
+    """The run a tasks-table record belongs to: the run row's own, or a task row's `pipeline_execution`."""
+    from polyris.coordination import run_row
+
+    key = _key_of(record)
+    if run_row.is_run_row(key):
+        return key[len(run_row.KEY_PREFIX):]
+    image = record["dynamodb"].get("NewImage") or record["dynamodb"].get("OldImage") or {}
+    value = image.get("pipeline_execution", {}).get("S")
+    return str(value) if value else None

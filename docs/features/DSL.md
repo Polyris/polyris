@@ -100,8 +100,8 @@ with DAG(
     default_args={
         "retries": 0,
         "retry_delay": timedelta(minutes=10),
-        "execution_timeout": timedelta(hours=4),
-        "orchestration_timeout": timedelta(hours=12),  # Wait for deps up to 12h
+        "execution_timeout": timedelta(hours=4),       # One attempt of the work: 4h at most
+        "orchestration_timeout": timedelta(hours=12),  # All waiting: 12h at most
     }
 ) as dag:
     # All tasks inherit these defaults unless overridden
@@ -375,9 +375,9 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `task_id` | str | (inferred from function name) | Override the auto-inferred task id. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
-| `execution_timeout` | timedelta | 24 hours | Max task execution time |
-| `orchestration_timeout` | timedelta | same as `execution_timeout` | Max time waiting for dependencies |
+| `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
+| `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. Unset, the work has no limit |
+| `orchestration_timeout` | timedelta | none | A cap on all of the task's waiting, until it is ready. It never falls back to `execution_timeout`. Unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
 | `retry_delay` | timedelta | 5 minutes | Delay between retries (base delay when backoff is on) |
 | `retry_exponential_backoff` | bool | False | Double the wait each retry: `min(retry_delay·2^n, max_retry_delay)` |
@@ -386,17 +386,17 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting) |
 | `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
 | `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
-| `outlets` | list[Asset] | `[]` | Assets produced by this task |
+| `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 98, each once (the decorator refuses an asset named twice) |
 | `inlets` | list[Asset] | `[]` | Assets consumed by this task |
-| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]` |
+| `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]`. The wait lasts 7 days from when the task's own dependencies are met; then the task fails. `polyris-deploy` warns when `orchestration_timeout` is shorter |
 
 ```python
 from datetime import timedelta
 
 @task.sfn(
     arn="arn:aws:states:us-east-1:123456789:stateMachine:my-sfn",
-    execution_timeout=timedelta(hours=2),
-    orchestration_timeout=timedelta(days=3),  # Long wait for cross-pipeline deps
+    execution_timeout=timedelta(hours=2),     # One attempt of the work: 2h at most
+    orchestration_timeout=timedelta(days=8),  # All waiting: 8 days at most
     retries=2,
     retry_delay=timedelta(minutes=10),
     wait_before=60,
@@ -406,6 +406,21 @@ from datetime import timedelta
 def my_task():
     pass
 ```
+
+### Pipeline limits
+
+`polyris-validate` and `polyris-deploy` refuse a pipeline beyond any of these limits, naming the limit and the size they measured:
+
+| Limit | Value | Why |
+|---|---|---|
+| Tasks per pipeline | 2,000 | The declared maximum the platform is tested at |
+| Outlets per task | 98 | A task's success is recorded in one DynamoDB transaction of at most 100 items |
+| A task's spec | 256 KB | A task starts with its spec as its input, which Step Functions caps at 256 KB |
+| The specs together | 16 MB | A run's first step reads every spec of the pipeline at once |
+| `task_id` | 128 bytes, and no leading `_` | Operator requests name a task in full; `_` starts the platform's own rows |
+| The definition | 1 MB | Step Functions' limit, measured as `polyris-deploy` sends it |
+
+`polyris-output --json` shows each task's spec and the definition.
 
 ## Task-type-specific parameters
 
@@ -418,18 +433,7 @@ labels).
 
 ## Trigger Rules
 
-> **polyris is intervention-first, not autonomous (ADR #114).** A task that exhausts
-> its retries pauses for a human decision (`retry` / `mark_success` / `skip` / `fail`)
-> rather than propagating failure automatically. That's a deliberate differentiator —
-> most orchestrators fail and stop; polyris lets you fix it inline, in the same
-> run. One consequence: a *confirmed* failure (resolved with `fail`) cancels the whole
-> pipeline's `Parallel` before any downstream `trigger_rule` ever evaluates — so a rule
-> whose only purpose is reacting to a confirmed failure can never fire. See ADR #117
-> for the full reachable-state analysis.
-
-polyris supports 5 trigger rules (ADR #117). Six additional rule names are
-**rejected at validation time** (`polyris-validate` / `polyris-deploy`), each
-with a specific suggestion for what to use instead.
+A trigger rule decides when a task runs, from the outcomes of its **declared direct** upstreams. `all_success` is the default.
 
 > **Scope of "upstream" here — the *declared direct* deps.** A trigger rule
 > looks at the tasks you connected to this task with `>>` or a function call,
@@ -438,83 +442,86 @@ with a specific suggestion for what to use instead.
 > reflected indirectly (if `extract` failed, `transform` never succeeded), but
 > the rule never asks about `extract` directly.
 
-| Rule | Description | Use Case |
-|------|-------------|----------|
-| `all_success` | All **declared direct** deps must have ended `success`. Default. | Standard ETL: extract → transform → load |
-| `one_success` | At least one direct dep succeeded (fires immediately on the first one; doesn't wait for the rest) | Redundant sources: run once any input arrived |
-| `all_done` | All direct deps finished (any status). Note: a *confirmed* failure cancels the run's `Parallel` before this fires — see ADR #116 for the planned exception. | Cleanup after the success path |
-| `all_skipped` | All direct deps ended `skipped` | Fallback for an entirely-optional branch |
-| `none_skipped` | No direct dep ended `skipped` | Only proceed if nothing upstream was intentionally skipped |
+| Rule | Runs its task when | Example |
+|------|--------------------|---------|
+| `all_success` (default) | Every upstream succeeded, or was skipped by an operator or by the run | `extract >> transform >> load` |
+| `one_success` | One upstream succeeded. The task starts at the first success and does not wait for the others | Two vendors deliver the same prices: process whichever arrives first |
+| `all_done` | Every upstream is final, whatever the outcome | Stop the EMR cluster after `load`, also when `load` failed |
+| `all_skipped` | Every upstream was skipped | `load_archive` runs when the run skipped `scrape_live` (`skip_tasks`) |
+| `none_skipped` | Every upstream is final and none was skipped. Failures pass | A data-quality report on every source, failures included |
+| `one_failed` | One upstream failed finally. The task starts at the first final failure | Delete the half-written S3 partition that a failed `load` left |
+| `all_failed` | Every upstream failed finally | Both price feeds failed: load yesterday's prices |
+| `none_failed` | Every upstream is final and none failed. Skips pass, even when every upstream was skipped | Write the date's `_SUCCESS` marker when nothing failed |
+| `none_failed_min_one_success` | Every upstream is final, none failed and at least one succeeded. Skips pass | `report` after `core` and an optional `enrich`, which a rule may skip |
 
-### Removed rules (ADR #117) and what to use instead
+### What a rule reads
 
-In polyris's intervention-first failure model (ADR #114), 6 additional rule names
-either duplicate one of the 5 above in every reachable state, or can never fire
-at all:
+- **Final outcomes.** An upstream is final once it succeeded, was skipped, ended `upstream_failed`, failed finally or was stopped. A task that exhausts its retries waits for a human decision first (ADR #114): retry, mark successful, skip or fail. Until that decision, or the decision timeout (5 hours by default), it is pending for every rule, so `one_failed` runs after the decision, not at the first error. The console bell shows the failure at once.
+- **Final failures** are `failed`, `upstream_failed` and `stopped`. A Stop is final: the stopped task's dependants are decided as after a Fail. Until a dependant is decided, a Restart or Mark Successful of the stopped task still counts for it.
+- **When a rule decides.** A rule runs its task as soon as its condition holds: `one_success` at the first success, `one_failed` at the first final failure, every other rule once all its upstreams are final. It skips the task, or ends it `upstream_failed`, only once every upstream is final.
+- **`skipped` or `upstream_failed`.** A rule that needs success or no failure (`all_success`, `one_success`, `none_failed`, `none_failed_min_one_success`) ends its task `upstream_failed` when a final failure blocks it. Any other rule that can no longer be met ends its task `skipped`: the condition never occurred, which is not an error (ADR #115).
 
-| Removed rule | Use instead | Why |
-|------|-------------|----------|
-| `one_done` | `all_done` | Identical in every reachable state |
-| `none_failed` | `all_done` | Identical in every reachable state |
-| `none_failed_min_one_success` | `one_success` | Identical in every reachable state |
-| `all_done_min_one_success` | `one_success` | Identical in every reachable state |
-| `all_failed` | *(no replacement)* | Never satisfiable — its only use case, reacting to a confirmed failure, is exactly the state `Parallel`-abort prevents it from reaching |
-| `one_failed` | *(no replacement)* | Same as above |
+### Skips and who made them
 
-> **Blocked-rule terminal (ADR #115).** When a rule's trigger condition never occurs
-> (e.g. `all_skipped` when nothing was skipped), the task resolves **`skipped`** and
-> the run stays **`success`** — this is a legitimate no-op, not an error, not
-> `upstream_failed`/`aborted`. Only a rule that *requires* success (`all_success`,
-> `one_success`) blocked by a **genuine, resolved** failure resolves **`upstream_failed`**.
->
-> **`all_done` and a confirmed failure.** `all_done` fires only on the
-> success path (every upstream ended `success` or `skipped`). A confirmed
-> failure (an operator resolving a paused task with `fail`) cancels the
-> run's `Parallel` before `all_done` can evaluate — see ADR #116 for the
-> design.
->
-> **Skip cascades for `all_success` (ADR #115).** A skipped upstream blocks
-> `all_success` — but only when the skip came from a *rule*
-> resolving `skipped`. A **manual** skip (an operator explicitly skipping a paused task
-> to unblock it) does not cascade — a human tolerating one gap shouldn't silently
-> no-op an entire downstream chain.
+Every skip records who made it, in `skip_origin`:
+
+| Origin | Who skips | Under `all_success` |
+|--------|-----------|---------------------|
+| `manual` | An operator, from the console | Passes, as if the task had succeeded |
+| `run` | The run, for a task named in its `skip_tasks` | Passes, as if the task had succeeded |
+| `rule` | The engine, because the task's own rule can no longer be met | Cascades: the dependant is skipped too |
+
+Only `all_success` reads the origin. Every other rule reads a skip the same: `one_success` and `none_failed_min_one_success` never count it as a success, `none_skipped` skips its task, and `all_skipped` counts it.
+
+> **Coming from Airflow.** In Airflow every skip cascades under `all_success`, and a join after a branch needs `none_failed_min_one_success`. In polyris only a rule's skip cascades: a task that an operator or the run skipped lets its `all_success` dependants run. To skip a chain by hand, skip each task in it.
+
+### Names that are rejected
+
+`polyris-validate` and `polyris-deploy` reject any other name. Four names that other orchestrators use get a hint:
+
+| Name | Use instead |
+|------|-------------|
+| `one_done` | `all_done` to wait for every upstream; `one_success` or `one_failed` to react to the first outcome of one kind |
+| `all_done_min_one_success` | `one_success`, which starts at the first success instead of waiting for the rest |
+| `always` | No rule: remove the dependency, since a task without upstreams starts with its run |
+| `all_done_setup_success` | `all_done` for a cleanup task |
+
+A task whose rule the platform does not know, from a pipeline deployed with a newer SDK, fails with the cause when its run reaches it.
+
+### A failure and the run
+
+A final failure does not end the run at once: its dependants' rules decide, and independent tasks run to completion. A run with a final failure fails, even when a cleanup (`all_done`) or a compensation (`one_failed`) task succeeded after it. To let a run succeed despite a failed task, skip the task or mark it successful before its failure is final.
 
 ### Examples
 
 ```python
-# all_success (default) — standard ETL
-@task.sfn(arn="...:extract")
-def extract(): pass
+from polyris import DAG, task
 
-@task.sfn(arn="...:transform")
-def transform(): pass
+with DAG("orders", schedule="@daily") as dag:
 
-@task.sfn(arn="...:load")  # trigger_rule="all_success" implicit
-def load(): pass
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:load-orders")
+    def load():
+        """Default all_success: runs when every upstream succeeded."""
 
-extract() >> transform() >> load()
-# `load` runs only if `transform` ended with status `success`.
-# If `extract` fails → `transform` never runs (or ends `upstream_failed`)
-# → `load`'s `all_success` isn't satisfied → `load` ends `upstream_failed`.
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:stop-cluster",
+              trigger_rule="all_done")
+    def stop_cluster():
+        """Cleanup: runs once load is final, success or failure."""
 
-# one_success — redundant sources, whoever wins first
-@task.sfn(arn="...", trigger_rule="one_success")
-def merge_results(): pass
-# Fires the moment ANY direct upstream ends `success`. Does not wait for
-# the others — they might still be running when `merge_results` starts.
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:drop-partition",
+              trigger_rule="one_failed")
+    def drop_partition():
+        """Compensation: runs after load failed finally, to remove what it half wrote."""
 
-# all_skipped — fallback branch that runs when nothing else ran
-@task.sfn(arn="...", trigger_rule="all_skipped")
-def fallback_path(): pass
-# Runs only if every direct upstream ended `skipped` (e.g. a set of
-# optional branches were all skipped by their own rules).
+    @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:mark-done",
+              trigger_rule="none_failed")
+    def mark_done():
+        """Writes the _SUCCESS marker when nothing failed; a skipped load still passes."""
 
-# all_done — cleanup that runs regardless of upstream success/skip
-@task.sfn(arn="...", trigger_rule="all_done")
-def cleanup(): pass
-# Runs after every direct upstream has terminated (success or skipped).
-# A CONFIRMED failure cancels the run's Parallel before cleanup evaluates
-# — ADR #116 tracks the planned exception to react to resolved failures.
+    loaded = load()
+    loaded >> stop_cluster()
+    loaded >> drop_partition()
+    loaded >> mark_done()
 ```
 
 ---
@@ -799,7 +806,7 @@ polyris-validate
 # Validate with details
 polyris-validate -v
 
-# Generate Step Functions JSON
+# The Step Functions definition and its task specs
 polyris-output --json
 
 # Generate Mermaid diagram

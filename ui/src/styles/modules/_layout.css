@@ -376,6 +376,13 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 0.8125rem; font-weight: 500;
 }
+/* The pipeline needs a redeploy (ADR #137): a small amber label before the sparkline */
+.sb-row__redeploy {
+    flex-shrink: 0; padding: 0 0.25rem; border-radius: 4px;
+    font-size: 0.625rem; font-weight: 600; line-height: 1rem;
+    color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, transparent);
+}
+.pd-redeploy { color: var(--warning); font-weight: 600; }
 .sb-row__schedule {
     width: 76px; flex-shrink: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

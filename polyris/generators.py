@@ -15,7 +15,7 @@ This module contains all the generate_* functions:
 from typing import Dict, Any, List, Tuple, Iterator, Optional, Callable, Set
 import json
 
-from .constants import TaskConfigKey
+from .constants import TaskConfigKey, TaskSpecKey, WarningKind
 from .config import config
 from .dag import DAG
 from .task import Task
@@ -26,8 +26,10 @@ from .steps import (
 from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
 from .coordination.records import DAG_SNAPSHOT_PREFIX
-from .coordination.run_name import MAX_NAME, fit_task_id
-from .partitions import MAX_PARTITION_KEY_LENGTH
+from .coordination import retention, run_row, task_spec
+from .coordination import start_run as start_run_contract
+from .coordination.start_run import Arg, RunArg
+from . import limits
 
 
 # =============================================================================
@@ -69,14 +71,7 @@ JSONATA_PARTITION = (
     f": {_DATE_FALLBACK}) %}}"
 )
 
-_EXEC_NAME_SUFFIX = (
-    "($length($states.context.Execution.Name) > 8 "
-    "? $substring($states.context.Execution.Name, "
-    "$length($states.context.Execution.Name) - 8) "
-    ": $states.context.Execution.Name)"
-)
-
-# Common JSONata expressions used across wrapper inputs and registration states
+# Common JSONata expressions used by the registration states and Start_Run's payload
 JSONATA_TOKEN = "{% $states.context.Task.Token %}"
 JSONATA_EXECUTION_NAME = "{% $states.context.Execution.Name %}"
 JSONATA_SKIP_TASKS = "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}"
@@ -98,13 +93,6 @@ JSONATA_PASS_INPUT = "{% $states.input %}"
 JSONATA_SUPPRESS_ASSET_EVENT = "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}"
 JSONATA_CASCADE_ALL = "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}"
 JSONATA_TRIGGERED_BY = "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}"
-JSONATA_EXEC_SHORT = (
-    "{% ( $exec := $states.context.Execution.Name; "
-    "$short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; "
-    "$replace($replace($short, '.', ''), ':', '') ) %}"
-)
-
-# Step types that go through wrapper SFN for dependency resolution
 WRAPPER_STEP_TYPES = frozenset({'lambda', 'glue', 'ecs', 'athena'})
 
 # Step types tracked in DAG visualization (business logic, not infrastructure)
@@ -126,33 +114,21 @@ _STANDARD_DYNAMODB_RETRY: Dict[str, Any] = {
 }
 
 
-# A wrapper execution is named "{task id}-{date}-{run suffix}". The date is a
-# partition key and the run suffix the run name's last 8 characters; the task
-# id gets what is left of the 80 characters, so the date and the suffix are
-# never cut (ADR #130 §6.6).
-_WRAPPER_NAME_TAIL = 1 + MAX_PARTITION_KEY_LENGTH + 1 + 8
-_TASK_ID_BUDGET = MAX_NAME - _WRAPPER_NAME_TAIL
-
-
-def _wrapper_name_part(node_id: str) -> str:
-    """The task-id part of a wrapper execution name: the id, or a prefix and a hash of it."""
-    return fit_task_id(node_id, _TASK_ID_BUDGET)
-
-
-def _warning_item(subject: str, task_name: str, dag_id: str, error: str) -> Dict[str, Any]:
-    """A DynamoDB-typed `coordination` warning row, the shape of records.warning_item (ADR #130 §9).
+def _warning_item(subject: str, task_name: str, dag_id: str, error: str, *,
+                  kind: str = WarningKind.COORDINATION, task_date: str = JSONATA_DATE) -> Dict[str, Any]:
+    """A DynamoDB-typed warning row, the shape of records.warning_item (ADR #130 §9).
 
     `subject` and `error` are JSONata fragments. The row carries no `date`:
     the bell finds it through the attention index by write time, whatever the
     partition date of the run (B-N1). A contract test compares the two shapes.
     """
     return {
-        "execution_name": {"S": f"{{% '_notify_warn_coordination_' & {subject} %}}"},
-        "kind": {"S": "coordination"},
+        "execution_name": {"S": f"{{% '_notify_warn_{kind}_' & {subject} %}}"},
+        "kind": {"S": kind},
         "task_name": {"S": task_name},
         "pipeline_name": {"S": dag_id},
         "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-        "task_date": {"S": JSONATA_DATE},
+        "task_date": {"S": task_date},
         "status": {"S": "failed"},
         "error": {"S": f"{{% {error} %}}"},
         "finished_at": {"S": JSONATA_NOW},
@@ -160,34 +136,6 @@ def _warning_item(subject: str, task_name: str, dag_id: str, error: str) -> Dict
         "attention_at": {"S": JSONATA_NOW},
         "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"},
     }
-
-
-def _make_execution_name_expr(task_id: str) -> str:
-    """JSONata for a wrapper execution's Name: {task id part}-{date}-{run suffix}.
-
-    Used for wrapper/step SFN startExecution.waitForTaskToken calls. Two runs
-    of a task never share a name, whatever the length of its id. The final
-    $substring only guards a date longer than any partition key.
-    """
-    return (
-        f"{{% $substring('{_wrapper_name_part(task_id)}-' "
-        f"& ({_DATE_FALLBACK}) "
-        f"& '-' & {_EXEC_NAME_SUFFIX}, 0, {MAX_NAME}) %}}"
-    )
-
-
-def _check_wrapper_names(dag: DAG) -> None:
-    """Fail when two nodes of ``dag`` would start wrappers under the same name."""
-    seen: Dict[str, str] = {}
-    nodes = [t.task_id for t in dag.tasks] + [s.step_id for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES]
-    for node_id in nodes:
-        part = _wrapper_name_part(node_id)
-        first = seen.setdefault(part, node_id)
-        if first != node_id:
-            raise ValueError(
-                f"DAG '{dag.dag_id}': tasks '{first}' and '{node_id}' would start their wrappers under "
-                f"the same name ('{part}-<date>-<run>'). Rename one of them."
-            )
 
 
 def _serialize_wait_for(wait_for: List[Any]) -> List[Dict[str, Any]]:
@@ -320,6 +268,10 @@ def _serialize_inlet(asset) -> Dict[str, str]:
 
 VALID_STATE_TYPES = {"Task", "Pass", "Choice", "Wait", "Succeed", "Fail", "Parallel", "Map"}
 
+#: The state types that take Retry and Catch; AWS rejects either field on any other type.
+ERROR_HANDLING_TYPES = frozenset({"Task", "Parallel", "Map"})
+
+
 def validate_asl(asl: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
     """
     Validate Amazon States Language JSON.
@@ -333,21 +285,12 @@ def validate_asl(asl: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
     errors = []
     warnings: List[str] = []
 
-    # 0. Size guard — AWS rejects definitions ≥ 1 MB; warn at 900 KB
-    _ASL_LIMIT_BYTES = 1_000_000
-    _ASL_WARN_BYTES = 900_000
-    size = len(json.dumps(asl).encode())
-    if size >= _ASL_LIMIT_BYTES:
-        errors.append(
-            f"Definition size {size:,} bytes exceeds the AWS 1 MB limit "
-            f"({_ASL_LIMIT_BYTES:,} bytes). Reduce the number of tasks or "
-            f"schema column count."
-        )
-    elif size >= _ASL_WARN_BYTES:
-        warnings.append(
-            f"Definition size {size:,} bytes is approaching the AWS 1 MB limit "
-            f"({_ASL_LIMIT_BYTES:,} bytes)."
-        )
+    # 0. Size guard — measured as polyris-deploy sends the definition (indented, as
+    # generate_step_function_json writes it): measured compact, 230 tasks validated at
+    # 937 KB and deployed at 1.11 MB (ADR #137 §8).
+    sent = json.dumps(asl, indent=2)
+    errors.extend(limits.definition_errors(sent))
+    warnings.extend(limits.definition_warnings(sent))
 
     # 1. Basic structure
     if "StartAt" not in asl:
@@ -417,6 +360,11 @@ def validate_asl(asl: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
             if has_next:
                 all_next_refs.add(state["Next"])
         
+        if state_type not in ERROR_HANDLING_TYPES:
+            for field in ("Retry", "Catch"):
+                if field in state:
+                    errors.append(f"State '{state_name}': Type '{state_type}' does not take '{field}'")
+
         # Catch transitions (error handlers) — their targets must exist too.
         # Without this, a Catch pointing at a non-existent state passes validation
         # and only fails at deploy time in AWS.
@@ -545,7 +493,7 @@ def generate_debug_info(dag: "DAG") -> Dict[str, Any]:
             "task_type": task.task_type,
             "arn": task.arn[:50] + "..." if task.arn and len(task.arn) > 50 else task.arn,
             "dependencies": [d.node_id for d in task.dependencies],
-            "timeout": task.timeout,
+            "execution_timeout": task.execution_timeout_seconds,
             "retries": task.retries,
         }
         if task.outlets:
@@ -855,49 +803,6 @@ def _generate_step_state(step: Step) -> Dict:
     )
 
 
-def _build_wrapper_input(
-    task_name: str,
-    task_arn: str,
-    task_type: str,
-    dependencies: List[str],
-    dag: DAG,
-    *,
-    cross_account_role: str = "same",
-    orchestration_timeout: int = 3600,
-    task_config: Optional[Dict] = None,
-) -> Dict:
-    """Build the common wrapper input dict shared by Task and Step branches.
-
-    Returns the base dict with all standard fields.  Callers can add
-    Task-specific extras (alerts, outlets, wait_for, etc.) to the result.
-    """
-    wrapper_input: Dict[str, Any] = {
-        "task_name": task_name,
-        "task_arn": task_arn,
-        "task_type": task_type,
-        "dependencies": dependencies,
-        "cross_account_role": cross_account_role,
-        "token": JSONATA_TOKEN,
-        "pipeline_name": dag.dag_id,
-        "pipeline_execution": JSONATA_EXECUTION_NAME,
-        "skip_tasks": JSONATA_SKIP_TASKS,
-        # Forward cascade control flags from parent execution input (set
-        # by bulk_backfill SFN per ADR #57 cascade semantics). Default
-        # false → run_task helper preserves existing 'auto' behavior.
-        "_suppress_asset_event": JSONATA_SUPPRESS_ASSET_EVENT,
-        "cascade_all": JSONATA_CASCADE_ALL,
-        "triggered_by": JSONATA_TRIGGERED_BY,
-        "date": JSONATA_DATE,
-        "current_date": JSONATA_DATE,
-        "PARTITION_ARG": JSONATA_PARTITION,
-        "variables": JSONATA_VARIABLES,
-        "orchestration_timeout": orchestration_timeout,
-    }
-    if task_config:
-        wrapper_input["task_config"] = task_config
-    return wrapper_input
-
-
 def _add_retry_config(
     task_config: Dict[TaskConfigKey, Any],
     retries: int,
@@ -909,7 +814,7 @@ def _add_retry_config(
     """Thread retry policy fields into task_config in-place.
 
     Single source of truth for the retry contract: called by both
-    _build_task_config_and_arn (Task path) and _build_step_branch
+    _build_task_config_and_arn (Task path) and _build_step_config_and_arn
     (wrapper-step path) so they cannot drift apart.
     """
     if not retries:
@@ -935,13 +840,10 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
     query_string) legitimately carry the empty string, which is the shape the
     generated ASL expects — not a missing value.
 
-    Shared between _build_task_branch (the original dispatch's own
-    wrapper_input) and _build_dag_visualization_nodes_edges (so task_config
-    is also stored in the registry's dag_metadata) — previously task_config
-    was never persisted anywhere retrievable after the original dispatch,
-    so restart_task_helper's Start_New_Wrapper had nothing to reconstruct
-    it from and always passed an empty {}, silently dropping a restarted
-    task's real retries/worker-type/etc settings.
+    Shared between the task's spec (_task_spec, which Start_Run's rows and
+    run_task's input come from) and _build_dag_visualization_nodes_edges (so
+    task_config is also stored in the registry's dag_metadata, from which the
+    1.2 restart helper rebuilds a restarted 1.2 task's settings).
     """
     task_arn = task.arn
     task_config: Dict[TaskConfigKey, Any] = {}
@@ -1012,205 +914,276 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
     return task_config, task_arn
 
 
-def _build_task_branch(task: Task, dag: DAG, wrapper_arn: str) -> Dict:
-    """Build a single parallel branch for a Task (wrapper-based execution).
-    
-    Each Task runs via nested SFN (wrapper) with waitForTaskToken.
-    The wrapper handles dependency resolution, retries, and error reporting.
-    
-    Args:
-        task: Task to generate branch for
-        dag: Parent DAG (for dag_id)
-        wrapper_arn: ARN of the wrapper state machine
-    
-    Returns:
-        Branch dict: {"StartAt": "Task_{id}", "States": {...}}
+def _build_step_config_and_arn(step: Step) -> Tuple[Dict[TaskConfigKey, Any], str]:
+    """task_config and task_arn of a wrapper step (lambda/glue/ecs/athena), as for a Task.
+
+    Its spec (_step_spec) records it, so a wrapper step runs as a task row with
+    a task's configuration (ADR #137 §1).
     """
-    # Check if task depends on direct steps (which don't support deps)
-    direct_step_deps = [
-        d for d in task.dependencies 
-        if isinstance(d, Step) and d.step_type not in WRAPPER_STEP_TYPES
-    ]
-    if direct_step_deps:
-        dep_names = [d.step_id for d in direct_step_deps]
-        raise ValueError(
-            f"Task '{task.task_id}' depends on direct step(s): {dep_names}. "
-            f"Direct steps (wait/pass/sns/sqs/s3/...) do not support dependencies. "
-            f"Use @task with wait_before parameter instead."
-        )
-    
-    dep_names = [d.node_id for d in task.dependencies]
-    task_config, task_arn = _build_task_config_and_arn(task)
-    # Resolve cross_account_role to ARN from config.roles (pyproject.toml)
-    # If role is defined in config.roles, use the ARN; otherwise keep the string
-    cross_account_role = task.role
-    if task.role and task.role != 'same' and task.role in config.roles:  # pragma: no cover -- cross-account role->ARN resolution depends on a populated config.roles, exercised by deploy e2e
-        cross_account_role = config.roles[task.role]
-    
-    # Build task state (JSONata syntax)
-    # Name is deterministic based on current_date (not $now()) for proper backfill support
-    task_input = _build_wrapper_input(
-        task_name=task.task_id,
-        task_arn=task_arn,
-        task_type=task.task_type,
-        dependencies=dep_names,
-        dag=dag,
-        cross_account_role=cross_account_role,
-        orchestration_timeout=task.orchestration_timeout_seconds,
-        task_config=task_config,
-    )
-    # Task-specific extras (not applicable to Step wrapper)
-    task_input["wait_before"] = task.wait_before_seconds
-    task_input["trigger_rule"] = task.trigger_rule or "all_success"
-    task_input["pipeline_execution_short"] = JSONATA_EXEC_SHORT
-    
-    # Add outlets for asset-based orchestration
-    # When task completes, wrapper will emit EventBridge events for each outlet
-    if task.outlets:
-        task_input["outlets"] = [_serialize_outlet(a) for a in task.outlets]
-    
-    # Add wait_for for pull-based cross-pipeline asset dependencies
-    if task.wait_for:
-        task_input["wait_for"] = _serialize_wait_for(task.wait_for)
-    
-    task_state = {
-        "Type": "Task",
-        "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
-        "TimeoutSeconds": task.timeout + task.wait_before_seconds,
-        "Arguments": {
-            "StateMachineArn": wrapper_arn,
-            "Name": _make_execution_name_expr(task.task_id),
-            "Input": task_input
-        },
-        "End": True
-    }
-    
-    # NOTE: No Retry here! Retry on waitForTaskToken with deterministic Name
-    # causes ExecutionAlreadyExists. Retries are handled inside wrapper/run_task.
-    
-    # Note: wait_before is now handled inside the wrapper, not as a separate Wait state
-    # This ensures the task is registered in DynamoDB immediately and UI can show countdown
-    
-    return {"StartAt": f"Task_{task.task_id}", "States": {f"Task_{task.task_id}": task_state}}
-
-
-def _build_step_branch(step: Step, dag: DAG, wrapper_arn: str) -> Dict:
-    """Build a single parallel branch for a Step.
-    
-    Two modes:
-    - Wrapper steps (lambda/glue/ecs/athena): Full dependency support via wrapper
-    - Direct steps (wait/pass/sns/sqs/s3/...): Run in parallel, NO dependency support
-    
-    Args:
-        step: Step to generate branch for
-        dag: Parent DAG (for dag_id)
-        wrapper_arn: ARN of the wrapper state machine
-    
-    Returns:
-        Branch dict: {"StartAt": "{step_id}", "States": {...}}
-    """
-    # These types go through wrapper for dependency resolution
-    if step.step_type in WRAPPER_STEP_TYPES:
-        # Validate that wrapper steps don't depend on direct steps
-        # Direct steps don't register in DynamoDB, so wrappers would wait forever
-        direct_step_deps = [
-            d for d in step.dependencies 
-            if isinstance(d, Step) and d.step_type not in WRAPPER_STEP_TYPES
-        ]
-        if direct_step_deps:
-            dep_names = [d.step_id for d in direct_step_deps]
-            raise ValueError(
-                f"Wrapper step '{step.step_id}' ({step.step_type}) depends on direct step(s): {dep_names}. "
-                f"Direct steps (wait/pass/sns/sqs/s3/...) don't register in DynamoDB and cannot be dependencies. "
-                f"Use wait_before parameter or restructure your DAG."
-            )
-        
-        # Generate wrapper call with task_type and task_config
-        dep_names = [d.node_id for d in step.dependencies]
-        
-        # Build task_config based on step type
-        task_config: Dict[TaskConfigKey, Any] = {}
-        if step.step_type == 'lambda':
-            assert isinstance(step, LambdaTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {TaskConfigKey.PAYLOAD: step.payload or {}}
-        elif step.step_type == 'glue':
-            assert isinstance(step, GlueTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {
-                TaskConfigKey.JOB_NAME: step.job_name,
-                TaskConfigKey.ARGUMENTS: step.arguments or {}
-            }
-        elif step.step_type == 'ecs':
-            assert isinstance(step, ECSTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {
-                TaskConfigKey.CLUSTER: step.cluster,
-                TaskConfigKey.TASK_DEFINITION: step.task_definition,
-                TaskConfigKey.LAUNCH_TYPE: step.launch_type,
-                TaskConfigKey.SUBNETS: step.subnets or [],
-                TaskConfigKey.SECURITY_GROUPS: step.security_groups or [],
-                TaskConfigKey.ASSIGN_PUBLIC_IP: step.assign_public_ip,
-                TaskConfigKey.OVERRIDES: step.overrides or {}
-            }
-        elif step.step_type == 'athena':
-            assert isinstance(step, AthenaTask)  # 1:1 step_type<->class; narrows for typing
-            task_config = {
-                TaskConfigKey.QUERY_STRING: step.query_string,
-                TaskConfigKey.DATABASE: step.database,
-                TaskConfigKey.OUTPUT_LOCATION: step.output_location,
-                TaskConfigKey.WORKGROUP: step.workgroup
-            }
-
-        # Include retry policy from step (same contract as _build_task_config_and_arn for Task).
-        # LambdaTask(Step) uses retry_interval; other wrapper step types currently carry no
-        # retry fields, so getattr defaults keep them out of the config.
-        _add_retry_config(
-            task_config,
-            getattr(step, 'retries', 0),
-            getattr(step, 'retry_interval', 1),
-        )
-
-        # For lambda, task_arn is function_arn
-        task_arn = getattr(step, 'function_arn', '') or getattr(step, 'task_arn', '') or step.step_id
-        
-        # Get timeout from step or use default (3600 for lambda, 86400 for glue/ecs/athena)
-        default_timeout = 3600 if step.step_type == 'lambda' else 86400
-        step_timeout = getattr(step, 'timeout', default_timeout)
-        
-        step_state = {
-            "Type": "Task",
-            "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
-            "TimeoutSeconds": step_timeout,
-            "Arguments": {
-                "StateMachineArn": wrapper_arn,
-                "Name": _make_execution_name_expr(step.step_id),
-                "Input": _build_wrapper_input(
-                    task_name=step.step_id,
-                    task_arn=task_arn,
-                    task_type=step.step_type,
-                    dependencies=dep_names,
-                    dag=dag,
-                    orchestration_timeout=step_timeout,
-                    task_config=task_config,
-                ),
-            },
-            "End": True
+    task_config: Dict[TaskConfigKey, Any] = {}
+    if step.step_type == 'lambda':
+        assert isinstance(step, LambdaTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {TaskConfigKey.PAYLOAD: step.payload or {}}
+    elif step.step_type == 'glue':
+        assert isinstance(step, GlueTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {
+            TaskConfigKey.JOB_NAME: step.job_name,
+            TaskConfigKey.ARGUMENTS: step.arguments or {}
         }
-        
-        return {"StartAt": step.step_id, "States": {step.step_id: step_state}}
+    elif step.step_type == 'ecs':
+        assert isinstance(step, ECSTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {
+            TaskConfigKey.CLUSTER: step.cluster,
+            TaskConfigKey.TASK_DEFINITION: step.task_definition,
+            TaskConfigKey.LAUNCH_TYPE: step.launch_type,
+            TaskConfigKey.SUBNETS: step.subnets or [],
+            TaskConfigKey.SECURITY_GROUPS: step.security_groups or [],
+            TaskConfigKey.ASSIGN_PUBLIC_IP: step.assign_public_ip,
+            TaskConfigKey.OVERRIDES: step.overrides or {}
+        }
+    elif step.step_type == 'athena':
+        assert isinstance(step, AthenaTask)  # 1:1 step_type<->class; narrows for typing
+        task_config = {
+            TaskConfigKey.QUERY_STRING: step.query_string,
+            TaskConfigKey.DATABASE: step.database,
+            TaskConfigKey.OUTPUT_LOCATION: step.output_location,
+            TaskConfigKey.WORKGROUP: step.workgroup
+        }
     else:
-        # Direct steps (wait, pass, sns, sqs, s3, etc.) - NOT integrated with wrapper
-        # Dependencies on direct steps will NOT work - fail fast with clear error
-        if step.dependencies:
-            dep_names = [d.node_id for d in step.dependencies]
+        raise ValueError(f"step '{step.step_id}' ({step.step_type}) does not run as a task row")
+
+    # Include retry policy from step (same contract as _build_task_config_and_arn for Task).
+    # LambdaTask(Step) uses retry_interval; other wrapper step types currently carry no
+    # retry fields, so getattr defaults keep them out of the config.
+    _add_retry_config(
+        task_config,
+        getattr(step, 'retries', 0),
+        getattr(step, 'retry_interval', 1),
+    )
+
+    # For lambda, task_arn is function_arn
+    task_arn = getattr(step, 'function_arn', '') or getattr(step, 'task_arn', '') or step.step_id
+    return task_config, task_arn
+
+
+def _resolved_role(task: Task) -> str:
+    """The task's cross_account_role: a config.roles key resolved to its ARN, anything else as written."""
+    if task.role and task.role != 'same' and task.role in config.roles:  # pragma: no cover -- cross-account role->ARN resolution depends on a populated config.roles, exercised by deploy e2e
+        return config.roles[task.role]
+    return task.role
+
+
+#: The key of a branch's output that records its error. After the Parallel, the pipeline fails its
+#: execution with the recorded errors, so a failed branch never cancels the others (ADR #137 §1).
+BRANCH_ERROR = "_polyris_branch_error"
+#: Step Functions' cap on a Fail state's cause, in characters.
+_CAUSE_MAX = 32768
+_JSONATA_EXECUTION_START = "{% $states.context.Execution.StartTime %}"
+_KEEP_INPUT = "{% $states.input %}"
+
+
+#: The run's date in a warning written after a Catch: the date ``_branch_error`` recorded from the state's input.
+_BRANCH_ERROR_DATE = f"{{% $states.input.{BRANCH_ERROR}.date %}}"
+
+
+def _branch_error(branch: str) -> Dict[str, Any]:
+    """A Catch's Output that records the caught error under BRANCH_ERROR, naming its branch, with the run's date
+    read from the state's input: the states after the Catch read the error, not the run's input."""
+    return {BRANCH_ERROR: {
+        "branch": branch,
+        "error": "{% $states.errorOutput.Error %}",
+        "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+        "date": JSONATA_DATE,
+    }}
+
+
+def _check_dependencies(dag: DAG) -> None:
+    """Direct steps are branches, not rows: they have no dependencies, and no task or wrapper step
+    depends on one, since nothing would ever record that it finished."""
+    def is_direct(node: Any) -> bool:
+        return isinstance(node, Step) and node.step_type not in WRAPPER_STEP_TYPES
+
+    for task in dag.tasks:
+        direct = [d.node_id for d in task.dependencies if is_direct(d)]
+        if direct:
             raise ValueError(
-                f"Direct step '{step.step_id}' ({step.step_type}) cannot have dependencies: {dep_names}. "
+                f"Task '{task.task_id}' depends on direct step(s): {direct}. "
+                f"Direct steps (wait/pass/sns/sqs/s3/...) do not support dependencies. "
+                f"Use @task with wait_before parameter instead."
+            )
+    for step in dag.steps:
+        if step.step_type in WRAPPER_STEP_TYPES:
+            direct = [d.node_id for d in step.dependencies if is_direct(d)]
+            if direct:
+                raise ValueError(
+                    f"Wrapper step '{step.step_id}' ({step.step_type}) depends on direct step(s): {direct}. "
+                    f"Direct steps (wait/pass/sns/sqs/s3/...) don't register in DynamoDB and cannot be dependencies. "
+                    f"Use wait_before parameter or restructure your DAG."
+                )
+        elif step.dependencies:
+            raise ValueError(
+                f"Direct step '{step.step_id}' ({step.step_type}) cannot have dependencies: "
+                f"{[d.node_id for d in step.dependencies]}. "
                 f"Only wrapper steps (lambda/glue/ecs/athena) support dependencies. "
                 f"Use @task with wait_before parameter instead."
             )
-        
-        step_state = _generate_step_state(step)
-        step_state["End"] = True
-        
-        return {"StartAt": step.step_id, "States": {step.step_id: step_state}}
+
+
+def _start_run_branch(dag: DAG, specs: task_spec.Version, start_run_function_arn: str, tokens_table: str) -> Dict:
+    """The branch that runs the pipeline's tasks (ADR #137 §1).
+
+    Start_Run writes the run's rows and returns; the state waits for the run's
+    token, which the dispatcher answers once every row is final. A failed run's
+    answer is recorded without a warning: its tasks failed visibly. Any other
+    failure starts no task, so it also writes a `coordination` warning.
+    """
+    payload = {
+        Arg.FORMAT_VERSION: task_spec.FORMAT_VERSION,
+        Arg.SPEC_ID: specs.spec_id,
+        Arg.TASK_COUNT: specs.task_count,
+        Arg.PIPELINE_NAME: dag.dag_id,
+        Arg.EXECUTION_NAME: JSONATA_EXECUTION_NAME,
+        Arg.EXECUTION_ARN: "{% $states.context.Execution.Id %}",
+        Arg.EXECUTION_START: _JSONATA_EXECUTION_START,
+        Arg.TOKEN: JSONATA_TOKEN,
+        Arg.RETRY_COUNT: "{% $states.context.State.RetryCount %}",
+        Arg.REDRIVE_COUNT: ("{% $exists($states.context.Execution.RedriveCount) "
+                            "? $states.context.Execution.RedriveCount : 0 %}"),
+        Arg.DATE: JSONATA_DATE,
+        Arg.INPUT: {
+            RunArg.VARIABLES: JSONATA_VARIABLES,
+            RunArg.SKIP_TASKS: JSONATA_SKIP_TASKS,
+            RunArg.CASCADE_ALL: JSONATA_CASCADE_ALL,
+            RunArg.SUPPRESS_ASSET_EVENT: JSONATA_SUPPRESS_ASSET_EVENT,
+            RunArg.TRIGGERED_BY: JSONATA_TRIGGERED_BY,
+            # From the execution's own input: Define_Inputs passes on only the fields it lists.
+            RunArg.BACKFILL_ID: ("{% $exists($states.context.Execution.Input.backfill_id) "
+                                 "? $states.context.Execution.Input.backfill_id : null %}"),
+        },
+    }
+    error = _branch_error("Start_Run")
+    return {"StartAt": "Start_Run", "States": {
+        "Start_Run": {
+            "Type": "Task",
+            "Comment": "Write the run's rows; the dispatcher answers this token once every row is final",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+            "Arguments": {"FunctionName": start_run_function_arn, "Payload": payload},
+            "Output": {},
+            "Retry": [{
+                "ErrorEquals": list(start_run_contract.RETRY_ERRORS),
+                "IntervalSeconds": int(start_run_contract.RETRY_INTERVAL.total_seconds()),
+                "MaxAttempts": start_run_contract.RETRY_ATTEMPTS,
+                "BackoffRate": start_run_contract.RETRY_BACKOFF,
+                "MaxDelaySeconds": int(start_run_contract.RETRY_MAX_DELAY.total_seconds()),
+                "JitterStrategy": "FULL",
+            }],
+            "Catch": [
+                {"ErrorEquals": [run_row.FAILED_RUN_ERROR], "Output": error, "Next": "Run_Ended_Failed"},
+                {"ErrorEquals": ["States.DataLimitExceeded"], "Output": error, "Next": "Warn_Start_Run_Failed"},
+                {"ErrorEquals": ["States.ALL"], "Output": error, "Next": "Warn_Start_Run_Failed"},
+            ],
+            "End": True,
+        },
+        "Warn_Start_Run_Failed": {
+            "Type": "Task",
+            "Comment": "No task of the run started: show why in the console bell",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Arguments": {
+                "TableName": tokens_table,
+                "Item": _warning_item(
+                    "$states.context.Execution.Name & '-start_run'", "Start_Run", dag.dag_id,
+                    f"'Start_Run failed, so no task of the run started: ' & $states.input.{BRANCH_ERROR}.error "
+                    f"& ': ' & $states.input.{BRANCH_ERROR}.cause", task_date=_BRANCH_ERROR_DATE),
+            },
+            "Output": _KEEP_INPUT,
+            "Retry": [_STANDARD_DYNAMODB_RETRY],
+            "Catch": [{"ErrorEquals": ["States.ALL"], "Output": _KEEP_INPUT, "Next": "Run_Ended_Failed"}],
+            "Next": "Run_Ended_Failed",
+        },
+        "Run_Ended_Failed": {"Type": "Pass", "Comment": "The error is recorded; the pipeline fails after the Parallel",
+                             "End": True},
+    }}
+
+
+def _mark_state(step: Step, tokens_table: str, next_state: str) -> Dict[str, Any]:
+    """The mark of a failed direct step on the run row (ADR #137 §1, §3).
+
+    It carries the execution's name and StartTime, so it and Start_Run's writes
+    accept each other in either order; it keeps run_version, and writes the
+    history TTL when the row has none.
+    """
+    history = int(retention.HISTORY.total_seconds())
+    return {
+        "Type": "Task",
+        "Comment": f"Mark the run failed by its direct step {step.step_id}",
+        "Resource": "arn:aws:states:::dynamodb:updateItem",
+        "Arguments": {
+            "TableName": tokens_table,
+            "Key": {run_row.TABLE_KEY: {"S": f"{{% '{run_row.KEY_PREFIX}' & $states.context.Execution.Name %}}"}},
+            "UpdateExpression": "SET #mark = :mark, #execution = :execution, #run_start = :run_start, "
+                                "#ttl = if_not_exists(#ttl, :ttl)",
+            "ConditionExpression": "attribute_not_exists(#execution) OR "
+                                   "(#execution = :execution AND #run_start = :run_start)",
+            "ExpressionAttributeNames": {"#mark": run_row.STEP_FAILURE, "#execution": run_row.EXECUTION,
+                                         "#run_start": run_row.RUN_START, "#ttl": run_row.TTL},
+            "ExpressionAttributeValues": {
+                ":mark": {"M": {
+                    run_row.STEP_MARK_STEP: {"S": run_row.clip(step.step_id, run_row.STEP_MAX)},
+                    run_row.STEP_MARK_ERROR: {"S": f"{{% $substring($states.input.{BRANCH_ERROR}.error, 0, "
+                                                   f"{run_row.ERROR_CHARS}) %}}"},
+                }},
+                ":execution": {"S": JSONATA_EXECUTION_NAME},
+                ":run_start": {"S": _JSONATA_EXECUTION_START},
+                ":ttl": {"N": f"{{% $string($floor($toMillis($now()) / 1000) + {history}) %}}"},
+            },
+        },
+        "Output": _KEEP_INPUT,
+        # A transaction of the dispatcher checks the run row, and may conflict with this write (§7).
+        "Retry": [{**_STANDARD_DYNAMODB_RETRY,
+                   "ErrorEquals": _STANDARD_DYNAMODB_RETRY["ErrorEquals"] + ["DynamoDB.TransactionConflictException"]}],
+        "Catch": [{"ErrorEquals": ["States.ALL"], "Output": _KEEP_INPUT, "Next": next_state}],
+        "Next": next_state,
+    }
+
+
+def _direct_step_branch(step: Step, number: int, dag: DAG, tokens_table: str, *, marks_run: bool) -> Dict:
+    """A direct step's branch (ADR #137 §1). Its failure is caught in the branch: the branch records
+    the error, writes a `step` warning and, in a pipeline with tasks, marks the run row."""
+    warn, mark, failed = f"Warn_Step_{number}_Failed", f"Mark_Step_{number}_Failed", f"Step_{number}_Failed"
+    state = _generate_step_state(step)
+    state["End"] = True
+    if state["Type"] not in ERROR_HANDLING_TYPES:
+        # A Wait, Pass or Succeed state takes no Catch; it fails only on a malformed definition.
+        return {"StartAt": step.step_id, "States": {step.step_id: state}}
+    error = _branch_error(step.step_id)
+    state["Catch"] = list(state.get("Catch", [])) + [
+        {"ErrorEquals": ["States.DataLimitExceeded"], "Output": error, "Next": warn},
+        {"ErrorEquals": ["States.ALL"], "Output": error, "Next": warn},
+    ]
+    states: Dict[str, Any] = {step.step_id: state}
+    states[warn] = {
+        "Type": "Task",
+        "Comment": f"The direct step {step.step_id} failed: show why in the console bell",
+        "Resource": "arn:aws:states:::dynamodb:putItem",
+        "Arguments": {
+            "TableName": tokens_table,
+            "Item": _warning_item(
+                f"$states.context.Execution.Name & '-step-' & $states.input.{BRANCH_ERROR}.branch",
+                step.step_id, dag.dag_id,
+                f"'The direct step ' & $states.input.{BRANCH_ERROR}.branch & ' failed: ' "
+                f"& $states.input.{BRANCH_ERROR}.error & ': ' & $states.input.{BRANCH_ERROR}.cause",
+                kind=WarningKind.STEP, task_date=_BRANCH_ERROR_DATE),
+        },
+        "Output": _KEEP_INPUT,
+        "Retry": [_STANDARD_DYNAMODB_RETRY],
+        "Catch": [{"ErrorEquals": ["States.ALL"], "Output": _KEEP_INPUT, "Next": mark if marks_run else failed}],
+        "Next": mark if marks_run else failed,
+    }
+    if marks_run:
+        states[mark] = _mark_state(step, tokens_table, failed)
+    states[failed] = {"Type": "Pass", "Comment": f"The error of {step.step_id} is recorded; "
+                                                 "the pipeline fails after the Parallel", "End": True}
+    return {"StartAt": step.step_id, "States": states}
 
 
 def _build_dag_visualization_nodes_edges(dag: DAG) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1316,6 +1289,69 @@ def _build_pipeline_metadata(dag: DAG) -> Tuple[List, Dict, Dict]:
     return tasks_metadata, dag_metadata, asset_schedule
 
 
+def _task_spec(task: Task) -> Dict[str, Any]:
+    """A task's spec (ADR #137 §8): everything needed to run the task and to draw it.
+
+    Keys are ``TaskSpecKey`` values. An optional key is absent when the task does not
+    set it, so a spec says only what the task declares: no execution_timeout means no
+    limit on the work, no orchestration_timeout no cap on the wait (§5).
+    """
+    task_config, task_arn = _build_task_config_and_arn(task)
+    spec: Dict[str, Any] = {
+        TaskSpecKey.TASK_ID: task.task_id,
+        TaskSpecKey.TASK_TYPE: task.task_type,
+        TaskSpecKey.TASK_ARN: task_arn,
+        TaskSpecKey.TASK_CONFIG: task_config,
+        TaskSpecKey.CROSS_ACCOUNT_ROLE: _resolved_role(task),
+        TaskSpecKey.DEPENDENCIES: [d.node_id for d in task.dependencies],
+        TaskSpecKey.TRIGGER_RULE: task.trigger_rule or "all_success",
+    }
+    if task.execution_timeout_seconds is not None:
+        spec[TaskSpecKey.EXECUTION_TIMEOUT] = task.execution_timeout_seconds
+    if task.orchestration_timeout_seconds is not None:
+        spec[TaskSpecKey.ORCHESTRATION_TIMEOUT] = task.orchestration_timeout_seconds
+    if task.wait_before_seconds:
+        spec[TaskSpecKey.WAIT_BEFORE] = task.wait_before_seconds
+    if task.outlets:
+        spec[TaskSpecKey.OUTLETS] = [_serialize_outlet(a) for a in task.outlets]
+    if task.inlets:
+        spec[TaskSpecKey.INLETS] = [_serialize_inlet(a) for a in task.inlets]
+    if task.wait_for:
+        spec[TaskSpecKey.WAIT_FOR] = _serialize_wait_for(task.wait_for)
+    if task.skip_on_backfill:
+        spec[TaskSpecKey.SKIP_ON_BACKFILL] = True
+    return spec
+
+
+def _step_spec(step: Step) -> Dict[str, Any]:
+    """A wrapper step's spec: it runs as a task row, with a task's defaults (ADR #137 §1)."""
+    task_config, task_arn = _build_step_config_and_arn(step)
+    return {
+        TaskSpecKey.TASK_ID: step.step_id,
+        TaskSpecKey.TASK_TYPE: step.step_type,
+        TaskSpecKey.TASK_ARN: task_arn,
+        TaskSpecKey.TASK_CONFIG: task_config,
+        TaskSpecKey.CROSS_ACCOUNT_ROLE: "same",
+        TaskSpecKey.DEPENDENCIES: [d.node_id for d in step.dependencies],
+        TaskSpecKey.TRIGGER_RULE: "all_success",
+    }
+
+
+def build_task_specs(dag: DAG) -> List[Dict[str, Any]]:
+    """The spec of every node of ``dag`` that runs as a task row: its tasks and wrapper steps.
+
+    Direct steps (wait/pass/sns/...) are branches of the definition, not rows, and have none.
+    """
+    specs = [_task_spec(t) for t in dag.tasks]
+    specs += [_step_spec(s) for s in dag.steps if s.step_type in WRAPPER_STEP_TYPES]
+    return specs
+
+
+def build_spec_version(dag: DAG) -> task_spec.Version:
+    """The spec version ``polyris-deploy`` writes to ``pipeline-specs`` and the definition names."""
+    return task_spec.build_version(dag.dag_id, build_task_specs(dag))
+
+
 def _build_registration_chain(
     dag: DAG,
     tasks_metadata: List,
@@ -1324,6 +1360,7 @@ def _build_registration_chain(
     registry_table: str,
     tokens_table: str,
     asset_subscriptions_table: str,
+    specs: task_spec.Version,
 ) -> Tuple[Dict, str]:
     """Build the registration state chain that runs before tasks.
 
@@ -1349,6 +1386,8 @@ def _build_registration_chain(
             in its ASSET_SUBSCRIPTIONS_TABLE, both sourced from the SAM stack's
             AssetSubscriptionsTable output that polyris-deploy reads via
             describe_stacks)
+        specs: the pipeline's spec version (build_spec_version); Register_Pipeline
+            names it in the registry with its task count (ADR #137 §8)
     
     Returns:
         Tuple of (states_dict, start_at_state_name)
@@ -1412,7 +1451,9 @@ def _build_registration_chain(
                 "#dag = :dag, "
                 "#schedule = :schedule, "
                 "asset_schedule = :asset_schedule, "
-                "last_execution = :last_execution"
+                "last_execution = :last_execution, "
+                "spec_id = :spec_id, "
+                "task_count = :task_count"
             ),
             "ExpressionAttributeNames": {
                 "#description": "description",
@@ -1429,11 +1470,19 @@ def _build_registration_chain(
                 ":schedule": {"S": dag.schedule if isinstance(dag.schedule, str) else ""},
                 ":asset_schedule": {"S": json.dumps(asset_schedule)},
                 ":last_execution": {"S": JSONATA_EXECUTION_NAME},
+                ":spec_id": {"S": specs.spec_id},
+                ":task_count": {"N": str(specs.task_count)},
             },
         },
         "Output": JSONATA_PASS_INPUT,
         "Retry": [_STANDARD_DYNAMODB_RETRY],
+        # States.ALL does not match States.DataLimitExceeded (AWS documents it outside it), so the
+        # Catch names it too: an input over 256 KB must reach the bell, not kill the run (ADR #137 §8).
         "Catch": [{
+            "ErrorEquals": ["States.DataLimitExceeded"],
+            "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
+            "Next": "Warn_Registration_Failed"
+        }, {
             "ErrorEquals": ["States.ALL"],
             "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
             "Next": "Warn_Registration_Failed"
@@ -1598,9 +1647,9 @@ def _build_registration_chain(
 
 
 def generate_step_function_json(
-    dag: DAG, 
-    dependency_wrapper_arn: Optional[str] = None,
-    wrapper_arn: Optional[str] = None,
+    dag: DAG,
+    *,
+    start_run_function_arn: Optional[str] = None,
     registry_table: Optional[str] = None,
     tokens_table: Optional[str] = None,
     asset_subscriptions_table: Optional[str] = None,
@@ -1610,8 +1659,8 @@ def generate_step_function_json(
     
     Args:
         dag: DAG to generate JSON for
-        dependency_wrapper_arn: (deprecated) Use wrapper_arn instead
-        wrapper_arn: ARN of wrapper state machine (default: ${wrapper_arn})
+        start_run_function_arn: ARN of the Start_Run function that writes each run's
+            rows (default: ${start_run_function_arn})
         registry_table: Name of pipeline registry table (default: ${registry_table})
         tokens_table: Name of pipeline tokens table (default: ${tokens_table})
         asset_subscriptions_table: Name of the asset subscriptions table that
@@ -1621,55 +1670,66 @@ def generate_step_function_json(
             AssetSubscriptionsTable CFN output that polyris-deploy reads via
             describe_stacks (see deploy.py).
     
-    Features:
-    - variables: Creates Define_Inputs Pass state at start
-    - wait_before: Adds Wait state before task in branch
-    - Passes context (variables, skip_tasks, current_date) to all tasks
-    - Supports all Step types (Lambda, DynamoDB, SNS, S3, etc.)
-    - Supports all Task types (sfn, lambda, glue, ecs, athena, emr, batch)
-    
-    Step types:
-    - Wrapper steps (lambda/glue/ecs/athena): Full dependency support via wrapper
-    - Direct steps (wait/pass/sns/sqs/s3/...): Run in parallel, NO dependency support
+    The registration chain runs first; then a Parallel holds one branch for the
+    pipeline's tasks, Start_Run, and one per direct step (ADR #137 §1):
+    - Tasks and wrapper steps (lambda/glue/ecs/athena) are rows: Start_Run writes
+      them from the pipeline's spec version, which polyris-deploy writes before
+      the stack, and the state ends when the dispatcher answers the run's token.
+    - Direct steps (wait/pass/sns/sqs/s3/...) run as branches, with no dependencies.
+      A failed one records its error, writes a `step` warning and marks the run row.
+    After the Parallel, the execution fails when a branch recorded an error, so a
+    failure never cancels a branch that is still running.
     """
-    # Handle deprecated parameter
-    _wrapper_arn = wrapper_arn or dependency_wrapper_arn or "${wrapper_arn}"
+    _start_run_arn = start_run_function_arn or "${start_run_function_arn}"
     _registry_table = registry_table or "${registry_table}"
     _tokens_table = tokens_table or "${tokens_table}"
     _asset_subscriptions_table = asset_subscriptions_table or "${asset_subscriptions_table}"
     
-    # 1. Build parallel branches (one per task/step)
-    _check_wrapper_names(dag)
-    branches = []
-    for item in list(dag.tasks) + list(dag.steps):
-        if isinstance(item, Task):
-            branches.append(_build_task_branch(item, dag, _wrapper_arn))
-        elif isinstance(item, Step):
-            branches.append(_build_step_branch(item, dag, _wrapper_arn))
-    
+    # 1. The branches: Start_Run for the rows, one per direct step
+    _check_dependencies(dag)
+    specs = build_spec_version(dag)
+    has_rows = specs.task_count > 0
+    branches = [_start_run_branch(dag, specs, _start_run_arn, _tokens_table)] if has_rows else []
+    direct_steps = [s for s in dag.steps if s.step_type not in WRAPPER_STEP_TYPES]
+    branches += [_direct_step_branch(step, number, dag, _tokens_table, marks_run=has_rows)
+                 for number, step in enumerate(direct_steps, start=1)]
+
     # 2. Build metadata (tasks, DAG viz, asset schedule)
     tasks_metadata, dag_metadata, asset_schedule = _build_pipeline_metadata(dag)
-    
+
     # 3. Build registration state chain
     states, start_at = _build_registration_chain(
         dag, tasks_metadata, dag_metadata, asset_schedule,
-        _registry_table, _tokens_table, _asset_subscriptions_table,
+        _registry_table, _tokens_table, _asset_subscriptions_table, specs,
     )
-    
-    # 4. Add parallel execution + failure handler
+
+    # 4. The Parallel; the execution fails after it when a branch recorded an error
+    errors = f"$states.input[$exists({BRANCH_ERROR})].{BRANCH_ERROR}"
     states["Run_All_Tasks"] = {
         "Type": "Parallel",
         "Branches": branches,
-        "End": True,
-        "Catch": [{
-            "ErrorEquals": ["States.ALL"],
-            "Next": "Pipeline_Failed"
-        }]
+        "Next": "Check_Branches",
+        "Catch": [{"ErrorEquals": ["States.DataLimitExceeded"], "Next": "Pipeline_Failed"},
+                  {"ErrorEquals": ["States.ALL"], "Next": "Pipeline_Failed"}],
     }
+    states["Check_Branches"] = {
+        "Type": "Choice",
+        "Comment": "Fail the execution once every branch has ended, if one of them recorded an error",
+        "Choices": [{"Condition": f"{{% $count({errors}) > 0 %}}", "Next": "Run_Failed"}],
+        "Default": "Run_Succeeded",
+    }
+    states["Run_Failed"] = {
+        "Type": "Fail",
+        "Error": f"{{% ($errors := {errors}; $errors[0].error) %}}",
+        "Cause": (f"{{% ($errors := {errors}; $substring($join($append([], $errors.(branch & ': ' & error "
+                  f"& (cause = '' ? '' : ': ' & cause))), '; '), 0, {_CAUSE_MAX})) %}}"),
+    }
+    states["Run_Succeeded"] = {"Type": "Succeed"}
     states["Pipeline_Failed"] = {
         "Type": "Fail",
-        "Error": "PipelineFailed",
-        "Cause": "Infrastructure error - wrapper did not handle"
+        "Comment": "The Parallel itself failed: a branch failed outside its own Catch",
+        "Error": "{% $exists($states.input.Error) ? $states.input.Error : 'PipelineFailed' %}",
+        "Cause": "{% $exists($states.input.Cause) ? $states.input.Cause : '' %}",
     }
     
     # 5. Assemble definition

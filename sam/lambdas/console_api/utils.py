@@ -248,7 +248,8 @@ def compute_pipeline_execution_short(pipeline_execution: str) -> str:
     """
     Compute pipeline_execution_short from full pipeline_execution.
     
-    Mirrors the JSONata logic in dependency_wrapper:
+    Equal to polyris.coordination.task_row.short, which names the run in its
+    task rows' keys (a test compares them):
     - Take last 20 characters
     - Remove '.' and ':' characters (Step Functions ARN compatibility)
     

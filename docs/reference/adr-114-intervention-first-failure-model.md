@@ -1,5 +1,7 @@
 # ADR #114 — Intervention-first failure model
 
+> **Amended by [ADR #138](adr-138-trigger-rules-after-run-end-change.md) (1.3):** its statement that failure-reactive trigger rules cannot be supported no longer holds. The decision stands: a failure is final only after the human decision or its timeout.
+
 > **Status:** ACCEPTED. Codifies existing behavior as an explicit product decision and
 > establishes the constraint that ADR #115 (canonical trigger rules) is built against.
 > No code changes — this ADR formalizes what `run_task`'s wrapper already does.

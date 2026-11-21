@@ -514,10 +514,9 @@ def test_pipeline_status_attempt_absent_returns_none(mocker):
 # get_pipeline_dag tests
 # ============================================================
 
-def test_pipeline_dag_empty_edges(mocker):
-    """DAG with edges=[] is returned correctly."""
-    dag_data = {'nodes': [{'id': 'a', 'name': 'a'}, {'id': 'b', 'name': 'b'}], 'edges': []}
-    mock_pipelines = MockRepo([{'pipeline_name': 'parallel', 'dag': json.dumps(dag_data)}])
+def test_pipeline_dag_empty_edges(mocker, deploy_specs):
+    """A pipeline whose tasks have no dependencies draws with edges=[] (its specs, ADR #137 §8)."""
+    mock_pipelines = MockRepo([deploy_specs('parallel', [{'task_id': 'a'}, {'task_id': 'b'}])])
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
@@ -525,14 +524,13 @@ def test_pipeline_dag_empty_edges(mocker):
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('parallel', _make_event()))
 
-    assert resp['nodes'] == dag_data['nodes']
+    assert [(n['id'], n['name']) for n in resp['nodes']] == [('a', 'a'), ('b', 'b')]
     assert resp['edges'] == []
 
 
-def test_pipeline_dag_with_edges(mocker):
-    """DAG with edges is returned with full edge data."""
-    dag_data = {'nodes': [{'id': 'a'}, {'id': 'b'}], 'edges': [{'source': 'a', 'acme': 'b'}]}
-    mock_pipelines = MockRepo([{'pipeline_name': 'chain', 'dag': json.dumps(dag_data)}])
+def test_pipeline_dag_with_edges(mocker, deploy_specs):
+    """A dependency is an edge from the upstream to its dependant."""
+    mock_pipelines = MockRepo([deploy_specs('chain', [{'task_id': 'a'}, {'task_id': 'b', 'dependencies': ['a']}])])
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
@@ -540,8 +538,7 @@ def test_pipeline_dag_with_edges(mocker):
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('chain', _make_event()))
 
-    assert len(resp['edges']) == 1
-    assert resp['edges'][0]['source'] == 'a'
+    assert resp['edges'] == [{'from': 'a', 'to': 'b'}]
 
 
 def test_pipeline_dag_no_dag_in_registry(mocker):
@@ -563,11 +560,10 @@ def test_pipeline_dag_no_dag_in_registry(mocker):
     assert len(resp['edges']) == 1
 
 
-def test_pipeline_dag_snapshot_preferred_over_registry(mocker):
-    """When pipeline_execution has a snapshot, use it instead of registry."""
-    registry_dag = {'nodes': [{'id': 'a'}, {'id': 'b'}, {'id': 'd'}], 'edges': []}
+def test_pipeline_dag_snapshot_preferred_over_registry(mocker, deploy_specs):
+    """When a 1.2 run has a snapshot, use it instead of the pipeline's current specs."""
     snapshot_dag = {'nodes': [{'id': 'a'}, {'id': 'b'}, {'id': 'c'}], 'edges': []}
-    mock_pipelines = MockRepo([{'pipeline_name': 'daily', 'dag': json.dumps(registry_dag)}])
+    mock_pipelines = MockRepo([deploy_specs('daily', [{'task_id': 'a'}, {'task_id': 'b'}, {'task_id': 'd'}])])
     mock_execs = MockRepo([
         {'execution_name': 'dag_snapshot::exec-old', 'pipeline_name': 'daily',
          'pipeline_execution': 'exec-old', 'dag': json.dumps(snapshot_dag)},
@@ -588,10 +584,9 @@ def test_pipeline_dag_snapshot_preferred_over_registry(mocker):
     assert resp['dag_source'] == 'snapshot'
 
 
-def test_pipeline_dag_falls_back_to_registry_without_snapshot(mocker):
-    """When no snapshot exists for execution, fall back to registry."""
-    registry_dag = {'nodes': [{'id': 'a'}, {'id': 'b'}], 'edges': [{'from': 'a', 'to': 'b'}]}
-    mock_pipelines = MockRepo([{'pipeline_name': 'daily', 'dag': json.dumps(registry_dag)}])
+def test_pipeline_dag_falls_back_to_registry_without_snapshot(mocker, deploy_specs):
+    """When no snapshot exists for execution, draw the specs of the version the registry names."""
+    mock_pipelines = MockRepo([deploy_specs('daily', [{'task_id': 'a'}, {'task_id': 'b', 'dependencies': ['a']}])])
     mock_execs = MockRepo([
         {'execution_name': 'e1', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
          'task_name': 'a', 'status': 'success', 'date': TODAY},
@@ -608,10 +603,9 @@ def test_pipeline_dag_falls_back_to_registry_without_snapshot(mocker):
     assert resp['dag_source'] == 'registry'
 
 
-def test_pipeline_dag_no_execution_uses_registry(mocker):
-    """Without pipeline_execution parameter, always use registry."""
-    registry_dag = {'nodes': [{'id': 'x'}], 'edges': []}
-    mock_pipelines = MockRepo([{'pipeline_name': 'daily', 'dag': json.dumps(registry_dag)}])
+def test_pipeline_dag_no_execution_uses_registry(mocker, deploy_specs):
+    """Without pipeline_execution parameter, always draw the registry's version."""
+    mock_pipelines = MockRepo([deploy_specs('daily', [{'task_id': 'x'}])])
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)

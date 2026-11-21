@@ -11,7 +11,7 @@ The behaviour that matters (and is easy to get wrong):
   - it must keep reading while only one date is buffered, however busy that date is;
   - it must stop as soon as the data runs out, reporting no cursor.
 
-Pattern follows test_backfills_repo.py — mock the .table property. No moto, no AWS.
+The .table property is mocked with finite query pages. No moto, no AWS.
 """
 
 
@@ -175,7 +175,8 @@ def test_no_cursor_means_no_sort_key_condition(mocker):
 
 
 def test_projection_and_expression_names_are_forwarded(mocker):
-    """Callers project a narrow attribute set; reserved words need aliases."""
+    """Callers project a narrow attribute set; reserved words need aliases. The fields that
+    ``should_skip_token_row`` reads are added, so internal and backfill rows can be dropped."""
     table = _table(mocker, [{'Items': []}])
     repo = _make_repo_with_table(mocker, table)
 
@@ -184,7 +185,7 @@ def test_projection_and_expression_names_are_forwarded(mocker):
     )
 
     params = table.query.call_args.kwargs
-    assert params['ProjectionExpression'] == 'pipeline_execution, #s'
+    assert params['ProjectionExpression'] == 'pipeline_execution, #s, execution_name, pipeline_name'
     assert params['ExpressionAttributeNames'] == {'#s': 'status'}
 
 
@@ -327,7 +328,7 @@ def test_forwards_projection_filter_and_key_condition(mocker):
                             key_condition=key)
 
     params = table.query.call_args.kwargs
-    assert params['ProjectionExpression'] == '#s'
+    assert params['ProjectionExpression'] == '#s, execution_name, pipeline_name'
     assert params['ExpressionAttributeNames'] == {'#s': 'status'}
     assert params['FilterExpression'].get_expression()['values'][1] == 'failed'
     assert params['KeyConditionExpression'].get_expression()['operator'] == 'AND'

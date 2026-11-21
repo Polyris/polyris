@@ -790,15 +790,22 @@ class TestAssetEventsOnManualSuccess:
     would. Skip/Fail/Stop correctly never do this, since they make no claim
     that anything was actually produced."""
 
+    @pytest.fixture(autouse=True)
+    def _specs(self, mocker):
+        """The task's outlets come from its spec (ADR #137 §8), in a moto pipeline-specs table."""
+        import boto3
+        from moto import mock_aws
+        from tests.specs_kit import use_specs_table
+        with mock_aws():
+            self._resource = boto3.resource('dynamodb', region_name='us-east-1')
+            use_specs_table(mocker, self._resource)
+            yield
+
     def _registry_with_outlet(self, task_name='transform', asset_name='sales/daily'):
-        return {
-            'pipeline_name': 'acme-daily',
-            'dag': json.dumps({
-                'nodes': [{'id': task_name, 'name': task_name, 'type': 'task',
-                           'outlets': [{'name': asset_name, 'uri': 's3://bucket/sales/'}]}],
-                'edges': [],
-            }),
-        }
+        from tests.specs_kit import deploy_specs, spec
+        outlets = [{'name': asset_name, 'uri': 's3://bucket/sales/'}]
+        return {'pipeline_name': 'acme-daily',
+                **deploy_specs(self._resource, 'acme-daily', [spec(task_name, outlets=outlets)])}
 
     def test_mark_success_with_outlets_records_the_fact(self, wired, mocker):
         tasks_module, fake_table = wired
@@ -875,14 +882,14 @@ class TestAssetEventsOnManualSuccess:
         assert not any(v.get('asset_name') for v in fake_table.items.values()), \
             f"{action_fn_name} must never emit an asset event"
 
-    def test_malformed_registry_dag_does_not_break_mark_success(self, wired, mocker):
-        """A malformed/unparseable dag field in the registry must not turn
+    def test_unreadable_specs_do_not_break_mark_success(self, wired, mocker):
+        """Specs that cannot be read (here: a version the table does not hold) must not turn
         Mark Successful itself into a failure — best-effort, matching every
         other side-effect in this codebase."""
         tasks_module, fake_table = wired
         fake_table.items['transform-2026-07-24-run1'] = _waiting_task()
-        mocker.patch.object(tasks_module.pipelines_repo, 'get',
-                            return_value={'pipeline_name': 'acme-daily', 'dag': 'not valid json{{{'})
+        mocker.patch.object(tasks_module.pipelines_repo, 'get', return_value={
+            'pipeline_name': 'acme-daily', 'spec_id': 'acme-daily#' + '0' * 64, 'task_count': 1})
 
         resp = tasks_module.mark_success(
             'transform', {'body': json.dumps({'date': '2026-07-24', 'pipeline_execution': 'run-1'})},

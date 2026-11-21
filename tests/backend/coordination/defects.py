@@ -1,5 +1,8 @@
 """Defects ADR #130 fixes, by id (the ADR's Context table); B-D1 is ADR #133's, and the ids from
 B-RN1 on come from the external review of 1.2.0 (ADR #135 and the CHANGELOG's Fixed entries).
+B-Q1 is D107's: the harness fails like AWS on an expression that evaluates to undefined.
+The ids from R-L1 on are the classes of bug ADR #137 makes impossible, each
+pinned by a red scenario in test_scenarios_rows.py before the code exists.
 
 Every id needs a scenario marked `@pytest.mark.defect(id)`, and, once that
 scenario is bound, a mutation probe in probes.py that re-introduces the
@@ -7,6 +10,33 @@ defect in the new code and makes the scenario fail. test_meta.py checks both.
 """
 
 DEFECTS = {
+    # Skipped until the stage that builds their mechanism (stages.py). R-S1 to R-S4 are the four
+    # stability blockers of the plan's review (2026-11-16).
+    "R-L1": "A lost stream record (a finished upstream, an activation, a Resume) leaves a task waiting until its "
+            "limit; it must heal at the run row's next check, within 30 minutes, with one warning for the run",
+    "R-S1": "A pass without a time budget: hundreds of root tasks time a pass out, and its retry times out the "
+            "same way; a pass out of budget must leave the rest to the next pass at once",
+    "R-S2": "A late Start_Run attempt revives a run the engine stopped while it stayed creating",
+    "R-S3": "A start that keeps failing is a silent hang; it must warn after 15 minutes and fail after 6 hours, "
+            "and a denied start must count toward neither",
+    "R-S4": "Restart with dependants races a pass: a decision read before a reset writes a dependant "
+            "upstream_failed, and the restart is lost",
+    "R-D1": "Two passes over one run at once start a task twice or decide it twice",
+    "R-P1": "A Pause or a Stop that lands between a pass's read and its write still lets a task start",
+    "R-F1": "A read that fails or comes back partial leads to a start, a close or a run's answer (fail-open)",
+    "R-E1": "A run whose rows are all final stays RUNNING because its answer was lost",
+    "R-T1": "A row of an active run goes missing: its waiting dependants hang, or a task row without its run "
+            "row waits forever",
+    "R-O1": "A task runs without the output of an upstream that succeeded: the output expired before a late "
+            "Restart, or the success was visible before its output",
+    "R-O2": "A result near the 256 KB payload limit loses its success, or one over it hangs the run; over "
+            "the limit the task must wait for a decision with States.DataLimitExceeded as the cause",
+    "R-W1": "A limit that falls due during a pause fires in the pause, or is lost; it must fire after the "
+            "Resume, moved by the paused time",
+    "R-U1": "A 1.2 row left in flight across the upgrade hangs instead of being stopped with the cause",
+    "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "
+            "States.QueryEvaluationError, while the harness carried undefined on as None and a Catch hid it "
+            "(Failure_Complete of the failure handler, found live in 1.2.0, CR-7)",
     "B-RN1": "A task fails before run_task answers its run (a pause token that cannot be saved): the failure "
              "handler skips the answer on helper_failed, and the run stays RUNNING",
     "B-RN2": "The reconciler aborts a task whose wrapper is gone without telling its run: the run stays RUNNING",

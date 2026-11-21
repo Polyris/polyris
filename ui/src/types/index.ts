@@ -387,6 +387,9 @@ export interface PipelineWithUI extends Pipeline {
   arn?: string;
   /** The latest run is running but waits for an operator: a decision or a resume. */
   waiting_on?: Extract<TaskStatus, 'waiting_decision' | 'waiting_paused'> | null;
+  /** Deployed with an older format than the platform reads, or before 1.3: its runs fail until
+   *  polyris-deploy runs again (the registry's format_version, ADR #137). */
+  needs_redeploy?: boolean;
 }
 
 export interface PipelineDetailProps {

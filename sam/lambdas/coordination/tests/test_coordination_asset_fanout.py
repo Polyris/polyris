@@ -1,20 +1,23 @@
-"""AssetFanout on moto, fed real stream records of the template-built table (ADR #130 §6.1)."""
+"""AssetFanout on moto, fed real stream records of the template-built table (ADR #130 §6.1, ADR #137 §7)."""
 
 import pytest
 from datetime import timedelta
 
-from coordination_testkit import DATE, NOW, TABLES, client_error, execution_name, fact, task_row
+from coordination_testkit import DATE, NOW, RUN, TABLES, client_error, execution_name, fact
 
 import asset_fanout
 from failures import CoordinationTransient
+from polyris.coordination import run_row
 
 ORDERS = [{"asset_name": "ns/orders", "freshness_hours": None}]
 NOW_LATER = NOW + timedelta(hours=1)
+OTHER = "orders-run-2026-11-12-0000ffff"
 
 
 @pytest.fixture
-def fanout(reconciler):
-    return asset_fanout.AssetFanout(reconciler, subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1],
+def fanout(rows):
+    return asset_fanout.AssetFanout(rows.dispatcher,
+                                    subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1],
                                     consumers_table=TABLES["ASSET_SUBSCRIPTIONS_TABLE"][1])
 
 
@@ -42,39 +45,68 @@ def stream(ddb):
     return read
 
 
-def _waiting(tokens, subscriptions, task, wait_for=ORDERS):
-    tokens.put_item(Item=task_row(task, wait_for=wait_for))
-    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": execution_name(task)})
+def _spec(task, wait_for=ORDERS, deps=()):
+    return {"task_id": task, "task_type": "sfn", "dependencies": list(deps), "trigger_rule": "all_success",
+            "wait_for": wait_for}
+
+
+def _status(tokens, task, run=RUN):
+    return tokens.get_item(Key={"execution_name": execution_name(task, run)}, ConsistentRead=True)["Item"]["status"]
 
 
 def _plenty():
     return 10 ** 6
 
 
-def test_a_new_fact_wakes_every_task_waiting_on_its_asset(fanout, tokens, subscriptions, asset_events, stream, sfn):
-    _waiting(tokens, subscriptions, "load")
-    _waiting(tokens, subscriptions, "report")
+def test_a_new_fact_starts_every_task_waiting_on_its_asset(fanout, rows, tokens, asset_events, stream, sfn):
+    rows.start([_spec("load"), _spec("report")])
     asset_events.put_item(Item=fact("ns/orders", DATE))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
-    assert sorted(s["token"] for s in sfn.succeeded) == ["token-load", "token-report"]
+    assert (_status(tokens, "load"), _status(tokens, "report")) == ("deps_ready", "deps_ready")
+    assert len(sfn.started) == 2
 
 
-def test_a_fact_for_another_partition_wakes_nobody(fanout, tokens, subscriptions, asset_events, stream, sfn):
-    _waiting(tokens, subscriptions, "load")
+def test_a_fact_for_another_partition_starts_nobody(fanout, rows, tokens, asset_events, stream, sfn):
+    rows.start([_spec("load")])
     asset_events.put_item(Item=fact("ns/orders", "2026-11-11"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
-    assert not sfn.succeeded
+    assert _status(tokens, "load") == "waiting" and not sfn.started
 
 
-def test_the_fact_reaches_the_reconciler_as_a_known_event(fanout, tokens, subscriptions, asset_events, stream,
-                                                          mocker):
-    _waiting(tokens, subscriptions, "load")
+def test_one_narrow_pass_per_run_covers_its_rows_that_wait_on_the_asset(fanout, rows, asset_events, stream, mocker):
+    rows.start([_spec("load"), _spec("report")])
+    rows.start([_spec("load")], execution=OTHER)
     asset_events.put_item(Item=fact("ns/orders", DATE))
-    spy = mocker.spy(fanout.reconciler, "reconcile")
+    narrow = mocker.spy(fanout.dispatcher, "narrow_pass")
     fanout.handle(stream(), _plenty)
-    [call] = spy.call_args_list
-    [known] = call.kwargs["known_events"]
-    assert (known["asset_name"], known["partition_date"], call.kwargs["source"]) == ("ns/orders", DATE, "asset_fanout")
+    calls = {c.args[0]: sorted(c.args[1]) for c in narrow.call_args_list}
+    assert calls == {run_row.key(RUN): [execution_name("load"), execution_name("report")],
+                     run_row.key(OTHER): [execution_name("load", OTHER)]}
+    assert {c.kwargs["source"] for c in narrow.call_args_list} == {"asset_fanout"}
+
+
+def test_a_pointer_without_its_run_finds_it_through_its_row(fanout, rows, tokens, subscriptions, asset_events,
+                                                            stream):
+    rows.start([_spec("load")])
+    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": execution_name("load")})
+    asset_events.put_item(Item=fact("ns/orders", DATE))
+    fanout.handle(stream(), _plenty)
+    assert _status(tokens, "load") == "deps_ready"
+
+
+def test_a_pointer_whose_row_is_gone_is_deleted(fanout, subscriptions, asset_events, stream):
+    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": "gone-2026-11-12-run"})
+    asset_events.put_item(Item=fact("ns/orders", DATE))
+    assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
+    assert subscriptions.scan()["Items"] == []
+
+
+def test_a_pointer_whose_row_cannot_be_read_is_left(fanout, subscriptions, asset_events, stream, mocker):
+    subscriptions.put_item(Item={"dependency_key": "asset:ns/orders", "subscriber": "x"})
+    asset_events.put_item(Item=fact("ns/orders", DATE))
+    mocker.patch.object(fanout.tasks, "get_item", side_effect=client_error("AccessDeniedException", "GetItem"))
+    assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
+    assert len(subscriptions.scan()["Items"]) == 1
 
 
 def test_records_other_than_inserts_are_ignored(fanout, tokens, subscriptions, asset_events, stream, sfn, mocker):
@@ -109,26 +141,28 @@ def test_a_non_transient_read_failure_becomes_a_warning_not_a_retry(fanout, toke
 def test_a_warning_that_cannot_be_written_is_logged(fanout, tokens, asset_events, stream, mocker, capsys):
     asset_events.put_item(Item=fact("ns/orders", DATE))
     mocker.patch.object(fanout.subscriptions, "query", side_effect=client_error("AccessDeniedException", "Query"))
-    mocker.patch.object(fanout.reconciler.tasks.table, "put_item", side_effect=client_error("AccessDeniedException"))
+    mocker.patch.object(fanout.tasks, "put_item", side_effect=client_error("AccessDeniedException"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
     assert "could not write the warning row" in capsys.readouterr().out
 
 
-def test_a_lost_hint_is_left_to_the_sweeper_and_the_others_still_wake(fanout, tokens, subscriptions, asset_events,
-                                                                      stream, sfn, mocker):
-    _waiting(tokens, subscriptions, "load")
-    _waiting(tokens, subscriptions, "report")
+def test_a_pass_that_fails_transiently_is_a_lost_hint_and_the_other_runs_still_pass(
+        fanout, rows, tokens, asset_events, stream, mocker):
+    rows.start([_spec("load")])
+    rows.start([_spec("load")], execution=OTHER)
     asset_events.put_item(Item=fact("ns/orders", DATE))
-    real = fanout.reconciler.reconcile
+    real = fanout.dispatcher.narrow_pass
 
-    def flaky(name, **kwargs):
-        if name == execution_name("load"):
+    def flaky(run_key, keys, **kwargs):
+        if run_key == run_row.key(RUN):
             raise CoordinationTransient("throttled")
-        return real(name, **kwargs)
+        return real(run_key, keys, **kwargs)
 
-    mocker.patch.object(fanout.reconciler, "reconcile", side_effect=flaky)
+    mocker.patch.object(fanout.dispatcher, "narrow_pass", side_effect=flaky)
+    fan_out = mocker.spy(fanout, "fan_out")
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
-    assert [s["token"] for s in sfn.succeeded] == ["token-report"]
+    assert fan_out.spy_return == {"subscribers": 2, "runs": 2, "passed": 1, "lost": 1}
+    assert (_status(tokens, "load"), _status(tokens, "load", OTHER)) == ("waiting", "deps_ready")
 
 
 def test_records_left_when_time_runs_out_are_redelivered(fanout, asset_events, stream, mocker):
@@ -140,30 +174,24 @@ def test_records_left_when_time_runs_out_are_redelivered(fanout, asset_events, s
     spy.assert_not_called()
 
 
-def test_a_record_that_runs_out_of_time_leaves_the_rest_to_the_sweeper_and_moves_on(
-        fanout, tokens, subscriptions, consumers, registry, asset_events, stream, sfn, mocker):
-    """One record with more waiters than fit in the invocation never blocks its shard (Principle #41).
-    Its consumers start first: a missed one waits for the hourly catch-up, a missed waiter only for the sweeper."""
-    import json
-
-    for task in ("audit", "load", "report"):
-        _waiting(tokens, subscriptions, task)
-    registry.put_item(Item={"pipeline_name": "pushed", "asset_schedule": json.dumps({"operator": "OR", "assets": ["ns/orders"]})})
-    consumers.put_item(Item={"asset_name": "ns/orders", "pipeline_name": "pushed", "sfn_arn": PUSHED_ARN})
+def test_a_record_that_runs_out_of_time_leaves_the_rest_to_the_runs_checks_and_moves_on(
+        fanout, rows, asset_events, stream, mocker):
+    """One record with more waiting runs than fit in the invocation never blocks its shard (Principle #41)."""
+    for run in (RUN, OTHER, "orders-run-2026-11-12-0000eeee"):
+        rows.start([_spec("load")], execution=run)
     asset_events.put_item(Item=fact("ns/orders", DATE))
-    left = iter([60_000, 60_000, 60_000, 60_000, asset_fanout.RECORD_RESERVE_MS - 1])  # record, consumer, 2 waiters
+    narrow = mocker.patch.object(fanout.dispatcher, "narrow_pass", return_value={})
     fan_out = mocker.spy(fanout, "fan_out")
-
-    assert fanout.handle(stream(), lambda: next(left, 0)) == {"batchItemFailures": []}
-
-    assert fan_out.spy_return == {"subscribers": 3, "woken": 2, "lost": 1}
-    assert len(sfn.succeeded) == 2 and len(sfn.started) == 1
+    assert fanout.handle(stream(), lambda: 60_000 if narrow.call_count < 2 else asset_fanout.RECORD_RESERVE_MS - 1) \
+        == {"batchItemFailures": []}
+    assert fan_out.spy_return == {"subscribers": 3, "runs": 3, "passed": 2, "lost": 1}
 
 
 def test_subscription_pages_are_followed(fanout, mocker):
-    pages = [{"Items": [{"subscriber": "a"}], "LastEvaluatedKey": {"k": 1}}, {"Items": [{"subscriber": "b"}]}]
+    pages = [{"Items": [{"subscriber": "a", "run": "_run_r"}], "LastEvaluatedKey": {"k": 1}},
+             {"Items": [{"subscriber": "b"}]}]
     query = mocker.patch.object(fanout.subscriptions, "query", side_effect=pages)
-    assert fanout._subscribers("ns/orders") == ["a", "b"]
+    assert fanout._subscribers("ns/orders") == [("a", "_run_r"), ("b", None)]
     assert query.call_args_list[0].kwargs["ConsistentRead"] is True
     assert query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"k": 1}
 
@@ -180,10 +208,14 @@ def test_the_handler_reads_the_lambda_time_budget(fanout, monkeypatch, mocker):
 def test_the_default_fanout_is_built_once(ddb, sfn, monkeypatch):
     import env
 
+    import dispatcher
+
     monkeypatch.setattr(env, "_dynamodb", ddb)
     monkeypatch.setattr(env, "_stepfunctions", sfn)
     monkeypatch.setattr(asset_fanout, "_FANOUT", None)
+    monkeypatch.setattr(dispatcher, "_DISPATCHER", None)
     assert asset_fanout._fanout() is asset_fanout._fanout()
+    assert asset_fanout._fanout().dispatcher is dispatcher._dispatcher()
 
 
 
@@ -209,6 +241,18 @@ def pushed(consumers, registry):
 def _push(fanout, asset_events, item):
     asset_events.put_item(Item=item)
     return fanout.push(item)
+
+
+def test_an_unreadable_fact_a_schedule_reads_counts_for_nothing_and_warns_once(fanout, asset_events, pushed, sfn,
+                                                                               tokens):
+    pushed({"operator": "AND", "assets": ["ns/a", "ns/b"]})
+    asset_events.put_item(Item=fact("ns/b", DATE, event_time="2026-11-12T03:00:00.000Z", granularity="fortnightly"))
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
+    _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:05:00.000Z"))
+    assert sfn.started == []
+    [warning] = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_coordination_fact-")]
+    assert warning["execution_name"].endswith("fact-ns/b-2026-11-12T03:00:00.000Z")
+    assert "cannot be read, so it counts for no task" in warning["error"]
 
 
 def test_an_and_schedule_starts_once_per_date_when_complete(fanout, asset_events, pushed, sfn):
@@ -370,7 +414,7 @@ def test_a_retry_row_keeps_its_first_failure(fanout, asset_events, pushed, sfn, 
     sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
     _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:00:00.000Z"))
     [row] = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_retry_push_")]
-    fanout.reconciler.clock = lambda: NOW_LATER
+    fanout.dispatcher.clock = lambda: NOW_LATER
     _push(fanout, asset_events, fact("ns/a", DATE, event_time="2026-11-12T04:10:00.000Z"))
     [again] = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_retry_push_")]
     assert again["first_failed_at"] == row["first_failed_at"]
@@ -379,7 +423,7 @@ def test_a_retry_row_keeps_its_first_failure(fanout, asset_events, pushed, sfn, 
 def test_a_retry_row_out_of_reach_redelivers_the_record(fanout, asset_events, pushed, sfn, mocker):
     pushed({"operator": "AND", "assets": ["ns/a"]})
     sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
-    mocker.patch.object(fanout.reconciler.tasks.table, "put_item", side_effect=client_error("ThrottlingException"))
+    mocker.patch.object(fanout.tasks, "put_item", side_effect=client_error("ThrottlingException"))
     with pytest.raises(CoordinationTransient):
         _push(fanout, asset_events, fact("ns/a", DATE))
 
@@ -407,29 +451,28 @@ def test_consumer_pages_and_registry_errors(fanout, mocker):
 
 
 
-def test_a_poison_record_is_reported_and_the_shard_moves_on(fanout, tokens, subscriptions, asset_events, stream, sfn):
-    _waiting(tokens, subscriptions, "load")
+def test_a_poison_record_is_reported_and_the_shard_moves_on(fanout, rows, tokens, asset_events, stream, sfn):
+    rows.start([_spec("load")])
     asset_events.put_item(Item={**fact("ns/orders", DATE, event_time="2026-11-12T04:00:00.000Z"),
                                 "execution_date": "not-a-partition", "partition_key": "not-a-partition",
                                 "partition_date": "not-a-partition"})
     asset_events.put_item(Item=fact("ns/orders", DATE, event_time="2026-11-12T04:30:00.000Z"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
-    assert sfn.succeeded                         # the good record after it was handled
+    assert sfn.started                           # the good record after it was handled
     warning = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_coordination_record:")]
     assert len(warning) == 1 and "not-a-partition" in warning[0]["error"]
 
 
-def test_a_fact_an_older_version_wrote_is_left_to_adoption(fanout, tokens, subscriptions, asset_events, stream,
-                                                            pushed, sfn):
+def test_a_fact_written_before_adr_130_starts_nothing(fanout, rows, tokens, asset_events, stream, pushed, sfn):
     """It started its own consumers when it was written; pushing it again would start them twice."""
     from coordination_testkit import legacy_fact
 
-    _waiting(tokens, subscriptions, "load")
+    rows.start([_spec("load")])
     pushed({"operator": "AND", "assets": ["ns/orders"]})
     asset_events.put_item(Item=legacy_fact("ns/orders", DATE, event_time="2026-11-12T04:00:00.000Z"))
     assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
     assert (sfn.started, sfn.succeeded) == ([], [])
-    assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_")]
+    assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith(("_notify_warn_", "_retry_push_"))]
 
 
 def test_a_raw_transient_error_still_redelivers(fanout, asset_events, stream, mocker):
@@ -458,6 +501,6 @@ def test_one_consumers_failure_does_not_stop_the_others(fanout, asset_events, pu
 def test_a_retry_row_denied_becomes_a_warning_not_a_blocked_shard(fanout, asset_events, pushed, sfn, mocker, capsys):
     pushed({"operator": "AND", "assets": ["ns/a"]})
     sfn.errors["start_execution"] = client_error("ThrottlingException", "StartExecution")
-    mocker.patch.object(fanout.reconciler.tasks.table, "put_item", side_effect=client_error("AccessDeniedException"))
+    mocker.patch.object(fanout.tasks, "put_item", side_effect=client_error("AccessDeniedException"))
     assert _push(fanout, asset_events, fact("ns/a", DATE)) == {"consumers": 1, "started": 0}
     assert "its retry row could not be written" in capsys.readouterr().out

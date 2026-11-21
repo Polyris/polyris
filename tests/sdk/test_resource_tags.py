@@ -119,7 +119,7 @@ SHAPES = ("cron", "asset", "none")
 def _pipeline_resources(shape: str) -> Dict[str, Dict[str, Any]]:
     template = _generate_cfn_template(
         _dag(shape), namespace="acme", stage="prod", region="us-east-1",
-        role_arn="arn:aws:iam::000000000000:role/x", wrapper_arn=ARN,
+        role_arn="arn:aws:iam::000000000000:role/x", start_run_function_arn=ARN,
         registry_table="registry", tokens_table="tokens", asset_subscriptions_table="asset-subs",
     )
     resources: Dict[str, Dict[str, Any]] = template["Resources"]

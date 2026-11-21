@@ -25,12 +25,12 @@ sys.path.insert(0, os.path.join(REPO_ROOT, 'sam', 'lambdas', 'console_api'))
 # ============================================================
 
 def test_orchestration_timeout_default():
-    """orchestration_timeout defaults to execution_timeout."""
+    """orchestration_timeout no longer falls back to execution_timeout (D49, ADR #137 §5)."""
     from polyris.task import Task
     t = Task(task_id='test', execution_timeout=timedelta(hours=2))
     assert t.orchestration_timeout is None
-    assert t.orchestration_timeout_seconds == 7200  # Same as execution_timeout
-    assert t.timeout == 7200
+    assert t.orchestration_timeout_seconds is None
+    assert t.execution_timeout_seconds == 7200
 
 
 def test_orchestration_timeout_explicit():
@@ -42,7 +42,7 @@ def test_orchestration_timeout_explicit():
         orchestration_timeout=timedelta(days=3)
     )
     assert t.orchestration_timeout_seconds == 259200  # 3 days
-    assert t.timeout == 7200  # execution_timeout unchanged
+    assert t.execution_timeout_seconds == 7200  # execution_timeout unchanged
 
 
 def test_orchestration_timeout_via_default_args():
@@ -191,68 +191,6 @@ def test_default_args_applies_trigger_rule_wait_before_skip_on_backfill():
     assert t2.skip_on_backfill is False
 
 
-def test_orchestration_timeout_in_generated_sfn():
-    """Generator passes orchestration_timeout to wrapper input."""
-    from polyris import DAG, task
-    from polyris.generators import generate_step_function_json
-
-    with DAG('test-gen', schedule=None) as dag:
-        @task.sfn(
-            arn='arn:aws:states:us-east-1:123:stateMachine:test',
-            orchestration_timeout=timedelta(days=3)
-        )
-        def t1():
-            pass
-        t1()
-
-    sfn_json = generate_step_function_json(dag)
-    sfn = json.loads(sfn_json)
-
-    # Find the wrapper task input
-    found = False
-    for name, state in sfn['States'].items():
-        if state.get('Type') == 'Parallel':
-            for branch in state.get('Branches', []):
-                for sn, ss in branch.get('States', {}).items():
-                    inp = ss.get('Arguments', {}).get('Input', {})
-                    if 'orchestration_timeout' in inp:
-                        assert inp['orchestration_timeout'] == 259200
-                        found = True
-
-    assert found, "orchestration_timeout not found in generated SFN"
-
-
-def test_orchestration_timeout_default_in_generated_sfn():
-    """Default orchestration_timeout = execution_timeout in generated SFN."""
-    from polyris import DAG, task
-    from polyris.generators import generate_step_function_json
-
-    with DAG('test-gen-default', schedule=None) as dag:
-        @task.sfn(arn='arn:aws:states:us-east-1:123:stateMachine:test')
-        def t1():
-            pass
-        t1()
-
-    sfn_json = generate_step_function_json(dag)
-    sfn = json.loads(sfn_json)
-
-    found = False
-    for name, state in sfn['States'].items():
-        if state.get('Type') == 'Parallel':
-            for branch in state.get('Branches', []):
-                for sn, ss in branch.get('States', {}).items():
-                    inp = ss.get('Arguments', {}).get('Input', {})
-                    if 'orchestration_timeout' in inp:
-                        assert inp['orchestration_timeout'] == 86400  # 24h default
-                        found = True
-
-    assert found, "orchestration_timeout not found in generated SFN"
-
-
-# ============================================================
-# Wrapper template tests
-# ============================================================
-
 def test_wrapper_timeout_is_dynamic():
     """Wait_For_Dependencies uses dynamic TimeoutSeconds via JSONata expression."""
     template_path = os.path.join(
@@ -329,7 +267,6 @@ def test_route_table_completeness():
         ('GET', '/api/runs'),
         ('GET', '/api/health'),
         ('POST', '/api/pipeline-run'),
-        ('POST', '/api/pipeline-register'),
     ]
     for method, path in critical:
         assert (method, path) in ROUTES, f"Missing free route: {method} {path}"
@@ -500,8 +437,6 @@ if __name__ == '__main__':
         test_orchestration_timeout_override_default_args,
         test_falsy_overrides_of_default_args_are_respected,
         test_default_args_applies_trigger_rule_wait_before_skip_on_backfill,
-        test_orchestration_timeout_in_generated_sfn,
-        test_orchestration_timeout_default_in_generated_sfn,
         # wrapper template
         test_wrapper_timeout_is_dynamic,
         # backfill staggered start

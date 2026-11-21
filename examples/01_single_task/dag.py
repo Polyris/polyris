@@ -5,7 +5,7 @@ A single scheduled task. Everything here runs locally with no AWS account:
     polyris-validate           # check the DAG is valid
     polyris-output --graph     # see the DAG as an ASCII graph
     polyris-output --mermaid   # Mermaid diagram
-    polyris-output --json      # the generated Step Functions definition (ASL)
+    polyris-output --json      # the Step Functions definition and its task specs
 
 Alerts (Slack / PagerDuty) are configured in the Console UI — Settings → Alerts,
 not in the pipeline code.

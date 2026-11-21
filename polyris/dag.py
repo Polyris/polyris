@@ -198,7 +198,7 @@ class DAG:
             self._current_task_group.add_task(task)
     
     def add_step(self, step: 'Step'):
-        """Add a non-task step (Wait, Pass, Choice) to the DAG."""
+        """Add a non-task step (Wait, Pass, Succeed, a service call) to the DAG."""
         if step not in self.steps:
             self.steps.append(step)
             step._dag = self

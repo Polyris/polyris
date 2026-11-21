@@ -1,0 +1,171 @@
+{
+  "format_version": 1,
+  "spec_id": "every_field#1abe27ba0594c4f9c78ee375c74fe8be152091e360a90e5b3f9c3fee2509a355",
+  "specs": {
+    "athena": {
+      "cross_account_role": "same",
+      "dependencies": [],
+      "task_arn": "",
+      "task_config": {
+        "database": "db",
+        "output_location": "s3://acme/athena/",
+        "query_string": "SELECT 1",
+        "workgroup": "primary"
+      },
+      "task_id": "athena",
+      "task_type": "athena",
+      "trigger_rule": "all_success"
+    },
+    "batch": {
+      "cross_account_role": "same",
+      "dependencies": [],
+      "task_arn": "",
+      "task_config": {
+        "job_definition": "jd",
+        "job_queue": "q",
+        "parameters": {}
+      },
+      "task_id": "batch",
+      "task_type": "batch",
+      "trigger_rule": "all_success"
+    },
+    "compact": {
+      "cross_account_role": "same",
+      "dependencies": [
+        "extract"
+      ],
+      "task_arn": "compact",
+      "task_config": {
+        "arguments": {},
+        "job_name": "compact-job"
+      },
+      "task_id": "compact",
+      "task_type": "glue",
+      "trigger_rule": "all_success"
+    },
+    "ecs": {
+      "cross_account_role": "same",
+      "dependencies": [],
+      "task_arn": "",
+      "task_config": {
+        "assign_public_ip": "DISABLED",
+        "cluster": "c",
+        "launch_type": "FARGATE",
+        "overrides": {},
+        "security_groups": [],
+        "subnets": [
+          "s-1"
+        ],
+        "task_definition": "td"
+      },
+      "task_id": "ecs",
+      "task_type": "ecs",
+      "trigger_rule": "all_success"
+    },
+    "emr": {
+      "cross_account_role": "same",
+      "dependencies": [],
+      "task_arn": "",
+      "task_config": {
+        "cluster_id": "j-1",
+        "step": {
+          "HadoopJarStep": {
+            "Args": [
+              "spark-submit"
+            ],
+            "Jar": "command-runner.jar"
+          },
+          "Name": "spark"
+        }
+      },
+      "task_id": "emr",
+      "task_type": "emr",
+      "trigger_rule": "all_success"
+    },
+    "extract": {
+      "cross_account_role": "same",
+      "dependencies": [],
+      "orchestration_timeout": 691200,
+      "outlets": [
+        {
+          "granularity": "daily",
+          "name": "acme/orders",
+          "uri": "s3://acme/orders/"
+        }
+      ],
+      "skip_on_backfill": true,
+      "task_arn": "arn:aws:states:us-east-1:123456789012:stateMachine:extract",
+      "task_config": {},
+      "task_id": "extract",
+      "task_type": "sfn",
+      "trigger_rule": "all_success",
+      "wait_for": [
+        {
+          "asset_name": "acme/customers",
+          "freshness_hours": 24
+        }
+      ]
+    },
+    "load": {
+      "cross_account_role": "same",
+      "dependencies": [
+        "extract"
+      ],
+      "execution_timeout": 7200,
+      "inlets": [
+        {
+          "name": "acme/orders"
+        }
+      ],
+      "outlets": [
+        {
+          "granularity": "daily",
+          "name": "acme/sales",
+          "uri": "s3://acme/sales/"
+        }
+      ],
+      "task_arn": "",
+      "task_config": {
+        "arguments": {},
+        "job_name": "load",
+        "retries": 2,
+        "retry_delay": 300
+      },
+      "task_id": "load",
+      "task_type": "glue",
+      "trigger_rule": "all_done",
+      "wait_before": 30,
+      "wait_for": [
+        {
+          "assets": [
+            {
+              "asset_name": "acme/customers",
+              "consecutive_days": 3
+            },
+            {
+              "asset_name": "acme/orders",
+              "freshness_hours": null
+            }
+          ],
+          "operator": "OR"
+        }
+      ]
+    },
+    "notify": {
+      "cross_account_role": "same",
+      "dependencies": [
+        "load"
+      ],
+      "task_arn": "notify",
+      "task_config": {
+        "function_name": "notify",
+        "payload": {
+          "k": "Ladung für Kunden"
+        }
+      },
+      "task_id": "notify",
+      "task_type": "lambda",
+      "trigger_rule": "all_success"
+    }
+  }
+}

@@ -5,6 +5,8 @@ Tests utility functions that are used across all route modules.
 
 from decimal import Decimal
 
+import pytest
+
 
 class TestIsExecutionName:
     """Tests for is_execution_name() function."""
@@ -419,9 +421,8 @@ class TestResolvePagerduty:
 
 class TestComputePipelineExecutionShort:
     """compute_pipeline_execution_short's own docstring documents it as a
-    hand-maintained mirror of the JSONata in dependency_wrapper
-    (JSONATA_EXEC_SHORT in polyris/generators.py: last 20 chars, strip '.'
-    and ':'). Neither this function nor ensure_pipeline_execution_short had
+    hand-maintained mirror of polyris.coordination.task_row.short, which keys
+    a run's task rows (last 20 chars, strip '.' and ':'). Neither this function nor ensure_pipeline_execution_short had
     any direct test anywhere in either repo before this — only indirect
     coverage via task_actions.py's extract_pipeline_execution_short test,
     for a single input shape, not the boundary cases (exactly 20 chars,
@@ -444,7 +445,7 @@ class TestComputePipelineExecutionShort:
     def test_over_20_chars_takes_last_20(self):
         from console_api.utils import compute_pipeline_execution_short
         s = '2026-07-21T12:34:56.789Z-abc123def456ghi789jkl'
-        # Mirrors JSONATA_EXEC_SHORT: last 20 chars of the RAW string, THEN
+        # Mirrors task_row.short: last 20 chars of the RAW string, THEN
         # strip '.'/':' — not "take 20 chars after stripping".
         expected = s[-20:].replace('.', '').replace(':', '')
         assert compute_pipeline_execution_short(s) == expected
@@ -452,11 +453,20 @@ class TestComputePipelineExecutionShort:
     def test_dots_and_colons_stripped_after_truncation_not_before(self):
         """Order matters: truncate to the last 20 raw characters FIRST, then
         strip '.'/':' — stripping first would shift which characters end up
-        in the final 20, silently diverging from JSONATA_EXEC_SHORT (which
-        truncates $exec itself, before any $replace)."""
+        in the final 20, silently diverging from task_row.short (which
+        truncates the name itself, before any replace)."""
         from console_api.utils import compute_pipeline_execution_short
         s = 'arn:aws:states:us-east-1:123456789012:execution:x:y'
         assert compute_pipeline_execution_short(s) == '789012executionxy'
+
+
+    @pytest.mark.parametrize("name", ["", "a.b:c", "x" * 20, "2026-07-21T12:34:56.789Z-abc123def456ghi789jkl",
+                                      "arn:aws:states:us-east-1:123456789012:execution:x:y"])
+    def test_it_is_the_task_rows_short_name(self, name):
+        """The console finds a run's task rows by the key Start_Run writes (ADR #137 §3)."""
+        from console_api.utils import compute_pipeline_execution_short
+        from polyris.coordination import task_row
+        assert compute_pipeline_execution_short(name) == task_row.short(name)
 
 
 class TestEnsurePipelineExecutionShort:

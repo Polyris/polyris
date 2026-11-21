@@ -13,7 +13,7 @@
             "S": "step_direct_eventbridge"
           }
         },
-        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution",
+        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution, spec_id = :spec_id, task_count = :task_count",
         "ExpressionAttributeNames": {
           "#description": "description",
           "#tasks": "tasks",
@@ -44,6 +44,12 @@
           },
           ":last_execution": {
             "S": "{% $states.context.Execution.Name %}"
+          },
+          ":spec_id": {
+            "S": "step_direct_eventbridge#767dca51e71891d5bfa46f991881a756c35d90a5c68d59d002a06dd79c159808"
+          },
+          ":task_count": {
+            "N": "1"
           }
         }
       },
@@ -63,6 +69,13 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "States.DataLimitExceeded"
+          ],
+          "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
+          "Next": "Warn_Registration_Failed"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -287,38 +300,175 @@
       "Type": "Parallel",
       "Branches": [
         {
-          "StartAt": "Task_process",
+          "StartAt": "Start_Run",
           "States": {
-            "Task_process": {
+            "Start_Run": {
               "Type": "Task",
-              "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
-              "TimeoutSeconds": 86400,
+              "Comment": "Write the run's rows; the dispatcher answers this token once every row is final",
+              "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
               "Arguments": {
-                "StateMachineArn": "${wrapper_arn}",
-                "Name": "{% $substring('process-' & (($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) & '-' & ($length($states.context.Execution.Name) > 8 ? $substring($states.context.Execution.Name, $length($states.context.Execution.Name) - 8) : $states.context.Execution.Name), 0, 80) %}",
-                "Input": {
-                  "task_name": "process",
-                  "task_arn": "arn:aws:states:us-east-1:123:stateMachine:process",
-                  "task_type": "sfn",
-                  "dependencies": [],
-                  "cross_account_role": "same",
-                  "token": "{% $states.context.Task.Token %}",
+                "FunctionName": "${start_run_function_arn}",
+                "Payload": {
+                  "format_version": 1,
+                  "spec_id": "step_direct_eventbridge#767dca51e71891d5bfa46f991881a756c35d90a5c68d59d002a06dd79c159808",
+                  "task_count": 1,
                   "pipeline_name": "step_direct_eventbridge",
-                  "pipeline_execution": "{% $states.context.Execution.Name %}",
-                  "skip_tasks": "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}",
-                  "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
-                  "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
-                  "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}",
+                  "execution_name": "{% $states.context.Execution.Name %}",
+                  "execution_arn": "{% $states.context.Execution.Id %}",
+                  "execution_start": "{% $states.context.Execution.StartTime %}",
+                  "token": "{% $states.context.Task.Token %}",
+                  "retry_count": "{% $states.context.State.RetryCount %}",
+                  "redrive_count": "{% $exists($states.context.Execution.RedriveCount) ? $states.context.Execution.RedriveCount : 0 %}",
                   "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
-                  "current_date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}",
-                  "PARTITION_ARG": "{% $states.input.variables.PARTITION_ARG ? $states.input.variables.PARTITION_ARG : ($states.input.PARTITION_ARG ? $states.input.PARTITION_ARG : ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T'))))) %}",
-                  "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
-                  "orchestration_timeout": 86400,
-                  "wait_before": 0,
-                  "trigger_rule": "all_success",
-                  "pipeline_execution_short": "{% ( $exec := $states.context.Execution.Name; $short := $length($exec) > 20 ? $substring($exec, $length($exec) - 20) : $exec; $replace($replace($short, '.', ''), ':', '') ) %}"
+                  "input": {
+                    "variables": "{% $exists($states.input.variables) ? $states.input.variables : {} %}",
+                    "skip_tasks": "{% $exists($states.input.skip_tasks) ? $states.input.skip_tasks : [] %}",
+                    "cascade_all": "{% $exists($states.input.cascade_all) ? $states.input.cascade_all : false %}",
+                    "_suppress_asset_event": "{% $exists($states.input._suppress_asset_event) ? $states.input._suppress_asset_event : false %}",
+                    "triggered_by": "{% $exists($states.input.triggered_by) ? $states.input.triggered_by : 'unknown' %}",
+                    "backfill_id": "{% $exists($states.context.Execution.Input.backfill_id) ? $states.context.Execution.Input.backfill_id : null %}"
+                  }
                 }
               },
+              "Output": {},
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "Lambda.TooManyRequestsException",
+                    "Lambda.Unknown",
+                    "Sandbox.Timedout",
+                    "CoordinationTransient"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2,
+                  "MaxDelaySeconds": 60,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "Polyris.RunFailed"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "Start_Run",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Run_Ended_Failed"
+                },
+                {
+                  "ErrorEquals": [
+                    "States.DataLimitExceeded"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "Start_Run",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Warn_Start_Run_Failed"
+                },
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "Start_Run",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Warn_Start_Run_Failed"
+                }
+              ],
+              "End": true
+            },
+            "Warn_Start_Run_Failed": {
+              "Type": "Task",
+              "Comment": "No task of the run started: show why in the console bell",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                  "execution_name": {
+                    "S": "{% '_notify_warn_coordination_' & $states.context.Execution.Name & '-start_run' %}"
+                  },
+                  "kind": {
+                    "S": "coordination"
+                  },
+                  "task_name": {
+                    "S": "Start_Run"
+                  },
+                  "pipeline_name": {
+                    "S": "step_direct_eventbridge"
+                  },
+                  "pipeline_execution": {
+                    "S": "{% $states.context.Execution.Name %}"
+                  },
+                  "task_date": {
+                    "S": "{% $states.input._polyris_branch_error.date %}"
+                  },
+                  "status": {
+                    "S": "failed"
+                  },
+                  "error": {
+                    "S": "{% 'Start_Run failed, so no task of the run started: ' & $states.input._polyris_branch_error.error & ': ' & $states.input._polyris_branch_error.cause %}"
+                  },
+                  "finished_at": {
+                    "S": "{% $now() %}"
+                  },
+                  "attention": {
+                    "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-start_run', 'SHA-256'), 0, 1) %}"
+                  },
+                  "attention_at": {
+                    "S": "{% $now() %}"
+                  },
+                  "ttl": {
+                    "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                  }
+                }
+              },
+              "Output": "{% $states.input %}",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "DynamoDB.ProvisionedThroughputExceededException",
+                    "DynamoDB.ThrottlingException",
+                    "DynamoDB.InternalServerError",
+                    "States.Timeout"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": "{% $states.input %}",
+                  "Next": "Run_Ended_Failed"
+                }
+              ],
+              "Next": "Run_Ended_Failed"
+            },
+            "Run_Ended_Failed": {
+              "Type": "Pass",
+              "Comment": "The error is recorded; the pipeline fails after the Parallel",
               "End": true
             }
           }
@@ -339,6 +489,180 @@
                   }
                 ]
               },
+              "End": true,
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.DataLimitExceeded"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "emit_completion",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Warn_Step_1_Failed"
+                },
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "emit_completion",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Warn_Step_1_Failed"
+                }
+              ]
+            },
+            "Warn_Step_1_Failed": {
+              "Type": "Task",
+              "Comment": "The direct step emit_completion failed: show why in the console bell",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                  "execution_name": {
+                    "S": "{% '_notify_warn_step_' & $states.context.Execution.Name & '-step-' & $states.input._polyris_branch_error.branch %}"
+                  },
+                  "kind": {
+                    "S": "step"
+                  },
+                  "task_name": {
+                    "S": "emit_completion"
+                  },
+                  "pipeline_name": {
+                    "S": "step_direct_eventbridge"
+                  },
+                  "pipeline_execution": {
+                    "S": "{% $states.context.Execution.Name %}"
+                  },
+                  "task_date": {
+                    "S": "{% $states.input._polyris_branch_error.date %}"
+                  },
+                  "status": {
+                    "S": "failed"
+                  },
+                  "error": {
+                    "S": "{% 'The direct step ' & $states.input._polyris_branch_error.branch & ' failed: ' & $states.input._polyris_branch_error.error & ': ' & $states.input._polyris_branch_error.cause %}"
+                  },
+                  "finished_at": {
+                    "S": "{% $now() %}"
+                  },
+                  "attention": {
+                    "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-step-' & $states.input._polyris_branch_error.branch, 'SHA-256'), 0, 1) %}"
+                  },
+                  "attention_at": {
+                    "S": "{% $now() %}"
+                  },
+                  "ttl": {
+                    "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                  }
+                }
+              },
+              "Output": "{% $states.input %}",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "DynamoDB.ProvisionedThroughputExceededException",
+                    "DynamoDB.ThrottlingException",
+                    "DynamoDB.InternalServerError",
+                    "States.Timeout"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": "{% $states.input %}",
+                  "Next": "Mark_Step_1_Failed"
+                }
+              ],
+              "Next": "Mark_Step_1_Failed"
+            },
+            "Mark_Step_1_Failed": {
+              "Type": "Task",
+              "Comment": "Mark the run failed by its direct step emit_completion",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                  "execution_name": {
+                    "S": "{% '_run_' & $states.context.Execution.Name %}"
+                  }
+                },
+                "UpdateExpression": "SET #mark = :mark, #execution = :execution, #run_start = :run_start, #ttl = if_not_exists(#ttl, :ttl)",
+                "ConditionExpression": "attribute_not_exists(#execution) OR (#execution = :execution AND #run_start = :run_start)",
+                "ExpressionAttributeNames": {
+                  "#mark": "step_failure",
+                  "#execution": "run_execution",
+                  "#run_start": "run_start",
+                  "#ttl": "ttl"
+                },
+                "ExpressionAttributeValues": {
+                  ":mark": {
+                    "M": {
+                      "step": {
+                        "S": "emit_completion"
+                      },
+                      "error": {
+                        "S": "{% $substring($states.input._polyris_branch_error.error, 0, 32) %}"
+                      }
+                    }
+                  },
+                  ":execution": {
+                    "S": "{% $states.context.Execution.Name %}"
+                  },
+                  ":run_start": {
+                    "S": "{% $states.context.Execution.StartTime %}"
+                  },
+                  ":ttl": {
+                    "N": "{% $string($floor($toMillis($now()) / 1000) + 39312000) %}"
+                  }
+                }
+              },
+              "Output": "{% $states.input %}",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "DynamoDB.ProvisionedThroughputExceededException",
+                    "DynamoDB.ThrottlingException",
+                    "DynamoDB.InternalServerError",
+                    "States.Timeout",
+                    "DynamoDB.TransactionConflictException"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": "{% $states.input %}",
+                  "Next": "Step_1_Failed"
+                }
+              ],
+              "Next": "Step_1_Failed"
+            },
+            "Step_1_Failed": {
+              "Type": "Pass",
+              "Comment": "The error of emit_completion is recorded; the pipeline fails after the Parallel",
               "End": true
             }
           }
@@ -358,13 +682,193 @@
                 "ContentType": "application/json",
                 "Accept": "application/json"
               },
+              "End": true,
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.DataLimitExceeded"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "ai_validate",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Warn_Step_2_Failed"
+                },
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": {
+                    "_polyris_branch_error": {
+                      "branch": "ai_validate",
+                      "error": "{% $states.errorOutput.Error %}",
+                      "cause": "{% $exists($states.errorOutput.Cause) ? $states.errorOutput.Cause : '' %}",
+                      "date": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
+                    }
+                  },
+                  "Next": "Warn_Step_2_Failed"
+                }
+              ]
+            },
+            "Warn_Step_2_Failed": {
+              "Type": "Task",
+              "Comment": "The direct step ai_validate failed: show why in the console bell",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Arguments": {
+                "TableName": "${tokens_table}",
+                "Item": {
+                  "execution_name": {
+                    "S": "{% '_notify_warn_step_' & $states.context.Execution.Name & '-step-' & $states.input._polyris_branch_error.branch %}"
+                  },
+                  "kind": {
+                    "S": "step"
+                  },
+                  "task_name": {
+                    "S": "ai_validate"
+                  },
+                  "pipeline_name": {
+                    "S": "step_direct_eventbridge"
+                  },
+                  "pipeline_execution": {
+                    "S": "{% $states.context.Execution.Name %}"
+                  },
+                  "task_date": {
+                    "S": "{% $states.input._polyris_branch_error.date %}"
+                  },
+                  "status": {
+                    "S": "failed"
+                  },
+                  "error": {
+                    "S": "{% 'The direct step ' & $states.input._polyris_branch_error.branch & ' failed: ' & $states.input._polyris_branch_error.error & ': ' & $states.input._polyris_branch_error.cause %}"
+                  },
+                  "finished_at": {
+                    "S": "{% $now() %}"
+                  },
+                  "attention": {
+                    "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-step-' & $states.input._polyris_branch_error.branch, 'SHA-256'), 0, 1) %}"
+                  },
+                  "attention_at": {
+                    "S": "{% $now() %}"
+                  },
+                  "ttl": {
+                    "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
+                  }
+                }
+              },
+              "Output": "{% $states.input %}",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "DynamoDB.ProvisionedThroughputExceededException",
+                    "DynamoDB.ThrottlingException",
+                    "DynamoDB.InternalServerError",
+                    "States.Timeout"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": "{% $states.input %}",
+                  "Next": "Mark_Step_2_Failed"
+                }
+              ],
+              "Next": "Mark_Step_2_Failed"
+            },
+            "Mark_Step_2_Failed": {
+              "Type": "Task",
+              "Comment": "Mark the run failed by its direct step ai_validate",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Arguments": {
+                "TableName": "${tokens_table}",
+                "Key": {
+                  "execution_name": {
+                    "S": "{% '_run_' & $states.context.Execution.Name %}"
+                  }
+                },
+                "UpdateExpression": "SET #mark = :mark, #execution = :execution, #run_start = :run_start, #ttl = if_not_exists(#ttl, :ttl)",
+                "ConditionExpression": "attribute_not_exists(#execution) OR (#execution = :execution AND #run_start = :run_start)",
+                "ExpressionAttributeNames": {
+                  "#mark": "step_failure",
+                  "#execution": "run_execution",
+                  "#run_start": "run_start",
+                  "#ttl": "ttl"
+                },
+                "ExpressionAttributeValues": {
+                  ":mark": {
+                    "M": {
+                      "step": {
+                        "S": "ai_validate"
+                      },
+                      "error": {
+                        "S": "{% $substring($states.input._polyris_branch_error.error, 0, 32) %}"
+                      }
+                    }
+                  },
+                  ":execution": {
+                    "S": "{% $states.context.Execution.Name %}"
+                  },
+                  ":run_start": {
+                    "S": "{% $states.context.Execution.StartTime %}"
+                  },
+                  ":ttl": {
+                    "N": "{% $string($floor($toMillis($now()) / 1000) + 39312000) %}"
+                  }
+                }
+              },
+              "Output": "{% $states.input %}",
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "DynamoDB.ProvisionedThroughputExceededException",
+                    "DynamoDB.ThrottlingException",
+                    "DynamoDB.InternalServerError",
+                    "States.Timeout",
+                    "DynamoDB.TransactionConflictException"
+                  ],
+                  "IntervalSeconds": 1,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2,
+                  "JitterStrategy": "FULL"
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "Output": "{% $states.input %}",
+                  "Next": "Step_2_Failed"
+                }
+              ],
+              "Next": "Step_2_Failed"
+            },
+            "Step_2_Failed": {
+              "Type": "Pass",
+              "Comment": "The error of ai_validate is recorded; the pipeline fails after the Parallel",
               "End": true
             }
           }
         }
       ],
-      "End": true,
+      "Next": "Check_Branches",
       "Catch": [
+        {
+          "ErrorEquals": [
+            "States.DataLimitExceeded"
+          ],
+          "Next": "Pipeline_Failed"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -373,10 +877,30 @@
         }
       ]
     },
+    "Check_Branches": {
+      "Type": "Choice",
+      "Comment": "Fail the execution once every branch has ended, if one of them recorded an error",
+      "Choices": [
+        {
+          "Condition": "{% $count($states.input[$exists(_polyris_branch_error)]._polyris_branch_error) > 0 %}",
+          "Next": "Run_Failed"
+        }
+      ],
+      "Default": "Run_Succeeded"
+    },
+    "Run_Failed": {
+      "Type": "Fail",
+      "Error": "{% ($errors := $states.input[$exists(_polyris_branch_error)]._polyris_branch_error; $errors[0].error) %}",
+      "Cause": "{% ($errors := $states.input[$exists(_polyris_branch_error)]._polyris_branch_error; $substring($join($append([], $errors.(branch & ': ' & error & (cause = '' ? '' : ': ' & cause))), '; '), 0, 32768)) %}"
+    },
+    "Run_Succeeded": {
+      "Type": "Succeed"
+    },
     "Pipeline_Failed": {
       "Type": "Fail",
-      "Error": "PipelineFailed",
-      "Cause": "Infrastructure error - wrapper did not handle"
+      "Comment": "The Parallel itself failed: a branch failed outside its own Catch",
+      "Error": "{% $exists($states.input.Error) ? $states.input.Error : 'PipelineFailed' %}",
+      "Cause": "{% $exists($states.input.Cause) ? $states.input.Cause : '' %}"
     }
   }
 }

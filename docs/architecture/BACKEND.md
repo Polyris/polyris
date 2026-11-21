@@ -4,8 +4,8 @@
 
 The backend consists of:
 - **Step Function state machines** (13 total) — 10 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-13)
-- **Lambda functions** (8) — console API, reconcile, asset fan-out, sweeper, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
-- **DynamoDB tables** (7) — state, metadata, event history
+- **Lambda functions** (9) — console API, reconcile, asset fan-out, sweeper, run start, subscription queries, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
+- **DynamoDB tables** (8) — state, metadata, task specs, event history
 - **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 
 **Generated constants & enums.** Status and trigger-rule enum families are defined once in `polyris/constants.py` and
@@ -138,7 +138,7 @@ Start
         → run_task fails → the task is marked failed with the cause
 ```
 
-Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback. Resume sends it; if resume misses the task, because the token was saved while resume ran or the release failed, the sweeper sends it once the run is no longer paused (ADR #130 §8).
+Called by run_task_helper when pipeline is paused. Parent SFN waits up to 12 hours for resume callback. Resume sends it.
 
 ### polyris-failure-handler
 
@@ -254,7 +254,7 @@ Called by the `registration` helper, by `notify_dependents` for each subscriber,
 and by asset-fanout.
 
 - Reads the task row, its dependencies' statuses and its `wait_for` facts with consistent reads
-- Evaluates the `trigger_rule` (5 rules — ADR #117; see
+- Evaluates the `trigger_rule` (9 rules — ADR #138; see
   `docs/features/DSL.md#trigger-rules`) and the asset conditions with `polyris/coordination`
 - Parks the task as `waiting_paused` when its run is paused
 - Signals the wrapper: `deps_ready`, `deps_skip` or `deps_blocked`; the wrapper writes the status
@@ -279,17 +279,16 @@ Reads the `asset_events` stream, new facts only (ADR #130 §6.1).
 
 ### 5. sweeper
 
-An EventBridge schedule runs it every 5 minutes (ADR #130 §8). One run at a time holds the `_sweeper_lease` row.
+An EventBridge schedule runs it every 5 minutes (ADR #130 §8, ADR #137 §7). One run at a time holds the `_sweeper_lease` row, within a time budget.
 
-- Takes the waiting rows whose due time has come from `attention-index`, earliest first, and reconciles each in-process
-- A task that still waits is due again later: 10, 20, then every 30 minutes
-- A task it wakes although it could run before its due time had its hint lost: it writes a `sweeper` warning
-- Releases a task held in run_task's pause wait (`paused#` rows) once its run is no longer paused: a pause token resume missed; also with a `sweeper` warning
-- Past a task's liveness deadline (`started_at` + `orchestration_timeout` + 1 h; three timeouts for a wrapper started before the upgrade), it checks the wrapper and aborts a task nothing can wake
+- Takes the due entries of the `waiting` and `decision` kinds from `attention-index`, run rows included, earliest first, groups them by run and makes one full pass of the dispatcher over each run, in its own process. The pass judges every row of the run from the row itself: a countdown that ended, a limit, a decision deadline, a start to try again
+- Its passes alone judge executions (`DescribeExecution`): a `deps_ready` or `running` row whose `run_task` ended without an outcome fails, one whose execution does not exist yet is no dead one, and a `deps_ready` row whose execution does not exist after 2 minutes is started again under its name. The engine stops a run whose execution ended before its answer, or that is still `creating` after `Start_Run`'s retry window, with the cause
+- After each check it moves the run row's due time on by the backoff (10, 20, then every 30 minutes) and clears `left_at`. A pass that fails moves it too, and warns once per run (`coordination`); a sweep in which most passes failed, and at least two, reports a failed step
+- A row whose wait the pass ended more than 5 minutes after it could have been decided had its hint lost: one `sweeper` warning per run and check, with the count and a few task names. A countdown that ended, and a row found while the run row carries `left_at`, are no lost hints
+- Rows whose run row is missing, such as those a 1.2 run left in flight, are stopped with the cause
 - Retries the push starts that failed transiently (`retry#` rows), from 5 minutes up to every hour; gives up after 24 h with a `push` warning
 - Hourly, replays the push branch for every fact of the last 48 h (a lost stream record); `_engine_health` keeps its progress
-- Adopts rows an older version wrote (waiting tasks without an attention entry, under `paused#` when they hold a pause token; facts without partition fields), resumably, once per adoption generation
-- Ends with a self-check in `_engine_health`: stream and mapping state, when the mapping last changed, the oldest overdue waiting or paused task, and the push retry backlog. It also records the names the console's findings use: its own function, asset-fanout and its mapping, the asset-events table, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
+- Ends with a self-check in `_engine_health`: the state of both streams and of their mappings (to asset-fanout and to the dispatcher), when each mapping last changed and its last result, the oldest overdue entry (a run row included), the number of runs whose check found lost hints, and the push retry backlog. It also records the names the console's findings use: its own function, asset-fanout, the dispatcher and their mappings, the asset-events and tasks tables, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
 
 ---
 
@@ -350,10 +349,27 @@ Pipeline metadata:
 |-----------|------|-------------|
 | pipeline_name | PK | Pipeline identifier |
 | sfn_arn | S | Step Function ARN |
-| dag | S | JSON: nodes, edges |
-| tasks | S | JSON: task definitions |
+| spec_id | S | The pipeline's spec version in `pipeline_specs`: `{pipeline}#{fingerprint}` |
+| task_count | N | The number of tasks in that version |
+| format_version | N | The format `polyris-deploy` deployed the pipeline with (`task_spec.FORMAT_VERSION`); missing or older, the console marks the pipeline "redeploy needed" |
+| registered_at | S | The last `polyris-deploy` |
+| dag | S | JSON: nodes, edges. Written for the 1.2 engine only; no console code reads it |
+| tasks | S | JSON: task definitions. Written for the 1.2 engine only; no console code reads it |
 | schedule | S | Schedule expression |
 | asset_schedule | S | JSON: asset trigger config |
+
+`polyris-deploy` writes `registered_at` and `format_version`; the pipeline's own `Register_Pipeline` state writes the rest on every run. `tests/sdk/test_registry_readers.py` fails for any code that reads `tasks` or `dag`.
+
+### pipeline_specs
+
+Every task's spec (ADR #137 §8), written by `polyris-deploy` before the pipeline's stack and read by the console through `dal.specs_repo`. Both keys are strings (`polyris/coordination/task_spec.py`: `PK`, `SK`, `TEXT`, `VERSION_HASH`):
+
+| Item | `pk` | `sk` | Attribute |
+|------|------|------|-----------|
+| A spec text | `{pipeline}#text` | sha256 of the text | `spec_text`: the spec as canonical JSON |
+| A version's task | `{pipeline}#{fingerprint}` (the `spec_id`) | task_id | `spec_hash`: the hash of its text |
+
+A text is stored once, however many versions use it. A version's fingerprint is the sha256 over its `(task_id, text hash)` pairs in key order. Items never change and are never deleted; every reader checks each text's hash and the fingerprint (`spec_store.read`).
 
 ### asset_events
 

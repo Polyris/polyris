@@ -12,7 +12,10 @@ Each column on the `pipeline-registry` row has an owner — either `polyris-depl
 including `register_only=true` self-registrations). `registered_at` means "last
 polyris-deploy" and is owned by the CLI; `sfn_arn`, `description`,
 `pipeline_group`, `tasks`, `dag`, `schedule`, `asset_schedule`, and
-`last_execution` are owned by the runtime.
+`last_execution`, `spec_id` and `task_count` are owned by the runtime.
+`format_version` (`task_spec.REGISTRY_FORMAT_FIELD`) is deploy-owned, written
+with `registered_at`: the console compares it with `task_spec.FORMAT_VERSION`
+to mark a pipeline "redeploy needed" (ADR #137, *Migration*).
 
 Rules:
 1. `_build_registration_chain`'s `Register_Pipeline` state must be a DynamoDB
@@ -23,7 +26,7 @@ Rules:
 2. The runtime `Register_Pipeline` state's `UpdateExpression` must only mention
    runtime-owned fields. Never add `registered_at` or any future deploy-stamp
    there.
-3. Deploy-owned fields are written exclusively from `deploy.py`
+3. Deploy-owned fields (`registered_at`, `format_version`) are written exclusively from `deploy.py`
    (`_stamp_registered_at`), as a direct boto3 `UpdateItem` on
    `pipeline-registry` right after a successful CloudFormation deploy — before
    the register_only SFN kick. Errors route through the standard
@@ -171,24 +174,21 @@ After adding a member: run `python -m polyris.codegen.sync_enums` to regenerate
 the four downstream files. A bare string literal on either side (generator or
 template) fails `tests/sdk/test_task_config_contract.py`.
 
-## New wrapper input fields require three-file updates + snapshot regeneration
+## A new task field goes through the task's spec (ADR #137 §8, §9)
 
-Any field that must flow from the SDK through every task execution and be written to
-DynamoDB requires changes in **all three** of these places in the same commit:
+A run's tasks are rows that `Start_Run` writes from the pipeline's task specs; no task
+field reaches a task through the pipeline's state machine any more (its registration still
+copies task metadata into the registry's `tasks` and `dag` until those go, ADR #137 §8).
+A field that must reach the engine changes these places in the same commit:
 
-1. `generators.py` → `_build_wrapper_input` — include the field in the dict returned
-   for each task's SFN input.
-2. `sam/sfn_templates/dependency_wrapper/sfn.tpl.json` → `Arguments.Input` block of
-   the registration_helper call — thread the field through using JSONata so it is
-   forwarded to the helper SFN.
-3. `sam/sfn_templates/helpers/registration/sfn.tpl.json` → DDB `PutItem` — write the
-   field to the `pipeline-tokens` table so it is queryable later.
+1. `polyris/constants.py` → `TaskSpecKey` (then `python -m polyris.codegen.sync_enums`),
+   and `generators._task_spec` / `_step_spec`, which write it.
+2. If the dispatcher decides on it: `task_spec.READINESS_KEYS`, so `Start_Run` copies it
+   onto each task row's `readiness`.
+3. If `run_task` needs it: `run_task_input.Key` and `run_task_input.build`.
 
-Missing any one of the three means the field arrives in the SFN execution context but
-is never persisted, or is persisted but never populated, or is populated only for
-directly-started executions and not for SDK-generated ones.
-
-After changing `_build_wrapper_input`, regenerate snapshots:
+Each definition names its spec version by a fingerprint of the specs, so a spec change
+moves the snapshots. Regenerate them:
 ```bash
 SNAPSHOT_UPDATE=1 python -m pytest tests/sdk/test_asl_snapshots.py tests/sdk/test_asl_snapshots_steps.py
 python -m pytest tests/sdk/test_asl_snapshots.py  # verify
@@ -293,7 +293,7 @@ single shared definition — don't inline a one-off retry dict.
 
 ## Wrapper step retry policy lives in `_add_retry_config`, not duplicated inline
 
-`_build_task_config_and_arn` (Task path) and `_build_step_branch` (wrapper-step
+`_build_task_config_and_arn` (Task path) and `_build_step_config_and_arn` (wrapper-step
 path) must both call `_add_retry_config` to thread the retry contract into
 `task_config`. Never inline the `if task.retries: task_config[...] = ...` block
 again — that's the duplication that caused `LambdaTask(retries=3)` used as a

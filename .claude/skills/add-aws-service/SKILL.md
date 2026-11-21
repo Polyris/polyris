@@ -49,12 +49,12 @@ Mirror `glue` end-to-end — it is the cleanest reference. Touch points, in orde
    compiler) is deferred until the first paid AWS service. Until then, edit both sites together.
    - Write `_gen_<service>_state(step)` returning the SFN Task state with the service ARN, and
      register it in the state-generator **dispatch dict**.
-   - Add an `elif task.task_type == '<service>':` branch to the `task_config` builder in
-     `_build_task_branch`. Keys are **never bare strings** — declare each as a
+   - Add an `elif task.task_type == '<service>':` branch to the `task_config` builder,
+     `_build_task_config_and_arn`. Keys are **never bare strings** — declare each as a
      `polyris.constants.TaskConfigKey` member first (ADR #108); `tests/sdk/test_task_config_contract.py`
      fails on any literal on either side.
-   - Add the type to `WRAPPER_STEP_TYPES` / `TRACKED_STEP_TYPES` if it should get the
-     started/failed wrapper and appear in DAG visualization.
+   - Add the type to `WRAPPER_STEP_TYPES` if its step should run as a task row, and to
+     `TRACKED_STEP_TYPES` if it should appear in DAG visualization.
 4. **`polyris/adapters/<service>.py`** — only if it is a data source feeding the asset model
    (schema / DDL / partition inference). A pure compute target needs no adapter.
 

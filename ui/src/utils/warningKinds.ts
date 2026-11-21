@@ -10,6 +10,7 @@ export const WARNING_KIND_LABELS: Record<WarningKind, string> = {
     notify: 'Dependent tasks not notified',
     manual: 'Manual action kept the real output',
     fact: 'Asset fact not recorded',
+    step: 'Pipeline step failed',
 };
 
 export function warningKindLabel(kind: string | undefined): string {

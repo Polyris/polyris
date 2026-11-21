@@ -13,6 +13,8 @@ scenario runs.
 from typing import NamedTuple, Tuple
 
 SCENARIOS = "tests/backend/coordination/test_scenarios.py"
+ROWS = "tests/backend/coordination/test_scenarios_rows.py"
+DISPATCHER = "sam/lambdas/coordination/dispatcher.py"
 CORE = "polyris/coordination/asset_conditions.py"
 REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
 TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
@@ -73,10 +75,6 @@ PROBES: Tuple[Probe, ...] = (
                    Edit(REGISTRATION, "{'dependency_key': 'asset:' & $a, 'subscriber': $me,",
                         "{'dependency_key': 'asset:' & $a, 'subscriber': $states.input.task_name,")),
           f"{SCENARIOS}::test_same_named_waiting_tasks_in_two_pipelines_both_wake"),
-    Probe("B-T1", (Edit("sam/lambdas/coordination/reconcile.py",
-                        '        if status not in RECONCILABLE or row.get("pause_token"):',
-                        '        if row.get("pause_token"):'),),
-          f"{SCENARIOS}::test_a_repeated_hint_does_not_disturb_a_running_task"),
     # The old AND trigger counted events: every event could start another run.
     Probe("B-U1", (Edit("sam/lambdas/coordination/asset_fanout.py",
                         '        every_event = fact.get("cascade") == "all" or schedule.operator == sp.OR',
@@ -109,22 +107,6 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-P1", (Edit(EXECUTIONS_ROUTE, "            'reconcile': _reconcile_run(pipeline_execution),\n",
                         "            'reconcile': {},\n"),),
           f"{SCENARIOS}::test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume"),
-    # Two guards: the reconciler parks only a task that is otherwise ready, and resume signals
-    # nothing without asking it. The old code parked any task whose deps finished during the
-    # pause and signalled every parked task deps_ready through its wait_token; the probe does both.
-    Probe("B-P2", (
-        Edit("polyris/coordination/decide.py",
-             "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"
-             "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n",
-             "    if paused:\n        return Decision(PAUSED, (\"pipeline is paused\",), deps, assets)\n"
-             "    if reasons:\n        return Decision(WAIT, tuple(reasons), deps, assets)\n"),
-        Edit(EXECUTIONS_ROUTE, "        if item.get('status') == 'waiting_paused' and item.get('pause_token')\n",
-             "        if item.get('status') == 'waiting_paused' and (item.get('pause_token') or item.get('wait_token'))\n"),
-        Edit(EXECUTIONS_ROUTE,
-             "                sfn.send_task_success(taskToken=item['pause_token'], output=json.dumps({'resumed': True}))\n",
-             "                sfn.send_task_success(taskToken=item.get('pause_token') or item['wait_token'],\n"
-             "                                      output=json.dumps({'signal': 'deps_ready', 'reason': 'resume'}))\n"),
-    ), f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
     # The old warning rows were found by partition date, not by write time: older ones never reached the bell.
     # The old pause waiter saved the token without an attention entry, so only resume could release it.
     Probe("B-P3", (
@@ -272,6 +254,11 @@ PROBES: Tuple[Probe, ...] = (
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),
           f"{SCENARIOS}::test_a_warning_about_an_old_partition_reaches_the_bell"),
+    # D107: the answer's API result replaced the state data, so Failure_Complete read fields that were gone.
+    Probe("B-Q1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
+                        '"Output": "{% $states.input %}",\n      "Next": "Failure_Complete",\n      "Catch": [',
+                        '"Next": "Failure_Complete",\n      "Catch": ['),),
+          f"{SCENARIOS}::test_a_dependency_wait_that_times_out_fails_the_task_once"),
     # ADR #135: the flag that told the failure handler run_task had answered, and its catch.
     Probe("B-RN1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
                          "\"Condition\": \"{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}\"",
@@ -280,9 +267,6 @@ PROBES: Tuple[Probe, ...] = (
                          "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput} | %}\"",
                          "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput, 'helper_failed': true} | %}\"")),
           f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
-    Probe("B-RN2", (Edit("sam/lambdas/coordination/reconcile.py",
-                         '            self._tell_the_run(row, f"The task was aborted: {reason}")\n', ""),),
-          f"{SCENARIOS}::test_a_stopped_wrapper_found_by_its_signal_ends_its_run"),
     Probe("B-RN3", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
                          '"Next": "Warn_Run_Left_Running"', '"Next": "Done"'),),
           f"{SCENARIOS}::test_a_rule_skip_whose_run_cannot_be_told_says_so"),
@@ -316,4 +300,41 @@ PROBES: Tuple[Probe, ...] = (
                         "'wait_for': ($exists($states.input.item.wait_for.S) and $states.input.item.wait_for.S != '') ? $parse($states.input.item.wait_for.S) : [], ",
                         "")),
           f"{SCENARIOS}::test_a_restarted_task_is_still_gated_on_its_assets"),
+    # ADR #137's tasks as rows (test_scenarios_rows.py).
+    # A pass that runs out of budget no longer sets left_at, so no record wakes the next pass.
+    Probe("R-S1", (Edit(DISPATCHER, "left=bool(state.changed) or state.run.left_at is None), quiet=True)",
+                        "left=False), quiet=True)"),),
+          f"{ROWS}::test_a_pass_out_of_budget_leaves_the_rest_to_the_next_pass_at_once"),
+    # Two guards keep two passes at once from starting a task twice: each decision's write is conditioned
+    # on the status it read, and run_task's name is derived from the row. The probe removes both.
+    Probe("R-D1", (Edit("polyris/coordination/dispatch_writes.py",
+                        'ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"',
+                        'ROW_CONDITION = f"(#status = :read OR attribute_exists(#status)) AND {task_row.FENCE}"'),
+                   Edit("polyris/coordination/run_name.py",
+                        "    digest = _digest(key, run_start, str(int(generation)), length=RUN_TASK_HASH)",
+                        "    digest = _digest(key, run_start, str(int(generation)), str(__import__('time').time_ns()), "
+                        "length=RUN_TASK_HASH)")),
+          f"{ROWS}::test_two_passes_at_once_start_each_task_once"),
+    # Two guards keep a late Start_Run attempt from reviving a run the engine stopped: the write of its token
+    # and its activation are each conditioned on no stop mark. The probe removes both.
+    Probe("R-S2", (Edit("polyris/coordination/run_row.py",
+                        'TOKEN_CONDITION = "attribute_not_exists(#stop) AND (attribute_not_exists(#order) OR '
+                        '#order <= :order)"',
+                        'TOKEN_CONDITION = "(attribute_not_exists(#stop) OR attribute_exists(#stop)) AND '
+                        '(attribute_not_exists(#order) OR #order <= :order)"'),
+                   Edit("polyris/coordination/start_run.py",
+                        '"#status = :creating AND attribute_not_exists(#stop) AND run_execution = :execution"',
+                        '"#status = :creating AND (attribute_not_exists(#stop) OR attribute_exists(#stop)) '
+                        'AND run_execution = :execution"')),
+          f"{ROWS}::test_a_late_start_run_attempt_cannot_revive_a_run_the_engine_stopped"),
+    # An access denied counts toward no limit: it waits for the permission. The probe counts it as throttling.
+    Probe("R-S3", (Edit("polyris/coordination/dispatch.py", "    if kind == DENIED:\n",
+                        "    if kind == DENIED and False:\n"),),
+          f"{ROWS}::test_a_denied_start_warns_at_once_and_counts_toward_no_limit"),
+    # A waiting row whose upstream's row is gone fails with the cause; the probe leaves it waiting for good.
+    Probe("R-T1", (Edit("polyris/coordination/dispatch.py",
+                        '        cause = f"the row of its upstream {missing[0]} is missing"\n'
+                        '        return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")\n',
+                        "        return Judgment(row.task_id, due=row.due)\n"),),
+          f"{ROWS}::test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause"),
 )

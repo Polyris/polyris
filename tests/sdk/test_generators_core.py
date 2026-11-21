@@ -270,7 +270,7 @@ class TestNoUnsubstitutedTemplateVariables:
         for dag in (_chain_dag(), _scheduled_dag(), _asset_dag(), _asset_triggered_dag()):
             asl_json = generate_step_function_json(
                 dag,
-                wrapper_arn="arn:aws:states:us-east-1:123456789012:stateMachine:wrapper",
+                start_run_function_arn="arn:aws:states:us-east-1:123456789012:stateMachine:wrapper",
                 registry_table="real-registry-table",
                 tokens_table="real-tokens-table",
                 asset_subscriptions_table="real-asset-subscriptions-table",

@@ -19,8 +19,9 @@ Workflow:
     3. Reads infra ARNs/tables from the SAM CloudFormation stack outputs
     4. Generates ASL JSON
     5. Generates CloudFormation template
-    6. Deploys via a CloudFormation change set (boto3)
-    7. Calls SFN with register_only=true (pipeline registration)
+    6. Writes the task specs to pipeline-specs, reads them back and checks them
+    7. Deploys via a CloudFormation change set (boto3)
+    8. Stamps the deploy-owned registry fields; calls SFN with register_only=true
 """
 
 import hashlib
@@ -46,9 +47,12 @@ from botocore.exceptions import (
 
 from .generators import (
     SCHEDULED_TIME_FIELD,
+    build_spec_version,
     generate_step_function_json,
     generate_dag_hash,
 )
+from . import limits
+from .coordination import spec_store, task_spec
 from .dag import DAG
 from . import folder_process
 from .loader import PipelineLoadError, duplicate_dag_ids, files_in, load_pipeline, out_of_reach_warnings, pipeline_folders
@@ -150,11 +154,12 @@ def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: O
 
 def _generate_cfn_template(
     dag: DAG,
+    *,
     namespace: str,
     stage: str,
     region: str,
     role_arn: str,
-    wrapper_arn: str,
+    start_run_function_arn: str,
     registry_table: str,
     tokens_table: str,
     asset_subscriptions_table: str,
@@ -166,7 +171,7 @@ def _generate_cfn_template(
     full_name = f"{namespace}-{stage}-polyris-{dag.dag_id}"
     asl_json = generate_step_function_json(
         dag,
-        wrapper_arn=wrapper_arn,
+        start_run_function_arn=start_run_function_arn,
         registry_table=registry_table,
         tokens_table=tokens_table,
         asset_subscriptions_table=asset_subscriptions_table,
@@ -328,11 +333,14 @@ def _stamp_registered_at(
     registry_table: str,
     dag_id: str,
 ) -> None:
-    """Write registered_at on pipeline-registry — the "last deploy" timestamp.
+    """Write the deploy-owned fields on pipeline-registry: registered_at, the "last
+    deploy" timestamp, and the format the pipeline was deployed with
+    (``task_spec.REGISTRY_FORMAT_FIELD``), which the console compares with the
+    format it reads to mark a pipeline that needs a redeploy (ADR #137, *Migration*).
 
-    This is the authoritative writer for `registered_at`. The pipeline SFN's
-    own Register_Pipeline state deliberately does NOT touch this field, so
-    every normal run leaves it alone and the UI's "Deployed at X" stays
+    This is the authoritative writer for both. The pipeline SFN's
+    own Register_Pipeline state deliberately does NOT touch them, so
+    every normal run leaves them alone and the UI's "Deployed at X" stays
     anchored to the actual deploy, not the last execution start.
 
     First-ever deploy: the registry row doesn't exist yet; UpdateItem upserts
@@ -345,14 +353,47 @@ def _stamp_registered_at(
         ddb.update_item(
             TableName=registry_table,
             Key={"pipeline_name": {"S": dag_id}},
-            UpdateExpression="SET registered_at = :now",
+            UpdateExpression="SET registered_at = :now, #format = :format",
+            ExpressionAttributeNames={"#format": task_spec.REGISTRY_FORMAT_FIELD},
             ExpressionAttributeValues={
                 ":now": {"S": datetime.now(timezone.utc).isoformat()},
+                ":format": {"N": str(task_spec.FORMAT_VERSION)},
             },
         )
     except (ClientError, BotoCoreError) as e:
         print(f"\n❌ Could not record deploy time for '{dag_id}' on '{registry_table}': {e}")
         sys.exit(1)
+
+
+#: The calls polyris-deploy makes on pipeline-specs, which its role must be allowed (IAM_PERMISSIONS.md).
+SPECS_TABLE_ACTIONS = ("dynamodb:PutItem", "dynamodb:BatchWriteItem", "dynamodb:BatchGetItem", "dynamodb:Query")
+
+
+def _write_specs(session: "boto3.Session", specs_table: str, version: task_spec.Version) -> None:
+    """Write the pipeline's task specs, read them back and check them, before any change set (ADR #137 §8).
+
+    A text is written once per hash and a version only names its texts. A failure of
+    any step stops the deploy before CloudFormation is touched, so a definition never
+    names a spec version the table does not hold whole.
+    """
+    print(f"\nWriting {version.task_count} task spec(s) to {_c(specs_table, CYAN)}...")
+    ddb = session.client("dynamodb")
+    try:
+        written = spec_store.write(ddb, specs_table, version)
+        spec_store.verify(ddb, specs_table, version)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        print(f"\n❌ Could not write the task specs of '{version.pipeline}' to {specs_table}: {e}")
+        if code in ("AccessDeniedException", "AccessDenied", "UnauthorizedOperation"):
+            print(f"   The role that runs polyris-deploy needs {', '.join(SPECS_TABLE_ACTIONS)} on "
+                  f"{specs_table} (see IAM_PERMISSIONS.md).")
+        print("   Nothing was deployed.")
+        sys.exit(1)
+    except (task_spec.SpecError, BotoCoreError) as e:
+        print(f"\n❌ The task specs of '{version.pipeline}' could not be confirmed in {specs_table}: {e}")
+        print("   Nothing was deployed.")
+        sys.exit(1)
+    print(f"  ✅ Spec version {_c(version.spec_id, CYAN)}: {written} new text(s), read back and checked")
 
 
 def _register_pipeline(
@@ -392,11 +433,12 @@ def _register_pipeline(
 # tests import the same names — a rename in the template that misses this
 # constant is caught immediately (Principle #13).
 SAM_STACK_OUTPUT_KEYS = (
-    "DependencyWrapperArn",
+    "StartRunFunctionArn",
     "OrchestrationRoleArn",
     "PipelineRegistryTable",
     "PipelineTokensTable",
     "AssetSubscriptionsTable",
+    "PipelineSpecsTable",
     "ResultsBucket",
 )
 
@@ -641,13 +683,15 @@ def deploy_pipeline(
     if not destroy:
         from polyris.validation import validate_asl_from_dag
 
-        is_valid, validation_errors, _warnings = validate_asl_from_dag(dag, verbose=False)
+        is_valid, validation_errors, validation_warnings = validate_asl_from_dag(dag, verbose=False)
         if not is_valid:
             print(f"\n❌ Validation failed for '{dag.dag_id}' — not deploying:")
             for err_msg in validation_errors:
                 print(f"   - {err_msg}")
             print("   Fix the errors above (or run polyris-validate) and retry.")
             sys.exit(1)
+        for warning in validation_warnings:
+            print(f"⚠️  {dag.dag_id}: {warning}")
 
     # ── Resolve config ────────────────────────────────────────────────────
     # Priority per field: CLI arg > env var > config.py > default.
@@ -786,20 +830,24 @@ def deploy_pipeline(
     print(f"\nReading SAM stack outputs from {_c(sam_stack_name, CYAN)}...")
     outputs, _params = _read_sam_stack(session, sam_stack_name)
 
-    wrapper_arn = outputs.get("DependencyWrapperArn")
+    start_run_arn = outputs.get("StartRunFunctionArn")
     role_arn = outputs.get("OrchestrationRoleArn")
     registry_table = outputs.get("PipelineRegistryTable")
     tokens_table = outputs.get("PipelineTokensTable")
     asset_subscriptions_table = outputs.get("AssetSubscriptionsTable")
+    specs_table = outputs.get("PipelineSpecsTable")
     results_bucket = outputs.get("ResultsBucket")
     console_url = outputs.get("ConsoleUiUrl")
 
-    if not wrapper_arn or not role_arn:
+    required = ("OrchestrationRoleArn",) + (() if destroy else ("PipelineSpecsTable", "StartRunFunctionArn"))
+    missing = [k for k in required if not outputs.get(k)]
+    if missing:
         print(f"❌ SAM stack '{sam_stack_name}' is missing required outputs.")
-        missing = [k for k in ("DependencyWrapperArn", "OrchestrationRoleArn") if not outputs.get(k)]
         print(f"   Missing outputs: {', '.join(missing)}")
-        print("   The stack may be from an older polyris/SAM version. Redeploy sam/ from the current repo.")
+        print("   The platform is older than this polyris. Upgrade it with polyris-up "
+              "(or redeploy sam/ from the current repo).")
         sys.exit(1)
+    assert role_arn  # narrowed by the check above
 
     stack_name = pipeline_stack
 
@@ -874,13 +922,21 @@ def deploy_pipeline(
         stage=stage,
         region=region,
         role_arn=role_arn,
-        wrapper_arn=wrapper_arn,
+        start_run_function_arn=start_run_arn or "",
         registry_table=registry_table or "",
         tokens_table=tokens_table or "",
         asset_subscriptions_table=asset_subscriptions_table or "",
         log_level=log_level,
         log_retention_days=log_retention_days,
     )
+
+    # The definition as it is sent, with the platform's real names (ADR #137 §8).
+    definition = template["Resources"]["PipelineStateMachine"]["Properties"]["DefinitionString"]
+    definition_errors = limits.definition_errors(definition)
+    if definition_errors:
+        print(f"\n❌ {dag.dag_id}: {definition_errors[0]}")
+        sys.exit(1)
+    specs = build_spec_version(dag)
 
     # Write template to temp file
     template_path = Path(f"/tmp/polyris-{dag.dag_id}-{stage}.json")
@@ -891,7 +947,12 @@ def deploy_pipeline(
         print(f"\n[dry-run] Would deploy stack: {_c(stack_name, CYAN)}")
         print(f"  Resources: {list(template['Resources'].keys())}")
         print(f"  DAG hash: {_c(generate_dag_hash(dag), CYAN)}")
+        print(f"  Would write spec version: {_c(specs.spec_id, CYAN)} ({specs.task_count} task(s))")
         return
+
+    # The specs first, read back and checked: only then the change set (ADR #137 §8).
+    assert specs_table  # required above for every deploy that is not a destroy
+    _write_specs(session, specs_table, specs)
 
     # Deploy via a CloudFormation change set — boto3 only, no `aws` CLI
     # (ADR #131). Templates over CloudFormation's inline limit go through the

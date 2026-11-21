@@ -1,5 +1,40 @@
 ## Unreleased
 
+Until 2.0, a minor release may change how runs behave, remove console routes, stack outputs and DSL parameters that had no effect, add deploy-time limits, and require upgrade steps. Each such change is listed under "Breaking", and `polyris-up` checks the upgrade's preconditions itself.
+
+### Breaking
+
+- The step classes `Choice`, `Map`, `Sensor` and `ShortCircuit`, and the `Condition` helper, are gone. They never worked: no generator existed for them, so a pipeline that used one failed when it was generated. To wait for data, use `wait_for`. A test now fails for any exported step without a generator.
+- The console route `POST /api/pipeline-register` is gone. Nothing called it: `polyris-deploy` registers each pipeline, and the console has no button for it. To register a pipeline by hand, run `polyris-register`. The free console now serves 27 routes.
+- **Trigger rules read final outcomes (ADR #138).** After a final failure, its dependants' rules decide: an `all_done`, `one_success` or `none_skipped` dependant now runs after a failed upstream, where before the failure ended the run first. The run still ends failed.
+- **A task's time limits change (ADR #137 §5).** `execution_timeout` has no default: unset, the work has no limit (it was 24 hours). `orchestration_timeout` no longer falls back to `execution_timeout`: unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days from when its own dependencies are met. `polyris-deploy` warns when an explicit `orchestration_timeout` is shorter than 7 days on a task with `wait_for`.
+- **Pipeline limits (ADR #137 §8).** `polyris-validate` and `polyris-deploy` refuse a pipeline of more than 2,000 tasks, a task with more than 98 outlets, a task whose spec takes more than 256 KB, a pipeline whose specs take more than 16 MB together, and a `task_id` of more than 128 bytes, each with the limit and the measured size. The 1 MB limit of the definition is measured as `polyris-deploy` sends it (indented); before, 230 tasks validated at 937 KB and deployed at 1.11 MB. A task that names one asset twice in `outlets` is refused by its decorator.
+- **The role that runs `polyris-deploy` needs `dynamodb:PutItem`, `dynamodb:BatchWriteItem`, `dynamodb:BatchGetItem` and `dynamodb:Query` on `pipeline-specs`** (`docs/deployment/IAM_PERMISSIONS.md`). Without them a deploy stops before it changes the stack, with the cause.
+- `polyris-deploy` reads the platform's `StartRunFunctionArn` output instead of `DependencyWrapperArn`, so deploy a pipeline only to a platform of your polyris version. Against an older platform it stops before it changes anything and says to upgrade with `polyris-up`.
+- `polyris-output --json` prints `{"definition": ..., "specs": ...}`: the definition, which names its spec version, and the task specs. Before, it printed the definition alone.
+- **A Stop is final for the dependants (ADR #138).** A `one_failed` dependant runs at once, and an `all_success` dependant becomes `upstream_failed` once its other upstreams have finished. Until then, a Restart or Mark Successful of the stopped task still counts. Before, the dependants waited for the stopped task and followed it.
+- **Backfill records are found through `pipeline-date-index` (ADR #137 §5).** The console no longer scans the whole tasks table for them; a record carries `date`, the day it started. A record written before the upgrade has no `date`, so the console no longer lists it, and it expires 30 days after it was created, as before.
+- `bulk_backfill` waits for each run as long as the run lives; its limit of 24 hours per run is gone (ADR #137 §5).
+
+### Changed
+
+- **A run starts with `Start_Run` (ADR #137 §1).** The pipeline's state machine no longer starts one wrapper execution per task. One state, `Start_Run`, writes the run's tasks as rows from the pipeline's task specs and waits until every task has finished. Tasks and the `lambda`, `glue`, `ecs` and `athena` steps are no longer branches of the pipeline's state machine; the console shows them. A `Start_Run` that fails for good starts no task, and writes a `coordination` warning to the bell with the cause.
+- A failed direct step (`dynamodb`, `sns`, `sqs`, `s3`, `http` and the like) no longer cancels the other branches of its run. Its branch writes a `step` warning to the bell and marks the run, and the execution fails once every branch has ended, with the first error and every cause. Before, any failure ended the execution at once as `PipelineFailed`.
+- A trigger rule that the platform does not know fails its task with the cause; before, the task ran as `all_success` (ADR #138).
+- `polyris-validate` and `polyris-deploy` reject `one_done`, `all_done_min_one_success`, `always` and `all_done_setup_success`, each with the rule to use instead; any other unknown name gets the list of the nine rules.
+- `polyris-local` evaluates trigger rules with the engine's code, so a mock run records `upstream_failed` where a deployed run does, and fails a task whose rule it does not know.
+- **The sweeper checks runs with the dispatcher (ADR #137 §7).** Every 5 minutes it takes the due entries, run rows included, and makes one full pass of the dispatcher over each of their runs. Its passes alone ask Step Functions about executions: a task whose `run_task` ended without an outcome fails with how it ended, a `deps_ready` task whose `run_task` does not exist is started again under its name, and the engine stops a run whose execution ended before its answer, or that never became active, with the cause. It stops the rows of a run whose run row is missing, the rows a 1.2 run left in flight included. After each check it moves the run's due time on by the backoff, at most 30 minutes, also after a pass that failed, which warns once per run. It writes one `sweeper` warning per run whose tasks lost their wake-up, instead of one per task. It no longer releases pause waits or adopts rows an older version wrote.
+- **The System status covers task delivery (ADR #137 §6).** The sweeper's self-check reads the tasks table's stream and its mapping to the dispatcher, as it reads AssetFanout's, and counts the runs whose check found lost wake-ups. The System status names each problem: task delivery not set up, off or failing, task changes not recorded, runs that missed their wake-ups, and a sweep whose passes mostly failed.
+- **Lifetimes (ADR #137 §5).** A backfill record lives as long as a run's history while its backfill runs, and 90 days once its final status is written; before, 30 days from its creation, so a backfill longer than a month lost its record mid-run. The `asset:{name}` pointers of a run carry the history's lifetime, and the activation of a run renews its run row's, as every other write of it does.
+- The health check's count of recent failures counts task rows only, not backfill records.
+
+### Added
+
+- **The dispatcher (ADR #137 §1, §7).** The tasks table (`pipeline-tokens`) has a stream with both images, and the `reconcile` function, under its names, reads it: a change of a row that the transition table marks wakes a pass over the row's run. A pass decides each waiting row from its upstreams' outcomes and its facts, writes `deps_ready` before it starts the row's `run_task` under a name derived from the row, and answers the run's token once every row is final. A pass that runs out of time leaves its run row due at once, and the next pass goes on. The upgrade adds the stream to the table in place.
+- **Task specs (ADR #137 §8).** The platform has a `pipeline-specs` table. Before it creates the change set, `polyris-deploy` writes each task's spec there (each text once, by its sha256; a version names its tasks' texts), reads the version back and checks its count, each text's hash and its fingerprint; a mismatch stops the deploy. The registry names a pipeline's version (`spec_id`, `task_count`) and the format it was deployed with. The console draws a pipeline's graph from its specs and reads every task's outlets, inlets and settings there, and marks a pipeline deployed before this release, or with an older format, "redeploy needed".
+- The trigger rules `one_failed`, `all_failed`, `none_failed` and `none_failed_min_one_success` (ADR #138). `docs/features/DSL.md#trigger-rules` describes all nine, and `examples/09_trigger_rules` shows them side by side.
+- Every skipped task records its origin in `skip_origin`: `manual`, `run` or `rule`. Only a rule's skip cascades under `all_success`.
+
 ## v1.2.3 - 2026-11-18
 
 ### Breaking — `--all` and pipeline files (ADR #139)
@@ -106,6 +141,8 @@
 - `make test-lambdas`, `scripts/verify-changed.sh`, the route count in `make test-docs` and the coordination smoke's `polyris-deploy` imported whichever `polyris` pip had installed. With an editable install of another checkout that was behind, the 1.2.1 release gate failed on an import. They now put the checkout's root on `PYTHONPATH`. CI was not affected: it installs the checkout under test.
 
 ## v1.2.0 - 2026-11-14
+
+This section also holds the 1.1.x changes, which were not given headings of their own.
 
 ### Upgrading to 1.2.0 (ADR #130, ADR #132)
 

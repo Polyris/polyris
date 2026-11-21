@@ -39,13 +39,6 @@ def sfn() -> FakeSfn:
 
 
 @pytest.fixture
-def reconciler(ddb, sfn):
-    from reconcile import Reconciler
-
-    return Reconciler(ddb, sfn, clock=lambda: NOW)
-
-
-@pytest.fixture
 def tokens(ddb):
     return ddb.Table(TABLES["TOKENS_TABLE"][1])
 
@@ -68,3 +61,50 @@ def consumers(ddb):
 @pytest.fixture
 def registry(ddb):
     return ddb.Table(TABLES["PIPELINES_TABLE"][1])
+
+
+@pytest.fixture
+def specs(ddb):
+    return ddb.Table(TABLES["SPECS_TABLE"][1])
+
+
+@pytest.fixture
+def rows(ddb, sfn, monkeypatch):
+    """1.3 runs as Start_Run writes them, and the dispatcher over them (ADR #137), on the testkit's clock."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    import boto3
+
+    import env
+    import start_run
+    from coordination_testkit import DATE, RUN, STARTED_AT
+    from dispatcher import Dispatcher
+    from polyris.coordination import spec_store, task_spec
+
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    monkeypatch.setattr(env, "_dynamodb", ddb)
+    monkeypatch.setattr(env, "_dynamodb_client", client)
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):                               # type: ignore[override]
+            return NOW
+
+    monkeypatch.setattr(start_run, "datetime", Frozen)
+
+    def start(specs, *, execution: str = RUN, pipeline: str = "orders", **inputs):
+        version = task_spec.build_version(pipeline, specs)
+        spec_store.write(client, TABLES["SPECS_TABLE"][1], version, sleep=lambda _: None)
+        start_run.handler({"format_version": task_spec.FORMAT_VERSION, "spec_id": version.spec_id,
+                           "task_count": version.task_count, "pipeline_name": pipeline, "execution_name": execution,
+                           "execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-orders:{execution}", "execution_start": STARTED_AT, "token": f"{execution}-token", "retry_count": 0,
+                           "redrive_count": 0, "date": DATE, "input": inputs}, None)
+        return version
+
+    dispatcher = Dispatcher(client, sfn, resource=ddb, tokens_table=TABLES["TOKENS_TABLE"][1],
+                            subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1], specs_table=TABLES["SPECS_TABLE"][1],
+                            asset_events_table=TABLES["ASSET_EVENTS_TABLE"][1],
+                            pipelines_table=TABLES["PIPELINES_TABLE"][1], run_task_arn="arn:run-task",
+                            clock=lambda: NOW, sleep=lambda _: None)
+    return SimpleNamespace(client=client, start=start, dispatcher=dispatcher)

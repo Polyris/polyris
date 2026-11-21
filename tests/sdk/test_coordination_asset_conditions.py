@@ -6,7 +6,7 @@ import pytest
 
 from polyris.assets import Asset
 from polyris.coordination import asset_conditions as ac
-from polyris.coordination.spec import parse
+from polyris.coordination.asset_spec import parse
 from polyris.generators import _serialize_wait_for
 
 UTC = timezone.utc

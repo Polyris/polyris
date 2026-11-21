@@ -1,162 +1,158 @@
-"""Trigger-rule evaluation over dependency statuses (ADR #115, #117).
+"""The nine trigger rules over a task's direct upstreams (ADR #138).
 
-The single implementation the reconciler uses (ADR #130 §3).
+One implementation: the engine decides with ``evaluate``, the console shows
+each upstream's verdict with it, and ``polyris-local`` runs it (§6). A rule
+reads final outcomes (§2):
+
+- final: a status in ``SETTLED_STATUSES``; every other status is pending,
+  ``waiting_decision`` included, so no rule fires on a failure that is not final;
+- a final failure: ``failed``, ``upstream_failed``, ``stopped``, and
+  ``aborted`` on rows from before 1.3;
+- a skip: every ``skipped`` row, whoever skipped it. Only ``all_success``
+  reads the origin: a skip by a rule cascades, one by an operator or the run
+  passes (§3).
+
+A rule runs its task as soon as its condition holds, and skips it or makes it
+``upstream_failed`` only once every upstream is final. An unknown name fails
+its task, a task without upstreams included.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Callable, Dict, Optional, Sequence
 
-from .statuses import FAILURE, SKIPPED, SUCCESS_ONLY, TERMINAL
+from ..constants import SkipOrigin, TaskStatus, TriggerRule
+from .statuses import SUCCESS_ONLY
+from .transitions import FINAL, FINAL_FAILURES
 
-KNOWN_RULES = frozenset({"all_success", "one_success", "all_done", "all_skipped", "none_skipped"})
+#: The engine's rules: the members of ``TriggerRule``, which the validation and the UI's type share.
+KNOWN_RULES = frozenset(v for k, v in vars(TriggerRule).items() if not k.startswith("_"))
 
-#: Names removed by ADR #117, mapped to the rule they always behaved as.
-ALIASES = {
-    "one_done": "all_done",
-    "none_failed": "all_done",
-    "none_failed_min_one_success": "one_success",
+#: Names that validation rejects, each with what to use instead (§1).
+REJECTED: Dict[str, str] = {
+    "one_done": "'all_done' to wait for every upstream; 'one_success' or 'one_failed' to react to the first "
+                "outcome of one kind",
+    "all_done_min_one_success": "'one_success', which starts at the first success instead of waiting for the rest",
+    "always": "no rule: remove the dependency, since a task without upstreams starts with its run",
+    "all_done_setup_success": "'all_done' for a cleanup task",
 }
 
-#: Rules that require success or absence of failure. When one of them can no
-#: longer be satisfied and a real failure is present, the task is
-#: ``upstream_failed``; otherwise the rule's condition simply never occurred
-#: and the task is skipped (ADR #115).
-FAILURE_AVERSE_RULES = frozenset({"all_success", "one_success"})
+#: Rules that need success or no failure: once all upstreams are final and the rule is not met, a final
+#: failure among them makes the task ``upstream_failed``; otherwise it is skipped (ADR #115).
+FAILURE_AVERSE_RULES = frozenset({TriggerRule.ALL_SUCCESS, TriggerRule.ONE_SUCCESS,
+                                  TriggerRule.NONE_FAILED, TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS})
 
 READY = "ready"
 WAIT = "wait"
 SKIP = "skip"
 UPSTREAM_FAILED = "upstream_failed"
+#: An unknown rule: the task fails with the cause, whatever its upstreams (§2).
+FAIL = "fail"
+
+_SKIPPED = TaskStatus.SKIPPED.value
 
 
 @dataclass(frozen=True)
 class Counts:
     total: int
     success: int
-    failed: int
-    skipped: int
+    failed: int        # final failures
+    skipped: int       # every skip
+    cascading: int     # skips by a rule, which only all_success reads
     pending: int
 
 
 @dataclass(frozen=True)
 class DepEvaluation:
-    """Outcome of a trigger rule over the dependencies' current statuses."""
-
+    """A rule's outcome over its upstreams' current statuses."""
     verdict: str
-    satisfied: bool
     reason: str
-    #: The rule actually evaluated: aliases resolved, unknown names → all_success.
-    effective_rule: str
-    #: False when the stored rule name is not a known rule or alias.
-    rule_known: bool
+    rule: str
     counts: Counts
 
 
-def count(statuses: Sequence[str]) -> Counts:
-    """Count dependency statuses the way every trigger rule reads them."""
+def count(statuses: Sequence[str], skip_origins: Optional[Sequence[Optional[str]]] = None) -> Counts:
+    """Count upstream statuses the way every rule reads them; ``skip_origins`` is aligned with ``statuses``."""
+    origins = _aligned(statuses, skip_origins, "skip_origins")
     return Counts(
         total=len(statuses),
         success=sum(1 for s in statuses if s in SUCCESS_ONLY),
-        failed=sum(1 for s in statuses if s in FAILURE),
-        skipped=sum(1 for s in statuses if s == SKIPPED),
-        pending=sum(1 for s in statuses if s not in TERMINAL),
+        failed=sum(1 for s in statuses if s in FINAL_FAILURES),
+        skipped=sum(1 for s in statuses if s == _SKIPPED),
+        cascading=sum(1 for s, o in zip(statuses, origins) if s == _SKIPPED and o == SkipOrigin.RULE),
+        pending=sum(1 for s in statuses if s not in FINAL),
     )
 
 
-def evaluate(
-    rule: str,
-    statuses: Sequence[str],
-    rule_originated_skip: Optional[Sequence[bool]] = None,
-) -> DepEvaluation:
-    """Evaluate ``rule`` over ``statuses`` and classify the result.
+#: When each rule runs its task. Some fire while upstreams are pending: one_success at the first
+#: success, one_failed at the first final failure; every other rule needs every upstream final.
+_MET: Dict[str, Callable[[Counts], bool]] = {
+    TriggerRule.ALL_SUCCESS: lambda c: c.pending == 0 and c.success + c.skipped - c.cascading == c.total,
+    TriggerRule.ONE_SUCCESS: lambda c: c.success >= 1,
+    TriggerRule.ALL_DONE: lambda c: c.pending == 0,
+    TriggerRule.ALL_SKIPPED: lambda c: c.pending == 0 and c.skipped == c.total,
+    TriggerRule.NONE_SKIPPED: lambda c: c.pending == 0 and c.skipped == 0,
+    TriggerRule.ONE_FAILED: lambda c: c.failed >= 1,
+    TriggerRule.ALL_FAILED: lambda c: c.pending == 0 and c.failed == c.total,
+    TriggerRule.NONE_FAILED: lambda c: c.pending == 0 and c.failed == 0,
+    TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS: lambda c: c.pending == 0 and c.failed == 0 and c.success >= 1,
+}
 
-    ``rule_originated_skip`` is aligned with ``statuses``: True where that
-    dependency is ``skipped`` because its own trigger rule never fired. Only
-    ``all_success`` reads it — such a skip cascades instead of counting as ok
-    (ADR #115). ``None`` means no skip is rule-originated.
+#: Why a rule that every final upstream left unmet skips its task.
+_UNMET: Dict[str, Callable[[Counts], str]] = {
+    TriggerRule.ALL_SUCCESS: lambda c: f"{c.cascading} upstreams were skipped by their own rule",
+    TriggerRule.ONE_SUCCESS: lambda c: "no upstream succeeded",
+    TriggerRule.ALL_SKIPPED: lambda c: f"not every upstream was skipped ({c.skipped} of {c.total})",
+    TriggerRule.NONE_SKIPPED: lambda c: f"{c.skipped} upstreams were skipped",
+    TriggerRule.ONE_FAILED: lambda c: "no upstream failed",
+    TriggerRule.ALL_FAILED: lambda c: f"not every upstream failed ({c.failed} of {c.total})",
+    TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS: lambda c: "no upstream succeeded",
+}
+
+
+def evaluate(rule: str, statuses: Sequence[str],
+             skip_origins: Optional[Sequence[Optional[str]]] = None) -> DepEvaluation:
+    """The outcome of ``rule`` over its upstreams' ``statuses``, with the origin of each skip."""
+    counts = count(statuses, skip_origins)
+    if rule not in KNOWN_RULES:
+        hint = f"; use {REJECTED[rule]}" if rule in REJECTED else f"; known rules: {sorted(KNOWN_RULES)}"
+        return DepEvaluation(FAIL, f"unknown trigger_rule {rule!r}{hint}", rule, counts)
+    if counts.total == 0:
+        return DepEvaluation(READY, "no upstreams", rule, counts)
+    if _MET[rule](counts):
+        return DepEvaluation(READY, f"{rule} is met", rule, counts)
+    if counts.pending > 0:
+        # No count in it: a row's recorded reason changes only when its outcome may (ADR #137 §1, *Cost*).
+        return DepEvaluation(WAIT, "waiting for its upstreams", rule, counts)
+    if rule in FAILURE_AVERSE_RULES and counts.failed > 0:
+        return DepEvaluation(UPSTREAM_FAILED, f"{counts.failed} upstreams failed", rule, counts)
+    return DepEvaluation(SKIP, _UNMET[rule](counts), rule, counts)
+
+
+def enabled_at(rule: str, statuses: Sequence[str], finished_at: Sequence[Optional[datetime]],
+               skip_origins: Optional[Sequence[Optional[str]]] = None) -> Optional[datetime]:
+    """When the upstreams first allowed the outcome ``evaluate`` gives (ADR #130 §9, ADR #138 §2).
+
+    ``finished_at`` is aligned with ``statuses``: when each upstream became final, for a failure at the
+    decision or its timeout, not when its work failed. ``one_success`` runs from its earliest success,
+    ``one_failed`` from its earliest final failure; any other outcome needs every upstream final, so it
+    dates from the latest one. None while the rule waits, for an unknown rule, or when no time is known.
     """
-    if rule_originated_skip is not None and len(rule_originated_skip) != len(statuses):
-        raise ValueError(
-            f"rule_originated_skip has {len(rule_originated_skip)} entries "
-            f"for {len(statuses)} dependencies"
-        )
-    rule_known = rule in KNOWN_RULES or rule in ALIASES
-    effective_rule = ALIASES.get(rule, rule) if rule_known else "all_success"
-    counts = count(statuses)
-    satisfied, reason = _check(effective_rule, counts, rule_originated_skip or ())
-
-    blocked = counts.pending == 0 and not satisfied
-    if not blocked:
-        verdict = READY if satisfied else WAIT
-    elif effective_rule in FAILURE_AVERSE_RULES and counts.failed > 0:
-        verdict = UPSTREAM_FAILED
-    else:
-        verdict = SKIP
-    if not rule_known:
-        reason = f"unknown trigger_rule {rule!r}, evaluated as all_success: {reason}"
-    return DepEvaluation(verdict, satisfied, reason, effective_rule, rule_known, counts)
-
-
-def enabled_at(
-    rule: str,
-    statuses: Sequence[str],
-    finished_at: Sequence[Optional[datetime]],
-    rule_originated_skip: Optional[Sequence[bool]] = None,
-) -> Optional[datetime]:
-    """When the dependencies first allowed the outcome ``evaluate`` gives (ADR #130 §9).
-
-    ``finished_at`` is aligned with ``statuses``; an unknown time is None.
-    ``one_success`` is ready from its earliest success. Any other outcome
-    needs every dependency settled, so it dates from the latest one. None
-    while the rule still waits, or when no time is known.
-    """
-    if len(finished_at) != len(statuses):
-        raise ValueError(f"finished_at has {len(finished_at)} entries for {len(statuses)} dependencies")
-    evaluation = evaluate(rule, statuses, rule_originated_skip)
-    if evaluation.verdict == WAIT:
+    _aligned(statuses, finished_at, "finished_at")
+    evaluation = evaluate(rule, statuses, skip_origins)
+    if evaluation.verdict in (WAIT, FAIL):
         return None
-    if evaluation.effective_rule == "one_success" and evaluation.verdict == READY:
-        times = [t for s, t in zip(statuses, finished_at) if s in SUCCESS_ONLY and t is not None]
-        return min(times, default=None)
+    if evaluation.verdict == READY and rule in (TriggerRule.ONE_SUCCESS, TriggerRule.ONE_FAILED):
+        firing = SUCCESS_ONLY if rule == TriggerRule.ONE_SUCCESS else FINAL_FAILURES
+        return min((t for s, t in zip(statuses, finished_at) if s in firing and t is not None), default=None)
     return max((t for t in finished_at if t is not None), default=None)
 
 
-def _check(rule: str, c: Counts, rule_originated_skip: Sequence[bool]) -> tuple[bool, str]:
-    if c.total == 0:
-        return True, "no dependencies"
-    if rule == "all_success":
-        cascading = sum(1 for flag in rule_originated_skip if flag)
-        ok = c.success + c.skipped - cascading
-        if c.pending == 0 and ok == c.total:
-            return True, "all_success"
-        if c.pending > 0:
-            return False, f"waiting for {c.pending} dependencies"
-        if c.failed > 0:
-            return False, f"{c.failed} dependencies failed"
-        return False, f"{cascading} dependencies skipped by their own rule"
-    if rule == "one_success":
-        if c.success >= 1:
-            return True, "one_success"
-        return False, "waiting, no success yet" if c.pending > 0 else "no dependency succeeded"
-    if rule == "all_done":
-        if c.pending == 0:
-            return True, "all_done"
-        return False, f"waiting for {c.pending} dependencies"
-    if rule == "all_skipped":
-        if c.pending == 0 and c.skipped == c.total:
-            return True, "all_skipped"
-        if c.pending > 0:
-            return False, f"waiting for {c.pending} dependencies"
-        return False, f"not all skipped ({c.skipped}/{c.total})"
-    if rule == "none_skipped":
-        if c.skipped > 0:
-            return False, f"{c.skipped} dependencies skipped"
-        if c.pending == 0:
-            return True, "none_skipped"
-        return False, f"waiting for {c.pending} dependencies"
-    # evaluate() maps every name to a member of KNOWN_RULES first; this guards
-    # a future rule added to KNOWN_RULES without a branch here.
-    raise ValueError(f"unhandled trigger rule {rule!r}")  # pragma: no cover - unreachable through evaluate()
+def _aligned(statuses: Sequence[str], values: Optional[Sequence[object]], name: str) -> Sequence[object]:
+    if values is None:
+        return [None] * len(statuses)
+    if len(values) != len(statuses):
+        raise ValueError(f"{name} has {len(values)} entries for {len(statuses)} upstreams")
+    return values

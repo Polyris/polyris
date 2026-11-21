@@ -103,7 +103,7 @@ def _health(mocker, tokens):
 
 def test_a_fresh_engine_report_is_healthy(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
-                          "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": "",
+                          "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "stream": "ENABLED", "oldest_overdue": "",
                           "push_retry_backlog": 3})
 
     status, body = _health(mocker, tokens)
@@ -116,7 +116,7 @@ def test_a_fresh_engine_report_is_healthy(tokens, mocker):
 
 def test_a_stale_report_degrades_the_api_and_names_the_finding(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=30)),
-                          "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""})
+                          "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "stream": "ENABLED", "oldest_overdue": ""})
 
     status, body = _health(mocker, tokens)
 
@@ -131,7 +131,7 @@ def test_a_stale_report_degrades_the_api_and_names_the_finding(tokens, mocker):
 
 def test_a_failed_sweeper_step_degrades_the_api_and_is_shown(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
-                          "fanout_mapping": "Enabled", "fanout_result": "OK", "stream": "ENABLED",
+                          "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "fanout_result": "OK", "stream": "ENABLED",
                           "oldest_overdue": "", "failed_steps": ["catch_up: ClientError: throttled"]})
 
     _, body = _health(mocker, tokens)
@@ -177,7 +177,7 @@ def test_a_report_that_cannot_be_judged_is_unhealthy_and_the_api_still_answers(t
     """Each of these failed all of /api/health with a 500, so the console could not show what is wrong
     (external review, round 2)."""
     report = {"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
-              "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""}
+              "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "stream": "ENABLED", "oldest_overdue": ""}
     tokens.put_item(Item={**report, field: value})
 
     status, body = _health(mocker, tokens)

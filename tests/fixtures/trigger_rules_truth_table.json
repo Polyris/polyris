@@ -1,0 +1,291 @@
+{
+  "_doc": "The truth table of the nine trigger rules, ADR #138 section 2, as the ADR prints it. A letter stands for every stored value listed under 'letters': a status, and for a skip its skip_origin. tests/sdk/test_coordination_trigger_rules.py checks every cell with every combination of those values against trigger_rules.evaluate. 'wait>skip' and 'wait>upstream_failed' wait, and give that outcome once the pending upstream is final.",
+  "letters": {
+    "S": [
+      [
+        "success",
+        null
+      ],
+      [
+        "succeeded",
+        null
+      ]
+    ],
+    "K": [
+      [
+        "skipped",
+        "manual"
+      ],
+      [
+        "skipped",
+        "run"
+      ],
+      [
+        "skipped",
+        null
+      ]
+    ],
+    "R": [
+      [
+        "skipped",
+        "rule"
+      ]
+    ],
+    "F": [
+      [
+        "failed",
+        null
+      ],
+      [
+        "upstream_failed",
+        null
+      ],
+      [
+        "stopped",
+        null
+      ],
+      [
+        "aborted",
+        null
+      ]
+    ],
+    "P": [
+      [
+        "waiting",
+        null
+      ],
+      [
+        "waiting_paused",
+        null
+      ],
+      [
+        "deps_ready",
+        null
+      ],
+      [
+        "running",
+        null
+      ],
+      [
+        "waiting_decision",
+        null
+      ],
+      [
+        "waiting_delay",
+        null
+      ],
+      [
+        "pending",
+        null
+      ]
+    ]
+  },
+  "two_upstreams": {
+    "columns": [
+      "S,S",
+      "S,K",
+      "K,K",
+      "S,F",
+      "F,F",
+      "K,F",
+      "S,P",
+      "F,P",
+      "K,P",
+      "P,P"
+    ],
+    "rules": {
+      "all_success": [
+        "run",
+        "run",
+        "run",
+        "upstream_failed",
+        "upstream_failed",
+        "upstream_failed",
+        "wait",
+        "wait>upstream_failed",
+        "wait",
+        "wait"
+      ],
+      "one_success": [
+        "run",
+        "run",
+        "skip",
+        "run",
+        "upstream_failed",
+        "upstream_failed",
+        "run",
+        "wait",
+        "wait",
+        "wait"
+      ],
+      "all_done": [
+        "run",
+        "run",
+        "run",
+        "run",
+        "run",
+        "run",
+        "wait",
+        "wait",
+        "wait",
+        "wait"
+      ],
+      "all_skipped": [
+        "skip",
+        "skip",
+        "run",
+        "skip",
+        "skip",
+        "skip",
+        "wait>skip",
+        "wait>skip",
+        "wait",
+        "wait"
+      ],
+      "none_skipped": [
+        "run",
+        "skip",
+        "skip",
+        "run",
+        "run",
+        "skip",
+        "wait",
+        "wait",
+        "wait>skip",
+        "wait"
+      ],
+      "one_failed": [
+        "skip",
+        "skip",
+        "skip",
+        "run",
+        "run",
+        "run",
+        "wait",
+        "run",
+        "wait",
+        "wait"
+      ],
+      "all_failed": [
+        "skip",
+        "skip",
+        "skip",
+        "skip",
+        "run",
+        "skip",
+        "wait>skip",
+        "wait",
+        "wait>skip",
+        "wait"
+      ],
+      "none_failed": [
+        "run",
+        "run",
+        "run",
+        "upstream_failed",
+        "upstream_failed",
+        "upstream_failed",
+        "wait",
+        "wait>upstream_failed",
+        "wait",
+        "wait"
+      ],
+      "none_failed_min_one_success": [
+        "run",
+        "run",
+        "skip",
+        "upstream_failed",
+        "upstream_failed",
+        "upstream_failed",
+        "wait",
+        "wait>upstream_failed",
+        "wait",
+        "wait"
+      ]
+    }
+  },
+  "three_upstreams": {
+    "columns": [
+      "none",
+      "S,K,F",
+      "S,K,K",
+      "F,F,P"
+    ],
+    "rules": {
+      "all_success": [
+        "run",
+        "upstream_failed",
+        "run",
+        "wait>upstream_failed"
+      ],
+      "one_success": [
+        "run",
+        "run",
+        "run",
+        "wait"
+      ],
+      "all_done": [
+        "run",
+        "run",
+        "run",
+        "wait"
+      ],
+      "all_skipped": [
+        "run",
+        "skip",
+        "skip",
+        "wait>skip"
+      ],
+      "none_skipped": [
+        "run",
+        "skip",
+        "skip",
+        "wait"
+      ],
+      "one_failed": [
+        "run",
+        "run",
+        "skip",
+        "run"
+      ],
+      "all_failed": [
+        "run",
+        "skip",
+        "skip",
+        "wait"
+      ],
+      "none_failed": [
+        "run",
+        "upstream_failed",
+        "run",
+        "wait>upstream_failed"
+      ],
+      "none_failed_min_one_success": [
+        "run",
+        "upstream_failed",
+        "run",
+        "wait>upstream_failed"
+      ]
+    }
+  },
+  "rule_skip": {
+    "_doc": "A skip by a rule (R) in place of K: only all_success changes (section 2).",
+    "rule": "all_success",
+    "columns": [
+      "S,R",
+      "R,R",
+      "R,F",
+      "R,P"
+    ],
+    "verdicts": [
+      "skip",
+      "skip",
+      "upstream_failed",
+      "wait"
+    ]
+  },
+  "unknown_rule": {
+    "_doc": "An unknown rule fails its task in every column, none included.",
+    "verdict": "fail"
+  }
+}
