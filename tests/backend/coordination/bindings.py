@@ -163,7 +163,8 @@ class Bindings:
             self.stack.ddb, self.stack.runtime, resource=self.resource,
             tokens_table=tables["PipelineTokensTable"], subscriptions_table=tables["DependencySubscriptionsTable"],
             specs_table=tables["PipelineSpecsTable"], asset_events_table=tables["AssetEventsTable"],
-            pipelines_table=tables["PipelineRegistryTable"], run_task_arn=run_task_arn, clock=self.clock,
+            pipelines_table=tables["PipelineRegistryTable"], task_events_table=tables["TaskEventsTable"],
+            run_task_arn=run_task_arn, clock=self.clock,
             sleep=lambda _: None))
         handler = as_component("lambda:reconcile", module.handler)
         self.stack.bind_lambda("ReconcileFunction", handler)

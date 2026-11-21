@@ -6,12 +6,14 @@ through these, so the bell, the index and the evaluator see one shape.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from ..partitions import GRANULARITIES, detect_granularity
 from . import attention as att
+from . import retention
 from .asset_conditions import Fact
 from .partition import partition_date
 from .statuses import FAILED, WARNING_KINDS
@@ -29,6 +31,15 @@ DAG_SNAPSHOT_PREFIX = "dag_snapshot::"
 RETRY_TTL = timedelta(days=7)
 
 CASCADES = frozenset({"auto", "none", "all"})
+
+#: The events of a task's timeline (``task-events``) that a pass writes after its decision (ADR #137 §1), named as
+#: the console's ``EventType`` names them, by the transition that writes each (``transitions.py``).
+DEPS_READY = "DEPS_READY"
+DEPS_SKIPPED = "DEPS_SKIPPED"
+DEPS_BLOCKED = "DEPS_BLOCKED"
+DECISION_EVENTS = {"ready": DEPS_READY, "skip_by_rule": DEPS_SKIPPED, "block": DEPS_BLOCKED}
+#: The sort-key suffix of a decision's event: before run_task's TASK_STARTED (``#10``), as 1.2's wrapper wrote it.
+DECISION_EVENT_ORDER = "#05"
 #: Facts written by ADR #130 writers. Older facts have no version.
 FACT_VERSION = 2
 
@@ -121,6 +132,25 @@ def cascade_of(run_input: Mapping[str, Any]) -> str:
     if run_input.get("cascade_all") is True:
         return "all"
     return "auto"
+
+
+def decision_event(*, transition: str, task_run_id: str, execution_name: str, task_name: str,
+                   pipeline_execution: str, partition_key: str, backfill_id: str, now: datetime,
+                   dependencies: Optional[List[str]] = None, reasons: Optional[List[str]] = None) -> Dict[str, Any]:
+    """The timeline event of a pass's decision, with the fields 1.2's wrapper wrote: ``dependencies`` on a ready
+    row, the ``reason`` of a skip or a block. ``task_run_id`` is the row's run_task name, so each generation has
+    a timeline of its own (invariant 4). It lives as long as a timeline does (``retention.TIMELINE``)."""
+    event_type = DECISION_EVENTS[transition]
+    item: Dict[str, Any] = {
+        "task_run_id": task_run_id, "event_time": format_utc(now) + DECISION_EVENT_ORDER, "event_type": event_type,
+        "execution_name": execution_name, "parent_execution_id": pipeline_execution, "backfill_id": backfill_id,
+        "partition_key": partition_key, "task_name": task_name, "ttl": retention.ttl(now, retention.TIMELINE)}
+    if event_type == DEPS_READY:
+        item["dependencies"] = json.dumps(list(dependencies or []))
+    else:
+        item["reason"] = "; ".join(reasons or []) or ("Upstream task failed" if event_type == DEPS_BLOCKED
+                                                      else "Trigger rule condition did not occur")
+    return item
 
 
 def asset_fact_item(

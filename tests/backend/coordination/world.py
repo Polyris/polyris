@@ -297,6 +297,13 @@ class World:
         pipeline = run.pipeline.name
         return {kind: self._read_row(f"{kind}#{pipeline}#{task}#{run.date}") for kind in ("output", "input")}
 
+    def timeline(self, run: Run, task: str) -> List[Dict[str, Any]]:
+        """`task`'s timeline events (task-events), oldest first, as the console reads them."""
+        response = self.ddb.query(TableName=self.stack.tables["TaskEventsTable"], IndexName="execution-name-index",
+                                  KeyConditionExpression="execution_name = :e",
+                                  ExpressionAttributeValues={":e": {"S": run.execution_name(task)}})
+        return sorted((plain(i) for i in response.get("Items", [])), key=lambda e: str(e["event_time"]))
+
     def run_task_transitions(self, run: Run, task: str) -> List[int]:
         """The state transitions of each run_task execution of `task`, oldest first."""
         name, helper = run.execution_name(task), self.stack.machine_arn("RunTaskHelperSfn")

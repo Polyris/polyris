@@ -16,6 +16,8 @@ PIPELINES_TABLE = os.environ.get("PIPELINES_TABLE", "pipeline-registry")
 ASSET_SUBSCRIPTIONS_TABLE = os.environ.get("ASSET_SUBSCRIPTIONS_TABLE", "asset-subscriptions")
 #: The task specs (ADR #137 §8), which Start_Run and the dispatcher read.
 SPECS_TABLE = os.environ.get("SPECS_TABLE", "pipeline-specs")
+#: Each task's timeline, where the dispatcher writes its decisions (ADR #137 §1).
+TASK_EVENTS_TABLE = os.environ.get("TASK_EVENTS_TABLE", "task-events")
 #: The state machine the dispatcher starts for a ready row (ADR #137 §1).
 RUN_TASK_ARN = os.environ.get("RUN_TASK_ARN", "run-task")
 #: The function the asset-events stream feeds; the sweeper checks its event source mapping.

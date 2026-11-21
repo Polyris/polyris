@@ -294,7 +294,7 @@ Twelve IAM roles the stack creates during Install. Every role's `RoleName` start
 
 Three AWS::IAM::ManagedPolicy resources the stack also creates. One is the dispatcher's own:
 
-- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs: run rows, task rows and the run's input, asset facts, warnings, and in `pipeline-specs` a run's task names (`Query`) and one task's spec at its start (`GetItem`). It queries `pipeline-execution-index` only for a run whose run row is missing, to stop that run's rows. A decision is one transaction, so `dynamodb:ConditionCheckItem` too. `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
+- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs: run rows, task rows and the run's input, asset facts, warnings, and in `pipeline-specs` a run's task names (`Query`) and one task's spec at its start (`GetItem`). It queries `pipeline-execution-index` only for a run whose run row is missing, to stop that run's rows, and puts each decision's event in the task's timeline (`task-events`). A decision is one transaction, so `dynamodb:ConditionCheckItem` too. `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
 
 Two are published for user pipeline tasks that need them:
 

@@ -117,13 +117,14 @@ class _Pass:
 
 class Dispatcher:
     def __init__(self, client: Any, sfn: Any, *, resource: Any, tokens_table: str, subscriptions_table: str,
-                 specs_table: str, asset_events_table: str, pipelines_table: str, run_task_arn: str,
-                 clock: Callable[[], datetime] = _utc_now, monotonic: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], None] = time.sleep):
+                 specs_table: str, asset_events_table: str, pipelines_table: str, task_events_table: str,
+                 run_task_arn: str, clock: Callable[[], datetime] = _utc_now,
+                 monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
         self.client = client
         self.sfn = sfn
         self.resource = resource
         self.tokens_table = tokens_table
+        self.task_events_table = task_events_table
         self.subscriptions_table = subscriptions_table
         self.specs_table = specs_table
         self.asset_events_table = asset_events_table
@@ -349,10 +350,29 @@ class Dispatcher:
                                countdown_ended=countdown is not None and countdown <= state.now,
                                resumed_at=pauses.resumed_at(state.run.pauses)):
                 state.lost.append(name)
+        if judgment.transition in records.DECISION_EVENTS:
+            self._timeline(state, name, row, judgment)
         if judgment.warning:
             self._warn(state.run, subject=row.key, task=name, item=state.items[name], error=judgment.warning)
         if judgment.start:
             self._start(state, name, row)
+
+    def _timeline(self, state: _Pass, name: str, row: dispatch.RowView, judgment: dispatch.Judgment) -> None:
+        """The decision's event in the task's timeline (ADR #137 §1). Best effort, as 1.2's wrapper wrote it: the
+        row holds the state, and only the console's timeline reads the events; a failure is logged."""
+        event = records.decision_event(
+            transition=str(judgment.transition),
+            task_run_id=run_name.run_task_name(row.key, state.run.run_start, row.generation),
+            execution_name=row.key, task_name=name, pipeline_execution=state.run.execution,
+            partition_key=state.run.date, backfill_id=str(state.items[name].get(task_row.BACKFILL_ID) or ""),
+            now=state.now, dependencies=list(row.dependencies),
+            reasons=[str(r) for r in judgment.fields.get(task_row.REASONS) or []])
+        try:
+            self.client.put_item(TableName=self.task_events_table,
+                                 Item={k: _serializer.serialize(v) for k, v in event.items()})
+        except (ClientError, BotoCoreError) as exc:
+            log.error("dispatcher", "could not write the decision to the timeline", run=state.run.key, task=name,
+                      event=event["event_type"], error=str(exc))
 
     def _read_again(self, state: _Pass, name: str) -> None:
         """A refused write: the run row, the row and its upstreams read again (§1)."""
@@ -749,7 +769,8 @@ def from_env() -> Dispatcher:
     return Dispatcher(env.dynamodb_client(), env.stepfunctions(), resource=env.dynamodb(),
                       tokens_table=env.TOKENS_TABLE, subscriptions_table=env.SUBSCRIPTIONS_TABLE,
                       specs_table=env.SPECS_TABLE, asset_events_table=env.ASSET_EVENTS_TABLE,
-                      pipelines_table=env.PIPELINES_TABLE, run_task_arn=env.RUN_TASK_ARN)
+                      pipelines_table=env.PIPELINES_TABLE, task_events_table=env.TASK_EVENTS_TABLE,
+                      run_task_arn=env.RUN_TASK_ARN)
 
 
 def _dispatcher() -> Dispatcher:

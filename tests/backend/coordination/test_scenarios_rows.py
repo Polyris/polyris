@@ -363,3 +363,15 @@ def test_a_task_costs_few_state_transitions(world):
     world.deliver_task_hints()
     assert world.run_task_transitions(run, "extract") == [13]          # $0.000325 each at $0.025 per 1,000
     assert world.run_task_transitions(run, "load") == [14]             # and one Map iteration per upstream read
+
+
+def test_a_tasks_timeline_shows_the_decision_then_its_run_task(world):
+    """The dispatcher writes its decision, run_task its start and its end, all under the row's run_task name: one
+    timeline per generation (ADR #137 §1, invariant 4)."""
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    events = world.timeline(run, "extract")
+    assert [e["event_type"] for e in events] == ["DEPS_READY", "TASK_STARTED", "TASK_FINISHED"]
+    assert {e["task_run_id"] for e in events} == {world.row(run, "extract")["task_run_id"]}

@@ -13,6 +13,7 @@ import start_run as start_run_lambda
 from coordination_testkit import TABLES, FakeSfn, client_error, fact
 from dispatcher import RESERVE_MS, Dispatcher
 from polyris.coordination import attention, run_name, run_row, spec_store, start_run, sweep, task_row, task_spec
+from polyris.coordination.records import DECISION_EVENT_ORDER, DEPS_BLOCKED, DEPS_READY
 from polyris.coordination.times import format_utc
 
 NOW = datetime(2026, 11, 12, 6, 0, 5, tzinfo=timezone.utc)
@@ -63,7 +64,8 @@ def world(ddb, monkeypatch):
     dispatcher = Dispatcher(client, sfn, resource=ddb, tokens_table=table("TOKENS_TABLE"),
                             subscriptions_table=table("SUBSCRIPTIONS_TABLE"), specs_table=table("SPECS_TABLE"),
                             asset_events_table=table("ASSET_EVENTS_TABLE"), pipelines_table=table("PIPELINES_TABLE"),
-                            run_task_arn=RUN_TASK, clock=clock.now, sleep=lambda _: None)
+                            task_events_table=table("TASK_EVENTS_TABLE"), run_task_arn=RUN_TASK, clock=clock.now,
+                            sleep=lambda _: None)
     return SimpleNamespace(client=client, ddb=ddb, sfn=sfn, dispatcher=dispatcher, clock=clock)
 
 
@@ -887,3 +889,46 @@ def test_the_spec_texts_a_container_keeps_are_bounded_by_bytes(world, monkeypatc
     calls = _spec_calls(world)
     full(world)
     assert calls.count("GetItem") == 2 and len(world.dispatcher._texts) == 1
+
+
+# ── the timeline (ADR #137 §1) ──────────────────────────────────────────────
+
+def timeline(world, task: str) -> List[Dict[str, Any]]:
+    response = world.client.query(TableName=table("TASK_EVENTS_TABLE"), IndexName="execution-name-index",
+                                  KeyConditionExpression="execution_name = :e",
+                                  ExpressionAttributeValues={":e": {"S": key(task)}})
+    return sorted(({k: _de.deserialize(v) for k, v in i.items()} for i in response["Items"]),
+                  key=lambda e: e["event_time"])
+
+
+def test_a_ready_row_writes_deps_ready_under_its_run_tasks_name(world):
+    start(world, CHAIN)
+    full(world)
+    [event] = timeline(world, "extract")
+    assert event["event_type"] == DEPS_READY and event["event_time"].endswith(DECISION_EVENT_ORDER)
+    assert event["task_run_id"] == item(world, key("extract"))["task_run_id"]      # one timeline per generation
+    assert (event["parent_execution_id"], event["partition_key"]) == (EXECUTION, DATE)
+    assert timeline(world, "load") == []                                        # a wait writes no event
+
+
+def test_a_blocked_row_writes_deps_blocked_with_the_reason(world):
+    start(world, CHAIN)
+    full(world)
+    finish(world, "extract", status="failed")
+    full(world)
+    [event] = timeline(world, "load")
+    assert event["event_type"] == DEPS_BLOCKED
+    assert [event["reason"]] == item(world, key("load"))["reasons"]                # the reason the row records
+
+
+def test_a_timeline_that_cannot_be_written_holds_up_no_decision(world):
+    """Best effort, as 1.2's wrapper wrote it: the row holds the state (ADR #137 §1)."""
+    start(world, CHAIN)
+
+    def refuse(params: Dict[str, Any], **_: Any) -> None:
+        if params.get("TableName") == table("TASK_EVENTS_TABLE"):
+            raise client_error("AccessDeniedException", "PutItem")
+
+    world.client.meta.events.register("before-parameter-build.dynamodb.PutItem", refuse)
+    assert full(world)["started"] == 1
+    assert item(world, key("extract"))["status"] == "deps_ready" and timeline(world, "extract") == []

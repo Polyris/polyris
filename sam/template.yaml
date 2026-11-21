@@ -1208,6 +1208,7 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           SPECS_TABLE: !Ref PipelineSpecsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
           # By name, not !Ref: run_task's definition names this function, and a !Ref would close a cycle.
           RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
 
@@ -1257,6 +1258,7 @@ Resources:
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           # Its narrow passes run the dispatcher in this process (ADR #137 §7).
           SPECS_TABLE: !Ref PipelineSpecsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
           RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
 
   # ADR #130 §6.1. Retries until the record is handled (records live for the
@@ -1345,6 +1347,7 @@ Resources:
           # Its passes run the dispatcher in this process (ADR #137 §7); the self-check reads the
           # dispatcher's stream mapping (§6).
           SPECS_TABLE: !Ref PipelineSpecsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
           RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
           DISPATCHER_FUNCTION: !Ref ReconcileFunction
 
@@ -1534,6 +1537,12 @@ Resources:
               - dynamodb:Query
             Resource:
               - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
+          # A decision's event in the task's timeline (ADR #137 §1).
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+            Resource:
+              - !GetAtt TaskEventsTable.Arn
           # Pointers are deleted once the row has left the wait (Rule 40).
           - Effect: Allow
             Action:

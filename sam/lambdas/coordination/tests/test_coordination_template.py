@@ -262,7 +262,8 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
     dispatcher = Dispatcher(rows.client, sfn, resource=ddb, tokens_table=TABLES["TOKENS_TABLE"][1],
                             subscriptions_table=TABLES["SUBSCRIPTIONS_TABLE"][1], specs_table=TABLES["SPECS_TABLE"][1],
                             asset_events_table=TABLES["ASSET_EVENTS_TABLE"][1],
-                            pipelines_table=TABLES["PIPELINES_TABLE"][1], run_task_arn="arn:run-task",
+                            pipelines_table=TABLES["PIPELINES_TABLE"][1],
+                            task_events_table=TABLES["TASK_EVENTS_TABLE"][1], run_task_arn="arn:run-task",
                             clock=lambda: clock, sleep=lambda _: None)
 
     class Mappings:

@@ -22,15 +22,16 @@ TABLES = {
     "PIPELINES_TABLE": ("PipelineRegistryTable", "test-pipeline-registry"),
     "ASSET_SUBSCRIPTIONS_TABLE": ("AssetSubscriptionsTable", "test-asset-subscriptions"),
     "SPECS_TABLE": ("PipelineSpecsTable", "test-pipeline-specs"),
+    "TASK_EVENTS_TABLE": ("TaskEventsTable", "test-task-events"),
 }
 #: Variables each coordination function reads (the others' tables it never touches).
 FUNCTION_TABLES = {
     "ReconcileFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
-                          "SPECS_TABLE"),
+                          "SPECS_TABLE", "TASK_EVENTS_TABLE"),
     "AssetFanoutFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
-                            "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
+                            "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "TASK_EVENTS_TABLE"),
     "SweeperFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
-                        "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
+                        "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "TASK_EVENTS_TABLE"),
     "StartRunFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
 }
 #: Environment a function reads beyond its tables.
