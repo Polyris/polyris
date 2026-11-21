@@ -158,6 +158,8 @@ def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     walk(pass_over())                                                            # the run's end
     client.delete_item(TableName=tokens, Key={"execution_name": {"S": execution_name("load", run)}})
     walk(pass_over())                                                            # a missing row warns
+    client.delete_item(TableName=tokens, Key={"execution_name": {"S": run_key}})
+    walk(pass_over())                                                            # a missing run row stops its rows
     assert len(sfn.started) == 2 and sfn.succeeded, "the walk must start both rows and answer the run"
     return calls, reads
 
@@ -174,9 +176,13 @@ def test_reconcile_role_allows_exactly_the_calls_the_code_makes(resources, ddb, 
 
 
 def test_every_read_of_the_dispatcher_is_consistent(ddb, rows):
-    """A pass decides from consistent reads by key, with no index on the decision path (ADR #137 §7)."""
+    """A pass decides from consistent reads by key, with no index on the decision path (ADR #137 §7). A run whose
+    run row is missing has its rows named by an index, and each is read again by key before its stop."""
+    from polyris.coordination import task_row
+
     _, reads = _walk_the_dispatcher(rows, ddb)
-    decisions = {r for r in reads if r[1] in {"PipelineTokensTable", "PipelineSpecsTable"}}
+    decisions = {r for r in reads if r[1] in {"PipelineTokensTable", "PipelineSpecsTable"}
+                 and r[2] != task_row.RUN_ROWS_INDEX}
     assert decisions and {r for r in decisions if not r[3] or r[2] is not None} == set()
 
 

@@ -131,25 +131,49 @@ class StreamAdapter:
         return []
 
     def _read(self) -> None:
+        """Read every new record, page by page (GetRecords gives at most 1,000 at a time), then trim them."""
         for shard in self.streams.describe_stream(StreamArn=self.arn)["StreamDescription"]["Shards"]:
             iterator = self.streams.get_shard_iterator(StreamArn=self.arn, ShardId=shard["ShardId"],
                                                        ShardIteratorType="TRIM_HORIZON")["ShardIterator"]
-            for record in self.streams.get_records(ShardIterator=iterator)["Records"]:
-                sequence = record["dynamodb"]["SequenceNumber"]
-                if sequence in self._seen:
-                    continue
-                self._seen.add(sequence)
-                record = {**record, "eventSourceARN": self.arn}
-                if record["eventName"] == "REMOVE" and self._partition(record) in self._expired:
-                    record["userIdentity"] = dict(TTL_IDENTITY)
-                if self._take(self._drops, record):
-                    self.dropped.append(record)
-                elif self.patterns and not matches_any(self.patterns, record):
-                    continue                     # the mapping's filters drop it, as Lambda does
-                elif self._take(self._delays, record):
-                    self.delayed.append(record)
-                else:
-                    self.pending[self._shard(record)].append(record)
+            while iterator:
+                page = self.streams.get_records(ShardIterator=iterator)
+                if not page["Records"]:
+                    break
+                for record in page["Records"]:
+                    self._take_in(record)
+                iterator = page.get("NextShardIterator")
+        self._trim()
+
+    def _take_in(self, record: Record) -> None:
+        sequence = record["dynamodb"]["SequenceNumber"]
+        if sequence in self._seen:
+            return
+        self._seen.add(sequence)
+        record = {**record, "eventSourceARN": self.arn}
+        if record["eventName"] == "REMOVE" and self._partition(record) in self._expired:
+            record["userIdentity"] = dict(TTL_IDENTITY)
+        if self._take(self._drops, record):
+            self.dropped.append(record)
+        elif self.patterns and not matches_any(self.patterns, record):
+            return                               # the mapping's filters drop it, as Lambda does
+        elif self._take(self._delays, record):
+            self.delayed.append(record)
+        else:
+            self.pending[self._shard(record)].append(record)
+
+    def _trim(self) -> None:
+        """Drop the records just read from moto's shard; this adapter holds them now. moto copies a table, its
+        stream included, in every transaction, so a scenario's stream would make each transaction slower than
+        the last (each success of run_task is one). The sequence numbers go on from where they were, as a
+        stream's trimming leaves them."""
+        from moto.core import DEFAULT_ACCOUNT_ID
+        from moto.dynamodb.models import dynamodb_backends
+
+        table = dynamodb_backends[DEFAULT_ACCOUNT_ID]["us-east-1"].tables.get(self.table)
+        shard = getattr(table, "stream_shard", None)
+        if shard is not None and shard.items:
+            shard.starting_sequence_number += len(shard.items)
+            shard.items = []
 
     @staticmethod
     def _take(faults: List[_Fault], record: Record) -> bool:

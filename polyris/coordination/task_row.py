@@ -13,10 +13,11 @@ it is its own run's.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from . import ownership, run_row, task_spec
 from .deadlines import RowTimes
+from .records import DAG_SNAPSHOT_PREFIX
 from .times import parse_utc
 
 # The key: {task}-{date}-{the last 20 characters of the run's name, without '.' and ':'}, as 1.2's.
@@ -38,6 +39,9 @@ READINESS = task_spec.ROW_READINESS
 #: The fence of every write of a task row (ADR #137 §3, Rule 47): under the generation the writer holds. No branch
 #: for a row without a generation, which 1.2's fence (ownership.FENCE) had.
 FENCE = "#g = :g"
+#: The index of a run's rows by the run's execution name (template.yaml). A pass reads it only for a run whose run
+#: row is missing, which names no spec version to find them by (invariant 11).
+RUN_ROWS_INDEX = "pipeline-execution-index"
 TRIGGERED_BY = "triggered_by"
 BACKFILL_ID = "backfill_id"
 TASK_TYPE = "task_type"
@@ -64,6 +68,28 @@ ERROR = "error"
 def short(pipeline_execution: str) -> str:
     """The run's short name in its rows' keys: its last 20 characters, without '.' and ':'."""
     return pipeline_execution[-SHORT_LENGTH:].replace(".", "").replace(":", "")
+
+
+def is_task_key(name: str) -> bool:
+    """Whether ``name`` keys a task row: not one of the platform's own rows (``_``), a store (``output#``,
+    ``input#``) or a 1.2 run's DAG snapshot. A task_id may not start with ``_`` (``limits.spec_errors``)."""
+    return not name.startswith("_") and "#" not in name and not name.startswith(DAG_SNAPSHOT_PREFIX)
+
+
+def run_rows(client: Any, table: str, pipeline_execution: str) -> List[str]:
+    """The keys of the task rows that ``RUN_ROWS_INDEX`` files under a run, every page of them. The index is read
+    eventually: a row it does not show yet waits for a later read."""
+    kwargs: Dict[str, Any] = {
+        "TableName": table, "IndexName": RUN_ROWS_INDEX, "KeyConditionExpression": "#run = :run",
+        "ExpressionAttributeNames": {"#run": PIPELINE_EXECUTION},
+        "ExpressionAttributeValues": {":run": {"S": pipeline_execution}}, "ProjectionExpression": TABLE_KEY}
+    keys: List[str] = []
+    while True:
+        page = client.query(**kwargs)
+        keys += [str(item[TABLE_KEY]["S"]) for item in page.get("Items", []) if is_task_key(str(item[TABLE_KEY]["S"]))]
+        if "LastEvaluatedKey" not in page:
+            return keys
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
 def key(task: str, date: str, pipeline_execution: str) -> str:

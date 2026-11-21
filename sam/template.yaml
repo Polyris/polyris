@@ -1528,6 +1528,12 @@ Resources:
               - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
+          # The rows of a run whose run row is missing, which a pass stops (invariant 11).
+          - Effect: Allow
+            Action:
+              - dynamodb:Query
+            Resource:
+              - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
           # Pointers are deleted once the row has left the wait (Rule 40).
           - Effect: Allow
             Action:

@@ -104,6 +104,9 @@ class World:
     resource: Any
     bindings: Bindings
     boundary: Boundary
+    #: The tasks table's stream delivers its records whenever the stack settles, as the mapping does in AWS.
+    #: Off by default: a scenario that orders passes delivers them by hand (``deliver_task_hints``).
+    tasks_stream_runs: bool = False
 
     def __init__(self, ddb_client: Any, *, start: Optional[datetime] = None):
         import boto3
@@ -118,7 +121,9 @@ class World:
         self._run_ids = itertools.count(0xABCD0000)
         self.bindings = Bindings(self.stack, self.resource, self.clock.read)
         self.bindings.start_run()
-        self._dispatch = self.bindings.dispatcher(self.bindings.run_task_stub())
+        #: Every call run_task made to the notify function: the alerts of a failure, the resolve after a success.
+        self.notifications: List[Dict[str, Any]] = []
+        self._dispatch = self.bindings.dispatcher(self.bindings.run_task(self.notifications))
         self.bindings.query_subscriptions()
         self._fanout = as_component("lambda:asset-fanout", self.bindings.asset_fanout())
         self._console = self.bindings.console()
@@ -209,6 +214,8 @@ class World:
         (row_invariants.py, stages.py) and that no template expression failed (D107). ADR #130's
         invariants retired with its engine (D115)."""
         self.runtime.run()
+        if self.tasks_stream_runs:
+            self.deliver_task_hints()
         for violation in self.check_invariants():
             if violation not in self.violations:
                 self.violations.append(violation)
@@ -269,8 +276,8 @@ class World:
         return sorted(names[n] for n in (self._job_owner(j) for j in self.runtime.jobs.values()) if n in names)
 
     def complete(self, run: Run, task: str, *, status: str = "success", output: Any = None) -> None:
-        """Finish the user's work for `task`; `status` is "success" or "failed", and a success returns
-        `output` (an empty object when None)."""
+        """Finish the user's work for `task`; `status` is "success", "failed" or "timed_out" (the attempt reached
+        its execution_timeout), and a success returns `output` (an empty object when None)."""
         name = run.execution_name(task)
         job = next((j for j in self.runtime.jobs.values() if self._job_owner(j) == name), None)
         if job is None:
@@ -279,9 +286,31 @@ class World:
             self.runtime.finish_job(job.id, output={"Output": {} if output is None else output, "Status": "SUCCEEDED"})
         elif status == "failed":
             self.runtime.finish_job(job.id, error="States.TaskFailed", cause="the user's task failed")
+        elif status == "timed_out":
+            self.runtime.finish_job(job.id, error="States.Timeout", cause="the attempt reached its execution_timeout")
         else:
-            raise ValueError(f"status must be 'success' or 'failed', got {status!r}")
+            raise ValueError(f"status must be 'success', 'failed' or 'timed_out', got {status!r}")
         self.settle()
+
+    def stores(self, run: Run, task: str) -> Dict[str, Optional[Dict[str, Any]]]:
+        """The rows of `task`'s date that run_task writes beside its row: `output#` and `input#`."""
+        pipeline = run.pipeline.name
+        return {kind: self._read_row(f"{kind}#{pipeline}#{task}#{run.date}") for kind in ("output", "input")}
+
+    def run_task_transitions(self, run: Run, task: str) -> List[int]:
+        """The state transitions of each run_task execution of `task`, oldest first."""
+        name, helper = run.execution_name(task), self.stack.machine_arn("RunTaskHelperSfn")
+        return [e.transitions for e in self.runtime.executions.values()
+                if e.machine.arn == helper and isinstance(e.input, dict) and e.input.get("execution_name") == name]
+
+    def work_input(self, run: Run, task: str) -> Dict[str, Any]:
+        """What the user's work of `task` was given: the input of its state machine (dags.py builds `@task.sfn`)."""
+        name = run.execution_name(task)
+        job = next((j for j in self.runtime.jobs.values() if self._job_owner(j) == name), None)
+        if job is None:
+            raise AssertionError(f"{task} is not running in {run.name}; running: {self.running_tasks(run)}")
+        payload = job.arguments.get("Input", {})
+        return json.loads(payload) if isinstance(payload, str) else dict(payload)
 
     @staticmethod
     def _job_owner(job: Any) -> Optional[str]:
@@ -290,9 +319,14 @@ class World:
 
     # ── failures injected from outside ─────────────────────────────────
 
-    def stop_wrapper_externally(self, run: Run, task: str) -> None:
-        """Someone stops the task's wrapper execution in the AWS console."""
-        self.runtime.stop_execution(executionArn=self.wrapper(run, task).arn, error="Console", cause="stopped by hand")
+    def stop_run_task_externally(self, run: Run, task: str) -> None:
+        """Someone stops the task's run_task execution in the AWS console."""
+        name, helper = run.execution_name(task), self.stack.machine_arn("RunTaskHelperSfn")
+        found = [e for e in self.runtime.executions.values() if e.machine.arn == helper and e.status == "RUNNING"
+                 and isinstance(e.input, dict) and e.input.get("execution_name") == name]
+        if not found:
+            raise AssertionError(f"{task} has no running run_task in {run.name}")
+        self.runtime.stop_execution(executionArn=found[0].arn, error="Console", cause="stopped by hand")
         self.settle()
 
     def time_out_registration(self, run: Run, task: str) -> None:
@@ -649,7 +683,10 @@ class World:
         marker = f"polyris-fail-after-{id(left)}"
 
         def fail(params: Dict[str, Any], context: Optional[Dict[str, Any]] = None, **_: Any) -> None:
-            if params.get("TableName") != name or (when is not None and not when(params)):
+            # A transaction names its tables in its items: it fails as a whole when one of them is `table`.
+            tables = {params.get("TableName")} | {body.get("TableName") for item in params.get("TransactItems", [])
+                                                  for body in item.values()}
+            if name not in tables or (when is not None and not when(params)):
                 return
             if left[0] is not None:
                 if left[0] <= 0:
@@ -754,12 +791,6 @@ class World:
         self.settle()
 
     # ── observations ───────────────────────────────────────────────────
-
-    def signals(self, run: Run, task: str) -> List[Dict[str, Any]]:
-        """Callbacks the task's wrapper accepted while waiting for its dependencies, oldest first."""
-        arn = self.wrapper(run, task).arn
-        return [c["outcome"] for c in self.runtime.callbacks
-                if c["execution"] == arn and c["state"] == "Wait_For_Dependencies"]
 
     def warnings(self) -> List[Dict[str, Any]]:
         """Coordination warnings as the bell reads them: through the attention index."""

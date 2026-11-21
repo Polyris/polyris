@@ -19,6 +19,7 @@ CORE = "polyris/coordination/asset_conditions.py"
 REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
 TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
 EXECUTIONS_ROUTE = "sam/lambdas/console_api/routes/executions.py"
+RUN_TASK = "sam/sfn_templates/helpers/run_task/sfn.tpl.json"
 
 
 class Edit(NamedTuple):
@@ -37,24 +38,6 @@ AND_AS_OR = Edit(CORE, "        ready = all(ok for ok, _ in outcomes)\n",
                  "        ready = any(ok for ok, _ in outcomes)\n")
 
 PROBES: Tuple[Probe, ...] = (
-    Probe("B-G1", (Edit(
-        REGISTRATION,
-        '"Comment": "No row exists for the sweeper to find: the task must fail now, with the cause.",\n'
-        '          "Output": "{% $states.input ~> |$| {\'failure\': $states.errorOutput} | %}",\n'
-        '          "Next": "Fail_Task"',
-        '"Comment": "No row exists for the sweeper to find: the task must fail now, with the cause.",\n'
-        '          "Output": "{% $states.input ~> |$| {\'failure\': $states.errorOutput} | %}",\n'
-        '          "Next": "Registered"'),),
-        f"{SCENARIOS}::test_a_failed_registration_fails_the_task_with_its_cause"),
-    Probe("B-S1", (Edit(
-        "sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
-        '"Comment": "B-S1: without the skipped row, dependants must not be woken. Fail visibly instead.",\n'
-        '          "Output": "{% $states.input ~> |$| {\'error\': $states.errorOutput} | %}",\n'
-        '          "Next": "Handle_Failure"',
-        '"Comment": "B-S1: without the skipped row, dependants must not be woken. Fail visibly instead.",\n'
-        '          "Output": "{% $states.input %}",\n'
-        '          "Next": "Auto_Skip_Notify_Dependents"'),),
-        f"{SCENARIOS}::test_a_failed_auto_skip_write_does_not_wake_dependants"),
     Probe("B-A1", (AND_AS_OR,), f"{SCENARIOS}::test_and_of_two_assets_wakes_once_after_both_in_every_order"),
     Probe("B-A2", (AND_AS_OR,), f"{SCENARIOS}::test_mixed_and_or_needs_a_and_one_of_b_or_c"),
     Probe("B-A3", (Edit(CORE, "    fresh = newest.event_time >= now - timedelta(hours=hours)", "    fresh = True"),),
@@ -70,10 +53,9 @@ PROBES: Tuple[Probe, ...] = (
         "        if True:"),),
         f"{SCENARIOS}::test_a_backfill_does_not_pass_on_todays_fact"),
     # The old pointers were keyed by task name, shared by every run and pipeline.
-    Probe("B-K1", (Edit(REGISTRATION, "'subscriber': $me, 'ttl': $ttl} }); $assets",
-                        "'subscriber': $states.input.task_name, 'ttl': $ttl} }); $assets"),
-                   Edit(REGISTRATION, "{'dependency_key': 'asset:' & $a, 'subscriber': $me,",
-                        "{'dependency_key': 'asset:' & $a, 'subscriber': $states.input.task_name,")),
+    Probe("B-K1", (Edit("polyris/coordination/start_run.py",
+                        "            subscriber = task_row.key(task_id, call.date, call.execution)\n",
+                        "            subscriber = task_id\n"),),
           f"{SCENARIOS}::test_same_named_waiting_tasks_in_two_pipelines_both_wake"),
     # The old AND trigger counted events: every event could start another run.
     Probe("B-U1", (Edit("sam/lambdas/coordination/asset_fanout.py",
@@ -133,14 +115,9 @@ PROBES: Tuple[Probe, ...] = (
                         '        if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):\n',
                         '        if False:\n'),),
           f"{SCENARIOS}::test_a_consumer_deployed_after_the_facts_does_not_start_for_them"),
-    # Without the claim marker a retried claim fails its own condition and ends as superseded.
-    Probe("B-W1", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
-                        '"UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",\n'
-                        '        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))'
-                        ' AND #s IN (:waiting, :paused, :status)",',
-                        '"UpdateExpression": "SET #s = :status REMOVE wait_token, attention, attention_at",\n'
-                        '        "ConditionExpression": "(generation = :g OR attribute_not_exists(generation))'
-                        ' AND #s IN (:waiting, :paused)",'),),
+    # A retried claim fails its own condition: without reading whose claim it was, it ends as superseded.
+    Probe("B-W1", (Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
+                        '"Next": "Read_Claim"', '"Next": "Superseded"'),),
           f"{SCENARIOS}::test_a_claim_whose_answer_is_lost_still_runs_the_task"),
     # Define_Inputs replaces the whole input: without a computed date the run falls back to the day it started.
     Probe("B-D1", (Edit("polyris/generators.py",
@@ -152,7 +129,7 @@ PROBES: Tuple[Probe, ...] = (
                         '                            SCHEDULED_TIME_FIELD: "<aws.scheduler.scheduled-time>",\n',
                         ''),),
           f"{SCENARIOS}::test_a_scheduled_run_carries_the_day_it_was_scheduled_for"),
-    # The old fallback: each task reads the clock when its input is built.
+    # The old fallback: the clock when the date is computed, which a run that starts at midnight has passed.
     Probe("B-D1", (Edit("polyris/generators.py",
                         "    \": $substringBefore($states.context.Execution.StartTime, 'T')))\"\n",
                         "    \": $substringBefore($now(), 'T')))\"\n"),),
@@ -219,11 +196,6 @@ PROBES: Tuple[Probe, ...] = (
                         '"ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",',
                         '"ConditionExpression": "(generation = :g OR attribute_exists(execution_name))",'),),
           f"{SCENARIOS}::test_a_task_an_operator_decided_while_paused_is_never_released_to_run"),
-    # A Lambda timeout that is not a transient error fails the task although its row is saved.
-    Probe("B-G2", (Edit("sam/sfn_templates/helpers/registration/sfn.tpl.json",
-                        '"Sandbox.Timedout",\n            "CoordinationTransient"\n          ],\n          "Comment": "Transient after retries',
-                        '"CoordinationTransient"\n          ],\n          "Comment": "Transient after retries'),),
-          f"{SCENARIOS}::test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper[Sandbox.Timedout]"),
     # Without the warning a fact Mark Successful could not record leaves no trace but a log line.
     Probe("B-M2", (Edit("sam/lambdas/console_api/routes/tasks.py",
                         "        _warn_fact_not_recorded(item, task_name, asset_name, error)\n",
@@ -238,10 +210,9 @@ PROBES: Tuple[Probe, ...] = (
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",
                         ""),),
           f"{SCENARIOS}::test_a_warning_about_an_old_partition_reaches_the_bell"),
-    # D107: the answer's API result replaced the state data, so Failure_Complete read fields that were gone.
-    Probe("B-Q1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
-                        '"Output": "{% $states.input %}",\n      "Next": "Failure_Complete",\n      "Catch": [',
-                        '"Next": "Failure_Complete",\n      "Catch": ['),),
+    # A wait for facts that never ends: the task waits on, and so does its run.
+    Probe("B-Q1", (Edit("polyris/coordination/deadlines.py", "WAIT_FOR_LIMIT = timedelta(days=7)\n",
+                        "WAIT_FOR_LIMIT = timedelta(days=7000)\n"),),
           f"{SCENARIOS}::test_a_dependency_wait_that_times_out_fails_the_task_once"),
     # ADR #135: the flag that told the failure handler run_task had answered, and its catch.
     Probe("B-RN1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
@@ -251,17 +222,50 @@ PROBES: Tuple[Probe, ...] = (
                          "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput} | %}\"",
                          "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput, 'helper_failed': true} | %}\"")),
           f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
-    Probe("B-RN3", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
-                         '"Next": "Warn_Run_Left_Running"', '"Next": "Done"'),),
-          f"{SCENARIOS}::test_a_rule_skip_whose_run_cannot_be_told_says_so"),
     Probe("B-RN4", (Edit("sam/lambdas/console_api/routes/tasks.py",
                          "        executions_repo.put(warning_item(\n            kind='coordination', execution_name=execution_name,",
                          "        (lambda _row: None)(warning_item(\n            kind='coordination', execution_name=execution_name,"),),
           f"{SCENARIOS}::test_a_console_action_whose_run_cannot_be_told_says_so"),
+    # A run's answer that failed counts as given: the run stays RUNNING with every row final (§4).
+    Probe("R-E1", (Edit(DISPATCHER, "            failures.reraise_transient(exc)\n            self._warn(run, subject=f\"{run.key}-answer\"",
+                        "            return True\n            self._warn(run, subject=f\"{run.key}-answer\""),),
+          f"{ROWS}::test_a_run_whose_answer_was_lost_is_answered_at_its_next_check"),
+    # A succeeded upstream whose output is missing reaches the task as if it had none to give (D109).
+    Probe("R-O1", (Edit(RUN_TASK, "'missing': $append([], $states.result[found = false and status = 'success'].name)}",
+                        "'missing': []}"),),
+          f"{ROWS}::test_a_succeeded_upstream_without_its_output_keeps_its_dependant_from_running"),
+    # The state carries the work's result twice, as 1.2's success did: past ~125 KB a success cannot be recorded.
+    Probe("R-O2", (Edit(RUN_TASK, "'task_output': $raw, 'task_execution_arn': $exists($states.result.ExecutionArn)",
+                        "'task_output': $raw, 'task_result': $states.result.Output, "
+                        "'task_execution_arn': $exists($states.result.ExecutionArn)"),),
+          f"{ROWS}::test_an_output_near_the_payload_limit_is_recorded_and_one_over_it_waits_for_a_decision"),
+    # A repeated wake-up decides a running row again, as 1.2's second signal overwrote running.
+    Probe("B-T1", (Edit("polyris/coordination/dispatch.py", "    if row.status in _WAITS:\n        return _wait(",
+                        "    if row.status in _WAITS | {S.RUNNING.value}:\n        return _wait("),),
+          f"{SCENARIOS}::test_a_repeated_hint_does_not_disturb_a_running_task"),
+    # A read DynamoDB left partly unprocessed counts as complete: its unread rows count as missing (fail-open).
+    Probe("R-F1", (Edit(DISPATCHER, '                request = response.get("UnprocessedKeys") or {}\n',
+                        "                request = {}\n"),),
+          f"{ROWS}::test_a_partial_read_starts_nothing_until_the_read_completes"),
+    # Without its run row's check a lost stream record leaves its task waiting for good (§7).
+    Probe("R-L1", (Edit("sam/lambdas/coordination/sweeper.py", "            run_key = self._run_of(entry)\n",
+                        "            run_key = None if run_row.is_run_row(key) else self._run_of(entry)\n"),),
+          f"{ROWS}::test_a_lost_hint_heals_at_its_run_rows_next_check_with_one_warning"),
+    # An upstream that failed is read like one that succeeded: its date's output# holds an older run's output.
+    Probe("R-N2", (Edit(RUN_TASK, "$u.status = 'success' or ($u.status = 'skipped'",
+                        "$u.status in ['success', 'failed'] or ($u.status = 'skipped'"),),
+          f"{ROWS}::test_a_task_after_a_final_failure_gets_its_status_and_never_an_older_runs_output"),
+    # A timeout skips the task's retries, as execution_timeout did in 1.2 (the review of ADR #136, B4).
+    Probe("R-T2", (Edit(RUN_TASK, '"Condition": "{% $retry_attempt < (',
+                        '"Condition": "{% $states.input.error_obj.Error != \'States.Timeout\' and $retry_attempt < ('),),
+          f"{ROWS}::test_a_timed_out_attempt_goes_through_the_tasks_retries"),
+    # A cancelled success transaction is not sent again: the success is lost, the task waits for a decision.
+    Probe("R-C1", (Edit(RUN_TASK, '"Next": "Wait_Before_Recording_Again"', '"Next": "Success_Not_Recorded"'),),
+          f"{ROWS}::test_a_cancelled_success_is_tried_again_and_recorded_with_its_fact"),
     # A success recorded without its facts: no consumer would ever see the partition (invariant 12).
     Probe("B-F3", (Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
                         "{'TransactItems': $append([$row, $output], $facts)}", "{'TransactItems': [$row, $output]}"),),
-          f"{SCENARIOS}::test_a_fact_that_cannot_be_recorded_reaches_the_bell"),
+          f"{SCENARIOS}::test_a_success_whose_fact_cannot_be_recorded_waits_for_a_decision"),
     Probe("B-U4", (Edit("sam/lambdas/coordination/asset_fanout.py",
                         "known_facts=[evidence], recorded_by=evidence.event_time)", "known_facts=[evidence])"),),
           f"{SCENARIOS}::test_the_catch_up_starts_no_run_that_a_cascade_none_backfill_completed"),

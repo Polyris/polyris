@@ -34,13 +34,16 @@ DEFECTS = {
     "R-W1": "A limit that falls due during a pause fires in the pause, or is lost; it must fire after the "
             "Resume, moved by the paused time",
     "R-U1": "A 1.2 row left in flight across the upgrade hangs instead of being stopped with the cause",
+    "R-N2": "A task that runs after a final failure reads an older run's output of the same date; the upstream "
+            "must reach it as its status alone (ADR #137 §1, ADR #138 §2)",
+    "R-T2": "A timed-out attempt ends the task without its retries; a timeout is a failed attempt (ADR #137 §1)",
+    "R-C1": "A success transaction that DynamoDB cancels (a conflict, a throttled item, a fact time already "
+            "taken) loses the success; run_task must read its row and try again with a new time for each fact",
     "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "
             "States.QueryEvaluationError, while the harness carried undefined on as None and a Catch hid it "
             "(Failure_Complete of the failure handler, found live in 1.2.0, CR-7)",
     "B-RN1": "A task fails before run_task answers its run (a pause token that cannot be saved): the failure "
              "handler skips the answer on helper_failed, and the run stays RUNNING",
-    "B-RN2": "The reconciler aborts a task whose wrapper is gone without telling its run: the run stays RUNNING",
-    "B-RN3": "The wrapper's skip answer swallows a failed answer: the task is skipped, the run stays RUNNING, nothing says why",
     "B-RN4": "A console action swallows a failed answer to the run (Stop), or answers 500 after the row has changed",
     "B-F3": "run_task cannot record a fact after the task succeeded: the consumers hang and nothing says why",
     "B-U4": "The hourly catch-up counts a fact recorded after the one it replays: a cascade='none' backfill "
@@ -53,7 +56,6 @@ DEFECTS = {
     "B-P2": "Task deps finish during a pause, assets missing: resume runs the task without its assets",
     "B-P3": "A task saves its pause token while resume runs: resume misses it, it waits for its 12-hour heartbeat",
     "B-P4": "pause_waiter cannot save the token: nobody can release the task; it runs after 12 hours, paused or not",
-    "B-G2": "A reconciler that times out during registration fails a healthy task instead of leaving it to the sweeper",
     "B-M2": "A Mark Successful whose fact cannot be recorded reports plain success: the tasks waiting on it hang silently",
     "B-F2": "One unreadable fact fails every task waiting on its asset",
     "B-W1": "A wrapper claim whose write applied but whose answer was lost ends as superseded: the task never runs",
@@ -71,8 +73,6 @@ DEFECTS = {
     "B-O1": "An operator resolves a waiting task but its wrapper cannot be stopped: registering again overwrites the row and runs the task",
     "B-R1": "restart_task passes neither wait_for nor the other starter fields: the restart is not gated on assets",
     "B-N1": "Warning rows dated by partition and grouped per run: older warnings never reach the bell",
-    "B-S1": "Auto_Skip_Register swallows a failed status write and still notifies dependants",
-    "B-G1": "A failed registration SFN never signals the wrapper: silent hang until orchestration_timeout",
     "B-X1": "Run-name collisions between asset-AND runs, backfill tiers and same-named tasks",
     "B-M1": "mark_success dates its asset fact from the request, not from the marked run's partition",
     "B-A1": "wait_for=[a, b] wakes on the first event",
@@ -82,5 +82,4 @@ DEFECTS = {
     "B-K1": "Subscription keys collide across runs and pipelines",
     "B-T1": "A second signal overwrites running",
     "B-U1": "Push AND loses the day when Trigger_AND fails after the counter completes",
-    "B-F1": "A consumer-notification failure fails the producer task",
 }

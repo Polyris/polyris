@@ -147,7 +147,7 @@ def test_unbound_lambdas_fail_the_state_that_calls_them():
     assert rt.executions[arn].error == "Lambda.ResourceNotFoundException"
 
 
-# ── the dispatcher on the tasks table's stream, with run_task's stand-in (ADR #137 §1, §7) ──
+# ── the dispatcher on the tasks table's stream, with the stack's run_task (ADR #137 §1, §7) ──
 
 @pytest.fixture
 def engine():
@@ -158,7 +158,7 @@ def engine():
         bindings = Bindings(stack, boto3.resource("dynamodb", region_name="us-east-1"),
                             lambda: datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc))
         bindings.start_run()
-        dispatch = bindings.dispatcher(bindings.run_task_stub())
+        dispatch = bindings.dispatcher(bindings.run_task([]))
         stream = StreamAdapter.for_mapping(stack, "TasksDispatchMapping", table="PipelineTokensTable",
                                            key="execution_name")
         yield SimpleNamespace(stack=stack, stream=stream, dispatch=dispatch)
@@ -188,8 +188,13 @@ def _chain_dag():
     return dag
 
 
+def _owner(job) -> str:
+    """The task whose run_task waits on `job`: run_task reads its input from its execution's context."""
+    return str(job.frame.execution.input.get("task_name"))
+
+
 def _work(engine, task: str):
-    [job] = [j for j in engine.stack.runtime.jobs.values() if j.arguments.get("JobName") == task]
+    [job] = [j for j in engine.stack.runtime.jobs.values() if _owner(j) == task]
     return job
 
 
@@ -197,7 +202,7 @@ def test_a_run_goes_to_its_end_through_the_tasks_stream(engine):
     """Start_Run writes the rows; the stream wakes the dispatcher at each change; its last pass answers the run."""
     execution = _start(engine.stack, _chain_dag())
     _settle(engine)
-    assert [j.arguments["JobName"] for j in engine.stack.runtime.jobs.values()] == ["extract"]
+    assert [_owner(j) for j in engine.stack.runtime.jobs.values()] == ["extract"]
     assert _item(engine.stack, f"load-2026-11-12-{RUN[-20:]}")["status"]["S"] == "waiting"
     engine.stack.runtime.finish_job(_work(engine, "extract").id, output={})
     _settle(engine)

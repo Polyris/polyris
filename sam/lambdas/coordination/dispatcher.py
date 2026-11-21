@@ -207,7 +207,11 @@ class Dispatcher:
         now = self.clock()
         run_item = self._get(run_key)
         if run_item is None:
-            return self.stop_orphans(run_key, sorted(orphan_keys), source=source)
+            # Every row of the run, not only the ones that woke this pass: a row that waits for other rows has no
+            # due time, so no check of its own would come (ADR #137 §3, invariant 11).
+            keys = orphan_keys | set(task_row.run_rows(self.client, self.tokens_table,
+                                                         run_key[len(run_row.KEY_PREFIX):]))
+            return self.stop_orphans(run_key, sorted(keys), source=source, deadline=deadline)
         run = dispatch.run_view(run_item)
         if check and run.status == run_row.CREATING:
             run = self._engine_check(run, now, finished=False) or run     # it never became active (§4)
@@ -510,12 +514,18 @@ class Dispatcher:
 
     # ── rows whose run row is missing ────────────────────────────────────
 
-    def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str) -> Dict[str, Any]:
+    def stop_orphans(self, run_key: str, keys: Sequence[str], *, source: str,
+                     deadline: Optional[float] = None) -> Dict[str, Any]:
         """Each row named, stopped with the cause: its run row is missing (invariant 11). A row that a 1.2 run
-        left in flight has no readiness fields; its stop needs only its status and generation (*Migration*)."""
+        left in flight has no readiness fields; its stop needs only its status and generation (*Migration*).
+        Past ``deadline`` the rest wait for a later pass or check, which finds them again."""
         now = self.clock()
         stopped = 0
-        for key in keys:
+        for index, key in enumerate(keys):
+            if deadline is not None and self.monotonic() >= deadline:
+                log.error("dispatcher", "rows whose run row is missing are left for a later pass", run=run_key,
+                          left=len(keys) - index)
+                break
             item = self._get(key)
             if item is None or task_row.STATUS not in item:
                 continue

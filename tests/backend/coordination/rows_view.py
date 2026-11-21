@@ -23,7 +23,6 @@ from row_invariants import FINAL, TOKEN_FIELDS, Answer, Pass, Run, RunTaskExecut
 _deserializer = TypeDeserializer()
 #: The components that run the dispatcher's passes: the stream's, the sweeper's and AssetFanout's.
 PASSERS = frozenset({"lambda:reconcile", "lambda:sweeper", "lambda:asset-fanout"})
-RUN_TASK = frozenset({"lambda:run-task-stub-claim", "lambda:run-task-stub-finish"})
 
 
 def plain(item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -151,17 +150,21 @@ class StackView:
                 if key.startswith("_") or "#" in key or after is None or "status" not in after:
                     continue
                 writes.append(RowWrite(
-                    kind=_kind(call, after), task=key,
+                    kind="run_task" if self._by_run_task(call) else _kind(call, after), task=key,
                     status_before=str(before["status"]) if before and "status" in before else None,
                     status_after=str(after["status"]),
                     generation_before=int(before.get("generation", 0)) if before else 0,
                     generation_after=int(after.get("generation", 0)),
                     conditional=_conditional(call, key), checks_run_version=_checks_run_version(call),
-                    writer_generation=_value(call, ":g") if call.component in RUN_TASK else None))
+                    writer_generation=_value(call, ":g") if self._by_run_task(call) else None))
         return writes
 
     def passes(self) -> List[Pass]:
         return list(self.observer.passes)
+
+    def _by_run_task(self, call: Call) -> bool:
+        """The interpreter acts as `sfn:{machine}:{execution}` when a state machine writes (sfn_runtime)."""
+        return call.component.startswith(f"sfn:{self.run_task_arn.rsplit(':', 1)[-1]}:")
 
 
 def _kind(call: Call, after: Dict[str, Any]) -> str:
@@ -169,8 +172,6 @@ def _kind(call: Call, after: Dict[str, Any]) -> str:
         return "stop" if after.get("status") == "stopped" else "decision"
     if call.component == "lambda:start-run":
         return "start_run"
-    if call.component in RUN_TASK:
-        return "run_task"
     if call.component.startswith("console"):
         return "action"
     return "other"

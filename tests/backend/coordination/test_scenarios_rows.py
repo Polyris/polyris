@@ -14,7 +14,7 @@ from datetime import timedelta
 
 import pytest
 
-from dags import chain, pipeline
+from dags import asset, chain, pipeline, waits_for
 from polyris.constants import WarningKind
 
 DATE = "2026-11-18"
@@ -38,7 +38,6 @@ def a_pass_reads_the_run(call):
             and all(table.endswith("-pipeline-tokens") for table in call.tables))
 
 
-@needs_binding("rows-run-task")
 @defect("R-L1")
 def test_a_lost_hint_heals_at_its_run_rows_next_check_with_one_warning(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -162,7 +161,6 @@ def test_a_stop_between_a_passs_read_and_its_write_starts_nothing(world):
     assert world.status(run, "load") == "stopped"
 
 
-@needs_binding("rows-run-task")
 @defect("R-F1")
 def test_a_partial_read_starts_nothing_until_the_read_completes(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load", "report")), DATE)
@@ -175,7 +173,6 @@ def test_a_partial_read_starts_nothing_until_the_read_completes(world):
     assert world.running_tasks(run) == ["load"]
 
 
-@needs_binding("rows-run-task")
 @defect("R-E1")
 def test_a_run_whose_answer_was_lost_is_answered_at_its_next_check(world):
     run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
@@ -200,7 +197,6 @@ def test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause(worl
     assert warnings_of(world, WarningKind.COORDINATION)
 
 
-@needs_binding("rows-run-task")
 @defect("R-T1")
 def test_a_task_row_without_its_run_row_is_stopped(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -211,13 +207,13 @@ def test_a_task_row_without_its_run_row_is_stopped(world):
     assert world.status(run, "load") == "stopped"
 
 
-@needs_binding("rows-run-task")
 @defect("R-O1")
 def test_a_succeeded_upstream_without_its_output_keeps_its_dependant_from_running(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.deliver_task_hints()
     world.complete(run, "extract")
     world.delete_output(run, "extract")            # gone, as when it expired before a late Restart
+    world.plant(f"invariant 12: {run.execution_name('extract')} reads success, but its output is not recorded")
     world.deliver_task_hints()                     # load's run_task finds no output for extract (D109)
     assert world.running_tasks(run) == []
     assert world.status(run, "load") in ("waiting_decision", "failed")
@@ -236,7 +232,6 @@ def test_a_restart_of_a_run_that_started_a_year_ago_is_refused(world):
     assert world.status(run, "extract") == "success"
 
 
-@needs_binding("rows-run-task")
 @defect("R-O2")
 def test_an_output_near_the_payload_limit_is_recorded_and_one_over_it_waits_for_a_decision(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -283,3 +278,88 @@ def test_a_1_2_row_left_in_flight_across_the_upgrade_is_stopped_with_the_cause(w
     world.sweep()
     assert world.status(run, "load") == "stopped"
     assert warnings_of(world, WarningKind.COORDINATION)
+
+
+@defect("R-C1")
+def test_a_cancelled_success_is_tried_again_and_recorded_with_its_fact(world):
+    """ADR #137 §1: after TransactionCanceledException run_task reads its row; still running under its generation,
+    it sends the transaction again, with a new time for the fact, and the consumer of the fact starts."""
+    orders = asset("ns/orders")
+    consumer = world.start_run(world.deploy(waits_for("consumer_p", [orders])), DATE)
+    run = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [orders]})])), DATE)
+    world.deliver_task_hints()
+    world.inject_failure("TransactWriteItems", "AssetEventsTable", "TransactionCanceledException", times=1)
+    world.complete(run, "build")
+    world.deliver_task_hints()
+    assert world.status(run, "build") == "success"
+    world.deliver_hints(orders)
+    world.deliver_task_hints()
+    assert world.running_tasks(consumer) == ["consumer"]
+
+
+@defect("R-N2")
+def test_a_task_after_a_final_failure_gets_its_status_and_never_an_older_runs_output(world):
+    """The date's output# still holds what the first run of the date wrote; the second run's all_done dependant of
+    the failed upstream gets that upstream's status alone (ADR #137 §1, ADR #138 §2)."""
+    orders = world.deploy(pipeline("orders", [("extract", {}), ("report", {"trigger_rule": "all_done"})],
+                                   [("extract", "report")]))
+    first = world.start_run(orders, DATE)
+    world.deliver_task_hints()
+    world.complete(first, "extract", output={"rows": 1})
+    world.deliver_task_hints()
+    world.complete(first, "report")
+    world.deliver_task_hints()
+    second = world.start_run(orders, DATE)
+    world.deliver_task_hints()
+    world.complete(second, "extract", status="failed")      # no retries: it waits for a decision
+    world.clock.advance(hours=5, minutes=1)                 # nobody decides: it fails at the decision timeout
+    world.sweep()
+    world.deliver_task_hints()
+    assert world.status(second, "extract") == "failed"
+    assert world.work_input(second, "report")["upstream"] == {"extract": {"status": "failed", "skip_origin": None}}
+
+
+@defect("R-T2")
+def test_a_timed_out_attempt_goes_through_the_tasks_retries(world):
+    retried = {"retries": 1, "retry_delay": timedelta(seconds=10), "execution_timeout": timedelta(minutes=30)}
+    run = world.start_run(world.deploy(pipeline("orders", [("extract", retried)])), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract", status="timed_out")      # the attempt reaches its execution_timeout
+    assert world.running_tasks(run) == ["extract"]          # its retry runs, at least a minute later on AWS
+    assert world.row(run, "extract")["retry_attempt"] == 1
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    assert world.status(run, "extract") == "success"
+
+
+def test_each_row_a_success_writes_keeps_its_lifetime(world):
+    """ADR #137 §5, D108: the task row a year and 90 days from its latest write, the date's output a year, the
+    task's input 90 days; nothing shortens them at the run's end."""
+    from polyris.coordination import retention
+    from polyris.coordination.times import parse_utc
+
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract", output={"rows": 1})
+    world.deliver_task_hints()
+    assert world.pipeline_status(run) == "SUCCEEDED"
+    written = parse_utc(str(world.row(run, "extract")["finished_at"]))      # the success's transaction
+    stores = world.stores(run, "extract")
+    for row, lifetime in ((world.row(run, "extract"), retention.HISTORY), (stores["output"], retention.OUTPUT),
+                          (stores["input"], retention.INPUT)):
+        assert abs(int(row["ttl"]) - retention.ttl(written, lifetime)) < 60, (row["execution_name"], lifetime)
+
+
+def test_a_task_costs_few_state_transitions(world):
+    """What a task's run_task takes, measured here (TR-5): a success with one upstream and one outlet, and a root
+    task's. 1.2 took a wrapper of its own besides; a regression in the template shows here first."""
+    orders = asset("ns/orders")
+    run = world.start_run(world.deploy(pipeline("orders", [("extract", {}), ("load", {"outlets": [orders]})],
+                                                [("extract", "load")])), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    world.complete(run, "load")
+    world.deliver_task_hints()
+    assert world.run_task_transitions(run, "extract") == [13]          # $0.000325 each at $0.025 per 1,000
+    assert world.run_task_transitions(run, "load") == [14]             # and one Map iteration per upstream read

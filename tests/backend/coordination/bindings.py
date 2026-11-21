@@ -140,16 +140,18 @@ class Bindings:
         self.stack.bind_lambda("StartRunFunction", handler)
         return handler
 
-    def run_task_stub(self) -> str:
-        """The stand-in for run_task until TR-5 (run_task_stub.py), on the stack's clock, as the stack's run_task
-        state machine; returns its ARN."""
-        import run_task_stub as stub
+    def run_task(self, notifications: List[Dict[str, Any]]) -> str:
+        """The stack's run_task state machine, as the template defines it (ADR #137 §1); returns its ARN.
 
-        machine = self.stack.runtime.add_machine(self.stack.machine_names["RunTaskHelperSfn"], stub.DEFINITION)
-        for name, handler in stub.handlers(self.stack.ddb, self.stack.tables["PipelineTokensTable"],
-                                           self.clock).items():
-            self.stack.runtime.lambdas[name] = as_component(f"lambda:{name}", handler)
-        return machine.arn
+        The notify function it calls is outside the engine: each call is recorded in `notifications` and
+        answered as the free build answers an action it has no notifier for.
+        """
+        def notify(event: Dict[str, Any], _: Any) -> Dict[str, Any]:
+            notifications.append(event)
+            return {"action": event.get("action"), "delivered": False, "reason": "unknown_action"}
+
+        self.stack.bind_lambda("NotifyFunction", as_component("lambda:notify", notify))
+        return self.stack.machine_arn("RunTaskHelperSfn")
 
     def dispatcher(self, run_task_arn: str) -> Callable[[Any, Any], Any]:
         """The dispatcher over the stack's tables, on the stack's clock, under reconcile's function as the

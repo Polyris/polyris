@@ -325,12 +325,13 @@ def test_rows_of_a_run_whose_run_row_is_missing_are_stopped_with_the_cause(make,
 
 
 def test_a_further_orphan_that_cannot_be_stopped_stays_due(make, tokens, clock, mocker):
-    for task in ("extract", "load"):
-        name = f"{task}-{DATE}{RUN[-20:]}"
+    names = [f"{task}-{DATE}{RUN[-20:]}" for task in ("extract", "load")]
+    for task, name in zip(("extract", "load"), names):
         tokens.put_item(Item={"execution_name": name, "task_name": task, "status": "waiting", "generation": 1,
                               "pipeline_execution": RUN, att.KEY: att.attention(att.WAITING, name),
                               att.DUE: format_utc(clock.now - timedelta(minutes=1))})
     sweeper_run = make()
+    _index_lags(sweeper_run.dispatcher.client, shows=names[:1])
     real = sweeper_run.dispatcher.stop_orphans
     calls: List[int] = []
 
@@ -342,6 +343,22 @@ def test_a_further_orphan_that_cannot_be_stopped_stays_due(make, tokens, clock, 
 
     mocker.patch.object(sweeper_run.dispatcher, "stop_orphans", side_effect=flaky)
     assert sweeper_run.due_runs(deadline=1e9)["orphans_stopped"] == 1
+
+
+def _index_lags(client: Any, *, shows: List[str]) -> None:
+    """The index of a run's rows is read eventually (task_row.RUN_ROWS_INDEX): its query answers with `shows` only,
+    at the boto3 boundary, as an index that has not caught up yet."""
+    from polyris.coordination import task_row
+
+    def remember(params: Dict[str, Any], context: Dict[str, Any], **_: Any) -> None:
+        context["index"] = params.get("IndexName")
+
+    def lag(parsed: Dict[str, Any], context: Dict[str, Any], **_: Any) -> None:
+        if context.get("index") == task_row.RUN_ROWS_INDEX:
+            parsed["Items"] = [i for i in parsed.get("Items", []) if i[task_row.TABLE_KEY]["S"] in shows]
+
+    client.meta.events.register("before-parameter-build.dynamodb.Query", remember)
+    client.meta.events.register("after-call.dynamodb.Query", lag)
 
 
 def test_an_entry_that_names_no_run_is_skipped(make, tokens, clock):

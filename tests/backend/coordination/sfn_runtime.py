@@ -159,6 +159,8 @@ class Execution:
     waiter: Optional["Frame"] = None   # a `.sync` parent waiting for this execution
     sync_shape: str = ""
     redrive_count: int = 0
+    #: The states it entered, retries and Map iterations included: what Step Functions bills as transitions.
+    transitions: int = 0
     #: Every frame of the execution, and the ones a redrive takes up again: the frames in progress when
     #: it was stopped, or the top-level frame at the state where it failed.
     frames: List["Frame"] = field(default_factory=list)
@@ -440,6 +442,8 @@ class Runtime:
     def _step(self, frame: Frame) -> None:
         state = frame.states[frame.state]
         kind = state["Type"]
+        if frame.resume is None:
+            frame.execution.transitions += 1
         try:
             if frame.resume is not None:
                 outcome, frame.resume = frame.resume, None
