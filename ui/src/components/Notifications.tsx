@@ -7,7 +7,7 @@ import { MS } from '@/utils/constants';
 import { formatApiErrorMessage } from '@/utils/api';
 import { Button } from '@/components/ui/button';
 import { logger } from '@/utils/logger';
-import { asStringArray } from '@/utils/formatters';
+import { asStringArray, formatDecisionDeadline } from '@/utils/formatters';
 import type { Notification as NotificationType } from '@/types';
 
 /**
@@ -353,7 +353,7 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                                                     : notification.type === 'backfill'
                                                     ? `${notification.completed_partitions}/${notification.total_partitions} partitions • ${notification.time_ago}`
                                                     : notification.type === 'decision_required'
-                                                    ? `${notification.task_name} • awaiting decision • ${notification.time_ago}`
+                                                    ? `${notification.task_name} • awaiting decision • ${formatDecisionDeadline(notification.deadline)}`
                                                     : `${notification.task_name} • ${notification.time_ago}`}
                                             </div>
                                         </div>
@@ -425,6 +425,8 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                                 <div className="ntf-notification-subtitle">
                                     {notification.type === 'backfill'
                                         ? `${notification.target_pipeline} • ${notification.completed_partitions}/${notification.total_partitions} • ${notification.time_ago}`
+                                        : notification.type === 'decision_required'
+                                        ? `${notification.pipeline_name} • ${formatDecisionDeadline(notification.deadline)}`
                                         : `${notification.pipeline_name} • ${notification.time_ago}`}
                                 </div>
                                 <div className="ntf-notification-actions">

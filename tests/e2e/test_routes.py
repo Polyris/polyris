@@ -195,6 +195,17 @@ class TestNotifications:
         notifs = body if isinstance(body, list) else body.get("notifications", [])
         assert isinstance(notifs, list)
 
+    def test_one_per_run_and_the_decision_requests_first_with_their_deadline(self, api):
+        """ADR #137 §6, D92: the attention index's failed and decision entries, whatever the run's date."""
+        notifs = api.get("/api/notifications", params={"limit": "50", "hours": "48"})["body"]["notifications"]
+        runs = [n["id"] for n in notifs if n["type"] in ("failure", "decision_required")]
+        assert len(runs) == len(set(runs)), notifs
+        kinds = [n["type"] == "decision_required" for n in notifs]
+        assert kinds == sorted(kinds, reverse=True), "decision requests come first"
+        for n in notifs:
+            if n["type"] == "decision_required":
+                assert "deadline" in n and (n["deadline"] is None or isinstance(n["deadline"], str)), n
+
 
 # =============================================================================
 # Error handling — unknown routes

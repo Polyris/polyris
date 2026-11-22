@@ -282,9 +282,15 @@ GET /api/execution-parent?id={execution_name}
 GET /api/notifications?limit=20&hours=4
 ```
 
-Task failures, tasks waiting for a decision and warnings, newest first. A warning
-(`"type": "warning"`) carries a `kind` from `WarningKind` and is listed by the time
-it was written, whatever the date of the task it is about.
+Read from the attention index (ADR #137 §6), whatever the date of the run: every task
+that failed within the last `hours`, by when it failed, and every task that waits for a
+decision (`"type": "decision_required"`), with the `deadline` at which it fails on its
+own, `null` while its run is paused. One notification per run, a decision request over a
+failure. The decision requests come first, the most urgent first; then failures, warnings
+and ended backfills, newest first. A warning (`"type": "warning"`) carries a `kind` from
+`WarningKind` and is listed by the time it was written, whatever the date of the task it
+is about. A run started before 1.3 has no entry of these kinds, so its failures are not
+listed.
 
 ---
 

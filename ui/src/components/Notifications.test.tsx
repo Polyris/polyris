@@ -284,6 +284,18 @@ describe('Notifications', () => {
             expect(screen.getByText('pipeline-x')).toBeInTheDocument();
             expect(screen.getByText(/awaiting decision/i)).toBeInTheDocument();
         });
+
+        it('says when an open request fails on its own, and that a pause holds the deadline (ADR #137 §6)', () => {
+            const inTwoHours = new Date(Date.now() + 2 * 60 * 60 * 1000 + 30_000).toISOString();
+            mockQueryData.current = [
+                createNotification({ id: 'd1', type: 'decision_required', task_name: 'approve', deadline: inTwoHours }),
+                createNotification({ id: 'd2', type: 'decision_required', task_name: 'review', deadline: null }),
+            ];
+            render(<Notifications onNavigate={onNavigate} />);
+            fireEvent.click(screen.getByTitle('2 notifications'));
+            expect(screen.getByText('approve • awaiting decision • fails in 2 h')).toBeInTheDocument();
+            expect(screen.getByText('review • awaiting decision • no deadline while paused')).toBeInTheDocument();
+        });
     });
 
 

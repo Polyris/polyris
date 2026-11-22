@@ -272,6 +272,23 @@ export const formatAgo = (iso: string | null | undefined, now: number = Date.now
     return `${Math.floor(hours / 24)} days ago`;
 };
 
+/**
+ * formatDecisionDeadline — when an open decision request fails on its own: the task fails
+ * at its deadline unless someone decides (ADR #137 §6). The bell gets no deadline while the
+ * run is paused, since a pause holds it.
+ */
+export const formatDecisionDeadline = (deadline: string | null | undefined, now: number = Date.now()): string => {
+    if (!deadline) return 'no deadline while paused';
+    const at = Date.parse(deadline);
+    if (Number.isNaN(at)) return 'no deadline while paused';
+    const minutes = Math.ceil((at - now) / 60000);
+    if (minutes <= 0) return 'deadline passed';
+    if (minutes < 120) return `fails in ${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `fails in ${hours} h`;
+    return `fails in ${Math.floor(hours / 24)} days`;
+};
+
 const TRIGGER_SOURCE_LABELS: Record<string, string> = {
     console_run: 'Manual',
     schedule: 'Scheduled',

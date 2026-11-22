@@ -11,7 +11,8 @@ task, in the bell among others. So every read of those indexes goes through
 - every reader of ``executions_repo`` that names one is listed in ``READS`` and
   run against moto, with the tokens table of sam/template.yaml, over a date that
   holds a task row, a backfill record and internal rows;
-- the bell's read of failures is one of them.
+- the bell's read of failures went to the attention index (ADR #137 §6), which a
+  backfill record never enters; a check below keeps it so.
 """
 import ast
 import importlib.util
@@ -23,6 +24,8 @@ import boto3
 import pytest
 from boto3.dynamodb.conditions import Key
 from moto import mock_aws
+
+from polyris.coordination import row_write
 
 _KIT_PATH = Path(__file__).resolve().parents[2] / "coordination" / "tests" / "coordination_testkit.py"
 _spec = importlib.util.spec_from_file_location("coordination_testkit", _KIT_PATH)
@@ -110,9 +113,12 @@ def tokens(mocker):
         mocker.patch.object(backfills_repo, "_table_name", name)
         table = resource.Table(name)
         now = datetime.now(timezone.utc).isoformat()
+        failed_entry = row_write.entry_after("failed", None, datetime.now(timezone.utc), TASK)
         for item in (
+            # A failed task row, with the attention entry its writer gives it, which the bell reads (ADR #137 §6).
             {"execution_name": TASK, "task_name": "load", "pipeline_execution": RUN, "pipeline_name": "orders",
-             "date": DATE, "status": "failed", "error": "boom", "finished_at": now},
+             "date": DATE, "task_date": DATE, "status": "failed", "error": "boom", "finished_at": now,
+             "attention": failed_entry[0], "attention_at": failed_entry[1]},
             # A backfill record of the day, failed: it is no task.
             {"execution_name": "bf-1234abcd", "backfill_id": "bf-1234abcd", "pipeline_name": "_polyris_bulk_backfill",
              "record_type": "backfill", "date": DATE, "status": "failed", "started_at": now, "finished_at": now,
@@ -167,6 +173,7 @@ def test_the_raw_read_reads_the_date_indexes_only(tokens):
 
 
 def test_the_bell_shows_a_failed_backfill_as_a_backfill_not_as_a_failed_task(tokens):
+    """The bell reads failures from the attention index (ADR #137 §6), and a backfill record has no entry there."""
     from routes import notifications
 
     body = json.loads(notifications.get_notifications({"queryStringParameters": {"limit": "50"}})["body"])

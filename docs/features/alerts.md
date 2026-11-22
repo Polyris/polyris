@@ -23,7 +23,7 @@ Successful runs do not generate notifications — the Console shows their status
 
 Notifications auto-refresh every 30s (or 3s when there's an active run in view). No manual reload needed.
 
-A warning shows by the time it was written, so a warning about a run for an old date still appears. Warnings expire after 8 days. A task failure shows while its run's date is within the window you ask for; a failed run for an older date shows in that run, not in the bell.
+Every notification shows by when it happened, whatever the date of its run: a task failure by when the task failed, within the last 48 hours, and a warning by when it was written; warnings expire after 8 days. A task that waits for your decision shows until you decide, with when it fails unless you do; while its run is paused, the pause holds that deadline.
 
 ## When coordination itself is unhealthy
 

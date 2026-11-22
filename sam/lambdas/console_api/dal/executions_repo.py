@@ -352,17 +352,25 @@ class ExecutionsRepo:
         16 `warn#` shards, so a warning about a task of any partition date
         reaches the bell (defect B-N1). The index projects what the bell shows.
         """
+        return self.attention_entries(att.WARN, since=since)[:limit]
+
+    def attention_entries(self, kind: str, *, since: str | None = None) -> list:
+        """Every entry of ``kind`` in the attention index, across its 16 shards, newest first by ``attention_at``,
+        and only those at or after ``since`` (UTC, ``…Z``) when it is given.
+
+        The bell reads the ``failed`` entries of its window, by when each task failed, and every ``decision``
+        entry, by its deadline, whatever the date of the run (ADR #137 §6, D92); the warnings by when each was
+        written. The index projects what the bell shows (``attention.PROJECTION``).
+        """
         rows: list = []
-        for partition in att.partitions(att.WARN):
-            response = self.table.query(
-                IndexName=att.INDEX,
-                KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).gte(since),
-                ScanIndexForward=False,
-                Limit=limit,
-            )
-            rows.extend(response.get('Items', []))
+        for partition in att.partitions(kind):
+            key: Any = Key(att.KEY).eq(partition)
+            if since:
+                key = key & Key(att.DUE).gte(since)
+            rows.extend(query_all(self.table, IndexName=att.INDEX, KeyConditionExpression=key,
+                                  ScanIndexForward=False))
         rows.sort(key=lambda r: str(r.get(att.DUE, '')), reverse=True)
-        return rows[:limit]
+        return rows
 
     # ── GSI: run-start-index ──────────────────────────────────────────────
 

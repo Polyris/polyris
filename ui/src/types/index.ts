@@ -248,6 +248,8 @@ export interface Notification {
   error?: string;
   /** The partition date of the task a warning is about. */
   date?: string;
+  /** When an open decision request fails on its own; null while its run is paused (ADR #137 §6). */
+  deadline?: string | null;
   /** ADR #68 — backfill terminal notifications. Populated when type='backfill'. */
   backfill_status?: 'completed' | 'failed' | 'partial' | 'canceled';
   backfill_id?: string;

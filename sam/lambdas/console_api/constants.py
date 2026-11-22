@@ -83,7 +83,6 @@ class Limits:
     # Query/Scan limits
     MAX_SCAN_ITEMS = 50000          # Default max for scan_all()
     MAX_FETCH_ITEMS = 10000         # Max items for get_all_tasks
-    MAX_NOTIFICATIONS_SCAN = 5000   # Max items for notifications
     MAX_LOGS_ITEMS = 1000           # Max items for get_pipeline_logs
     MAX_RESTART_ITEMS = 5000        # Max items for restart_pipeline
     MAX_PIPELINES_TO_QUERY = 30

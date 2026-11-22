@@ -1,149 +1,116 @@
-"""Notifications routes for Console API.
+"""Notifications routes for Console API: the bell.
 
-Handles endpoints related to failure notifications and alerts.
-
-v0.78.11: extended to also emit backfill terminal events
-(completed/failed/partial/canceled) finished within the time window.
-See ADR #68.
+The bell reads the attention index only (ADR #137 §6, D92): every task that failed
+within its window, by when it failed, and every open decision request, whatever the
+date of its run; with the coordination warnings of its window (ADR #130 §9) and the
+backfills that ended in it (ADR #68). It keeps one notification per run, a decision
+request over a failure. A run from before 1.3 has no entry of these kinds, so the
+bell shows none of its failures.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Dict
+from typing import Dict, Optional
 
 from botocore.exceptions import BotoCoreError, ClientError
-
-from boto3.dynamodb.conditions import Key, Attr
 
 from dal import executions_repo, backfills_repo
 from constants import Limits
 from response import cors_response
 from logger import log
 from utils import safe_param_int
-from polyris.coordination.times import format_utc
+from polyris.coordination import attention, deadlines
+from polyris.coordination.times import format_utc, parse_utc
 
 
 def get_notifications(event: Dict) -> Dict:
-    """Get recent failures and alerts for notification display.
-    
-    Optimized to use GSI 'date-pipeline-index' instead of full table scan.
-    Queries recent dates and filters for failed status.
-    
+    """Recent failures, open decision requests, warnings and ended backfills, for the bell.
+
     Args:
         event: API Gateway event with optional query parameters:
             - limit: Maximum notifications to return (default: 10, max: 50)
             - hours: Time window in hours (default: 24, max: 168)
-    
+
     Returns:
-        CORS response with notifications list and count.
+        CORS response with notifications list and count. The open decision
+        requests come first, the most urgent first; then the rest, newest first.
     """
     params = event.get('queryStringParameters', {}) or {}
     limit = safe_param_int(params, 'limit', 10, 50)
     hours_back = safe_param_int(params, 'hours', 24, Limits.MAX_NOTIFICATION_HOURS)
-    
-    # Calculate time window
+
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=hours_back)
-    cutoff_iso = cutoff.isoformat()
-    
-    # Generate list of dates to query (more efficient than full scan)
-    dates_to_query = []
-    current_date = now
-    for _ in range(min(hours_back // 24 + 1, 8)):  # Max 8 days
-        dates_to_query.append(current_date.strftime('%Y-%m-%d'))
-        current_date -= timedelta(days=1)
-    
-    notifications = []
-    run_state: Dict[str, Dict] = {}  # dedup_key -> one notification per run
-    items_scanned = 0
-    
+
     try:
-        # Query each date using GSI (O(log n) per date instead of full scan)
-        for date_str in dates_to_query:
-            if items_scanned >= Limits.MAX_NOTIFICATIONS_SCAN:
-                break
-                
-            last_key = None
-            while items_scanned < Limits.MAX_NOTIFICATIONS_SCAN:
-                query_params = {
-                    'KeyConditionExpression': Key('date').eq(date_str),
-                    # Two attention states (ADR #107): a task that failed, or one paused
-                    # awaiting a manual decision (skip / mark success / fail).
-                    'FilterExpression': Attr('status').is_in(['failed', 'waiting_decision']),
-                    'ProjectionExpression': 'pipeline_name, task_name, pipeline_execution, finished_at, started_at, running_at, #s, #e, #d',
-                    'ExpressionAttributeNames': {'#s': 'status', '#e': 'error', '#d': 'date'}
-                }
-                if last_key:
-                    query_params['ExclusiveStartKey'] = last_key
-                
-                response = executions_repo.query_by_date_raw(**query_params)
-                items_scanned += response.get('Count', 0)
-                
-                for item in response.get('Items', []):
-                    # Warnings written as ADR #130 rows carry no `date`, so this index never
-                    # lists them: they come from the attention index below.
-                    status = item.get('status', '')
-                    is_decision = status == 'waiting_decision'
-                    # A waiting_decision task is paused (not finished) so it has no
-                    # finished_at — anchor it on when it started running/waiting, and
-                    # always surface it (it is actively blocking the run right now).
-                    ts = item.get('finished_at') or item.get('running_at') or item.get('started_at') or ''
-                    if not is_decision and (not ts or ts < cutoff_iso):
-                        continue  # a plain failure must fall within the time window
-
-                    pipeline_name = item.get('pipeline_name', '')
-                    exec_id = item.get('pipeline_execution', '')
-                    dedup_key = f"{pipeline_name}:{exec_id}"
-
-                    # One notification per run; a decision-required state outranks a plain
-                    # failure (it needs human action), so it wins when both are present.
-                    existing = run_state.get(dedup_key)
-                    if existing and (existing['type'] == 'decision_required' or not is_decision):
-                        continue
-
-                    run_state[dedup_key] = {
-                        'id': dedup_key,
-                        'type': 'decision_required' if is_decision else 'failure',
-                        'pipeline_name': pipeline_name,
-                        'task_name': item.get('task_name', ''),
-                        'pipeline_execution': exec_id,
-                        'error': '' if is_decision else item.get('error', 'Unknown error'),
-                        'date': item.get('date', ''),
-                        'finished_at': ts,
-                        'time_ago': _format_time_ago(ts, now) if ts else 'just now'
-                    }
-                
-                last_key = response.get('LastEvaluatedKey')
-                if not last_key:
-                    break
-        
-        # Coordination warnings: from the attention index by write time, whatever
-        # the partition date of the task they are about (ADR #130 §9, B-N1).
-        notifications = list(run_state.values()) + _coordination_warnings(cutoff, now, limit)
-
-        # Sort by timestamp descending (newest first)
-        notifications.sort(key=lambda x: x.get('finished_at', ''), reverse=True)
-        notifications = notifications[:limit]
-
-        # Append backfill terminal events (ADR #68). Backfills are infrequent
-        # (a few per day at most) so list_recent is fine; we filter to terminal
-        # statuses finished within the same time window.
+        runs: Dict[str, Dict] = {}  # one notification per run
+        for entry in executions_repo.attention_entries(attention.FAILED, since=format_utc(cutoff)):
+            runs.setdefault(_run_key(entry), _failure(entry, now))
+        for entry in executions_repo.attention_entries(attention.DECISION):
+            runs[_run_key(entry)] = _decision(entry)        # a request for a decision outranks a failure
+        decisions = sorted((n for n in runs.values() if n['type'] == 'decision_required'),
+                           key=lambda n: n['deadline'] or '~')    # the most urgent first; a paused one last
+        others = [n for n in runs.values() if n['type'] != 'decision_required']
+        others += _coordination_warnings(cutoff, now, limit)
         try:
-            backfill_notifs = _backfill_terminal_notifications(cutoff_iso, now)
-            notifications.extend(backfill_notifs)
-            # Re-sort and re-cap
-            notifications.sort(key=lambda x: x.get('finished_at', ''), reverse=True)
-            notifications = notifications[:limit]
+            others += _backfill_terminal_notifications(cutoff.isoformat(), now)
         except (KeyError, ValueError, TypeError) as e:
-            log.warn("notifications", "Failed to fetch backfill notifications",
-                     error=str(e))
+            log.warn("notifications", "Failed to fetch backfill notifications", error=str(e))
+        others.sort(key=lambda x: x.get('finished_at', ''), reverse=True)
+        notifications = (decisions + others)[:limit]
 
         return cors_response(200, {
             'notifications': notifications,
             'count': len(notifications)
         })
-        
+
     except Exception as e:
         log.error("notifications", "Error in get_notifications", error=str(e))
         return cors_response(500, {'error': f'Failed to get notifications: {str(e)}'})
+
+
+def _run_key(entry: Dict) -> str:
+    return f"{entry.get('pipeline_name', '')}:{entry.get('pipeline_execution', '')}"
+
+
+def _failure(entry: Dict, now: datetime) -> Dict:
+    """A task that failed: its entry falls due when it failed (ADR #137 §6)."""
+    failed_at = str(entry.get(attention.DUE, ''))
+    return {
+        'id': _run_key(entry),
+        'type': 'failure',
+        'pipeline_name': entry.get('pipeline_name', ''),
+        'task_name': entry.get('task_name', ''),
+        'pipeline_execution': entry.get('pipeline_execution', ''),
+        'error': entry.get('error', 'Unknown error'),
+        'date': entry.get('task_date', ''),
+        'finished_at': failed_at,
+        'time_ago': _format_time_ago(failed_at, now) if failed_at else 'just now',
+    }
+
+
+def _decision(entry: Dict) -> Dict:
+    """A task that waits for an operator's decision: its entry falls due at the deadline, far in the future while
+    its run is paused, when the bell shows no deadline (ADR #137 §5, §6)."""
+    return {
+        'id': _run_key(entry),
+        'type': 'decision_required',
+        'pipeline_name': entry.get('pipeline_name', ''),
+        'task_name': entry.get('task_name', ''),
+        'pipeline_execution': entry.get('pipeline_execution', ''),
+        'error': '',
+        'date': entry.get('task_date', ''),
+        'deadline': _deadline(str(entry.get(attention.DUE, ''))),
+        'finished_at': '',
+        'time_ago': '',
+    }
+
+
+def _deadline(due: str) -> Optional[str]:
+    """The decision's deadline, or None while a pause holds it (``deadlines.FAR_FUTURE``) or it cannot be read."""
+    try:
+        return due if parse_utc(due) < deadlines.FAR_FUTURE else None
+    except ValueError:
+        log.warn("notifications", "Unreadable decision deadline", attention_at=due)
+        return None
 
 
 def _coordination_warnings(cutoff: datetime, now: datetime, limit: int) -> list:

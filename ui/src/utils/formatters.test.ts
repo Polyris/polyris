@@ -348,3 +348,23 @@ describe('formatAgo', () => {
         expect(formatAgo('2026-05-08T13:15:00Z')).toBe('45 min ago');
     });
 });
+
+// formatDecisionDeadline — when an open decision request fails on its own (ADR #137 §6).
+import { formatDecisionDeadline } from './formatters';
+
+describe('formatDecisionDeadline', () => {
+    const now = Date.parse('2026-11-22T12:00:00Z');
+    it.each([
+        ['2026-11-22T12:45:00Z', 'fails in 45 min'],
+        ['2026-11-22T16:00:00Z', 'fails in 4 h'],
+        ['2026-11-26T12:00:00Z', 'fails in 4 days'],
+        ['2026-11-22T11:59:00Z', 'deadline passed'],
+    ])('%s → %s', (deadline, expected) => {
+        expect(formatDecisionDeadline(deadline, now)).toBe(expected);
+    });
+
+    it('names no deadline while the run is paused', () => {
+        expect(formatDecisionDeadline(null, now)).toBe('no deadline while paused');
+        expect(formatDecisionDeadline('not a time', now)).toBe('no deadline while paused');
+    });
+});
