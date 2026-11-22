@@ -246,6 +246,22 @@ def test_a_finished_runs_summary_replaces_one_a_clock_ahead_wrote_unless_the_run
                                                                  read_at=ahead + timedelta(seconds=1))}])
 
 
+def test_a_finished_runs_summary_writes_its_end_so_a_run_finished_again_ends_anew(ddb):
+    """The review of TR-6d, P-9: the answer's mark writes the first end once per token (D120); a Restart after the
+    run's end finishes it again, and the summary of that end moves finished_at, an unfinished one never does."""
+    seed(ddb)
+    first = NOW - timedelta(hours=5)
+    assert send(ddb, [{"Update": dispatch_writes.summary(run(), dispatch.run_outcome(run(), {"load": S.FAILED.value}),
+                                                             table=TABLE, read_at=first)}])
+    assert get(ddb, run().key)["finished_at"] == format_utc(first)
+    assert send(ddb, [{"Update": dispatch_writes.summary(
+        run(), dispatch.run_outcome(run(), {"load": S.RUNNING.value}), table=TABLE, read_at=NOW - timedelta(hours=1))}])
+    assert get(ddb, run().key)["finished_at"] == format_utc(first)
+    assert send(ddb, [{"Update": dispatch_writes.summary(run(), dispatch.run_outcome(run(), {"load": S.SUCCESS.value}),
+                                                             table=TABLE, read_at=NOW)}])
+    assert get(ddb, run().key)["finished_at"] == format_utc(NOW)
+
+
 def test_a_pass_that_left_rows_makes_its_run_row_due_at_once(ddb):
     seed(ddb)
     assert send(ddb, [{"Update": dispatch_writes.due_now(run(), table=TABLE, now=NOW, left=True)}])

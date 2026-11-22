@@ -150,14 +150,17 @@ def summary(run: RunView, end: RunEnd, *, table: str, read_at: datetime) -> Dict
 
     The summary of a finished run is written on the ``run_version`` the pass read instead: no later pass comes
     to replace it, so a count a clock running behind would refuse must not stay stale. No row leaves a final
-    status without an action or a request, and each of them raises ``run_version``.
+    status without an action or a request, and each of them raises ``run_version``. With it goes the run's end
+    (``finished_at``): the answer's mark writes the first end only, once per token (D120), and a run that a
+    Restart after its end finishes again ends anew (the review of TR-6d, P-9).
     """
     names = {"#summary": run_row.SUMMARY, "#summary_at": run_end.SUMMARY_AT}
     values: Dict[str, Any] = {":summary": dict(end.summary), ":read_at": format_utc(read_at)}
     expression = "SET #summary = :summary, #summary_at = :read_at"
     if end.finished:
-        return _run_update(run, table=table, now=read_at, expression=expression,
-                           condition=run_row.VERSION_UNCHANGED, names={**names, **run_row.VERSION_NAMES},
+        return _run_update(run, table=table, now=read_at, expression=f"{expression}, #finished = :read_at",
+                           condition=run_row.VERSION_UNCHANGED,
+                           names={**names, "#finished": run_row.FINISHED_AT, **run_row.VERSION_NAMES},
                            values={**values, ":rv": run.version})
     return _run_update(run, table=table, now=read_at, expression=expression,
                        condition=f"attribute_exists(#key) AND ({run_end.SUMMARY_CONDITION})",
