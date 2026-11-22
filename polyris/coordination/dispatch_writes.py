@@ -30,16 +30,11 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from boto3.dynamodb.types import TypeSerializer
 
 from ..constants import ExecutionStatus, TaskSpecKey
-from . import attention, ownership, retention, run_end, run_name, run_row, start_run, task_row, task_spec, transitions
+from . import attention, retention, row_write, run_end, run_name, run_row, start_run, task_row, task_spec, transitions
 from .dispatch import Judgment, RowView, RunEnd, RunView
 from .times import format_utc
 
 _serializer = TypeSerializer()
-#: A task row's write is conditional on what the pass read of it.
-ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"
-#: The same for a row that a 1.2 run left with no generation or with 0, which 1.2's templates write when their
-#: input has none (``ownership.is_legacy``); only its stop writes such a row.
-LEGACY_ROW_CONDITION = "#status = :read AND (attribute_not_exists(#g) OR #g = :legacy)"
 
 
 def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, table: str,
@@ -52,54 +47,16 @@ def task_write(row: RowView, judgment: Judgment, run: Optional[RunView], *, tabl
     """
     if judgment.task_id != row.task_id:
         raise ValueError(f"a judgment of {judgment.task_id!r} cannot write the row of {row.task_id!r}")
-    if judgment.transition:
-        move = transitions.task_transition(judgment.transition)
-        if row.status not in move.sources or transitions.Writer.DISPATCHER not in move.writers:
-            # Invariant 7: a pass moves a row only as the table gives the move to the dispatcher.
-            raise ValueError(f"{row.key}: the transition table gives the dispatcher no {judgment.transition!r} "
-                             f"from {row.status!r}")
     if not judgment.transition and not judgment.fields and not judgment.removed and judgment.due == row.due:
         return []
-    status = judgment.status or row.status
-    names = {"#status": task_row.STATUS, "#g": task_row.GENERATION, "#ttl": task_row.TTL,
-             "#att": attention.KEY, "#due": attention.DUE}
-    legacy = row.generation == ownership.LEGACY
-    values: Dict[str, Any] = {":read": row.status, ":ttl": retention.ttl(now, retention.HISTORY),
-                              **({":legacy": ownership.LEGACY} if legacy else {":g": row.generation})}
-    sets = ["#ttl = :ttl"]
-    removes: List[str] = []
     fields = dict(judgment.fields)
-    if judgment.transition:
-        sets.append("#status = :status")
-        values[":status"] = status
-        if judgment.transition == "ready":
-            if run is None:
-                raise ValueError(f"{row.key}: a row is made ready only within its run")
-            fields[task_row.TASK_RUN_ID] = run_name.run_task_name(row.key, run.run_start, row.generation)
-        move = transitions.task_transition(judgment.transition)
-        if move.raises_generation:
-            sets.append("#g = :g_next")
-            values[":g_next"] = row.generation + 1
-        if move.skip_origin is not None:
-            fields[task_row.SKIP_ORIGIN] = move.skip_origin           # from the table, not from the writer
-    for i, (name, value) in enumerate(sorted(fields.items())):
-        names[f"#f{i}"] = name
-        values[f":f{i}"] = value
-        sets.append(f"#f{i} = :f{i}")
-    for j, name in enumerate(judgment.removed):
-        names[f"#r{j}"] = name
-        removes.append(f"#r{j}")
-    entry = _entry(status, judgment.due, now, row.key)
-    if entry is None:
-        removes += ["#att", "#due"]
-    else:
-        values[":att"], values[":due"] = entry
-        sets += ["#att = :att", "#due = :due"]
-    update = {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": row.key}},
-              "UpdateExpression": "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else ""),
-              "ConditionExpression": LEGACY_ROW_CONDITION if legacy else ROW_CONDITION,
-              "ExpressionAttributeNames": names,
-              "ExpressionAttributeValues": _typed(values)}
+    if judgment.transition == "ready":
+        if run is None:
+            raise ValueError(f"{row.key}: a row is made ready only within its run")
+        fields[task_row.TASK_RUN_ID] = run_name.run_task_name(row.key, run.run_start, row.generation)
+    update = row_write.task_update(key=row.key, read_status=row.status, read_generation=row.generation,
+                                   writer=transitions.Writer.DISPATCHER, transition=judgment.transition, fields=fields,
+                                   removed=judgment.removed, due=judgment.due, table=table, now=now)
     items: List[Dict[str, Any]] = [{"Update": update}]
     if run is not None and (judgment.transition or _pause_moves_due(row, judgment, run)):
         items.append(version_check(run, table=table))
@@ -127,23 +84,13 @@ def applied(item: Mapping[str, Any], row: RowView, judgment: Judgment, run: Opti
     after.update(judgment.fields)
     for name in judgment.removed:
         after.pop(name, None)
-    entry = _entry(status, judgment.due, now, row.key)
+    entry = row_write.entry_after(status, judgment.due, now, row.key)
     if entry is None:
         after.pop(attention.KEY, None)
         after.pop(attention.DUE, None)
     else:
         after[attention.KEY], after[attention.DUE] = entry
     return after
-
-
-def _entry(status: str, due: Optional[datetime], now: datetime, key: str) -> Optional[Tuple[str, str]]:
-    """A row's entry in ``attention-index`` after a write: its kind by status, at its due time, or when it failed."""
-    kind = transitions.attention_kind(status)
-    if kind == attention.FAILED:
-        return attention.attention(kind, key), format_utc(now)
-    if kind is None or due is None:
-        return None
-    return attention.attention(kind, key), format_utc(due)
 
 
 def _pause_moves_due(row: RowView, judgment: Judgment, run: RunView) -> bool:

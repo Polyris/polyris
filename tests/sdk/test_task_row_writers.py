@@ -29,7 +29,7 @@ from sfn_jsonata import load_template
 
 from polyris import generators
 from polyris.constants import TaskStatus
-from polyris.coordination import dispatch, dispatch_writes, ownership, run_row, start_run, task_row, task_spec
+from polyris.coordination import dispatch, dispatch_writes, ownership, row_write, run_row, start_run, task_row, task_spec
 from polyris.coordination import transitions
 from polyris.coordination.deadlines import RowTimes
 from polyris.coordination.times import format_utc
@@ -68,7 +68,7 @@ def test_a_pass_moves_a_task_row_only_as_the_table_gives_the_move_to_the_dispatc
     update, check = write()
     values = update["Update"]["ExpressionAttributeValues"]
     names = set(update["Update"]["ExpressionAttributeNames"].values())
-    assert update["Update"]["ConditionExpression"] == dispatch_writes.ROW_CONDITION       # on what the pass read
+    assert update["Update"]["ConditionExpression"] == row_write.ROW_CONDITION       # on what the pass read
     assert task_row.FENCE in update["Update"]["ConditionExpression"]                       # under its generation
     assert (values[":read"], values[":g"], values[":status"]) == ({"S": status}, {"N": "2"}, {"S": move.target})
     assert check == dispatch_writes.version_check(RUN, table=TOKENS)                       # a decision (§1)
@@ -81,7 +81,7 @@ def test_a_pass_that_keeps_a_rows_status_writes_no_status_and_still_on_what_it_r
     judgment = dispatch.Judgment("load", fields={task_row.LAST_CHECK: format_utc(NOW), task_row.CHECKS: 1})
     [update] = dispatch_writes.task_write(_row(TaskStatus.RUNNING.value), judgment, RUN, table=TOKENS, now=NOW)
     assert ":status" not in update["Update"]["ExpressionAttributeValues"]
-    assert update["Update"]["ConditionExpression"] == dispatch_writes.ROW_CONDITION
+    assert update["Update"]["ConditionExpression"] == row_write.ROW_CONDITION
 
 
 def _spec(**fields: Any) -> task_spec.TaskSpec:
