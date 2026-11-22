@@ -22,7 +22,7 @@ from botocore.exceptions import ClientError, BotoCoreError
 from config import sfn, ASSET_EVENT_TTL_DAYS
 from polyris.coordination import actions, run_input, run_row, task_row
 from polyris.coordination.records import warning_item
-from dal import asset_events_repo, executions_repo, pipelines_repo, specs_repo
+from dal import asset_events_repo, executions_repo, specs_repo
 from dal.specs_repo import SpecsMissing
 from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo

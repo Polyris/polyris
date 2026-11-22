@@ -46,7 +46,8 @@ def world(mocker):
         mocker.patch.object(executions_repo, "_table_name", tokens)
         mocker.patch.object(task_events_repo, "_table_name", kit.TABLES["TASK_EVENTS_TABLE"][1])
         mocker.patch.object(tasks.asset_events_repo, "_table_name", facts)
-        mocker.patch.object(tasks.pipelines_repo, "_table_name", kit.TABLES["PIPELINES_TABLE"][1])
+        from dal import pipelines_repo
+        mocker.patch.object(pipelines_repo, "_table_name", kit.TABLES["PIPELINES_TABLE"][1])
         sfn = mocker.patch.object(tasks, "sfn")                    # the boundary: Step Functions
         registry = deploy_specs(resource, "orders", [spec("load", outlets=[{"name": "ns/orders"}])])
         resource.Table(kit.TABLES["PIPELINES_TABLE"][1]).put_item(Item={"pipeline_name": "orders", **registry})
