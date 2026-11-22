@@ -8,6 +8,10 @@ its scenario, expects it to fail and restores the files. Probes target the
 code the harness runs: the templates, the Lambdas and the coordination core
 (polyris/coordination), which the Lambdas import. test_meta.py requires one for every defect whose
 scenario runs.
+
+An edit brings the defect back with a valid expression: a DynamoDB expression keeps every name and value
+it binds, or the write is refused as invalid and the scenario meets an error path instead of the defect.
+The first R-L2 probe dropped the names its condition used, and survived for that reason alone.
 """
 
 from typing import NamedTuple, Tuple
@@ -283,8 +287,9 @@ PROBES: Tuple[Probe, ...] = (
     Probe("R-G1", (Edit(RUN_TASK, "$dt := $toMillis($pd & 'T00:00:00Z')", "$dt := $toMillis($cd & 'T00:00:00Z')"),),
           f"{ROWS}::test_a_run_of_an_hourly_weekly_or_monthly_partition_runs_its_tasks[hourly]"),
     # The success transaction writes the row whatever owns it: a superseded run_task records its late success.
+    # The mutated condition keeps every name and value, or DynamoDB refuses it as invalid and nothing is written.
     Probe("R-L2", (Edit(RUN_TASK, "'ConditionExpression': '#s = :running AND #g = :g'",
-                        "'ConditionExpression': 'attribute_exists(execution_name)'"),),
+                        "'ConditionExpression': '(#s = :running OR #s <> :running) AND (#g = :g OR #g <> :g)'"),),
           f"{ROWS}::test_a_late_success_of_a_run_task_the_engine_stopped_records_nothing"),
     # A timeout skips the task's retries, as execution_timeout did in 1.2 (the review of ADR #136, B4).
     Probe("R-T2", (Edit(RUN_TASK, '"Condition": "{% $retry_attempt < (',

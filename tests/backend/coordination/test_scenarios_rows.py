@@ -430,7 +430,8 @@ def test_a_run_of_an_hourly_weekly_or_monthly_partition_runs_its_tasks(world, da
 @defect("R-L2")
 def test_a_late_success_of_a_run_task_the_engine_stopped_records_nothing(world):
     """The run's execution is stopped by hand while the work runs; the engine stops the run, raising the row's
-    generation; the work then succeeds (the break review of TR-5, p5)."""
+    generation, while run_task goes on; the work then succeeds, and the success transaction's fence refuses it
+    (the break review of TR-5, p5). Once a Stop also stops run_task (TR-6), a stop that fails leaves this race."""
     orders = asset("ns/orders")
     run = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [orders]})])), DATE)
     world.deliver_task_hints()
