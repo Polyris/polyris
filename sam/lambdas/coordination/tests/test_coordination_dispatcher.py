@@ -657,7 +657,7 @@ def test_a_countdown_that_ended_at_the_check_is_no_lost_hint(world):
 
 
 @pytest.mark.parametrize("generation,raised", [(None, 1), (0, 1), (3, 4)])
-def test_a_row_a_12_run_left_in_flight_is_stopped_without_decision_fields(world, generation, raised):
+def test_a_row_a_12_run_left_in_flight_is_stopped_without_readiness_fields(world, generation, raised):
     """1.2 rows name no spec version; their stop needs only the status and the generation (*Migration*)."""
     old = "load-2026-11-12-run-2026-11-12-0ld0ld01"
     row = {"execution_name": old, "task_name": "load", "status": "waiting", "pipeline_execution": "old-run",
@@ -776,6 +776,29 @@ def test_a_transaction_that_keeps_conflicting_leaves_the_row_and_a_throttled_one
     result = full(world)
     assert result.get("action") != "failed" and result["left"] is True and "left_at" in item(world, RUN_KEY)
     assert not item(world, f"_notify_warn_coordination_{RUN_KEY}-pass")         # no false warning
+
+
+@pytest.mark.parametrize("conflicts, sent", [(1, True), (99, False)])
+def test_a_single_write_that_meets_a_transaction_backs_off_and_then_is_decided_again(world, conflicts, sent):
+    """A write with no transition is one UpdateItem (a due time moved by a check, say), and DynamoDB refuses it
+    while run_task's success transaction holds the row (TransactionConflictException). It is sent again after a
+    short backoff, and one that keeps meeting it is decided again from new reads (False), instead of ending the
+    whole pass as transient (the review of TR-5)."""
+    start(world, [spec("extract")])
+    real, left = world.client.update_item, [conflicts]
+
+    def conflicting(**kwargs: Any) -> Any:
+        if left[0] > 0:
+            left[0] -= 1
+            raise client_error("TransactionConflictException", "UpdateItem")
+        return real(**kwargs)
+
+    world.client.update_item = conflicting
+    update = {"TableName": table("TOKENS_TABLE"), "Key": {"execution_name": {"S": key("extract")}},
+              "UpdateExpression": "SET #n = :v", "ExpressionAttributeNames": {"#n": "note"},
+              "ExpressionAttributeValues": {":v": {"S": "checked"}}}
+    assert world.dispatcher._send_items([{"Update": update}]) is sent      # never CoordinationTransient
+    assert (item(world, key("extract")).get("note") == "checked") is sent
 
 
 def test_a_stop_mark_that_lands_mid_pass_starts_no_row_and_the_next_pass_stops_them(world):

@@ -76,8 +76,6 @@ VARIABLES: Dict[str, VariableSpec] = {
     "is_backfill":           {"expr": "$exists($states.context.Execution.Input.backfill_id) and "
                                       "$states.context.Execution.Input.backfill_id != ''",
                               "description": "true in a run of a backfill, which carries its backfill_id"},
-    "ALLOW_UNSUCCESSFUL_SPIDER_RUN": {"expr": "'True'",
-                              "description": "Legacy flag, always 'True'"},
 }
 
 __all__ = ["VARIABLES", "VariableSpec"]

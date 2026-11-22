@@ -132,9 +132,9 @@ def push_retry_item(
 def cascade_of(run_input: Mapping[str, Any]) -> str:
     """The cascade of the facts a run records, from the flags its backfill started it with (ADR #57).
 
-    run_task's Emit_Asset_Events computes the same in JSONata, and the console
-    uses this for Mark Successful; a parity test compares them. A suppressed
-    run wins over one that cascades to all.
+    Start_Run keeps it in the run's input, from which the dispatcher passes it
+    to run_task, which writes it on each fact; the console uses this for Mark
+    Successful. A suppressed run wins over one that cascades to all.
     """
     if run_input.get("_suppress_asset_event") is True:
         return "none"

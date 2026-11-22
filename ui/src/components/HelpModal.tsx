@@ -497,11 +497,11 @@ function BackfillDocsTab() {
             </div>
 
             <div className="hm-help-section">
-                <h4>Task variables (available in every child execution)</h4>
+                <h4>Task variables (available to Lambda and state machine tasks)</h4>
                 <div className="hm-api-endpoints mt-2">
                     <div className="hm-api-endpoint">
                         <code className="hm-api-method get">current_date</code>
-                        <span className="hm-api-desc">2025-01-15 (daily anchor)</span>
+                        <span className="hm-api-desc">2025-01-15, or the partition key of an hourly, weekly or monthly run</span>
                     </div>
                     <div className="hm-api-endpoint">
                         <code className="hm-api-method get">partition_key</code>

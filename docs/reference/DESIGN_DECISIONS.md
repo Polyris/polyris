@@ -419,7 +419,7 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 
 | Source | Variables | Why |
 |---|---|---|
-| JSONata (always) | date_compact, date_slash, year, month, day, day_of_week, previous_date, next_date, minus_7/14/30_days, ALLOW_UNSUCCESSFUL_SPIDER_RUN | Derivable from current_date with simple arithmetic |
+| JSONata (always) | date_compact, date_slash, year, month, day, day_of_week, previous_date, next_date, minus_7/14/30_days (ALLOW_UNSUCCESSFUL_SPIDER_RUN until 1.3.0) | Derivable from current_date with simple arithmetic |
 | Python (backfill only) | minus_1_month, minus_3_months, day_of_year, week_of_year, is_backfill, is_reprocess | Calendar math or special formats JSONata can't compute |
 
 **Merge order:** `$merge([$dateVars, $vars])` — backfill/custom variables always override computed values.

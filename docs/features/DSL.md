@@ -375,7 +375,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`; an id over 57 characters appears there as a prefix plus a 6-character hash |
+| `task_id` | str | (inferred from function name) | Override the auto-inferred task id, at most 128 bytes in UTF-8. The task's Step Functions execution is named `{task_id}-{date}-{run suffix}`, cut to 63 characters, followed by a 16-character hash; a Restart gets a new name |
 | `execution_timeout` | timedelta | none | The limit of one attempt of the work. A timeout is a failed attempt: the task's retries follow, then the decision on a failed task. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work. Unset, the work has no limit |
 | `orchestration_timeout` | timedelta | none | A cap on all of the task's waiting, until it is ready. It never falls back to `execution_timeout`. Unset, a task waits for the tasks of its run as long as they take, and for its `wait_for` assets 7 days |
 | `retries` | int | 0 | Number of retry attempts. Maximum: `9` (values above 9 raise `ValueError` at DAG-definition time) |
@@ -699,6 +699,9 @@ Every task's `variables` also carry the run's date in several forms; a variable 
 | `previous_date`, `next_date` | `"2025-07-24"`, `"2025-07-26"` |
 | `minus_7_days`, `minus_14_days`, `minus_30_days` | `"2025-07-18"`, `"2025-07-11"`, `"2025-06-25"` |
 | `minus_7_days_compact`, `minus_30_days_compact` | `"20250718"`, `"20250625"` |
+| `partition_key` | `"2025-07-25"`: the same as `current_date` |
+| `PARTITION_ARG` | the run's own `PARTITION_ARG`, or `current_date` |
+| `backfill_id`, `is_backfill` | the backfill the run belongs to and `true`, or `""` and `false` |
 
 A run of an hourly, weekly or monthly partition has that partition's key as `current_date` (`"2025-07-25T06"`, `"2025-W30"`, `"2025-07"`). Every other form is that of the partition's first day: the day of the hour, the Monday of the week, the 1st of the month.
 

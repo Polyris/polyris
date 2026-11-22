@@ -13,8 +13,8 @@ goes the other way, dependants first (§4).
 - A narrow pass covers the rows a fact wakes and their direct upstreams; it
   leaves the run's end to the next full pass (§7).
 - A refused write is decided again once from a new read of the run row, the row
-  and its upstreams; a ``TransactionConflict`` is tried again after a short
-  random backoff. Every pass has a time budget, spent on what takes time: the
+  and its upstreams; a ``TransactionConflict``, of a transaction or of a single
+  write that met run_task's, is tried again after a short random backoff. Every pass has a time budget, spent on what takes time: the
   reads of a row's facts, its writes and its start. Deciding a row is pure, so a
   pass moves past the rows that need nothing to the ones that do. A pass that
   leaves rows makes its run row due at once and sets ``left_at``, which wakes the
@@ -671,6 +671,14 @@ class Dispatcher:
                 return True
             except ClientError as exc:
                 if failures.is_condition_failed(exc):
+                    return False
+                if failures.error_code(exc) == "TransactionConflictException":
+                    # A single write that met a transaction on its row (run_task's success at the same moment): the
+                    # same short backoff as a cancelled transaction, then decided again from new reads (§7). It
+                    # ended the whole pass as transient (the review of TR-5).
+                    if attempt + 1 < CONFLICT_ATTEMPTS:
+                        self.sleep(random.uniform(*CONFLICT_BACKOFF_SECONDS))
+                        continue
                     return False
                 if failures.error_code(exc) == "TransactionCanceledException":
                     reasons = [str(r.get("Code", "")) for r in exc.response.get("CancellationReasons", [])]

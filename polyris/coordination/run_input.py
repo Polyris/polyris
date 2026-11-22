@@ -32,7 +32,7 @@ class RunInput:
     variables: Mapping[str, Any] = field(default_factory=dict)
     skip_tasks: Tuple[str, ...] = ()
     cascade: str = BackfillCascade.AUTO
-    partition_arg: str = ""            # empty in an item written before it was kept: the run's date stands in
+    partition_arg: str = ""            # empty: the run's date stands in (run_task_input.build)
 
 
 def to_item(run_input: RunInput, *, pipeline_execution: str, ttl: int) -> Dict[str, Any]:
@@ -56,7 +56,7 @@ def from_item(item: Mapping[str, Any]) -> RunInput:
     cascade = item.get(CASCADE)
     if cascade not in _CASCADES:
         raise ValueError(f"a run's cascade must be one of {sorted(_CASCADES)}, got {cascade!r}")
-    partition_arg = item.get(PARTITION_ARG, "")
+    partition_arg = item.get(PARTITION_ARG)
     if not isinstance(partition_arg, str):
         raise ValueError(f"a run's partition_arg must be text, got {type(partition_arg).__name__}")
     return RunInput(variables, tuple(skip_tasks), str(cascade), partition_arg)

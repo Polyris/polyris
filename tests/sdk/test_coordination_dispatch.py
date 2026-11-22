@@ -462,7 +462,7 @@ def test_a_run_row_reads_back_with_its_pipeline_and_its_start():
 
 # ── the rows that a 1.2 run left in flight (*Migration*, invariant 11) ──────
 
-def test_a_row_without_decision_fields_reads_back_for_its_stop_alone():
+def test_a_row_without_readiness_fields_reads_back_for_its_stop_alone():
     legacy = dispatch.stop_view({task_row.TABLE_KEY: "load-k", task_row.STATUS: S.WAITING.value})
     assert (legacy.task_id, legacy.status, legacy.generation) == ("load-k", S.WAITING.value, 0)
     raised = dispatch.stop_view({task_row.TABLE_KEY: "load-k", task_row.TASK_NAME: "load",

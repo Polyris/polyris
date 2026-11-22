@@ -45,8 +45,9 @@ def test_an_item_of_another_shape_is_refused(change, problem):
         run_input.from_item(item)
 
 
-def test_an_item_written_before_the_partition_arg_was_kept_reads_as_none():
-    """The run's date stands in for it then (run_task_input.build)."""
+def test_an_item_without_its_partition_arg_is_refused():
+    """Start_Run writes it in every item (no release wrote one without it), so its absence is a malformed item."""
     item = run_input.to_item(run_input.RunInput(), pipeline_execution=RUN, ttl=1)
     del item[run_input.PARTITION_ARG]
-    assert run_input.from_item(item).partition_arg == ""
+    with pytest.raises(ValueError, match="partition_arg must be text"):
+        run_input.from_item(item)

@@ -126,7 +126,7 @@ def test_a_rule_this_platform_does_not_know_is_left_to_the_dispatcher():
         "none_failed_or_skipped"
 
 
-def test_the_decision_fields_survive_dynamodb_as_text():
+def test_the_readiness_fields_survive_dynamodb_as_text():
     """As attributes, boto3's resource gives numbers back as Decimal, which the asset parser refuses."""
     from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
@@ -142,7 +142,7 @@ def test_the_decision_fields_survive_dynamodb_as_text():
     ('{"dependencies": [], "trigger_rule": "all_success", "task_arn": "x"}', r"unknown \['task_arn'\]"),
     ('{"dependencies": "x", "trigger_rule": "all_success"}', "dependencies must be a list"),
 ])
-def test_decision_fields_of_another_shape_are_refused(text, problem):
+def test_readiness_fields_of_another_shape_are_refused(text, problem):
     with pytest.raises(task_spec.SpecError, match=problem):
         task_spec.readiness_from_text(text)
 
