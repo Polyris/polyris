@@ -987,3 +987,61 @@ def test_a_timeline_that_cannot_be_written_holds_up_no_decision(world):
     world.client.meta.events.register("before-parameter-build.dynamodb.PutItem", refuse)
     assert full(world)["started"] == 1
     assert item(world, key("extract"))["status"] == "deps_ready" and timeline(world, "extract") == []
+
+
+# ── requests: a Restart's renewal and the reset of its dependants (ADR #137 §3, §5) ─────────────────────────
+
+def restart(world, task: str, *, with_dependants: bool = False) -> None:
+    """The console's Restart, through the builder it sends (coordination.actions)."""
+    from polyris.coordination import actions
+    write = actions.restart(task=item(world, key(task)), run=item(world, RUN_KEY), with_dependants=with_dependants,
+                            operator="ops", reason="rerun", now=world.clock.at, tokens_table=table("TOKENS_TABLE"))
+    world.client.transact_write_items(TransactItems=write.items)
+
+
+def test_a_restart_with_dependants_reruns_what_the_failure_decided_and_the_request_clears(world):
+    start(world, [spec("extract"), spec("load", ["extract"]), spec("report", ["load"]), spec("side")])
+    full(world)
+    finish(world, "side")
+    finish(world, "extract", "failed")
+    full(world)
+    assert item(world, key("report"))["status"] == "upstream_failed" and len(world.sfn.failed) == 1
+    world.clock.at += timedelta(minutes=5)
+    restart(world, "extract", with_dependants=True)
+    full(world)
+    assert {t: item(world, key(t))["status"] for t in ("extract", "load", "report", "side")} == {
+        "extract": "deps_ready", "load": "waiting", "report": "waiting", "side": "success"}
+    assert item(world, key("load"))["generation"] == item(world, key("report"))["generation"] == 2
+    assert run_row.RESET_DEPENDANTS in item(world, RUN_KEY)[run_row.REQUESTS]          # a pass that reset rows
+    full(world)
+    assert item(world, RUN_KEY)[run_row.REQUESTS] == {}                              # the next resets nothing
+    for task in ("extract", "load", "report"):
+        finish(world, task)
+        full(world)
+    assert len(world.sfn.failed) == 1 and not world.sfn.succeeded     # its token was answered once, at the failure
+    run = item(world, RUN_KEY)
+    assert run["summary"] == {"success": 4} and "attention" not in run
+
+
+def test_a_restart_renews_its_runs_rows_and_writes_the_pointers_of_its_waiting_rows(world):
+    wait_for = [{"asset_name": "ns/orders"}]
+    start(world, [spec("extract", wait_for=wait_for), spec("load", ["extract"])])
+    full(world)
+    finish(world, "extract", "failed")
+    full(world)
+    world.client.delete_item(TableName=table("SUBSCRIPTIONS_TABLE"),
+                             Key={"dependency_key": {"S": "asset:ns/orders"}, "subscriber": {"S": key("extract")}})
+    output = f"output#orders#load#{DATE}"
+    world.client.put_item(TableName=table("TOKENS_TABLE"), Item={"execution_name": {"S": output}, "ttl": {"N": "1"}})
+    world.clock.at += timedelta(days=200)
+    restart(world, "extract")
+    full(world)
+    later = world.clock.at
+    for row_key in (key("load"), run_row.input_key(EXECUTION)):
+        assert int(item(world, row_key)["ttl"]) >= int((later + timedelta(days=455)).timestamp()), row_key
+    assert int(item(world, output)["ttl"]) == int((later + timedelta(days=365)).timestamp())
+    assert item(world, f"output#orders#extract#{DATE}") == {}                    # none was written: none made
+    pointer = world.client.get_item(TableName=table("SUBSCRIPTIONS_TABLE"), Key={
+        "dependency_key": {"S": "asset:ns/orders"}, "subscriber": {"S": key("extract")}}).get("Item")
+    assert pointer and pointer["run"]["S"] == RUN_KEY
+    assert item(world, RUN_KEY)[run_row.REQUESTS] == {}

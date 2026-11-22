@@ -173,7 +173,8 @@ def test_every_transition_of_the_run_row_has_its_writer_here_or_is_not_built_yet
 
 def test_the_coordination_lambdas_write_task_rows_and_the_run_row_only_through_the_builders():
     """The dispatcher and Start_Run build no update and no condition of their own (``dispatch_writes``,
-    ``start_run``): what they send is what the tests above check."""
+    ``start_run``, and ``actions`` for the requests a pass carries out): what they send is what the tests above
+    check."""
     for module in ("dispatcher.py", "start_run.py"):
         text = (COORDINATION / module).read_text()
         assert "UpdateExpression" not in text and "ConditionExpression" not in text, module
@@ -181,7 +182,8 @@ def test_the_coordination_lambdas_write_task_rows_and_the_run_row_only_through_t
              if isinstance(node, ast.Call) and ast.unparse(node.func) == "self._send"]
     assert sends, "the scan of the dispatcher's sends is broken"
     for node in sends:
-        assert isinstance(node.args[0], ast.Call) and ast.unparse(node.args[0].func).startswith("dispatch_writes."), \
+        assert isinstance(node.args[0], ast.Call) and ast.unparse(node.args[0].func).startswith(
+            ("dispatch_writes.", "actions.")), \
             ast.unparse(node)
 
 
@@ -321,6 +323,9 @@ CODE_WRITERS = {
     ("coordination/dispatcher.py", "_send_items"): "task rows and the run row's check: dispatch_writes.task_write",
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
     ("coordination/dispatcher.py", "_drop_pointers"): "another table: a row's pointers once it left its wait",
+    ("coordination/dispatcher.py", "_put_pointers"): "another table: a waiting row's pointers (actions.pointer_items)",
+    ("coordination/dispatcher.py", "_renew"):
+        "a TTL alone, on task rows, the run's input and output#: actions.renewals, conditional on the item",
     ("coordination/dispatcher.py", "_warn"): "warning rows (records.warning_item)",
     ("coordination/dispatcher.py", "_timeline"): "another table: a decision's timeline event (records.decision_event)",
     ("coordination/start_run.py", "_start"): "another table: the asset: pointers (start_run.pointer_items)",

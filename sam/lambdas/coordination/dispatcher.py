@@ -9,7 +9,10 @@ goes the other way, dependants first (§4).
 
 - A full pass covers every row of the run, then decides the run's end: the
   summary, the answer of its token and its mark, the stop done, and the removal
-  of the run row's due time (§4, §3).
+  of the run row's due time (§4, §3). Before any decision it carries out the
+  run's requests through ``coordination.actions``: a Restart's renewal (the
+  pointers of each waiting row, then the TTLs) and the reset of a Restart with
+  dependants, each cleared once done (§3, §5).
 - A narrow pass covers the rows a fact wakes and their direct upstreams; it
   leaves the run's end to the next full pass (§7).
 - A refused write is decided again once from a new read of the run row, the row
@@ -51,7 +54,7 @@ import failures
 from failures import CoordinationTransient
 from logger import log
 from polyris.constants import TaskSpecKey, TaskStatus, WarningKind
-from polyris.coordination import asset_spec, dispatch, dispatch_writes, pauses, records, run_input, run_row
+from polyris.coordination import actions, asset_spec, dispatch, dispatch_writes, pauses, records, run_input, run_row
 from polyris.coordination import run_name, run_task_input, spec_store, sweep, task_row, task_spec, transitions
 from polyris.coordination.times import format_utc
 from polyris.coordination.asset_conditions import Evaluation
@@ -231,6 +234,8 @@ class Dispatcher:
             upstreams = {d for name in judged if name in state.rows for d in state.rows[name].dependencies} - judged
             self._read_rows(state, {name: keys[name] for name in upstreams if name in keys})
         try:
+            if targets is None and run.requests:
+                self._requests(state)                  # the renewal, then a reset: before any decision (§3, §5)
             if run.stopping:
                 self._stop_rows(state, judged)
             else:
@@ -256,6 +261,76 @@ class Dispatcher:
             result["lost"] = sorted(state.lost)
         log.info("dispatcher", "pass", **result)
         return result
+
+    # ── requests: the heavy actions a pass carries out (§3, §5) ────────
+
+    def _requests(self, state: _Pass) -> None:
+        """The run's renewal, then the reset of a Restart with dependants unless a stop is in progress; each is
+        cleared once carried out, on the run_version the pass holds."""
+        renewal = state.run.requests.get(run_row.RENEW_TTL)
+        if renewal is not None:
+            self._renew(state, renewal)
+        reset = state.run.requests.get(run_row.RESET_DEPENDANTS)
+        if reset is not None and not state.run.stopping:
+            self._reset(state, reset)
+
+    def _renew(self, state: _Pass, request: Mapping[str, Any]) -> None:
+        """The renewal of a Restart (§5): the pointers of each waiting row with wait_for, before any decision, so
+        no fact recorded after the Restart goes unseen; then the TTLs, one write at a time within the budget. A
+        refused condition means the item is gone or renewed already."""
+        for name in sorted(state.rows):
+            if state.rows[name].status == S.WAITING.value and state.rows[name].has_wait_for:
+                self._within_budget(state)
+                self._put_pointers(state, name)
+        for write in actions.renewals(state.run, state.items, request=request, now=state.now, table=self.tokens_table):
+            self._within_budget(state)
+            try:
+                self.client.update_item(**write)
+            except ClientError as exc:
+                if not failures.is_condition_failed(exc):
+                    raise
+        self._clear(state, run_row.RENEW_TTL)
+
+    def _reset(self, state: _Pass, request: Mapping[str, Any]) -> None:
+        """The reset of a Restart with dependants (§3): one transaction per row, upstreams first, each raising
+        run_version from the pass's read. A refused one leaves the rest to the next pass, which builds its set
+        again from new reads; only a pass that resets nothing clears the request."""
+        names = actions.reset_set(state.rows, request)
+        if not names:
+            self._clear(state, run_row.RESET_DEPENDANTS)
+            return
+        for name in names:
+            self._within_budget(state)
+            row = state.rows[name]
+            if not self._send_items(actions.reset(state.items[name], row, state.run, now=state.now,
+                                                  table=self.tokens_table)):
+                raise _Left()
+            state.run = replace(state.run, version=state.run.version + 1)
+            state.items[name] = actions.reset_applied(state.items[name], row, state.run, now=state.now)
+            state.rows[name] = dispatch.row_view(state.items[name])
+            state.changed += 1
+            log.info("dispatcher", "row", run=state.run.key, task=name, status=S.WAITING.value, transition="reset")
+            if state.rows[name].has_wait_for:
+                self._put_pointers(state, name)
+
+    def _clear(self, state: _Pass, kind: str) -> None:
+        """A request cleared on the run_version the pass holds. Refused, an action or a request came after the
+        pass's read: the next pass carries the request out again from new reads."""
+        if not self._send(actions.clear_request(state.run, kind, table=self.tokens_table, now=state.now)):
+            raise _Left()
+        requests = {k: v for k, v in state.run.requests.items() if k != kind}
+        state.run = replace(state.run, version=state.run.version + 1, requests=requests)
+
+    def _put_pointers(self, state: _Pass, name: str) -> None:
+        """A waiting row's asset: pointers, as Start_Run writes them. A lost one is a lost hint: the run row's
+        next check judges the row (Rule 41)."""
+        for pointer in actions.pointer_items(state.items[name], run_key=state.run.key, now=state.now):
+            try:
+                self.client.put_item(TableName=self.subscriptions_table,
+                                     Item={k: _serializer.serialize(v) for k, v in pointer.items()})
+            except (ClientError, BotoCoreError) as exc:
+                log.error("dispatcher", "an asset pointer could not be written", run=state.run.key, task=name,
+                          pointer=pointer, error=str(exc))
 
     def _stop_rows(self, state: _Pass, judged: Set[str]) -> None:
         """Every unfinished row of the set stopped, dependants first (§4)."""

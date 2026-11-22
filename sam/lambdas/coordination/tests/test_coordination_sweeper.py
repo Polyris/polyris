@@ -225,8 +225,11 @@ def test_a_finished_run_is_closed_and_the_move_does_not_make_it_due_again(make, 
     assert sfn.succeeded and att.DUE not in _row(tokens, RUN_KEY)
 
 
-def test_a_move_after_a_write_that_raised_run_version_is_refused_and_the_run_stays_due(make, run, tokens, sfn, clock):
-    """A pending request keeps the run row due after the answer; the answer's mark raised run_version (§3)."""
+def test_a_move_after_a_write_that_raised_run_version_is_refused_and_puts_back_no_due_time(make, run, tokens, sfn,
+                                                                                           clock):
+    """The check's pass answers the run and carries out its pending request, and both raise run_version; the
+    sweeper's move after it, made on the version it read before, is refused, so the closed run row stays closed
+    (§3)."""
     run()
     make().run()
     for task in ("extract", "load"):
@@ -236,7 +239,8 @@ def test_a_move_after_a_write_that_raised_run_version_is_refused_and_the_run_sta
 
     make().run()
 
-    assert sfn.succeeded and _row(tokens, RUN_KEY)[att.DUE] == due
+    row = _row(tokens, RUN_KEY)
+    assert sfn.succeeded and row[run_row.REQUESTS] == {} and att.DUE not in row
 
 
 def test_a_failed_pass_moves_its_run_on_and_its_warning_replaces_itself(make, run, tokens, specs, clock):
