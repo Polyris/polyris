@@ -2,30 +2,27 @@
 
 Handles pipeline execution control operations:
 - get_all_runs: List all pipeline executions
-- stop_execution: Stop a running execution
-- pause_execution: Pause execution (running tasks complete, new tasks wait)
-- resume_execution: Resume paused execution
-- extend_pause: Extend pause timeout by 12 hours
-- get_execution_pause_status: Check if execution is paused
+- stop_execution: Stop a run: its stop mark, which the dispatcher carries out (ADR #137 §4)
+- pause_execution: Pause a run: tasks that run go on, none starts (ADR #137 §5)
+- resume_execution: Resume a paused run
 - get_execution_children: Get child tasks of an execution
 - get_execution_parent: Get parent execution info
 """
 import json
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
-from config import RECONCILE_FUNCTION_ARN, lambda_client, sfn
-from polyris.coordination import ownership
-from polyris.coordination.wake import DEAD_TOKEN_CODES
+from polyris.coordination import actions, run_row
 from dal import executions_repo, pipelines_repo, backfills_repo
 from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
-from constants import Limits, TASK_SETTLED_STATUSES, derive_execution_status
+from constants import Limits, derive_execution_status
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
-from response import cors_response
+from response import cors_response, safe_parse_body
 from logger import log
+from auth import operator_display
 from utils import safe_param_int, should_skip_token_row
 
 
@@ -431,342 +428,68 @@ def get_execution_parent(execution_name: str, event: Dict) -> Dict:
 
 
 
-def _sfn_stop(arn: str, context: str = '') -> None:
-    """Stop a single SFN execution, ignoring not-found / already-stopped errors."""
-    if not arn or not arn.startswith('arn:aws:states:'):
-        return
-    try:
-        sfn.stop_execution(executionArn=arn, error='StoppedViaUI', cause='Pipeline stopped via UI')
-    except Exception as e:
-        log.error("_sfn_stop", "Unexpected error", error=str(e))
-        err = str(e)
-        # Ignore expected errors: already stopped, not found, wrong type
-        if any(s in err for s in ('ExecutionDoesNotExist', 'InvalidArn', 'ABORTED', 'SUCCEEDED', 'FAILED')):
-            return
-        log.warn("_sfn_stop", "Could not stop execution", arn=arn[:80], context=context, error=err[:100])
+#: A run action whose write a change of the run row refused is built again from a new read, this many times in all.
+RUN_ACTION_ATTEMPTS = 3
 
 
 def stop_execution(pipeline_execution: str, event: Dict) -> Dict:
-    """Stop a pipeline execution — stops full hierarchy:
-    acme-daily SFN → dependency_wrapper(s) → run_task(s) → DynamoDB.
+    """Stop a run (ADR #137 §4): its stop mark, with who asked and why (``reason`` in the body).
 
-    Accepts pipeline_execution (run ID) from query params.
-    pipeline_name is resolved from DynamoDB task items.
-    All stop calls are idempotent — safe to call multiple times.
+    The dispatcher carries the stop out: it stops the run's unfinished rows, dependants first, then the run's
+    execution and any run_task still running, and answers the run. Safe to repeat: a second Stop changes nothing.
     """
-    if not pipeline_execution:
-        return cors_response(400, {'error': 'pipeline_execution is required'})
-
-    try:
-        # Query all task items for this pipeline run
-        # Include wrapper_execution_arn + task_execution_arn + pipeline_name
-        items = executions_repo.query_by_pipeline_execution(
-            pipeline_execution,
-            projection='execution_name, #s, task_execution_arn, wrapper_execution_arn, pipeline_name',
-            expr_names={'#s': 'status'},
-        )
-
-        # 1. Stop acme-daily SFN execution
-        # Reconstruct from pipeline registry: sfn_arn + pipeline_execution name
-        pipeline_name = next(
-            (i.get('pipeline_name') for i in items if i.get('pipeline_name') and i.get('pipeline_name') != 'unknown'),
-            None,
-        )
-        if pipeline_name:
-            # The registry row's sfn_arn, which the pipeline's own registration writes.
-            sfn_arn = (pipelines_repo.get(pipeline_name) or {}).get('sfn_arn')
-            if sfn_arn:
-                pipeline_exec_arn = sfn_arn.replace(':stateMachine:', ':execution:') + ':' + pipeline_execution
-                _sfn_stop(pipeline_exec_arn, context='pipeline')
-
-        # 2. Stop all dependency_wrapper executions (deduplicated)
-        wrapper_arns = {
-            i['wrapper_execution_arn']
-            for i in items
-            if i.get('wrapper_execution_arn') and i['wrapper_execution_arn'].startswith('arn:')
-        }
-        for arn in wrapper_arns:
-            _sfn_stop(arn, context='wrapper')
-
-        # 3. Stop run_task executions + update DynamoDB
-        _mark_pending_tasks_stopped(pipeline_execution, items=items)
-
-        return cors_response(
-            200,
-            {
-                'message': 'Execution stopped',
-                'pipeline_execution': pipeline_execution,
-                'wrappers_stopped': len(wrapper_arns),
-            },
-        )
-    except Exception as e:
-        log.error("stop_execution", "Error stopping execution", error=str(e))
-        return cors_response(500, {'error': f'Failed to stop execution: {str(e)}'})
-
-
-def _mark_pending_tasks_stopped(pipeline_execution: str, items: list = None) -> int:
-    """Mark all non-terminal tasks as 'stopped' in DynamoDB and stop active run_task executions.
-
-    Args:
-        pipeline_execution: Run ID to query if items not provided
-        items: Pre-fetched task items (avoids duplicate DynamoDB query when called from stop_execution)
-    """
-    stopped_at = datetime.now(timezone.utc).isoformat()
-    updated_count = 0
-
-    # Use pre-fetched items or query DynamoDB
-    if items is None:
-        items = executions_repo.query_by_pipeline_execution(
-            pipeline_execution, projection='execution_name, #s, task_execution_arn', expr_names={'#s': 'status'}
-        )
-
-    for item in items:
-        status = item.get('status', '')
-        execution_name = item.get('execution_name', '')
-
-        # Skip tasks already settled — terminal or deliberately stopped — plus
-        # internal (_pause_) and Backfill records.
-        if status in TASK_SETTLED_STATUSES or should_skip_token_row(item):
-            continue
-
-        # Stop active run_task SFN execution if present
-        task_execution_arn = item.get('task_execution_arn', '')
-        _sfn_stop(task_execution_arn, context='run_task')
-
-        # Update to stopped. Stopping ends the wrapper's ownership, so the same write
-        # raises the generation (ADR #130 §2.1).
-        try:
-            executions_repo.update(
-                execution_name,
-                f'SET #s = :status, finished_at = :finished, {ownership.RAISE}',
-                expr_values={
-                    **ownership.RAISE_VALUES,
-                    ':status': 'stopped',
-                    ':finished': stopped_at,
-                    ':s1': 'success',
-                    ':s2': 'failed',
-                    ':s3': 'skipped',
-                    ':s4': 'stopped',
-                    ':s5': 'aborted',
-                    ':s6': 'upstream_failed',
-                },
-                expr_names={'#s': 'status'},
-                condition_expr='attribute_exists(execution_name) AND NOT #s IN (:s1, :s2, :s3, :s4, :s5, :s6)',
-            )
-            updated_count += 1
-        except executions_repo.conditional_check_exception:
-            # Task already in terminal state, skip
-            pass
-        except Exception as e:
-            log.error("executions", "Error updating task to stopped", error=str(e), execution_name=execution_name)
-
-    log.info(
-        "executions", "Marked tasks as stopped", updated_count=updated_count, pipeline_execution=pipeline_execution
-    )
-    return updated_count
+    body, err = safe_parse_body(event)
+    if err:
+        return err
+    operator, reason = operator_display(event), str(body.get('reason') or 'Stopped via UI')
+    return _run_action('stop', pipeline_execution, lambda run, now: actions.stop_run(
+        run, by=operator, reason=reason, now=now, table=executions_repo.table.name),
+        {'message': 'Stopping the run: its tasks stop, dependants first', 'stopping': True})
 
 
 def pause_execution(pipeline_execution: str, event: Dict) -> Dict:
-    """
-    Pause a pipeline execution. Running tasks will complete, but no new tasks will start.
-    Tasks that would start will be marked as 'waiting_paused'.
-    """
-    try:
-        # Create/update pause record
-        pause_key = f"_pause_{pipeline_execution}"
-        executions_repo.put(
-            {
-                'execution_name': pause_key,
-                'paused': True,
-                'paused_at': datetime.now(timezone.utc).isoformat(),
-                'pipeline_execution': pipeline_execution,
-            }
-        )
-
-        return cors_response(
-            200, {'message': 'Pipeline execution paused', 'pipeline_execution': pipeline_execution, 'paused': True}
-        )
-
-    except Exception as e:
-        log.error("pause_execution", "Error pausing execution", error=str(e))
-        return cors_response(500, {'error': f'Failed to pause execution: {str(e)}'})
-
-
-def get_paused_tasks_with_token(pipeline_execution: str) -> List[Dict]:
-    """The run's waiting_paused rows that hold a token, of either kind (ADR #130 §2):
-
-    1. pause_token: run_task holds the task at its start, in its pause wait.
-    2. wait_token only: the task waits for its dependencies, and the reconciler
-       parked it because its run is paused; its dependency wait is still open.
-    """
-    all_items = executions_repo.query_by_pipeline_execution(pipeline_execution)
-
-    # Filter to paused tasks with EITHER pause_token OR wait_token
-    return [
-        item
-        for item in all_items
-        if item.get('status') == 'waiting_paused' and (item.get('pause_token') or item.get('wait_token'))
-    ]
-
-
-def _held_by_pause(pipeline_execution: str) -> List[Dict]:
-    """Rows run_task holds in its pause wait: status waiting_paused with a pause_token."""
-    return [
-        item
-        for item in executions_repo.query_by_pipeline_execution(pipeline_execution)
-        if item.get('status') == 'waiting_paused' and item.get('pause_token')
-    ]
-
-
-def _reconcile_run(pipeline_execution: str) -> Dict:
-    """Have the reconciler check every waiting row of the run from its facts (ADR #130 §6.5).
-
-    Returns how many rows it handled and how many it left due for the sweeper.
-    A failure here only delays the run's waiting tasks: they keep their place
-    in the attention index, and the sweeper checks them at their due time.
-    """
-    if not RECONCILE_FUNCTION_ARN:
-        log.error("resume_execution", "RECONCILE_FUNCTION_ARN is not set; the sweeper checks the run's waiting tasks",
-                  pipeline_execution=pipeline_execution)
-        return {'error': 'RECONCILE_FUNCTION_ARN is not set'}
-    try:
-        response = lambda_client.invoke(
-            FunctionName=RECONCILE_FUNCTION_ARN,
-            InvocationType='RequestResponse',
-            Payload=json.dumps({'pipeline_execution': pipeline_execution, 'source': 'resume'}),
-        )
-        body = json.loads(response['Payload'].read() or b'{}')
-    except (ClientError, BotoCoreError, ValueError) as e:
-        log.error("resume_execution", "The reconcile call failed; the sweeper checks the run's waiting tasks",
-                  pipeline_execution=pipeline_execution, error=str(e))
-        return {'error': str(e)}
-    if response.get('FunctionError'):
-        error = str(body.get('errorMessage') or response['FunctionError'])
-        log.error("resume_execution", "The reconciler failed; the sweeper checks the run's waiting tasks",
-                  pipeline_execution=pipeline_execution, error=error)
-        return {'error': error}
-    return {'handled': int(body.get('handled', 0)), 'deferred': int(body.get('deferred', 0))}
+    """Pause a run (ADR #137 §5): tasks that run go on, none starts until the Resume; a pause has no time limit."""
+    return _run_action('pause', pipeline_execution, lambda run, now: actions.pause_run(
+        run, now=now, table=executions_repo.table.name), {'message': 'Pipeline execution paused', 'paused': True})
 
 
 def resume_execution(pipeline_execution: str, event: Dict) -> Dict:
-    """Resume a paused run (ADR #130 §6.5).
-
-    1. Clear the pause flag first, so no task parks or enters the pause wait any more.
-    2. Release the tasks run_task holds in its pause wait. run_task writes
-       `running` and drops the pause_token itself (Principle #43).
-    3. Have the reconciler check the run's waiting rows from their facts: it
-       signals the ready ones and leaves the others waiting. Nothing is
-       signalled without that check (B-P1, B-P2).
-    """
-    pause_key = f"_pause_{pipeline_execution}"
-
-    try:
-        executions_repo.update(
-            pause_key,
-            'SET paused = :p, resumed_at = :r',
-            expr_values={':p': False, ':r': datetime.now(timezone.utc).isoformat()},
-        )
-
-        released, failed = [], []
-        for item in _held_by_pause(pipeline_execution):
-            task_name = item.get('task_name', '')
-            try:
-                sfn.send_task_success(taskToken=item['pause_token'], output=json.dumps({'resumed': True}))
-                released.append(task_name)
-            except (ClientError, BotoCoreError) as e:
-                code = e.response.get('Error', {}).get('Code', '') if isinstance(e, ClientError) else ''
-                if code in DEAD_TOKEN_CODES:
-                    # Its wait already ended: the sweeper released it, or its pause heartbeat ran out.
-                    released.append(task_name)
-                    continue
-                log.error("resume_execution", "Could not release a paused task", task_name=task_name,
-                          pipeline_execution=pipeline_execution, error=str(e))
-                failed.append(f"{task_name} ({code or str(e)[:50]})")
-
-        response_data = {
-            'message': 'Pipeline execution resumed',
-            'pipeline_execution': pipeline_execution,
-            'paused': False,
-            'resumed_tasks': released,
-            'reconcile': _reconcile_run(pipeline_execution),
-        }
-        if failed:
-            response_data['failed_tasks'] = failed
-        return cors_response(200, response_data)
-
-    except Exception as e:
-        log.error("resume_execution", "Error resuming execution", error=str(e), pipeline_execution=pipeline_execution)
-        return cors_response(500, {'error': f'Failed to resume execution: {str(e)}'})
+    """Resume a paused run (ADR #137 §5): the dispatcher decides the rows the pause held, from the run row's change."""
+    return _run_action('resume', pipeline_execution, lambda run, now: actions.resume_run(
+        run, now=now, table=executions_repo.table.name), {'message': 'Pipeline execution resumed', 'paused': False})
 
 
-def extend_pause(pipeline_execution: str, event: Dict) -> Dict:
-    """
-    Extend pause timeout by 12 hours. Sends heartbeat to all paused tasks.
+def _run_action(action: str, pipeline_execution: str, build: Callable[[Dict, datetime], Optional[Dict]],
+                answer: Dict) -> Dict:
+    """Read the run row, build the action's write from it and send it, built again from a new read while a change
+    of the run row refuses it. A write the builder finds needless (a second Stop, a Pause of a paused run) is no
+    error: the run already is as asked."""
+    if not pipeline_execution:
+        return cors_response(400, {'error': 'pipeline_execution is required'})
+    for _ in range(RUN_ACTION_ATTEMPTS):
+        run = executions_repo.get(run_row.key(pipeline_execution), consistent=True)
+        if run is None:
+            return cors_response(409, {'error': f'{pipeline_execution}: no run row; a run from before 1.3 takes no '
+                                                f'{action}, and so does no run at all',
+                                       'pipeline_execution': pipeline_execution})
+        try:
+            update = build(run, datetime.now(timezone.utc))
+        except actions.ActionRefused as exc:
+            return cors_response(409, {'error': str(exc), 'pipeline_execution': pipeline_execution})
+        if update is None:
+            break
+        try:
+            executions_repo.transact_write([{'Update': update}])
+            break
+        except executions_repo.transaction_canceled_exception:
+            log.info(action, "The run row changed under the action: built again from a new read",
+                     pipeline_execution=pipeline_execution)
+    else:
+        return cors_response(409, {'error': f'{pipeline_execution} kept changing under the {action}; try again',
+                                   'pipeline_execution': pipeline_execution})
+    log.info(action, "Done", pipeline_execution=pipeline_execution)
+    return cors_response(200, {**answer, 'pipeline_execution': pipeline_execution})
 
-    Only a task held in run_task's pause wait (it has a pause_token) takes a
-    heartbeat. A task the reconciler parked while it waits for its dependencies
-    has only its wait_token: Wait_For_Dependencies has a fixed timeout and no
-    heartbeat, so it is reported as skipped.
-    """
-    try:
-        paused_tasks = get_paused_tasks_with_token(pipeline_execution)
-        extended_tasks = []
-        skipped_wait_token = []
-
-        for item in paused_tasks:
-            task_name = item.get('task_name', '')
-            pause_token = item.get('pause_token')
-
-            # Skip tasks that only have wait_token (no heartbeat possible)
-            if not pause_token:
-                skipped_wait_token.append(task_name)
-                continue
-
-            try:
-                sfn.send_task_heartbeat(taskToken=pause_token)
-                extended_tasks.append(task_name)
-            except sfn.exceptions.TaskTimedOut:
-                log.warn("extend_pause", "Pause token timed out", task_name=task_name)
-            except sfn.exceptions.InvalidToken:
-                log.warn("extend_pause", "Invalid pause token", task_name=task_name)
-            except Exception as e:
-                log.error("extend_pause", "Failed to extend pause", error=str(e), task_name=task_name)
-
-        response_data = {
-            'message': 'Pause extended by 12 hours',
-            'pipeline_execution': pipeline_execution,
-            'extended_tasks': extended_tasks,
-        }
-
-        if skipped_wait_token:
-            response_data['skipped_wait_token_tasks'] = skipped_wait_token
-            response_data['warning'] = 'Tasks with wait_token have fixed 24h timeout and cannot be extended'
-
-        return cors_response(200, response_data)
-
-    except Exception as e:
-        log.error("extend_pause", "Error extending pause", error=str(e))
-        return cors_response(500, {'error': f'Failed to extend pause: {str(e)}'})
-
-
-def get_execution_pause_status(pipeline_execution: str) -> bool:
-    """Check if a pipeline execution is paused."""
-    pause_key = f"_pause_{pipeline_execution}"
-
-    try:
-        item = executions_repo.get(pause_key, consistent=True)
-        return (item or {}).get('paused', False)
-    except Exception as e:
-        # "Not paused" on read failure is the safe default — false negatives here
-        # just mean a paused execution gets one extra poll, never an unintended
-        # resume. Log so a real DDB outage doesn't silently disable pause UX.
-        log.warn(
-            "get_execution_pause_status",
-            "Pause status read failed; defaulting to not paused",
-            pipeline_execution=pipeline_execution,
-            error=str(e),
-        )
-        return False
 
 def register(router) -> None:
     """Register the free execution read routes. See ADR #97."""
@@ -777,4 +500,3 @@ def register(router) -> None:
     router.add('POST', '/api/execution-stop', stop_execution, 'pipeline_execution')
     router.add('POST', '/api/execution-pause', pause_execution, 'id')
     router.add('POST', '/api/execution-resume', resume_execution, 'id')
-    router.add('POST', '/api/execution-extend', extend_pause, 'id')

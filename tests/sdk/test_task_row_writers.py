@@ -324,12 +324,12 @@ def test_every_state_machine_write_of_a_task_row_is_fenced_or_raises(writer):
 
 #: Code that writes the tokens table, and every write call of the coordination Lambdas whatever its table,
 #: by (file, function), with the role of each write.
-RAISE = "ends an ownership: raises the generation"
 CODE_WRITERS = {
     ("console_api/routes/tasks.py", "_transact"):
         "an operator's action on a task: actions.task_action and actions.restart, whose row_write raises the "
         "generation as the table says",
-    ("console_api/routes/executions.py", "_mark_pending_tasks_stopped"): RAISE,
+    ("console_api/routes/executions.py", "_run_action"):
+        "the run row: actions.stop_run, pause_run and resume_run (a Stop of the run, Pause, Resume)",
     ("coordination/dispatcher.py", "_send_items"): "task rows and the run row's check: dispatch_writes.task_write",
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
     ("coordination/dispatcher.py", "_drop_pointers"): "another table: a row's pointers once it left its wait",
@@ -354,8 +354,6 @@ CODE_WRITERS = {
     ("coordination/asset_fanout.py", "_drop_subscription"): "another table: a push consumer's subscription",
     ("coordination/asset_fanout.py", "_retry_later"): "push retry rows",
     ("coordination/asset_fanout.py", "_warn"): "warning rows (records.warning_item)",
-    ("console_api/routes/executions.py", "pause_execution"): "the run's pause row",
-    ("console_api/routes/executions.py", "resume_execution"): "the run's pause row",
     ("console_api/routes/tasks.py", "_emit_marker_blocked_warn"): "warning rows",
     ("console_api/routes/tasks.py", "_warn_fact_not_recorded"): "warning rows",
     ("console_api/routes/tasks.py", "answer_run"): "warning rows",
@@ -397,9 +395,3 @@ def test_every_code_writer_has_a_role():
     assert not unknown, f"classify these writers in CODE_WRITERS: {unknown}"
     gone = sorted(set(CODE_WRITERS) - set(CODE))
     assert not gone, f"these writers no longer exist; drop them from CODE_WRITERS: {gone}"
-
-
-@pytest.mark.parametrize("writer", sorted(w for w, role in CODE_WRITERS.items() if role == RAISE),
-                         ids=lambda w: f"{w[0]}:{w[1]}")
-def test_every_decision_raises_the_generation_in_the_same_write(writer):
-    assert "ownership.RAISE" in CODE[writer] and "ownership.RAISE_VALUES" in CODE[writer], writer

@@ -483,21 +483,6 @@ describe('usePipelineActions', () => {
     });
   });
 
-  describe('handleExtendPause', () => {
-    it('should extend pause for current execution', async () => {
-      mockApiPost.mockResolvedValue({ success: true });
-      
-      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
-      
-      await act(async () => {
-        await result.current.handleExtendPause();
-      });
-      
-      expect(mockApiPost).toHaveBeenCalledWith('/execution-extend?id=exec-123', {});
-      expect(defaultProps.showToast).toHaveBeenCalledWith('Pause extended by 12 hours', 'success');
-    });
-  });
-
   describe('closeModal', () => {
     it('should close modal', () => {
       const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });

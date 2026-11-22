@@ -222,11 +222,14 @@ children are not embedded.
 ### Execution Actions
 
 ```http
-POST /api/execution-stop?pipeline_execution={pipeline_execution}
+POST /api/execution-stop?pipeline_execution={pipeline_execution}   # body: {"reason": "..."}, optional
 POST /api/execution-pause?id={pipeline_execution}
 POST /api/execution-resume?id={pipeline_execution}
-POST /api/execution-extend?id={pipeline_execution}   # +12h pause timeout
 ```
+
+Each answers at once: Stop writes the run's stop mark, and the engine stops its unfinished tasks, dependants first,
+within seconds. A pause has no time limit: it lasts until the Resume. Repeating an action changes nothing; a run
+started before 1.3 takes none of them (409).
 
 ### Execution Info
 

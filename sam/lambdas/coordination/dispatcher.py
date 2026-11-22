@@ -63,6 +63,10 @@ from polyris.coordination.partition import partition_date
 from stores import FactStore, Registry
 
 S = TaskStatus
+#: The rows whose run_task may be running: a stop of one stops that execution too (§4).
+_STARTED = frozenset({S.DEPS_READY.value, S.RUNNING.value})
+#: The error with which a stop ends an execution, the run's own or a row's run_task.
+STOPPED_ERROR = "Polyris.Stopped"
 #: Time a pass keeps in hand before its caller's timeout (Rule 52).
 RESERVE_MS = 5_000
 #: A write that a TransactionConflict cancelled is sent again after a short random backoff (§7).
@@ -431,6 +435,22 @@ class Dispatcher:
             self._warn(state.run, subject=row.key, task=name, item=state.items[name], error=judgment.warning)
         if judgment.start:
             self._start(state, name, row)
+        if judgment.transition == "stop" and row.status in _STARTED:
+            self._stop_run_task(state, name, row)
+
+    def _stop_run_task(self, state: _Pass, name: str, row: dispatch.RowView) -> None:
+        """The run_task of a row a stop ended, as cleanup (§4): the fence keeps whatever it does next out of the
+        row, the output and the facts. Its work may run on if the stop fails, so a failure warns (Principle #38)."""
+        arn = _execution_arn(self.run_task_arn, row.key, state.run, row.generation)
+        try:
+            self.sfn.stop_execution(executionArn=arn, error=STOPPED_ERROR, cause=_stop_cause(state.run))
+        except (ClientError, BotoCoreError) as exc:
+            if failures.error_code(exc) == "ExecutionDoesNotExist":
+                return                                     # its start never went through
+            # No pass comes back to a stopped row, so even a transient failure is not raised: it is said.
+            self._warn(state.run, subject=f"{row.key}-stop", task=name, item=state.items.get(name, {}),
+                       error=f"{name}: its run_task could not be stopped, and its work may run on; its result is "
+                             f"not recorded: {failures.error_code(exc)}: {exc}")
 
     def _timeline(self, state: _Pass, name: str, row: dispatch.RowView, judgment: dispatch.Judgment) -> None:
         """The decision's event in the task's timeline, or the end of a task it failed (ADR #137 §1). Best effort,
@@ -483,6 +503,8 @@ class Dispatcher:
                        error=f"rows of the run are missing, and count as failed: {', '.join(end.missing)}")
         if dispatch.summary_changed(run, end):
             self._send(dispatch_writes.summary(run, end, table=self.tokens_table, read_at=state.now), quiet=True)
+        if dispatch.needs_answer(run, end) and run.stopping and (run.stop or {}).get("by") != run_row.ENGINE:
+            self._stop_execution(run)                  # a Stop of the run ends its execution, then the answer (§4)
         if dispatch.needs_answer(run, end) and self._answer(run, end):
             if self._send(dispatch_writes.answered(run, table=self.tokens_table, now=state.now)):
                 run = replace(run, version=run.version + 1, answered_order=run.token_order)
@@ -493,6 +515,18 @@ class Dispatcher:
                 self._send(dispatch_writes.close(run, table=self.tokens_table, now=state.now), quiet=True)
         state.run = run
         return end
+
+    def _stop_execution(self, run: dispatch.RunView) -> None:
+        """The run's execution stopped once every row of a stopped run is final (§4); the answer that follows meets
+        a closed token, which counts as answered. If it cannot be stopped, the answer ends it as failed."""
+        if not run.execution_arn:
+            return
+        try:
+            self.sfn.stop_execution(executionArn=run.execution_arn, error=STOPPED_ERROR, cause=_stop_cause(run))
+        except ClientError as exc:
+            failures.reraise_transient(exc)
+            log.error("dispatcher", "the stopped run's execution could not be stopped; the answer ends it",
+                      run=run.key, error=str(exc))
 
     # ── executions: the sweeper's checks (§1, §4) ────────────────────────
 

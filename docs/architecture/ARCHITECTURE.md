@@ -490,7 +490,7 @@ No always-on control plane, so idle cost is near zero.
                                   └───────────────────────┘
 ```
 
-A task of a paused run waits as `waiting_paused` at one of two points: before its dependency signal, where the reconciler parks it, or at the start of run_task, where it holds a pause token. Resume releases both.
+A task of a paused run that becomes ready waits as `waiting_paused`: the dispatcher holds it, and starts it after the Resume. Tasks that already run go on. A pause lasts until it is lifted (ADR #137 §5).
 
 **Terminal statuses:** success, failed, skipped, aborted, upstream_failed
 

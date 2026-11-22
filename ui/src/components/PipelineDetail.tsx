@@ -34,7 +34,6 @@ import {
     Square, 
     Rocket, 
     ActionIcons,
-    Clock,
     BookOpen,
     Inbox,
     ArrowLeft,
@@ -461,11 +460,8 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                 <div className="pd-pause-banner">
                     <span className="pd-pause-banner-icon"><Pause size={18} /></span>
                     <span className="pd-pause-banner-text">
-                        Pipeline paused – {stats.paused} task{stats.paused !== 1 ? 's' : ''} waiting (12h timeout)
+                        Pipeline paused – {stats.paused} task{stats.paused !== 1 ? 's' : ''} waiting until the Resume
                     </span>
-                    <Button size="sm" variant="secondary" onClick={actions.handleExtendPause} title="Extend pause by 12 hours">
-                        <Clock size={14} /> +12h
-                    </Button>
                     <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={actions.handlePauseResume}>
                         <Play size={14} /> Resume
                     </Button>

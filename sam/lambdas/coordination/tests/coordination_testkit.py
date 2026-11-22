@@ -105,6 +105,7 @@ class FakeSfn:
         self.dead_tokens: set = set()
         self.executions: Dict[str, Any] = {}
         self.described: List[str] = []
+        self.stopped: List[Dict[str, Any]] = []
         self.errors: Dict[str, Exception] = {}
 
     def _raise_if_set(self, operation: str) -> None:
@@ -133,6 +134,11 @@ class FakeSfn:
             raise client_error("ExecutionAlreadyExists", "StartExecution")
         self.started.append({"arn": stateMachineArn, "name": name, "input": json.loads(input)})
         return {"executionArn": f"{stateMachineArn}:{name}"}
+
+    def stop_execution(self, *, executionArn: str, error: str, cause: str) -> Dict[str, Any]:
+        self._raise_if_set("stop_execution")
+        self.stopped.append({"arn": executionArn, "error": error, "cause": cause})
+        return {"stopDate": "2026-11-12T06:00:00Z"}
 
     def describe_execution(self, *, executionArn: str) -> Dict[str, Any]:
         """``executions`` maps an ARN to its status, or to the status with its ``error`` and ``cause``."""

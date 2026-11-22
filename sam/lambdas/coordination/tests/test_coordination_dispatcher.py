@@ -173,6 +173,21 @@ def test_a_stop_stops_every_unfinished_row_answers_the_run_and_records_the_stop_
     assert (extract["status"], extract["generation"], load["status"]) == ("stopped", 2, "stopped")
     assert extract["error"] == "the run was stopped by ops: wrong date"
     assert world.sfn.failed and "stop_done" in item(world, RUN_KEY)
+    # Cleanup (§4): the started row's run_task, then the run's own execution, before the answer.
+    assert [s["arn"] for s in world.sfn.stopped] == [run_task_execution("extract"), PIPELINE_EXECUTION]
+    assert {s["error"] for s in world.sfn.stopped} == {"Polyris.Stopped"}
+
+
+def test_a_run_task_that_cannot_be_stopped_warns_and_its_row_stays_stopped(world):
+    from coordination_testkit import client_error
+    start(world, CHAIN)
+    full(world)
+    world.sfn.errors["stop_execution"] = client_error("AccessDeniedException", "StopExecution")
+    update(world, RUN_KEY, stop={"by": "ops", "reason": "wrong date", "at": "2026-11-12T06:01:00.000Z"})
+    full(world)
+    assert item(world, key("extract"))["status"] == "stopped"
+    assert any("could not be stopped" in w["error"] for w in warnings(world))
+    assert "stop_done" in item(world, RUN_KEY)                       # the answer ended the execution instead
 
 
 def test_a_run_not_yet_active_starts_nothing(world):

@@ -161,6 +161,40 @@ def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     client.delete_item(TableName=tokens, Key={"execution_name": {"S": run_key}})
     walk(pass_over())                                                            # a missing run row stops its rows
     assert len(sfn.started) == 2 and sfn.succeeded, "the walk must start both rows and answer the run"
+
+    # A second run: a Restart's renewal (the pointers of a waiting row, the TTLs), then a Stop of the run, which
+    # stops a started row's run_task and the run's execution (ADR #137 §3, §4, §5).
+    from datetime import timedelta
+
+    from boto3.dynamodb.types import TypeDeserializer
+    from polyris.coordination import actions
+    from polyris.coordination.times import parse_utc
+    _de = TypeDeserializer()
+    other = "orders-run-2026-11-12-dddd0002"
+    rows.start([{"task_id": "extract", "task_type": "sfn", "dependencies": [], "trigger_rule": "all_success"},
+                {"task_id": "load", "task_type": "sfn", "dependencies": ["extract"], "trigger_rule": "all_success",
+                 "wait_for": [{"asset_name": "ns/orders", "freshness_hours": None}]}], execution=other)
+    other_key = run_row.key(other)
+
+    def item(key: str) -> Dict[str, Any]:
+        raw = client.get_item(TableName=tokens, Key={"execution_name": {"S": key}}, ConsistentRead=True)["Item"]
+        return {k: _de.deserialize(v) for k, v in raw.items()}
+
+    def full_pass_of_other() -> Any:
+        return lambda: dispatcher.full_pass(other_key, source="test", remaining_ms=lambda: 60_000)
+
+    walk(full_pass_of_other())                                                   # extract starts
+    client.update_item(TableName=tokens, Key={"execution_name": {"S": execution_name("extract", other)}},
+                       UpdateExpression="SET #s = :s, finished_at = :f", ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":s": {"S": "success"}, ":f": {"S": "2026-11-12T05:59:00.000Z"}})
+    now = parse_utc(str(item(other_key)[run_row.STARTED_AT])) + timedelta(hours=1)
+    write = actions.restart(task=item(execution_name("extract", other)), run=item(other_key), with_dependants=False,
+                            operator="ops", reason="rerun", now=now, tokens_table=tokens)
+    client.transact_write_items(TransactItems=write.items)
+    walk(full_pass_of_other())                                                   # the renewal; extract again
+    client.update_item(**actions.stop_run(item(other_key), by="ops", reason="done", now=now, table=tokens))
+    walk(full_pass_of_other())                                                   # the stop
+    assert sfn.stopped, "the walk must stop a run_task and the run's execution"
     return calls, reads
 
 
@@ -425,7 +459,7 @@ def test_step_functions_actions_per_role(resources):
     def actions(role):
         return {a for s in _statements(resources, role) for a in s["Action"] if a.startswith("states:")}
 
-    dispatcher = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:StartExecution"}
+    dispatcher = {"states:SendTaskSuccess", "states:SendTaskFailure", "states:StartExecution", "states:StopExecution"}
     assert actions("ReconcileRole") == dispatcher
     assert actions("AssetFanoutRole") == dispatcher
     assert actions("SweeperRole") == dispatcher | {"states:DescribeExecution"}

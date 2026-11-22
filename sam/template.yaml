@@ -1416,7 +1416,6 @@ Resources:
           RESTART_HELPER_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
           NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
           NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
-          RECONCILE_FUNCTION_ARN: !GetAtt ReconcileFunction.Arn
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
         ApiProxy:
@@ -1543,10 +1542,12 @@ Resources:
               - dynamodb:PutItem
             Resource:
               - !GetAtt TaskEventsTable.Arn
-          # Pointers are deleted once the row has left the wait (Rule 40).
+          # Pointers are deleted once the row has left the wait (Rule 40), and written again for a row that
+          # waits again after a Restart or a reset (ADR #137 §3).
           - Effect: Allow
             Action:
               - dynamodb:DeleteItem
+              - dynamodb:PutItem
             Resource:
               - !GetAtt DependencySubscriptionsTable.Arn
           # Asset facts: the partition index plus recent writes (base table).
@@ -1581,6 +1582,13 @@ Resources:
               - states:SendTaskSuccess
               - states:SendTaskFailure
             Resource: "*"
+          # A stop of a run ends a stopped row's run_task and the run's own execution (ADR #137 §4); both state
+          # machines are named ${Namespace}-${Stage}-polyris-*.
+          - Effect: Allow
+            Action:
+              - states:StopExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-*:*"
 
   ReconcileRole:
     Type: AWS::IAM::Role
@@ -1914,14 +1922,12 @@ Resources:
                 Action:
                   - glue:GetTable
                 Resource: "*"
-              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C), and the
-              # reconciler, which resume asks to check a run's waiting tasks (ADR #130 §6.5).
+              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C).
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt NotifyFunction.Arn
-                  - !GetAtt ReconcileFunction.Arn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace

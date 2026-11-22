@@ -119,7 +119,6 @@ class Bindings:
                               (dal.pipelines_repo, "PipelineRegistryTable"), (dal.asset_events_repo, "AssetEventsTable"),
                               (dal.task_events_repo, "TaskEventsTable")):
             self._set(repo, "_table_name", tables[logical])
-        self._set(executions, "RECONCILE_FUNCTION_ARN", self.stack.function_arn("ReconcileFunction"))
         self._set(executions, "datetime", _clocked_datetime(self.clock))     # pause and resume times
         self._set(tasks, "datetime", _clocked_datetime(self.clock))          # an action's times and due time
         self._set(task_actions, "NOTIFY_DEPENDENTS_HELPER_ARN", self.stack.machine_arn("NotifyDependentsSfn"))

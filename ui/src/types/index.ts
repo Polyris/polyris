@@ -407,7 +407,6 @@ export interface PipelineDetailProps {
   onBackfill: () => void;
   onPauseResume: () => void;
   onStop: () => void;
-  onExtendPause: () => void;
   onTaskSelect: (task: Task) => void;
   selectedTask: Task | null;
   error: string | null;
@@ -929,7 +928,6 @@ export interface PipelineActions {
   handleRun: () => void;
   handleStop: () => void;
   handlePauseResume: () => void;
-  handleExtendPause: () => void;
   handleTaskAction: (action: string, task?: Task | null) => void;
   handleRunAction: (actionType: string, task: Task) => void;
   /** Which action is in flight, for button loading labels. */

@@ -97,7 +97,7 @@ polyris/
 │
 ├── sam/     # AWS Infrastructure
 │   ├── lambdas/          # Lambda function code
-│   │   ├── console_api/  # REST API (27 free endpoints)
+│   │   ├── console_api/  # REST API (26 free endpoints)
 │   │   ├── coordination/ # Start_Run, the dispatcher, the sweeper and asset fan-out (ADR #137)
 │   │   ├── query_subscriptions/     # Downstream subscriber lookup
 │   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
@@ -148,7 +148,7 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 | SDK core (DAG, tasks, DSL) | `tests/sdk/test_smoke.py` | `pytest tests/sdk/` | DAG structure, dependencies, ASL generation, constants |
 | ASL snapshots | `tests/sdk/test_asl_snapshots.py` | `pytest tests/sdk/` | Golden file comparison of generated Step Functions JSON |
 | Template features | `tests/sdk/test_templates.py` | `pytest tests/sdk/` | orchestration_timeout, route table, run_task resilience |
-| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 27 free console_api routes registered and callable |
+| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 26 free console_api routes registered and callable |
 | Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The 5 trigger rules, their aliases and the unknown-rule fallback |
 | SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for all 13 templates |
 | JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, 550 expressions compile |

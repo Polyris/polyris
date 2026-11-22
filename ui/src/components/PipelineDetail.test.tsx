@@ -40,7 +40,7 @@ const mockActions = {
     triggerParams: '{}', setTriggerParams: vi.fn(),
     actionPending: false, pendingAction: null as string | null,
     handleRun: vi.fn(), handleStop: vi.fn(), handlePauseResume: vi.fn(),
-    handleExtendPause: vi.fn(), handleRefresh: vi.fn(), handleTaskAction: vi.fn(), handleRunAction: vi.fn(),
+    handleRefresh: vi.fn(), handleTaskAction: vi.fn(), handleRunAction: vi.fn(),
     executeModalAction: vi.fn(), closeModal: vi.fn(),
 };
 vi.mock('../hooks', async () => {

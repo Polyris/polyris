@@ -29,7 +29,7 @@ export interface TaskDecisionContext {
 }
 
 /**
- * Resolve "the execution these pipeline-level actions (pause/resume/extend/stop)
+ * Resolve "the execution these pipeline-level actions (pause/resume/stop)
  * should target": the user's explicit selection if it still exists in the list,
  * otherwise whichever execution is currently running.
  *
@@ -182,23 +182,6 @@ export function usePipelineActions({
             setPendingAction(null);
         }
     }, [selectedPipeline, executions, selectedExecution, executionPaused, showToast, handleRefresh]);
-    
-    const handleExtendPause = useCallback(async () => {
-        const currentExecution = resolveCurrentExecution(executions, selectedExecution);
-        
-        if (!currentExecution?.execution_id) return;
-        
-        try {
-            const result = await api.post(`/execution-extend?id=${currentExecution.execution_id}`, {});
-            if (result.error) {
-                showToast(getApiErrorMessage(result), 'error');
-            } else {
-                showToast('Pause extended by 12 hours', 'success');
-            }
-        } catch (e: unknown) {
-            showToast(`Failed to extend pause: ${e instanceof Error ? e.message : String(e)}`, 'error');
-        }
-    }, [executions, selectedExecution, showToast]);
     
     // ========== Task Actions ==========
     const handleTaskAction = useCallback((action: string, task: Task | null = null) => {
@@ -506,7 +489,6 @@ export function usePipelineActions({
         handleRun,
         handleStop,
         handlePauseResume,
-        handleExtendPause,
         handleRefresh,
         
         // Task actions

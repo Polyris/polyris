@@ -242,7 +242,7 @@ def test_route_table_completeness():
         ('POST', '/api/task-skip'), ('POST', '/api/task-fail'), ('POST', '/api/task-success'),
         ('POST', '/api/task-stop'), ('POST', '/api/task-restart'), ('POST', '/api/task-retry'),
         ('POST', '/api/execution-stop'), ('POST', '/api/execution-pause'),
-        ('POST', '/api/execution-resume'), ('POST', '/api/execution-extend'),
+        ('POST', '/api/execution-resume'),
     ]
     for method, path in free_intervention:
         assert (method, path) in ROUTES, f"Missing free intervention route: {method} {path}"

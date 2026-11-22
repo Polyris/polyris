@@ -136,7 +136,6 @@ def test_two_passes_at_once_start_each_task_once(world):
     assert left_waiting(world, run) == []          # invariant 4 checks one run_task per row and generation
 
 
-@needs_binding("rows-ops")
 @defect("R-P1")
 def test_a_pause_between_a_passs_read_and_its_write_starts_nothing(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -150,7 +149,6 @@ def test_a_pause_between_a_passs_read_and_its_write_starts_nothing(world):
     assert world.running_tasks(run) == ["load"]
 
 
-@needs_binding("rows-ops")
 @defect("R-P1")
 def test_a_stop_between_a_passs_read_and_its_write_starts_nothing(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
@@ -247,7 +245,6 @@ def test_an_output_near_the_payload_limit_is_recorded_and_one_over_it_waits_for_
     assert world.pipeline_status(run) == "RUNNING"
 
 
-@needs_binding("rows-ops")
 @defect("R-W1")
 def test_a_limit_due_in_a_pause_fires_after_the_resume_moved_by_the_paused_time(world):
     timed = pipeline("orders", [("extract", {}), ("load", {"orchestration_timeout": timedelta(hours=1)})],
@@ -439,6 +436,7 @@ def test_a_late_success_of_a_run_task_the_engine_stopped_records_nothing(world):
     # The premise: the execution ended while its row ran (invariant 8); the engine stops the row at its check.
     world.plant(f"invariant 8: the execution of {run.name} ended while {run.execution_name('build')} were not final")
     world.clock.advance(minutes=31)
+    world.fail_stops("ServiceUnavailable", times=1)   # the stop of its run_task fails: the work goes on
     world.sweep()
     world.deliver_task_hints()
     assert world.status(run, "build") == "stopped"

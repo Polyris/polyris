@@ -22,7 +22,7 @@ Each route module exports handler functions that:
 # Route modules - Phase 2 complete
 from .executions import (
     get_all_runs, get_execution_children, get_execution_parent,
-    stop_execution, pause_execution, resume_execution, extend_pause
+    stop_execution, pause_execution, resume_execution
 )
 from .tasks import (
     get_all_tasks, get_task_config, get_task_events,
@@ -43,7 +43,6 @@ __all__ = [
     'stop_execution',
     'pause_execution',
     'resume_execution',
-    'extend_pause',
     # tasks
     'get_all_tasks',
     'get_task_config',

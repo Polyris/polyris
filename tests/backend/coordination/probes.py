@@ -76,9 +76,9 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-M1", (Edit(TASKS_ROUTE, "    partition_key = item.get('date')\n",
                         "    partition_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')\n"),),
           f"{SCENARIOS}::test_mark_success_writes_the_fact_for_the_marked_runs_partition"),
-    # The old resume never asked the reconciler: tasks parked during the pause stayed parked.
-    Probe("B-P1", (Edit(EXECUTIONS_ROUTE, "            'reconcile': _reconcile_run(pipeline_execution),\n",
-                        "            'reconcile': {},\n"),),
+    # A Resume that wakes no pass: tasks the pause held stay held until the run row's next check (ADR #137 §5).
+    Probe("B-P1", (Edit("polyris/coordination/transitions.py",
+                        "            or old.get(run_row.PAUSES) != new.get(run_row.PAUSES)\n", ""),),
           f"{SCENARIOS}::test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume"),
     # The old warning rows were found by partition date, not by write time: older ones never reached the bell.
     # The old pause waiter saved the token without an attention entry, so only resume could release it.
@@ -307,9 +307,8 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-U4", (Edit("sam/lambdas/coordination/asset_fanout.py",
                         "known_facts=[evidence], recorded_by=evidence.event_time)", "known_facts=[evidence])"),),
           f"{SCENARIOS}::test_the_catch_up_starts_no_run_that_a_cascade_none_backfill_completed"),
-    Probe("B-S2", (Edit("sam/lambdas/console_api/routes/executions.py",
-                        "sfn_arn = (pipelines_repo.get(pipeline_name) or {}).get('sfn_arn')",
-                        "sfn_arn = pipelines_repo.get_sfn_arn(pipeline_name)"),),
+    Probe("B-S2", (Edit(EXECUTIONS_ROUTE, "            executions_repo.transact_write([{'Update': update}])",
+                        "            executions_repo.transact_writes([{'Update': update}])"),),
           f"{SCENARIOS}::test_stopping_a_run_ends_its_execution"),
     Probe("B-R3", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
                         '"IntervalSeconds": 5,\n          "MaxAttempts": 2,\n          "BackoffRate": 2,\n          "JitterStrategy": "FULL"\n        }\n      ],\n      "Catch": [\n        {\n          "ErrorEquals": [\n            "States.ALL"\n          ],\n          "Comment": "The restart did not happen: say so in the bell, then fail.",\n          "Output": "{% $states.input ~> |$| {\'restart_error\': $states.errorOutput} | %}",\n          "Next": "Warn_Restart_Failed"\n        }\n      ]',
@@ -382,4 +381,12 @@ PROBES: Tuple[Probe, ...] = (
     Probe("R-O3", (Edit(ACTIONS, "                        table=table) for name in sorted(items)]",
                         "                        table=table) for name in sorted(items) if False]"),),
           f"{ROWS}::test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_restart"),
+    # A Pause that raises no run_version: a pass that read the run row before it still writes deps_ready (§1, §5).
+    Probe("R-P1", (Edit(ACTIONS, 'expression=f"SET #pauses = :pauses, {run_row.VERSION_RAISE}, #ttl = :ttl",',
+                        'expression="SET #pauses = :pauses, #ttl = :ttl",'),),
+          f"{ROWS}::test_a_pause_between_a_passs_read_and_its_write_starts_nothing"),
+    # The paused time moves no limit: the hour's limit fires right after the Resume (§5).
+    Probe("R-W1", (Edit("polyris/coordination/deadlines.py", "        if interval.end > begin:\n            deadline += "
+                        "interval.end - begin\n", ""),),
+          f"{ROWS}::test_a_limit_due_in_a_pause_fires_after_the_resume_moved_by_the_paused_time"),
 )

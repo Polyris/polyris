@@ -156,10 +156,9 @@ Click a task to open detail modal with actions:
 
 | Action | Description |
 |--------|-------------|
-| **⏸️ Pause** | Pause execution. Running tasks complete, new tasks wait. |
-| **▶️ Resume** | Resume paused execution. |
-| **⏰ +12h** | Extend pause timeout by 12 hours. |
-| **⏹️ Stop** | Stop all tasks immediately. |
+| **⏸️ Pause** | Pause the run: running tasks complete, no task starts. A pause lasts until the Resume. |
+| **▶️ Resume** | Resume the paused run: the tasks it held start. |
+| **⏹️ Stop** | Stop the run: its unfinished tasks stop, dependants first, within seconds. |
 
 ---
 

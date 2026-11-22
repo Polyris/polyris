@@ -380,7 +380,7 @@ sam/
       restart_wrapper/sfn.tpl.json
       pause_waiter/sfn.tpl.json
   lambdas/
-    console_api/      # REST API (27 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
+    console_api/      # REST API (26 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
     coordination/     # reconcile, asset-fanout, sweeper (ADR #130): decide readiness, signal wrappers, start push consumers, re-check
     query_subscriptions/  # Finds downstream subscribers for a completed task
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
@@ -581,7 +581,7 @@ After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums
 
 Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `register(router)`; `main.py` exposes the assembled `ROUTES` table `(METHOD, '/api/path') → (handler_fn, 'param_key')`.
 
-**Surface (ADR #98, #110):** 27 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
+**Surface (ADR #98, #110):** 26 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
@@ -631,11 +631,7 @@ except (ClientError, BotoCoreError) as e:
 
 **A new AWS call in `console_api` needs its IAM action on `ConsoleApiRole` in the same change.** Step Functions calls are pinned by `tests/sdk/test_console_api_sfn_iam_parity.py`; a missing `states:ListStateMachines` left `/api/health` at 503 on every stack until the ADR #131 live smoke caught it.
 
-**Stop pipeline hierarchy** (always stop in this order):
-1. Pipeline SFN execution (reconstruct ARN: `sfn_arn.replace(':stateMachine:', ':execution:') + ':' + pipeline_execution`)
-2. All `wrapper_execution_arn` from task items (deduplicated)
-3. All `task_execution_arn` from task items
-4. Update DynamoDB → `stopped`/`aborted`
+**Operator actions write rows; the engine does the rest (ADR #137 §3, §4).** The console sends a transaction that `polyris/coordination/actions.py` builds from its reads (a task's Skip, Fail, Mark Successful, Stop, Restart; a run's Stop, Pause, Resume) and stops, starts and answers nothing itself, apart from the `run_task` of a task it stops. A Stop of a run is its stop mark: the dispatcher stops the unfinished rows dependants first, each stopped row's `run_task`, then the run's execution, and answers the run. Every AWS call a coordination Lambda makes needs its grant in `sam/template.yaml`; `test_reconcile_role_allows_exactly_the_calls_the_code_makes` walks the dispatcher's paths, so a new path joins that walk (the renewal's pointer write lacked `dynamodb:PutItem` until the walk took a Restart).
 
 ---
 
