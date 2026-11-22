@@ -1692,6 +1692,26 @@ def test_every_failure_of_the_work_is_shaped_in_one_place(template):
     assert states["Shape_Failure"]["Next"] == "Check_Should_Retry"
 
 
+def test_a_task_that_waits_for_a_decision_ends_its_timeline_with_the_failure(template):
+    """1.2 wrote TASK_FINISHED failed with error_summary, which the console's timeline shows; run_task writes it
+    once the row waits for the decision, with the fields records.failure_event gives the dispatcher's failures."""
+    from polyris.coordination import records
+    from sfn_jsonata import NOW, evaluate
+    states = template["States"]
+    assert states["Ask"]["Next"] == "Emit_Task_Finished_Failed"
+    emit = states["Emit_Task_Finished_Failed"]
+    assert emit["Next"] == "Check_Is_Backfill" and _catches(emit)["States.ALL"] == "Check_Is_Backfill"
+    run_input = {"execution_name": "load-x", "pipeline_execution": "orders-run-x", "date": "2026-11-21",
+                 "task_name": "load", "timeline_ttl_seconds": 7776000}
+    item = evaluate(emit["Arguments"]["Item"], input={"error": "e" * 600}, context=_context(run_input),
+                    variables={"attempt": 1})
+    model = records.failure_event(task_run_id="x", execution_name="x", task_name="x", pipeline_execution="x",
+                                  partition_key="x", backfill_id="", now=NOW, cause="e" * 600)
+    assert set(model) <= set(item) and item["status"] == {"S": "failed"}
+    assert item["error_summary"] == {"S": model["error_summary"]}
+    assert item["event_time"]["S"].endswith(records.FINISHED_EVENT_ORDER)
+
+
 def test_the_row_keeps_at_most_4000_characters_of_the_error(template):
     """Every full pass reads the row, and attention-index projects it (the review of TR-5)."""
     from sfn_jsonata import evaluate

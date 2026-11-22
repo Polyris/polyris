@@ -473,6 +473,23 @@ def test_a_task_costs_few_state_transitions(world):
     assert world.run_task_transitions(run, "load") == [14]             # and one Map iteration per upstream read
 
 
+def test_a_failed_tasks_timeline_ends_with_its_failure_and_the_cause(world):
+    """run_task writes TASK_FINISHED failed when the task waits for a decision; the dispatcher writes it for a
+    failure run_task never saw, here a wait past its limit (records.FAILURE_EVENTS). 1.2 wrote the first."""
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract", status="failed")
+    events = world.timeline(run, "extract")
+    assert [e["event_type"] for e in events] == ["DEPS_READY", "TASK_STARTED", "TASK_FINISHED"]
+    assert events[-1]["status"] == "failed" and "the user's task failed" in events[-1]["error_summary"]
+    waiting = world.start_run(world.deploy(waits_for("p", [asset("ns/orders")])), DATE)
+    world.clock.advance(days=7, minutes=1)
+    world.sweep()
+    [event] = world.timeline(waiting, "consumer")
+    assert (event["event_type"], event["status"]) == ("TASK_FINISHED", "failed")
+    assert "waited past its limit" in event["error_summary"]
+
+
 def test_a_tasks_timeline_shows_the_decision_then_its_run_task(world):
     """The dispatcher writes its decision, run_task its start and its end, all under the row's run_task name: one
     timeline per generation (ADR #137 §1, invariant 4)."""

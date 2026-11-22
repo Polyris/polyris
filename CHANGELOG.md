@@ -39,6 +39,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - A failure whose cause Step Functions cut at 32,768 characters goes through the task's retries. It failed the task 10 to 15 minutes later with `States.QueryEvaluationError`.
 - An `@task.sfn` task with a long `task_id` gets a unique name for its child execution. From 42 characters a retry failed with `ExecutionAlreadyExists`, from 56 a second run of the date did.
 - A task row keeps at most 4,000 characters of a failure's error; the execution's history keeps all of it.
+- A failed task's timeline ends with its failure and the cause: when it waits for a decision, as in 1.2, and when it fails without starting its work or without an outcome (a wait past its limit, a start refused, an execution that ended).
 - The `is_backfill` variable is `true` in a run of a backfill, and `backfill_id` carries its id; they were always `false` and empty.
 - A run of an hourly, weekly or monthly partition (a backfill of such partitions) runs its tasks: each of them failed 10 to 15 minutes after its start with `States.QueryEvaluationError`. `current_date` stays the partition's key, and every other date variable is that of the partition's first day; `date_iso`, `year`, `month` and `day` were cut from the key.
 

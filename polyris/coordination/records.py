@@ -40,6 +40,15 @@ DEPS_BLOCKED = "DEPS_BLOCKED"
 DECISION_EVENTS = {"ready": DEPS_READY, "skip_by_rule": DEPS_SKIPPED, "block": DEPS_BLOCKED}
 #: The sort-key suffix of a decision's event: before run_task's TASK_STARTED (``#10``), as 1.2's wrapper wrote it.
 DECISION_EVENT_ORDER = "#05"
+TASK_FINISHED = "TASK_FINISHED"
+#: The dispatcher's moves that fail a task whose failure run_task never recorded: each ends the task's timeline
+#: with TASK_FINISHED failed, as run_task's Emit_Task_Finished_Failed does when it asks for a decision.
+#: fail_undecided follows run_task's own event.
+FAILURE_EVENTS = frozenset({"fail_wait", "fail_start", "fail_dead"})
+#: After run_task's TASK_STARTED (#10) in a timeline's order, as run_task's TASK_FINISHED is.
+FINISHED_EVENT_ORDER = "#20"
+#: The characters of a cause the timeline keeps, as 1.2 did; the row keeps more, the execution all of it.
+ERROR_SUMMARY_MAX = 500
 #: Facts written by ADR #130 writers. Older facts have no version.
 FACT_VERSION = 2
 
@@ -151,6 +160,21 @@ def decision_event(*, transition: str, task_run_id: str, execution_name: str, ta
         item["reason"] = "; ".join(reasons or []) or ("Upstream task failed" if event_type == DEPS_BLOCKED
                                                       else "Trigger rule condition did not occur")
     return item
+
+
+def error_summary(cause: str) -> str:
+    """A cause as a timeline event keeps it; run_task's Emit_Task_Finished_Failed cuts it the same way."""
+    return cause if len(cause) <= ERROR_SUMMARY_MAX else cause[:ERROR_SUMMARY_MAX] + "..."
+
+
+def failure_event(*, task_run_id: str, execution_name: str, task_name: str, pipeline_execution: str,
+                  partition_key: str, backfill_id: str, now: datetime, cause: str) -> Dict[str, Any]:
+    """The end of the timeline of a task the dispatcher failed (FAILURE_EVENTS): TASK_FINISHED failed with its
+    cause, the fields run_task writes. Under the row's run_task name, as the decision events (invariant 4)."""
+    return {"task_run_id": task_run_id, "event_time": format_utc(now) + FINISHED_EVENT_ORDER,
+            "event_type": TASK_FINISHED, "execution_name": execution_name, "parent_execution_id": pipeline_execution,
+            "backfill_id": backfill_id, "partition_key": partition_key, "task_name": task_name, "status": FAILED,
+            "error_summary": error_summary(cause), "ttl": retention.ttl(now, retention.TIMELINE)}
 
 
 def asset_fact_item(

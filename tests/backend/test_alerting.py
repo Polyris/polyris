@@ -38,7 +38,7 @@ def load(helper_name):
 
 class TestRunTaskAlertingFlow:
     """The failure flow of 1.3 (ADR #137 §1): retries, then Get_Decision_Timeout → Ask (waiting_decision) →
-    Check_Is_Backfill → Interactive_Slack → Send_PagerDuty_Alert → the end. No process waits for the
+    Emit_Task_Finished_Failed → Check_Is_Backfill → Interactive_Slack → Send_PagerDuty_Alert → the end. No process waits for the
     decision: the dispatcher fails the row at its deadline."""
 
     @pytest.fixture(autouse=True)
@@ -48,7 +48,8 @@ class TestRunTaskAlertingFlow:
     def test_exhausted_retries_read_the_decision_timeout_then_ask(self):
         assert self.rt['States']['Check_Should_Retry']['Default'] == 'Get_Decision_Timeout'
         assert self.rt['States']['Get_Decision_Timeout']['Next'] == 'Ask'
-        assert self.rt['States']['Ask']['Next'] == 'Check_Is_Backfill'
+        assert self.rt['States']['Ask']['Next'] == 'Emit_Task_Finished_Failed'
+        assert self.rt['States']['Emit_Task_Finished_Failed']['Next'] == 'Check_Is_Backfill'
 
     def test_get_decision_timeout_reads_global_settings(self):
         """Get_Decision_Timeout reads the reserved __global_settings__ registry

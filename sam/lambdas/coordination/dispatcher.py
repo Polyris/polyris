@@ -350,7 +350,7 @@ class Dispatcher:
                                countdown_ended=countdown is not None and countdown <= state.now,
                                resumed_at=pauses.resumed_at(state.run.pauses)):
                 state.lost.append(name)
-        if judgment.transition in records.DECISION_EVENTS:
+        if judgment.transition in records.DECISION_EVENTS or judgment.transition in records.FAILURE_EVENTS:
             self._timeline(state, name, row, judgment)
         if judgment.warning:
             self._warn(state.run, subject=row.key, task=name, item=state.items[name], error=judgment.warning)
@@ -358,15 +358,19 @@ class Dispatcher:
             self._start(state, name, row)
 
     def _timeline(self, state: _Pass, name: str, row: dispatch.RowView, judgment: dispatch.Judgment) -> None:
-        """The decision's event in the task's timeline (ADR #137 §1). Best effort, as 1.2's wrapper wrote it: the
-        row holds the state, and only the console's timeline reads the events; a failure is logged."""
-        event = records.decision_event(
-            transition=str(judgment.transition),
-            task_run_id=run_name.run_task_name(row.key, state.run.run_start, row.generation),
-            execution_name=row.key, task_name=name, pipeline_execution=state.run.execution,
-            partition_key=state.run.date, backfill_id=str(state.items[name].get(task_row.BACKFILL_ID) or ""),
-            now=state.now, dependencies=list(row.dependencies),
-            reasons=[str(r) for r in judgment.fields.get(task_row.REASONS) or []])
+        """The decision's event in the task's timeline, or the end of a task it failed (ADR #137 §1). Best effort,
+        as 1.2's wrapper wrote it: the row holds the state, and only the console's timeline reads the events; a
+        failure is logged."""
+        common = dict(task_run_id=run_name.run_task_name(row.key, state.run.run_start, row.generation),
+                      execution_name=row.key, task_name=name, pipeline_execution=state.run.execution,
+                      partition_key=state.run.date,
+                      backfill_id=str(state.items[name].get(task_row.BACKFILL_ID) or ""), now=state.now)
+        if judgment.transition in records.FAILURE_EVENTS:
+            event = records.failure_event(**common, cause=str(judgment.cause or ""))
+        else:
+            event = records.decision_event(transition=str(judgment.transition), **common,
+                                           dependencies=list(row.dependencies),
+                                           reasons=[str(r) for r in judgment.fields.get(task_row.REASONS) or []])
         try:
             self.client.put_item(TableName=self.task_events_table,
                                  Item={k: _serializer.serialize(v) for k, v in event.items()})

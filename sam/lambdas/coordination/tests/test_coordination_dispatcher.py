@@ -921,6 +921,17 @@ def test_a_blocked_row_writes_deps_blocked_with_the_reason(world):
     assert [event["reason"]] == item(world, key("load"))["reasons"]                # the reason the row records
 
 
+def test_a_start_refused_for_good_ends_the_timeline_with_the_failure(world):
+    """A failure run_task never recorded ends the timeline as run_task's own does (records.FAILURE_EVENTS)."""
+    start(world, CHAIN)
+    world.sfn.errors["start_execution"] = client_error("StateMachineDoesNotExist", "StartExecution")
+    full(world)
+    finished = [e for e in timeline(world, "extract") if e["event_type"] == "TASK_FINISHED"]
+    [event] = finished
+    assert event["status"] == "failed" and "StateMachineDoesNotExist" in event["error_summary"]
+    assert event["task_run_id"] == item(world, key("extract")).get("task_run_id", event["task_run_id"])
+
+
 def test_a_timeline_that_cannot_be_written_holds_up_no_decision(world):
     """Best effort, as 1.2's wrapper wrote it: the row holds the state (ADR #137 §1)."""
     start(world, CHAIN)

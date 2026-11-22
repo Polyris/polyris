@@ -48,3 +48,26 @@ def test_the_decision_events_follow_the_dispatchers_transitions_and_the_consoles
     for name in records.DECISION_EVENTS:
         assert transitions.Writer.DISPATCHER in transitions.task_transition(name).writers, name
     assert records.DECISION_EVENT_ORDER < "#10"                       # before run_task's TASK_STARTED
+
+
+def test_a_failure_the_dispatcher_writes_ends_the_timeline_with_its_cause():
+    """A task that fails without run_task recording it (a wait limit, a start refused, an execution that ended
+    without an outcome) ends its timeline as run_task's own failure does, with the cause cut to 500 characters."""
+    event = records.failure_event(task_run_id="load-x-1a2b", execution_name="load-2026-11-21-x", task_name="load",
+                                  pipeline_execution="orders-run-x", partition_key="2026-11-21", backfill_id="",
+                                  now=NOW, cause="e" * 600)
+    assert event == {"task_run_id": "load-x-1a2b", "event_time": "2026-11-21T06:00:00.000Z#20",
+                     "event_type": "TASK_FINISHED", "execution_name": "load-2026-11-21-x",
+                     "parent_execution_id": "orders-run-x", "backfill_id": "", "partition_key": "2026-11-21",
+                     "task_name": "load", "status": "failed", "error_summary": "e" * 500 + "...",
+                     "ttl": retention.ttl(NOW, retention.TIMELINE)}
+    assert records.error_summary("short") == "short"
+
+
+def test_the_failure_events_follow_the_dispatchers_failing_moves_and_the_consoles_names():
+    body = re.search(r"class EventType:(.*?)(?=\nclass |\Z)", CONSOLE_CONSTANTS.read_text(), re.DOTALL).group(1)
+    assert records.TASK_FINISHED in set(re.findall(r"'([A-Z_]+)'", body))
+    for name in records.FAILURE_EVENTS:
+        move = transitions.task_transition(name)
+        assert transitions.Writer.DISPATCHER in move.writers and move.target == "failed", name
+    assert records.FINISHED_EVENT_ORDER > "#10"                       # after run_task's TASK_STARTED

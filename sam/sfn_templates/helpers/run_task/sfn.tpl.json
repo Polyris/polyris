@@ -1155,6 +1155,86 @@
           "Next": "Ask_Failed"
         }
       ],
+      "Next": "Emit_Task_Finished_Failed"
+    },
+    "Emit_Task_Finished_Failed": {
+      "Type": "Task",
+      "Comment": "The end of the task's work in its timeline: failed, with the cause cut as records.error_summary cuts it (1.2 wrote it so). Best effort: the row is the state. Each retry is in the timeline already (TASK_RETRY_STARTED); the decision flow reads no retry counter.",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${task_events_table}",
+        "Item": {
+          "task_run_id": {
+            "S": "{% $states.context.Execution.Name %}"
+          },
+          "event_time": {
+            "S": "{% $now() & '#20' %}"
+          },
+          "event_type": {
+            "S": "TASK_FINISHED"
+          },
+          "execution_name": {
+            "S": "{% $states.context.Execution.Input.execution_name %}"
+          },
+          "parent_execution_id": {
+            "S": "{% $states.context.Execution.Input.pipeline_execution %}"
+          },
+          "backfill_id": {
+            "S": "{% $exists($states.context.Execution.Input.backfill_id) ? $states.context.Execution.Input.backfill_id : '' %}"
+          },
+          "partition_key": {
+            "S": "{% $states.context.Execution.Input.date %}"
+          },
+          "task_name": {
+            "S": "{% $states.context.Execution.Input.task_name %}"
+          },
+          "status": {
+            "S": "failed"
+          },
+          "attempt": {
+            "N": "{% $string($attempt) %}"
+          },
+          "ttl": {
+            "N": "{% $string($floor($toMillis($now()) / 1000) + $states.context.Execution.Input.timeline_ttl_seconds) %}"
+          },
+          "error_summary": {
+            "S": "{% ( $err := $string($states.input.error); $length($err) > 500 ? $substring($err, 0, 500) & '...' : $err ) %}"
+          }
+        }
+      },
+      "Output": "{% $states.input %}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ConditionalCheckFailedException",
+            "DynamoDb.ConditionalCheckFailedException",
+            "DynamoDb.TransactionCanceledException",
+            "States.QueryEvaluationError",
+            "States.DataLimitExceeded"
+          ],
+          "MaxAttempts": 0
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "The timeline is best effort: the row is the state.",
+          "Output": "{% $states.input %}",
+          "Next": "Check_Is_Backfill"
+        }
+      ],
       "Next": "Check_Is_Backfill"
     },
     "Ask_Failed": {
