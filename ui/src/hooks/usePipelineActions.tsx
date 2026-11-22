@@ -89,6 +89,8 @@ export function usePipelineActions({
     const [actionPending, setActionPending] = useState(false);
     // Which action is in flight, for button loading labels: 'run' | 'pause' | 'resume' | 'stop'.
     const [pendingAction, setPendingAction] = useState<string | null>(null);
+    /** Restart with dependants: also rerun the dependants its failure or stop decided (ADR #137 §3). */
+    const [withDependants, setWithDependants] = useState(false);
     
     // ========== Invalidation Helpers ==========
     // eslint-disable-next-line react-hooks/preserve-manual-memoization -- manual useCallback kept intentionally
@@ -219,7 +221,7 @@ export function usePipelineActions({
             },
             restart: {
                 title: 'Restart Task',
-                message: `Restart "${targetTask.task_name}"? This will stop the current execution and start fresh.`,
+                message: `Restart "${targetTask.task_name}"? It runs again from the start.`,
                 icon: <RotateCcw size={20} className="text-blue-500" />,
                 confirmText: 'Restart',
                 confirmStyle: 'btn-primary'
@@ -256,6 +258,7 @@ export function usePipelineActions({
         }
 
         onSelectTask(targetTask);
+        setWithDependants(false);
         setModal({
             isOpen: true,
             action,
@@ -446,7 +449,8 @@ export function usePipelineActions({
             setModal(prev => ({ ...prev, isOpen: false }));
             return;
         }
-        const result = await api.post(endpoints[action], { date });
+        const body = action === 'restart' && withDependants ? { date, with_dependants: true } : { date };
+        const result = await api.post(endpoints[action], body);
         setModal(prev => ({ ...prev, isOpen: false }));
         if (result.error) {
             showToast(getApiErrorMessage(result), 'error');
@@ -468,7 +472,7 @@ export function usePipelineActions({
     }, [
         modal.action, triggerParams, selectedPipeline, selectedTask, tasks, executions,
         selectedExecution, date, setDate, setSelectedExecution,
-        showToast, invalidateAll
+        showToast, invalidateAll, withDependants
     ]);
     
     const closeModal = useCallback(() => {
@@ -484,6 +488,8 @@ export function usePipelineActions({
         setExecutionPaused,
         actionPending,
         pendingAction,
+        withDependants,
+        setWithDependants,
         
         // Pipeline actions
         handleRun,

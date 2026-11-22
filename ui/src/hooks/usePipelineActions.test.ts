@@ -347,6 +347,26 @@ describe('usePipelineActions', () => {
       expect(defaultProps.showToast).toHaveBeenCalledWith('Task skipped', 'success');
     });
 
+    it('should restart with its dependants when the box is ticked', async () => {
+      mockApiPost.mockResolvedValue({ success: true });
+
+      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
+
+      act(() => {
+        result.current.handleTaskAction('restart');
+      });
+      expect(result.current.withDependants).toBe(false);          // each Restart dialog starts unticked
+      act(() => {
+        result.current.setWithDependants(true);
+      });
+      await act(async () => {
+        await result.current.executeModalAction();
+      });
+
+      expect(mockApiPost).toHaveBeenCalledWith('/task-restart?name=exec-task-1',
+        { date: '2024-01-15', with_dependants: true });
+    });
+
     it('should handle invalid JSON params', async () => {
       const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
       

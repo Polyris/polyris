@@ -32,6 +32,8 @@ export function PipelineActionsProvider({ params, children }: PipelineActionsPro
                 pipelineName={params.selectedPipeline?.name ?? ''}
                 triggerParams={actions.triggerParams}
                 onTriggerParamsChange={actions.setTriggerParams}
+                withDependants={actions.withDependants}
+                onWithDependantsChange={actions.setWithDependants}
             />
         </>
     );

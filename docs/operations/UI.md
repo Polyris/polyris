@@ -150,7 +150,7 @@ Click a task to open detail modal with actions:
 | **Skip** | Mark as skipped, notify dependents |
 | **Fail** | Mark as failed, notify dependents |
 | **Stop** | Force stop running execution |
-| **Restart** | Retry failed task |
+| **Restart** | Run a finished or undecided task again; tick *Also rerun the dependants its failure or stop decided* to rerun them too |
 
 ### Pipeline Actions
 

@@ -27,6 +27,9 @@ interface ActionModalProps {
     pipelineName: string;
     triggerParams: string;
     onTriggerParamsChange: (value: string) => void;
+    /** Restart only: also rerun the dependants its failure or stop decided. */
+    withDependants?: boolean;
+    onWithDependantsChange?: (value: boolean) => void;
 }
 
 function statusLabel(status: string): string {
@@ -117,6 +120,8 @@ export function ActionModal({
     pipelineName,
     triggerParams,
     onTriggerParamsChange,
+    withDependants = false,
+    onWithDependantsChange,
 }: ActionModalProps) {
     return (
         <Modal
@@ -137,6 +142,16 @@ export function ActionModal({
         >
             {modal.taskContext && (modal.action === 'skip' || modal.action === 'success') && (
                 <DecisionContext ctx={modal.taskContext} />
+            )}
+            {modal.action === 'restart' && onWithDependantsChange && (
+                <label className="flex items-center gap-2 text-sm mt-sm">
+                    <input
+                        type="checkbox"
+                        checked={withDependants}
+                        onChange={e => onWithDependantsChange(e.target.checked)}
+                    />
+                    <span>Also rerun the dependants its failure or stop decided</span>
+                </label>
             )}
             {modal.customContent && modal.action === 'runPipeline' && (
                 <div>
