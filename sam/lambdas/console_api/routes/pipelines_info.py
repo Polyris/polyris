@@ -10,7 +10,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from dal import executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing
-from feed import latest_run_of_date
+from feed import dependencies_of, latest_run_of_date, readiness_of
 from polyris.constants import TaskSpecKey as K
 from polyris.coordination import run_row
 from polyris.coordination.task_spec import SpecError
@@ -183,12 +183,7 @@ def _inferred_graph(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]
         if task_name in countdowns:
             node['wait_before'] = countdowns[task_name]
         nodes.append(node)
-        deps_str = item.get('dependencies', '[]')
-        try:
-            deps = json.loads(deps_str) if isinstance(deps_str, str) else deps_str
-        except (json.JSONDecodeError, TypeError, ValueError):
-            deps = []
-        edges.extend({'from': dep, 'to': task_name} for dep in deps)
+        edges.extend({'from': dep, 'to': task_name} for dep in dependencies_of(item, readiness_of(item)))
     return {'nodes': nodes, 'edges': edges}
 
 

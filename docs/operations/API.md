@@ -178,6 +178,10 @@ How far back a page can reach depends on the filters:
 GET /api/task-config?name={execution_name}
 ```
 
+Returns the task's `timeout_seconds` and `max_retries`. For a run of 1.3 they come from its run's spec version
+(`execution_timeout`, `null` when the work has no limit, and the retries of its `task_config`), and the route answers
+503 with the cause when that version cannot be read.
+
 ### Get Task Output
 
 ```http
@@ -286,7 +290,6 @@ started before 1.3 takes none of them (409).
 
 ```http
 GET /api/execution-children?id={execution_name}
-GET /api/execution-parent?id={execution_name}
 ```
 
 ---

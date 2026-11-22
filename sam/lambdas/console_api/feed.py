@@ -20,6 +20,7 @@ on ``date`` and fans the window out one query per day, a pipeline-filtered feed 
 :func:`page_by_started_at`, so there is one paging dialect regardless of the source.
 """
 
+import json
 from datetime import datetime, date as date_cls, timezone, timedelta
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
@@ -27,7 +28,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from polyris.constants import ExecutionStatus
-from polyris.coordination import run_end, run_row, task_row, transitions
+from polyris.coordination import run_end, run_row, task_row, task_spec, transitions
 from dal import executions_repo
 from constants import Limits
 from logger import log
@@ -320,6 +321,39 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
         })
     fill_triggered_by(legacy)
     return runs + legacy
+
+
+def readiness_of(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """A 1.3 row's readiness fields (dependencies, trigger rule, wait_before, wait_for), or {} for a 1.2 row."""
+    text = item.get(task_row.READINESS)
+    if not text:
+        return {}
+    try:
+        return task_spec.readiness_from_text(str(text))
+    except (ValueError, TypeError) as e:
+        log.warn("feed", "A task row's readiness cannot be read", execution_name=item.get('execution_name'),
+                 error=str(e))
+        return {}
+
+
+def dependencies_of(item: Mapping[str, Any], readiness: Mapping[str, Any]) -> List[str]:
+    """A row's dependencies: in its readiness on a 1.3 row (ADR #137 §8), as the JSON text 1.2 wrote on an older
+    one. A 1.3 row has no field of 1.2's, so a read of that field drew its graph without edges (review of TR-6d)."""
+    if readiness:
+        return [str(d) for d in readiness.get('dependencies') or []]
+    raw = item.get('dependencies', '[]')
+    try:
+        deps = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    return [str(d) for d in deps] if isinstance(deps, list) else []
+
+
+def wait_for_text(item: Mapping[str, Any], readiness: Mapping[str, Any]) -> str:
+    """A row's wait_for as the JSON text the console returns: from its readiness on a 1.3 row, 1.2's text on another."""
+    if readiness.get('wait_for'):
+        return json.dumps(readiness['wait_for'])
+    return str(item.get('wait_for') or '[]')
 
 
 def is_stale(item: Mapping[str, Any]) -> bool:

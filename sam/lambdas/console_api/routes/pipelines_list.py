@@ -13,18 +13,20 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
 from botocore.exceptions import ClientError, BotoCoreError
-from polyris.constants import ACCESS_DENIED_CODES
-from polyris.coordination import attention, dispatch, run_row, task_row, task_spec, trigger_rules
+from polyris.constants import ACCESS_DENIED_CODES, TaskConfigKey, TaskSpecKey
+from polyris.coordination import attention, dispatch, run_row, task_row, trigger_rules
 
 from config import sfn
-from dal import executions_repo, pipelines_repo
-from dal.specs_repo import needs_redeploy
+from dal import executions_repo, pipelines_repo, specs_repo
+from dal.specs_repo import SpecsMissing, needs_redeploy
+from polyris.coordination.task_spec import SpecError
 from constants import Limits, TaskStatus
-from feed import (feed_dates, is_stale, latest_run_of_date, page_by_started_at, run_counts, run_entry,
-                  run_rows_before, runs_of_date)
+from feed import (dependencies_of, feed_dates, is_stale, latest_run_of_date, page_by_started_at, readiness_of,
+                  run_counts, run_entry, run_rows_before, runs_of_date, wait_for_text)
 from response import cors_response, index_building_response
 from logger import log
-from utils import safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries
+from utils import (safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries,
+                   parse_task_config)
 
 def list_pipelines(event: Dict) -> Dict:
     """List the registered pipelines; with ``?stats=true`` each one's latest run, recent runs and SLA.
@@ -73,7 +75,6 @@ def list_pipelines(event: Dict) -> Dict:
                     # (ADR #137, *Migration*): its runs fail until polyris-deploy runs again.
                     'needs_redeploy': needs_redeploy(item),
                     'status': 'idle',
-                    'paused': False,
                     'sla': None,
                     'recent_runs': None,
                     # The latest run waits for an operator (ADR #112 §7 follow-up): a
@@ -99,7 +100,6 @@ def list_pipelines(event: Dict) -> Dict:
                         'description': '',
                         'needs_redeploy': True,  # it has no registry entry, so no format either
                         'status': 'idle',
-                        'paused': False,
                         'sla': None,
                         'waiting_on': None,
                         'failed_tasks': None,
@@ -198,6 +198,22 @@ def _finish_runs(pipeline: Dict, runs: list) -> None:
     pipeline['status'] = latest['status']
 
 
+def _spec_retries(run_item: Optional[Dict]) -> Dict[str, int]:
+    """Each task's retries from its run's spec version (ADR #137 §8): a 1.3 row holds none, and the page showed none
+    (the review of TR-6d, P-8). {} for a run from before 1.3, whose rows hold them, or for a version that cannot be
+    read, when the page shows no limit of retries."""
+    if not run_item or not run_item.get(run_row.SPEC_ID):
+        return {}
+    try:
+        version = specs_repo.version(str(run_item[run_row.SPEC_ID]), int(run_item.get(run_row.TASK_COUNT, 0)))
+    except (SpecsMissing, SpecError, ClientError, BotoCoreError, ValueError) as e:
+        log.warn("pipeline_status", "The run's spec version cannot be read; the page shows no retries",
+                 run=run_item.get(run_row.TABLE_KEY), error=str(e))
+        return {}
+    return {name: safe_int(parse_task_config(spec.fields.get(TaskSpecKey.TASK_CONFIG.value)).get(TaskConfigKey.RETRIES.value), 0)
+            for name, spec in version.items()}
+
+
 def _run_state(item: Optional[Dict]) -> Optional[Dict]:
     """What the run row says of its run and its task rows do not (ADR #137 §3, §5): whether a pause holds it, and
     whether a Stop of it is in progress. The page guessed a pause from rows that had become ``waiting_paused``,
@@ -207,19 +223,6 @@ def _run_state(item: Optional[Dict]) -> Optional[Dict]:
         return None
     view = dispatch.run_view(item)
     return {'paused': view.paused, 'stopping': view.stopping}
-
-
-def _readiness(item: Dict) -> Dict:
-    """A 1.3 row's readiness fields (dependencies, trigger rule, wait_before, wait_for), or {} for a 1.2 row."""
-    text = item.get(task_row.READINESS)
-    if not text:
-        return {}
-    try:
-        return task_spec.readiness_from_text(str(text))
-    except (ValueError, TypeError) as e:
-        log.warn("pipeline_status", "A task row's readiness cannot be read", execution_name=item.get('execution_name'),
-                 error=str(e))
-        return {}
 
 
 def _why_it_waits(item: Dict, readiness: Dict, rows: Dict[str, Dict]) -> Dict:
@@ -284,18 +287,12 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
     if not task_map:
         selected_execution = None
     run_item = executions_repo.get(run_row.key(selected_execution)) if selected_execution else None
+    retries = _spec_retries(run_item)
 
     # Now build the final task list
     tasks = []
     for task_name, item in task_map.items():
-        readiness = _readiness(item)
-        # Parse dependencies: a 1.3 row holds them in its readiness (ADR #137 §8), a 1.2 row as JSON text
-        deps_str = item.get('dependencies', '[]')
-        try:
-            deps = readiness.get('dependencies') if readiness else (
-                json.loads(deps_str) if isinstance(deps_str, str) else deps_str)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            deps = []
+        readiness = readiness_of(item)
         
         # Parse result
         result_str = item.get('result', '{}')
@@ -310,8 +307,8 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'execution_name': item.get('execution_name', ''),
             'task_name': task_name,
             'status': item.get('status', 'unknown'),
-            'dependencies': deps or [],
-            'wait_for': json.dumps(readiness['wait_for']) if readiness.get('wait_for') else item.get('wait_for', '[]'),
+            'dependencies': dependencies_of(item, readiness),
+            'wait_for': wait_for_text(item, readiness),
             'started_at': item.get('started_at', ''),
             'running_at': item.get('running_at'),
             'finished_at': item.get('finished_at'),
@@ -321,8 +318,6 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'wait_delay_started_ms': safe_int(item.get('wait_delay_started_ms')),
             'wait_delay_until_ms': safe_int(item.get('wait_delay_until_ms')),
             'trigger_rule': readiness.get('trigger_rule') or item.get('trigger_rule', 'all_success'),
-            'config': {
-            },
             'pipeline_name': item.get('pipeline_name', 'unknown'),
             'pipeline_execution': item.get('pipeline_execution'),
             'pipeline_execution_short': item.get('pipeline_execution_short'),
@@ -335,7 +330,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             # retry_attempt (ADR #125) — in-SFN auto-retry index for the current wrapper.
             # Distinct from `attempt` which bumps only on manual Restart.
             'retry_attempt': safe_int(item.get('retry_attempt'), 0),
-            'max_retries': resolve_max_retries(item),
+            'max_retries': retries[task_name] if task_name in retries else resolve_max_retries(item),
             **_why_it_waits(item, readiness, task_map),
             **({'stale': True} if is_stale(item) else {}),
         })

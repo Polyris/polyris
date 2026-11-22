@@ -66,7 +66,7 @@ class TestListPipelines:
         p = body['pipelines'][0]
         assert p['name'] == 'acme-daily'
         assert p['group'] == 'acme'
-        assert p['paused'] is False  # default
+        assert 'paused' not in p      # a pause belongs to a run, not to a pipeline (ADR #137 §5)
         assert p['status'] == 'idle'
 
     def test_stats_param_false_skips_expensive_scan(self, pipelines_module):

@@ -170,14 +170,6 @@ class TestExecutionChildren:
         assert resp["status"] in (400, 422)
 
 
-class TestExecutionParent:
-    """GET /api/execution-parent"""
-
-    def test_requires_params(self, api):
-        resp = api.get("/api/execution-parent")
-        assert resp["status"] in (400, 422)
-
-
 # =============================================================================
 # Notifications
 # =============================================================================

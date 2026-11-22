@@ -758,9 +758,6 @@ function ApiReferenceTab() {
                     <ApiEndpointDetail method="GET" path="/api/execution-children?id=RUN" desc="Get the run's tasks"
                         example={`curl "${BASE}/api/execution-children?id=acme-daily-run-2026-11-12-abcd1234"`}
                     />
-                    <ApiEndpointDetail method="GET" path="/api/execution-parent?id=TASK_EXECUTION" desc="Get a task's pipeline execution"
-                        example={`curl "${BASE}/api/execution-parent?id=extract-2026-11-12--2026-11-12-abcd1234"`}
-                    />
                 </div>
             </div>
             

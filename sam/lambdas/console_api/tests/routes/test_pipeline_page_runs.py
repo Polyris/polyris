@@ -266,3 +266,31 @@ def test_the_page_says_whether_a_pause_holds_the_run_or_a_stop_of_it_is_in_progr
     assert status_of(date='2026-11-20')['run'] == {'paused': True, 'stopping': False}
     assert status_of(date='2026-11-21')['run'] == {'paused': False, 'stopping': True}
     assert status_of(date='2026-11-19')['run'] is None            # a run from before 1.3 has no run row
+
+
+def test_a_1_3_task_reads_its_dependencies_retries_and_limits_from_its_run_s_spec(world):
+    """The review of TR-6d, P-8: a 1.3 row holds its dependencies in its readiness and its retries and timeout in its
+    run's spec version; the routes read 1.2's fields, which it has not."""
+    from polyris.coordination import task_spec
+    from routes.tasks import get_all_tasks, get_task_config
+    from routes import pipelines_info
+    ran = deploy_specs(world.resource, 'orders', [spec('extract', task_config={'retries': 3}, execution_timeout=600),
+                                                  spec('load', dependencies=['extract'])])
+    run = put_run(world.table, 'orders', '2026-11-20', days_ago(0), summary={'running': 1, 'waiting': 1},
+                  spec_id=ran['spec_id'], task_count=ran['task_count'])
+    put_task(world.table, run, 'extract', '2026-11-20', 'running', started=days_ago(0),
+             readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []}))
+    put_task(world.table, run, 'load', '2026-11-20', 'waiting', started=days_ago(0),
+             readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': ['extract']}))
+
+    tasks = {t['task_name']: t for t in status_of(date='2026-11-20')['tasks']}
+    assert (tasks['load']['dependencies'], tasks['extract']['max_retries'], tasks['load']['max_retries']) == (
+        ['extract'], 3, 0)
+    assert 'config' not in tasks['load']
+    listed = json.loads(get_all_tasks({'queryStringParameters': {'pipeline': 'orders', 'date': '2026-11-20'}})['body'])
+    assert {t['task_name']: t['dependencies'] for t in listed['tasks']} == {'extract': [], 'load': ['extract']}
+    config = json.loads(get_task_config('extract', {'queryStringParameters': {'pipeline_execution': run,
+                                                                          'date': '2026-11-20'}})['body'])
+    assert config['config'] == {'timeout_seconds': 600, 'max_retries': 3}
+    rows = world.table.scan()['Items']                                    # the graph a missing spec leaves
+    assert {'from': 'extract', 'to': 'load'} in pipelines_info._inferred_graph(rows)['edges']

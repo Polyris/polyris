@@ -20,6 +20,7 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn, ASSET_EVENT_TTL_DAYS
+from polyris.constants import TaskConfigKey, TaskSpecKey
 from polyris.coordination import actions, run_input, run_row, task_row
 from polyris.coordination.records import warning_item
 from dal import asset_events_repo, executions_repo, specs_repo
@@ -28,14 +29,15 @@ from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
 from constants import Limits
 from constants_generated import ManualResolution
-from feed import feed_dates, is_older, is_stale, page_by_started_at, pipeline_rows_before
+from feed import (dependencies_of, feed_dates, is_older, is_stale, page_by_started_at, pipeline_rows_before,
+                  readiness_of, wait_for_text)
 from response import cors_response, safe_parse_body
 from logger import log
 from auth import operator_display
 from utils import (
     should_skip_token_row,
     is_execution_name, safe_int, safe_param_int,
-    resolve_pagerduty, retrieve_result, resolve_max_retries
+    resolve_pagerduty, retrieve_result, resolve_max_retries, parse_task_config
 )
 
 
@@ -149,6 +151,7 @@ def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
                      error=str(e))
 
     max_retries = resolve_max_retries(item)
+    readiness = readiness_of(item)
 
     return {
         'execution_name': item.get('execution_name'),
@@ -160,8 +163,8 @@ def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
         'running_at': item.get('running_at'),
         'finished_at': item.get('finished_at'),
         'duration_ms': duration_ms,
-        'dependencies': item.get('dependencies', []),
-        'wait_for': item.get('wait_for', '[]'),
+        'dependencies': dependencies_of(item, readiness),
+        'wait_for': wait_for_text(item, readiness),
         'pipeline_execution': item.get('pipeline_execution'),
         'wrapper_execution_arn': item.get('wrapper_execution_arn'),
         'notification_failed': item.get('notification_failed'),
@@ -312,13 +315,22 @@ def get_task_config(task_name: str, event: Dict) -> Dict:
         item = {}
         execution_name = task_name
 
+    config = {'timeout_seconds': safe_int(item.get('timeout_seconds'), 14400), 'max_retries': resolve_max_retries(item)}
+    if item.get(task_row.READINESS):
+        # A 1.3 row holds neither: its run's spec version does (ADR #137 §8). Without it, no number stands in for
+        # them: 1.2's defaults were wrong for every task of 1.3 (the review of TR-6d, P-8).
+        run_item = executions_repo.get(run_row.key(str(item.get('pipeline_execution', '')))) or {}
+        fields, why = _run_task_spec(run_item, str(item.get('task_name') or task_name))
+        if fields is None:
+            return cors_response(503, {'error': f'{execution_name}: {why}', 'execution_name': execution_name})
+        config = {'timeout_seconds': fields.get(TaskSpecKey.EXECUTION_TIMEOUT.value),
+                  'max_retries': safe_int(parse_task_config(fields.get(TaskSpecKey.TASK_CONFIG.value)).get(
+                      TaskConfigKey.RETRIES.value), 0)}
+
     return cors_response(200, {
         'task_name': task_name,
         'execution_name': execution_name,
-        'config': {
-            'timeout_seconds': safe_int(item.get('timeout_seconds'), 14400),
-            'max_retries': resolve_max_retries(item)
-        },
+        'config': config,
         # Runtime state (read-only, for reference)
         'runtime': {
             # retry_attempt (ADR #125) replaces the dead legacy `retry_attempts` field —

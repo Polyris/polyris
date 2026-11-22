@@ -6,7 +6,6 @@ Handles pipeline execution control operations:
 - pause_execution: Pause a run: tasks that run go on, none starts (ADR #137 §5)
 - resume_execution: Resume a paused run
 - get_execution_children: Get child tasks of an execution
-- get_execution_parent: Get parent execution info
 """
 import json
 import random
@@ -230,63 +229,6 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
         return cors_response(500, {'error': f'Failed to read the run\'s tasks: {e}'})
 
 
-def get_execution_parent(execution_name: str, event: Dict) -> Dict:
-    """
-    Get parent execution info for a given execution.
-    """
-    try:
-        # Get the execution record
-        item = executions_repo.get(execution_name)
-        
-        if not item:
-            return cors_response(404, {'error': 'Execution not found'})
-        
-        pipeline_execution = item.get('pipeline_execution', 'none')
-        pipeline_name = item.get('pipeline_name', 'none')
-        parent_task = item.get('task_name', 'none')
-        
-        # If no parent, return empty
-        if pipeline_execution == 'none' or not pipeline_execution:
-            return cors_response(200, {
-                'execution_name': execution_name,
-                'has_parent': False,
-                'parent': None
-            })
-        
-        # Get parent execution details
-        parent_item = executions_repo.get(pipeline_execution)
-        
-        parent_info = None
-        if parent_item:
-            parent_info = {
-                'execution_name': pipeline_execution,
-                'pipeline': pipeline_name,
-                'task': parent_task,
-                'status': parent_item.get('status'),
-                'date': parent_item.get('date')
-            }
-        else:
-            # Parent record might be expired/deleted, just return what we know
-            parent_info = {
-                'execution_name': pipeline_execution,
-                'pipeline': pipeline_name,
-                'task': parent_task,
-                'status': 'unknown',
-                'date': ''
-            }
-        
-        return cors_response(200, {
-            'execution_name': execution_name,
-            'has_parent': True,
-            'parent': parent_info
-        })
-    
-    except Exception as e:
-        log.error("executions", "Error getting parent", error=str(e), execution_name=execution_name)
-        return cors_response(500, {'error': str(e)})
-
-
-
 #: A run action whose write a change of the run row refused is built again from a new read, this many times in all.
 RUN_ACTION_ATTEMPTS = 3
 
@@ -355,7 +297,6 @@ def register(router) -> None:
     """Register the free execution read routes. See ADR #97."""
     router.add('GET', '/api/runs', get_all_runs)
     router.add('GET', '/api/execution-children', get_execution_children, 'id')
-    router.add('GET', '/api/execution-parent', get_execution_parent, 'id')
     # Execution control — free (ADR #110): intervene on a live run.
     router.add('POST', '/api/execution-stop', stop_execution, 'pipeline_execution')
     router.add('POST', '/api/execution-pause', pause_execution, 'id')

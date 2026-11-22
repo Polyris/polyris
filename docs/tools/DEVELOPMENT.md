@@ -53,7 +53,7 @@ pytest tests/sdk/test_smoke.py -v              # Core: DAG structure, ASL genera
 pytest tests/sdk/test_asl_snapshots.py -v      # Golden file comparison of generated JSON
 pytest tests/sdk/test_sfn_flow.py -v           # SFN template graph validation (every orchestration template)
 pytest tests/sdk/test_templates.py -v          # orchestration_timeout, route table, resilience
-pytest tests/backend/test_api_routes.py -v         # All 26 free API routes registered
+pytest tests/backend/test_api_routes.py -v         # All 25 free API routes registered
 pytest tests/sdk/test_coordination_trigger_rules.py -v  # The nine trigger rules and their truth table (polyris/coordination)
 
 # Update ASL snapshots after intentional changes

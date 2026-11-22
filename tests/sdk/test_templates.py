@@ -258,7 +258,7 @@ def test_route_table_completeness():
         assert ('PUT', '/api/task-config') not in ROUTES, "task-config PUT must be Team-only"
 
     # Loose free-floor sanity check; the full build adds Team routes on top.
-    assert len(ROUTES) >= 26
+    assert len(ROUTES) >= 25
 
     # Critical *free* routes must always exist (present in both tiers).
     critical = [
