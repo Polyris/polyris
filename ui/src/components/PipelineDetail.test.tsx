@@ -15,7 +15,7 @@ const mockDag = createDAG();
 const mockExecList = [createExecution()];
 
 const mockDetailQuery: {
-    data: { tasks: typeof mockTasks; dag: typeof mockDag; serverOffsetMs: number; selectedExecution: null; statusError?: string | null } | undefined;
+    data: { tasks: typeof mockTasks; dag: typeof mockDag; serverOffsetMs: number; selectedExecution: null; statusError?: string | null; run?: { paused: boolean; stopping: boolean } | null } | undefined;
     isLoading: boolean; isError: boolean; error: Error | null; refetch: ReturnType<typeof vi.fn>;
 } = { data: { tasks: mockTasks, dag: mockDag, serverOffsetMs: 0, selectedExecution: null }, isLoading: false, isError: false, error: null, refetch: vi.fn() };
 const mockRunsQuery: {
@@ -110,7 +110,7 @@ vi.mock('./DatePicker', () => ({
     ),
 }));
 vi.mock('@/components/ui/button', () => ({
-    Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string} aria-label={props['aria-label'] as string} data-variant={props.variant}>{props.children as React.ReactNode}</button>,
+    Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string} aria-label={props['aria-label'] as string} data-variant={props.variant} disabled={props.disabled as boolean}>{props.children as React.ReactNode}</button>,
 }));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
 vi.mock('../utils/api', async (importOriginal) => ({
@@ -288,11 +288,28 @@ describe('PipelineDetail', () => {
         });
 
         it('shows Resume and Stop while paused', () => {
-            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'waiting_paused' })] };
-            useAppStore.getState().setExecutionPaused(true);
+            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'waiting_paused' })],
+                                     run: { paused: true, stopping: false } };
             render(<PipelineDetail {...defaultProps} />);
             expect(screen.getAllByRole('button', { name: /resume/i }).length).toBeGreaterThan(0);
             expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+        });
+
+        it('shows Resume for a run its run row says is paused before any task row waits paused (review of TR-6d)', () => {
+            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'running' })],
+                                     run: { paused: true, stopping: false } };
+            render(<PipelineDetail {...defaultProps} />);
+            expect(screen.getAllByRole('button', { name: /resume/i }).length).toBeGreaterThan(0);
+            expect(screen.getByText(/no task starts until the Resume/)).toBeInTheDocument();
+        });
+
+        it('says a Stop of the run is in progress and offers no run action meanwhile (review of TR-6d)', () => {
+            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'running' })],
+                                     run: { paused: false, stopping: true } };
+            render(<PipelineDetail {...defaultProps} />);
+            expect(screen.getByRole('status')).toHaveTextContent('Stopping the run');
+            expect(screen.getByRole('button', { name: /stop/i })).toBeDisabled();
+            expect(screen.getByRole('button', { name: /pause/i })).toBeDisabled();
         });
 
         it('shows a loading label while an action is pending', () => {

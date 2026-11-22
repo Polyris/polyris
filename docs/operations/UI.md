@@ -160,6 +160,8 @@ Click a task to open detail modal with actions:
 | **▶️ Resume** | Resume the paused run: the tasks it held start. |
 | **⏹️ Stop** | Stop the run: its unfinished tasks stop, dependants first, within seconds. |
 
+The page reads a pause and a Stop from the run itself: it offers Resume as soon as the run is paused, and while a Stop is in progress it says so and offers no action on the run.
+
 ---
 
 ## Auto-Refresh

@@ -101,6 +101,7 @@ class TestEmptyDateBehavesAsAbsent:
 
     def _read(self, mocker, module, rows):
         mocker.patch.object(module.executions_repo, 'query_by_pipeline_execution', return_value=rows)
+        mocker.patch.object(module.executions_repo, 'get', return_value=None)       # the run row: none, a 1.2 run
         return mocker.patch.object(module.executions_repo, 'rows_of_pipeline_date', return_value=rows)
 
     def test_pipeline_status_falls_back_to_today(self, mocker):

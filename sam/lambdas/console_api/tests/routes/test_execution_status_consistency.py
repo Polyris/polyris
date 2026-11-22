@@ -104,6 +104,7 @@ class TestPipelineStatusReportsTheRealPipeline:
         from routes import pipelines_list
         mocker.patch.object(pipelines_list.executions_repo,
                             'query_by_pipeline_execution', return_value=rows)
+        mocker.patch.object(pipelines_list.executions_repo, 'get', return_value=None)   # no run row: a 1.2 run
         mocker.patch.object(pipelines_list.pipelines_repo, 'get', return_value=None)
         resp = pipelines_list.get_pipeline_status(
             asked_for, {'queryStringParameters': {'name': asked_for,

@@ -159,12 +159,15 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     // Omits: selectedExecution, setSelectedExecution (only auto-select when no execution is chosen)
     }, [detailData?.selectedExecution]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ========== Pause detection ==========
+    // ========== Pause and Stop, from the run row ==========
+    // The run row holds the pause and the Stop mark (ADR #137 §3, §5). Rows become waiting_paused only once a pass
+    // reaches them, so a guess from the rows showed Pause for a run already paused (the review of TR-6d, P-15).
+    // Synced when the answer changes, so an action's own update holds until the refetch confirms it.
+    const runPaused = !!detailData?.run?.paused;
+    const runStopping = !!detailData?.run?.stopping;
     useEffect(() => {
-        const hasPausedTasks = filteredTasks.some(t => t.status === 'waiting_paused');
-        if (hasPausedTasks && !executionPaused) setExecutionPaused(true);
-        else if (!hasPausedTasks && executionPaused) setExecutionPaused(false);
-    }, [filteredTasks, executionPaused, setExecutionPaused]);
+        setExecutionPaused(runPaused);
+    }, [runPaused, setExecutionPaused]);
 
     // ========== Actions ==========
     const toast = useToast();
@@ -392,7 +395,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                             variant="default"
                                             className="bg-green-600 hover:bg-green-700"
                                             onClick={actions.handlePauseResume}
-                                            disabled={!!actions.pendingAction}
+                                            disabled={!!actions.pendingAction || runStopping}
                                             title="Resume pipeline execution"
                                         >
                                             {actions.pendingAction === 'resume'
@@ -400,7 +403,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                                 : <><Play size={14} /> Resume</>}
                                         </Button>
                                         <span className="pd-action-sep" aria-hidden="true" />
-                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction}>
+                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction || runStopping}>
                                             {actions.pendingAction === 'stop'
                                                 ? <><Loader2 size={14} className="animate-spin" /> Stopping…</>
                                                 : <><Square size={14} /> Stop</>}
@@ -411,7 +414,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                         <Button
                                             variant="outline"
                                             onClick={actions.handlePauseResume}
-                                            disabled={!!actions.pendingAction}
+                                            disabled={!!actions.pendingAction || runStopping}
                                             title="Pause pipeline (running tasks will complete)"
                                         >
                                             {actions.pendingAction === 'pause'
@@ -419,7 +422,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                                 : <><Pause size={14} /> Pause</>}
                                         </Button>
                                         <span className="pd-action-sep" aria-hidden="true" />
-                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction}>
+                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction || runStopping}>
                                             {actions.pendingAction === 'stop'
                                                 ? <><Loader2 size={14} className="animate-spin" /> Stopping…</>
                                                 : <><Square size={14} /> Stop</>}
@@ -456,12 +459,22 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                 )}
             </div>
 
+            {/* A Stop of the run in progress: the engine stops its tasks, dependants first (ADR #137 §3) */}
+            {runStopping && pipeline && (
+                <div className="pd-pause-banner" role="status">
+                    <span className="pd-pause-banner-icon"><Square size={18} /></span>
+                    <span className="pd-pause-banner-text">
+                        Stopping the run – the engine stops its tasks, dependants first
+                    </span>
+                </div>
+            )}
+
             {/* Paused Execution Banner */}
-            {executionPaused && pipeline && actions && (
+            {executionPaused && !runStopping && pipeline && actions && (
                 <div className="pd-pause-banner">
                     <span className="pd-pause-banner-icon"><Pause size={18} /></span>
                     <span className="pd-pause-banner-text">
-                        Pipeline paused – {stats.paused} task{stats.paused !== 1 ? 's' : ''} waiting until the Resume
+                        Pipeline paused – {stats.paused > 0 ? `${stats.paused} task${stats.paused !== 1 ? 's' : ''} waiting` : 'no task starts'} until the Resume
                     </span>
                     <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={actions.handlePauseResume}>
                         <Play size={14} /> Resume

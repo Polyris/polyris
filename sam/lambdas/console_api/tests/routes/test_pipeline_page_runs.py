@@ -248,3 +248,21 @@ def test_a_row_of_a_run_from_before_1_3_left_unfinished_is_stale(world):
     for date, expected in (('2026-11-19', {'extract': None, 'load': True}), ('2026-11-20', {'extract': None})):
         listed = json.loads(get_all_tasks({'queryStringParameters': {'pipeline': 'orders', 'date': date}})['body'])
         assert {t['task_name']: t.get('stale') for t in listed['tasks']} == expected
+
+
+def test_the_page_says_whether_a_pause_holds_the_run_or_a_stop_of_it_is_in_progress(world):
+    """The review of TR-6d, P-15: the run row says so (ADR #137 §3, §5). The page guessed a pause from rows that
+    were already waiting_paused, and said nothing of a Stop that the dispatcher was carrying out."""
+    from polyris.coordination import pauses, task_spec
+    readiness = task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []})
+    paused = put_run(world.table, 'orders', '2026-11-20', days_ago(0), summary={'running': 1},
+                     pauses=pauses.to_item(pauses.pause((), days_ago(0, hour=7))))
+    put_task(world.table, paused, 'extract', '2026-11-20', 'running', started=days_ago(0), readiness=readiness)
+    stopping = put_run(world.table, 'orders', '2026-11-21', days_ago(0), suffix='stop0001', summary={'running': 1},
+                       stop={'by': 'operator', 'reason': 'wrong input', 'at': iso(days_ago(0, hour=8))})
+    put_task(world.table, stopping, 'extract', '2026-11-21', 'running', started=days_ago(0), readiness=readiness)
+    put_task(world.table, 'orders-run-2026-11-19-0ld0ld00', 'extract', '2026-11-19', 'success', started=days_ago(3))
+
+    assert status_of(date='2026-11-20')['run'] == {'paused': True, 'stopping': False}
+    assert status_of(date='2026-11-21')['run'] == {'paused': False, 'stopping': True}
+    assert status_of(date='2026-11-19')['run'] is None            # a run from before 1.3 has no run row

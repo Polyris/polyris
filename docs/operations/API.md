@@ -84,7 +84,8 @@ GET /api/pipeline-status?name={pipeline_name}&date={YYYY-MM-DD}&pipeline_executi
 Returns one run's tasks: the run named by `pipeline_execution`, or else the latest run of `date` (today by default),
 found through the pipeline's task rows of that date (`pipeline-date-index`; ADR #137 §5). `selected_execution` names
 the run, `null` when the date has none. Each task's status is the one its row holds: the console asks Step Functions
-nothing about a run.
+nothing about a run. `run` says what the run row holds and the task rows do not: `paused`, whether a pause holds the
+run, and `stopping`, whether a Stop of it is in progress (ADR #137 §3, §5); `null` for a run started before 1.3.
 
 A task that waits (`waiting`, `waiting_paused`, `waiting_decision`) also says why (ADR #137 §1): `reasons`, the
 reasons the engine recorded, and `reasons_at`, since when; `countdown_end`, when a ready task's `wait_before`

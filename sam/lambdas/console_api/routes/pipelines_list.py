@@ -10,11 +10,11 @@ Step Functions about a run.
 """
 import json
 from datetime import datetime, timezone, timedelta
-from typing import Dict
+from typing import Dict, Optional
 
 from botocore.exceptions import ClientError, BotoCoreError
 from polyris.constants import ACCESS_DENIED_CODES
-from polyris.coordination import attention, task_row, task_spec, trigger_rules
+from polyris.coordination import attention, dispatch, run_row, task_row, task_spec, trigger_rules
 
 from config import sfn
 from dal import executions_repo, pipelines_repo
@@ -198,6 +198,17 @@ def _finish_runs(pipeline: Dict, runs: list) -> None:
     pipeline['status'] = latest['status']
 
 
+def _run_state(item: Optional[Dict]) -> Optional[Dict]:
+    """What the run row says of its run and its task rows do not (ADR #137 §3, §5): whether a pause holds it, and
+    whether a Stop of it is in progress. The page guessed a pause from rows that had become ``waiting_paused``,
+    and showed Pause for a paused run with none yet and nothing of a Stop (the review of TR-6d, P-15). None for a
+    run from before 1.3, which has no run row."""
+    if item is None:
+        return None
+    view = dispatch.run_view(item)
+    return {'paused': view.paused, 'stopping': view.stopping}
+
+
 def _readiness(item: Dict) -> Dict:
     """A 1.3 row's readiness fields (dependencies, trigger rule, wait_before, wait_for), or {} for a 1.2 row."""
     text = item.get(task_row.READINESS)
@@ -272,6 +283,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
         task_map[task_name] = item
     if not task_map:
         selected_execution = None
+    run_item = executions_repo.get(run_row.key(selected_execution)) if selected_execution else None
 
     # Now build the final task list
     tasks = []
@@ -358,6 +370,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
         'tasks': tasks,
         'stats': stats,
         'selected_execution': selected_execution,  # Which execution the tasks are from
+        'run': _run_state(run_item),
         'server_now_ms': int(datetime.now(timezone.utc).timestamp() * 1000)
     })
 

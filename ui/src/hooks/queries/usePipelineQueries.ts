@@ -12,6 +12,9 @@ interface PipelineDetailData {
     /** /pipeline-status answered an error: `tasks` is empty because it could not be read,
      *  not because the date has no run (ui/CLAUDE.md, "A failed load is never shown as an empty list"). */
     statusError: string | null;
+    /** What the run row says of the run (ADR #137 §3, §5): a pause holds it, a Stop of it is in progress.
+     *  null for a run from before 1.3, or when the page shows no run. */
+    run: { paused: boolean; stopping: boolean } | null;
 }
 
 /** What a partial /api/pipelines answer says about its statuses: the run index is still being
@@ -126,6 +129,7 @@ export function usePipelineDetailQuery(pipelineName: string, date: string, execu
                 serverOffsetMs,
                 selectedExecution,
                 statusError: statusData.error ? String(statusData.error) : null,
+                run: statusData.error ? null : (statusData.run ?? null),
             };
         },
         enabled: !!pipelineName,
