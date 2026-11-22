@@ -386,11 +386,11 @@ def get_pipeline_executions(pipeline_name: str, event: Dict) -> Dict:
             except ValueError as e:
                 return cors_response(400, {'error': f'Invalid date format: {e}'})
             runs = [run_entry(item) for item in run_rows_before(
-                '', None, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_name, run_dates=(first, last))]
+                '', None, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_name, run_dates=(first, last))[0]]
         else:
             page_size = safe_param_int(params, 'page_size', Limits.RUNS_PAGE_SIZE, 100)
-            rows = run_rows_before(before, page_size + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_name)
-            runs, next_cursor = page_by_started_at([run_entry(item) for item in rows], before, page_size)
+            rows, more = run_rows_before(before, page_size + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_name)
+            runs, next_cursor = page_by_started_at([run_entry(item) for item in rows], before, page_size, more=more)
         runs.sort(key=lambda r: r.get('started_at') or '', reverse=True)
 
         # Get pipeline ARN for response (informational)

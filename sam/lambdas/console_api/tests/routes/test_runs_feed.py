@@ -228,3 +228,17 @@ def test_a_run_whose_direct_step_failed_names_the_step_and_its_error():
     entry = run_entry(item)
     assert (entry["status"], entry["failed_step"]) == ("failed", {"step": "notify", "error": "SNS.NotFound"})
     assert run_entry({run_row.TABLE_KEY: run_row.key("orders-run-2026-11-20-abcd1234")})["failed_step"] is None
+
+
+def test_a_page_whose_last_run_has_a_twin_at_the_end_of_the_read_still_says_older_runs_exist(table):
+    """Review of TR-6d, B-1: the read stops at limit + 1 rows, the extra one is a twin of the page's last run and
+    joins it; the page must keep its cursor, since the read, not the data, ended there."""
+    put_run(table, 'orders', '2026-11-22', days_ago(0), suffix='today001')
+    twin = days_ago(1)
+    put_run(table, 'orders', '2026-11-21', twin, suffix='twin0001')
+    put_run(table, 'billing', '2026-11-21', twin, suffix='twin0002')
+    put_run(table, 'orders', '2026-11-20', days_ago(2), suffix='older001')
+    status, first = runs(limit=2)
+    assert status == 200 and len(first['runs']) == 3 and first['next']
+    status, second = runs(limit=2, before=first['next'])
+    assert [r['pipeline_execution'] for r in second['runs']] == ['orders-run-2026-11-20-older001']

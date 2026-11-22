@@ -76,7 +76,7 @@ def feed_dates(before: str = '', days: int = Limits.SLA_DAYS) -> List[str]:
     return dates
 
 
-def page_by_started_at(rows: List[Dict], before: str, limit: int) -> Tuple[List[Dict], Optional[str]]:
+def page_by_started_at(rows: List[Dict], before: str, limit: int, *, more: bool = False) -> Tuple[List[Dict], Optional[str]]:
     """Cut one page out of a ``started_at``-ordered feed.
 
     Drops what the cursor already served, sorts newest-first, and takes ``limit``.
@@ -115,7 +115,8 @@ def page_by_started_at(rows: List[Dict], before: str, limit: int) -> Tuple[List[
         page.append(row)
 
     if len(kept) <= len(page):
-        return page, None       # the twins were the tail of the feed
+        # The twins were the tail of what was read: the feed's end only if the read reached it (``more``).
+        return page, cursor if more else None
     return page, cursor
 
 
@@ -170,7 +171,7 @@ def pipeline_rows_before(
 
 def run_rows_before(before: str, want: Optional[int], *, days: int, pipeline: str = '',
                     run_dates: Optional[Tuple[str, str]] = None,
-                    keep: Optional[Callable[[Mapping[str, Any]], bool]] = None) -> List[Dict]:
+                    keep: Optional[Callable[[Mapping[str, Any]], bool]] = None) -> Tuple[List[Dict], bool]:
     """Run rows older than the cursor, newest first, from the start days of a window of ``days`` days (ADR #137 §5).
 
     The shard key is the day a run started, not its logical date, so the walk stops
@@ -180,6 +181,9 @@ def run_rows_before(before: str, want: Optional[int], *, days: int, pipeline: st
     must, since a run may start before its date or long after it. ``pipeline`` keeps
     one pipeline's runs, and ``keep`` the rows it accepts, which alone count toward
     ``want``. Raises ``executions_repo.IndexBuilding`` while DynamoDB builds the index.
+
+    Returns the rows and whether the walk stopped at ``want`` before the window's end: older rows may exist, which
+    :func:`page_by_started_at` needs when the twins of its last row were the tail of the read (review of TR-6d).
     """
     rows: List[Dict] = []
     for day in feed_dates(before, days):
@@ -188,8 +192,8 @@ def run_rows_before(before: str, want: Optional[int], *, days: int, pipeline: st
             want=None if want is None or keep is not None else want - len(rows))
         rows.extend(item for item in read if keep is None or keep(item))
         if want is not None and len(rows) >= want:
-            break
-    return rows
+            return rows, True
+    return rows, False
 
 
 def run_counts(item: Mapping[str, Any]) -> Optional[Dict[str, int]]:

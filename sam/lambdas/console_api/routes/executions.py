@@ -147,14 +147,15 @@ def get_all_runs(event: Dict) -> Dict:
         return not status_filter or run['status'] == status_filter
 
     try:
+        more = False                    # whether the walk of run rows stopped before the window's end
         if status_filter and status_filter not in run_end.SHOWN_STATUSES:
             runs = []                   # a backfill's status (ADR #95): no run has it, so no run row is read
         elif date_filter:
             runs = [r for r in runs_of_date(date_filter, pipeline_filter) if keeps(r)]
         else:
             # The status is derived from each run row, so it filters here, and the walk counts only what it keeps.
-            runs = run_rows_before(before, limit + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_filter,
-                                   keep=lambda item: keeps(run_entry(item)))
+            runs, more = run_rows_before(before, limit + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_filter,
+                                         keep=lambda item: keeps(run_entry(item)))
             runs = [run_entry(item) for item in runs]
         all_runs = [{'kind': 'execution', **run} for run in runs]
 
@@ -166,7 +167,7 @@ def get_all_runs(event: Dict) -> Dict:
 
         # One page, newest first, plus the cursor for the older one. Both kinds sort
         # and page on the same started_at, so the merge needs no second cursor.
-        page, next_cursor = page_by_started_at(all_runs, before, limit)
+        page, next_cursor = page_by_started_at(all_runs, before, limit, more=more)
 
         return cors_response(200, {
             'runs': page,
