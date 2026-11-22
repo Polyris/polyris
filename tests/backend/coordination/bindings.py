@@ -113,11 +113,13 @@ class Bindings:
         tables = self.stack.tables
         self._set(config, "_sfn", self.stack.runtime)
         self._set(config, "_dynamodb", self.resource)
+        self._set(config, "_dynamodb_client", self.stack.ddb)        # transactions and the specs' reads
         self._set(config, "_lambda", _LambdaClient(self.stack))
         for repo, logical in ((dal.executions_repo, "PipelineTokensTable"), (dal.backfills_repo, "PipelineTokensTable"),
                               (dal.pipelines_repo, "PipelineRegistryTable"), (dal.asset_events_repo, "AssetEventsTable"),
-                              (dal.task_events_repo, "TaskEventsTable")):
+                              (dal.task_events_repo, "TaskEventsTable"), (dal.specs_repo, "PipelineSpecsTable")):
             self._set(repo, "_table_name", tables[logical])
+        self._set(dal.specs_repo, "_versions", type(dal.specs_repo._versions)())   # no spec of another stack
         self._set(executions, "datetime", _clocked_datetime(self.clock))     # pause and resume times
         self._set(tasks, "datetime", _clocked_datetime(self.clock))          # an action's times and due time
         self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))

@@ -186,7 +186,6 @@ def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
 # ── writers ─────────────────────────────────────────────────────────────
 
 
-@needs_binding("rows-ops")
 @defect("B-M1")
 def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
     produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), "2026-11-01")
@@ -371,7 +370,6 @@ def test_a_claim_whose_answer_is_lost_still_runs_the_task(world):
 # ── pause and restart ───────────────────────────────────────────────────
 
 
-@needs_binding("rows-ops")
 @defect("B-P1")
 def test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume(world):
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
@@ -383,7 +381,6 @@ def test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
-@needs_binding("rows-ops")
 @defect("B-P2")
 def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
     run = world.start_run(world.deploy(waits_for("p", [A], deps=["extract"])), DATE)
@@ -448,7 +445,6 @@ def test_a_task_resume_could_not_check_is_woken_by_the_sweeper_without_a_miss(wo
     assert [w for w in world.warnings() if w["kind"] == "sweeper"] == []   # resume deferred it: no lost hint
 
 
-@needs_binding("rows-ops")
 @defect("B-R1")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)
@@ -582,7 +578,6 @@ def test_a_console_action_whose_run_cannot_be_told_says_so(world, action, status
     assert "AccessDeniedException" in warning["error"] and "states:SendTask" in warning["error"]
 
 
-@needs_binding("rows-ops")
 @defect("B-M3")
 def test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers(world):
     """A cascade='none' backfill starts no consumer of its facts (ADR #57); marking one of its tasks
@@ -669,7 +664,6 @@ def test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided(world):
     assert world.task_runs(run, "load") == 0
 
 
-@needs_binding("rows-ops")
 @defect("B-O4")
 def test_run_task_never_starts_a_task_an_operator_decided_after_its_wait(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)

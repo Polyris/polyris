@@ -193,9 +193,11 @@ PROBES: Tuple[Probe, ...] = (
           f"{SCENARIOS}::test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided"),
     # run_task's running write without the generation fence takes the row back from an operator's decision.
     # A run_task whose generation an operator raised claims the row of the newer generation (Rule 47).
+    # In 1.3 the decision also moves the status, so the claim must lose on both: an always-true condition that
+    # keeps every name in use (an unused one fails the write with a ValidationException, probes.py header).
     Probe("B-O4", (Edit("sam/sfn_templates/helpers/run_task/sfn.tpl.json",
                         '"ConditionExpression": "#s = :deps_ready AND #g = :g",',
-                        '"ConditionExpression": "#s = :deps_ready AND (#g = :g OR attribute_exists(execution_name))",'),),
+                        '"ConditionExpression": "(#s = :deps_ready OR #s <> :deps_ready) AND (#g = :g OR #g <> :g)",'),),
           f"{SCENARIOS}::test_run_task_never_starts_a_task_an_operator_decided_after_its_wait"),
     # The pause wait's heartbeat retry saved its token over an operator's decision, unconditionally.
     Probe("B-O5", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
@@ -317,17 +319,10 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-M3", (Edit(TASKS_ROUTE, "outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',",
                         "outlets=outlets, cascade='auto',"),),
           f"{SCENARIOS}::test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers"),
-    # The old restart rebuilt the wrapper's input from a few saved fields, without wait_for. The
-    # fallback for a pre-1.2 row now restores wait_for from the row, so both are put back.
-    Probe("B-R1", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
-                        "$start := ($exists($item.starter_input.S) and $item.starter_input.S != '') ? $parse($item.starter_input.S) :",
-                        "$start := false ? $parse($item.starter_input.S) :"),
-                   Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
-                        "'wait_for': ($exists($states.input.item.wait_for.S) and $states.input.item.wait_for.S != '') ? $parse($states.input.item.wait_for.S) : [], ",
-                        "")),
+    # A Restart whose renewal writes no pointers: a fact recorded after it never wakes the restarted task.
+    Probe("B-R1", (Edit(DISPATCHER, "                self._within_budget(state)\n                self._put_pointers(state, name)\n",
+                        "                self._within_budget(state)\n"),),
           f"{SCENARIOS}::test_a_restarted_task_is_still_gated_on_its_assets"),
-    # ADR #137's tasks as rows (test_scenarios_rows.py).
-    # A pass that runs out of budget no longer sets left_at, so no record wakes the next pass.
     Probe("R-S1", (Edit(DISPATCHER, "left=bool(state.changed) or state.run.left_at is None), quiet=True)",
                         "left=False), quiet=True)"),),
           f"{ROWS}::test_a_pass_out_of_budget_leaves_the_rest_to_the_next_pass_at_once"),
@@ -389,4 +384,7 @@ PROBES: Tuple[Probe, ...] = (
     Probe("R-W1", (Edit("polyris/coordination/deadlines.py", "        if interval.end > begin:\n            deadline += "
                         "interval.end - begin\n", ""),),
           f"{ROWS}::test_a_limit_due_in_a_pause_fires_after_the_resume_moved_by_the_paused_time"),
+    # A task whose facts are not ready starts anyway once its upstreams allow it (after a Resume, B-P2).
+    Probe("B-P2", (Edit("polyris/coordination/decide.py", "        if not assets.ready:\n", "        if False:\n"),),
+          f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
 )
