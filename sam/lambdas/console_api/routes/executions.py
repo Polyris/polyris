@@ -16,7 +16,7 @@ from typing import Callable, Dict, List, Optional
 
 from botocore.exceptions import ClientError, BotoCoreError
 
-from polyris.coordination import actions, run_row
+from polyris.coordination import actions, run_end, run_row
 from routes.tasks import ACTION_BACKOFF_SECONDS
 from dal import executions_repo, backfills_repo
 from constants import Limits
@@ -147,7 +147,9 @@ def get_all_runs(event: Dict) -> Dict:
         return not status_filter or run['status'] == status_filter
 
     try:
-        if date_filter:
+        if status_filter and status_filter not in run_end.SHOWN_STATUSES:
+            runs = []                   # a backfill's status (ADR #95): no run has it, so no run row is read
+        elif date_filter:
             runs = [r for r in runs_of_date(date_filter, pipeline_filter) if keeps(r)]
         else:
             # The status is derived from each run row, so it filters here, and the walk counts only what it keeps.

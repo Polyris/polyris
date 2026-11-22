@@ -55,6 +55,16 @@ def test_the_console_shows_a_run_running_until_every_row_its_summary_counts_is_f
     assert run_end.shown_status(counts, step_failed=step_failed) == expected
 
 
+def test_the_console_shows_no_status_beyond_its_set():
+    """A run list filtered by another status reads no run row (SHOWN_STATUSES)."""
+    from itertools import combinations
+
+    statuses = sorted(FINAL | {"running", "waiting", "waiting_decision", "deps_ready"})
+    shown = {run_end.shown_status(dict.fromkeys(combo, 1), step_failed=step)
+             for n in (1, 2) for combo in combinations(statuses, n) for step in (False, True)}
+    assert shown == run_end.SHOWN_STATUSES
+
+
 @pytest.mark.parametrize("counts,expected", [
     (None, 0), ({}, 0), ({"success": 3}, 0),
     ({"failed": 2, "running": 1}, 2),

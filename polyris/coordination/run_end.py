@@ -50,6 +50,11 @@ def outcome(counts: Mapping[str, int], *, task_count: int, step_failed: bool) ->
     return derive_execution_status(present)
 
 
+#: Every status ``shown_status`` gives: a run list filtered by any other status holds no run (a backfill's status).
+SHOWN_STATUSES = frozenset({ExecutionStatus.RUNNING, ExecutionStatus.SUCCESS, ExecutionStatus.FAILED,
+                            ExecutionStatus.ABORTED})
+
+
 def shown_status(counts: Optional[Mapping[str, int]], *, step_failed: bool) -> str:
     """The run's status as the console shows it, from its run row's summary and step mark (§4).
 

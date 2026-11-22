@@ -170,6 +170,14 @@ def test_backfills_merge_by_their_start_and_page_through_the_one_cursor(table):
     assert names(runs(limit=2, before=body['next'])[1]) == [older]
 
 
+def test_a_status_only_a_backfill_has_reads_no_run_row(table, mocker):
+    from dal import executions_repo
+
+    put_run(table, 'orders', TODAY, days_ago(0), summary={'success': 1})
+    read = mocker.spy(executions_repo, 'runs_started')
+    assert runs(status='partial')[1]['runs'] == [] and read.call_count == 0
+
+
 def test_a_backfill_filter_keeps_its_own_vocabulary_and_target(table):
     _backfill(days_ago(1), backfill_id='bf-00000001', status='partial')
     _backfill(days_ago(2), backfill_id='bf-00000002', target_pipeline='billing')
