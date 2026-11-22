@@ -83,6 +83,21 @@ def test_one_notification_per_run_and_a_decision_request_outranks_a_failure(tabl
     assert shown == [('orders', 'decision_required', 'decide'), ('billing', 'failure', 'load')]
 
 
+def test_each_notification_names_its_event_so_a_later_request_of_the_same_run_is_new(table):
+    """Review of TR-6d, B-2: the bell keeps "read" and "cleared" by id, and a 1.3 run goes on after a failure. An
+    id per run hid a later decision request of a run whose failure was read or cleared."""
+    put_row(table, 'failed', task='extract')
+    [failure] = bell()
+    assert [n['id'] for n in bell()] == [failure['id']]                      # one event keeps its id
+    put_row(table, 'waiting_decision', task='load', deadline=NOW + timedelta(hours=5))
+    [first] = bell()
+    assert first['type'] == 'decision_required' and first['id'] != failure['id']
+    # A Restart of the task, which fails again and asks for a new decision: the row's new entry, a new id.
+    put_row(table, 'waiting_decision', task='load', deadline=NOW + timedelta(hours=6))
+    [again] = bell()
+    assert again['type'] == 'decision_required' and again['id'] not in (first['id'], failure['id'])
+
+
 def test_the_open_requests_come_first_the_most_urgent_first_then_the_rest_newest_first(table):
     put_row(table, 'failed', run='a-run-2026-11-22-aaaaaaaa', failed_ago=timedelta(minutes=1))
     put_row(table, 'failed', run='b-run-2026-11-22-bbbbbbbb', failed_ago=timedelta(hours=2))

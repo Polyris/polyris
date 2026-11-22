@@ -364,7 +364,7 @@ The three levels of ADR #130 §9 stay; what fills them changes.
 - A row's entry follows its status and its times (§3), so the write that changes them replaces or removes it. A Restart removes a `failed` or `decision` entry, and writes a `waiting` one only for a row with a limit outside a pause. The `paused` kind goes.
 - The run row reuses the `waiting` kind. Its only reader is the sweeper, which groups the due entries by run, so a run row and the task rows of its run fall into one pass. The `_run_` key tells them apart. A kind of its own would add 16 shard queries to each sweeper run and 16 to its self-check, and no reader needs the two apart.
 - The index keeps its projection, since a change would replace it. The projection holds what the bell shows: the status, task, pipeline, run, error and `task_date`, which task rows now carry too (§3).
-- The bell reads every `decision` entry, and the `failed` and `warn` entries of its window, from the 16 shards of each kind. It keeps one notification per run, a decision request over a failure, as today, and adds the warnings and the backfills.
+- The bell reads every `decision` entry, and the `failed` and `warn` entries of its window, from the 16 shards of each kind. It keeps one notification per run, a decision request over a failure, as today, and adds the warnings and the backfills. A notification's id names its event (the task row and when its entry falls due), not its run: the console keeps "read" by id, and a run goes on after a failure, so a later request of a run whose failure was read showed nothing (review of TR-6d).
 - A failure outside `run_task` shows there like any other: a wait limit, a decision timeout, a Fail decision, a `run_task` that died.
 
 ### 7. Wake-ups

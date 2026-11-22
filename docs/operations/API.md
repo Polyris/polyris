@@ -286,7 +286,9 @@ Read from the attention index (ADR #137 §6), whatever the date of the run: ever
 that failed within the last `hours`, by when it failed, and every task that waits for a
 decision (`"type": "decision_required"`), with the `deadline` at which it fails on its
 own, `null` while its run is paused. One notification per run, a decision request over a
-failure. The decision requests come first, the most urgent first; then failures, warnings
+failure. Its `id` names the event, the task's failure or its decision request, not the run:
+the console keeps "read" and "cleared" by it, and a run may fail and ask again. A pause or a
+resume moves a request's deadline, and with it the `id`. The decision requests come first, the most urgent first; then failures, warnings
 and ended backfills, newest first. A warning (`"type": "warning"`) carries a `kind` from
 `WarningKind` and is listed by the time it was written, whatever the date of the task it
 is about. A run started before 1.3 has no entry of these kinds, so its failures are not

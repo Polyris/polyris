@@ -4,7 +4,8 @@ The bell reads the attention index only (ADR #137 §6, D92): every task that fai
 within its window, by when it failed, and every open decision request, whatever the
 date of its run; with the coordination warnings of its window (ADR #130 §9) and the
 backfills that ended in it (ADR #68). It keeps one notification per run, a decision
-request over a failure. A run from before 1.3 has no entry of these kinds, so the
+request over a failure, and names each by its event: the UI keeps "read" and
+"cleared" by that id. A run from before 1.3 has no entry of these kinds, so the
 bell shows none of its failures.
 """
 from datetime import datetime, timedelta, timezone
@@ -71,11 +72,19 @@ def _run_key(entry: Dict) -> str:
     return f"{entry.get('pipeline_name', '')}:{entry.get('pipeline_execution', '')}"
 
 
+def _event_id(kind: str, entry: Dict) -> str:
+    """A notification's id names its event, not its run: a run of 1.3 goes on after a failure and may ask for
+    several decisions, and the bell keeps "read" by id (review of TR-6d, B-2). The task row and the time its entry
+    falls due tell one event from the next, a decision after a Restart included. A pause or a resume of the run
+    moves a decision's deadline, and with it the id: the request shows again, with the deadline it now has."""
+    return f"{kind}:{entry.get('execution_name', '')}:{entry.get(attention.DUE, '')}"
+
+
 def _failure(entry: Dict, now: datetime) -> Dict:
     """A task that failed: its entry falls due when it failed (ADR #137 §6)."""
     failed_at = str(entry.get(attention.DUE, ''))
     return {
-        'id': _run_key(entry),
+        'id': _event_id('failure', entry),
         'type': 'failure',
         'pipeline_name': entry.get('pipeline_name', ''),
         'task_name': entry.get('task_name', ''),
@@ -91,7 +100,7 @@ def _decision(entry: Dict) -> Dict:
     """A task that waits for an operator's decision: its entry falls due at the deadline, far in the future while
     its run is paused, when the bell shows no deadline (ADR #137 §5, §6)."""
     return {
-        'id': _run_key(entry),
+        'id': _event_id('decision', entry),
         'type': 'decision_required',
         'pipeline_name': entry.get('pipeline_name', ''),
         'task_name': entry.get('task_name', ''),
