@@ -358,10 +358,10 @@ PROBES: Tuple[Probe, ...] = (
                         '        return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")\n',
                         "        return Judgment(row.task_id, due=row.due)\n"),),
           f"{ROWS}::test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause"),
-    # A Restart with dependants resets only what was decided after its request: the dependant the failure decided
-    # stays upstream_failed, and the restart of the dependants is lost.
-    Probe("R-S4", (Edit(ACTIONS, "    return row.times.status_since is None or row.times.status_since < at\n",
-                        "    return row.times.status_since is not None and row.times.status_since > at\n"),),
+    # A Restart with dependants that resets no decision of a rule: the dependant the failure decided stays
+    # upstream_failed, and the restart of the dependants is lost.
+    Probe("R-S4", (Edit(ACTIONS, "        decided = _RULE_DECISIONS.get((row.status, row.skip_origin))\n",
+                        "        decided = None\n"),),
           f"{ROWS}::test_a_restart_with_dependants_inside_a_passs_read_reruns_the_dependant"),
     # The engine judges an answered run's execution: a Restart after the run's end is stopped with the run (D120).
     Probe("R-R2", (Edit(DISPATCH, "if run.stop is not None or run.answered or finished or run.started_at is None:",
@@ -387,4 +387,8 @@ PROBES: Tuple[Probe, ...] = (
     # A task whose facts are not ready starts anyway once its upstreams allow it (after a Resume, B-P2).
     Probe("B-P2", (Edit("polyris/coordination/decide.py", "        if not assets.ready:\n", "        if False:\n"),),
           f"{SCENARIOS}::test_resume_does_not_run_a_task_whose_assets_are_missing"),
+    # Only a Stop stops a running task's run_task, as before the review of TR-6 (B-1).
+    Probe("R-X1", (Edit(ACTIONS, "run_task_to_stop=run_task_name if row.status in _LIVE else None,",
+                        'run_task_to_stop=run_task_name if action == "stop" and row.status in _LIVE else None,'),),
+          f"{ROWS}::test_an_action_on_a_running_task_stops_its_work_and_a_restart_runs_one_copy"),
 )

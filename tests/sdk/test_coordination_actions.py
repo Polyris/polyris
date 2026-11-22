@@ -325,20 +325,31 @@ def _view(name: str, status: str, *, dependencies=(), origin: Optional[str] = No
     return dispatch.row_view(item)
 
 
-def test_the_reset_set_is_what_a_failure_decided_downstream_before_the_request_upstreams_first():
-    late = format_utc(NOW + timedelta(seconds=1))
+def test_the_reset_set_is_what_a_rule_decided_downstream_that_its_upstreams_no_longer_give():
+    """Upstreams first, the rows it resets counting as waiting again: report follows load (D121)."""
     rows = {
-        "extract": _view("extract", S.WAITING.value),
+        "extract": _view("extract", S.WAITING.value),                          # restarted
         "load": _view("load", S.UPSTREAM_FAILED.value, dependencies=["extract"]),
         "report": _view("report", S.UPSTREAM_FAILED.value, dependencies=["load"]),
         "audit": _view("audit", S.SKIPPED.value, dependencies=["extract"], origin="rule"),
         "manual": _view("manual", S.SKIPPED.value, dependencies=["extract"], origin="manual"),
-        "late": _view("late", S.UPSTREAM_FAILED.value, dependencies=["extract"], since=late),
+        "beside": _view("beside", S.UPSTREAM_FAILED.value, dependencies=["extract", "other"]),   # waits for extract
+        "mid": _view("mid", S.FAILED.value, dependencies=["extract"]),          # its own failure: no reset
+        "tail": _view("tail", S.UPSTREAM_FAILED.value, dependencies=["mid"]),   # mid still blocks it
         "stranger": _view("stranger", S.UPSTREAM_FAILED.value, dependencies=["other"]),
         "other": _view("other", S.FAILED.value),
     }
     request = run_row.request(by="ops", at=format_utc(NOW), task="extract")
-    assert actions.reset_set(rows, request) == ["audit", "load", "report"]
+    assert actions.reset_set(rows, request) == ["audit", "beside", "load", "report"]
+
+
+def test_a_dependant_decided_after_the_request_from_a_row_the_reset_had_not_reached_is_reset_too():
+    """Review of TR-6, B-4: a narrow pass blocked report from load before the full pass reset load."""
+    rows = {"extract": _view("extract", S.WAITING.value),
+            "load": _view("load", S.UPSTREAM_FAILED.value, dependencies=["extract"]),
+            "report": _view("report", S.UPSTREAM_FAILED.value, dependencies=["load"],
+                            since=format_utc(NOW + timedelta(seconds=5)))}
+    assert actions.reset_set(rows, run_row.request(by="ops", at=format_utc(NOW), task="extract")) == ["load", "report"]
 
 
 def test_a_reset_raises_run_version_from_its_read_so_a_second_from_the_same_read_loses(ddb):

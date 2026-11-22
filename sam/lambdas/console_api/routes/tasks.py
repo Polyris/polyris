@@ -601,27 +601,23 @@ def _emit_marker_blocked_warn(
         )
 
 
-def _read_task_spec(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict], str]:
-    """A task's spec fields from the version the registry names (ADR #137 §8), or why it cannot be read.
+def _run_task_spec(run_item: Dict, task_name: str) -> Tuple[Optional[Dict], str]:
+    """A task's spec fields from its run's spec version (ADR #137 §8), or why they cannot be read. Never the
+    registry's version: a redeploy since the run started may have changed the task's outlets, or removed it.
 
     The spec holds the outlets and task_config (``TaskSpecKey``); wrapper steps have one too.
-    Returns ``(spec, '')`` on success and ``(None, reason)`` otherwise.
     """
-    if not pipeline_name:
-        return None, 'the task row names no pipeline'
+    spec_id = run_item.get(run_row.SPEC_ID)
+    if not spec_id:
+        return None, 'its run row names no spec version'
     try:
-        registry_item = pipelines_repo.get(pipeline_name)
-    except (ClientError, BotoCoreError) as e:
-        return None, f'the pipeline registry could not be read: {e}'
-    if not registry_item:
-        return None, f'pipeline {pipeline_name} is not in the registry'
-    try:
-        spec = specs_repo.task_of(registry_item, task_name)
-    except (SpecsMissing, SpecError, ClientError, BotoCoreError) as e:
-        return None, f'the task specs of {pipeline_name} cannot be read: {e}'
+        version = specs_repo.version(str(spec_id), int(run_item.get(run_row.TASK_COUNT, 0)))
+    except (SpecsMissing, SpecError, ClientError, BotoCoreError, ValueError) as e:
+        return None, f"its run's spec version cannot be read: {e}"
+    spec = version.get(task_name)
     if spec is None:
-        return None, f'task {task_name} is not in the deployed pipeline {pipeline_name}'
-    return spec, ''
+        return None, f"task {task_name} is not in its run's spec version"
+    return dict(spec.fields), ''
 
 
 #: An action whose transaction a row's move cancelled is built again from new reads, this many times in all.
@@ -660,7 +656,7 @@ def apply_task_action(action: str, item: Dict, execution_name: str, *, reason: s
         date = str(run_item.get(run_row.RUN_DATE) or task.get('date', ''))
         outlets: List[Dict] = []
         if action == ManualResolution.MARK_SUCCESS:
-            node, problem = _read_task_spec(pipeline, task_name)
+            node, problem = _run_task_spec(run_item, task_name)
             if problem:
                 # Its facts are part of the success (invariant 12): without its outlets it cannot be recorded.
                 raise actions.ActionRefused(f"{execution_name}: its outlets cannot be read ({problem}); "
@@ -747,7 +743,7 @@ def skip_task(task_name: str, event: Dict) -> Dict:
 
 
 def fail_task(task_name: str, event: Dict) -> Dict:
-    """Mark a running task as failed and stop its wrapper.
+    """Mark a task as failed; a running one's run_task is stopped as cleanup (ADR #137 §3).
 
     Supports both execution_name (full) and task_name (requires date lookup).
     """

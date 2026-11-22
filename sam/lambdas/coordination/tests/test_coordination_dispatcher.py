@@ -1060,3 +1060,36 @@ def test_a_restart_renews_its_runs_rows_and_writes_the_pointers_of_its_waiting_r
         "dependency_key": {"S": "asset:ns/orders"}, "subscriber": {"S": key("extract")}}).get("Item")
     assert pointer and pointer["run"]["S"] == RUN_KEY
     assert item(world, RUN_KEY)[run_row.REQUESTS] == {}
+
+
+def test_a_narrow_pass_over_a_run_with_a_pending_reset_decides_nothing_and_leaves_it_to_the_full_pass(world):
+    """Review of TR-6, B-4: a fact's narrow pass would decide a dependant from an upstream the reset has not reached."""
+    start(world, [spec("extract"), spec("load", ["extract"])])
+    full(world)
+    finish(world, "extract", "failed")
+    full(world)
+    restart(world, "extract", with_dependants=True)
+    result = world.dispatcher.narrow_pass(RUN_KEY, [key("load")], source="test", remaining_ms=lambda: 60_000)
+    assert result["left"] and result["changed"] == 0 and item(world, key("load"))["status"] == "upstream_failed"
+    assert run_row.LEFT_AT in item(world, RUN_KEY)
+    full(world)
+    assert item(world, key("load"))["status"] == "waiting"                    # the full pass reset it
+
+
+def test_a_pointer_the_role_may_not_write_warns(world, monkeypatch):
+    from coordination_testkit import client_error
+    start(world, [spec("extract", wait_for=[{"asset_name": "ns/orders"}])])
+    full(world)
+    finish(world, "extract", "failed")
+    full(world)
+    real = world.dispatcher.client.put_item
+
+    def put_item(**kwargs):
+        if kwargs["TableName"] == table("SUBSCRIPTIONS_TABLE"):
+            raise client_error("AccessDeniedException", "PutItem")
+        return real(**kwargs)
+
+    monkeypatch.setattr(world.dispatcher.client, "put_item", put_item)
+    restart(world, "extract")
+    full(world)
+    assert any("asset pointers cannot be written" in w["error"] for w in warnings(world))

@@ -242,6 +242,12 @@ def judge(row: RowView, upstreams: Mapping[str, Optional[RowView]], run: RunView
     return Judgment(row.task_id, due=deadlines.due_time(row.times, run.pauses))
 
 
+def rule_verdict(row: RowView, upstreams: Mapping[str, Optional[RowView]]) -> str:
+    """What the row's trigger rule gives from ``upstreams`` as they are (trigger_rules' verdicts): the reset of a
+    Restart with dependants compares it with the decision the row holds (actions.reset_set)."""
+    return _rule(row, upstreams).verdict
+
+
 def _rule(row: RowView, upstreams: Mapping[str, Optional[RowView]]) -> trigger_rules.DepEvaluation:
     ups = [upstreams[d] for d in row.dependencies]
     return trigger_rules.evaluate(row.trigger_rule, [u.status for u in ups if u],

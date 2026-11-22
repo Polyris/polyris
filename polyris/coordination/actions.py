@@ -32,14 +32,14 @@ run and the console answers within API Gateway's 30 seconds.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..constants import SkipOrigin, TaskStatus
 from ..partitions import detect_granularity
 from . import (attention, deadlines, dispatch, dispatch_writes, pauses, records, retention, row_write, run_name,
-               run_row, start_run, task_row, transitions)
+               run_row, start_run, task_row, transitions, trigger_rules)
 from .times import format_utc, parse_utc
 
 #: The light actions on a task, named as their transitions (transitions.py).
@@ -64,7 +64,8 @@ class ActionWrite:
     items: List[Dict[str, Any]]
     #: Real output is in ``output#``: the marker stays out, and the caller writes a ``manual`` warning.
     marker_blocked: bool = False
-    #: Stop of a row whose run_task runs: the name of that execution, for StopExecution.
+    #: An action on a row whose run_task may run (``deps_ready``, ``running``): the name of that execution, which
+    #: the caller stops after the transaction, as cleanup (§3).
     run_task_to_stop: Optional[str] = None
     events: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -112,7 +113,7 @@ def task_action(*, action: str, task: Mapping[str, Any], run: Mapping[str, Any],
                                                backfill_id=str(task.get(task_row.BACKFILL_ID) or ""), now=now,
                                                cause=str(error)))
     return ActionWrite(items=items, marker_blocked=marker is None and _real_output(output),
-                       run_task_to_stop=run_task_name if action == "stop" and row.status in _LIVE else None,
+                       run_task_to_stop=run_task_name if row.status in _LIVE else None,
                        events=events)
 
 
@@ -334,10 +335,10 @@ def pointer_items(task: Mapping[str, Any], *, run_key: str, now: datetime) -> Li
 
 def reset_set(rows: Mapping[str, dispatch.RowView], request: Mapping[str, Any]) -> List[str]:
     """The rows a pass resets for a Restart with dependants, upstreams first (§3): the descendants of the
-    request's task among ``rows`` that a failure or a stop decided (``upstream_failed``, or skipped by a rule)
-    before the request. A decision since was made from the restarted task, and a reset of it would come round
-    again; an operator's or the run's skip stays."""
-    at = parse_utc(str(request["at"]))
+    request's task among ``rows`` that a rule decided (``upstream_failed``, or skipped by a rule) and whose rule no
+    longer gives that decision from their upstreams as they are now, the rows this set resets counting as waiting
+    again. A dependant that another final failure still blocks stays, so no reset comes round again; an
+    operator's or the run's skip stays (D121)."""
     dependants: Dict[str, List[str]] = {}
     for name, row in rows.items():
         for upstream in set(row.dependencies):
@@ -349,15 +350,24 @@ def reset_set(rows: Mapping[str, dispatch.RowView], request: Mapping[str, Any]) 
             if dependant not in seen:
                 seen.add(dependant)
                 stack.append(dependant)
-    chosen = {name for name in seen if _decided_by_an_upstream(rows[name], at)}
-    return dispatch.upstreams_first(chosen, {name: rows[name].dependencies for name in chosen})
+    chosen: List[str] = []
+    waiting_again: Dict[str, dispatch.RowView] = {}
+    for name in dispatch.upstreams_first(seen, {n: rows[n].dependencies for n in seen}):
+        row = rows[name]
+        decided = _RULE_DECISIONS.get((row.status, row.skip_origin))
+        if decided is None:
+            continue
+        upstreams = {d: waiting_again.get(d, rows.get(d)) for d in row.dependencies}
+        if any(u is None for u in upstreams.values()) or dispatch.rule_verdict(row, upstreams) == decided:
+            continue                                   # a missing upstream row fails it at its next decision
+        chosen.append(name)
+        waiting_again[name] = replace(row, status=TaskStatus.WAITING.value, skip_origin=None)
+    return chosen
 
 
-def _decided_by_an_upstream(row: dispatch.RowView, at: datetime) -> bool:
-    by_rule = row.status == TaskStatus.SKIPPED.value and row.skip_origin == SkipOrigin.RULE
-    if not (row.status == TaskStatus.UPSTREAM_FAILED.value or by_rule):
-        return False
-    return row.times.status_since is None or row.times.status_since < at
+#: The statuses a rule decides, and the verdict that decided each (trigger_rules).
+_RULE_DECISIONS = {(TaskStatus.UPSTREAM_FAILED.value, None): trigger_rules.UPSTREAM_FAILED,
+                   (TaskStatus.SKIPPED.value, SkipOrigin.RULE): trigger_rules.SKIP}
 
 
 def reset(task: Mapping[str, Any], row: dispatch.RowView, run: dispatch.RunView, *, now: datetime,

@@ -576,3 +576,18 @@ def test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_re
     world.deliver_task_hints()
     assert world.running_tasks(run) == ["load"]
     assert world.work_input(run, "load")["upstream"]["lookup"]["output"] == {"rows": 3}
+
+
+@defect("R-X1")
+def test_an_action_on_a_running_task_stops_its_work_and_a_restart_runs_one_copy(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["extract"]
+    world.fail_task(run, "extract")
+    assert world.running_tasks(run) == []          # Fail stopped its run_task
+    world.restart(run, "extract")
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["extract"]  # one copy of the work
+    world.skip(run, "extract")
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["load"]     # the skipped work stopped; its dependant runs alone

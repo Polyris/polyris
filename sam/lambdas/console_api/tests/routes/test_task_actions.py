@@ -52,7 +52,7 @@ def world(mocker):
         registry = deploy_specs(resource, "orders", [spec("load", outlets=[{"name": "ns/orders"}])])
         resource.Table(kit.TABLES["PIPELINES_TABLE"][1]).put_item(Item={"pipeline_name": "orders", **registry})
         table = resource.Table(tokens)
-        yield type("World", (), {"table": table, "tasks": tasks, "sfn": sfn, "resource": resource,
+        yield type("World", (), {"table": table, "tasks": tasks, "sfn": sfn, "resource": resource, "registry": registry,
                                  "facts": resource.Table(facts), "events": resource.Table(kit.TABLES["TASK_EVENTS_TABLE"][1])})
 
 
@@ -66,7 +66,8 @@ def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, s
         world.table.put_item(Item={run_row.TABLE_KEY: run_row.key(RUN), run_row.EXECUTION: RUN,
                                    run_row.STATUS: run_row.ACTIVE, run_row.RUN_VERSION: 4,
                                    run_row.RUN_START: "2026-11-21T06:00:00.000Z", run_row.RUN_DATE: "2026-11-21",
-                                   run_row.PIPELINE: "orders",
+                                   run_row.PIPELINE: "orders", run_row.SPEC_ID: world.registry["spec_id"],
+                                   run_row.TASK_COUNT: world.registry["task_count"],
                                    run_row.STARTED_AT: format_utc(datetime.now(timezone.utc) - started)})
         world.table.put_item(Item=run_input.to_item(run_input.RunInput(partition_arg="2026-11-21", cascade=cascade),
                                                     pipeline_execution=RUN, ttl=1))
@@ -115,10 +116,28 @@ def test_mark_successful_records_its_facts_with_the_runs_cascade(world):
 def test_mark_successful_whose_outlets_cannot_be_read_is_refused_with_nothing_recorded(world, mocker):
     """Its facts belong to the success (invariant 12): no success without them."""
     seed(world, "failed")
-    mocker.patch.object(world.tasks, "_read_task_spec", return_value=(None, "the task specs cannot be read"))
+    mocker.patch.object(world.tasks, "_run_task_spec", return_value=(None, "the task specs cannot be read"))
     response = act(world, "mark_success")
     assert response["statusCode"] == 409 and "outlets cannot be read" in json.loads(response["body"])["error"]
     assert row(world)["status"] == "failed" and not world.facts.scan()["Items"]
+
+
+def test_mark_successful_records_the_outlets_of_its_runs_spec_not_of_a_redeploy_since(world):
+    """Review of TR-6, B-2: the pipeline was redeployed with another outlet, and the task renamed away."""
+    from tests.specs_kit import deploy_specs, spec
+    seed(world, "failed")
+    newer = deploy_specs(world.resource, "orders", [spec("loader", outlets=[{"name": "ns/other"}])])
+    world.resource.Table(kit.TABLES["PIPELINES_TABLE"][1]).put_item(Item={"pipeline_name": "orders", **newer})
+    assert act(world, "mark_success")["statusCode"] == 200
+    assert [f["asset_name"] for f in world.facts.scan()["Items"]] == ["ns/orders"]
+
+
+@pytest.mark.parametrize("route", ["skip_task", "fail_task", "mark_success", "stop_task"])
+def test_an_action_on_a_running_task_stops_its_run_task(world, route):
+    """ADR #137 §3: whatever the action, the work of a task that runs stops (review of TR-6, B-1)."""
+    seed(world, "running", run_task_helper_arn=ARN)
+    assert act(world, route)["statusCode"] == 200
+    assert world.sfn.stop_execution.call_args.kwargs["executionArn"] == ARN
 
 
 def test_a_stop_of_a_running_task_stops_its_run_task(world):

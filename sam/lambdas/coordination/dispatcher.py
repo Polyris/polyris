@@ -242,6 +242,8 @@ class Dispatcher:
                 self._requests(state)                  # the renewal, then a reset: before any decision (§3, §5)
             if run.stopping:
                 self._stop_rows(state, judged)
+            elif targets is not None and run_row.RESET_DEPENDANTS in run.requests:
+                state.left = True       # a reset waits on the run: its full pass decides these rows after it (§3)
             else:
                 dependencies = {name: state.rows[name].dependencies for name in judged if name in state.rows}
                 for name in dispatch.upstreams_first(judged, dependencies):
@@ -335,6 +337,12 @@ class Dispatcher:
             except (ClientError, BotoCoreError) as exc:
                 log.error("dispatcher", "an asset pointer could not be written", run=state.run.key, task=name,
                           pointer=pointer, error=str(exc))
+                if failures.error_code(exc) in ACCESS_DENIED:     # a permission no retry brings: say so (§7)
+                    self._warn(state.run, subject=f"{state.run.key}-pointers", task=name,
+                               item=state.items.get(name, {}),
+                               error=f"{name}: its asset pointers cannot be written, so a fact wakes it only at "
+                                     f"its run's next check: {failures.error_code(exc)}: {exc}")
+                    return
 
     def _stop_rows(self, state: _Pass, judged: Set[str]) -> None:
         """Every unfinished row of the set stopped, dependants first (§4)."""
