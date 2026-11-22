@@ -297,8 +297,12 @@ export function AllRunsView({
                                                     : run.status}
                                             </span>
                                         ) : (
-                                            <span className={`task-status-badge ${run.status}`}>
+                                            <span
+                                                className={`task-status-badge ${run.status}`}
+                                                title={run.failed_step ? `step ${run.failed_step.step} failed: ${run.failed_step.error}` : undefined}
+                                            >
                                                 {formatRunStatus(run.status, run.failed_tasks)}
+                                                {run.failed_step ? `, step ${run.failed_step.step} failed` : ''}
                                             </span>
                                         )}
                                     </td>

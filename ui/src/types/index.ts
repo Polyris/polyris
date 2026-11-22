@@ -153,6 +153,8 @@ export interface Execution {
   triggered_by?: string;
   /** How many of the run's tasks failed: shown while the run is still running (ADR #137 §4). */
   failed_tasks?: number;
+  /** A failed direct step (`wait`, `sns`, `s3` and the like): it has no row, and fails the run (ADR #137 §1). */
+  failed_step?: { step: string; error: string } | null;
   [key: string]: unknown;
 }
 

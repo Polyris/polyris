@@ -219,7 +219,16 @@ def run_entry(item: Mapping[str, Any]) -> Dict[str, Any]:
         'finished_at': finished_at,
         'duration_ms': duration_ms(started_at, finished_at),
         'triggered_by': item.get(run_row.TRIGGERED_BY) or None,
+        # A failed direct step (a `wait`, `sns`, `s3` step and the like) has no row: the run row's mark names it and
+        # its error, which fail the run once its rows are final (ADR #137 §1).
+        'failed_step': _failed_step(item.get(run_row.STEP_FAILURE)),
     }
+
+
+def _failed_step(mark: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(mark, Mapping):
+        return None
+    return {'step': str(mark.get(run_row.STEP_MARK_STEP, '')), 'error': str(mark.get(run_row.STEP_MARK_ERROR, ''))}
 
 
 def duration_ms(started_at: Optional[str], finished_at: Optional[str]) -> Optional[int]:

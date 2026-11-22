@@ -126,6 +126,13 @@ describe('AllRunsView', () => {
             expect(screen.getByText('failed')).toBeInTheDocument();
         });
 
+        it('names a failed direct step and its error (ADR #137 §1)', () => {
+            setup({ runs: [{ ...mockRuns[1], failed_step: { step: 'notify', error: 'SNS.NotFound' } }] });
+            render(<AllRunsView {...defaultProps} />);
+            const status = screen.getByText('failed, step notify failed');
+            expect(status).toHaveAttribute('title', 'step notify failed: SNS.NotFound');
+        });
+
         it('table has aria-label', () => {
             render(<AllRunsView {...defaultProps} />);
             expect(screen.getByRole('table')).toHaveAttribute('aria-label', 'Pipeline executions');

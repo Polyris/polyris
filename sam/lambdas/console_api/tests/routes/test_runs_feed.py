@@ -217,3 +217,14 @@ def test_any_other_read_failure_fails_the_request(table, mocker):
     query.return_value.query.side_effect = ClientError({'Error': {'Code': 'ValidationException',
                                                                   'Message': 'something else'}}, 'Query')
     assert runs()[0] == 500
+
+
+def test_a_run_whose_direct_step_failed_names_the_step_and_its_error():
+    """A direct step has no row: the run row's mark names it (ADR #137 §1), and it fails the run."""
+    from feed import run_entry
+    from polyris.coordination import run_row
+    item = {run_row.TABLE_KEY: run_row.key("orders-run-2026-11-20-abcd1234"), run_row.SUMMARY: {"success": 2},
+            run_row.STEP_FAILURE: {"step": "notify", "error": "SNS.NotFound"}}
+    entry = run_entry(item)
+    assert (entry["status"], entry["failed_step"]) == ("failed", {"step": "notify", "error": "SNS.NotFound"})
+    assert run_entry({run_row.TABLE_KEY: run_row.key("orders-run-2026-11-20-abcd1234")})["failed_step"] is None
