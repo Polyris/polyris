@@ -414,3 +414,47 @@ def test_a_reset_row_with_a_limit_is_due_at_it_as_the_pass_reads(ddb):
     assert send(ddb, actions.ActionWrite(actions.reset(row, dispatch.row_view(row), view, now=NOW, table=TOKENS)))
     assert get(ddb, KEY) == actions.reset_applied(row, dispatch.row_view(row), view, now=NOW)
     assert get(ddb, KEY)[attention.DUE] == format_utc(NOW + timedelta(minutes=10))
+
+
+# ── Stop of a run, Pause and Resume (§3, §4, §5) ───────────────────────────
+
+
+def test_a_stop_of_a_run_marks_it_raises_it_makes_it_due_and_cancels_a_pending_reset(ddb):
+    reset = {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t", "task": "load"}, run_row.RENEW_TTL: {"by": "a", "at": "t"}}
+    put(ddb, active_run(**{run_row.REQUESTS: reset}))
+    ddb.update_item(**actions.stop_run(get(ddb, run_row.key(RUN)), by="ops", reason="wrong data", now=NOW,
+                                       table=TOKENS))
+    the_run = get(ddb, run_row.key(RUN))
+    assert the_run[run_row.STOP] == {"by": "ops", "reason": "wrong data", "at": format_utc(NOW)}
+    assert the_run[run_row.RUN_VERSION] == 6 and the_run[attention.DUE] == format_utc(NOW)
+    assert set(the_run[run_row.REQUESTS]) == {run_row.RENEW_TTL}             # the renewal goes on
+    assert actions.stop_run(the_run, by="ops", reason="again", now=NOW, table=TOKENS) is None
+
+
+def test_a_stop_built_before_a_reset_was_requested_is_refused_so_it_cancels_it_when_built_again(ddb):
+    read = active_run()
+    put(ddb, active_run(**{run_row.REQUESTS: {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t", "task": "x"}}}))
+    with pytest.raises(ddb.exceptions.ConditionalCheckFailedException):
+        ddb.update_item(**actions.stop_run(read, by="ops", reason="", now=NOW, table=TOKENS))
+    with pytest.raises(actions.ActionRefused, match="not active"):
+        actions.stop_run(active_run(**{run_row.STATUS: run_row.CREATING}), by="ops", reason="", now=NOW, table=TOKENS)
+
+
+def test_a_pause_opens_an_interval_and_a_resume_closes_it_each_on_the_intervals_read(ddb):
+    put(ddb, active_run())
+    ddb.update_item(**actions.pause_run(get(ddb, run_row.key(RUN)), now=NOW, table=TOKENS))
+    paused = get(ddb, run_row.key(RUN))
+    assert dispatch.run_view(paused).paused and paused[run_row.RUN_VERSION] == 6
+    assert actions.pause_run(paused, now=NOW, table=TOKENS) is None              # paused already
+    later = NOW + timedelta(hours=1)
+    ddb.update_item(**actions.resume_run(paused, now=later, table=TOKENS))
+    resumed = get(ddb, run_row.key(RUN))
+    assert not dispatch.run_view(resumed).paused and resumed[run_row.RUN_VERSION] == 7
+    assert actions.resume_run(resumed, now=later, table=TOKENS) is None          # not paused
+    with pytest.raises(ddb.exceptions.ConditionalCheckFailedException):         # built from the paused read
+        ddb.update_item(**actions.pause_run({**paused, run_row.PAUSES: []}, now=later, table=TOKENS))
+
+
+def test_a_stopped_run_takes_no_pause():
+    with pytest.raises(actions.ActionRefused, match="takes no Pause"):
+        actions.pause_run(active_run(**{run_row.STOP: {"by": "ops"}}), now=NOW, table=TOKENS)

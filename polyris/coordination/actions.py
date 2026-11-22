@@ -1,4 +1,5 @@
-"""An operator's action on a task (ADR #137 §3): one pure builder for Skip, Fail, Mark Successful, Stop and Restart.
+"""An operator's actions (ADR #137 §3): one pure builder for Skip, Fail, Mark Successful, Stop and Restart of a task,
+and Stop, Pause and Resume of a run.
 
 The console reads the task row, its run row and the date's ``output#`` item, and
 sends the transaction built here from those reads. The action and everything
@@ -37,8 +38,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..constants import SkipOrigin, TaskStatus
 from ..partitions import detect_granularity
-from . import (attention, deadlines, dispatch, dispatch_writes, records, retention, row_write, run_name, run_row,
-               start_run, task_row, transitions)
+from . import (attention, deadlines, dispatch, dispatch_writes, pauses, records, retention, row_write, run_name,
+               run_row, start_run, task_row, transitions)
 from .times import format_utc, parse_utc
 
 #: The light actions on a task, named as their transitions (transitions.py).
@@ -416,4 +417,75 @@ def _renewal(key: str, *, ttl: int, below: Optional[int], table: str) -> Dict[st
         values[":below"] = below
     return {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": key}}, "UpdateExpression": "SET #ttl = :ttl",
             "ConditionExpression": condition, "ExpressionAttributeNames": {"#key": task_row.TABLE_KEY, "#ttl": "ttl"},
+            "ExpressionAttributeValues": row_write.typed(values)}
+
+
+# ── Stop of a run, Pause and Resume (§3, §4, §5) ──────────────────────────
+
+
+def stop_run(run: Mapping[str, Any], *, by: str, reason: str, now: datetime, table: str) -> Optional[Dict[str, Any]]:
+    """The console's Stop of a run (§4): the stop mark with who asked and why, ``run_version`` raised, the run row
+    due at once; a pending reset of a Restart with dependants is cancelled (§3), as read. The dispatcher stops the
+    rows. None when a stop mark is set already: a second Stop changes nothing."""
+    view = dispatch.run_view(run)
+    if view.stop is not None:
+        return None
+    if not view.active:
+        raise ActionRefused(f"{view.execution}: a run that is not active yet takes no Stop")
+    stamp = format_utc(now)
+    names = {**run_row.VERSION_NAMES, "#status": run_row.STATUS, "#stop": run_row.STOP, "#req": run_row.REQUESTS,
+             "#reset": run_row.RESET_DEPENDANTS, "#att": attention.KEY, "#due": attention.DUE, "#ttl": run_row.TTL}
+    values = {**run_row.VERSION_RAISE_VALUES, ":active": run_row.ACTIVE, ":now": stamp,
+              ":mark": run_row.stop_mark(by=by, reason=reason, at=stamp),
+              ":att": attention.attention(attention.WAITING, view.key), ":ttl": retention.ttl(now, retention.HISTORY)}
+    expression = f"SET #stop = :mark, {run_row.VERSION_RAISE}, #att = :att, #due = :now, #ttl = :ttl"
+    condition = "#status = :active AND attribute_not_exists(#stop)"
+    if run_row.RESET_DEPENDANTS in view.requests:
+        expression += " REMOVE #req.#reset"
+        condition += " AND attribute_exists(#req.#reset)"
+    else:
+        condition += " AND attribute_not_exists(#req.#reset)"
+    return _run_write(view, expression=expression, condition=condition, names=names, values=values, table=table)
+
+
+def pause_run(run: Mapping[str, Any], *, now: datetime, table: str) -> Optional[Dict[str, Any]]:
+    """The console's Pause (§5): an interval opened on the run row, ``run_version`` raised, so no pass that read the
+    run row before writes a ``deps_ready`` after (§1). None when the run is paused already."""
+    view = dispatch.run_view(run)
+    if view.paused:
+        return None
+    if not view.active or view.stop is not None:
+        raise ActionRefused(f"{view.execution}: a run that is not active, or that is stopped, takes no Pause")
+    return _pauses_write(view, run, pauses.pause(view.pauses, now), now=now, table=table)
+
+
+def resume_run(run: Mapping[str, Any], *, now: datetime, table: str) -> Optional[Dict[str, Any]]:
+    """The console's Resume (§5): the open interval closed, ``run_version`` raised; the run row's change wakes the
+    dispatcher, which decides the held rows. None when the run is not paused."""
+    view = dispatch.run_view(run)
+    if not view.paused:
+        return None
+    return _pauses_write(view, run, pauses.resume(view.pauses, now), now=now, table=table)
+
+
+def _pauses_write(view: dispatch.RunView, run: Mapping[str, Any], intervals: Sequence[pauses.Interval], *,
+                  now: datetime, table: str) -> Dict[str, Any]:
+    """The run row's intervals as computed from the read, conditional on them being as read."""
+    names = {**run_row.VERSION_NAMES, "#status": run_row.STATUS, "#pauses": run_row.PAUSES, "#ttl": run_row.TTL}
+    values: Dict[str, Any] = {**run_row.VERSION_RAISE_VALUES, ":active": run_row.ACTIVE,
+                              ":pauses": pauses.to_item(intervals), ":ttl": retention.ttl(now, retention.HISTORY)}
+    condition = "#status = :active"
+    if run_row.PAUSES in run:
+        condition += " AND #pauses = :read"
+        values[":read"] = run[run_row.PAUSES]
+    else:
+        condition += " AND attribute_not_exists(#pauses)"
+    return _run_write(view, expression=f"SET #pauses = :pauses, {run_row.VERSION_RAISE}, #ttl = :ttl",
+                      condition=condition, names=names, values=values, table=table)
+
+
+def _run_write(view: dispatch.RunView, *, expression: str, condition: str, names: Mapping[str, str],
+               values: Mapping[str, Any], table: str) -> Dict[str, Any]:
+    return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": view.key}}, "UpdateExpression": expression,
+            "ConditionExpression": condition, "ExpressionAttributeNames": dict(names),
             "ExpressionAttributeValues": row_write.typed(values)}

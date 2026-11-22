@@ -132,7 +132,16 @@ RUN_ROW_WRITERS: Dict[str, Tuple[Tuple[str, ...], Callable[[], Mapping[str, Any]
                                                         table=TOKENS)[1]["Update"]),
     "actions.clear_request": (("clear_request",), lambda: actions.clear_request(RUN, run_row.RENEW_TTL, table=TOKENS,
                                                                                 now=NOW)),
+    "actions.stop_run": (("stop",), lambda: actions.stop_run(_run_item(), by="ops", reason="", now=NOW, table=TOKENS)),
+    "actions.pause_run": (("pause",), lambda: actions.pause_run(_run_item(), now=NOW, table=TOKENS)),
+    "actions.resume_run": (("resume",), lambda: actions.resume_run(
+        {**_run_item(), run_row.PAUSES: [[int(NOW.timestamp())]]}, now=NOW, table=TOKENS)),
 }
+
+
+def _run_item() -> Dict[str, Any]:
+    return {run_row.TABLE_KEY: RUN.key, run_row.EXECUTION: RUN.execution, run_row.STATUS: run_row.ACTIVE,
+            run_row.RUN_VERSION: RUN.version}
 
 
 def _reset_row() -> Dict[str, Any]:
@@ -140,9 +149,9 @@ def _reset_row() -> Dict[str, Any]:
             task_row.GENERATION: 2, task_row.READINESS: task_spec.canonical_json(
                 {"trigger_rule": "all_success", "dependencies": ["extract"]})}
 
-#: The run row's transitions whose writer is not built yet: the console's Stop of a run, Pause and Resume
-#: (ADR #137 §3, §4). Each joins RUN_ROW_WRITERS with its writer.
-NOT_BUILT = frozenset({"stop", "pause", "resume"})
+#: The run row's transitions whose writer is not built yet (ADR #137 §3, §4): each joins RUN_ROW_WRITERS with its
+#: writer.
+NOT_BUILT: frozenset = frozenset()
 
 
 @pytest.mark.parametrize("writer", sorted(RUN_ROW_WRITERS))
