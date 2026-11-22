@@ -277,9 +277,11 @@ class World:
         names = {run.execution_name(t.task_id): t.task_id for t in run.pipeline.dag.tasks}
         return sorted(names[n] for n in (self._job_owner(j) for j in self.runtime.jobs.values()) if n in names)
 
-    def complete(self, run: Run, task: str, *, status: str = "success", output: Any = None) -> None:
+    def complete(self, run: Run, task: str, *, status: str = "success", output: Any = None,
+                 cause: str = "the user's task failed") -> None:
         """Finish the user's work for `task`; `status` is "success", "failed" or "timed_out" (the attempt reached
-        its execution_timeout), and a success returns `output` (an empty object when None, null for JSON_NULL)."""
+        its execution_timeout), a success returns `output` (an empty object when None, null for JSON_NULL), and a
+        failure ends with `cause`."""
         name = run.execution_name(task)
         job = next((j for j in self.runtime.jobs.values() if self._job_owner(j) == name), None)
         if job is None:
@@ -288,7 +290,7 @@ class World:
             returned = {} if output is None else None if output is JSON_NULL else output
             self.runtime.finish_job(job.id, output={"Output": returned, "Status": "SUCCEEDED"})
         elif status == "failed":
-            self.runtime.finish_job(job.id, error="States.TaskFailed", cause="the user's task failed")
+            self.runtime.finish_job(job.id, error="States.TaskFailed", cause=cause)
         elif status == "timed_out":
             self.runtime.finish_job(job.id, error="States.Timeout", cause="the attempt reached its execution_timeout")
         else:

@@ -42,6 +42,12 @@ DEFECTS = {
             "as that string (the review of TR-5)",
     "R-N3": "A task beside an upstream that has not succeeded yet in this run (one_success) reads that upstream's "
             "older output of the same date through xcom (the review of TR-5)",
+    "R-A1": "A failure whose cause Step Functions cut (a failed child's cause carries its input, and a cause "
+            "stops at 32,768 characters) skips the task's retries: parsing the cut JSON failed the catcher itself, "
+            "and the task failed 10 to 15 minutes later with the wrong cause (the review of TR-5)",
+    "R-R1": "A write of run_task that fails with an error its Retry does not name is given up after seconds: the "
+            "claim fails the task for good, and a success waits for a decision while its work would run again "
+            "(the review of TR-5)",
     "R-C1": "A success transaction that DynamoDB cancels (a conflict, a throttled item, a fact time already "
             "taken) loses the success; run_task must read its row and try again with a new time for each fact",
     "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "

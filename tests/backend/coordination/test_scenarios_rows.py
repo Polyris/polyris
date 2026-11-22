@@ -375,6 +375,42 @@ def test_a_task_beside_an_upstream_that_still_runs_never_reads_its_older_output(
     assert world.xcom_get(second, "pick", "slow", raise_on_missing=False) is None
 
 
+@defect("R-A1")
+def test_a_failure_whose_cause_was_cut_still_goes_through_the_tasks_retries(world):
+    """A cause Step Functions cut at 32,768 characters is no JSON; the child's ARN is matched in it, never parsed."""
+    retried = {"retries": 1, "retry_delay": timedelta(seconds=10)}
+    run = world.start_run(world.deploy(pipeline("orders", [("extract", retried)])), DATE)
+    world.deliver_task_hints()
+    cut = ('{"ExecutionArn":"arn:aws:states:us-east-1:123456789012:execution:child:abc","Input":"{\\"rows\\": \\"'
+           + "x" * 200)
+    world.complete(run, "extract", status="failed", cause=cut)
+    assert world.running_tasks(run) == ["extract"]          # its retry runs
+    assert world.row(run, "extract")["retry_attempt"] == 1
+
+
+@defect("R-R1")
+def test_a_success_whose_write_failed_with_an_error_nobody_named_is_recorded(world):
+    """The harness names a 5xx of the SDK integration DynamoDb.InternalServerError, which the success's Retry did not
+    list: the success waited for a decision. Any error but an answer is retried, then the row is read."""
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
+    world.inject_failure("TransactWriteItems", "PipelineTokensTable", "InternalServerError", times=2)
+    world.complete(run, "extract", output={"rows": 1})
+    world.deliver_task_hints()
+    assert world.status(run, "extract") == "success"
+    assert world.running_tasks(run) == ["load"]
+
+
+@defect("R-R1")
+def test_a_claim_whose_write_failed_twice_still_runs_the_task(world):
+    orders = world.deploy(chain("orders", "extract"))
+    world.inject_failure("UpdateItem", "PipelineTokensTable", "InternalServerError", times=2,
+                         when=lambda params: str(params.get("ConditionExpression", "")).startswith("#s = :deps_ready"))
+    run = world.start_run(orders, DATE)
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["extract"]
+
+
 @defect("R-T2")
 def test_a_timed_out_attempt_goes_through_the_tasks_retries(world):
     retried = {"retries": 1, "retry_delay": timedelta(seconds=10), "execution_timeout": timedelta(minutes=30)}

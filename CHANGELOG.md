@@ -19,6 +19,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - **Rebuild every bundle of the SDK with 1.3:** a Lambda's package (`polyris-build-lambda`), a Glue job's wheel, an ECS or Batch image. An older copy of `xcom` returns `None` for an upstream whose output the task's input could not hold (a fan-in over about 1,500 upstreams), raises for an upstream the run skipped, and can read an older run's output of the same date after an upstream failed.
 - **An upstream that succeeded without its output fails the task with that cause (D109).** Before, the task ran without the data.
 - **`run_task` no longer retries a timeout itself:** one attempt could run three times. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work.
+- A Lambda task that crashes, runs out of memory or times out (`Lambda.Unknown`) is no longer run again by `run_task` outside the task's `retries`: it is a failed attempt, as a timeout is.
 
 ### Changed
 
@@ -34,7 +35,11 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - **`run_task` only runs the work (ADR #137 §1).** It moves its task from `deps_ready` to `running` under the generation it was started with, and ends quietly when an operator took the task over. A success is one transaction of the status, the output in `output#` and a fact per outlet: a dependant never starts before the data it reads, and a success never lacks its facts. A success that cannot be recorded waits for an operator's decision with the cause, instead of a `fact` warning. A task that fails after its retries waits for the decision without a running execution: the dispatcher fails it at the decision timeout. It no longer checks the pause, notifies dependants or answers the run.
 - A task's output of a date is kept a year from its latest write, and the input its console preview shows 90 days (ADR #137 §5).
 - A task's string result is stored as JSON (`"ok"`, with its quotes) and reaches its dependants as that string. 1.2 stored it as it was, which `xcom` could not read (`not readable JSON`) and `event["upstream"]` carried as `{"_raw": ...}`; such a row still reaches them as the string.
-- A task's PagerDuty incident is resolved when a later start of the task succeeds. In 1.2 the call after a success never ran: it read fields its input did not carry.
+- `run_task` retries a DynamoDB call on any error but a failed condition for about two minutes. It gave up after about seven seconds on four named errors, which failed a task for good at its start or left a success waiting for a decision. A success whose write failed reads its row first, so a lost answer counts as the success, and the transaction is sent at most five times.
+- A failure whose cause Step Functions cut at 32,768 characters goes through the task's retries. It failed the task 10 to 15 minutes later with `States.QueryEvaluationError`.
+- An `@task.sfn` task with a long `task_id` gets a unique name for its child execution. From 42 characters a retry failed with `ExecutionAlreadyExists`, from 56 a second run of the date did.
+- A task row keeps at most 4,000 characters of a failure's error; the execution's history keeps all of it.
+- The `is_backfill` variable is `true` in a run of a backfill, and `backfill_id` carries its id; they were always `false` and empty.
 
 ### Added
 

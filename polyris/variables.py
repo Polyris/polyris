@@ -68,8 +68,9 @@ VARIABLES: Dict[str, VariableSpec] = {
     "backfill_id":           {"expr": "$exists($states.context.Execution.Input.backfill_id) ? "
                                       "$states.context.Execution.Input.backfill_id : ''",
                               "description": "Backfill run id, or empty string"},
-    "is_backfill":           {"expr": "false",
-                              "description": "Legacy flag, false unless the run's own variables set it"},
+    "is_backfill":           {"expr": "$exists($states.context.Execution.Input.backfill_id) and "
+                                      "$states.context.Execution.Input.backfill_id != ''",
+                              "description": "true in a run of a backfill, which carries its backfill_id"},
     "ALLOW_UNSUCCESSFUL_SPIDER_RUN": {"expr": "'True'",
                               "description": "Legacy flag, always 'True'"},
 }

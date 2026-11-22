@@ -266,6 +266,19 @@ PROBES: Tuple[Probe, ...] = (
                         "    if status == _SUCCESS or (status == _SKIPPED and skip_origin in _READABLE_SKIPS):\n",
                         "    if (status not in _FAILED_FINALLY and status != _SKIPPED) or skip_origin in _READABLE_SKIPS:\n"),),
           f"{ROWS}::test_a_task_beside_an_upstream_that_still_runs_never_reads_its_older_output"),
+    # The catcher parses the cause again: a cut cause fails it, and the task skips its retries.
+    Probe("R-A1", (Edit(RUN_TASK, "$m := $match($causeStr, /\\\"ExecutionArn\\\"\\\\s*:\\\\s*\\\"([^\\\"]+)\\\"/, 1); "
+                                  "$count($m) > 0 ? $m.groups[0] : '')",
+                        "$parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '')"),),
+          f"{ROWS}::test_a_failure_whose_cause_was_cut_still_goes_through_the_tasks_retries"),
+    # The success neither retries an unnamed error nor reads its row after one: it waits for a decision.
+    Probe("R-R1", (Edit(RUN_TASK, '            "States.ALL"\n          ],\n          "IntervalSeconds": 2,\n'
+                                  '          "MaxAttempts": 3,',
+                        '            "States.ALL"\n          ],\n          "IntervalSeconds": 2,\n'
+                        '          "MaxAttempts": 0,'),
+                   Edit(RUN_TASK, '"Next": "Read_After_Cancel",\n          "Comment": "Any other error, whose write',
+                        '"Next": "Success_Not_Recorded",\n          "Comment": "Any other error, whose write')),
+          f"{ROWS}::test_a_success_whose_write_failed_with_an_error_nobody_named_is_recorded"),
     # A timeout skips the task's retries, as execution_timeout did in 1.2 (the review of ADR #136, B4).
     Probe("R-T2", (Edit(RUN_TASK, '"Condition": "{% $retry_attempt < (',
                         '"Condition": "{% $states.input.error_obj.Error != \'States.Timeout\' and $retry_attempt < ('),),

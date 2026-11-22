@@ -100,10 +100,12 @@ def test_run_task_starts_no_consumer_and_wakes_no_dependant_itself(states):
 
 def test_a_success_never_lacks_its_facts(states):
     """The facts are in the success's own transaction (invariant 12): if it cannot be written, the row waits
-    for a decision with the cause instead of succeeding without them."""
+    for a decision with the cause instead of succeeding without them. An error that may have applied the write
+    is read first, and the transaction is sent again (the review of TR-5)."""
     record = states["Record_Success"]
     catches = {e: c["Next"] for c in record["Catch"] for e in c["ErrorEquals"]}
-    assert catches["States.ALL"] == catches["States.DataLimitExceeded"] == "Success_Not_Recorded"
+    assert catches["States.DataLimitExceeded"] == "Success_Not_Recorded"
+    assert catches["States.ALL"] == "Read_After_Cancel"
     assert "Emit_Asset_Events" not in states and "Warn_Facts_Not_Recorded" not in states
 
 

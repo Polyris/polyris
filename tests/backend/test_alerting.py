@@ -147,7 +147,8 @@ class TestRunTaskAlertingFlow:
         """All Run_Task_* states catch to the retry decision (ADR #106), which on exhausted retries
         converges on the decision of ADR #114."""
         state = self.rt['States'][task_state]
-        assert {c['Next'] for c in state['Catch']} == {'Check_Should_Retry'}
+        assert {c['Next'] for c in state['Catch']} == {'Shape_Failure'}
+        assert self.rt['States']['Shape_Failure']['Next'] == 'Check_Should_Retry'
 
 
 class TestRetryLoopComposesWithHumanDecision:

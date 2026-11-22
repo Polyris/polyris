@@ -1314,7 +1314,7 @@ def test_an_upstream_that_succeeded_without_its_output_fails_the_task_without_re
 
 def test_a_failed_read_of_the_outputs_is_a_failed_attempt(template):
     catches = _catches(template["States"]["Read_Upstream_Outputs"])
-    assert catches["States.ALL"] == catches["States.DataLimitExceeded"] == "Check_Should_Retry"
+    assert catches["States.ALL"] == catches["States.DataLimitExceeded"] == "Shape_Failure"
 
 
 def test_save_task_input_state_removed(template):
@@ -1594,12 +1594,17 @@ def test_a_cancelled_transaction_reads_the_row_and_branches_on_it(template):
 
 
 def test_a_success_that_cannot_be_recorded_waits_for_a_decision_with_its_cause(template):
-    """The transaction's Catch names States.DataLimitExceeded too (TR-0 B2); the work runs again only if an
-    operator restarts it."""
+    """The transaction's Catch names States.DataLimitExceeded too (TR-0 B2). Any other error may have applied
+    the write, so the row is read first: a lost answer is a success, a miss is sent again up to five times
+    (the review of TR-5). The work runs again only if an operator restarts it."""
     from sfn_jsonata import evaluate
     states = template["States"]
     catches = _catches(states["Record_Success"])
-    assert catches["States.DataLimitExceeded"] == catches["States.ALL"] == "Success_Not_Recorded"
+    assert catches["States.DataLimitExceeded"] == "Success_Not_Recorded"
+    assert catches["States.ALL"] == catches["DynamoDb.TransactionCanceledException"] == "Read_After_Cancel"
+    route = states["Route_After_Cancel"]
+    assert route["Choices"][-1]["Next"] == "Success_Not_Recorded" and "$record_tries < 5" in route["Choices"][1][
+        "Condition"]
     waiting = evaluate(states["Success_Not_Recorded"]["Output"],
                        input={"record_error": {"Error": "States.DataLimitExceeded", "Cause": "too large"},
                               "task_output": "x"})
@@ -1608,11 +1613,103 @@ def test_a_success_that_cannot_be_recorded_waits_for_a_decision_with_its_cause(t
     assert states["Success_Not_Recorded"]["Next"] == "Get_Decision_Timeout"
 
 
-def test_the_success_retries_name_the_sdk_integrations_errors(template):
-    """The SDK integration names errors after the SDK's exceptions (DynamoDb.*), not DynamoDB.* (TR-0 B3)."""
-    errors = {e for r in template["States"]["Record_Success"]["Retry"] for e in r["ErrorEquals"]}
-    assert errors and all(e.startswith("DynamoDb.") for e in errors)
-    assert "DynamoDb.TransactionCanceledException" not in errors
+def test_every_dynamodb_state_retries_any_error_but_an_answer_for_minutes(template):
+    """The review of TR-5: three tries in seven seconds, on error names nobody had seen, failed a claim for good and
+    left a success waiting for a decision. A condition that failed is an answer, and an expression error or an
+    oversized payload does not pass on a retry; anything else is retried for about two minutes, whatever name AWS
+    gives it (the optimized integration says DynamoDB.*, the SDK one DynamoDb.*, TR-0 B3)."""
+    never = {"DynamoDB.ConditionalCheckFailedException", "DynamoDb.ConditionalCheckFailedException",
+             "DynamoDb.TransactionCanceledException", "States.QueryEvaluationError", "States.DataLimitExceeded"}
+    found = []
+
+    def walk(states):
+        for name, state in states.items():
+            if ":dynamodb:" in str(state.get("Resource", "")):
+                found.append(name)
+                first, rest = state["Retry"]
+                assert set(first["ErrorEquals"]) == never and first["MaxAttempts"] == 0, name
+                assert rest["ErrorEquals"] == ["States.ALL"] and rest["MaxDelaySeconds"] == 60, name
+                waited = sum(min(rest["IntervalSeconds"] * rest["BackoffRate"] ** i, 60)
+                             for i in range(rest["MaxAttempts"]))
+                assert waited >= (14 if name == "Record_Success" else 120), name   # the success: five sends
+            if "ItemProcessor" in state:
+                walk(state["ItemProcessor"]["States"])
+
+    walk(template["States"])
+    assert {"Claim", "Read_Claim", "Ask", "Record_Success", "Read_After_Cancel", "Get_Dep_Output"} <= set(found)
+
+
+def test_a_lambda_that_crashed_or_timed_out_is_a_failed_attempt(template):
+    """Lambda.Unknown (a crash, a timeout, out of memory) ran the user's code again outside the task's retries, as
+    the States.Timeout retry did (the review of TR-5); the service's own errors are retried, the code did not run."""
+    errors = {e for r in template["States"]["Run_Task_Lambda"]["Retry"] for e in r["ErrorEquals"]}
+    assert "Lambda.Unknown" not in errors and {"Lambda.ServiceException", "Lambda.TooManyRequestsException"} <= errors
+
+
+def test_a_long_task_id_keeps_the_childs_name_unique(template):
+    """A task id of up to 128 bytes: the name keeps its tail of the start's time, so a retry or a second run of
+    the date never meets ExecutionAlreadyExists (the review of TR-5)."""
+    from datetime import timedelta
+    from sfn_jsonata import NOW, evaluate
+    expr = template["States"]["Run_Task_SFN"]["Arguments"]["Name"]
+    run_input = {"execution_name": "t" * 128 + "-2026-11-18--2026-11-18-0000abcd"}
+    names = {evaluate(expr, context=_context(run_input), variables={"attempt": a}, now=NOW + timedelta(seconds=s))
+             for a, s in ((1, 0), (1, 1), (2, 0))}
+    assert len(names) == 3 and all(len(n) <= 80 and re.search(r"-\d{6}$", n) for n in names)
+    short = evaluate(expr, context=_context({"execution_name": "extract-2026-11-18--2026-11-18-0000abcd"}),
+                     variables={"attempt": 2})
+    assert short.startswith("restart-extract-2026-11-18--2026-11-18-0000abcd-")
+
+
+@pytest.mark.parametrize("cause, arn", [
+    ('{"ExecutionArn":"arn:aws:states:us-east-1:1:execution:child:abc","Input":"{\\"rows\\": \\"xxx',
+     "arn:aws:states:us-east-1:1:execution:child:abc"),               # cut at 32,768 characters: no JSON
+    ('{"ExecutionArn": "arn:x"}', "arn:x"), ("the user's task failed", ""), ("", "")])
+def test_a_failures_cause_is_matched_for_its_arn_never_parsed(template, cause, arn):
+    """A cause Step Functions cut is no JSON, and $parse failed the catcher itself: no retry, no decision, and the
+    wrong cause 10 to 15 minutes later (the review of TR-5). Every catcher matches the ARN instead."""
+    from sfn_jsonata import evaluate
+    states = template["States"]
+    catcher = next(c for c in states["Run_Task_SFN"]["Catch"] if c["ErrorEquals"] == ["States.ALL"])
+    caught = evaluate(catcher["Output"], input={"upstream_outputs": {}, "x": 1}, context=_context({}),
+                      error_output={"Error": "States.TaskFailed", "Cause": cause})
+    assert caught == {"x": 1, "caught": {"Error": "States.TaskFailed", "Cause": cause}}
+    out = evaluate(states["Shape_Failure"]["Output"], input=caught, context=_context({}))
+    assert out["task_execution_arn"] == arn and out["error_obj"]["Cause"] == cause and "caught" not in out
+    assert "$parse($causeStr)" not in json.dumps(template)
+
+
+def test_every_failure_of_the_work_is_shaped_in_one_place(template):
+    """Sixteen copies of one expression became one state; each catcher only keeps what it caught."""
+    states = template["States"]
+    workers = ["Read_Upstream_Outputs"] + [f"Run_Task_{t}" for t in ("SFN", "Lambda", "Glue", "ECS", "Athena",
+                                                                      "EMR", "Batch")]
+    for name in workers:
+        for catcher in states[name]["Catch"]:
+            assert catcher["Next"] == "Shape_Failure", name
+            assert "caught" in catcher["Output"], name
+    assert states["Shape_Failure"]["Next"] == "Check_Should_Retry"
+
+
+def test_the_row_keeps_at_most_4000_characters_of_the_error(template):
+    """Every full pass reads the row, and attention-index projects it (the review of TR-5)."""
+    from sfn_jsonata import evaluate
+    value = template["States"]["Ask"]["Arguments"]["ExpressionAttributeValues"][":error"]["S"]
+    kept = evaluate(value, input={"error": "e" * 50000}, context=_context({}))
+    assert kept == "e" * 4000 + "...[truncated]"
+    assert evaluate(value, input={"error": "short"}, context=_context({})) == "short"
+
+
+@pytest.mark.parametrize("backfill_id, expected", [("bf-123", True), ("", False), (None, False)])
+def test_is_backfill_is_true_in_a_run_of_a_backfill(template, backfill_id, expected):
+    """A backfill's runs carry its backfill_id (Start_Run, the dispatcher); is_backfill was always false."""
+    from sfn_jsonata import evaluate
+    run_input = {"date": "2026-11-18", "partition_arg": "2026-11-18", "variables": {}}
+    if backfill_id is not None:
+        run_input["backfill_id"] = backfill_id
+    out = evaluate(template["States"]["Prepare_Task_Input"]["Output"], input={}, context=_context(run_input))
+    assert out["variables"]["is_backfill"] is expected
+    assert out["variables"]["backfill_id"] == (backfill_id or "")
 
 
 def test_all_run_task_states_route_to_check_task_pushed(template):
@@ -1899,7 +1996,7 @@ def test_each_attempt_has_the_tasks_time_limit_and_a_timeout_is_not_retried_by_t
         assert evaluate(state["TimeoutSeconds"], context=_context({"execution_timeout": 900})) == 900
         assert evaluate(state["TimeoutSeconds"], context=_context({})) == 99999999       # no limit of its own
         assert "States.Timeout" not in {e for r in state.get("Retry", []) for e in r["ErrorEquals"]}, name
-        assert _catches(state)["States.ALL"] == _catches(state)["States.DataLimitExceeded"] == "Check_Should_Retry"
+        assert _catches(state)["States.ALL"] == _catches(state)["States.DataLimitExceeded"] == "Shape_Failure"
 
 
 @pytest.mark.parametrize("error,delay,expected", [("States.Timeout", 5, 60), ("States.Timeout", 90, 90),
