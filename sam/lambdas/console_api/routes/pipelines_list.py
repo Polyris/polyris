@@ -231,7 +231,12 @@ def _why_it_waits(item: Dict, readiness: Dict, rows: Dict[str, Dict]) -> Dict:
         verdict = trigger_rules.evaluate(readiness.get('trigger_rule') or 'all_success',
                                          [str(u.get('status', '')) for u in upstreams],
                                          [u.get(task_row.SKIP_ORIGIN) for u in upstreams])
-        detail['dependency_verdict'] = {'verdict': verdict.verdict, 'reason': verdict.reason}
+        detail['dependency_verdict'] = {
+            'verdict': verdict.verdict, 'reason': verdict.reason,
+            'upstreams': [{'name': d, 'status': rows[d].get('status'),
+                           'counts_as': trigger_rules.counts_as(str(rows[d].get('status', '')),
+                                                                rows[d].get(task_row.SKIP_ORIGIN))}
+                          for d in dependencies]}
     return detail
 
 

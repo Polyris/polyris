@@ -49,7 +49,12 @@ export interface Task {
   /** The deadline of its wait or of its decision; none while a pause holds it. */
   deadline?: string | null;
   /** What its trigger rule makes of its upstreams as the page shows them. */
-  dependency_verdict?: { verdict: string; reason: string };
+  dependency_verdict?: {
+    verdict: string;
+    reason: string;
+    /** Each upstream's status and what every rule counts it as (the server's trigger_rules.counts_as). */
+    upstreams?: { name: string; status: string; counts_as: string }[];
+  };
   pipeline_name: string;
   execution_name: string;
   pipeline_execution_short?: string;

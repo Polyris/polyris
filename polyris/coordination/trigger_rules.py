@@ -73,6 +73,26 @@ class DepEvaluation:
     counts: Counts
 
 
+#: What an upstream counts as for every rule (``count``): the console shows it beside the rule's verdict, so no copy
+#: of the rules reads the statuses again (ADR #137 §1).
+COUNTS_AS_SUCCESS, COUNTS_AS_FAILED, COUNTS_AS_SKIPPED_BY_RULE, COUNTS_AS_SKIPPED, COUNTS_AS_PENDING = (
+    "success", "failed", "skipped_by_rule", "skipped", "pending")
+
+
+def counts_as(status: str, skip_origin: Optional[str] = None) -> str:
+    """The category ``count`` puts an upstream of ``status`` in; a final status no category names counts as done
+    for ``all_done`` alone, as ``failed``'s complement, and shows as ``pending`` never."""
+    if status in SUCCESS_ONLY:
+        return COUNTS_AS_SUCCESS
+    if status in FINAL_FAILURES:
+        return COUNTS_AS_FAILED
+    if status == _SKIPPED:
+        return COUNTS_AS_SKIPPED_BY_RULE if skip_origin == SkipOrigin.RULE else COUNTS_AS_SKIPPED
+    if status not in FINAL:
+        return COUNTS_AS_PENDING
+    return COUNTS_AS_FAILED   # pragma: no cover — every final status is a success, a failure or a skip
+
+
 def count(statuses: Sequence[str], skip_origins: Optional[Sequence[Optional[str]]] = None) -> Counts:
     """Count upstream statuses the way every rule reads them; ``skip_origins`` is aligned with ``statuses``."""
     origins = _aligned(statuses, skip_origins, "skip_origins")

@@ -200,3 +200,4 @@ def test_a_waiting_task_shows_why_it_waits(world):
     assert (load['reasons'], load['reasons_at'], load['deadline']) == (
         ['waits for extract'], '2026-11-22T06:00:00.000Z', '2026-11-22T18:00:00.000Z')
     assert load['dependency_verdict']['verdict'] == 'wait'
+    assert load['dependency_verdict']['upstreams'] == [{'name': 'extract', 'status': 'running', 'counts_as': 'pending'}]

@@ -180,3 +180,16 @@ def test_unknown_times_are_left_out():
 def test_times_must_align_with_statuses():
     with pytest.raises(ValueError, match="finished_at has 1 entries for 2 upstreams"):
         tr.enabled_at("all_success", ["success", "success"], [T1])
+
+
+@pytest.mark.parametrize("status, origin, category", [
+    ("success", None, "success"), ("failed", None, "failed"), ("upstream_failed", None, "failed"),
+    ("stopped", None, "failed"), ("skipped", "rule", "skipped_by_rule"), ("skipped", "manual", "skipped"),
+    ("skipped", None, "skipped"), ("waiting", None, "pending"), ("running", None, "pending"),
+    ("waiting_decision", None, "pending")])
+def test_each_upstream_counts_as_what_every_rule_counts_it(status, origin, category):
+    """The console shows it beside the rule's verdict; it agrees with ``count`` (ADR #137 §1)."""
+    assert tr.counts_as(status, origin) == category
+    counts = tr.count([status], [origin])
+    assert {"success": counts.success, "failed": counts.failed, "pending": counts.pending,
+            "skipped_by_rule": counts.cascading, "skipped": counts.skipped - counts.cascading}[category] == 1
