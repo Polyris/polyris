@@ -1,4 +1,4 @@
-"""An operator's action on a task (ADR #137 §3): one pure builder for Skip, Fail, Mark Successful and Stop.
+"""An operator's action on a task (ADR #137 §3): one pure builder for Skip, Fail, Mark Successful, Stop and Restart.
 
 The console reads the task row, its run row and the date's ``output#`` item, and
 sends the transaction built here from those reads. The action and everything
@@ -19,6 +19,13 @@ that must come with it are one transaction (invariants 6 and 12):
 A transaction refused because a row moved is built again from new reads, while
 the action still applies. The timeline events and the stop of the row's
 ``run_task`` follow the transaction, best effort: the row holds the state.
+
+A Restart puts the row back to ``waiting`` with the run's request in the same
+transaction: the renewal of the history TTL, and for Restart with dependants
+the reset of the dependants that a failure or a stop decided. The dispatcher
+carries the requests out in passes through the builders below (``renewals``,
+``reset_set``, ``reset``, ``clear_request``), since they touch every row of a
+run and the console answers within API Gateway's 30 seconds.
 """
 
 from __future__ import annotations
@@ -26,12 +33,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from ..constants import TaskStatus
+from ..constants import SkipOrigin, TaskStatus
 from ..partitions import detect_granularity
-from . import attention, dispatch, records, retention, row_write, run_name, run_row, task_row, transitions
-from .times import format_utc
+from . import (attention, deadlines, dispatch, dispatch_writes, records, retention, row_write, run_name, run_row,
+               start_run, task_row, transitions)
+from .times import format_utc, parse_utc
 
 #: The light actions on a task, named as their transitions (transitions.py).
 TASK_ACTIONS = ("skip", "mark_success", "fail", "stop")
@@ -70,14 +78,8 @@ def task_action(*, action: str, task: Mapping[str, Any], run: Mapping[str, Any],
     """
     if action not in TASK_ACTIONS:
         raise ValueError(f"no such action on a task: {action!r}")
-    try:
-        row = dispatch.row_view(task)
-    except ValueError as exc:
-        raise ActionRefused(f"{task.get(task_row.TABLE_KEY)}: a task of a run from before 1.3 takes no action") from exc
+    row = _row_of(task, action)
     view = dispatch.run_view(run)
-    move = transitions.task_transition(action)
-    if row.status not in move.sources:
-        raise ActionRefused(f"{row.key}: a task {row.status} takes no {action}")
     stamp = format_utc(now)
     fields: Dict[str, Any] = {task_row.FINISHED_AT: stamp, task_row.STATUS_SINCE: stamp}
     if action == "fail":
@@ -182,3 +184,236 @@ def _facts(outlets: Sequence[Mapping[str, Any]], *, pipeline: str, task_name: st
         facts.append({"TableName": table, "Item": row_write.typed(item),
                       "ConditionExpression": "attribute_not_exists(event_time)"})
     return facts
+
+
+def _row_of(task: Mapping[str, Any], action: str) -> dispatch.RowView:
+    """The row read back, refused for a run from before 1.3 or a status the table gives no such action from."""
+    try:
+        row = dispatch.row_view(task)
+    except ValueError as exc:
+        raise ActionRefused(f"{task.get(task_row.TABLE_KEY)}: a task of a run from before 1.3 takes no action") from exc
+    if row.status not in transitions.task_transition(action).sources:
+        raise ActionRefused(f"{row.key}: a task {row.status} takes no {action}")
+    return row
+
+
+# ── Restart, and Restart with dependants (§3) ─────────────────────────────
+
+
+@dataclass(frozen=True)
+class RestartWrite:
+    """What a Restart sends: its transaction, then its timeline event. The pass that carries out its renewal
+    writes the row's ``asset:`` pointers (``renewal_pointers``)."""
+    items: List[Dict[str, Any]]
+    events: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def restart(*, task: Mapping[str, Any], run: Mapping[str, Any], with_dependants: bool, operator: str, reason: str,
+            now: datetime, tokens_table: str) -> RestartWrite:
+    """The transaction of a Restart of the task row ``task`` of the run row ``run``, from the caller's reads.
+
+    The row waits again as ``Start_Run`` wrote it, its limits counted anew; the run row raises ``run_version``,
+    lives a year and 90 days from now, falls due at once and carries the request: the renewal of the history
+    TTL, and with ``with_dependants`` the reset of the task's dependants (§3, §5).
+    """
+    row = _row_of(task, "restart")
+    view = dispatch.run_view(run)
+    refusal = restart_refusal(view, with_dependants=with_dependants, now=now)
+    if refusal:
+        raise ActionRefused(f"{row.key}: {refusal}")
+    items = [{"Update": back_to_waiting(task, row, view, transition="restart", writer=transitions.Writer.CONSOLE,
+                                        now=now, table=tokens_table)},
+             {"Update": run_request(view, run, task_id=row.task_id if with_dependants else None, by=operator,
+                                    now=now, table=tokens_table)}]
+    event = records.manual_decision_event(
+        task_run_id=run_name.run_task_name(row.key, view.run_start, row.generation), execution_name=row.key,
+        task_name=row.task_id, pipeline_execution=view.execution, decision="restart", reason=reason,
+        operator=operator, now=now)
+    return RestartWrite(items=items, events=[event])
+
+
+def restart_refusal(run: dispatch.RunView, *, with_dependants: bool, now: datetime) -> Optional[str]:
+    """Why the run takes no Restart now, or None (§3, §5)."""
+    if not run.active:
+        return "its run is not active yet"
+    if run.stopping:
+        return "a Stop of its run is in progress"
+    if run.started_at is None or not retention.restart_allowed(run.started_at, now):
+        return ("its run started more than a year ago, less a day: rows a rerun reads may be gone "
+                "(run the date again instead)")
+    if with_dependants and run_row.RESET_DEPENDANTS in run.requests:
+        return "a Restart with dependants is in progress in its run"
+    return None
+
+
+def back_to_waiting(task: Mapping[str, Any], row: dispatch.RowView, run: dispatch.RunView, *, transition: str,
+                    writer: str, now: datetime, table: str) -> Dict[str, Any]:
+    """The row's ``Update`` of a Restart or a reset: ``waiting`` from now, without what its run wrote
+    (``task_row.RUN_FIELDS``), with its due time counted anew (``deadlines.due_time``, invariant 9)."""
+    fields, removed, due, _ = _waiting_again(task, row, run, now)
+    return row_write.task_update(key=row.key, read_status=row.status, read_generation=row.generation, writer=writer,
+                                 transition=transition, fields=fields, removed=removed, due=due, table=table, now=now)
+
+
+def reset_applied(task: Mapping[str, Any], row: dispatch.RowView, run: dispatch.RunView, *,
+                  now: datetime) -> Dict[str, Any]:
+    """The row's item as a reset leaves it, so the rest of the pass reads what is written (a test compares it
+    with the item DynamoDB holds after the reset)."""
+    _, _, due, after = _waiting_again(task, row, run, now)
+    after[task_row.GENERATION] = row.generation + 1
+    after[task_row.TTL] = retention.ttl(now, retention.HISTORY)
+    after.pop(attention.KEY, None)
+    after.pop(attention.DUE, None)
+    entry = row_write.entry_after(TaskStatus.WAITING.value, due, now, row.key)
+    if entry is not None:
+        after[attention.KEY], after[attention.DUE] = entry
+    return after
+
+
+def _waiting_again(task: Mapping[str, Any], row: dispatch.RowView, run: dispatch.RunView,
+                   now: datetime) -> Tuple[Dict[str, Any], List[str], Optional[datetime], Dict[str, Any]]:
+    """What a row back to ``waiting`` sets and removes, its due time, and the item it leaves."""
+    stamp = format_utc(now)
+    fields: Dict[str, Any] = {task_row.WAITING_SINCE: stamp, task_row.STATUS_SINCE: stamp}
+    if not row.dependencies:
+        fields[task_row.ENABLED_AT] = stamp           # allowed from the start of its wait, as Start_Run writes it
+    after = {k: v for k, v in task.items() if k not in task_row.RUN_FIELDS}
+    after.update(fields)
+    after[task_row.STATUS] = TaskStatus.WAITING.value
+    due = deadlines.due_time(task_row.row_times(after), run.pauses)
+    removed = [name for name in task_row.RUN_FIELDS if name in task and name not in fields]
+    return fields, removed, due, after
+
+
+def run_request(run: dispatch.RunView, run_item: Mapping[str, Any], *, task_id: Optional[str], by: str, now: datetime,
+                table: str) -> Dict[str, Any]:
+    """A Restart's write of its run row (§3): ``run_version`` raised, the long TTL, due at once, and the request
+    of the renewal, with the reset of ``task_id``'s dependants when it names one.
+
+    It is conditional on the run being active with no stop in progress, and for a reset on none being in
+    progress. The requests map is written whole when the run row has none yet, else by kind, as read."""
+    stamp = format_utc(now)
+    kinds: Dict[str, Dict[str, str]] = {run_row.RENEW_TTL: run_row.request(by=by, at=stamp)}
+    if task_id is not None:
+        kinds[run_row.RESET_DEPENDANTS] = run_row.request(by=by, at=stamp, task=task_id)
+    names = {**run_row.VERSION_NAMES, "#status": run_row.STATUS, "#stop": run_row.STOP, "#done": run_row.STOP_DONE,
+             "#req": run_row.REQUESTS, "#att": attention.KEY, "#due": attention.DUE, "#ttl": run_row.TTL}
+    values: Dict[str, Any] = {**run_row.VERSION_RAISE_VALUES, ":active": run_row.ACTIVE, ":now": stamp,
+                              ":att": attention.attention(attention.WAITING, run.key),
+                              ":ttl": retention.ttl(now, retention.HISTORY)}
+    condition = "#status = :active AND (attribute_not_exists(#stop) OR attribute_exists(#done))"
+    if isinstance(run_item.get(run_row.REQUESTS), Mapping):
+        sets = []
+        for placeholder, kind in (("#renew", run_row.RENEW_TTL), ("#reset", run_row.RESET_DEPENDANTS)):
+            if kind in kinds:
+                names[placeholder] = kind
+                values[f":{placeholder[1:]}"] = kinds[kind]
+                sets.append(f"#req.{placeholder} = :{placeholder[1:]}")
+        condition += " AND attribute_exists(#req)"
+        if task_id is not None:
+            condition += " AND attribute_not_exists(#req.#reset)"
+    else:
+        sets = ["#req = :requests"]
+        values[":requests"] = kinds
+        condition += " AND attribute_not_exists(#req)"
+    return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run.key}},
+            "UpdateExpression": f"SET {run_row.VERSION_RAISE}, #att = :att, #due = :now, #ttl = :ttl, "
+                                + ", ".join(sets),
+            "ConditionExpression": condition, "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": row_write.typed(values)}
+
+
+def pointer_items(task: Mapping[str, Any], *, run_key: str, now: datetime) -> List[Dict[str, Any]]:
+    """The row's ``asset:{name}`` pointers, as ``Start_Run`` writes them, for a row that waits again (Rule 40): the
+    renewal writes those of each waiting row, a Restart's included, and a reset those of its row."""
+    ttl = retention.ttl(now, retention.HISTORY)
+    return [{**key, start_run.POINTER_RUN: run_key, start_run.POINTER_TTL: ttl}
+            for key in dispatch_writes.pointers(task)]
+
+
+def reset_set(rows: Mapping[str, dispatch.RowView], request: Mapping[str, Any]) -> List[str]:
+    """The rows a pass resets for a Restart with dependants, upstreams first (§3): the descendants of the
+    request's task among ``rows`` that a failure or a stop decided (``upstream_failed``, or skipped by a rule)
+    before the request. A decision since was made from the restarted task, and a reset of it would come round
+    again; an operator's or the run's skip stays."""
+    at = parse_utc(str(request["at"]))
+    dependants: Dict[str, List[str]] = {}
+    for name, row in rows.items():
+        for upstream in set(row.dependencies):
+            dependants.setdefault(upstream, []).append(name)
+    seen: set = set()
+    stack = [str(request.get("task", ""))]
+    while stack:                                       # iterative (polyris/CLAUDE.md, "Graph traversal")
+        for dependant in dependants.get(stack.pop(), ()):
+            if dependant not in seen:
+                seen.add(dependant)
+                stack.append(dependant)
+    chosen = {name for name in seen if _decided_by_an_upstream(rows[name], at)}
+    return dispatch.upstreams_first(chosen, {name: rows[name].dependencies for name in chosen})
+
+
+def _decided_by_an_upstream(row: dispatch.RowView, at: datetime) -> bool:
+    by_rule = row.status == TaskStatus.SKIPPED.value and row.skip_origin == SkipOrigin.RULE
+    if not (row.status == TaskStatus.UPSTREAM_FAILED.value or by_rule):
+        return False
+    return row.times.status_since is None or row.times.status_since < at
+
+
+def reset(task: Mapping[str, Any], row: dispatch.RowView, run: dispatch.RunView, *, now: datetime,
+          table: str) -> List[Dict[str, Any]]:
+    """One reset of a Restart with dependants (§3): the row back to ``waiting`` as a Restart writes it, and the
+    run row's ``run_version`` raised from the value the pass read, so a decision read before it loses."""
+    return [{"Update": back_to_waiting(task, row, run, transition="reset", writer=transitions.Writer.DISPATCHER,
+                                       now=now, table=table)},
+            {"Update": _version_next(run, table=table, now=now)}]
+
+
+def clear_request(run: dispatch.RunView, kind: str, *, table: str, now: datetime) -> Dict[str, Any]:
+    """The request ``kind`` cleared once carried out, on the ``run_version`` the pass read, which it raises."""
+    return _version_next(run, table=table, now=now, remove=kind)
+
+
+def _version_next(run: dispatch.RunView, *, table: str, now: datetime, remove: Optional[str] = None) -> Dict[str, Any]:
+    names = {**run_row.VERSION_NAMES, "#ttl": run_row.TTL}
+    expression = f"SET {run_row.VERSION_NEXT}, #ttl = :ttl"
+    if remove is not None:
+        names.update({"#req": run_row.REQUESTS, "#kind": remove})
+        expression += " REMOVE #req.#kind"
+    return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run.key}}, "UpdateExpression": expression,
+            "ConditionExpression": run_row.VERSION_UNCHANGED, "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": row_write.typed({**run_row.version_values(run.version),
+                                                         ":ttl": retention.ttl(now, retention.HISTORY)})}
+
+
+def renewals(run: dispatch.RunView, items: Mapping[str, Mapping[str, Any]], *, request: Mapping[str, Any],
+             now: datetime, table: str) -> List[Dict[str, Any]]:
+    """The renewal of a Restart (§5), as single updates a pass sends one by one: the history TTL of each task row
+    the pass read below the request's, and of the run's input; the year of each task's ``output#``.
+
+    Each is conditional on the item's existence, so none writes an item of the key alone where TTL deleted one,
+    and the input's and the outputs' on a TTL below the request's, so a pass that takes up the renewal again
+    after its budget writes nothing twice. A refused condition is no failure: the item is gone or renewed.
+    The ``output#`` of every task, not only the restarted task's upstreams: a reset row reads its other
+    upstreams' outputs too, possibly long after the Restart."""
+    at = parse_utc(str(request["at"]))
+    history, year = retention.ttl(at, retention.HISTORY), retention.ttl(at, retention.OUTPUT)
+    keys = [str(item[task_row.TABLE_KEY]) for _, item in sorted(items.items())
+            if int(item.get(task_row.TTL, 0)) < history]
+    writes = [_renewal(key, ttl=retention.ttl(now, retention.HISTORY), below=None, table=table) for key in keys]
+    writes.append(_renewal(run_row.input_key(run.execution), ttl=retention.ttl(now, retention.HISTORY), below=history,
+                           table=table))
+    pipeline = run.pipeline
+    writes += [_renewal(f"output#{pipeline}#{name}#{run.date}", ttl=retention.ttl(now, retention.OUTPUT), below=year,
+                        table=table) for name in sorted(items)]
+    return writes
+
+
+def _renewal(key: str, *, ttl: int, below: Optional[int], table: str) -> Dict[str, Any]:
+    condition = "attribute_exists(#key)"
+    values: Dict[str, Any] = {":ttl": ttl}
+    if below is not None:
+        condition += " AND (attribute_not_exists(#ttl) OR #ttl < :below)"
+        values[":below"] = below
+    return {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": key}}, "UpdateExpression": "SET #ttl = :ttl",
+            "ConditionExpression": condition, "ExpressionAttributeNames": {"#key": task_row.TABLE_KEY, "#ttl": "ttl"},
+            "ExpressionAttributeValues": row_write.typed(values)}

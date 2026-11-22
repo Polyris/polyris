@@ -73,7 +73,8 @@ class RunView:
     summary: Optional[Mapping[str, int]] = None
     date: str = ""                         # the run's date, by which its rows are keyed
     left_at: Optional[str] = None          # when a pass last left rows (§7)
-    requests: bool = False                 # a heavy action waits on the run (§3)
+    #: The heavy actions that wait on the run, by kind (run_row.request): its renewal, a reset (§3).
+    requests: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     pipeline: str = ""
     started_at: Optional[datetime] = None  # the execution's StartTime
     execution_arn: str = ""                # the execution's ARN, which the engine's check describes (§4)
@@ -110,9 +111,16 @@ def run_view(item: Mapping[str, Any]) -> RunView:
         token_order=_int(item.get(run_row.TOKEN_ORDER)), answered_order=_int(item.get(run_row.ANSWERED)),
         summary={str(k): int(v) for k, v in summary.items()} if isinstance(summary, Mapping) else None,
         date=str(item.get(run_row.RUN_DATE, "")), left_at=item.get(run_row.LEFT_AT),
-        requests=bool(item.get(run_row.REQUESTS)), pipeline=str(item.get(run_row.PIPELINE, "")),
+        requests=_requests(item.get(run_row.REQUESTS)), pipeline=str(item.get(run_row.PIPELINE, "")),
         started_at=_moment(item.get(run_row.STARTED_AT)), execution_arn=str(item.get(run_row.EXECUTION_ARN, "")),
     )
+
+
+def _requests(value: Any) -> Dict[str, Dict[str, Any]]:
+    """The run row's requests by kind; a kind whose value is no map counts as none (Rule 51)."""
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(kind): dict(request) for kind, request in value.items() if isinstance(request, Mapping)}
 
 
 @dataclass(frozen=True)

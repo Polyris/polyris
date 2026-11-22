@@ -30,7 +30,7 @@ from sfn_jsonata import load_template
 from polyris import generators
 from polyris.constants import TaskStatus
 from polyris.coordination import dispatch, dispatch_writes, ownership, row_write, run_row, start_run, task_row, task_spec
-from polyris.coordination import transitions
+from polyris.coordination import actions, transitions
 from polyris.coordination.deadlines import RowTimes
 from polyris.coordination.times import format_utc
 
@@ -125,11 +125,24 @@ RUN_ROW_WRITERS: Dict[str, Tuple[Tuple[str, ...], Callable[[], Mapping[str, Any]
     "dispatch_writes.close": ((), lambda: dispatch_writes.close(RUN, table=TOKENS, now=NOW)),
     "dispatch_writes.checked": ((), lambda: dispatch_writes.checked(
         RUN.key, table=TOKENS, due_read=format_utc(NOW), version_read=RUN.version, checks=0, now=NOW)),
+    "actions.run_raise": (("task_action",), lambda: actions.run_raise(RUN.key, table=TOKENS, now=NOW)),
+    "actions.run_request": (("request",), lambda: actions.run_request(
+        RUN, {run_row.REQUESTS: {}}, task_id="extract", by="ops", now=NOW, table=TOKENS)),
+    "actions.reset": (("reset",), lambda: actions.reset(_reset_row(), dispatch.row_view(_reset_row()), RUN, now=NOW,
+                                                        table=TOKENS)[1]["Update"]),
+    "actions.clear_request": (("clear_request",), lambda: actions.clear_request(RUN, run_row.RENEW_TTL, table=TOKENS,
+                                                                                now=NOW)),
 }
 
-#: The run row's transitions whose writer is not built yet: the console's actions and the requests of a
-#: Restart (ADR #137 §3, §4). Each joins RUN_ROW_WRITERS with its writer.
-NOT_BUILT = frozenset({"stop", "request", "task_action", "pause", "resume", "reset", "clear_request"})
+
+def _reset_row() -> Dict[str, Any]:
+    return {task_row.TABLE_KEY: "audit-key", task_row.TASK_NAME: "audit", task_row.STATUS: "upstream_failed",
+            task_row.GENERATION: 2, task_row.READINESS: task_spec.canonical_json(
+                {"trigger_rule": "all_success", "dependencies": ["extract"]})}
+
+#: The run row's transitions whose writer is not built yet: the console's Stop of a run, Pause and Resume
+#: (ADR #137 §3, §4). Each joins RUN_ROW_WRITERS with its writer.
+NOT_BUILT = frozenset({"stop", "pause", "resume"})
 
 
 @pytest.mark.parametrize("writer", sorted(RUN_ROW_WRITERS))

@@ -63,6 +63,22 @@ DECISION_SINCE = "decision_since"
 DECISION_TIMEOUT = "decision_timeout"       # seconds, the timeout in force when the wait began
 REASONS = "reasons"                         # why the row waits, with no time in them
 ERROR = "error"
+# What run_task writes on the row (its template; a test compares the two).
+RUNNING_AT = "running_at"
+ATTEMPT = "attempt"                         # the task's runs, counted across Restarts
+RETRY_ATTEMPT = "retry_attempt"
+RUN_TASK_ARN = "run_task_helper_arn"        # the row's run_task execution, which Stop stops
+TASK_EXECUTION_ARN = "task_execution_arn"
+WAIT_DELAY_STARTED = "wait_delay_started_ms"
+WAIT_DELAY_UNTIL = "wait_delay_until_ms"
+NOTIFICATION_FAILED = "notification_failed"
+#: What a run of the task writes on its row after its wait: the dispatcher's decisions, run_task and an
+#: operator's action. A Restart and a reset remove them, so the row waits again as Start_Run wrote it; the
+#: attempt count stays (ADR #137 §3).
+RUN_FIELDS = (ENABLED_AT, COUNTDOWN_END, START_FAILED_FIRST, START_FAILED_LAST, START_FAILURES, LAST_CHECK, CHECKS,
+              DECISION_SINCE, DECISION_TIMEOUT, REASONS, ERROR, TASK_RUN_ID, SKIP_ORIGIN, FINISHED_AT, RUNNING_AT,
+              RETRY_ATTEMPT, RUN_TASK_ARN, TASK_EXECUTION_ARN, WAIT_DELAY_STARTED, WAIT_DELAY_UNTIL,
+              NOTIFICATION_FAILED)
 
 
 def short(pipeline_execution: str) -> str:
