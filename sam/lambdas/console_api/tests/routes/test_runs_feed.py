@@ -93,6 +93,16 @@ def test_the_walk_stops_once_the_page_is_full(table, mocker):
     assert [c.args[0] for c in read.call_args_list] == [TODAY]
 
 
+def test_runs_that_started_at_the_same_instant_share_a_page(table):
+    """The cursor is a strict `<`, so a twin left off a page would never come back (feed.page_by_started_at)."""
+    twins = sorted(put_run(table, name, TODAY, days_ago(0), suffix='twin0001', summary={'success': 1})
+                   for name in ('orders', 'billing'))
+    older = put_run(table, 'orders', TODAY, days_ago(0, hour=3), suffix='older001', summary={'success': 1})
+    status, body = runs(limit=1)
+    assert sorted(names(body)) == twins and body['next'] == body['runs'][0]['started_at']
+    assert names(runs(limit=1, before=body['next'])[1]) == [older]
+
+
 def test_the_cursor_pages_through_start_days_without_repeats(table):
     made = [put_run(table, 'orders', f'2026-11-{20 - i:02d}', days_ago(i * 3), suffix=f'run{i:05d}',
                     summary={'success': 1}) for i in range(5)]

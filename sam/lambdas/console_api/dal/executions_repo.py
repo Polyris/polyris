@@ -380,8 +380,10 @@ class ExecutionsRepo:
 
         ``before`` keeps the runs that started before it (a ``started_at``: the feeds' cursor), ``pipeline`` one
         pipeline's, and ``run_dates`` those whose logical date lies between its two dates, inclusive. ``want``
-        stops the read once that many rows are in. The index holds run rows only and projects what the run lists
-        show (``run_row.INDEX_FIELDS``). Raises ``IndexBuilding`` while DynamoDB builds the index.
+        stops the read at the end of the page that brings that many rows; the page's other rows come back too,
+        so no run that started at the same instant as the last one wanted is cut off (``feed.page_by_started_at``
+        keeps such twins together). The index holds run rows only and projects what the run lists show
+        (``run_row.INDEX_FIELDS``). Raises ``IndexBuilding`` while DynamoDB builds the index.
         """
         key: Any = Key(run_row.START_DAY).eq(start_day)
         if before:
@@ -406,7 +408,7 @@ class ExecutionsRepo:
             rows.extend(response.get('Items', []))
             last_key = response.get('LastEvaluatedKey')
             if not last_key or (want is not None and len(rows) >= want):
-                return rows if want is None else rows[:want]
+                return rows
             params['ExclusiveStartKey'] = last_key
 
     # ── The one scan ──────────────────────────────────────────────────────
