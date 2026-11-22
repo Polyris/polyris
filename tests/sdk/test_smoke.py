@@ -612,23 +612,3 @@ def test_task_intervention_handlers_are_free():
     for fn in ('def stop_task', 'def skip_task', 'def fail_task',
                'def mark_success', 'def restart_task', 'def _execute_task_action'):
         assert fn in content, f"{fn} should live in free routes/tasks.py (ADR #110)"
-
-
-def test_manual_decision_events_free():
-    """Manual task actions record MANUAL_DECISION events from the free
-    routes/tasks.py after the intervention tier-flip (ADR #110). Resolution
-    values themselves are checked via the ManualResolution enum
-    (single source of truth — polyris/constants.py; see the coupled-constants
-    parity test)."""
-    tasks_src = os.path.join(REPO_ROOT, 'sam/lambdas/console_api/routes/tasks.py')
-    with open(tasks_src) as f:
-        content = f.read()
-    assert 'record_manual_decision' in content, "record_manual_decision not found"
-    assert "action_name=ManualResolution.SKIP" in content, "skip_task should pass ManualResolution.SKIP"
-    assert "action_name=ManualResolution.FAIL" in content, "fail_task should pass ManualResolution.FAIL"
-    assert "action_name=ManualResolution.MARK_SUCCESS" in content, "mark_success should pass ManualResolution.MARK_SUCCESS"
-    assert "record_manual_decision(execution_name, 'stop'" in content, "stop_task should record MANUAL_DECISION"
-    assert "record_manual_decision(execution_name, 'restart'" in content, "restart_task should record MANUAL_DECISION"
-    assert "record_manual_decision(execution_name, action_name," in content, (
-        "_execute_task_action should call record_manual_decision"
-    )

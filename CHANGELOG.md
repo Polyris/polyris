@@ -21,6 +21,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - **`run_task` no longer retries a timeout itself:** one attempt could run three times. A retry after a timeout waits at least a minute, while Step Functions stops the timed-out work.
 - A Lambda task that crashes, runs out of memory or times out (`Lambda.Unknown`) is no longer run again by `run_task` outside the task's `retries`: it is a failed attempt, as a timeout is.
 - The `ALLOW_UNSUCCESSFUL_SPIDER_RUN` variable is gone. It was always `'True'`.
+- **A task of a run started before the upgrade takes no action** in the console (Skip, Fail, Mark Successful, Stop): no engine acts on such a run. Run its pipeline again after the redeploy.
 
 ### Changed
 
@@ -41,6 +42,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - An `@task.sfn` task with a long `task_id` gets a unique name for its child execution. From 42 characters a retry failed with `ExecutionAlreadyExists`, from 56 a second run of the date did.
 - A Batch task's job is named after its `run_task` execution. A `task_id` over about 96 characters, or with a dot, failed every SubmitJob.
 - A task row keeps at most 4,000 characters of a failure's error; the execution's history keeps all of it.
+- **Skip, Fail, Mark Successful and Stop of a task are one transaction (ADR #137 §3):** the task's status, its run's due time and version, the output marker and, for Mark Successful, the facts of its outlets. A row that moved meanwhile is read again and the action built again. They no longer answer the task's wrapper or start `notify_dependents`: the engine takes the change from the tasks table's stream. Mark Successful is refused while the task's outlets cannot be read, instead of succeeding without its facts. A Stop of a running task also stops its `run_task`.
 - A failed task's timeline ends with its failure and the cause: when it waits for a decision, as in 1.2, and when it fails without starting its work or without an outcome (a wait past its limit, a start refused, an execution that ended).
 - The `is_backfill` variable is `true` in a run of a backfill, and `backfill_id` carries its id; they were always `false` and empty.
 - A run of an hourly, weekly or monthly partition (a backfill of such partitions) runs its tasks: each of them failed 10 to 15 minutes after its start with `States.QueryEvaluationError`. `current_date` stays the partition's key, and every other date variable is that of the partition's first day; `date_iso`, `year`, `month` and `day` were cut from the key.

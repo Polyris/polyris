@@ -19,7 +19,7 @@ records carry a ``date`` (ADR #137 §5), so both indexes list them. A census tes
 from boto3.dynamodb.conditions import Key
 
 from polyris.coordination import attention as att
-from config import dynamodb, TABLE_NAME
+from config import dynamodb, dynamodb_client, TABLE_NAME
 from utils import scan_all, query_all, should_skip_token_row
 
 #: The two indexes keyed by a task's date, whose every read skips internal and backfill rows.
@@ -357,6 +357,18 @@ class ExecutionsRepo:
             Key={'execution_name': '_health_check_'},
             ConsistentRead=True
         )
+
+    def transact_write(self, items: list) -> None:
+        """One transaction of the items a coordination builder made: low-level, typed, each naming its table
+        (an operator's action, ADR #137 §3), sent through the low-level client: the resource's own client would
+        serialize them again. Raises ClientError; a refused condition cancels it as a whole
+        (``transaction_canceled_exception``)."""
+        dynamodb_client.transact_write_items(TransactItems=items)
+
+    @property
+    def transaction_canceled_exception(self):
+        """The TransactionCanceledException a refused condition raises, for try/except."""
+        return dynamodb_client.exceptions.TransactionCanceledException
 
     # ── Conditional check exception ───────────────────────────────────────
 

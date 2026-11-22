@@ -1,0 +1,168 @@
+"""The console's Skip, Fail, Mark Successful and Stop of a task (ADR #137 §3), on moto tables.
+
+The route reads the task row, its run row, the date's output# and the task's spec, and sends the transaction
+coordination.actions builds; Step Functions is the only thing replaced (for the stop of a running task).
+"""
+
+import importlib.util
+import json
+from pathlib import Path
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from polyris.coordination import attention, run_input, run_row, task_row, task_spec
+
+_KIT_PATH = Path(__file__).resolve().parents[3] / "coordination" / "tests" / "coordination_testkit.py"
+_spec = importlib.util.spec_from_file_location("coordination_testkit", _KIT_PATH)
+kit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(kit)
+
+RUN = "orders-run-2026-11-21-abcd1234"
+KEY = "load-2026-11-21--2026-11-21-abcd1234"
+OUTPUT = "output#orders#load#2026-11-21"
+ARN = "arn:aws:states:us-east-1:123456789012:execution:acme-dev-polyris-run-task-helper:load-x"
+
+
+@pytest.fixture
+def world(mocker):
+    import config
+    from dal import executions_repo
+    from dal.task_events_repo import task_events_repo
+    from routes import tasks
+    from tests.specs_kit import deploy_specs, spec, use_specs_table
+
+    names = {kit.TABLES[k][0]: kit.TABLES[k][1] for k in ("TOKENS_TABLE", "ASSET_EVENTS_TABLE", "TASK_EVENTS_TABLE",
+                                                          "PIPELINES_TABLE")}
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        kit.create_tables(resource, names)
+        mocker.patch.object(config, "_dynamodb", resource)
+        use_specs_table(mocker, resource)
+        tokens, facts = kit.TABLES["TOKENS_TABLE"][1], kit.TABLES["ASSET_EVENTS_TABLE"][1]
+        mocker.patch.object(executions_repo, "_table_name", tokens)
+        mocker.patch.object(task_events_repo, "_table_name", kit.TABLES["TASK_EVENTS_TABLE"][1])
+        mocker.patch.object(tasks, "TABLE_NAME", tokens)
+        mocker.patch.object(tasks, "ASSET_EVENTS_TABLE", facts)
+        mocker.patch.object(tasks.pipelines_repo, "_table_name", kit.TABLES["PIPELINES_TABLE"][1])
+        sfn = mocker.patch.object(tasks, "sfn")                    # the boundary: Step Functions
+        mocker.patch.object(tasks, "resolve_pagerduty")            # alerting, unchanged (D58)
+        registry = deploy_specs(resource, "orders", [spec("load", outlets=[{"name": "ns/orders"}])])
+        resource.Table(kit.TABLES["PIPELINES_TABLE"][1]).put_item(Item={"pipeline_name": "orders", **registry})
+        table = resource.Table(tokens)
+        yield type("World", (), {"table": table, "tasks": tasks, "sfn": sfn, "resource": resource,
+                                 "facts": resource.Table(facts), "events": resource.Table(kit.TABLES["TASK_EVENTS_TABLE"][1])})
+
+
+def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, **fields):
+    world.table.put_item(Item={
+        task_row.TABLE_KEY: KEY, task_row.TASK_NAME: "load", task_row.STATUS: status, task_row.GENERATION: generation,
+        "pipeline_name": "orders", "pipeline_execution": RUN, "date": "2026-11-21",
+        task_row.READINESS: task_spec.canonical_json({"trigger_rule": "all_success", "dependencies": []}), **fields})
+    if run_row_too:
+        world.table.put_item(Item={run_row.TABLE_KEY: run_row.key(RUN), run_row.EXECUTION: RUN,
+                                   run_row.STATUS: run_row.ACTIVE, run_row.RUN_VERSION: 4,
+                                   run_row.RUN_START: "2026-11-21T06:00:00.000Z", run_row.RUN_DATE: "2026-11-21",
+                                   run_row.PIPELINE: "orders"})
+        world.table.put_item(Item=run_input.to_item(run_input.RunInput(partition_arg="2026-11-21"),
+                                                    pipeline_execution=RUN, ttl=1))
+
+
+def act(world, route: str, **body):
+    return getattr(world.tasks, route)(KEY, {"body": json.dumps({"pipeline_execution": RUN, "date": "2026-11-21",
+                                                                  **body})})
+
+
+def row(world):
+    return world.table.get_item(Key={task_row.TABLE_KEY: KEY}, ConsistentRead=True)["Item"]
+
+
+@pytest.mark.parametrize("route, status", [("skip_task", "skipped"), ("fail_task", "failed"),
+                                           ("mark_success", "success"), ("stop_task", "stopped")])
+def test_an_action_moves_the_row_raises_its_run_and_leaves_its_marker_and_events(world, route, status):
+    seed(world, "waiting_decision")
+    response = act(world, route, reason="checked by hand")
+    assert response["statusCode"] == 200, response
+    assert (row(world)["status"], row(world)["generation"]) == (status, 3)
+    run = world.table.get_item(Key={run_row.TABLE_KEY: run_row.key(RUN)})["Item"]
+    assert run[run_row.RUN_VERSION] == 5 and attention.DUE in run
+    marker = json.loads(world.table.get_item(Key={task_row.TABLE_KEY: OUTPUT})["Item"]["result"])
+    assert marker["_manually_resolved"] is True and marker["_reason"] == "checked by hand"
+    events = world.events.scan()["Items"]
+    assert [e["event_type"] for e in events] == ["MANUAL_DECISION"]
+
+
+def test_mark_successful_records_the_facts_of_the_tasks_outlets(world):
+    seed(world, "failed", error="boom")
+    assert act(world, "mark_success")["statusCode"] == 200
+    [fact] = world.facts.scan()["Items"]
+    assert (fact["asset_name"], fact["partition_key"], fact["source_task"]) == ("ns/orders", "2026-11-21", "load")
+    assert sorted(e["event_type"] for e in world.events.scan()["Items"]) == ["MANUAL_DECISION", "TASK_FINISHED"]
+
+
+def test_a_stop_of_a_running_task_stops_its_run_task(world):
+    seed(world, "running", run_task_helper_arn=ARN)
+    assert act(world, "stop_task")["statusCode"] == 200
+    world.sfn.stop_execution.assert_called_once()
+    assert world.sfn.stop_execution.call_args.kwargs["executionArn"] == ARN
+
+
+def test_an_action_the_status_does_not_allow_is_refused(world):
+    seed(world, "success")
+    response = act(world, "skip_task")
+    assert response["statusCode"] == 409 and "takes no skip" in json.loads(response["body"])["error"]
+    assert row(world)["status"] == "success"
+
+
+def test_a_task_of_a_run_from_before_1_3_takes_no_action(world):
+    seed(world, "failed", run_row_too=False)
+    response = act(world, "mark_success")
+    assert response["statusCode"] == 409 and "before 1.3" in json.loads(response["body"])["error"]
+
+
+def test_a_row_that_moves_under_the_action_is_read_again_and_the_action_applies(world):
+    """A pass raised the row's generation after the route's read: the transaction is cancelled, built again from
+    the new read, and applies (ADR #137 §3)."""
+    import config
+    seed(world, "waiting_decision")
+    client = config._dynamodb_client                     # the low-level client the repository sends it with
+    moved = []
+
+    def a_pass_moves_the_row(params, **_):
+        if not moved:
+            moved.append(1)
+            world.table.update_item(Key={task_row.TABLE_KEY: KEY}, UpdateExpression="SET generation = :g",
+                                    ExpressionAttributeValues={":g": 7})
+
+    client.meta.events.register("before-parameter-build.dynamodb.TransactWriteItems", a_pass_moves_the_row)
+    assert act(world, "fail_task")["statusCode"] == 200
+    assert (row(world)["status"], row(world)["generation"]) == ("failed", 8)
+
+
+def test_real_output_keeps_the_marker_out_and_warns(world):
+    seed(world, "failed")
+    world.table.put_item(Item={task_row.TABLE_KEY: OUTPUT, "result": json.dumps({"rows": 3})})
+    assert act(world, "skip_task")["statusCode"] == 200
+    assert json.loads(world.table.get_item(Key={task_row.TABLE_KEY: OUTPUT})["Item"]["result"]) == {"rows": 3}
+    warnings = [i for i in world.table.scan()["Items"] if str(i["execution_name"]).startswith("_notify_warn_manual")]
+    assert warnings and "real output" in warnings[0]["error"]
+
+
+def test_a_row_that_finished_under_the_action_is_refused_with_nothing_after_it(world):
+    """run_task recorded the task's success after the route's read: the transaction is cancelled, the new read
+    allows no Stop, and nothing follows (no event, no StopExecution, no marker)."""
+    import config
+    seed(world, "running", run_task_helper_arn=ARN)
+
+    def run_task_succeeds(params, **_):
+        world.table.update_item(Key={task_row.TABLE_KEY: KEY}, UpdateExpression="SET #s = :s",
+                                ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":s": "success"})
+
+    config._dynamodb_client.meta.events.register("before-parameter-build.dynamodb.TransactWriteItems",
+                                                 run_task_succeeds)
+    response = act(world, "stop_task")
+    assert response["statusCode"] == 409 and "takes no stop" in json.loads(response["body"])["error"]
+    assert row(world)["status"] == "success" and not world.events.scan()["Items"]
+    world.sfn.stop_execution.assert_not_called()
+    assert "Item" not in world.table.get_item(Key={task_row.TABLE_KEY: OUTPUT})

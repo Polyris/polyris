@@ -302,8 +302,8 @@ def test_every_state_machine_write_of_a_task_row_is_fenced_or_raises(writer):
 #: by (file, function), with the role of each write.
 RAISE = "ends an ownership: raises the generation"
 CODE_WRITERS = {
-    ("console_api/routes/tasks.py", "_execute_task_action"): RAISE,
-    ("console_api/routes/tasks.py", "stop_task"): RAISE,
+    ("console_api/routes/tasks.py", "apply_task_action"):
+        "an operator's action on a task: actions.task_action, whose row_write raises the generation as the table says",
     ("console_api/routes/executions.py", "_mark_pending_tasks_stopped"): RAISE,
     ("coordination/dispatcher.py", "_send_items"): "task rows and the run row's check: dispatch_writes.task_write",
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
@@ -328,11 +328,9 @@ CODE_WRITERS = {
     ("coordination/asset_fanout.py", "_warn"): "warning rows (records.warning_item)",
     ("console_api/routes/executions.py", "pause_execution"): "the run's pause row",
     ("console_api/routes/executions.py", "resume_execution"): "the run's pause row",
-    ("console_api/routes/tasks.py", "_write_notify_warning"): "warning rows",
     ("console_api/routes/tasks.py", "_emit_marker_blocked_warn"): "warning rows",
     ("console_api/routes/tasks.py", "_warn_fact_not_recorded"): "warning rows",
     ("console_api/routes/tasks.py", "answer_run"): "warning rows",
-    ("console_api/routes/tasks.py", "_write_synthetic_output_marker"): "the output# row",
 }
 
 CODE_FILES = (sorted((REPO / "sam/lambdas/console_api/routes").glob("*.py"))
@@ -353,7 +351,7 @@ def _code_writers() -> Dict[Tuple[str, str], str]:
                 if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
                     continue
                 target, method = ast.unparse(node.func.value), node.func.attr
-                repo_write = target == "executions_repo" and method in ("update", "put", "delete")
+                repo_write = target == "executions_repo" and method in ("update", "put", "delete", "transact_write")
                 table_write = method in ("update_item", "put_item", "delete_item") and (
                     "tasks" in target or target == "self.table")
                 coordination_write = path.parent == COORDINATION and method in WRITE_CALLS

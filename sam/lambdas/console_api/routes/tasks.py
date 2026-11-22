@@ -19,15 +19,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
-from config import sfn
-from polyris.coordination import ownership
+from config import sfn, ASSET_EVENT_TTL_DAYS, ASSET_EVENTS_TABLE, TABLE_NAME
+from polyris.coordination import actions, run_input, run_row
 from polyris.coordination.records import cascade_of, warning_item
 from polyris.coordination.wake import DEAD_TOKEN_CODES
 from dal import asset_events_repo, executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing
 from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
-from constants import Limits, TaskStatus, TASK_WAITING_STATUSES, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TASK_TERMINAL_STATUSES
+from constants import Limits, TASK_SETTLED_STATUSES, TASK_TERMINAL_STATUSES
 from constants_generated import ManualResolution
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
 from response import cors_response, safe_parse_body
@@ -36,17 +36,10 @@ from auth import operator_display
 from utils import (
     should_skip_token_row,
     is_execution_name, safe_int, safe_param_int,
-    stop_task_executions, record_manual_decision, ensure_pipeline_execution_short,
-    resolve_pagerduty, retrieve_result, resolve_max_retries
+    record_manual_decision, resolve_pagerduty, retrieve_result, resolve_max_retries
 )
 from task_actions import (
-    notify_dependents_via_sfn,
-    record_facts_for_manual_success,
-    is_terminal_status,
-    build_condition_expression_values,
-    TERMINAL_CONDITION_EXPRESSION,
-    RESOLVED_CONDITION_EXPRESSION,
-    build_resolved_expression_values
+    record_facts_for_manual_success
 )
 
 
@@ -576,24 +569,6 @@ def get_task_events(execution_name: str, event: Dict) -> Dict:
 
 
 
-def _write_notify_warning(
-    execution_name: str, task_name: str, pipeline_execution: str, pipeline_name: str, date: str, error: str
-) -> None:
-    """Write a `notify` warning when a manual action could not start notify_dependents (ADR #130 §9).
-
-    A lost hint never fails the action: the sweeper re-checks the dependants.
-    The warning reaches the bell through the attention index.
-    """
-    try:
-        executions_repo.put(warning_item(
-            kind="notify", execution_name=execution_name, task_name=task_name, pipeline_name=pipeline_name,
-            pipeline_execution=pipeline_execution, task_date=date, error=f"notify_dependents failed: {error}",
-            now=datetime.now(timezone.utc),
-        ))
-    except Exception as e:
-        log.error("_write_notify_warning", "Failed to write warning", error=str(e))
-
-
 def retry_task(task_name: str, event: Dict) -> Dict:
     """Retry a failed/skipped task.
 
@@ -602,135 +577,6 @@ def retry_task(task_name: str, event: Dict) -> Dict:
     """
     # Delegate to restart_task for actual functionality
     return restart_task(task_name, event)
-
-
-def _write_synthetic_output_marker(item: Dict, action_name: str, reason: str, date: str, operator: str = "unknown") -> None:
-    """Write a synthetic marker to the canonical output store (the same
-    output#{pipeline}#{task}#{date} key xcom.pull() and the console's
-    Input/Output tab both read) when a task is manually resolved — Skip,
-    Mark Successful, Mark Failed, or Stop — without ever actually running
-    through the wrapper's Save_Canonical_Output state.
-
-    Without this, a downstream task calling xcom.pull() on this task raises
-    PullError ("no output stored ... did it return anything?") purely as a
-    consequence of a manual decision made on an upstream task, through no
-    fault of the downstream task's own logic.
-
-    Two distinct protection concerns, addressed separately (CLAUDE.md #32):
-
-    1. **Never clobber real user output.** A genuine, real output from an
-       earlier successful run of this same task/date (e.g. same-day re-run,
-       real xcom.push, real Lambda return) must survive — this synthetic
-       marker only fills the gap when nothing real is there.
-    2. **Always refresh a prior stale marker.** A previous same-date manual
-       action left its own marker on the row (with its own operator / reason
-       / resolution). A subsequent manual action must overwrite it —
-       otherwise the identity fields drift silently forever (SEV3 finding
-       in 1.0.0 development: same-date second-skip left the first-skip
-       operator UUID even after the ID-token fix). GetItem-then-Update is
-       the cleanest split of these two concerns; `attribute_not_exists`
-       alone conflates them.
-
-    Best-effort, matching every other status write in this codebase: a
-    failure here must not block the manual action itself. When the guard
-    legitimately blocks (real output present), emit a `_notify_warn_` so
-    the operator sees the intent-vs-storage mismatch in the Notifications
-    bell rather than only in CloudWatch (Principle #38).
-    """
-    pipeline_name = item.get('pipeline_name', 'unknown')
-    task_name = item.get('task_name', '')
-    if not task_name:
-        return
-    key = f"output#{pipeline_name}#{task_name}#{date}"
-    # `_operator` — human-readable identity of whoever clicked the action
-    # (Cognito email if present, else sub; PAT: `pat:<name>`; else 'unknown').
-    # UI reads this to show "Marked <resolution> by <operator>" in the
-    # Task Detail modal instead of leaving intent invisible in a shared account.
-    # `_pipeline_execution` — which pipeline run created this marker. Threaded
-    # into the SDK's XComManuallyResolvedError message so a downstream task
-    # in a different same-date run sees the source explicitly instead of
-    # inferring stale-vs-current bleed from context.
-    marker = json.dumps({
-        '_manually_resolved': True,
-        '_resolution': action_name,
-        '_reason': reason,
-        '_operator': operator,
-        '_pipeline_execution': item.get('pipeline_execution', ''),
-    })
-    ttl = int(datetime.now(timezone.utc).timestamp()) + (30 * 24 * 60 * 60)
-
-    # 1) Read the existing row's result (if any) to distinguish "empty",
-    #    "prior marker" (refresh), and "real user output" (protect).
-    try:
-        existing = executions_repo.get(key)
-    except (ClientError, BotoCoreError) as e:
-        log.warn(
-            "_write_synthetic_output_marker",
-            "Failed to read existing output# row before marker write",
-            error=str(e), task_name=task_name,
-        )
-        return
-
-    prior_result = (existing or {}).get('result')
-    prior_is_marker = False
-    if isinstance(prior_result, str):
-        try:
-            parsed = json.loads(prior_result)
-            prior_is_marker = isinstance(parsed, dict) and parsed.get('_manually_resolved') is True
-        except (ValueError, TypeError):
-            # Malformed JSON is treated as "not a marker" — protect it as if
-            # it were opaque real output. Same conservative bias.
-            prior_is_marker = False
-
-    if prior_result is not None and not prior_is_marker:
-        # Real user output present — the original guard's intent. Skip write,
-        # elevate to WARN, and surface via Notifications bell (Principle #38)
-        # so the operator sees that their manual action's marker did not land.
-        log.warn(
-            "_write_synthetic_output_marker",
-            "Real output already exists for this task/date — marker not written; "
-            "downstream reads will see the prior real output, not the manual resolution",
-            task_name=task_name,
-            pipeline_name=pipeline_name,
-            date=date,
-            action=action_name,
-            operator=operator,
-        )
-        _emit_marker_blocked_warn(
-            pipeline_name=pipeline_name,
-            task_name=task_name,
-            date=date,
-            action_name=action_name,
-            operator=operator,
-        )
-        return
-
-    # 2) Absent OR prior marker → unconditional SET (no `condition_expr`).
-    #    Unconditional is safe here because we just proved the row does not
-    #    hold real output; if a race writes real output between our GetItem
-    #    and this UpdateItem, we still overwrite — but that race would need
-    #    a full task run in single-digit-millisecond window after a manual
-    #    action, which is practically impossible.
-    try:
-        executions_repo.update(
-            key,
-            'SET task_name = :tn, #r = :result, #s = :status, '
-            'updated_at = :ua, #ttl_field = if_not_exists(#ttl_field, :ttl)',
-            expr_names={'#r': 'result', '#s': 'status', '#ttl_field': 'ttl'},
-            expr_values={
-                ':tn': task_name,
-                ':result': marker,
-                ':status': action_name,
-                ':ua': datetime.now(timezone.utc).isoformat(),
-                ':ttl': ttl,
-            },
-        )
-    except (ClientError, BotoCoreError) as e:
-        log.warn(
-            "_write_synthetic_output_marker",
-            "Failed to write synthetic marker",
-            error=str(e), task_name=task_name,
-        )
 
 
 def _emit_marker_blocked_warn(
@@ -877,204 +723,102 @@ def _warn_fact_not_recorded(item: Dict, task_name: str, asset_name: str, error: 
                   asset_name=asset_name, execution_name=execution_name, error=str(e))
 
 
-def _execute_task_action(
-    task_name: str,
-    event: Dict,
-    *,
-    action_name: str,
-    target_status: str,
-    use_resolved_check: bool,
-    include_error_field: bool = False,
-    stop_error: str,
-    default_reason: str = None,
-    default_stop_cause: str = None,
-    callback_fn,
-    success_message: str,
-    skip_origin: str = None,
-    emit_asset_events: bool = False,
-) -> Dict:
-    """Shared implementation for skip_task, fail_task, mark_success.
+#: An action whose transaction a row's move cancelled is built again from new reads, this many times in all.
+ACTION_ATTEMPTS = 3
 
-    Claim-first pattern: update DynamoDB status before executing side-effects.
 
-    Args:
-        action_name: For logging and record_manual_decision ('skip', 'fail', 'mark_success')
-        target_status: New DynamoDB status ('skipped', 'failed', 'success')
-        skip_origin: ADR #115 — written only by skip_task, as 'manual'. Distinguishes a
-            human's explicit skip decision from the wrapper's rule-triggered skip
-            (skip_origin='rule', written by notify_dependents' Update_Status_Skip when a
-            trigger_rule's condition legitimately never occurs). all_success's
-            skip-cascade treats only skip_origin='rule' as blocking; a manual skip does
-            not cascade — a human tolerating one gap should not silently no-op an entire
-            downstream success chain.
-        use_resolved_check: True = block only resolved (success/skipped), allow recovery from failed.
-                            False = block all terminal states.
-        include_error_field: If True, include error field in UpdateExpression (for fail_task)
-        stop_error: First arg to stop_task_executions ('Skipped', 'ManuallyFailed', 'ManuallySucceeded')
-        default_reason: If set, extract 'reason' from body with this as default. None = no reason.
-        default_stop_cause: Fallback stop_cause when reason is None (e.g. 'Task skipped via UI').
-        callback_fn: callable(token, task_name, reason) that sends orchestration callback
-        success_message: Template for 200 response message (use {execution_name})
-        emit_asset_events: §7c — only mark_success passes True. Mark Successful is the
-            one manual action that explicitly claims real work happened ("verified via
-            logs/S3"), so a downstream pipeline scheduled on this task's outlets (push
-            model) is notified the same way a normal completion would notify it.
-            Skip/Fail/Stop correctly leave this False — they make no claim that
-            anything was actually produced.
-    """
+def _execute_task_action(task_name: str, event: Dict, *, action: str, default_reason: str,
+                         success_message: str) -> Dict:
+    """Skip, Fail, Mark Successful and Stop from the request's body, through ``apply_task_action``."""
     body, err = safe_parse_body(event)
     if err:
         return err
     date = body.get('date', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
-    pipeline_execution = body.get('pipeline_execution', '')
-    reason = body.get('reason', default_reason) if default_reason else None
-
-    # Resolve task using unified resolver (handles both formats with pagination)
-    item, execution_name = resolve_task_item(task_name, date, pipeline_execution)
-
+    item, execution_name = resolve_task_item(task_name, date, body.get('pipeline_execution', ''))
     if not item:
-        log.warn(action_name, "Task not found", task_name=task_name, date=date)
+        log.warn(action, "Task not found", task_name=task_name, date=date)
         return cors_response(404, {'error': f'Task not found: {task_name} on {date}'})
+    return apply_task_action(action, item, execution_name, reason=body.get('reason') or default_reason,
+                             operator=operator_display(event), success_message=success_message)
 
-    orchestration_token = item.get('orchestration_token')
-    actual_task_name = item.get('task_name', task_name)
-    pipeline_execution = item.get('pipeline_execution', '')
-    pipeline_execution_short = item.get('pipeline_execution_short', '')
-    current_status = item.get('status', '')
 
-    # Check if action is blocked by current status
-    if use_resolved_check:
-        if current_status in TASK_SUCCESS_STATUSES:
-            return cors_response(
-                409,
-                {
-                    'error': f'Task already resolved: {current_status}',
-                    'execution_name': execution_name,
-                    'current_status': current_status,
-                },
-            )
-        condition_expr = RESOLVED_CONDITION_EXPRESSION
-        expr_values_fn = build_resolved_expression_values
+def apply_task_action(action: str, item: Dict, execution_name: str, *, reason: str, operator: str,
+                      success_message: str) -> Dict:
+    """An operator's Skip, Fail, Mark Successful or Stop of a task (ADR #137 §3).
+
+    One transaction that ``coordination.actions`` builds from this function's reads: the row, its run row, the
+    date's ``output#``, and for Mark Successful the task's outlets. A transaction a row's move cancelled (a pass,
+    run_task, a push) is built again from new reads while the action still applies. Then, best effort, the
+    timeline events, the stop of the task's run_task, and a ``manual`` warning when real output kept the marker
+    out. The dispatcher sees the move through the tasks table's stream: nothing here starts, answers or notifies.
+    """
+    pipeline = str(item.get('pipeline_name', ''))
+    task_name = str(item.get('task_name', ''))
+    run_execution = str(item.get('pipeline_execution', ''))
+    write = None
+    for _ in range(ACTION_ATTEMPTS):
+        run_item = executions_repo.get(run_row.key(run_execution), consistent=True)
+        if run_item is None:
+            return cors_response(409, {'error': f'{execution_name}: a task of a run from before 1.3 takes no action; '
+                                                'run its pipeline again after the redeploy',
+                                       'execution_name': execution_name})
+        date = str(run_item.get(run_row.RUN_DATE) or item.get('date', ''))
+        outlets: List[Dict] = []
+        if action == ManualResolution.MARK_SUCCESS:
+            node, problem = _read_task_spec(pipeline, task_name)
+            if problem:
+                # Its facts are part of the success (invariant 12): without its outlets it cannot be recorded.
+                return cors_response(409, {'error': f"{execution_name}: its outlets cannot be read ({problem}); "
+                                                    "Mark Successful would record none of its facts",
+                                           'execution_name': execution_name})
+            outlets = list((node or {}).get('outlets') or [])
+        stored = executions_repo.get(run_row.input_key(run_execution))
+        try:
+            write = actions.task_action(
+                action=action, task=item, run=run_item,
+                output=executions_repo.get(f'output#{pipeline}#{task_name}#{date}', consistent=True),
+                outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',
+                operator=operator, reason=reason, now=datetime.now(timezone.utc), tokens_table=TABLE_NAME,
+                asset_events_table=ASSET_EVENTS_TABLE, fact_ttl_days=ASSET_EVENT_TTL_DAYS)
+        except actions.ActionRefused as exc:
+            return cors_response(409, {'error': str(exc), 'execution_name': execution_name,
+                                       'current_status': item.get('status')})
+        try:
+            executions_repo.transact_write(write.items)
+            break
+        except executions_repo.transaction_canceled_exception as exc:
+            log.info(action, "The transaction was cancelled: built again from new reads", execution_name=execution_name,
+                     reasons=[str(r.get('Code', '')) for r in exc.response.get('CancellationReasons', [])])
+            item = executions_repo.get(execution_name, consistent=True)
+            if item is None:
+                return cors_response(404, {'error': f'Task not found: {execution_name}'})
     else:
-        if is_terminal_status(current_status):
-            return cors_response(
-                409,
-                {
-                    'error': f'Task already in terminal state: {current_status}',
-                    'execution_name': execution_name,
-                    'current_status': current_status,
-                },
-            )
-        condition_expr = TERMINAL_CONDITION_EXPRESSION
-        expr_values_fn = build_condition_expression_values
+        return cors_response(409, {'error': f'{execution_name} kept changing under the action; try again',
+                                   'execution_name': execution_name})
+    _after_action(action, item, write, pipeline=pipeline, task_name=task_name, date=date, operator=operator)
+    log.info(action, "Done", execution_name=execution_name)
+    return cors_response(200, {'message': success_message.format(execution_name=execution_name),
+                               'execution_name': execution_name})
 
-    # Ensure pipeline_execution_short has a value (critical for notify_dependents)
-    pipeline_execution_short = ensure_pipeline_execution_short(pipeline_execution, pipeline_execution_short)
-    if not pipeline_execution_short:
-        log.warn(action_name, "No pipeline_execution_short, event notification may fail", execution_name=execution_name)
 
-    # Claim: update status FIRST (with ConditionExpression as race condition guard)
-    # ADR #115: skip_origin is appended to the SET clause only when provided (skip_task
-    # passes 'manual'); fail_task/mark_success never pass it, so their UpdateExpression
-    # is byte-identical to before this change.
-    skip_origin_set = ', skip_origin = :skip_origin' if skip_origin else ''
-    skip_origin_values = {':skip_origin': skip_origin} if skip_origin else {}
-    try:
-        # The decision ends the wrapper's ownership: raising the generation in the same
-        # write fences every later write of that wrapper (ADR #130 §2.1).
-        if include_error_field:
-            executions_repo.update(
-                execution_name,
-                f'SET #s = :status, finished_at = :finished, #e = :error{skip_origin_set}, {ownership.RAISE}',
-                expr_values=expr_values_fn(
-                    {
-                        ':status': target_status,
-                        ':finished': datetime.now(timezone.utc).isoformat(),
-                        ':error': reason,
-                        **skip_origin_values,
-                        **ownership.RAISE_VALUES,
-                    }
-                ),
-                expr_names={'#s': 'status', '#e': 'error'},
-                condition_expr=condition_expr,
-            )
-        else:
-            executions_repo.update(
-                execution_name,
-                f'SET #s = :status, finished_at = :finished{skip_origin_set}, {ownership.RAISE}',
-                expr_values=expr_values_fn(
-                    {
-                        ':status': target_status,
-                        ':finished': datetime.now(timezone.utc).isoformat(),
-                        **skip_origin_values,
-                        **ownership.RAISE_VALUES,
-                    }
-                ),
-                expr_names={'#s': 'status'},
-                condition_expr=condition_expr,
-            )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-            log.warn(
-                action_name, "Race condition: Task became terminal during operation", execution_name=execution_name
-            )
-            return cors_response(
-                409,
-                {'error': 'Task status changed during operation (race condition)', 'execution_name': execution_name},
-            )
-        else:
-            raise
-
-    # Side-effects AFTER successful claim
-    stop_cause = reason or default_stop_cause or f'Task {action_name} via UI'
-    stop_task_executions(item, stop_error, stop_cause)
-    record_manual_decision(execution_name, action_name, stop_cause, item)
-    _write_synthetic_output_marker(item, action_name, stop_cause, item.get('date', date), operator=operator_display(event))
-    failed_facts = record_manual_success_facts(item, actual_task_name) if emit_asset_events else {}
-
-    log.info(action_name, "Successfully completed", execution_name=execution_name, actual_task_name=actual_task_name)
-
-    # Tell the run how its task ended (ADR #135); the action itself is done and cannot be repeated
-    if orchestration_token:
-        answer_run(item, execution_name, target_status,
-                   lambda: callback_fn(orchestration_token, actual_task_name, reason))
-    else:
-        # No token means task failed before Run_Task recorded it (e.g. IAM error at startup)
-        # Still notify dependents so downstream tasks can unblock
-        log.warn(
-            action_name,
-            "No orchestration token — task may have failed before starting",
-            execution_name=execution_name,
-            task=actual_task_name,
-        )
-
-    # Notify dependents via SFN helper
-    if not notify_dependents_via_sfn(
-        task_name=actual_task_name,
-        status=target_status,
-        date=item.get('date', date),
-        pipeline_execution_short=pipeline_execution_short,
-        pipeline_execution=pipeline_execution,
-    ):
-        log.warn(
-            action_name,
-            "Failed to notify dependents — downstream tasks may stay waiting",
-            execution_name=execution_name,
-        )
-        _write_notify_warning(
-            execution_name=execution_name,
-            task_name=actual_task_name,
-            pipeline_execution=pipeline_execution,
-            pipeline_name=item.get('pipeline_name', 'unknown'),
-            date=item.get('date', date),
-            error='SFN start_execution failed',
-        )
-
+def _after_action(action: str, item: Dict, write: 'actions.ActionWrite', *, pipeline: str, task_name: str,
+                  date: str, operator: str) -> None:
+    """What follows an action's transaction, best effort: the row holds the state (ADR #137 §3)."""
+    for event in write.events:
+        try:
+            task_events_repo.put(event)
+        except (ClientError, BotoCoreError) as e:
+            log.error(action, "Could not write the timeline event", event=event.get('event_type'), error=str(e))
+    arn = item.get('run_task_helper_arn')
+    if write.run_task_to_stop and arn:
+        try:
+            sfn.stop_execution(executionArn=arn, error='Console', cause=f'stopped by {operator}')
+        except (ClientError, BotoCoreError) as e:
+            # The fence keeps whatever it does next out of the row: its writes are conditional on its generation.
+            log.error(action, "Could not stop the task's run_task", arn=arn, error=str(e))
+    if write.marker_blocked:
+        _emit_marker_blocked_warn(pipeline, task_name, date, action, operator)
     resolve_pagerduty(item)
-    body = {'message': success_message.format(execution_name=execution_name), 'execution_name': execution_name}
-    if failed_facts:
-        body['failed_facts'] = failed_facts      # each also a `fact` warning in the bell
-    return cors_response(200, body)
 
 
 def skip_task(task_name: str, event: Dict) -> Dict:
@@ -1082,20 +826,8 @@ def skip_task(task_name: str, event: Dict) -> Dict:
 
     Supports both execution_name (full) and task_name (requires date lookup).
     """
-    return _execute_task_action(
-        task_name,
-        event,
-        action_name=ManualResolution.SKIP,
-        target_status='skipped',
-        use_resolved_check=True,
-        stop_error='Skipped',
-        default_reason='Task skipped via UI',
-        skip_origin='manual',
-        callback_fn=lambda token, name, _reason: sfn.send_task_success(
-            taskToken=token, output=json.dumps({'status': 'skipped', 'task_name': name})
-        ),
-        success_message='Skip triggered for {execution_name}',
-    )
+    return _execute_task_action(task_name, event, action=ManualResolution.SKIP, default_reason='Task skipped via UI',
+                                success_message='Skip triggered for {execution_name}')
 
 
 def fail_task(task_name: str, event: Dict) -> Dict:
@@ -1103,20 +835,8 @@ def fail_task(task_name: str, event: Dict) -> Dict:
 
     Supports both execution_name (full) and task_name (requires date lookup).
     """
-    return _execute_task_action(
-        task_name,
-        event,
-        action_name=ManualResolution.FAIL,
-        target_status='failed',
-        use_resolved_check=False,
-        include_error_field=True,
-        stop_error='ManuallyFailed',
-        default_reason='Manually failed by user',
-        callback_fn=lambda token, _name, reason: sfn.send_task_failure(
-            taskToken=token, error='ManuallyFailed', cause=reason
-        ),
-        success_message='Task {execution_name} marked as failed',
-    )
+    return _execute_task_action(task_name, event, action=ManualResolution.FAIL, default_reason='Manually failed by user',
+                                success_message='Task {execution_name} marked as failed')
 
 
 def mark_success(task_name: str, event: Dict) -> Dict:
@@ -1129,21 +849,8 @@ def mark_success(task_name: str, event: Dict) -> Dict:
     - Manual intervention - work done by human
     - Testing - quickly mark task as done
     """
-    return _execute_task_action(
-        task_name,
-        event,
-        action_name=ManualResolution.MARK_SUCCESS,
-        target_status='success',
-        use_resolved_check=True,
-        stop_error='ManuallySucceeded',
-        default_reason='Manually marked successful by user',
-        callback_fn=lambda token, name, reason: sfn.send_task_success(
-            taskToken=token,
-            output=json.dumps({'status': 'success', 'task_name': name, 'manual': True, 'reason': reason}),
-        ),
-        success_message='Task {execution_name} marked as successful',
-        emit_asset_events=True,
-    )
+    return _execute_task_action(task_name, event, action=ManualResolution.MARK_SUCCESS, default_reason='Manually marked successful by user',
+                                success_message='Task {execution_name} marked as successful')
 
 
 def answer_run(item: Dict, execution_name: str, outcome: str, send: Callable[[], Any]) -> None:
@@ -1184,122 +891,12 @@ def answer_run(item: Dict, execution_name: str, outcome: str, send: Callable[[],
 
 
 def stop_task(task_name: str, event: Dict) -> Dict:
-    """Stop a running task (pause) without marking as failed. Task can be resumed later.
-    Also handles stopping waiting tasks by marking them as aborted.
+    """Stop a task that has not finished: ``stopped``, final for its dependants (ADR #138); Restart runs it again.
 
     Supports both execution_name (full) and task_name (requires date lookup).
     """
-    body, err = safe_parse_body(event)
-    if err:
-        return err
-    date = body.get('date', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
-    pipeline_execution = body.get('pipeline_execution', '')
-
-    # Resolve task using unified resolver (handles both formats with pagination)
-    item, execution_name = resolve_task_item(task_name, date, pipeline_execution)
-
-    if not item:
-        return cors_response(404, {'error': f'Task not found: {task_name} on {date}'})
-
-    current_status = item.get('status', '')
-
-    # Check if already terminal BEFORE doing anything
-    if is_terminal_status(current_status):
-        return cors_response(
-            409,
-            {
-                'error': f'Task already in terminal state: {current_status}',
-                'execution_name': execution_name,
-                'current_status': current_status,
-            },
-        )
-
-    actual_task_name = item.get('task_name', task_name)
-    pipeline_execution = item.get('pipeline_execution', '')
-    pipeline_execution_short = item.get('pipeline_execution_short', '')
-    orchestration_token = item.get('orchestration_token')
-
-    # Ensure pipeline_execution_short has a value (critical for notify_dependents)
-    pipeline_execution_short = ensure_pipeline_execution_short(pipeline_execution, pipeline_execution_short)
-    if not pipeline_execution_short:
-        log.warn("stop_task", "No pipeline_execution_short, event notification may fail", execution_name=execution_name)
-
-    # Determine final status based on current status
-    # Running tasks become 'stopped', waiting tasks become 'aborted'
-    if current_status in TASK_WAITING_STATUSES:
-        final_status = TaskStatus.ABORTED
-    else:
-        final_status = TaskStatus.STOPPED
-
-    # Claim: update status FIRST (only if not already terminal). Stopping ends the wrapper's
-    # ownership, so the same write raises the generation (ADR #130 §2.1).
-    try:
-        executions_repo.update(
-            execution_name,
-            f'SET #s = :status, finished_at = :finished, {ownership.RAISE}',
-            expr_values=build_condition_expression_values(
-                {':status': final_status, ':finished': datetime.now(timezone.utc).isoformat(),
-                 **ownership.RAISE_VALUES}
-            ),
-            expr_names={'#s': 'status'},
-            condition_expr=TERMINAL_CONDITION_EXPRESSION,
-        )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-            log.info(
-                "stop_task", "Task already in terminal state, skipping status update", execution_name=execution_name
-            )
-            return cors_response(
-                409,
-                {
-                    'error': 'Task already in terminal state',
-                    'execution_name': execution_name,
-                    'current_status': current_status,
-                },
-            )
-        else:
-            raise
-
-    # Side-effects AFTER successful claim
-    stop_task_executions(item, 'Stopped', 'Task stopped via UI - can be restarted')
-    record_manual_decision(execution_name, 'stop', 'Task stopped via UI', item)
-    _write_synthetic_output_marker(item, ManualResolution.STOP, 'Task stopped via UI', item.get('date', date), operator=operator_display(event))
-
-    # For aborted tasks: send orchestration callback if token exists
-    # This prevents pipeline from hanging waiting for callback
-    if final_status == 'aborted' and orchestration_token:
-        answer_run(item, execution_name, final_status,
-                   lambda: sfn.send_task_failure(taskToken=orchestration_token, error='TaskAborted',
-                                                 cause='Task aborted via UI'))
-
-    # Notify dependents ONLY for aborted (terminal status)
-    # stopped is NOT terminal - task can be restarted, so don't notify dependents yet
-    if final_status == 'aborted':
-        if not notify_dependents_via_sfn(
-            task_name=actual_task_name,
-            status=final_status,
-            date=item.get('date', date),
-            pipeline_execution_short=pipeline_execution_short,
-            pipeline_execution=pipeline_execution,
-        ):
-            log.error("stop_task", "Failed to notify dependents", execution_name=execution_name)
-            _write_notify_warning(
-                execution_name=execution_name,
-                task_name=actual_task_name,
-                pipeline_execution=pipeline_execution,
-                pipeline_name=item.get('pipeline_name', 'unknown'),
-                date=item.get('date', date),
-                error='SFN start_execution failed during stop',
-            )
-
-    return cors_response(
-        200,
-        {
-            'message': f'Task {execution_name} {final_status}. Use Restart to resume.',
-            'execution_name': execution_name,
-            'status': final_status,
-        },
-    )
+    return _execute_task_action(task_name, event, action=ManualResolution.STOP, default_reason='Task stopped via UI',
+                                success_message='Task {execution_name} stopped. Use Restart to run it again.')
 
 
 def restart_task(task_name: str, event: Dict) -> Dict:

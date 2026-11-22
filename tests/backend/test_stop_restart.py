@@ -1,11 +1,8 @@
 """
 Tests for stop_task and restart_task.
 
-stop_task:
-- Running → stopped (can be restarted)
-- Waiting → aborted (terminal, sends callback, notifies dependents)
-- Terminal → 409
-- Race condition → 409, no side-effects
+stop_task (its transaction: sam/lambdas/console_api/tests/routes/test_task_actions.py):
+- Not found → 404
 
 restart_task:
 - Terminal → restart initiated (SFN helper)
@@ -51,61 +48,6 @@ def _make_event(date='2026-02-20'):
 # ============================================================
 # stop_task
 # ============================================================
-
-
-def test_stop_running_returns_stopped(mocker):
-    """Running task → stopped status (not aborted)."""
-    from routes.tasks import stop_task
-
-    item = _make_item(status='running')
-    mocker.patch('routes.tasks.resolve_task_item', return_value=(item, item['execution_name']))
-    mock_stop_exec = mocker.patch('routes.tasks.stop_task_executions')
-    mock_record = mocker.patch('routes.tasks.record_manual_decision')
-    mock_repo = mocker.patch('routes.tasks.executions_repo')
-    mock_repo.update.return_value = {}
-
-    response = stop_task('extract', _make_event())
-
-    assert response['statusCode'] == 200
-    body = json.loads(response['body'])
-    assert body['status'] == 'stopped'
-    mock_stop_exec.assert_called_once()
-    mock_record.assert_called_once()
-
-
-def test_stop_waiting_returns_aborted(mocker):
-    """Waiting task → aborted status (terminal), sends callback."""
-    from routes.tasks import stop_task
-
-    item = _make_item(status='waiting_decision')
-    mocker.patch('routes.tasks.resolve_task_item', return_value=(item, item['execution_name']))
-    mocker.patch('routes.tasks.stop_task_executions')
-    mocker.patch('routes.tasks.record_manual_decision')
-    mock_notify = mocker.patch('routes.tasks.notify_dependents_via_sfn', return_value=True)
-    mock_repo = mocker.patch('routes.tasks.executions_repo')
-    mock_repo.update.return_value = {}
-    mock_sfn = mocker.patch('routes.tasks.sfn')
-
-    response = stop_task('extract', _make_event())
-
-    assert response['statusCode'] == 200
-    body = json.loads(response['body'])
-    assert body['status'] == 'aborted'
-    mock_sfn.send_task_failure.assert_called_once()
-    mock_notify.assert_called_once()
-
-
-def test_stop_terminal_returns_409(mocker):
-    """Already terminal → 409 conflict."""
-    from routes.tasks import stop_task
-
-    item = _make_item(status='success')
-    mocker.patch('routes.tasks.resolve_task_item', return_value=(item, item['execution_name']))
-
-    response = stop_task('extract', _make_event())
-
-    assert response['statusCode'] == 409
-    assert 'terminal' in json.loads(response['body'])['error'].lower()
 
 
 def test_stop_not_found_returns_404(mocker):
