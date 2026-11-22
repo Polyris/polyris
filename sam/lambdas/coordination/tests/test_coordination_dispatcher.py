@@ -407,6 +407,27 @@ def test_a_conflicting_transaction_is_sent_again(world):
     assert item(world, key("extract"))["status"] == "deps_ready" and conflicts == [1]
 
 
+def test_an_action_between_a_passs_read_and_its_answer_leaves_the_answer_marked(world):
+    """D120 (the review of TR-4, break 5): a Restart raises run_version while the pass answers the token it read
+    as final. The token was answered, so the mark records it, and the engine never stops the run for an answer
+    it did not see marked; the restarted row goes on as after the run's end."""
+    start(world, CHAIN)
+    full(world)
+    finish(world, "extract")
+    full(world)
+    finish(world, "load")
+    real = world.sfn.send_task_success
+
+    def answered_while_an_action_lands(**kwargs: Any) -> Any:
+        update(world, RUN_KEY, run_version=int(item(world, RUN_KEY)["run_version"]) + 1)    # the action's raise
+        return real(**kwargs)
+
+    world.sfn.send_task_success = answered_while_an_action_lands
+    full(world)
+    run = item(world, RUN_KEY)
+    assert run["answered_order"] == run["token_order"] and len(world.sfn.succeeded) == 1
+
+
 def test_a_closed_token_counts_as_answered(world):
     start(world, CHAIN)
     for task in ("extract", "load"):

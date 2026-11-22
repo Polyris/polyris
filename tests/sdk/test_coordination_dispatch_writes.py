@@ -205,11 +205,20 @@ def test_the_answers_mark_holds_only_for_the_token_still_current(ddb):
     assert send(ddb, [{"Update": dispatch_writes.answered(run(), table=TABLE, now=NOW)}])
     marked = get(ddb, run().key)
     assert (marked["answered_order"], marked["run_version"], marked["finished_at"]) == (2, 4, format_utc(NOW))
-    assert not send(ddb, [{"Update": dispatch_writes.answered(run(), table=TABLE, now=NOW)}])   # read before the mark
+    assert not send(ddb, [{"Update": dispatch_writes.answered(run(), table=TABLE, now=NOW)}])   # marked once
     put(ddb, {"execution_name": run().key, "status": "active", "run_version": 4, "token_order": 3})   # a newer token
     assert not send(ddb, [{"Update": dispatch_writes.answered(run(version=4), table=TABLE, now=NOW)}])
     with pytest.raises(ValueError, match="no answer to mark"):
         dispatch_writes.answered(run(token_order=None), table=TABLE, now=NOW)
+
+
+def test_the_answers_mark_holds_after_an_action_raised_run_version(ddb):
+    """D120: a Restart between the pass's read and its answer raised run_version; the token was answered all the
+    same, and the mark records it, raising run_version on from where the action left it."""
+    seed(ddb)
+    put(ddb, {**get(ddb, run().key), "run_version": 7})                      # the action, after the read of 3
+    assert send(ddb, [{"Update": dispatch_writes.answered(run(), table=TABLE, now=NOW)}])
+    assert (get(ddb, run().key)["answered_order"], get(ddb, run().key)["run_version"]) == (2, 8)
 
 
 def test_a_summary_never_replaces_one_from_a_later_read(ddb):

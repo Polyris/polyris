@@ -199,7 +199,7 @@ Every write by the console raises the generation, and so does every write that t
 
 No transition leads back to `creating`.
 - **`run_version`** is raised by every write in the table except the mark of a failed direct step, and by nothing else. The writes of the run row's due time, its summary and its TTL keep it, and so does the mark. None of them can make a decision wrong, or the removal of the due time.
-- A pass's decisions check it and never raise it (§1). A pass raises it only by a write of the table: a reset, its stop mark, the answered mark, the stop done or a request cleared. Each such write is conditional on `run_version = :read`, the value the pass holds, and sets `:read + 1`.
+- A pass's decisions check it and never raise it (§1). A pass raises it only by a write of the table: a reset, its stop mark, the answered mark, the stop done or a request cleared. Each such write is conditional on `run_version = :read`, the value the pass holds, and sets `:read + 1`, except the answered mark (D120). That mark is a fact about the token: it is conditional on its token being the current one and not yet marked, and raises `run_version` whatever it is. A Restart that lands between the pass's read and its answer then runs as one after the run's end, instead of the engine stopping the run for an answer it never saw marked.
   - When the condition holds, no other write raised it in between, so the pass goes on holding `:read + 1`.
   - When it fails, an action, a token or a request came in between. The pass reads the run row and its rows again, and decides again from the new reads.
 - A pass that changes the run's summary writes it (§4), a write that wakes nothing.

@@ -183,16 +183,18 @@ def answer(run: RunView, end: RunEnd) -> Tuple[str, Dict[str, str]]:
 
 
 def answered(run: RunView, *, table: str, now: datetime) -> Dict[str, Any]:
-    """The answer's mark: the order of the token answered, while that token is still the current one (§4)."""
+    """The answer's mark: the order of the token answered, while that token is still the current one and not yet
+    marked (§4). It is a fact about the token, so it holds whatever raised ``run_version`` since the pass's read,
+    and raises it whatever it is (D120): a Restart that lands between the pass's read and its answer then runs as
+    a Restart after the run's end does, instead of the engine stopping the run for an answer it never saw marked."""
     if run.token_order is None:
         raise ValueError(f"{run.key}: a run row without a token has no answer to mark")
     return _run_update(run, table=table, now=now,
-                       expression=f"SET #answered = :order, #finished = :now, {run_row.VERSION_NEXT}",
-                       condition=f"{run_row.VERSION_UNCHANGED} AND #order = :order",
+                       expression=f"SET #answered = :order, #finished = :now, {run_row.VERSION_RAISE}",
+                       condition="#order = :order AND (attribute_not_exists(#answered) OR #answered <> :order)",
                        names={**run_row.VERSION_NAMES, "#answered": run_row.ANSWERED, "#order": run_row.TOKEN_ORDER,
                               "#finished": run_row.FINISHED_AT},
-                       values={**run_row.version_values(run.version), ":order": run.token_order,
-                               ":now": format_utc(now)})
+                       values={**run_row.VERSION_RAISE_VALUES, ":order": run.token_order, ":now": format_utc(now)})
 
 
 def summary(run: RunView, end: RunEnd, *, table: str, read_at: datetime) -> Dict[str, Any]:
