@@ -20,7 +20,7 @@ from polyris.coordination import actions, run_end, run_row
 from routes.tasks import ACTION_BACKOFF_SECONDS
 from dal import executions_repo, backfills_repo
 from constants import Limits
-from feed import duration_ms, page_by_started_at, run_entry, run_rows_before, runs_of_date
+from feed import duration_ms, is_stale, page_by_started_at, run_entry, run_rows_before, runs_of_date
 from response import cors_response, index_building_response, safe_parse_body
 from logger import log
 from auth import operator_display
@@ -208,7 +208,8 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
                 'status': item.get('status'),
                 'date': item.get('date'),
                 'started_at': item.get('started_at'),
-                'finished_at': item.get('finished_at')
+                'finished_at': item.get('finished_at'),
+                **({'stale': True} if is_stale(item) else {}),
             })
         
         # Sort by started_at, then the task's name: every row of a 1.3 run carries its run's one

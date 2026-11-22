@@ -93,5 +93,5 @@ class TestNormalizeSupersedesAdr71:
         assert "succeeded" not in EXECUTION_STATUS_CANONICAL
         assert "stopped" not in EXECUTION_STATUS_CANONICAL
         assert EXECUTION_STATUS_CANONICAL == {
-            "running", "success", "failed", "timed_out", "aborted", "recovered",
+            "running", "success", "failed", "timed_out", "aborted", "recovered", "stale",
         }

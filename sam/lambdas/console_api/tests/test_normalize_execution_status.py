@@ -71,5 +71,5 @@ class TestNormalizeExecutionStatus:
         # Lock the canonical set so accidental additions/removals are caught
         # by tests, not by runtime drift.
         assert EXECUTION_STATUS_CANONICAL == {
-            'running', 'success', 'failed', 'timed_out', 'aborted', 'recovered',
+            'running', 'success', 'failed', 'timed_out', 'aborted', 'recovered', 'stale',
         }

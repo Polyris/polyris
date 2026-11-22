@@ -7,7 +7,7 @@
  * `formatDateTime` makes the date explicit while staying readable.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { formatDateTime } from './formatters';
+import { formatDateTime, shownTaskStatus } from './formatters';
 
 // "Now" is fixed so "Today"/"Yesterday" branches are deterministic.
 const NOW = new Date('2026-05-08T14:00:00Z');
@@ -366,5 +366,13 @@ describe('formatDecisionDeadline', () => {
     it('names no deadline while the run is paused', () => {
         expect(formatDecisionDeadline(null, now)).toBe('no deadline while paused');
         expect(formatDecisionDeadline('not a time', now)).toBe('no deadline while paused');
+    });
+});
+
+describe('shownTaskStatus (ADR #137, Migration; the review of TR-6d)', () => {
+    it('shows a row of a run from before 1.3 left unfinished as stale, any other row by its status', () => {
+        expect(shownTaskStatus({ status: 'running', stale: true })).toBe('stale');
+        expect(shownTaskStatus({ status: 'running' })).toBe('running');
+        expect(shownTaskStatus({ status: null })).toBe('waiting');
     });
 });

@@ -320,6 +320,9 @@ class ExecutionStatus:
     TIMED_OUT = "timed_out"
     ABORTED = "aborted"
     RECOVERED = "recovered"  # Derived: SFN reports failed/timed_out but all tasks resolved
+    # Derived: a run from before 1.3 with a task row left unfinished. 1.3 finishes no such row, and the upgrade
+    # stopped the run's execution (ADR #137, Migration), so it stays so until its rows expire. Goes with 1.4.
+    STALE = "stale"
 
 
 EXECUTION_STATUS_CANONICAL: Set[str] = {
@@ -329,6 +332,7 @@ EXECUTION_STATUS_CANONICAL: Set[str] = {
     ExecutionStatus.TIMED_OUT,
     ExecutionStatus.ABORTED,
     ExecutionStatus.RECOVERED,
+    ExecutionStatus.STALE,
 }
 
 _EXECUTION_STATUS_UPPERCASE_MAP = {

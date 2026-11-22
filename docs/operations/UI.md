@@ -202,6 +202,8 @@ before the upgrade included.
 ### Runs View
 A single table of pipeline executions (ADR #95). A run is running until every task has
 finished; while it runs, its status says how many tasks failed (`running, 2 failed`).
+A run started before 1.3 with a task left unfinished shows `stale`, and so does the task:
+1.3 finishes neither, and the upgrade stopped the run.
 - **Pipeline** — Filter by pipeline name
 - **Status** — Filter by run status (succeeded/failed/running/aborted)
 - **Date** — Filter by the run's logical date

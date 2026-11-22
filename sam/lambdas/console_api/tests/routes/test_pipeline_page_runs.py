@@ -226,3 +226,25 @@ def test_the_history_names_a_failed_direct_step(world):
     [run] = body['executions']
     assert (status, run['status'], run['failed_tasks']) == (200, 'failed', 0)
     assert run['failed_step'] == {'step': 'notify', 'error': 'AccessDenied'}
+
+
+def test_a_row_of_a_run_from_before_1_3_left_unfinished_is_stale(world):
+    """ADR #137, Migration (the review of TR-6d, P-2): 1.3 finishes no row of a run from before it, and the upgrade
+    stopped its execution, so such a row says it is stale; a row of 1.3 never does."""
+    from polyris.coordination import task_spec
+    from routes.tasks import get_all_tasks
+    old = 'orders-run-2026-11-19-0ld0ld00'
+    put_task(world.table, old, 'extract', '2026-11-19', 'success', started=days_ago(3))
+    put_task(world.table, old, 'load', '2026-11-19', 'running', started=days_ago(3))
+    run = put_run(world.table, 'orders', '2026-11-20', days_ago(0), summary={'running': 1})
+    put_task(world.table, run, 'extract', '2026-11-20', 'running', started=days_ago(0),
+             readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []}))
+
+    shown = {t['task_name']: t.get('stale') for t in status_of(date='2026-11-19')['tasks']}
+    assert shown == {'extract': None, 'load': True}
+    assert [t.get('stale') for t in status_of(date='2026-11-20')['tasks']] == [None]
+    status, body = executions(date='2026-11-19')
+    assert [r['status'] for r in body['executions']] == ['stale']
+    for date, expected in (('2026-11-19', {'extract': None, 'load': True}), ('2026-11-20', {'extract': None})):
+        listed = json.loads(get_all_tasks({'queryStringParameters': {'pipeline': 'orders', 'date': date}})['body'])
+        assert {t['task_name']: t.get('stale') for t in listed['tasks']} == expected

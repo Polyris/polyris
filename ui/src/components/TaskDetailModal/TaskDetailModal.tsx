@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
-import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount, waitUntilMs } from '../../utils';
+import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount, waitUntilMs, shownTaskStatus } from '../../utils';
 import { formatDateTime, formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
 import { logger } from '../../utils/logger';
 import { useKeyboardShortcuts } from '../../hooks';
@@ -111,8 +111,8 @@ export function TaskDetailModal({
                     </div>
                     <div>
                         <div className="td-task-title">{task.task_name}</div>
-                        <span className={`task-status-badge ${task.status || 'waiting'}`} aria-label={`Task status: ${task.status || 'waiting'}`}>
-                            {task.status || 'waiting'}
+                        <span className={`task-status-badge ${shownTaskStatus(task)}`} aria-label={`Task status: ${shownTaskStatus(task)}`}>
+                            {shownTaskStatus(task)}
                         </span>
                     </div>
                 </div>

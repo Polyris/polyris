@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
-import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
+import { formatDuration, formatApiErrorMessage, formatTriggerSource, shownTaskStatus } from '../utils';
 import { Search, Inbox, AlertTriangle, RefreshCw, Repeat2 } from '../utils/icons';
 import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
@@ -270,8 +270,8 @@ export function AllTasksView({
                                         </span>
                                     </td>
                                     <td className="p-md">
-                                        <span className={`task-status-badge ${task.status}`}>
-                                            {task.status}
+                                        <span className={`task-status-badge ${shownTaskStatus(task)}`}>
+                                            {shownTaskStatus(task)}
                                         </span>
                                         {/* ADR #125 — compact two-chip retry indicator.
                                             Restart (↻ N) comes from manual UI action;

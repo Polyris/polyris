@@ -26,7 +26,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
-from polyris.coordination import run_end, run_row, task_row
+from polyris.constants import ExecutionStatus
+from polyris.coordination import run_end, run_row, task_row, transitions
 from dal import executions_repo
 from constants import Limits
 from logger import log
@@ -303,9 +304,12 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
             runs.append(run_entry(run_item))
             continue
         counts = run_end.summary(group['statuses'])
-        status = run_end.shown_status(counts, step_failed=False)
+        # 1.3 finishes no row of a run from before it, and the upgrade stopped its execution: a run with a row left
+        # unfinished is stale until its rows expire, not running (ADR #137, Migration).
+        stale = any(str(s) not in transitions.FINAL for s in group['statuses'])
+        status = ExecutionStatus.STALE if stale else run_end.shown_status(counts, step_failed=False)
         started_at = group['started_at'] or None
-        finished_at = (group['finished_at'] or None) if status != 'running' else None
+        finished_at = (group['finished_at'] or None) if status not in ('running', ExecutionStatus.STALE) else None
         legacy.append({
             'pipeline_name': group['pipeline_name'], 'pipeline_execution': pipeline_execution,
             'pipeline_execution_short': group['short'], 'status': status,
@@ -316,6 +320,12 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
         })
     fill_triggered_by(legacy)
     return runs + legacy
+
+
+def is_stale(item: Mapping[str, Any]) -> bool:
+    """A task row of a run from before 1.3 (it has no ``readiness``) that is not final. 1.3 finishes no such row,
+    and the upgrade stopped its run's execution, so it stays so until it expires (ADR #137, Migration)."""
+    return not item.get(task_row.READINESS) and str(item.get('status', '')) not in transitions.FINAL
 
 
 def fill_triggered_by(executions: list) -> None:

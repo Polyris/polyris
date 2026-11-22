@@ -50,6 +50,8 @@ export interface Task {
   deadline?: string | null;
   /** When a ready task's wait_before countdown ends, and the task starts (a 1.3 row that is `waiting`). */
   countdown_end?: string | null;
+  /** A row of a run from before 1.3 left unfinished: nothing will finish it (ADR #137, Migration). */
+  stale?: boolean;
   /** What its trigger rule makes of its upstreams as the page shows them. */
   dependency_verdict?: {
     verdict: string;

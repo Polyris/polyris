@@ -20,8 +20,8 @@ from config import sfn
 from dal import executions_repo, pipelines_repo
 from dal.specs_repo import needs_redeploy
 from constants import Limits, TaskStatus
-from feed import (feed_dates, latest_run_of_date, page_by_started_at, run_counts, run_entry, run_rows_before,
-                  runs_of_date)
+from feed import (feed_dates, is_stale, latest_run_of_date, page_by_started_at, run_counts, run_entry,
+                  run_rows_before, runs_of_date)
 from response import cors_response, index_building_response
 from logger import log
 from utils import safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries
@@ -325,6 +325,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'retry_attempt': safe_int(item.get('retry_attempt'), 0),
             'max_retries': resolve_max_retries(item),
             **_why_it_waits(item, readiness, task_map),
+            **({'stale': True} if is_stale(item) else {}),
         })
     
     # Calculate stats

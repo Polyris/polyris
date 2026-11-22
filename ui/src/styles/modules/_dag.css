@@ -204,6 +204,7 @@
 .task-status-badge.deps_ready { background: var(--accent-light); color: var(--accent); }
 .task-status-badge.stopped { background: var(--stopped-light); color: var(--stopped); }
 .task-status-badge.aborted { background: var(--aborted-light); color: var(--aborted); }
+.task-status-badge.stale { background: var(--skipped-light); color: var(--skipped); }
 .task-status-badge.skipped { background: var(--skipped-light); color: var(--skipped); }
 .task-status-badge.upstream_failed { background: var(--error-light); color: var(--error); }
 .task-status-badge.timed_out { background: var(--error-light); color: var(--error); }
@@ -227,6 +228,7 @@
 .pd-exec-status-mini.upstream_failed { background: var(--error-light); color: var(--error); }
 .pd-exec-status-mini.running { background: var(--running-light); color: var(--running); }
 .pd-exec-status-mini.aborted { background: var(--aborted-light); color: var(--aborted); }
+.pd-exec-status-mini.stale { background: var(--skipped-light); color: var(--skipped); }
 .pd-exec-status-mini.stopped { background: var(--stopped-light); color: var(--stopped); }
 .pd-exec-status-mini.skipped { background: var(--skipped-light); color: var(--skipped); }
 .pd-exec-status-mini.pending, .pd-exec-status-mini.waiting { background: var(--waiting-light); color: var(--waiting); }

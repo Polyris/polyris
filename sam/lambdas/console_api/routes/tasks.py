@@ -28,7 +28,7 @@ from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
 from constants import Limits
 from constants_generated import ManualResolution
-from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
+from feed import feed_dates, is_older, is_stale, page_by_started_at, pipeline_rows_before
 from response import cors_response, safe_parse_body
 from logger import log
 from auth import operator_display
@@ -126,12 +126,13 @@ def resolve_task_item(
 # fields that either index lacks are read from the base table for the returned page.
 # retry_attempt (ADR #125) counts in-SFN auto-retries within one wrapper; `attempt`
 # counts manual-restart generations across wrappers.
-_TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', 'wrapper_execution_arn',
+_TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', 'wrapper_execution_arn', task_row.READINESS,
                    *executions_repo.RUN_META_FIELDS)
 
 
-def _format_task_row(item: Dict) -> Dict:
-    """Project one pipeline-tokens row to a History tasks-feed row."""
+def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
+    """Project one pipeline-tokens row to a History tasks-feed row; ``stale`` marks a row of a run from before 1.3
+    that is not final (``feed.is_stale``)."""
     # Calculate duration if possible — use running_at (actual task start) not started_at (wrapper start)
     duration_ms = None
     actual_start = item.get('running_at') or item.get('started_at')
@@ -174,6 +175,7 @@ def _format_task_row(item: Dict) -> Dict:
         # list view (a static ceiling in a live feed is misleading). Included for the task
         # detail panel to surface alongside attempt.
         'max_retries': max_retries,
+        **({'stale': True} if stale else {}),
     }
 
 
@@ -256,6 +258,7 @@ def get_all_tasks(event: Dict) -> Dict:
         # Fields the index read lacks (_TASKS_BACKFILL), from the base table for the
         # current page only. A page holds whole runs (page_by_started_at), so a run of
         # 2,000 tasks costs 20 BatchGetItem calls, whatever the limit.
+        backfilled = True
         try:
             names = [r['execution_name'] for r in page if r.get('execution_name')]
             if names:
@@ -267,12 +270,13 @@ def get_all_tasks(event: Dict) -> Dict:
                             if r.get(field) is None:
                                 r[field] = m.get(field)
         except (ClientError, BotoCoreError) as e:
+            backfilled = False      # without readiness, no row can be told from one of 1.2: none is marked stale
             log.warn("get_all_tasks", "batch_get_run_meta failed; run-meta fields left null",
                      error=str(e))
 
         # The rows as they are: the engine keeps them true, and the console asks Step Functions nothing about a
         # run (ADR #137 §5).
-        tasks = [_format_task_row(i) for i in page]
+        tasks = [_format_task_row(i, stale=backfilled and is_stale(i)) for i in page]
 
         return cors_response(200, {
             'tasks': tasks,

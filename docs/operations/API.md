@@ -92,6 +92,10 @@ countdown ends and it starts; `deadline`, when its wait or its decision fails, `
 task counts down; and, while it waits for its upstreams, `dependency_verdict`: what its trigger rule makes of them
 (`verdict`, `reason`, and per upstream its `name`, `status` and what it `counts_as`).
 
+A run started before 1.3 has no run row, and 1.3 finishes none of its rows: a task row of such a run that is not
+final carries `"stale": true` here, in `/api/tasks` and in `/api/execution-children`, and such a run shows the status
+`stale` in the run lists of a date (ADR #137, *Migration*).
+
 ### Get Pipeline Executions
 
 ```http
@@ -225,7 +229,7 @@ Returns pipeline runs, `started_at`-descending:
       "pipeline_name": "acme-daily",
       "pipeline_execution": "acme-daily-run-2026-05-31-ab12cd34",
       "pipeline_execution_short": "-2026-05-31-ab12cd34",
-      "status": "running",           // running | success | failed | aborted
+      "status": "running",           // running | success | failed | aborted | stale
       "failed_tasks": 1,             // tasks of the run that failed
       "failed_step": null,           // a failed direct step, which has no row: {"step": "notify", "error": "..."}
       "started_at": "...", "finished_at": null,

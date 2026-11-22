@@ -27,6 +27,7 @@ export const STATUS_COLORS = {
     aborted: 'aborted',
     timed_out: 'error',
     recovered: 'warning',
+    stale: 'muted',     // a run or task row from before 1.3 left unfinished
     // Asset statuses
     updated: 'success',
     ready: 'success',
