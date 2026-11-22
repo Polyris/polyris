@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = [pytest.mark.smoke, pytest.mark.write]
 
-#: Long enough for a fact to reach a waiting task (stream, asset-fanout, reconcile, wrapper):
+#: Long enough for a fact to reach a waiting task (the asset-events stream, asset-fanout, the dispatcher's pass):
 #: a task that has not moved after this long would not have moved on that fact.
 SETTLE_SECONDS = 45
 #: How long a scenario waits for a run to get where it should.
