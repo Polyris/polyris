@@ -700,6 +700,8 @@ Every task's `variables` also carry the run's date in several forms; a variable 
 | `minus_7_days`, `minus_14_days`, `minus_30_days` | `"2025-07-18"`, `"2025-07-11"`, `"2025-06-25"` |
 | `minus_7_days_compact`, `minus_30_days_compact` | `"20250718"`, `"20250625"` |
 
+A run of an hourly, weekly or monthly partition has that partition's key as `current_date` (`"2025-07-25T06"`, `"2025-W30"`, `"2025-07"`). Every other form is that of the partition's first day: the day of the hour, the Monday of the week, the 1st of the month.
+
 ---
 
 ## Complete Example

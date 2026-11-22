@@ -1501,7 +1501,8 @@ SUCCESS_RUN = {"execution_name": "load-2026-11-18-orders-run-x", "generation": 3
                "pipeline_name": "orders", "pipeline_execution": "orders-run-2026-11-18-x", "date": "2026-11-18",
                "cascade": "auto", "outlets": [{"name": "ns/orders", "uri": "s3://bucket/orders"},
                                               {"name": "ns/daily", "granularity": "daily"}],
-               "output_ttl_seconds": 31536000, "history_ttl_seconds": 39312000}
+               "output_ttl_seconds": 31536000, "history_ttl_seconds": 39312000,
+               "partition_date": "2026-11-18", "granularity": "daily"}     # run_task_input.partition_fields
 
 
 def _transaction(template, *, pushed=False, run=None, output='{"rows": 3}'):
@@ -1700,11 +1701,33 @@ def test_the_row_keeps_at_most_4000_characters_of_the_error(template):
     assert evaluate(value, input={"error": "short"}, context=_context({})) == "short"
 
 
+@pytest.mark.parametrize("date, current_date, date_iso, previous_date, month", [
+    ("2026-11-18", "2026-11-18", "2026-11-18", "2026-11-17", "11"),
+    ("2026-11-18T06", "2026-11-18T06", "2026-11-18", "2026-11-17", "11"),
+    ("2026-W47", "2026-W47", "2026-11-16", "2026-11-15", "11"),
+    ("2026-W01", "2026-W01", "2025-12-29", "2025-12-28", "12"),
+    ("2026-11", "2026-11", "2026-11-01", "2026-10-31", "11"),
+])
+def test_the_date_variables_of_any_partition_are_those_of_its_first_day(template, date, current_date, date_iso,
+                                                                         previous_date, month):
+    """current_date and partition_key stay the run's key; every day form is the partition's first day's, which the
+    input carries (run_task_input.partition_fields). $toMillis of a weekly or hourly key failed every task."""
+    from polyris.coordination import run_task_input
+    from sfn_jsonata import evaluate
+    run_input = {"date": date, "partition_arg": date, "variables": {}, **run_task_input.partition_fields(date)}
+    variables = evaluate(template["States"]["Prepare_Task_Input"]["Output"], input={},
+                         context=_context(run_input))["variables"]
+    assert (variables["current_date"], variables["partition_key"]) == (current_date, current_date)
+    assert (variables["date_iso"], variables["previous_date"], variables["month"]) == (date_iso, previous_date, month)
+    assert variables["date_compact"] == date_iso.replace("-", "")
+
+
 @pytest.mark.parametrize("backfill_id, expected", [("bf-123", True), ("", False), (None, False)])
 def test_is_backfill_is_true_in_a_run_of_a_backfill(template, backfill_id, expected):
     """A backfill's runs carry its backfill_id (Start_Run, the dispatcher); is_backfill was always false."""
     from sfn_jsonata import evaluate
-    run_input = {"date": "2026-11-18", "partition_arg": "2026-11-18", "variables": {}}
+    run_input = {"date": "2026-11-18", "partition_arg": "2026-11-18", "partition_date": "2026-11-18",
+                 "variables": {}}
     if backfill_id is not None:
         run_input["backfill_id"] = backfill_id
     out = evaluate(template["States"]["Prepare_Task_Input"]["Output"], input={}, context=_context(run_input))

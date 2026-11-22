@@ -60,6 +60,18 @@ def test_the_lifetimes_come_from_retention_so_the_template_keeps_no_copy():
     assert payload["timeline_ttl_seconds"] == retention.TIMELINE.total_seconds()
 
 
+@pytest.mark.parametrize("date, first_day, granularity", [
+    ("2026-11-18", "2026-11-18", "daily"), ("2026-11-18T06", "2026-11-18", "hourly"),
+    ("2026-W47", "2026-11-16", "weekly"), ("2026-W01", "2025-12-29", "weekly"), ("2026-11", "2026-11-01", "monthly"),
+])
+def test_the_first_day_and_granularity_of_the_runs_partition_come_from_python(date, first_day, granularity):
+    """A run of an hourly, weekly or monthly partition failed every task in the template's $toMillis (the review
+    of TR-5): Python decides the partition's first day once, and the template does no calendar arithmetic."""
+    payload = build(date=date, partition_arg=date)
+    assert (payload["partition_date"], payload["granularity"]) == (first_day, granularity)
+    assert rti.partition_fields(date) == {"partition_date": first_day, "granularity": granularity}
+
+
 def test_the_partition_arg_of_a_run_that_has_none_is_its_date():
     """1.2 gave each task PARTITION_ARG: the run's own, or its date (generators.JSONATA_PARTITION)."""
     assert build(partition_arg="")["partition_arg"] == "2026-11-18"

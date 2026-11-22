@@ -11,6 +11,7 @@ from datetime import date, timedelta
 import pytest
 from sfn_jsonata import NOW, evaluate, load_template, plain
 
+from polyris.coordination import run_task_input
 from polyris.coordination.records import asset_fact_item
 
 TTL_DAYS = 365
@@ -38,7 +39,8 @@ def _transaction(states, key="2026-11-12", *, outlets=None, cascade="auto"):
     run = {"execution_name": f"build-{key}-producer-run-x", "generation": 2, "task_name": "build",
            "pipeline_name": "producer", "date": key, "cascade": cascade,
            "outlets": outlets if outlets is not None else [{"name": "ns/orders", "uri": "s3://bucket/orders"}],
-           "output_ttl_seconds": 31536000, "history_ttl_seconds": 39312000}
+           "output_ttl_seconds": 31536000, "history_ttl_seconds": 39312000,
+           **run_task_input.partition_fields(key)}            # the partition's first day, which Python decides
     arguments = states["Record_Success"]["Arguments"]
     return evaluate(arguments, input={"task_output": "{}", "_task_pushed": False},
                     context={"Execution": {"Input": run, "Id": "arn:run-task", "Name": "run-task"}})["TransactItems"]

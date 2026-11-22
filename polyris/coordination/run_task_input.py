@@ -21,7 +21,8 @@ from decimal import Decimal
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from ..constants import TaskSpecKey
-from . import retention
+from ..partitions import detect_granularity
+from . import partition, retention
 from .task_spec import TaskSpec, canonical_json
 
 #: Step Functions' quota for an execution's input, as UTF-8 JSON.
@@ -37,6 +38,8 @@ class Key:
     PIPELINE_EXECUTION = "pipeline_execution"
     DATE = "date"
     PARTITION_ARG = "partition_arg"              # the run's partition key, which a task gets as PARTITION_ARG
+    PARTITION_DATE = "partition_date"            # the first day of the run's partition: the date variables' day
+    GRANULARITY = "granularity"                  # the run's partition's: hourly, daily, weekly or monthly
     BACKFILL_ID = "backfill_id"
     TASK_TYPE = "task_type"
     TASK_ARN = "task_arn"
@@ -64,6 +67,13 @@ class InputTooLarge(ValueError):
         self.size = size
 
 
+def partition_fields(date: str) -> Dict[str, str]:
+    """The first day and the granularity of the run's partition, which ``date`` keys at any granularity: the
+    date variables of every task are that day's, and its facts record both. Python decides them once, here, so
+    the template does no calendar arithmetic (the review of TR-5)."""
+    return {Key.PARTITION_DATE: partition.partition_date(date).isoformat(), Key.GRANULARITY: detect_granularity(date)}
+
+
 def build(*, execution_name: str, generation: Union[int, Decimal], task_name: str, pipeline_name: str,
           pipeline_execution: str, date: str, partition_arg: str, backfill_id: Optional[str],
           spec: TaskSpec, variables: Mapping[str, Any], cascade: str,
@@ -85,6 +95,7 @@ def build(*, execution_name: str, generation: Union[int, Decimal], task_name: st
         Key.PIPELINE_EXECUTION: pipeline_execution,
         Key.DATE: date,
         Key.PARTITION_ARG: partition_arg or date,
+        **partition_fields(date),
         Key.TASK_TYPE: fields[TaskSpecKey.TASK_TYPE],
         Key.TASK_CONFIG: fields.get(TaskSpecKey.TASK_CONFIG, {}),
         Key.OUTLETS: fields.get(TaskSpecKey.OUTLETS, []),

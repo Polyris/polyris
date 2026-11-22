@@ -411,6 +411,22 @@ def test_a_claim_whose_write_failed_twice_still_runs_the_task(world):
     assert world.running_tasks(run) == ["extract"]
 
 
+@defect("R-G1")
+@pytest.mark.parametrize("date, first_day", [("2026-11-18T06", "2026-11-18"), ("2026-W47", "2026-11-16"),
+                                             ("2026-11", "2026-11-01")], ids=["hourly", "weekly", "monthly"])
+def test_a_run_of_an_hourly_weekly_or_monthly_partition_runs_its_tasks(world, date, first_day):
+    """A backfill starts a run with its partition key as the date; the day forms of its variables are those of the
+    partition's first day, which the dispatcher passes (run_task_input.partition_fields)."""
+    run = world.start_run(world.deploy(chain("orders", "extract")), date)
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["extract"]
+    given = world.work_input(run, "extract")                 # a state machine gets the variables at the top
+    assert (given["current_date"], given["date_iso"]) == (date, first_day)
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    assert world.status(run, "extract") == "success"
+
+
 @defect("R-T2")
 def test_a_timed_out_attempt_goes_through_the_tasks_retries(world):
     retried = {"retries": 1, "retry_delay": timedelta(seconds=10), "execution_timeout": timedelta(minutes=30)}

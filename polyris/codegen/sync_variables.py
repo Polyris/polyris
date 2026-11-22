@@ -31,13 +31,14 @@ TEMPLATE_PATH = REPO_ROOT / "sam" / "sfn_templates" / "helpers" / "run_task" / "
 # inside uses only single quotes, so a double-quoted ``"[^"]*"`` span bounds it safely.
 _OUTPUT_RE = re.compile(r'"(\{%[^"]*\$dateVars[^"]*%\})"')
 
-# Fixed JSONata scaffolding around the generated object. ``$cd`` / ``$dt`` are the
-# logical-date locals the registry expressions reference, from run_task's input
+# Fixed JSONata scaffolding around the generated object. ``$cd`` is the run's date, a
+# partition key of any granularity; ``$pd`` the first day of that partition and ``$dt``
+# its midnight in milliseconds, which the day forms read. All come from run_task's input
 # (``run_task_input.Key``, read from the execution's context); the suffix merges the
 # computed vars with the run's own ``variables``, which win.
 _INPUT = "$states.context.Execution.Input"
-_PREFIX = ("{% ( $cd := " + _INPUT + ".date; "
-           "$dt := $toMillis($cd & 'T00:00:00Z'); $dateVars := { ")
+_PREFIX = ("{% ( $cd := " + _INPUT + ".date; $pd := " + _INPUT + ".partition_date; "
+           "$dt := $toMillis($pd & 'T00:00:00Z'); $dateVars := { ")
 _SUFFIX = (" }; $vars := $exists(" + _INPUT + ".variables) ? " + _INPUT + ".variables : {}; "
            "$merged := $merge([$dateVars, $vars]); "
            "$states.input ~> |$| {'variables': $merged} | ) %}")

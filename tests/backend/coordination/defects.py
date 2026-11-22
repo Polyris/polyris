@@ -48,6 +48,9 @@ DEFECTS = {
     "R-R1": "A write of run_task that fails with an error its Retry does not name is given up after seconds: the "
             "claim fails the task for good, and a success waits for a decision while its work would run again "
             "(the review of TR-5)",
+    "R-G1": "A run of an hourly, weekly or monthly partition (a backfill gives such a run its partition key as the "
+            "date) fails every task 10 to 15 minutes after its start: the template's $toMillis read the key as a "
+            "day (the review of TR-5)",
     "R-C1": "A success transaction that DynamoDB cancels (a conflict, a throttled item, a fact time already "
             "taken) loses the success; run_task must read its row and try again with a new time for each fact",
     "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "
