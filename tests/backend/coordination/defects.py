@@ -55,6 +55,12 @@ DEFECTS = {
             "success: the row, the date's output or a fact (invariants 5 and 12)",
     "R-C1": "A success transaction that DynamoDB cancels (a conflict, a throttled item, a fact time already "
             "taken) loses the success; run_task must read its row and try again with a new time for each fact",
+    "R-R2": "A Restart after its run's end is refused, or the engine stops it for an execution that ended with "
+            "its answer marked; it must rerun the task and its dependants, and answer the run nothing twice (D120)",
+    "R-R3": "A dependant that another failed upstream still blocks is reset by every pass of a Restart with "
+            "dependants: the reset and its block come round without end, and the request never clears (D121)",
+    "R-O3": "A Restart late in its run's year renews only the restarted task's upstreams' outputs: a reset dependant "
+            "that starts days later finds its other upstreams' outputs expired (D121)",
     "B-Q1": "A wait for facts that reaches its limit leaves its task waiting and the run RUNNING (1.2: the "
             "failure handler read a field its input no longer carried, a Catch hid the expression error, and the "
             "answer was skipped; F16, CR-7). The task must fail once, with the cause; World._expression_failures "

@@ -24,6 +24,8 @@ REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
 TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
 EXECUTIONS_ROUTE = "sam/lambdas/console_api/routes/executions.py"
 RUN_TASK = "sam/sfn_templates/helpers/run_task/sfn.tpl.json"
+ACTIONS = "polyris/coordination/actions.py"
+DISPATCH = "polyris/coordination/dispatch.py"
 
 
 class Edit(NamedTuple):
@@ -362,4 +364,22 @@ PROBES: Tuple[Probe, ...] = (
                         '        return _final(row, "fail_wait", now, cause=cause, warning=f"{row.task_id}: {cause}")\n',
                         "        return Judgment(row.task_id, due=row.due)\n"),),
           f"{ROWS}::test_a_waiting_dependant_of_a_missing_upstream_row_fails_with_the_cause"),
+    # A Restart with dependants resets only what was decided after its request: the dependant the failure decided
+    # stays upstream_failed, and the restart of the dependants is lost.
+    Probe("R-S4", (Edit(ACTIONS, "    return row.times.status_since is None or row.times.status_since < at\n",
+                        "    return row.times.status_since is not None and row.times.status_since > at\n"),),
+          f"{ROWS}::test_a_restart_with_dependants_inside_a_passs_read_reruns_the_dependant"),
+    # The engine judges an answered run's execution: a Restart after the run's end is stopped with the run (D120).
+    Probe("R-R2", (Edit(DISPATCH, "if run.stop is not None or run.answered or finished or run.started_at is None:",
+                        "if run.stop is not None or finished or run.started_at is None:"),),
+          f"{ROWS}::test_a_restart_after_the_runs_end_reruns_the_task_and_its_dependants"),
+    # A pass that resets nothing leaves the request: it never clears. (Resetting decisions made since the request
+    # too, the scenario's other way to fail, comes round in every pass and costs the harness 10,000 rounds.)
+    Probe("R-R3", (Edit(DISPATCHER, "        if not names:\n            self._clear(state, run_row.RESET_DEPENDANTS)\n",
+                        "        if not names:\n"),),
+          f"{ROWS}::test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_clears"),
+    # The renewal leaves the outputs alone, as when only the Restart's own upstreams were renewed.
+    Probe("R-O3", (Edit(ACTIONS, "                        table=table) for name in sorted(items)]",
+                        "                        table=table) for name in sorted(items) if False]"),),
+          f"{ROWS}::test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_restart"),
 )

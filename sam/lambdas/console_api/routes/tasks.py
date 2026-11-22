@@ -11,23 +11,21 @@ Handles task operations:
 - get_task_events: Get task timeline events
 """
 import json
-import os
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
-from config import sfn, ASSET_EVENT_TTL_DAYS, ASSET_EVENTS_TABLE, TABLE_NAME
-from polyris.coordination import actions, run_input, run_row
+from config import sfn, ASSET_EVENT_TTL_DAYS
+from polyris.coordination import actions, run_input, run_row, task_row
 from polyris.coordination.records import cascade_of, warning_item
 from polyris.coordination.wake import DEAD_TOKEN_CODES
 from dal import asset_events_repo, executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing
 from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
-from constants import Limits, TASK_SETTLED_STATUSES, TASK_TERMINAL_STATUSES
+from constants import Limits, TASK_SETTLED_STATUSES
 from constants_generated import ManualResolution
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
 from response import cors_response, safe_parse_body
@@ -36,7 +34,7 @@ from auth import operator_display
 from utils import (
     should_skip_token_row,
     is_execution_name, safe_int, safe_param_int,
-    record_manual_decision, resolve_pagerduty, retrieve_result, resolve_max_retries
+    resolve_pagerduty, retrieve_result, resolve_max_retries
 )
 from task_actions import (
     record_facts_for_manual_success
@@ -747,58 +745,73 @@ def apply_task_action(action: str, item: Dict, execution_name: str, *, reason: s
     """An operator's Skip, Fail, Mark Successful or Stop of a task (ADR #137 §3).
 
     One transaction that ``coordination.actions`` builds from this function's reads: the row, its run row, the
-    date's ``output#``, and for Mark Successful the task's outlets. A transaction a row's move cancelled (a pass,
-    run_task, a push) is built again from new reads while the action still applies. Then, best effort, the
-    timeline events, the stop of the task's run_task, and a ``manual`` warning when real output kept the marker
-    out. The dispatcher sees the move through the tasks table's stream: nothing here starts, answers or notifies.
+    date's ``output#``, and for Mark Successful the task's outlets. Then, best effort, the timeline events, the
+    stop of the task's run_task, and a ``manual`` warning when real output kept the marker out. The dispatcher
+    sees the move through the tasks table's stream: nothing here starts, answers or notifies.
     """
     pipeline = str(item.get('pipeline_name', ''))
     task_name = str(item.get('task_name', ''))
     run_execution = str(item.get('pipeline_execution', ''))
-    write = None
-    for _ in range(ACTION_ATTEMPTS):
-        run_item = executions_repo.get(run_row.key(run_execution), consistent=True)
-        if run_item is None:
-            return cors_response(409, {'error': f'{execution_name}: a task of a run from before 1.3 takes no action; '
-                                                'run its pipeline again after the redeploy',
-                                       'execution_name': execution_name})
-        date = str(run_item.get(run_row.RUN_DATE) or item.get('date', ''))
+
+    def build(task: Dict, run_item: Dict) -> 'actions.ActionWrite':
+        date = str(run_item.get(run_row.RUN_DATE) or task.get('date', ''))
         outlets: List[Dict] = []
         if action == ManualResolution.MARK_SUCCESS:
             node, problem = _read_task_spec(pipeline, task_name)
             if problem:
                 # Its facts are part of the success (invariant 12): without its outlets it cannot be recorded.
-                return cors_response(409, {'error': f"{execution_name}: its outlets cannot be read ({problem}); "
-                                                    "Mark Successful would record none of its facts",
-                                           'execution_name': execution_name})
+                raise actions.ActionRefused(f"{execution_name}: its outlets cannot be read ({problem}); "
+                                            "Mark Successful would record none of its facts")
             outlets = list((node or {}).get('outlets') or [])
         stored = executions_repo.get(run_row.input_key(run_execution))
-        try:
-            write = actions.task_action(
-                action=action, task=item, run=run_item,
-                output=executions_repo.get(f'output#{pipeline}#{task_name}#{date}', consistent=True),
-                outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',
-                operator=operator, reason=reason, now=datetime.now(timezone.utc), tokens_table=TABLE_NAME,
-                asset_events_table=ASSET_EVENTS_TABLE, fact_ttl_days=ASSET_EVENT_TTL_DAYS)
-        except actions.ActionRefused as exc:
-            return cors_response(409, {'error': str(exc), 'execution_name': execution_name,
-                                       'current_status': item.get('status')})
-        try:
-            executions_repo.transact_write(write.items)
-            break
-        except executions_repo.transaction_canceled_exception as exc:
-            log.info(action, "The transaction was cancelled: built again from new reads", execution_name=execution_name,
-                     reasons=[str(r.get('Code', '')) for r in exc.response.get('CancellationReasons', [])])
-            item = executions_repo.get(execution_name, consistent=True)
-            if item is None:
-                return cors_response(404, {'error': f'Task not found: {execution_name}'})
-    else:
-        return cors_response(409, {'error': f'{execution_name} kept changing under the action; try again',
-                                   'execution_name': execution_name})
-    _after_action(action, item, write, pipeline=pipeline, task_name=task_name, date=date, operator=operator)
+        return actions.task_action(
+            action=action, task=task, run=run_item,
+            output=executions_repo.get(f'output#{pipeline}#{task_name}#{date}', consistent=True),
+            outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',
+            operator=operator, reason=reason, now=datetime.now(timezone.utc), tokens_table=executions_repo.table.name,
+            asset_events_table=asset_events_repo.table.name, fact_ttl_days=ASSET_EVENT_TTL_DAYS)
+
+    write, item, refusal = _transact(action, execution_name, item, build)
+    if refusal is not None:
+        return refusal
+    _after_action(action, item, write, pipeline=pipeline, task_name=task_name, date=str(item.get('date', '')),
+                  operator=operator)
     log.info(action, "Done", execution_name=execution_name)
     return cors_response(200, {'message': success_message.format(execution_name=execution_name),
                                'execution_name': execution_name})
+
+
+def _transact(action: str, execution_name: str, item: Dict,
+              build: Callable[[Dict, Dict], Any]) -> Tuple[Any, Dict, Optional[Dict]]:
+    """Read the run row, build the action's transaction from the reads and send it (ADR #137 §3). A transaction a
+    row's move cancelled (a pass, run_task, a push) is built again from new reads while the action still applies.
+
+    Returns what ``build`` made and the row as last read, or the answer that refuses the action.
+    """
+    run_execution = str(item.get('pipeline_execution', ''))
+    for _ in range(ACTION_ATTEMPTS):
+        run_item = executions_repo.get(run_row.key(run_execution), consistent=True)
+        if run_item is None:
+            return None, item, cors_response(409, {
+                'error': f'{execution_name}: a task of a run from before 1.3 takes no action; '
+                         'run its pipeline again after the redeploy', 'execution_name': execution_name})
+        try:
+            write = build(item, run_item)
+        except actions.ActionRefused as exc:
+            return None, item, cors_response(409, {'error': str(exc), 'execution_name': execution_name,
+                                                   'current_status': item.get('status')})
+        try:
+            executions_repo.transact_write(write.items)
+            return write, item, None
+        except executions_repo.transaction_canceled_exception as exc:
+            log.info(action, "The transaction was cancelled: built again from new reads", execution_name=execution_name,
+                     reasons=[str(r.get('Code', '')) for r in exc.response.get('CancellationReasons', [])])
+            fresh = executions_repo.get(execution_name, consistent=True)
+            if fresh is None:
+                return None, item, cors_response(404, {'error': f'Task not found: {execution_name}'})
+            item = fresh
+    return None, item, cors_response(409, {'error': f'{execution_name} kept changing under the action; try again',
+                                           'execution_name': execution_name})
 
 
 def _after_action(action: str, item: Dict, write: 'actions.ActionWrite', *, pipeline: str, task_name: str,
@@ -809,7 +822,7 @@ def _after_action(action: str, item: Dict, write: 'actions.ActionWrite', *, pipe
             task_events_repo.put(event)
         except (ClientError, BotoCoreError) as e:
             log.error(action, "Could not write the timeline event", event=event.get('event_type'), error=str(e))
-    arn = item.get('run_task_helper_arn')
+    arn = item.get(task_row.RUN_TASK_ARN)
     if write.run_task_to_stop and arn:
         try:
             sfn.stop_execution(executionArn=arn, error='Console', cause=f'stopped by {operator}')
@@ -900,105 +913,40 @@ def stop_task(task_name: str, event: Dict) -> Dict:
 
 
 def restart_task(task_name: str, event: Dict) -> Dict:
-    """Restart a task by calling the restart_task_helper Step Function.
+    """Restart a task, and with ``with_dependants`` in the body the dependants a failure or a stop decided
+    (ADR #137 §3).
 
-    Supports both execution_name (full) and task_name (requires date lookup).
+    One transaction that ``coordination.actions.restart`` builds: the row back to ``waiting`` and its run row's
+    request, which the dispatcher carries out in passes (the renewal of the run's rows, the reset of the
+    dependants). Supports both execution_name (full) and task_name (requires date lookup).
     """
     body, err = safe_parse_body(event)
     if err:
         return err
     date = body.get('date', datetime.now(timezone.utc).strftime('%Y-%m-%d'))
-    pipeline_execution = body.get('pipeline_execution', '')
-
-    # Resolve task using unified resolver (handles both formats with pagination)
-    item, execution_name = resolve_task_item(task_name, date, pipeline_execution)
-
+    item, execution_name = resolve_task_item(task_name, date, body.get('pipeline_execution', ''))
     if not item:
         return cors_response(404, {'error': f'Task not found: {task_name} on {date}'})
+    with_dependants = body.get('with_dependants') is True
+    operator = operator_display(event)
+    reason = body.get('reason') or 'Task restarted via UI'
 
-    current_status = item.get('status', '')
+    def build(task: Dict, run_item: Dict) -> 'actions.RestartWrite':
+        return actions.restart(task=task, run=run_item, with_dependants=with_dependants, operator=operator,
+                               reason=reason, now=datetime.now(timezone.utc), tokens_table=executions_repo.table.name)
 
-    # Restartable from any terminal status, 'stopped', OR 'waiting_decision' —
-    # restart_task_helper's Stop_Old_Wrapper hard-kills whatever's still
-    # running via states:StopExecution (not send_task_success/failure), so it
-    # never triggers notify_dependents_via_sfn the way Stop does — going
-    # straight to Restart from waiting_decision avoids Stop's unconditional,
-    # immediate downstream notification entirely (see docs/reference/
-    # SPIKE_TASK_ACTIONS_DATA_LIFECYCLE.md §8/§9 for the full reasoning).
-    # Safe to include here specifically because both §9 prerequisites are in
-    # place: (1) Stop_Old_Wrapper reads the correct field name (helper_arn
-    # was a bug — the wrapper actually writes run_task_helper_arn — so it can
-    # now actually find and kill the still-live wrapper, not silently no-op),
-    # and (2) even if that kill fails for any reason, every status-writing
-    # state in the wrapper now requires its own attempt to still match the
-    # DB's current attempt — so a surviving ghost's write is rejected by
-    # DynamoDB itself, and can never corrupt what the new attempt has
-    # written, regardless of whether the kill succeeded.
-    #
-    # Restartable from any terminal status, OR from 'stopped' — stop_task's own
-    # success message tells the user to "Use Restart to resume", so a stopped
-    # task must be accepted here even though 'stopped' is deliberately NOT in
-    # TASK_TERMINAL_STATUSES (stop_task treats it as non-terminal/resumable,
-    # not as "done"). This is a restart_task-local extension, not a change to
-    # the shared is_terminal_status/TASK_TERMINAL_STATUSES — stop_task's own
-    # "already terminal" check and other actions still use the unmodified set.
-    RESTARTABLE_STATUSES = TASK_TERMINAL_STATUSES | {'stopped', 'waiting_decision'}
-    if current_status not in RESTARTABLE_STATUSES:
-        return cors_response(
-            409,
-            {
-                'error': f'Task not in restartable state: {current_status}. '
-                         f'Only completed/failed/skipped/aborted/stopped/waiting_decision tasks can be restarted.',
-                'execution_name': execution_name,
-                'current_status': current_status,
-            },
-        )
+    write, item, refusal = _transact('restart', execution_name, item, build)
+    if refusal is not None:
+        return refusal
+    for timeline_event in write.events:
+        try:
+            task_events_repo.put(timeline_event)
+        except (ClientError, BotoCoreError) as e:
+            log.error('restart', "Could not write the timeline event", execution_name=execution_name, error=str(e))
+    log.info('restart', "Done", execution_name=execution_name, with_dependants=with_dependants)
+    message = f'Task {execution_name} restarted' + (' with its dependants' if with_dependants else '')
+    return cors_response(200, {'message': message, 'execution_name': execution_name})
 
-    # RESTART_HELPER_ARN is set automatically by the SAM template (see
-    # template.yaml — !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:...).
-    # Its absence means a broken/partial deploy; the previous fallback path was
-    # dead code that couldn't do the two-level stop the helper does and would
-    # leave ghost wrappers alive on waiting_decision restarts. Fail fast with a
-    # clear error instead.
-    restart_helper_arn = os.environ.get('RESTART_HELPER_ARN')
-    if not restart_helper_arn:
-        log.error(
-            "restart_task",
-            "RESTART_HELPER_ARN not configured — misconfigured deploy",
-            execution_name=execution_name,
-        )
-        return cors_response(500, {'error': 'RESTART_HELPER_ARN not configured — check deploy'})
-
-    # Record manual decision for timeline
-    record_manual_decision(execution_name, 'restart', 'Task restarted via UI', item)
-
-    # task_config/outlets are deploy-time DAG properties, never stored on
-    # the per-execution record — look them up from the task's spec so the
-    # restarted attempt doesn't silently lose retries/worker-type/etc or
-    # outlets (previously always reconstructed as empty).
-    node = _lookup_task_spec(item.get('pipeline_name', ''), item.get('task_name', ''))
-    task_config = (node or {}).get('task_config', {})
-    outlets = (node or {}).get('outlets', [])
-
-    # Call restart_task_helper Step Function
-    try:
-        exec_id = uuid.uuid4().hex[:8]
-        restart_name = f"restart-{execution_name[:60]}-{exec_id}"
-        result = sfn.start_execution(
-            stateMachineArn=restart_helper_arn,
-            name=restart_name,
-            input=json.dumps({
-                'execution_name': execution_name,
-                'task_config': task_config,
-                'outlets': outlets,
-            }),
-        )
-        return cors_response(
-            200, {'message': f'Restart initiated for {execution_name}', 'execution_arn': result['executionArn']}
-        )
-    except Exception as e:
-        log.error("unknown", "Unexpected error", error=str(e))
-        return cors_response(500, {'error': f'Failed to start restart: {str(e)}'})
 
 def register(router) -> None:
     """Register the free task read routes. See ADR #97."""

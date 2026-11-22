@@ -106,7 +106,6 @@ def test_a_denied_start_warns_at_once_and_counts_toward_no_limit(world):
     assert len(warnings_of(world, WarningKind.COORDINATION)) == 1
 
 
-@needs_binding("rows-ops")
 @defect("R-S4")
 def test_a_restart_with_dependants_inside_a_passs_read_reruns_the_dependant(world):
     orders = pipeline("orders", [("extract", {}), ("load", {}), ("audit", {})], [("extract", "load")])
@@ -221,7 +220,6 @@ def test_a_succeeded_upstream_without_its_output_keeps_its_dependant_from_runnin
     assert world.status(run, "load") in ("waiting_decision", "failed")
 
 
-@needs_binding("rows-ops")
 @defect("R-O1")
 def test_a_restart_of_a_run_that_started_a_year_ago_is_refused(world):
     run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
@@ -524,3 +522,59 @@ def test_a_tasks_timeline_shows_the_decision_then_its_run_task(world):
     events = world.timeline(run, "extract")
     assert [e["event_type"] for e in events] == ["DEPS_READY", "TASK_STARTED", "TASK_FINISHED"]
     assert {e["task_run_id"] for e in events} == {world.row(run, "extract")["task_run_id"]}
+
+
+@defect("R-R2")
+def test_a_restart_after_the_runs_end_reruns_the_task_and_its_dependants(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract", status="failed")
+    world.fail_task(run, "extract")
+    world.deliver_task_hints()
+    assert world.status(run, "load") == "upstream_failed"     # every row final: the run is answered, it ended
+    world.restart_with_dependants(run, "extract")
+    world.deliver_task_hints()
+    world.sweep()                                  # its check sees the ended execution and the answer marked
+    assert world.running_tasks(run) == ["extract"] and world.status(run, "load") == "waiting"
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    world.complete(run, "load")
+    world.deliver_task_hints()
+    assert world.status(run, "load") == "success"
+
+
+@defect("R-R3")
+def test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_clears(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "mid", "load")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    world.complete(run, "mid", status="failed")
+    world.fail_task(run, "mid")
+    world.deliver_task_hints()
+    world.restart_with_dependants(run, "extract")  # extract reruns; mid's own failure stays
+    world.deliver_task_hints()                     # load is reset, blocked again by mid at once, and left there
+    assert (world.status(run, "mid"), world.status(run, "load")) == ("failed", "upstream_failed")
+    assert world.running_tasks(run) == ["extract"]
+    assert not any(r.request_pending for r in world.rows_view().runs())
+
+
+@defect("R-O3")
+def test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_restart(world):
+    orders = pipeline("orders", [("extract", {}), ("lookup", {}), ("load", {})],
+                      [("extract", "load"), ("lookup", "load")])
+    run = world.start_run(world.deploy(orders), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "lookup", output={"rows": 3})
+    world.complete(run, "extract", status="failed")
+    world.fail_task(run, "extract")
+    world.deliver_task_hints()
+    world.clock.advance(days=363)                  # within the year less a day: the Restart is accepted
+    world.restart_with_dependants(run, "extract")
+    world.deliver_task_hints()
+    world.clock.advance(days=3)                    # lookup's output, a year from its write, would be gone
+    world.expire_ttl()
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["load"]
+    assert world.work_input(run, "load")["upstream"]["lookup"]["output"] == {"rows": 3}

@@ -117,14 +117,16 @@ class StackView:
                 paused=bool(pauses) and len(pauses[-1]) == 1,
                 due_at=_moment(item.get("attention_at")) if item.get("attention") else None,
                 expires_at=_moment(item.get("ttl")),
-                execution_ended=execution is not None and execution.status != "RUNNING"))
+                execution_ended=execution is not None and execution.status != "RUNNING",
+                execution_ended_at=_moment(execution.ended) if execution is not None and execution.ended else None))
         return found
 
     def tasks(self, run: str) -> List[Task]:
         outputs = {str(i["execution_name"]) for i in self.items if str(i["execution_name"]).startswith("output#")}
         return [Task(key=str(i["execution_name"]), run=run, status=str(i["status"]), generation=int(i["generation"]),
                      token_fields=tuple(f for f in TOKEN_FIELDS if f in i), expires_at=_moment(i.get("ttl")),
-                     output_recorded=f"output#{i.get('pipeline_name')}#{i.get('task_name')}#{i.get('date')}" in outputs)
+                     output_recorded=f"output#{i.get('pipeline_name')}#{i.get('task_name')}#{i.get('date')}" in outputs,
+                     waiting_since=_moment(i.get("waiting_since")))
                 for i in self.items
                 if i.get("pipeline_execution") == run and "generation" in i and "status" in i
                 and not str(i["execution_name"]).startswith("_")]

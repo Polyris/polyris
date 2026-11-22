@@ -108,6 +108,7 @@ class Bindings:
         import dal
         import main
         import routes.executions as executions
+        import routes.tasks as tasks
         import task_actions
 
         tables = self.stack.tables
@@ -120,6 +121,7 @@ class Bindings:
             self._set(repo, "_table_name", tables[logical])
         self._set(executions, "RECONCILE_FUNCTION_ARN", self.stack.function_arn("ReconcileFunction"))
         self._set(executions, "datetime", _clocked_datetime(self.clock))     # pause and resume times
+        self._set(tasks, "datetime", _clocked_datetime(self.clock))          # an action's times and due time
         self._set(task_actions, "NOTIFY_DEPENDENTS_HELPER_ARN", self.stack.machine_arn("NotifyDependentsSfn"))
         self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))
         return main

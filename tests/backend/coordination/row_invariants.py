@@ -40,6 +40,7 @@ class Task:
     token_fields: Tuple[str, ...] = ()        # which of TOKEN_FIELDS the row carries
     expires_at: Optional[datetime] = None     # the row's TTL
     output_recorded: bool = False             # its output# row exists
+    waiting_since: Optional[datetime] = None  # when its wait began: Start_Run, or a Restart or a reset
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class Run:
     due_at: Optional[datetime] = None         # the run row's due time in attention-index
     expires_at: Optional[datetime] = None
     execution_ended: bool = False             # its pipeline execution is no longer RUNNING
+    execution_ended_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,8 @@ def invariant_8(view: RowsView) -> List[str]:
 
     When every row is final, the current token is answered and the run row records it, or the run row
     stays due so that a later check answers it. No token is answered, and no run's execution ends, while
-    a row is not final, outside the stop paths (§4).
+    a row is not final, outside the stop paths (§4). A row whose wait began after the execution ended was
+    restarted after the run's end (§3, D120): the execution did not end while it waited.
     """
     found = []
     for run in view.runs():
@@ -253,8 +256,11 @@ def invariant_8(view: RowsView) -> List[str]:
         unfinished = sorted(t.key for t in tasks if t.status not in FINAL)
         if not unfinished and run.token and run.answered != run.token and not run.execution_ended and run.due_at is None:
             found.append(f"invariant 8: every row of {run.id} is final, its token is not answered, and nothing will check it")
-        if unfinished and run.execution_ended and not run.stop_mark:
-            found.append(f"invariant 8: the execution of {run.id} ended while {', '.join(unfinished)} were not final")
+        at_the_end = [t.key for t in tasks if t.status not in FINAL and not (
+            run.execution_ended_at and t.waiting_since and t.waiting_since > run.execution_ended_at)]
+        if at_the_end and run.execution_ended and not run.stop_mark:
+            found.append(f"invariant 8: the execution of {run.id} ended while {', '.join(sorted(at_the_end))} were not "
+                         "final")
     for answer in view.answers():
         if answer.unfinished and not answer.stop_mark:
             found.append(f"invariant 8: the token of {answer.run} was answered while "

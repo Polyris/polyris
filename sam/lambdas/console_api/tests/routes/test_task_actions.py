@@ -6,6 +6,7 @@ coordination.actions builds; Step Functions is the only thing replaced (for the 
 
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import boto3
@@ -13,6 +14,7 @@ import pytest
 from moto import mock_aws
 
 from polyris.coordination import attention, run_input, run_row, task_row, task_spec
+from polyris.coordination.times import format_utc
 
 _KIT_PATH = Path(__file__).resolve().parents[3] / "coordination" / "tests" / "coordination_testkit.py"
 _spec = importlib.util.spec_from_file_location("coordination_testkit", _KIT_PATH)
@@ -43,8 +45,7 @@ def world(mocker):
         tokens, facts = kit.TABLES["TOKENS_TABLE"][1], kit.TABLES["ASSET_EVENTS_TABLE"][1]
         mocker.patch.object(executions_repo, "_table_name", tokens)
         mocker.patch.object(task_events_repo, "_table_name", kit.TABLES["TASK_EVENTS_TABLE"][1])
-        mocker.patch.object(tasks, "TABLE_NAME", tokens)
-        mocker.patch.object(tasks, "ASSET_EVENTS_TABLE", facts)
+        mocker.patch.object(tasks.asset_events_repo, "_table_name", facts)
         mocker.patch.object(tasks.pipelines_repo, "_table_name", kit.TABLES["PIPELINES_TABLE"][1])
         sfn = mocker.patch.object(tasks, "sfn")                    # the boundary: Step Functions
         mocker.patch.object(tasks, "resolve_pagerduty")            # alerting, unchanged (D58)
@@ -55,7 +56,8 @@ def world(mocker):
                                  "facts": resource.Table(facts), "events": resource.Table(kit.TABLES["TASK_EVENTS_TABLE"][1])})
 
 
-def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, **fields):
+def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, started: timedelta = timedelta(hours=1),
+         **fields):
     world.table.put_item(Item={
         task_row.TABLE_KEY: KEY, task_row.TASK_NAME: "load", task_row.STATUS: status, task_row.GENERATION: generation,
         "pipeline_name": "orders", "pipeline_execution": RUN, "date": "2026-11-21",
@@ -64,7 +66,8 @@ def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, *
         world.table.put_item(Item={run_row.TABLE_KEY: run_row.key(RUN), run_row.EXECUTION: RUN,
                                    run_row.STATUS: run_row.ACTIVE, run_row.RUN_VERSION: 4,
                                    run_row.RUN_START: "2026-11-21T06:00:00.000Z", run_row.RUN_DATE: "2026-11-21",
-                                   run_row.PIPELINE: "orders"})
+                                   run_row.PIPELINE: "orders",
+                                   run_row.STARTED_AT: format_utc(datetime.now(timezone.utc) - started)})
         world.table.put_item(Item=run_input.to_item(run_input.RunInput(partition_arg="2026-11-21"),
                                                     pipeline_execution=RUN, ttl=1))
 
@@ -166,3 +169,50 @@ def test_a_row_that_finished_under_the_action_is_refused_with_nothing_after_it(w
     assert row(world)["status"] == "success" and not world.events.scan()["Items"]
     world.sfn.stop_execution.assert_not_called()
     assert "Item" not in world.table.get_item(Key={task_row.TABLE_KEY: OUTPUT})
+
+
+# ── Restart (ADR #137 §3) ──────────────────────────────────────────────────
+
+def run_item(world):
+    return world.table.get_item(Key={run_row.TABLE_KEY: run_row.key(RUN)}, ConsistentRead=True)["Item"]
+
+
+@pytest.mark.parametrize("status", ["failed", "success", "skipped", "upstream_failed", "stopped", "waiting_decision"])
+def test_a_restart_puts_a_final_or_undecided_row_back_to_waiting_and_requests_the_renewal(world, status):
+    """A stopped task too: Stop's own message tells the operator to restart it."""
+    seed(world, status, error="boom", run_task_helper_arn=ARN, attempt=1)
+    response = act(world, "restart_task")
+    assert response["statusCode"] == 200, response
+    written = row(world)
+    assert (written["status"], written["generation"], written["attempt"]) == ("waiting", 3, 1)
+    assert "error" not in written and task_row.RUN_TASK_ARN not in written
+    assert set(run_item(world)[run_row.REQUESTS]) == {run_row.RENEW_TTL}
+    assert [e["decision"] for e in world.events.scan()["Items"]] == ["restart"]
+    world.sfn.start_execution.assert_not_called()         # the dispatcher starts it, from the stream
+
+
+@pytest.mark.parametrize("status", ["waiting", "deps_ready", "running"])
+def test_a_row_that_has_not_finished_takes_no_restart(world, status):
+    seed(world, status)
+    response = act(world, "restart_task")
+    assert response["statusCode"] == 409 and "takes no restart" in json.loads(response["body"])["error"]
+
+
+def test_a_restart_with_dependants_requests_their_reset(world):
+    seed(world, "failed")
+    response = act(world, "restart_task", with_dependants=True)
+    assert response["statusCode"] == 200 and "with its dependants" in json.loads(response["body"])["message"]
+    assert run_item(world)[run_row.REQUESTS][run_row.RESET_DEPENDANTS]["task"] == "load"
+
+
+def test_a_restart_of_a_run_that_started_a_year_ago_or_before_1_3_is_refused(world):
+    seed(world, "failed", started=timedelta(days=364, minutes=1))
+    response = act(world, "restart_task")
+    assert response["statusCode"] == 409 and "more than a year ago" in json.loads(response["body"])["error"]
+    world.table.delete_item(Key={run_row.TABLE_KEY: run_row.key(RUN)})
+    assert "before 1.3" in json.loads(act(world, "restart_task")["body"])["error"]
+
+
+def test_a_restart_of_a_task_that_does_not_exist_is_404(world):
+    response = world.tasks.restart_task("nope", {"body": json.dumps({"date": "2026-11-21"})})
+    assert response["statusCode"] == 404

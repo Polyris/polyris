@@ -161,6 +161,8 @@ class Execution:
     input: Any
     started: str
     status: str = "RUNNING"
+    #: When it last ended (StopDate); a redrive clears it.
+    ended: Any = None
     output: Any = None
     error: Optional[str] = None
     cause: Optional[str] = None
@@ -294,6 +296,7 @@ class Runtime:
             raise client_error("ExecutionNotRedrivable", "RedriveExecution",
                                f"Execution is {execution.status} and cannot be redriven")
         execution.status, execution.output, execution.error, execution.cause = "RUNNING", None, None, None
+        execution.ended = None
         execution.redrive_count += 1
         for frame in execution.frontier:
             frame.done, frame.waiting, frame.resume, frame.attempts, frame.entered = False, None, None, {}, ""
@@ -380,6 +383,7 @@ class Runtime:
     def _finish(self, execution: Execution, status: str, *, output: Any = None,
                 error: Optional[str] = None, cause: Optional[str] = None) -> None:
         execution.status, execution.output, execution.error, execution.cause = status, output, error, cause
+        execution.ended = self.now()
         for token in [t for t, f in self.tokens.items() if f.execution is execution]:
             del self.tokens[token]
         for job_id in [j for j, job in self.jobs.items() if job.frame.execution is execution]:

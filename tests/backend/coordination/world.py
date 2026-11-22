@@ -620,7 +620,8 @@ class World:
 
     def restart_with_dependants(self, run: Run, task: str) -> None:
         """The console's Restart of `task` and of its dependants that failed or were skipped by a rule."""
-        raise NeedsBinding("rows-ops", "Restart with dependants")
+        self._call_console("/api/task-restart", query={"name": task},
+                           body={"date": run.date, "pipeline_execution": run.name, "with_dependants": True})
 
     def upgrade_platform(self) -> None:
         """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are."""

@@ -317,8 +317,9 @@ def test_every_state_machine_write_of_a_task_row_is_fenced_or_raises(writer):
 #: by (file, function), with the role of each write.
 RAISE = "ends an ownership: raises the generation"
 CODE_WRITERS = {
-    ("console_api/routes/tasks.py", "apply_task_action"):
-        "an operator's action on a task: actions.task_action, whose row_write raises the generation as the table says",
+    ("console_api/routes/tasks.py", "_transact"):
+        "an operator's action on a task: actions.task_action and actions.restart, whose row_write raises the "
+        "generation as the table says",
     ("console_api/routes/executions.py", "_mark_pending_tasks_stopped"): RAISE,
     ("coordination/dispatcher.py", "_send_items"): "task rows and the run row's check: dispatch_writes.task_write",
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
