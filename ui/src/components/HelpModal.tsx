@@ -672,7 +672,7 @@ function ApiReferenceTab() {
                         example={`curl "${BASE}/api/pipeline-dag?name=acme-daily"`}
                         response={`{"name": "acme-daily", "nodes": [...], "edges": [{"from": "extract_listings", "to": "stage_listings"}]}`}
                     />
-                    <ApiEndpointDetail method="GET" path="/api/pipeline-executions?name=X&date=Y" desc="List SFN executions for date"
+                    <ApiEndpointDetail method="GET" path="/api/pipeline-executions?name=X&date=Y" desc="List a pipeline's runs for a date"
                         example={`curl "${BASE}/api/pipeline-executions?name=acme-daily&date=2026-02-17"`}
                     />
                     <ApiEndpointDetail method="GET" path="/api/pipeline-logs?name=X" desc="Get recent pipeline logs"
