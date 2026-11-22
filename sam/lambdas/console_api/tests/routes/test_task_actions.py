@@ -57,7 +57,7 @@ def world(mocker):
 
 
 def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, started: timedelta = timedelta(hours=1),
-         **fields):
+         cascade: str = "auto", **fields):
     world.table.put_item(Item={
         task_row.TABLE_KEY: KEY, task_row.TASK_NAME: "load", task_row.STATUS: status, task_row.GENERATION: generation,
         "pipeline_name": "orders", "pipeline_execution": RUN, "date": "2026-11-21",
@@ -68,7 +68,7 @@ def seed(world, status: str, *, generation: int = 2, run_row_too: bool = True, s
                                    run_row.RUN_START: "2026-11-21T06:00:00.000Z", run_row.RUN_DATE: "2026-11-21",
                                    run_row.PIPELINE: "orders",
                                    run_row.STARTED_AT: format_utc(datetime.now(timezone.utc) - started)})
-        world.table.put_item(Item=run_input.to_item(run_input.RunInput(partition_arg="2026-11-21"),
+        world.table.put_item(Item=run_input.to_item(run_input.RunInput(partition_arg="2026-11-21", cascade=cascade),
                                                     pipeline_execution=RUN, ttl=1))
 
 
@@ -102,6 +102,23 @@ def test_mark_successful_records_the_facts_of_the_tasks_outlets(world):
     [fact] = world.facts.scan()["Items"]
     assert (fact["asset_name"], fact["partition_key"], fact["source_task"]) == ("ns/orders", "2026-11-21", "load")
     assert sorted(e["event_type"] for e in world.events.scan()["Items"]) == ["MANUAL_DECISION", "TASK_FINISHED"]
+
+
+def test_mark_successful_records_its_facts_with_the_runs_cascade(world):
+    """A backfill with cascade='none' starts no consumers from a fact Mark Successful records (B-M3)."""
+    seed(world, "failed", cascade="none")
+    assert act(world, "mark_success")["statusCode"] == 200
+    [fact] = world.facts.scan()["Items"]
+    assert fact["cascade"] == "none"
+
+
+def test_mark_successful_whose_outlets_cannot_be_read_is_refused_with_nothing_recorded(world, mocker):
+    """Its facts belong to the success (invariant 12): no success without them."""
+    seed(world, "failed")
+    mocker.patch.object(world.tasks, "_read_task_spec", return_value=(None, "the task specs cannot be read"))
+    response = act(world, "mark_success")
+    assert response["statusCode"] == 409 and "outlets cannot be read" in json.loads(response["body"])["error"]
+    assert row(world)["status"] == "failed" and not world.facts.scan()["Items"]
 
 
 def test_a_stop_of_a_running_task_stops_its_run_task(world):

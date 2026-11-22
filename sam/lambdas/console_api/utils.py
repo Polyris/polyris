@@ -17,10 +17,9 @@ from typing import Dict, Any, List
 from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
 
 from config import (
-    sfn, s3, lambda_client,
+    s3, lambda_client,
     EXECUTION_NAME_PATTERN
 )
-from dal.task_events_repo import task_events_repo
 from constants import Limits
 from logger import log
 
@@ -172,76 +171,6 @@ def retrieve_result(result: Any) -> Any:
         log.error("retrieve_result", "Error retrieving result from S3", error=str(e))
         # Return the reference with error info
         return {**result, '_retrieval_error': str(e)}
-
-
-def record_manual_decision(execution_name: str, decision: str, reason: str = '', item: Dict = None) -> None:
-    """
-    Record MANUAL_DECISION event in task_events table for timeline/debugging.
-    
-    If the task had an error (from failed execution), also records a TASK_FINISHED
-    event so the error is preserved in history even after skip/mark_success.
-    
-    Uses deterministic sort keys (execution_name+decision hash) so retries
-    overwrite the same item instead of creating duplicates.
-    
-    Args:
-        execution_name: Task execution name
-        decision: Action taken (skip, fail, stop, restart)
-        reason: Optional reason for the decision
-        item: Task item from DynamoDB (for task_run_id, parent_execution_id, error)
-    """
-    import hashlib
-    
-    try:
-        # Extract IDs from item if available
-        task_run_id = item.get('task_run_id', execution_name) if item else execution_name
-        parent_execution_id = item.get('parent_execution_id', item.get('pipeline_execution', '')) if item else ''
-        task_name = item.get('task_name', execution_name.split('-')[0]) if item else execution_name.split('-')[0]
-        
-        # TTL = 30 days
-        ttl = int((datetime.now(timezone.utc).timestamp())) + (30 * 24 * 60 * 60)
-        
-        # Deterministic suffix from execution_name + decision (retry-safe)
-        det_suffix = hashlib.md5(f"{execution_name}-{decision}".encode()).hexdigest()[:6]
-        
-        # If task had an error, emit TASK_FINISHED (failed) event first
-        # This preserves the error in timeline even when task is skipped/marked success
-        error_str = item.get('error', '') if item else ''
-        if error_str:
-            error_event_time = f"{datetime.now(timezone.utc).isoformat()}#25#{det_suffix}"
-            
-            # Truncate error for summary
-            error_summary = error_str[:500] + '...' if len(error_str) > 500 else error_str
-            
-            task_events_repo.put({
-                'task_run_id': task_run_id,
-                'event_time': error_event_time,
-                'event_type': 'TASK_FINISHED',
-                'execution_name': execution_name,
-                'parent_execution_id': parent_execution_id,
-                'task_name': task_name,
-                'status': 'failed',
-                'error_summary': error_summary,
-                'ttl': ttl
-            })
-        
-        # Record MANUAL_DECISION event
-        event_time = f"{datetime.now(timezone.utc).isoformat()}#30#{det_suffix}"
-        
-        task_events_repo.put({
-            'task_run_id': task_run_id,
-            'event_time': event_time,
-            'event_type': 'MANUAL_DECISION',
-            'execution_name': execution_name,
-            'parent_execution_id': parent_execution_id,
-            'task_name': task_name,
-            'decision': decision,
-            'reason': reason or f'Manual {decision} via UI',
-            'ttl': ttl
-        })
-    except Exception as e:
-        log.error("utils", "Error recording MANUAL_DECISION", error=str(e))
-        # Don't fail the action if event recording fails
 
 
 def compute_pipeline_execution_short(pipeline_execution: str) -> str:
@@ -431,38 +360,6 @@ def query_all(table, max_items: int = None, **query_kwargs) -> List[Dict]:
         log.warn("query_all", "Hit max_items limit", max_items=max_items)
     
     return items[:max_items]
-
-
-def stop_task_executions(item: Dict, error: str, cause: str) -> None:
-    """
-    Stop all Step Functions executions related to a task.
-    Stops both wrapper and run_task_helper to prevent orphaned executions.
-    
-    Args:
-        item: Task item from DynamoDB containing execution ARNs
-        error: Error message for the stop operation
-        cause: Cause description for the stop operation
-    """
-    wrapper_arn = item.get('wrapper_execution_arn')
-    run_task_helper_arn = item.get('run_task_helper_arn')
-    
-    # Stop wrapper execution
-    if wrapper_arn:
-        try:
-            sfn.stop_execution(executionArn=wrapper_arn, error=error, cause=cause)
-        except sfn.exceptions.ExecutionDoesNotExist:
-            pass  # Already finished
-        except Exception as e:
-            log.error("stop_task_executions", "Failed to stop wrapper", error=str(e))
-    
-    # Stop run_task_helper execution (prevents orphaned helper that could overwrite status)
-    if run_task_helper_arn:
-        try:
-            sfn.stop_execution(executionArn=run_task_helper_arn, error=error, cause=cause)
-        except sfn.exceptions.ExecutionDoesNotExist:
-            pass  # Already finished
-        except Exception as e:
-            log.error("stop_task_executions", "Failed to stop run_task_helper", error=str(e))
 
 
 # ============================================

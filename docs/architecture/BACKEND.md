@@ -228,7 +228,6 @@ Execution history is in CloudWatch Logs (level: ALL).
 **Entry points:**
 - `run_task_helper` → Notify_Dependents (success)
 - `failure_handler` → Notify_Dependents (failed)
-- `console_api` → skip_task, fail_task, mark_success, stop_task (via notify_dependents_via_sfn)
 
 ### Asset facts and push consumers
 

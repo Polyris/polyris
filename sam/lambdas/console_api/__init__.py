@@ -25,9 +25,9 @@ from .config import (
 )
 
 from .utils import (
-    is_execution_name, retrieve_result, record_manual_decision,
+    is_execution_name, retrieve_result,
     parse_wait_before, safe_int, safe_param_int,
-    scan_all, query_all, stop_task_executions
+    scan_all, query_all
 )
 
 from .response import cors_response, html_response
@@ -43,9 +43,9 @@ __all__ = [
     'TASK_EVENTS_TABLE', 'RESULTS_BUCKET',
     'EXECUTION_NAME_PATTERN',
     # Utils
-    'is_execution_name', 'retrieve_result', 'record_manual_decision',
+    'is_execution_name', 'retrieve_result',
     'parse_wait_before', 'safe_int', 'safe_param_int',
-    'scan_all', 'query_all', 'stop_task_executions',
+    'scan_all', 'query_all',
     # Response
     'cors_response', 'html_response',
     # Handler

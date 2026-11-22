@@ -50,5 +50,5 @@ Update it when something moves. Paths here are checked by
 
 Principle #15 is not optional: deploy to dev and run a live smoke. The last pass
 touched `sam/lambdas/console_api/routes/tasks.py` and
-`sam/lambdas/console_api/task_actions.py` — DDB write paths where a mock can lie.
+`polyris/coordination/actions.py` — DDB write paths where a mock can lie.
 Exercise mark_success on a task with an outlet and confirm the asset event lands.

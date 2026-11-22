@@ -355,12 +355,10 @@ CODE_WRITERS = {
     ("coordination/asset_fanout.py", "_retry_later"): "push retry rows",
     ("coordination/asset_fanout.py", "_warn"): "warning rows (records.warning_item)",
     ("console_api/routes/tasks.py", "_emit_marker_blocked_warn"): "warning rows",
-    ("console_api/routes/tasks.py", "_warn_fact_not_recorded"): "warning rows",
-    ("console_api/routes/tasks.py", "answer_run"): "warning rows",
 }
 
 CODE_FILES = (sorted((REPO / "sam/lambdas/console_api/routes").glob("*.py"))
-              + [REPO / "sam/lambdas/console_api/task_actions.py", REPO / "sam/lambdas/console_api/utils.py"]
+              + [REPO / "sam/lambdas/console_api/utils.py"]
               + sorted(COORDINATION.glob("*.py")))
 #: The DynamoDB write calls; in the coordination Lambdas every one of them is classified, whatever its table.
 WRITE_CALLS = ("put_item", "update_item", "delete_item", "transact_write_items", "batch_write_item")

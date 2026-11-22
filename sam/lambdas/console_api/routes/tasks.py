@@ -19,8 +19,7 @@ from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn, ASSET_EVENT_TTL_DAYS
 from polyris.coordination import actions, run_input, run_row, task_row
-from polyris.coordination.records import cascade_of, warning_item
-from polyris.coordination.wake import DEAD_TOKEN_CODES
+from polyris.coordination.records import warning_item
 from dal import asset_events_repo, executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing
 from polyris.coordination.task_spec import SpecError
@@ -36,10 +35,6 @@ from utils import (
     is_execution_name, safe_int, safe_param_int,
     resolve_pagerduty, retrieve_result, resolve_max_retries
 )
-from task_actions import (
-    record_facts_for_manual_success
-)
-
 
 
 def resolve_task_item(
@@ -566,7 +561,6 @@ def get_task_events(execution_name: str, event: Dict) -> Dict:
     })
 
 
-
 def retry_task(task_name: str, event: Dict) -> Dict:
     """Retry a failed/skipped task.
 
@@ -628,97 +622,6 @@ def _read_task_spec(pipeline_name: str, task_name: str) -> Tuple[Optional[Dict],
     if spec is None:
         return None, f'task {task_name} is not in the deployed pipeline {pipeline_name}'
     return spec, ''
-
-
-def _lookup_task_spec(pipeline_name: str, task_name: str) -> Optional[Dict]:
-    """Best-effort ``_read_task_spec``: None on any failure, which is logged; callers choose their fallback."""
-    spec, reason = _read_task_spec(pipeline_name, task_name)
-    if reason:
-        log.warn("_lookup_task_spec", "Could not read the task's spec",
-                 task_name=task_name, pipeline_name=pipeline_name, error=reason)
-    return spec
-
-
-def _row_outlets(item: Dict) -> Optional[List[Dict]]:
-    """The outlets the marked run was started with, which registration stores on the task row;
-    None for a row from before 1.2, which has none."""
-    raw = item.get('outlets')
-    try:
-        value = json.loads(raw) if isinstance(raw, str) else raw
-    except ValueError:
-        return None
-    return value if isinstance(value, list) else None
-
-
-def _row_cascade(item: Dict) -> str:
-    """The cascade the marked run's own facts would have had (ADR #57), from the start
-    input registration stores on the task row. A row from before 1.2 has no start
-    input, and its facts cascade as they always did, 'auto'."""
-    raw = item.get('starter_input')
-    if not raw:
-        return 'auto'
-    try:
-        value = json.loads(raw) if isinstance(raw, str) else raw
-    except ValueError as e:
-        log.error("record_manual_success_facts", "the task row's starter_input is not JSON; the facts cascade 'auto'",
-                  execution_name=item.get('execution_name', ''), error=str(e))
-        return 'auto'
-    return cascade_of(value) if isinstance(value, dict) else 'auto'
-
-
-def record_manual_success_facts(item: Dict, task_name: str) -> Dict[str, str]:
-    """For Mark Successful specifically, record the facts of this task's
-    outlets, as a normal completion would (ADR #130 §1). Every path that marks
-    a task successful calls it.
-
-    The outlets are the run's own, from the task row; a row from before 1.2
-    has none, and they come from the task's spec (ADR #137 §8). The facts belong to the partition of the marked run, the row's
-    ``date`` — never the day the action happens (B-M1). Their cascade is the
-    run's own: a cascade='none' backfill starts no push consumer this way either.
-
-    A fact that cannot be recorded does not undo the action: it becomes a
-    `fact` warning in the bell (Principle #38), since nothing would ever
-    re-check a fact that does not exist. Returns ``{asset: error}``.
-    """
-    pipeline_name = item.get('pipeline_name', '')
-    outlets = _row_outlets(item)
-    if outlets is None:
-        node, reason = _read_task_spec(pipeline_name, task_name)
-        if reason:
-            # Outlets unknown: whatever facts the task had are missing, so say so (B-M2).
-            _warn_fact_not_recorded(item, task_name, '*', f'its outlets are unknown ({reason})')
-            return {'*': reason}
-        outlets = (node or {}).get('outlets') or []
-    if not outlets:
-        return {}
-    partition_key = item.get('date')
-    if not partition_key:
-        failed = {str(o.get('name')): 'the task row has no date' for o in outlets if o.get('name')}
-    else:
-        failed = record_facts_for_manual_success(
-            outlets, task_name, pipeline_name, str(partition_key), asset_events_repo, cascade=_row_cascade(item),
-        )
-    for asset_name, error in failed.items():
-        _warn_fact_not_recorded(item, task_name, asset_name, error)
-    return failed
-
-
-def _warn_fact_not_recorded(item: Dict, task_name: str, asset_name: str, error: str) -> None:
-    """One `fact` warning per missing fact; asset ``*`` means the task's outlets could not be read."""
-    execution_name = str(item.get('execution_name', ''))
-    what = 'no fact was recorded' if asset_name == '*' else f'the fact of asset {asset_name} was not recorded'
-    try:
-        executions_repo.put(warning_item(
-            kind="fact", execution_name=f"{execution_name}-fact-{asset_name}", task_name=task_name,
-            pipeline_name=str(item.get('pipeline_name', '')), pipeline_execution=str(item.get('pipeline_execution', '')),
-            task_date=str(item.get('date', '')),
-            error=(f"Marked successful, but {what}: {error}. "
-                   "Tasks waiting on its assets for this run's partition keep waiting; restart the task to record them."),
-            now=datetime.now(timezone.utc),
-        ))
-    except (ClientError, BotoCoreError) as e:
-        log.error("record_manual_success_facts", "Could not write the warning row",
-                  asset_name=asset_name, execution_name=execution_name, error=str(e))
 
 
 #: An action whose transaction a row's move cancelled is built again from new reads, this many times in all.
@@ -866,43 +769,6 @@ def mark_success(task_name: str, event: Dict) -> Dict:
                                 success_message='Task {execution_name} marked as successful')
 
 
-def answer_run(item: Dict, execution_name: str, outcome: str, send: Callable[[], Any]) -> None:
-    """Tell the run how its task ended, after an operator ended it (ADR #135).
-
-    `outcome` is the task's new status. A closed token (`DEAD_TOKEN_CODES`) is
-    fine: the run was answered already, or it has ended. Any other error
-    leaves the run RUNNING with nothing to show for it, so the bell says so.
-    The action itself is done and cannot be repeated, so the request still
-    succeeds: a 500 here once told the operator that a skip had failed while
-    the row was already skipped.
-    """
-    try:
-        send()
-        return
-    except ClientError as e:
-        if e.response.get('Error', {}).get('Code', '') in DEAD_TOKEN_CODES:
-            log.info("answer_run", "The run's token is closed: it was answered already or has ended",
-                     execution_name=execution_name)
-            return
-        error = f'{type(e).__name__}: {e}'
-    except BotoCoreError as e:
-        error = f'{type(e).__name__}: {e}'
-    log.error("answer_run", "Could not tell the run how its task ended", execution_name=execution_name, error=error)
-    hint = (' The console API role needs states:SendTaskSuccess and states:SendTaskFailure.'
-            if 'AccessDenied' in error else '')
-    try:
-        executions_repo.put(warning_item(
-            kind='coordination', execution_name=execution_name, task_name=str(item.get('task_name', '')),
-            pipeline_name=str(item.get('pipeline_name', '')),
-            pipeline_execution=str(item.get('pipeline_execution', '')), task_date=str(item.get('date', '')),
-            error=(f'The task is {outcome}, but its run could not be told, so it stays RUNNING until you stop it '
-                   f'or it times out waiting for this task: {error}.{hint}'),
-            now=datetime.now(timezone.utc),
-        ))
-    except (ClientError, BotoCoreError) as e:
-        log.error("answer_run", "Could not write the warning row", execution_name=execution_name, error=str(e))
-
-
 def stop_task(task_name: str, event: Dict) -> Dict:
     """Stop a task that has not finished: ``stopped``, final for its dependants (ADR #138); Restart runs it again.
 
@@ -927,9 +793,13 @@ def restart_task(task_name: str, event: Dict) -> Dict:
     item, execution_name = resolve_task_item(task_name, date, body.get('pipeline_execution', ''))
     if not item:
         return cors_response(404, {'error': f'Task not found: {task_name} on {date}'})
-    with_dependants = body.get('with_dependants') is True
-    operator = operator_display(event)
-    reason = body.get('reason') or 'Task restarted via UI'
+    return apply_restart(item, execution_name, with_dependants=body.get('with_dependants') is True,
+                         operator=operator_display(event), reason=body.get('reason') or 'Task restarted via UI')
+
+
+def apply_restart(item: Dict, execution_name: str, *, with_dependants: bool, operator: str, reason: str) -> Dict:
+    """A Restart of the task row ``item`` (ADR #137 §3), as the console and the paid overlay's Slack button send it:
+    ``coordination.actions.restart``'s transaction through ``_transact``, then its timeline event."""
 
     def build(task: Dict, run_item: Dict) -> 'actions.RestartWrite':
         return actions.restart(task=task, run=run_item, with_dependants=with_dependants, operator=operator,

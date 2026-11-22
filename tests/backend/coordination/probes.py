@@ -73,8 +73,8 @@ PROBES: Tuple[Probe, ...] = (
                         '    tail = f"-{_clean(date)}-{kind}-{_digest(pipeline, date, kind, discriminator, length=8)}"',
                         '    tail = f"-{_clean(date)}-asset-and"'),),
           f"{SCENARIOS}::test_two_push_consumers_with_the_same_task_id_on_one_day_both_run"),
-    Probe("B-M1", (Edit(TASKS_ROUTE, "    partition_key = item.get('date')\n",
-                        "    partition_key = datetime.now(timezone.utc).strftime('%Y-%m-%d')\n"),),
+    Probe("B-M1", (Edit(ACTIONS, "_facts(outlets, pipeline=pipeline, task_name=task_name, date=date,",
+                        "_facts(outlets, pipeline=pipeline, task_name=task_name, date=format_utc(now)[:10],"),),
           f"{SCENARIOS}::test_mark_success_writes_the_fact_for_the_marked_runs_partition"),
     # A Resume that wakes no pass: tasks the pause held stay held until the run row's next check (ADR #137 §5).
     Probe("B-P1", (Edit("polyris/coordination/transitions.py",
@@ -202,10 +202,9 @@ PROBES: Tuple[Probe, ...] = (
                         '"ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",',
                         '"ConditionExpression": "(generation = :g OR attribute_exists(execution_name))",'),),
           f"{SCENARIOS}::test_a_task_an_operator_decided_while_paused_is_never_released_to_run"),
-    # Without the warning a fact Mark Successful could not record leaves no trace but a log line.
-    Probe("B-M2", (Edit("sam/lambdas/console_api/routes/tasks.py",
-                        "        _warn_fact_not_recorded(item, task_name, asset_name, error)\n",
-                        "        pass\n"),),
+    # Mark Successful without its facts in its transaction: the tasks waiting on them hang (invariant 12).
+    Probe("B-M2", (Edit(ACTIONS, '    if action == "mark_success":\n        items += [{"Put": fact}',
+                        '    if False:\n        items += [{"Put": fact}'),),
           f"{SCENARIOS}::test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it"),
     # Without the guard an unreadable fact raises out of the reader and fails the waiting task.
     Probe("B-F2", (Edit("sam/lambdas/coordination/stores.py",
@@ -228,9 +227,10 @@ PROBES: Tuple[Probe, ...] = (
                          "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput} | %}\"",
                          "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput, 'helper_failed': true} | %}\"")),
           f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
-    Probe("B-RN4", (Edit("sam/lambdas/console_api/routes/tasks.py",
-                         "        executions_repo.put(warning_item(\n            kind='coordination', execution_name=execution_name,",
-                         "        (lambda _row: None)(warning_item(\n            kind='coordination', execution_name=execution_name,"),),
+    # A console action that answers 500 after its row changed: a timeline write that fails escapes the route.
+    Probe("B-RN4", (Edit(TASKS_ROUTE, "        except (ClientError, BotoCoreError) as e:\n            log.error(action, \"Could not "
+                         "write the timeline event\"",
+                         "        except KeyError as e:\n            log.error(action, \"Could not write the timeline event\""),),
           f"{SCENARIOS}::test_a_console_action_whose_run_cannot_be_told_says_so"),
     # A run's answer that failed counts as given: the run stays RUNNING with every row final (§4).
     Probe("R-E1", (Edit(DISPATCHER, "            failures.reraise_transient(exc)\n            self._warn(run, subject=f\"{run.key}-answer\"",
@@ -314,8 +314,8 @@ PROBES: Tuple[Probe, ...] = (
                         '"IntervalSeconds": 5,\n          "MaxAttempts": 2,\n          "BackoffRate": 2,\n          "JitterStrategy": "FULL"\n        }\n      ],\n      "Catch": [\n        {\n          "ErrorEquals": [\n            "States.ALL"\n          ],\n          "Comment": "The restart did not happen: say so in the bell, then fail.",\n          "Output": "{% $states.input ~> |$| {\'restart_error\': $states.errorOutput} | %}",\n          "Next": "Warn_Restart_Failed"\n        }\n      ]',
                         '"IntervalSeconds": 5,\n          "MaxAttempts": 2,\n          "BackoffRate": 2,\n          "JitterStrategy": "FULL"\n        }\n      ]'),),
           f"{SCENARIOS}::test_a_restart_that_cannot_start_its_wrapper_says_so_and_can_be_repeated"),
-    Probe("B-M3", (Edit("sam/lambdas/console_api/routes/tasks.py",
-                        "asset_events_repo, cascade=_row_cascade(item),", "asset_events_repo, cascade='auto',"),),
+    Probe("B-M3", (Edit(TASKS_ROUTE, "outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',",
+                        "outlets=outlets, cascade='auto',"),),
           f"{SCENARIOS}::test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers"),
     # The old restart rebuilt the wrapper's input from a few saved fields, without wait_for. The
     # fallback for a pre-1.2 row now restores wait_for from the row, so both are put back.

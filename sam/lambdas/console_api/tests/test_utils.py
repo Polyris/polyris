@@ -245,103 +245,6 @@ class TestScanAll:
         mock_table.scan.assert_called_once()
 
 
-class TestRecordManualDecision:
-    """Tests for record_manual_decision utility."""
-    
-    def test_emits_task_finished_before_manual_decision_when_error(self, mocker):
-        """When task has error, TASK_FINISHED(failed) should be emitted before MANUAL_DECISION."""
-        from console_api.utils import record_manual_decision
-
-        # Mock the DAL repo's put method — utils.py now goes through task_events_repo
-        # instead of touching dynamodb directly (CLAUDE.md Principle #2).
-        mock_put = mocker.patch('console_api.utils.task_events_repo.put')
-
-        item = {
-            'task_run_id': 'extract-2024-01-15-abc123',
-            'parent_execution_id': 'pipeline-2024-01-15-abc123',
-            'task_name': 'extract',
-            'error': 'Lambda timeout after 300s'
-        }
-
-        record_manual_decision('extract-2024-01-15-abc123', 'skip', 'Skipped by operator', item)
-
-        # Should have 2 put calls: TASK_FINISHED + MANUAL_DECISION
-        assert mock_put.call_count == 2
-
-        # First call: TASK_FINISHED
-        first_item = mock_put.call_args_list[0][0][0]
-        assert first_item['event_type'] == 'TASK_FINISHED'
-        assert first_item['status'] == 'failed'
-        assert 'Lambda timeout' in first_item['error_summary']
-        assert '#25#' in first_item['event_time']
-
-        # Second call: MANUAL_DECISION
-        second_item = mock_put.call_args_list[1][0][0]
-        assert second_item['event_type'] == 'MANUAL_DECISION'
-        assert second_item['decision'] == 'skip'
-        assert '#30#' in second_item['event_time']
-    
-    def test_no_task_finished_when_no_error(self, mocker):
-        """When task has no error, only MANUAL_DECISION should be emitted."""
-        from console_api.utils import record_manual_decision
-
-        mock_put = mocker.patch('console_api.utils.task_events_repo.put')
-
-        item = {
-            'task_run_id': 'extract-2024-01-15-abc123',
-            'parent_execution_id': 'pipeline-2024-01-15-abc123',
-            'task_name': 'extract',
-            'error': ''  # No error
-        }
-
-        record_manual_decision('extract-2024-01-15-abc123', 'stop', '', item)
-
-        # Should have only 1 put call: MANUAL_DECISION
-        assert mock_put.call_count == 1
-        call_item = mock_put.call_args[0][0]
-        assert call_item['event_type'] == 'MANUAL_DECISION'
-    
-    def test_error_truncated_to_500_chars(self, mocker):
-        """Long errors should be truncated to 500 chars in error_summary."""
-        from console_api.utils import record_manual_decision
-
-        mock_put = mocker.patch('console_api.utils.task_events_repo.put')
-
-        item = {
-            'task_run_id': 'extract-2024-01-15-abc123',
-            'parent_execution_id': 'pipeline-2024-01-15-abc123',
-            'task_name': 'extract',
-            'error': 'x' * 1000  # 1000 chars
-        }
-
-        record_manual_decision('extract-2024-01-15-abc123', 'skip', '', item)
-
-        first_item = mock_put.call_args_list[0][0][0]
-        assert len(first_item['error_summary']) == 503  # 500 + '...'
-        assert first_item['error_summary'].endswith('...')
-    
-    def test_event_time_ordering(self, mocker):
-        """TASK_FINISHED (#25) should sort before MANUAL_DECISION (#30)."""
-        from console_api.utils import record_manual_decision
-
-        mock_put = mocker.patch('console_api.utils.task_events_repo.put')
-
-        item = {
-            'task_run_id': 'extract-2024-01-15-abc123',
-            'parent_execution_id': 'pipeline-2024-01-15-abc123',
-            'task_name': 'extract',
-            'error': 'Some error'
-        }
-
-        record_manual_decision('extract-2024-01-15-abc123', 'skip', '', item)
-
-        finished_time = mock_put.call_args_list[0][0][0]['event_time']
-        decision_time = mock_put.call_args_list[1][0][0]['event_time']
-
-        # String sort: #25 < #30
-        assert finished_time < decision_time, f"TASK_FINISHED ({finished_time}) should sort before MANUAL_DECISION ({decision_time})"
-
-
 class TestResolvePagerduty:
     """Tests for resolve_pagerduty() — non-blocking PD resolve on human decisions.
 
@@ -422,12 +325,8 @@ class TestResolvePagerduty:
 class TestComputePipelineExecutionShort:
     """compute_pipeline_execution_short's own docstring documents it as a
     hand-maintained mirror of polyris.coordination.task_row.short, which keys
-    a run's task rows (last 20 chars, strip '.' and ':'). Neither this function nor ensure_pipeline_execution_short had
-    any direct test anywhere in either repo before this — only indirect
-    coverage via task_actions.py's extract_pipeline_execution_short test,
-    for a single input shape, not the boundary cases (exactly 20 chars,
-    empty input, dots/colons) that a JSONata-mirroring function is most
-    likely to silently drift on."""
+    a run's task rows (last 20 chars, strip '.' and ':'). These tests pin the boundary cases (exactly 20 chars,
+    empty input, dots/colons) that a JSONata-mirroring function is most likely to silently drift on."""
 
     def test_empty_returns_empty(self):
         from console_api.utils import compute_pipeline_execution_short
