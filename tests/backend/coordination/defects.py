@@ -88,7 +88,6 @@ DEFECTS = {
             "meanwhile runs on the old success, or is blocked again by the old failure",
     "B-U3": "A push subscription outlives what made it: an asset dropped from the schedule, or a pipeline moved to a cron, "
             "keeps its subscription and gets a warning for every fact",
-    "B-O3": "Registration wakes a pre-upgrade wrapper with deps_ready after an operator's decision: the task runs at once",
     "B-O4": "run_task writes running over an operator's decision whose stops failed: the task runs",
     "B-O5": "A task an operator decided while it was held by a pause is released to run after the resume",
     "B-O1": "An operator resolves a waiting task but its wrapper cannot be stopped: registering again overwrites the row and runs the task",

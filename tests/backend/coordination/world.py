@@ -25,7 +25,7 @@ from platform_stack import Stack
 from row_invariants import CHECKS, STAGE_OF, liveness
 import rows_view
 from rows_view import Observer, StackView
-from sfn_runtime import ACCOUNT, REGION, Execution, client_error
+from sfn_runtime import ACCOUNT, REGION, client_error
 from streams import StreamAdapter
 
 from polyris.coordination.times import format_utc
@@ -126,7 +126,6 @@ class World:
         #: Every call run_task made to the notify function: the alerts of a failure, the resolve after a success.
         self.notifications: List[Dict[str, Any]] = []
         self._dispatch = self.bindings.dispatcher(self.bindings.run_task(self.notifications))
-        self.bindings.query_subscriptions()
         self._fanout = as_component("lambda:asset-fanout", self.bindings.asset_fanout())
         self._console = self.bindings.console()
         self._sweeper = as_component("lambda:sweeper", self.bindings.sweeper())
@@ -161,14 +160,10 @@ class World:
 
     # ── setup ──────────────────────────────────────────────────────────
 
-    def deploy(self, dag: Any, *, before_upgrade: bool = False) -> Pipeline:
+    def deploy(self, dag: Any) -> Pipeline:
         """Deploy as polyris-deploy does: load the machine, then run it register_only, so the
         real registration states write the registry entry and any push subscriptions.
-
-        `before_upgrade`: a pipeline generated before 1.3, whose run is in flight across the upgrade.
         """
-        if before_upgrade:
-            raise NeedsBinding("rows-migration", "a pipeline generated before 1.3")
         pipeline = Pipeline(dag, self.stack.deploy_pipeline(dag))
         # A fresh name per deploy, as polyris-deploy does, so a pipeline can be deployed again.
         self.runtime.start_execution(stateMachineArn=pipeline.arn, name=f"{pipeline.name}-register-{next(self._run_ids):08x}",
@@ -358,29 +353,6 @@ class World:
                                   KeyConditionExpression="asset_name = :a",
                                   ExpressionAttributeValues={":a": {"S": asset.name}}, ConsistentRead=True)
         return [plain(i) for i in response.get("Items", [])]
-
-    def time_out_registration(self, run: Run, task: str) -> None:
-        """The wrapper's wait for dependencies reaches its timeout."""
-        wrapper = self.wrapper(run, task)
-        token = next((t for t, f in self.runtime.tokens.items()
-                      if f.execution is wrapper and f.state == "Wait_For_Dependencies"), None)
-        if token is None:
-            raise AssertionError(f"{task} is not waiting for its dependencies")
-        self.runtime.time_out(token)
-        self.settle()
-
-    def time_out_pause_wait(self, run: Run, task: str) -> None:
-        """The task's pause wait in run_task reaches its heartbeat timeout (12 hours by default)."""
-        name = run.execution_name(task)
-        helper = self.stack.machine_arn("RunTaskHelperSfn")
-        token = next((t for t, f in self.runtime.tokens.items()
-                      if f.execution.machine.arn == helper and f.state == "Save_Pause_Token_And_Wait"
-                      and isinstance(f.execution.input, dict) and f.execution.input.get("execution_name") == name),
-                     None)
-        if token is None:
-            raise AssertionError(f"{task} is not held in its pause wait")
-        self.runtime.time_out(token)
-        self.settle()
 
     # ── verbs whose code paths arrive with later phases ────────────────
 
@@ -859,16 +831,6 @@ class World:
 
     def pipeline_status(self, run: Run) -> str:
         return self.runtime.executions[run.arn].status
-
-    def wrapper(self, run: Run, task: str) -> Execution:
-        suffix = run.name[-8:] if len(run.name) > 8 else run.name
-        name = f"{task}-{run.date}-{suffix}"[:80]
-        wrappers = self.stack.machine_names["DependencyWrapperSfn"]   # the current one, or the v1.1.4 one
-        found = [e for e in self.runtime.executions.values()
-                 if e.machine.name.startswith(wrappers) and e.name == name]
-        if not found:
-            raise AssertionError(f"no wrapper execution {name}")
-        return found[0]
 
 
 @dataclass

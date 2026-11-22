@@ -65,7 +65,7 @@ def test_bucket_names_match_template(template):
 
 
 def test_namespace_stage_limit_matches_longest_role_name(template):
-    """The 25-character budget is 64 minus the longest fixed part of any RoleName."""
+    """The budget of Namespace + Stage is 64 minus the longest fixed part of any RoleName."""
     fixed = []
     for res in template["Resources"].values():
         role = (res.get("Properties") or {}).get("RoleName")

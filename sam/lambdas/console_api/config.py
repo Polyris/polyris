@@ -211,8 +211,7 @@ SPECS_TABLE = os.environ.get('SPECS_TABLE', 'pipeline-specs')
 CIRCUIT_BREAKER_TABLE = os.environ.get('CIRCUIT_BREAKER_TABLE', '')
 RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 
-# SFN Helpers
-NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
+# Step Functions
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
 
 # ============================================

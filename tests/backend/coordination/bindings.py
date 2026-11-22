@@ -122,7 +122,6 @@ class Bindings:
         self._set(dal.specs_repo, "_versions", type(dal.specs_repo._versions)())   # no spec of another stack
         self._set(executions, "datetime", _clocked_datetime(self.clock))     # pause and resume times
         self._set(tasks, "datetime", _clocked_datetime(self.clock))          # an action's times and due time
-        self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))
         return main
 
     def start_run(self) -> Callable[[Any, Any], Any]:
@@ -198,12 +197,3 @@ class Bindings:
             dispatcher_function=self.stack.functions["ReconcileFunction"]))
         return sweeper.handler
 
-    def query_subscriptions(self) -> Callable[[Any, Any], Any]:
-        module = _load("query_subscriptions_handler", LAMBDAS / "query_subscriptions" / "index.py")
-        import qs_dal
-
-        self._set(qs_dal, "_dynamodb", self.resource)
-        self._set(qs_dal.subscriptions_repo, "_explicit_table_name", self.stack.tables["DependencySubscriptionsTable"])
-        handler = as_component("lambda:query-subscriptions", module.handler)
-        self.stack.bind_lambda("QuerySubscriptionsFunction", handler)
-        return handler

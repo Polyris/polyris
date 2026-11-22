@@ -232,19 +232,6 @@ def test_lambda_syntax():
     
     print("✅ All Lambda handlers valid Python")
 
-def test_dependency_wrapper_check_deps_signal():
-    """Test that dependency_wrapper has Check_Deps_Signal state."""
-    template_path = os.path.join(REPO_ROOT, 
-                                  'sam/sfn_templates/dependency_wrapper/sfn.tpl.json')
-    
-    with open(template_path) as f:
-        content = json.load(f)
-    
-    states = content.get('States', {})
-    assert 'Check_Deps_Signal' in states, "Check_Deps_Signal state not found"
-    assert 'Handle_Deps_Blocked' in states, "Handle_Deps_Blocked state not found"
-    print("✅ dependency_wrapper Check_Deps_Signal implemented")
-
 def test_run_task_helper_saves_arn():
     """Test that run_task_helper saves its own ARN."""
     template_path = os.path.join(REPO_ROOT, 
@@ -268,20 +255,6 @@ def test_task_events_table():
     assert 'task_events' in content, "task_events table not found in SAM template"
     assert 'task_run_id' in content, "task_run_id not found in schema"
     print("✅ task_events table defined")
-
-
-def test_wrapper_emits_events():
-    """Test that wrapper emits events to task_events table."""
-    template_path = os.path.join(REPO_ROOT, 
-                                  'sam/sfn_templates/dependency_wrapper/sfn.tpl.json')
-    
-    with open(template_path) as f:
-        content = f.read()
-    
-    assert 'task_run_id' in content, "task_run_id not found in wrapper"
-    assert 'Emit_Wrapper_Started' in content, "Emit_Wrapper_Started state not found"
-    assert 'WRAPPER_STARTED' in content, "WRAPPER_STARTED event type not found"
-    print("✅ wrapper emits events")
 
 
 def test_run_task_emits_events():
@@ -313,20 +286,6 @@ def test_api_has_task_events_endpoint():
     assert 'def get_task_events' in content, "get_task_events function not found"
     assert 'task_events_repo' in content, "task_events_repo not found (DAL for task events)"
     print("✅ API has task_events endpoint")
-
-
-def test_pipeline_execution_short_length():
-    """Test that pipeline_execution_short uses 20 chars (not 8 or 16) to avoid collisions."""
-    wrapper_path = os.path.join(REPO_ROOT, 
-                                 'sam/sfn_templates/dependency_wrapper/sfn.tpl.json')
-    
-    with open(wrapper_path) as f:
-        content = f.read()
-    
-    # Should be > 20
-    assert '> 20' in content, "pipeline_execution_short should use 20 chars"
-    assert '- 20)' in content, "pipeline_execution_short should take last 20 chars"
-    print("✅ pipeline_execution_short uses 20 chars")
 
 
 def test_no_dead_code():
@@ -391,19 +350,6 @@ def test_dag_group_default_empty():
     print("✅ DAG group defaults to empty string")
 
 
-def test_register_sfn_templates_have_pipeline_group():
-    """Test that registration SFN template writes pipeline_group to DDB."""
-    base = os.path.join(REPO_ROOT,
-                        'sam/sfn_templates/helpers')
-    
-    path = os.path.join(base, 'register_pipeline', 'sfn.tpl.json')
-    with open(path) as f:
-        content = f.read()
-    assert 'pipeline_group' in content, "register_pipeline missing pipeline_group in DDB putItem"
-    
-    print("✅ SFN registration template has pipeline_group")
-
-
 def test_pipelines_api_returns_group():
     """Test that pipelines API endpoint returns group field."""
     api_path = os.path.join(REPO_ROOT,
@@ -415,59 +361,6 @@ def test_pipelines_api_returns_group():
     assert "'group': item.get('pipeline_group'" in content, "API should return group in response"
     
     print("✅ Pipelines API returns group field")
-
-
-def test_task_completed_contract():
-    """
-    Test that task completion events have the required fields.
-    
-    In v51+, task completion is handled via:
-    1. DynamoDB task_events table (for timeline)
-    2. notify_dependents SFN helper (for dependency resolution)
-    
-    Required fields in task record:
-    - task_name, execution_name, task_run_id, attempt, date
-    - pipeline_name, pipeline_execution, pipeline_execution_short
-    - status
-    """
-    required_fields = [
-        'task_name', 'execution_name', 'task_run_id', 'attempt', 'date',
-        'pipeline_name', 'pipeline_execution', 'pipeline_execution_short', 'status'
-    ]
-    
-    # Check wrapper template - it writes to DynamoDB with all fields
-    wrapper_path = os.path.join(REPO_ROOT, 
-                                'sam/sfn_templates/dependency_wrapper/sfn.tpl.json')
-    with open(wrapper_path, 'r') as f:
-        content = f.read()
-    
-    # Wrapper must have all required fields for DynamoDB writes
-    for field in required_fields:
-        assert f'"{field}"' in content, f"Missing {field} in wrapper DynamoDB write"
-    
-    # Check run_task helper
-    run_task_path = os.path.join(REPO_ROOT, 
-                                 'sam/sfn_templates/helpers/run_task/sfn.tpl.json')
-    with open(run_task_path, 'r') as f:
-        content = f.read()
-    
-    # run_task should track task_run_id and attempt
-    assert 'task_run_id' in content, "run_task missing task_run_id"
-    assert 'attempt' in content, "run_task missing attempt"
-    
-    # Check notify_dependents helper exists and has required params
-    notify_path = os.path.join(REPO_ROOT, 
-                               'sam/sfn_templates/helpers/notify_dependents/sfn.tpl.json')
-    with open(notify_path, 'r') as f:
-        content = f.read()
-    
-    # notify_dependents finds the subscribers of {task}-{pipeline_execution_short}
-    # and hands each subscriber's execution_name to the reconciler (ADR #130 §6.2)
-    assert 'pipeline_execution_short' in content, "notify_dependents missing pipeline_execution_short"
-    assert '${reconcile_function_arn}' in content, "notify_dependents does not call the reconciler"
-    assert "'execution_name': $s.subscriber" in content, "notify_dependents does not pass the subscriber"
-    
-    print("✅ task completion contract verified (DynamoDB + SFN helpers have required fields)")
 
 
 def test_asset_consecutive_method():
@@ -567,15 +460,11 @@ def run_all_tests():
         test_sfn_templates_valid_json,
         test_sfn_templates_valid_asl,
         test_lambda_syntax,
-        test_dependency_wrapper_check_deps_signal,
         test_run_task_helper_saves_arn,
         test_task_events_table,
-        test_wrapper_emits_events,
         test_run_task_emits_events,
         test_api_has_task_events_endpoint,
-        test_pipeline_execution_short_length,
         test_no_dead_code,
-        test_task_completed_contract,
         test_asset_consecutive_method,
         test_asset_consecutive_serialization,
         test_asset_consecutive_operators,

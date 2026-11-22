@@ -29,7 +29,7 @@ from sfn_jsonata import load_template
 
 from polyris import generators
 from polyris.constants import TaskStatus
-from polyris.coordination import dispatch, dispatch_writes, ownership, row_write, run_row, start_run, task_row, task_spec
+from polyris.coordination import dispatch, dispatch_writes, row_write, run_row, start_run, task_row, task_spec
 from polyris.coordination import actions, transitions
 from polyris.coordination.deadlines import RowTimes
 from polyris.coordination.times import format_utc
@@ -254,13 +254,10 @@ def test_every_move_the_table_gives_run_task_has_its_write():
     assert moves == {m for m in RUN_TASK_WRITES.values() if m}
 
 
-# ── 1.2: the state machines' writes of a task row (ADR #130 §2.1, D40) ──────
+# ── templates other than run_task: none writes a task row (TR-8) ──────
 
 #: A key that starts with one of these is a row of its own kind, not a task row.
 OTHER_ROWS = ("_notify_warn_", "_pause_", "_retry_push_", "output#", "input#")
-
-#: The first write of a new owner: it may create the row, so it cannot require one.
-FIRST_WRITES = {("helpers/registration", "Save_Task_Record"), ("dependency_wrapper", "Auto_Skip_Register")}
 
 #: A key built from one of these input fields names another kind of row.
 OTHER_KEYS = ("backfill_id",)       # the bulk backfill machine's own record
@@ -299,25 +296,11 @@ def _template_task_row_writes() -> Dict[Tuple[str, str], dict]:
 TEMPLATE_WRITES = _template_task_row_writes()
 
 
-def test_the_census_finds_the_writers_it_should():
-    assert {("dependency_wrapper", f"Claim_{c}") for c in ("Deps_Ready", "Skipped", "Upstream_Failed")} <= set(TEMPLATE_WRITES)
-    assert {("helpers/pause_waiter", "Save_Pause_Token"),
-            ("helpers/failure_handler", "Update_Status_Failed"), ("helpers/restart_task", "Hand_Over_Ownership"),
-            ("helpers/registration", "Save_Task_Record")} <= set(TEMPLATE_WRITES)
-
-
-@pytest.mark.parametrize("writer", sorted(TEMPLATE_WRITES), ids=lambda w: f"{w[0]}:{w[1]}")
-def test_every_state_machine_write_of_a_task_row_is_fenced_or_raises(writer):
-    arguments = TEMPLATE_WRITES[writer]
-    update, condition = arguments.get("UpdateExpression", ""), arguments.get("ConditionExpression", "")
-    if ownership.RAISE in update:
-        assert set(ownership.RAISE_VALUES) <= set(arguments["ExpressionAttributeValues"]), writer
-        return
-    if writer in FIRST_WRITES:
-        assert "generation = :g" in condition and arguments["Item"][ownership.FIELD], writer
-        return
-    assert ownership.FENCE in condition, f"{writer} writes a task row without the generation fence: {condition!r}"
-    assert ":g" in arguments["ExpressionAttributeValues"], writer
+def test_no_template_but_run_task_writes_a_task_row():
+    """run_task has its own census above. The 1.2 templates that wrote task rows (the wrapper, its registration,
+    failure handler, pause waiter and restart helper) are gone (TR-8): a new template that writes one needs the
+    generation fence (Rule 47) and its place in a census here."""
+    assert TEMPLATE_WRITES == {}
 
 
 # ── every write call of the code, and its role ──────────────────────────

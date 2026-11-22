@@ -18,7 +18,7 @@ Distinct from the **runtime task role** (`${Namespace}-${Stage}-polyris-default-
 
 | Phase | Who runs it | Frequency | AWS-level permissions needed |
 |-------|-------------|-----------|------------------------------|
-| **Install** | Platform admin or CI role | Once per account | Broad — 86 resources across 11 services |
+| **Install** | Platform admin or CI role | Once per account | Broad — 67 resources across 11 services |
 | **Deploy** | Developer or CI role | Per pipeline, per change | Narrow — CloudFormation + Step Functions + PassRole |
 | **Operate** | Console user (Cognito) / on-call engineer | Continuous | None (Console user) or read-only (on-call) |
 | **Remove** | Platform admin | Rare | Same as Install + S3 bucket empty rights |
@@ -27,14 +27,14 @@ Approval question for each phase: *what happens if this role is compromised?* In
 
 ## Install — `polyris-up` (or a from-source `sam deploy`)
 
-The polyris platform stack creates 86 resources across 11 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
+The polyris platform stack creates 67 resources across 11 AWS services in one CloudFormation stack. The role that runs `polyris-up` (or `sam deploy`) needs permission to create every resource type in the stack. `polyris-up` additionally creates and writes the artifacts bucket `polyris-artifacts-<account>-<region>` and calls `sts:GetCallerIdentity` to show the target account.
 
 ### Recommended approach: AWS-managed policies
 
 Attach both:
 
 - `arn:aws:iam::aws:policy/PowerUserAccess` — everything except IAM
-- `arn:aws:iam::aws:policy/IAMFullAccess` — for the 12 IAM roles + 3 managed policies polyris creates
+- `arn:aws:iam::aws:policy/IAMFullAccess` — for the 11 IAM roles + 3 managed policies polyris creates
 
 These two together cover install with reasonable blast radius (no root, no billing, no organization changes). Suitable for a dedicated `polyris-installer` IAM user or CI role.
 
@@ -46,12 +46,12 @@ If your org requires enumerated permissions, the installer role needs these serv
 |-------------|---------|-----|
 | `cloudformation` | `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `DescribeStackEvents`, `GetTemplate`, `CreateChangeSet`, `ExecuteChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `ListChangeSets`, `ListStackResources`; `CreateChangeSet` also on `arn:aws:cloudformation:<region>:aws:transform/Serverless-2016-10-31` | `polyris-up` / SAM build the change set and execute it |
 | `sts` | `GetCallerIdentity` | `polyris-up` prints the target account before it changes anything |
-| `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `UpdateAssumeRolePolicy`, `TagRole`, `UntagRole`, `ListRoleTags`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions`, `GetPolicyVersion`, `ListEntitiesForPolicy` | 12 roles + 3 managed policies |
+| `iam` | `CreateRole`, `DeleteRole`, `GetRole`, `PassRole`, `AttachRolePolicy`, `DetachRolePolicy`, `PutRolePolicy`, `DeleteRolePolicy`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `UpdateAssumeRolePolicy`, `TagRole`, `UntagRole`, `ListRoleTags`, `CreatePolicy`, `DeletePolicy`, `GetPolicy`, `CreatePolicyVersion`, `DeletePolicyVersion`, `ListPolicyVersions`, `GetPolicyVersion`, `ListEntitiesForPolicy` | 11 roles + 3 managed policies |
 | `dynamodb` | `CreateTable`, `DeleteTable`, `UpdateTable`, `DescribeTable`, `TagResource`, `UntagResource`, `ListTagsOfResource`, `UpdateContinuousBackups`, `DescribeContinuousBackups`, `UpdateTimeToLive`, `DescribeTimeToLive`, `DescribeContributorInsights`, `DescribeKinesisStreamingDestination` | 8 tables (pipeline-tokens, pipeline-registry, pipeline-specs, task-events, etc.) |
-| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `GetPolicy`, `InvokeFunction`, `TagResource`, `UntagResource`, `ListTags`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 9 Lambda functions (console-api, reconcile, asset-fanout, sweeper, start-run, query-subscriptions, notify, etc.) and the mappings that feed the asset-events stream to asset-fanout and the tasks table's stream to the dispatcher (`polyris-reconcile`) |
-| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource`, `UntagResource`, `ListTagsForResource` | 13 state machines (dependency wrapper, run-task helper, notify-dependents, etc.) |
+| `lambda` | `CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration`, `DeleteFunction`, `GetFunction`, `AddPermission`, `RemovePermission`, `GetPolicy`, `InvokeFunction`, `TagResource`, `UntagResource`, `ListTags`, `PublishVersion`, `CreateEventSourceMapping`, `GetEventSourceMapping`, `UpdateEventSourceMapping`, `DeleteEventSourceMapping`, `ListEventSourceMappings` | 8 Lambda functions (console-api, reconcile, asset-fanout, sweeper, start-run, query-subscriptions, notify, etc.) and the mappings that feed the asset-events stream to asset-fanout and the tasks table's stream to the dispatcher (`polyris-reconcile`) |
+| `states` | `CreateStateMachine`, `UpdateStateMachine`, `DeleteStateMachine`, `DescribeStateMachine`, `TagResource`, `UntagResource`, `ListTagsForResource` | 5 state machines (`run_task`, `bulk_backfill` and three test tasks) |
 | `scheduler` | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule`, `GetSchedule` | The sweeper's 5-minute schedule |
-| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `UntagResource`, `ListTagsForResource`, `DescribeLogGroups` | 18 log groups |
+| `logs` | `CreateLogGroup`, `DeleteLogGroup`, `PutRetentionPolicy`, `TagResource`, `UntagResource`, `ListTagsForResource`, `DescribeLogGroups` | 10 log groups |
 | `s3` | `CreateBucket`, `DeleteBucket`, `PutBucketPolicy`, `PutBucketPublicAccessBlock`, `PutBucketVersioning`, `PutBucketWebsite`, `PutBucketOwnershipControls`, `PutEncryptionConfiguration`, `GetBucketPolicy`, `DeleteBucketPolicy`, `PutBucketTagging`, `GetBucketTagging`, `TagResource`, `UntagResource`, `ListTagsForResource`, `PutObject`, `GetObject`, `DeleteObject`, `ListBucket`, `ListBucketVersions`, `DeleteObjectVersion` | Console UI bucket, results bucket, and the artifacts bucket `polyris-up` uploads release code to |
 | `cognito-idp` | `CreateUserPool`, `DeleteUserPool`, `UpdateUserPool`, `CreateUserPoolClient`, `DeleteUserPoolClient`, `UpdateUserPoolClient`, `DescribeUserPool`, `SetUserPoolMfaConfig`, `GetUserPoolMfaConfig`, `AdminCreateUser`, `AdminDeleteUser`, `AdminGetUser`, `TagResource`, `UntagResource`, `ListTagsForResource` | Console API auth; the first console admin when `AdminEmail` is set |
 | `cloudfront` | `CreateDistribution`, `CreateDistributionWithTags`, `UpdateDistribution`, `GetDistributionConfig`, `GetOriginAccessControl`, `GetResponseHeadersPolicy`, `DescribeFunction`, `DeleteDistribution`, `GetDistribution`, `CreateOriginAccessControl`, `DeleteOriginAccessControl`, `CreateResponseHeadersPolicy`, `DeleteResponseHeadersPolicy`, `CreateFunction`, `DeleteFunction`, `PublishFunction`, `UpdateFunction`, `TagResource`, `UntagResource`, `ListTagsForResource` | Console UI hosting |
@@ -275,14 +275,13 @@ Then re-run `polyris-down` (or `sam delete`).
 
 ## IAM roles polyris creates
 
-Twelve IAM roles the stack creates during Install. Every role's `RoleName` starts with `${Namespace}-${Stage}-polyris-`. Every trust policy names `states.amazonaws.com`, `lambda.amazonaws.com`, or another AWS service — none accept root or IAM user principals.
+Eleven IAM roles the stack creates during Install. Every role's `RoleName` starts with `${Namespace}-${Stage}-polyris-`. Every trust policy names `states.amazonaws.com`, `lambda.amazonaws.com`, or another AWS service — none accept root or IAM user principals.
 
 | Role | Trust principal | Purpose |
 |------|-----------------|---------|
-| `polyris-orchestration-role` | Step Functions | Runs the dependency-wrapper state machines. Reads/writes to pipeline-tokens DDB, invokes task Lambdas / helper SFNs / CloudWatch logs. Highest-privilege role in the stack — it's the "conductor" |
+| `polyris-orchestration-role` | Step Functions | Runs `run_task`, `bulk_backfill` and the pipelines' state machines. Reads/writes to pipeline-tokens DDB, invokes task Lambdas / helper SFNs / CloudWatch logs. Highest-privilege role in the stack — it's the "conductor" |
 | `polyris-default-task-role` | Cross-account trust (from orchestration-role) | The runtime task role. Assumed by task Lambdas / Glue / ECS / Batch when the wrapper starts a task. Covers Athena + Glue + S3 + task-service `StartJobRun` / `RunTask` |
 | `polyris-console-api-role` | Lambda | Serves the REST API behind the Console UI. Reads DDB tables, starts a pipeline's run, writes operator actions and stops a stopped task's `run_task`; it asks Step Functions nothing about a run, whose status the run row holds (ADR #137 §5) |
-| `polyris-query-subscriptions-role` | Lambda | Reads the `dep-subscriptions` DDB table to find downstream tasks when an upstream completes |
 | `polyris-reconcile-role` | Lambda | The dispatcher (ADR #137): passes over a run's rows when the tasks table's stream wakes it, decides each row and starts its `run_task`. Its own grant reads that stream; the rest is the `polyris-reconcile` policy below |
 | `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions; makes one narrow pass of the dispatcher over each run with a waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset. It deletes a push subscription whose pipeline is no longer scheduled on the asset |
 | `polyris-sweeper-role` | Lambda | Every 5 minutes, makes one full pass of the dispatcher over each run that is due (ADR #137 §7), with the `polyris-reconcile` policy. It reads the attention index and keeps its lease and health rows. Its passes alone judge executions with `states:DescribeExecution` on the platform's own executions (`${Namespace}-${Stage}-polyris-*`): a task's `run_task` and the run's execution. It retries or catches up push starts: reads `asset-subscriptions`, starts the pipelines scheduled on an asset and deletes the subscriptions their pipelines no longer have. It checks both streams and their mappings (`dynamodb:DescribeTable` on `asset-events` and `pipeline-tokens`, `lambda:ListEventSourceMappings`) |

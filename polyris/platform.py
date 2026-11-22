@@ -64,10 +64,11 @@ OUTPUT_CONSOLE_URL = "ConsoleUiUrl"
 OUTPUT_TEST_SFN_ARN = "TestQuickSfnArn"
 
 # AWS caps IAM role names at 64 characters. The longest role in the template
-# is "{Namespace}-{Stage}-polyris-query-subscriptions-role" (34 fixed
-# characters), so Namespace + Stage may use at most 30. Every other named
-# resource (functions, buckets, state machines) fits within that.
-NAMESPACE_STAGE_MAX_LEN = 30
+# is "{Namespace}-{Stage}-polyris-sweeper-schedule-role" (31 fixed
+# characters), so Namespace + Stage may use at most 33. Every other named
+# resource (functions, buckets, state machines) fits within that. (Until 1.3
+# the query-subscriptions role made it 30.)
+NAMESPACE_STAGE_MAX_LEN = 33
 
 # S3 bucket names allow lowercase letters, digits and hyphens here; both parts
 # end up inside "{Namespace}-{Stage}-polyris-*" bucket names.

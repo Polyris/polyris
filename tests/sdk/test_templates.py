@@ -191,20 +191,6 @@ def test_default_args_applies_trigger_rule_wait_before_skip_on_backfill():
     assert t2.skip_on_backfill is False
 
 
-def test_wrapper_timeout_is_dynamic():
-    """Wait_For_Dependencies uses dynamic TimeoutSeconds via JSONata expression."""
-    template_path = os.path.join(
-        REPO_ROOT, 'sam',
-        'sfn_templates', 'dependency_wrapper', 'sfn.tpl.json'
-    )
-    data = load_template(template_path)
-
-    state = data['States']['Wait_For_Dependencies']
-    assert 'Timeout' not in state, "Timeout is not supported in JSONata ASL, use TimeoutSeconds"
-    assert 'TimeoutSeconds' in state, "Dynamic TimeoutSeconds should be present"
-    assert 'orchestration_timeout' in state['TimeoutSeconds'], "Should read from input"
-
-
 # ============================================================
 # Backfill staggered start tests
 # ============================================================
@@ -424,8 +410,6 @@ if __name__ == '__main__':
         test_orchestration_timeout_override_default_args,
         test_falsy_overrides_of_default_args_are_respected,
         test_default_args_applies_trigger_rule_wait_before_skip_on_backfill,
-        # wrapper template
-        test_wrapper_timeout_is_dynamic,
         # backfill staggered start
         test_backfill_orchestrator_template_removed,
         # route table

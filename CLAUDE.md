@@ -369,20 +369,12 @@ pipelines/            # Pipeline definitions — each pipeline has a dag.py
 sam/
   template.yaml       # ALL AWS resources — single source of truth
   sfn_templates/      # SFN definitions as .tpl.json — edit HERE, never in template.yaml
-    dependency_wrapper/sfn.tpl.json
+    bulk_backfill/sfn.tpl.json
     helpers/
       run_task/sfn.tpl.json
-      failure_handler/sfn.tpl.json
-      notify_dependents/sfn.tpl.json
-      registration/sfn.tpl.json
-      register_pipeline/sfn.tpl.json
-      restart_task/sfn.tpl.json
-      restart_wrapper/sfn.tpl.json
-      pause_waiter/sfn.tpl.json
   lambdas/
     console_api/      # REST API (25 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
-    coordination/     # reconcile, asset-fanout, sweeper (ADR #130): decide readiness, signal wrappers, start push consumers, re-check
-    query_subscriptions/  # Finds downstream subscribers for a completed task
+    coordination/     # the dispatcher (reconcile), start-run, asset-fanout, sweeper (ADR #137): decide each row, start run_task, start push consumers, re-check
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
 tests/
   sdk/                # ASL snapshot tests, template tests, SFN flow tests
@@ -452,7 +444,7 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | Repo | Table suffix | PK | SK | GSIs |
 |------|-------------|----|----|------|
 | `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130), `run-start-index` (sparse: run rows, ADR #137 §5) |
-| `subscriptions_repo` (query_subscriptions `qs_dal`) | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
+| — (`Start_Run` writes; the dispatcher and AssetFanout read) | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
 | `specs_repo` (reads only; `polyris-deploy` writes) | `pipeline-specs` | `pk` | `sk` | — |
 | `asset_events_repo` | `asset-events` | `asset_name` | `event_time` | `date-index`, `asset-partition-index` (sparse, ADR #130) |
@@ -461,23 +453,19 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 | `api_tokens_repo` | `api-tokens` | `token_id` | — | `hash-index`, `owner-index` |
 
 **Two separate subscription tables, split by semantics (not by consumer):**
-- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5): a task dependency (`dependency_key = "{upstream}-{pipeline_execution_short}"`, 1.2 runs only) or a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name`, `run` = its run row's key (ADR #137 §7) and no token. Writers: `Start_Run`, and for 1.2 runs the registration SFN. Readers: `query_subscriptions` (for `notify_dependents`) and `AssetFanout`, which groups the pointers by `run` into one narrow pass per run; both consistent. The dispatcher deletes a row's pointers once it has left the wait (Principle #40).
+- `DependencySubscriptionsTable` — composite key `dependency_key` + `subscriber`. Per-run pointers (ADR #130 §5, ADR #137 §7): a `wait_for` asset (`dependency_key = "asset:{name}"`), with `subscriber` = the waiting task's `execution_name`, `run` = its run row's key and no token. Writer: `Start_Run` (and the dispatcher, which rewrites them for a Restart). Reader: `AssetFanout`, which groups the pointers by `run` into one narrow pass per run, consistently. The dispatcher deletes a row's pointers once it has left the wait (Principle #40).
 - `AssetSubscriptionsTable` — composite key `asset_name` + `pipeline_name`. Push consumers only (`schedule=[asset]`): one row per (asset, consumer pipeline). Writer: the pipeline's own registration chain (`Register_Asset_Subscriptions`, at deploy and on every run). Reader: `AssetFanout`, which evaluates the consumer's schedule from its registry entry (ADR #130 §6.1).
 
-The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while dep/wait_for subscriptions are per-(upstream, subscriber-task-execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
+The two tables exist because push-trigger subscriptions are per-(asset, pipeline) with no per-run identity, while `wait_for` pointers are per-(asset, waiting task execution). Don't move a subscription between tables based on who reads it — move it based on which schema fits the write.
 
 **Key fields in `pipeline-tokens` (executions_repo):**
 - `execution_name` — `{task_name}-{date}-{pipeline_execution_short}`
 - `pipeline_execution` — `{pipeline_name}-run-{date}-{hex8}`
 - `pipeline_execution_short` — last 20 chars of `pipeline_execution`, strips `.` and `:`
 - `status` — see TaskStatus constants
-- `wrapper_execution_arn` — ARN of dependency_wrapper SFN execution
 - `task_execution_arn` — ARN of run_task SFN execution
-- `orchestration_token` — `.waitForTaskToken` for signaling deps ready
-- `wait_token` — token for notify_dependents to signal ready
+- `readiness` — what the dispatcher decides on (dependencies, trigger rule, `wait_before`, `wait_for`), copied from the spec by `Start_Run` (ADR #137 §8)
 - `generation` — the owner's generation (ADR #130 §2.1): writes made for an owner are fenced by it; decisions and restarts raise it
-
-**dependency_key format:** `{upstream_task_name}-{pipeline_execution_short}` — must match exactly between writer (registration) and reader (query_subscriptions).
 
 ---
 
@@ -510,20 +498,12 @@ Symptom: "click X → ends up at default state Y", URL flickers to correct param
 
 ## Step Functions
 
-### 13 State Machines (10 orchestration + 3 test)
+### 5 State Machines (2 orchestration + 3 test)
 
 | Name | Type | Purpose |
 |------|------|---------|
-| `polyris-dependency-wrapper` | STANDARD | One per task — waits for deps, runs task, signals downstream |
-| `polyris-dep-run-task-helper` | STANDARD | Executes the actual task SFN/Lambda/Glue/etc |
-| `polyris-failure-handler` | STANDARD | Handles failures, notifies, updates DynamoDB |
-| `polyris-registration-helper` | STANDARD | Registers pipeline on deploy |
-| `polyris-pause-waiter` | STANDARD | Holds execution during pipeline pause |
+| `polyris-dep-run-task-helper` | STANDARD | `run_task`: one attempt of a task's work, its outcome and its facts in one write (ADR #137 §1) |
 | `polyris-bulk-backfill` | STANDARD | Orchestrates a range of dates for a pipeline |
-| `polyris-notify-dependents` | EXPRESS | Finds and signals downstream tasks when upstream completes |
-| `polyris-restart-task-helper` | EXPRESS | Stops wrapper + restarts task |
-| `polyris-restart-wrapper` | EXPRESS | Starts new dependency_wrapper for restart |
-| `polyris-register-pipeline` | EXPRESS | Deployed but orphaned — not called by any current code path; superseded by the inline `Register_Pipeline` state in each generated pipeline SFN |
 | `polyris-test-quick` | STANDARD | Demo/test task (fast) |
 | `polyris-test-success` | STANDARD | Demo/test task (always succeeds) |
 | `polyris-test-failure` | STANDARD | Demo/test task (always fails) |
@@ -537,12 +517,9 @@ Express SFN (fire-and-forget) → states:startExecution ✅
 Express SFN   → startExecution.sync:2              ❌ WRONG — fails silently
 ```
 
-### DefinitionSubstitutions — subscriptions_table mapping
+### The subscriptions table mapping
 
-In `template.yaml`, always verify:
-- `RegistrationHelperSfn.subscriptions_table` → `DependencySubscriptionsTable` ✅
-- `NotifyDependentsSfn.subscriptions_table` → `DependencySubscriptionsTable` ✅
-- `QuerySubscriptionsFunction.SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` ✅
+In `template.yaml`, the coordination functions' `SUBSCRIPTIONS_TABLE` (`ReconcileFunction`, `StartRunFunction`, `AssetFanoutFunction`, `SweeperFunction`) → `DependencySubscriptionsTable` ✅. A wrong table once hid the `wait_for` pointers for months (*Error Visibility*).
 
 ---
 
@@ -551,7 +528,6 @@ In `template.yaml`, always verify:
 | Function | Purpose | Key env vars |
 |----------|---------|-------------|
 | `console-api` | All REST API endpoints | `TOKENS_TABLE`, `REGISTRY_TABLE`, etc. |
-| `query-subscriptions` | Find downstream subscribers | `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable` |
 | `reconcile` | The dispatcher (ADR #137 §1, §7; handler `dispatcher.handler`): woken by the tasks table's stream, it passes over a run's rows, decides each, starts `run_task` and answers the run | `TOKENS_TABLE`, `SUBSCRIPTIONS_TABLE` → `DependencySubscriptionsTable`, `ASSET_EVENTS_TABLE`, `PIPELINES_TABLE`, `SPECS_TABLE` → `PipelineSpecsTable`, `TASK_EVENTS_TABLE` (its decisions in each task's timeline), `RUN_TASK_ARN` |
 | `asset-fanout` | Read the `asset-events` stream (INSERT only), make one narrow pass of the dispatcher over each run with a task waiting on the new fact's asset (ADR #137 §7), and start the pipelines scheduled on it (ADR #130 §6.1) | the same as `reconcile`, plus `ASSET_SUBSCRIPTIONS_TABLE` |
 | `sweeper` | Every 5 minutes (EventBridge Scheduler): one full pass of the dispatcher over each due run (ADR #137 §7), whose passes alone judge executions; the engine stops a run whose execution ended before its answer or that never became active; stop rows whose run row is missing; warn about lost hints once per run; retry failed push starts, hourly push catch-up, write the engine self-check to `_engine_health` (ADR #130 §8, ADR #137 §6) | the same as `asset-fanout`, plus `ASSET_FANOUT_FUNCTION` and `DISPATCHER_FUNCTION` |
@@ -767,12 +743,11 @@ make test-cov
 2. **Express SFN via sync:2 fails silently** — use `startSyncExecution` instead.
 3. **DefinitionUri vs inline** — always edit `sfn_templates/`, never inline in `template.yaml`.
 4. **pipeline_execution_short** — last 20 chars of `pipeline_execution`, with `.` and `:` stripped. Format: `-{date}-{hex8}`.
-5. **dependency_key** — `{task_name}-{pipeline_execution_short}`. Must match exactly between writer (registration) and reader (query_subscriptions).
-6. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`). A field whose expression evaluates to undefined fails the state with `States.QueryEvaluationError`, since JSON cannot represent undefined, and a `Catch` on `States.ALL` hides that: `Failure_Complete` read fields its input no longer carried, and the failure handler failed live while every scenario passed (1.2.0, CR-7). Never let an expression error steer a template: test the field with `$exists` in a `Choice`. The coordination harness fails like AWS on undefined, and a scenario fails on any expression error, caught or not (D107; defect `B-Q1`).
-7. **Whoever ends a task answers its run, and a closed token is fine (ADR #135).** In 1.3 the dispatcher answers a run once every row is final, and `run_task` answers none (ADR #137 §4); the 1.2 wrapper and failure handler still answer theirs. Never skip the answer because a flag says another state machine gave it. `helper_failed` claimed that `run_task` had answered, and twice it had not: F16, and a pause token that could not be saved. A zombie that the reconciler closed had no answer at all, and the wrapper's skip answer and the console's task actions swallowed a failed one. Retry nothing on the closed-token codes (`DEAD_TOKEN_CODES`), and turn any other error into a warning (`Warn_Run_Left_Running` in a template, the dispatcher's `_answer`). The console answers no run: its actions write rows (ADR #137 §3). The one exception is a superseded owner: a restart handed its token on, and the new owner answers. `tests/sdk/test_run_answers.py` fails until a new template answer has a role, and harness invariant 10 fails a scenario that leaves a run `RUNNING` after its tasks have finished.
-8. **A value a template stores for another to parse is JSON, a string included.** `$string(x)` of a string is the string itself (`ok`, not `"ok"`), which no reader can parse: a task that returned a string blocked its dependant (the review of TR-5). Encode a string as `run_task`'s work states do (`$string([$x])` without its brackets) unless it starts like JSON: that is JSON text (`json.dumps`), which 1.2 stored as it was and read parsed, and encoding it changed what dependants got (the review of TR-5e). Writer and reader decide "starts like JSON" by the same characters (`test_a_result_is_stored_as_json_text_as_1_2_read_it`). A reader of a store an older version wrote takes what that version wrote: `run_task` parses only a text that starts like JSON, and `xcom.pull` and the console return any other text as the string.
-9. **A `Retry` never depends on error names nobody has seen.** List what must not be retried (`MaxAttempts: 0`: a failed condition, a cancelled transaction, an expression error, a payload too large), then `States.ALL`. `run_task` retried four named DynamoDB errors for seven seconds, and a claim failed its task for good on a 5xx it did not name (the review of TR-5; `test_every_dynamodb_state_retries_any_error_but_an_answer_for_minutes`). After an error whose write may have applied, read the row before sending the write again.
-10. **A catcher never parses what it caught.** Step Functions cuts a cause at 32,768 characters, so `$parse` of a cause can fail the catcher itself, and the state then fails without its retries: match what you need (`Shape_Failure`). A name cut to a service's limit keeps its unique tail (`Run_Task_SFN`'s child execution).
+5. **JSONata on a field that may be missing.** `$not(x)` of a missing `x` is undefined, and `and` with undefined is false; a comparison with a missing field (`x != true`) is false too. Write the absence out: `$not($exists(x) and x = true)`. The failure handler's `$not($states.input.helper_failed)` was false whenever the field was absent, so a task whose wait timed out never answered its run, which stayed `RUNNING` (F16, 1.2.0 rehearsal; `test_a_dependency_wait_that_times_out_fails_the_task_once`). A field whose expression evaluates to undefined fails the state with `States.QueryEvaluationError`, since JSON cannot represent undefined, and a `Catch` on `States.ALL` hides that: `Failure_Complete` read fields its input no longer carried, and the failure handler failed live while every scenario passed (1.2.0, CR-7). Never let an expression error steer a template: test the field with `$exists` in a `Choice`. The coordination harness fails like AWS on undefined, and a scenario fails on any expression error, caught or not (D107; defect `B-Q1`).
+6. **Whoever ends a task answers its run, and a closed token is fine (ADR #135).** In 1.3 the dispatcher answers a run once every row is final, and no template answers one: `run_task` answers none (ADR #137 §4). Never skip the answer because a flag says another state machine gave it. `helper_failed` claimed that `run_task` had answered, and twice it had not: F16, and a pause token that could not be saved. A zombie that the reconciler closed had no answer at all, and the wrapper's skip answer and the console's task actions swallowed a failed one. Retry nothing on the closed-token codes (`DEAD_TOKEN_CODES`), and turn any other error into a warning (`Warn_Run_Left_Running` in a template, the dispatcher's `_answer`). The console answers no run: its actions write rows (ADR #137 §3). The one exception is a superseded owner: a restart handed its token on, and the new owner answers. `tests/sdk/test_run_answers.py` fails when a template answers a run, and harness invariant 10 fails a scenario that leaves a run `RUNNING` after its tasks have finished.
+7. **A value a template stores for another to parse is JSON, a string included.** `$string(x)` of a string is the string itself (`ok`, not `"ok"`), which no reader can parse: a task that returned a string blocked its dependant (the review of TR-5). Encode a string as `run_task`'s work states do (`$string([$x])` without its brackets) unless it starts like JSON: that is JSON text (`json.dumps`), which 1.2 stored as it was and read parsed, and encoding it changed what dependants got (the review of TR-5e). Writer and reader decide "starts like JSON" by the same characters (`test_a_result_is_stored_as_json_text_as_1_2_read_it`). A reader of a store an older version wrote takes what that version wrote: `run_task` parses only a text that starts like JSON, and `xcom.pull` and the console return any other text as the string.
+8. **A `Retry` never depends on error names nobody has seen.** List what must not be retried (`MaxAttempts: 0`: a failed condition, a cancelled transaction, an expression error, a payload too large), then `States.ALL`. `run_task` retried four named DynamoDB errors for seven seconds, and a claim failed its task for good on a 5xx it did not name (the review of TR-5; `test_every_dynamodb_state_retries_any_error_but_an_answer_for_minutes`). After an error whose write may have applied, read the row before sending the write again.
+9. **A catcher never parses what it caught.** Step Functions cuts a cause at 32,768 characters, so `$parse` of a cause can fail the catcher itself, and the state then fails without its retries: match what you need (`Shape_Failure`). A name cut to a service's limit keeps its unique tail (`Run_Task_SFN`'s child execution).
 
 ---
 

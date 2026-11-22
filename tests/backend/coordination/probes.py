@@ -20,7 +20,6 @@ SCENARIOS = "tests/backend/coordination/test_scenarios.py"
 ROWS = "tests/backend/coordination/test_scenarios_rows.py"
 DISPATCHER = "sam/lambdas/coordination/dispatcher.py"
 CORE = "polyris/coordination/asset_conditions.py"
-REGISTRATION = "sam/sfn_templates/helpers/registration/sfn.tpl.json"
 TASKS_ROUTE = "sam/lambdas/console_api/routes/tasks.py"
 EXECUTIONS_ROUTE = "sam/lambdas/console_api/routes/executions.py"
 RUN_TASK = "sam/sfn_templates/helpers/run_task/sfn.tpl.json"
@@ -138,18 +137,6 @@ PROBES: Tuple[Probe, ...] = (
                         '"subscribed_at = if_not_exists(subscribed_at, :now)"',
                         '"subscribed_at = :now"'),),
           f"{SCENARIOS}::test_a_consumer_registered_again_keeps_its_subscription_time"),
-    # Waking a superseded wrapper with deps_ready: a pre-upgrade wrapper has no claim to fail.
-    Probe("B-O3", (Edit(REGISTRATION,
-                        '"Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",\n'
-                        '      "Arguments": {\n'
-                        '        "TaskToken": "{% $states.input.wait_token %}",\n'
-                        '        "Error": "Superseded",',
-                        '"Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",\n'
-                        '      "Arguments": {\n'
-                        '        "TaskToken": "{% $states.input.wait_token %}",\n'
-                        '        "Output": "{\\"signal\\":\\"deps_ready\\",\\"reason\\":\\"superseded\\"}",\n'
-                        '        "Error": "Superseded",'),),
-          f"{SCENARIOS}::test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided"),
     # run_task's running write without the generation fence takes the row back from an operator's decision.
     # A run_task whose generation an operator raised claims the row of the newer generation (Rule 47).
     # In 1.3 the decision also moves the status, so the claim must lose on both: an always-true condition that

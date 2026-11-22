@@ -222,130 +222,13 @@ class TestRetryLoopComposesWithHumanDecision:
 # failure_handler — upstream_failed suppression
 # ============================================================
 
-class TestFailureHandlerUpstreamFailed:
-    """Verify upstream_failed tasks skip alerting."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.fh = load('failure_handler')
-
-    def test_check_is_upstream_failed_exists(self):
-        """Check_Is_Upstream_Failed state exists."""
-        assert 'Check_Is_Upstream_Failed' in self.fh['States']
-
-    def test_upstream_failed_skips_slack(self):
-        """upstream_failed → Check_Orchestration_Token (skips Slack)."""
-        state = self.fh['States']['Check_Is_Upstream_Failed']
-        assert state['Choices'][0]['Next'] == 'Check_Orchestration_Token'
-        assert 'UpstreamFailed' in state['Choices'][0]['Condition']
-
-    def test_non_upstream_goes_to_send_alerts(self):
-        """Normal failure → Send_Alerts (ADR #103 Stage-1: one Lambda call)."""
-        state = self.fh['States']['Check_Is_Upstream_Failed']
-        assert state['Default'] == 'Send_Alerts'
-
-    def test_notify_dependents_goes_to_upstream_check(self):
-        """Notify_Dependents → Check_Is_Upstream_Failed."""
-        state = self.fh['States']['Notify_Dependents']
-        assert state['Next'] == 'Check_Is_Upstream_Failed'
-
-    def test_notify_dependents_catch_goes_to_upstream_check(self):
-        """Notify_Dependents catch → Check_Is_Upstream_Failed (graceful)."""
-        state = self.fh['States']['Notify_Dependents']
-        assert state['Catch'][0]['Next'] == 'Check_Is_Upstream_Failed'
-
-
 # ============================================================
 # failure_handler — PagerDuty removed
 # ============================================================
 
-class TestFailureHandlerNoPagerDuty:
-    """Verify PagerDuty ALERT states are removed from failure_handler.
-    
-    PD alerting is in run_task (line 1). failure_handler only does Slack + orchestration.
-    PD resolve on human decisions is handled by Lambda API (slack.py, tasks.py).
-    """
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.fh = load('failure_handler')
-
-    def test_no_pagerduty_alert_states(self):
-        """PagerDuty ALERT states removed from failure_handler."""
-        for name in ['Check_PagerDuty_Alert', 'Send_PagerDuty_Alert', 'Save_PagerDuty_Failed']:
-            assert name not in self.fh['States'], f"{name} should be removed"
-
-    def test_no_pagerduty_alerter_arn(self):
-        """pagerduty_alerter_arn not referenced in failure_handler."""
-        content = json.dumps(self.fh)
-        assert 'pagerduty_alerter_arn' not in content
-
-    def test_no_pagerduty_resolver(self):
-        """No PD resolve in failure_handler — resolve is in Lambda API handlers."""
-        content = json.dumps(self.fh)
-        assert 'pagerduty_resolver_arn' not in content
-        assert 'Resolve_PagerDuty' not in content
-
-    def test_send_alerts_state_present(self):
-        """ADR #103 Stage-1: one Send_Alerts state replaces the 3-state fan-out."""
-        assert 'Send_Alerts' in self.fh['States']
-
-    def test_old_slack_chain_removed(self):
-        """The hard-wired Slack chain is gone (channels are data now)."""
-        for name in ['Check_Slack_Alert', 'Send_Slack_Alert', 'Record_Slack_Failure']:
-            assert name not in self.fh['States'], f"{name} should be removed"
-
-    def test_old_fanout_states_removed(self):
-        """The 3 SFN alert states collapsed into the Lambda (Stage-1)."""
-        for name in ['Get_Alert_Config', 'Has_Channels', 'Fan_Out_Alerts']:
-            assert name not in self.fh['States'], f"{name} should be gone"
-
-    def test_send_alerts_invokes_notify_lambda(self):
-        """Send_Alerts is a single Lambda invoke (the Lambda fans out itself)."""
-        state = self.fh['States']['Send_Alerts']
-        assert 'lambda:invoke' in state['Resource']
-        assert '${notify_function_arn}' in json.dumps(state)
-
-    def test_send_alerts_passes_pipeline_and_failure(self):
-        """The Lambda gets pipeline_name + the failure; it reads config itself."""
-        payload = self.fh['States']['Send_Alerts']['Arguments']['Payload']
-        assert 'pipeline_name' in payload
-        assert 'failure' in payload
-
-    def test_send_alerts_never_blocks_callback(self):
-        """Delivery problems must not block the orchestration callback."""
-        state = self.fh['States']['Send_Alerts']
-        assert state['Next'] == 'Check_Orchestration_Token'
-        assert state['Catch'][0]['Next'] == 'Check_Orchestration_Token'
-
-
 # ============================================================
 # failure_handler — no buttons on dead task
 # ============================================================
-
-class TestFailureHandlerSlackNoButtons:
-    """ADR #103: failure_handler no longer sends Slack directly, so the old
-    "empty token to suppress buttons on a dead task" concern moves to the notify
-    Lambda. Interactive buttons remain only in run_task's Interactive_Slack
-    (live tasks), which is unchanged."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.fh = load('failure_handler')
-
-    def test_failure_handler_has_no_interactive_slack(self):
-        """No waitForTaskToken Slack in failure_handler — a failed task is dead,
-        nothing to interact with. Fan-out delivers a plain notification."""
-        content = json.dumps(self.fh)
-        assert 'Send_Slack_Alert' not in content
-        assert 'waitForTaskToken' not in content
-
-    def test_send_alerts_failure_context_has_no_token(self):
-        """The failure context passed to notify carries no orchestration token —
-        notifiers post a plain message, not interactive buttons."""
-        payload = self.fh['States']['Send_Alerts']['Arguments']['Payload']
-        assert 'token' not in payload['failure']
-
 
 # ============================================================
 # restart_task — alerts field
@@ -371,62 +254,18 @@ class TestMainTFWiring:
         assert 'pagerduty_alerter_arn' not in block, "alerter ref should be gone (Stage 3)"
         assert 'notify_function_arn' in block, "notify_function_arn must be present"
 
-    def test_failure_handler_no_pagerduty_alerter(self):
-        """FailureHandlerSfn does not reference the deleted pagerduty_alerter;
-        it sends alerts via the notify Lambda (Send_Alerts, Stage 1a)."""
-        idx = self.content.find('FailureHandlerSfn:')
-        assert idx != -1, "FailureHandlerSfn not found in SAM template"
-        block = self.content[idx:idx+3000]
-        assert 'pagerduty_alerter_arn' not in block
-
 
 class TestCrossTemplateConsistency:
     """Verify templates are consistent with each other."""
 
-    def test_run_task_pagerduty_dedup_matches_wrapper_resolve(self):
-        """Live alert (run_task) and resolve (wrapper) must produce the same PD
-        dedup_key. Both now invoke the notify Lambda, which builds the key from
-        failure.{pipeline_name,task_name,date}; so both payloads must carry those
-        three fields in failure (the Lambda derives pipeline/task/date identically)."""
-        import json as _json
-        import re as _re
+    def test_the_resolve_of_an_incident_names_it_as_its_alert_does(self):
+        """PagerDuty matches a resolve to its incident by the dedup key the notify Lambda builds from
+        failure.{pipeline_name, task_name, date}: run_task's alert and its resolve must both carry them."""
         rt = load('run_task')
-        # dependency_wrapper lives one level up from helpers/, load it directly.
-        _dw_path = os.path.join(TEMPLATES, 'dependency_wrapper', 'sfn.tpl.json')
-        _dw_raw = open(_dw_path).read()
-        _dw_clean = _re.sub(r'\{%[^%]*%\}', 'J', _re.sub(r'\$\{[a-z_]+\}', '0', _dw_raw))
-        dw = _json.loads(_dw_clean)
         live = rt['States']['Send_PagerDuty_Alert']['Arguments']['Payload']['failure']
-        resolve = dw['States']['Resolve_PagerDuty']['Arguments']['Payload']['failure']
-        for field in ('pipeline_name', 'task_name'):
-            assert field in live, f'live missing {field}'
-            assert field in resolve, f'resolve missing {field}'
-        # date drives the dedup key — both must reference input.date
-        assert 'date' in live and 'date' in resolve
-
-    def test_failure_handler_all_states_reachable(self):
-        """All failure_handler states reachable from StartAt."""
-        fh = load('failure_handler')
-        reachable = set()
-        queue = [fh['StartAt']]
-        while queue:
-            name = queue.pop(0)
-            if name in reachable or name not in fh['States']:
-                continue
-            reachable.add(name)
-            state = fh['States'][name]
-            for ref in [state.get('Next'), state.get('Default')]:
-                if ref:
-                    queue.append(ref)
-            for c in state.get('Choices', []):
-                if c.get('Next'):
-                    queue.append(c['Next'])
-            for c in state.get('Catch', []):
-                if c.get('Next'):
-                    queue.append(c['Next'])
-
-        unreachable = set(fh['States'].keys()) - reachable
-        assert not unreachable, f"Unreachable states: {unreachable}"
+        resolve = rt['States']['Resolve_PagerDuty']['Arguments']['Payload']['failure']
+        for field in ('pipeline_name', 'task_name', 'date'):
+            assert field in live and field in resolve, field
 
     def test_run_task_all_states_reachable(self):
         """All run_task states reachable from StartAt."""
@@ -459,8 +298,8 @@ class TestCrossTemplateConsistency:
         assert not unreachable, f"Unreachable states: {unreachable}"
 
     def test_no_dangling_references(self):
-        """No state references point to non-existent states (both templates)."""
-        for name in ['run_task', 'failure_handler', 'restart_task']:
+        """No state of run_task references a state that does not exist."""
+        for name in ['run_task']:
             data = load(name)
             all_states = set(data['States'].keys())
             for sname, state in data['States'].items():
@@ -501,25 +340,10 @@ class TestSlackMentionsTemplateFlow:
         assert 'pipeline_name' in payload
         assert 'console_api_endpoint' in payload
 
-    def test_failure_handler_send_alerts_passes_pipeline(self):
-        """ADR #103 Stage-1: failure_handler no longer routes channel/config in the
-        SFN — it passes pipeline_name + failure, and the notify Lambda reads the
-        config (incl. mentions) from the registry itself."""
-        fh = load('failure_handler')
-        payload = fh['States']['Send_Alerts']['Arguments']['Payload']
-        assert 'pipeline_name' in payload
-        assert 'failure' in payload
-        # the old per-channel routing + Slack chain are gone from the SFN
-        assert 'Send_Slack_Alert' not in fh['States']
-        assert 'Fan_Out_Alerts' not in fh['States']
-
     def test_no_hardcoded_responsible_for_anywhere(self):
         """No template references responsible_for_data_pipeline_ops."""
-        for name in ['run_task', 'failure_handler']:
-            data = load(name)
-            content = json.dumps(data)
-            assert 'responsible_for_data_pipeline_ops' not in content, \
-                f"{name} still has hardcoded responsible_for"
+        content = json.dumps(load('run_task'))
+        assert 'responsible_for_data_pipeline_ops' not in content, "run_task still has hardcoded responsible_for"
 
 
 # ============================================================
@@ -745,91 +569,6 @@ class TestVariableSchemaDrift:
         assert set(TASK_VARIABLES) == set(VARIABLES)
 
 
-class TestRestartStopsBothWrapperLevels:
-    """§9, corrected: restarting a task must stop TWO separate executions, in
-    a specific order — not just one.
-
-    There are two levels: the OUTER dependency_wrapper (handles dependency
-    waiting, then synchronously calls Run_Task -> the INNER run_task, via
-    startExecution.sync:2) and the INNER run_task (the one with
-    Wait_For_Decision/waiting_decision). An earlier fix attempt here killed
-    only the inner run_task (reading 'run_task_helper_arn'), reasoning that
-    'wrapper_execution_arn' — the field originally read — must be a typo,
-    since it's never written anywhere in run_task's own template. That
-    reasoning was incomplete: 'wrapper_execution_arn' IS genuinely written,
-    by registration_helper's Save_Task_Record, for the OUTER wrapper
-    specifically (Prepare_Inputs sets it to $states.context.Execution.Id,
-    evaluated in the outer wrapper's own context) — a fact only visible by
-    checking registration_helper's template too, not just run_task's.
-
-    Killing only the inner run_task directly (while leaving the outer
-    wrapper alive, synchronously waiting on it) caused a real, confirmed bug:
-    the outer wrapper's Run_Task call sees its child forcibly aborted, which
-    IS an internal error from the outer wrapper's own perspective — so its
-    own Catch fires, routing to Handle_Failure -> failure_handler ->
-    notify_dependents('failed'), immediately, well before the new attempt's
-    own work even begins. This surfaced live: clicking Restart caused the
-    downstream task to be marked upstream_failed within seconds, while the
-    restarted task's own underlying work was still genuinely running (and
-    later genuinely succeeded, ~30s later, per its own execution history) —
-    a false failure notification racing ahead of the real outcome.
-
-    The fix: kill the OUTER wrapper FIRST (external StopExecution does not
-    trigger a wrapper's own internal Catch — that only fires for errors from
-    WITHIN an execution, not from being stopped externally — so this cannot
-    cascade a false notification), THEN the inner run_task second (safe now
-    that the outer wrapper, which would otherwise catch this, is already
-    dead) — preventing both the cascading false-failure bug and run_task
-    being orphaned as a ghost."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.rt = load('restart_task')
-
-    def test_outer_wrapper_stopped_first_using_wrapper_execution_arn(self):
-        state = self.rt['States']['Stop_Old_Outer_Wrapper']
-        arn_expr = state['Arguments']['ExecutionArn']
-        m = re.search(r'\$states\.input\.item\.(\w+)\.S', arn_expr)
-        assert m, f"Could not find a field reference in: {arn_expr}"
-        assert m.group(1) == 'wrapper_execution_arn'
-
-    def test_inner_run_task_stopped_second_using_run_task_helper_arn(self):
-        state = self.rt['States']['Stop_Old_Inner_Wrapper']
-        arn_expr = state['Arguments']['ExecutionArn']
-        m = re.search(r'\$states\.input\.item\.(\w+)\.S', arn_expr)
-        assert m, f"Could not find a field reference in: {arn_expr}"
-        assert m.group(1) == 'run_task_helper_arn'
-
-    def test_outer_wrapper_chains_to_inner_before_delete(self):
-        """The ORDER is the entire point of this fix — outer must be fully
-        attempted (success or caught failure) before inner is touched, and
-        inner must complete before Hand_Over_Ownership."""
-        assert self.rt['States']['Check_Task_Exists']['Choices'][0]['Next'] == 'Stop_Old_Outer_Wrapper'
-        outer = self.rt['States']['Stop_Old_Outer_Wrapper']
-        assert outer['Next'] == 'Stop_Old_Inner_Wrapper'
-        assert outer['Catch'][0]['Next'] == 'Stop_Old_Inner_Wrapper'
-        inner = self.rt['States']['Stop_Old_Inner_Wrapper']
-        assert inner['Next'] == 'Hand_Over_Ownership'
-        assert inner['Catch'][0]['Next'] == 'Hand_Over_Ownership'
-
-    def test_registration_helper_writes_wrapper_execution_arn_for_the_outer_wrapper(self):
-        """Cross-template consistency: registration_helper's Save_Task_Record
-        must actually persist wrapper_execution_arn, or Stop_Old_Outer_Wrapper
-        has nothing to read. This is the check the earlier, incomplete fix
-        attempt skipped — it only looked at run_task's own template."""
-        registration = load('registration')
-        item = registration['States']['Save_Task_Record']['Arguments']['Item']
-        assert 'wrapper_execution_arn' in item
-
-    def test_run_task_writes_run_task_helper_arn_for_the_inner_wrapper(self):
-        """Cross-template consistency for the inner kill target."""
-        run_task = load('run_task')
-        state = run_task['States']['Claim']
-        update_expr = state['Arguments']['UpdateExpression']
-        assert 'run_task_helper_arn = :arn' in update_expr
-        assert state['Arguments']['ExpressionAttributeValues'][':arn'] == {'S': '{% $states.context.Execution.Id %}'}
-
-
 class TestRunTaskWritesOnlyUnderItsGeneration:
     """§9 layer 2 became the generation (ADR #137 invariant 5): each write of run_task is conditional on
     the status it expects and on the generation it was started with. Whatever the console did since
@@ -858,41 +597,6 @@ class TestRunTaskWritesOnlyUnderItsGeneration:
         state = self.rt['States']['Superseded']
         assert state['Type'] == 'Succeed'
         assert 'Next' not in state
-
-
-class TestRestartTaskConfigAndOutletsThreading:
-    """task_config/outlets are deploy-time DAG properties, never stored on
-    the per-execution DynamoDB record. Start_New_Wrapper previously tried
-    to reconstruct them from item.task_config.S/item.outlets.S — fields
-    that never existed — always silently yielding {} and [] regardless of
-    the task's real configuration. Fixed by having restart_task's Python
-    handler look these up from the registry and pass them explicitly at
-    the top level of restart_task_helper's input; Get_Task_Config must
-    preserve them through to Start_New_Wrapper."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.rt = load('restart_task')
-
-    def test_get_task_config_preserves_task_config_and_outlets_from_input(self):
-        output_expr = self.rt['States']['Get_Task_Config']['Output']
-        assert "'task_config'" in output_expr
-        assert "'outlets'" in output_expr
-        assert '$states.input.task_config' in output_expr
-        assert '$states.input.outlets' in output_expr
-
-    def test_start_new_wrapper_reads_task_config_and_outlets_from_top_level_input(self):
-        """Must read $states.input.task_config / $states.input.outlets
-        directly (as threaded through by Get_Task_Config above) — NOT
-        $states.input.item.task_config.S / item.outlets.S, which was the
-        bug (those fields never existed on the stored item). Since restart
-        replays starter_input (ADR #130 §6.5), the input is one expression;
-        tests/sdk/test_restart_task_template.py evaluates it."""
-        expr = self.rt['States']['Start_New_Wrapper']['Arguments']['Input']
-        assert '$states.input.task_config' in expr
-        assert '$states.input.outlets' in expr
-        assert 'item.task_config' not in expr
-        assert 'item.outlets' not in expr
 
 
 class TestRestartNamePrefix:

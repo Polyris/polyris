@@ -945,19 +945,6 @@ Resources:
   # CloudWatch Log Groups — Step Functions
   # ---------------------------------------------------------------------------
 
-  DependencyWrapperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-dependency-wrapper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
   RunTaskHelperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -971,84 +958,6 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  RegistrationHelperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-registration-helper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  FailureHandlerLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-failure-handler"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  NotifyDependentsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-notify-dependents"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-
-  PauseWaiterLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-pause-waiter"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  RestartWrapperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-wrapper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  RestartTaskHelperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-task-helper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
 
   BulkBackfillLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1084,19 +993,6 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-notify"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  QuerySubscriptionsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-query-subscriptions"
       RetentionInDays: !Ref LogRetentionDays
       Tags:
         - Key: polyris:namespace
@@ -1190,22 +1086,6 @@ Resources:
       Environment:
         Variables:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
-
-  QuerySubscriptionsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${Namespace}-${Stage}-polyris-query-subscriptions"
-      CodeUri: lambdas/query_subscriptions/
-      Handler: index.handler
-      Timeout: 30
-      MemorySize: 128
-      Role: !GetAtt QuerySubscriptionsRole.Arn
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref QuerySubscriptionsLogGroup
-      Environment:
-        Variables:
-          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
 
   ReconcileFunction:
     Type: AWS::Serverless::Function
@@ -1436,8 +1316,6 @@ Resources:
           POLYRIS_TIER: !Ref PolyrisTier
           RESULTS_BUCKET: !Ref ResultsBucket
           ASSET_EVENT_TTL_DAYS: "365"
-          RESTART_HELPER_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
-          NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
           NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
@@ -1495,38 +1373,6 @@ Resources:
                   - dynamodb:GetItem
                 Resource:
                   - !GetAtt PipelineRegistryTable.Arn
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  QuerySubscriptionsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${Namespace}-${Stage}-polyris-query-subscriptions-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: QuerySubscriptionsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:Query
-                Resource:
-                  - !GetAtt DependencySubscriptionsTable.Arn
-                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -2182,53 +2028,6 @@ Resources:
 
 
 
-  PauseWaiterSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-pause-waiter"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt PauseWaiterLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-      DefinitionUri: sfn_templates/helpers/pause_waiter/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RestartWrapperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-restart-wrapper"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RestartWrapperLogGroup.Arn
-      DefinitionUri: sfn_templates/helpers/restart_wrapper/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-
-  QuerySubscriptionsPermissionFromSfn:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt QuerySubscriptionsFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: states.amazonaws.com
-      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-
   ConsoleApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -2237,117 +2036,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ConsoleApi}/*"
 
-  NotifyDependentsSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-notify-dependents"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt NotifyDependentsLogGroup.Arn
-      DefinitionSubstitutions:
-        query_subscriptions_lambda: !GetAtt QuerySubscriptionsFunction.Arn
-        reconcile_function_arn: !GetAtt ReconcileFunction.Arn
-      DefinitionUri: sfn_templates/helpers/notify_dependents/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RegistrationHelperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-registration-helper"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
-      DefinitionSubstitutions:
-        subscriptions_table: !Ref DependencySubscriptionsTable
-        tokens_table: !Ref PipelineTokensTable
-        reconcile_function_arn: !GetAtt ReconcileFunction.Arn
-      DefinitionUri: sfn_templates/helpers/registration/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RegisterPipelineSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-register-pipeline"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
-      DefinitionSubstitutions:
-        registry_table: !Ref PipelineRegistryTable
-        asset_subscriptions_table: !Ref AssetSubscriptionsTable
-      DefinitionUri: sfn_templates/helpers/register_pipeline/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RestartTaskHelperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-restart-task-helper"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RestartTaskHelperLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        task_events_table: !Ref TaskEventsTable
-        wrapper_arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dependency-wrapper"
-      DefinitionUri: sfn_templates/helpers/restart_task/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  FailureHandlerSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-failure-handler"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt FailureHandlerLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        task_events_table: !Ref TaskEventsTable
-        pipeline_registry_table: !Ref PipelineRegistryTable
-        notify_function_arn: !GetAtt NotifyFunction.Arn
-        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
-        default_slack_mentions: !Ref DefaultSlackMentions
-      DefinitionUri: sfn_templates/helpers/failure_handler/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
   RunTaskHelperSfn:
     Type: AWS::Serverless::StateMachine
     # A fact recorded by the new definition must find the mapping that wakes
@@ -2379,34 +2067,6 @@ Resources:
         polyris:namespace: !Ref Namespace
         polyris:stage: !Ref Stage
         polyris:component: platform
-  DependencyWrapperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-dependency-wrapper"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt DependencyWrapperLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        task_events_table: !Ref TaskEventsTable
-        registration_helper_arn: !Ref RegistrationHelperSfn
-        run_task_helper_arn: !Ref RunTaskHelperSfn
-        failure_handler_arn: !Ref FailureHandlerSfn
-        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
-        notify_function_arn: !GetAtt NotifyFunction.Arn
-        default_orchestration_timeout_seconds: "86400"
-      DefinitionUri: sfn_templates/dependency_wrapper/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-
   BulkBackfillSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -2873,12 +2533,6 @@ Outputs:
     Value: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-console-api-url"
-
-  DependencyWrapperArn:
-    Description: ARN of the dependency wrapper Step Function
-    Value: !Ref DependencyWrapperSfn
-    Export:
-      Name: !Sub "${Namespace}-${Stage}-polyris-wrapper-arn"
 
   OrchestrationRoleArn:
     Description: ARN of the orchestration IAM role

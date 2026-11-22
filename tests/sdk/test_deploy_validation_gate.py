@@ -198,8 +198,8 @@ def test_namespace_stage_length_guardrail(mocker):
         return_value=(True, [], []),
     )
     cfg = mocker.patch("polyris.deploy.polyris_config")
-    # namespace(24) + stage(9) = 33 > 30
-    cfg.stage = "stagingxy"
+    # namespace(24) + stage(10) = 34 > 33
+    cfg.stage = "stagingxyz"
     cfg.for_stage.return_value = _stage_cfg(
         mocker,
         namespace="this-is-a-long-namespace",

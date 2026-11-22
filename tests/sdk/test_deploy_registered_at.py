@@ -158,36 +158,6 @@ def test_register_pipeline_still_writes_other_metadata():
 
 
 # ---------------------------------------------------------------------------
-# Orphaned helper SFN must also not clobber registered_at
-# ---------------------------------------------------------------------------
-
-def test_orphaned_register_pipeline_sfn_uses_updateitem():
-    """The helper SFN uses putItem, which replaces the entire row — not just the
-    fields listed in Item. Keeping registered_at absent from a putItem does NOT
-    protect the field; it DELETES it. The file must use updateItem so wiring it
-    up in the future does not silently undo the deploy-stamp contract."""
-    import json as _json
-    from pathlib import Path
-
-    sfn_path = (
-        Path(__file__).parent.parent.parent
-        / "sam" / "sfn_templates" / "helpers" / "register_pipeline" / "sfn.tpl.json"
-    )
-    content = sfn_path.read_text()
-    # .tpl.json files contain ${var} substitutions — strip them before parsing.
-    import re
-    cleaned = re.sub(r'"?\$\{[^}]+\}"?', '"__placeholder__"', content)
-    template = _json.loads(cleaned)
-
-    register_state = template["States"]["RegisterPipeline"]
-    assert register_state["Resource"] == "arn:aws:states:::dynamodb:updateItem", (
-        "RegisterPipeline must use updateItem, not putItem — putItem replaces "
-        "the entire row and would delete registered_at"
-    )
-    assert "registered_at" not in _json.dumps(register_state)
-
-
-# ---------------------------------------------------------------------------
 # Half 2: polyris-deploy writes registered_at via UpdateItem
 # ---------------------------------------------------------------------------
 

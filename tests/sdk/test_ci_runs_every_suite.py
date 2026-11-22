@@ -2,8 +2,8 @@
 
 CI lists each Lambda's suite as its own step and calls one make target per
 pytest directory, so a new suite or directory is silently skipped until
-someone wires it in. The coordination, query_subscriptions and bucket_cleanup
-suites were skipped that way, and so was tests/docs, though a comment in
+someone wires it in. The coordination and bucket_cleanup suites (and a
+Lambda suite since removed) were skipped that way, and so was tests/docs, though a comment in
 ci.yml said it ran.
 """
 

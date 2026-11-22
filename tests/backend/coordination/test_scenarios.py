@@ -565,18 +565,6 @@ def test_an_operator_skip_holds_when_the_run_task_could_not_be_stopped(world):
     assert world.running_tasks(run) == ["load"]
 
 
-@needs_binding("rows-migration")
-@defect("B-O3")
-def test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided(world):
-    run = world.start_run(world.deploy(chain("orders", "extract", "load"), before_upgrade=True), DATE)
-    world.fail_stops("ThrottlingException", times=10)
-    world.skip(run, "load")                 # the console cannot stop load's v1.1.4 wrapper
-    world.time_out_registration(run, "load")    # that wrapper retries its wait and registers again
-    world.complete(run, "extract")
-    assert world.status(run, "load") == "skipped"
-    assert world.task_runs(run, "load") == 0
-
-
 @defect("B-O4")
 def test_run_task_never_starts_a_task_an_operator_decided_after_its_wait(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)

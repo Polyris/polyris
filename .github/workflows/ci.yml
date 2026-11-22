@@ -153,10 +153,6 @@ jobs:
           # Functions is a fake at the boto3 boundary.
           cd sam/lambdas/coordination && PYTHONPATH=. python -m pytest tests/ -v
 
-      - name: Run query_subscriptions tests
-        run: |
-          cd sam/lambdas/query_subscriptions && PYTHONPATH=. python -m pytest test_query_subscriptions.py -v
-
       - name: Run bucket_cleanup tests
         run: |
           cd sam/lambdas/bucket_cleanup && PYTHONPATH=. python -m pytest test_bucket_cleanup.py -v

@@ -33,21 +33,9 @@ Rules:
    `(ClientError, BotoCoreError)` → red `❌` → `sys.exit(1)` pattern so the
    operator sees the failure in the same style as every other deploy step.
 
-4. `sam/sfn_templates/helpers/register_pipeline/sfn.tpl.json` (the orphaned
-   `polyris-register-pipeline` EXPRESS SFN, deployed but not called by any current
-   code path) has been migrated to `updateItem` for the same reason. Using `putItem`
-   is a landmine: a `putItem` without `registered_at` in its `Item` does NOT
-   preserve the field — it DELETES it, because `putItem` replaces the entire row.
-   The correct mitigation is `updateItem`, which only touches named attributes.
-   Do not revert this SFN back to `putItem`.
-
-Covered by `tests/sdk/test_deploy_registered_at.py` — all three checks are
-pinned there: (1) generated pipeline SFN omits `registered_at`; (2) CLI writes
-it via `_stamp_registered_at`; (3) orphaned helper SFN's `RegisterPipeline`
-state uses `updateItem` and does not write `registered_at`. Note: the same
-`.tpl.json` file writes `registered_at` in its `WriteSubscription` state to the
-`asset_subscriptions` table — that is a different field on a different table and
-is intentional.
+Covered by `tests/sdk/test_deploy_registered_at.py` — both checks are pinned
+there: (1) generated pipeline SFN omits `registered_at`; (2) CLI writes it via
+`_stamp_registered_at`.
 
 ## Context managers that push/pop shared state must save and restore, never just clear
 
