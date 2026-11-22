@@ -102,6 +102,13 @@ class TestPipelineStatus:
         name = registered_pipelines[0] if isinstance(registered_pipelines[0], str) else registered_pipelines[0]["name"]
         resp = api.get("/api/pipeline-status", params={"name": name})
         assert resp["status"] == 200
+        assert "selected_execution" in resp["body"] and isinstance(resp["body"]["tasks"], list)
+
+    def test_the_latest_run_of_its_date_is_the_one_shown(self, api, registered_pipelines):
+        """ADR #137 §5: found with a query of pipeline-date-index, no scan; the run named is the date's latest."""
+        name, run = _latest_run(api, registered_pipelines)
+        body = api.get("/api/pipeline-status", params={"name": name, "date": run["date"]})["body"]
+        assert body["selected_execution"] is not None and body["pipeline_name"] == name
 
 
 class TestPipelineExecutions:
@@ -116,7 +123,35 @@ class TestPipelineExecutions:
             pytest.skip("No pipelines registered")
         name = registered_pipelines[0] if isinstance(registered_pipelines[0], str) else registered_pipelines[0]["name"]
         resp = api.get("/api/pipeline-executions", params={"name": name})
+        if resp["status"] == 503 and resp["body"].get("code") == "INDEX_BUILDING":
+            pytest.skip("run-start-index is still being built")
         assert resp["status"] == 200
+        assert "next" in resp["body"]
+
+    def test_each_run_says_its_status_and_failed_tasks_newest_first(self, api, registered_pipelines):
+        """ADR #137 §4, §5: run rows, newest first; the status from the run row's summary."""
+        name, _ = _latest_run(api, registered_pipelines)
+        runs = api.get("/api/pipeline-executions", params={"name": name})["body"]["executions"]
+        for run in runs:
+            assert run["status"] in RUN_STATUSES and isinstance(run["failed_tasks"], int), run
+        starts = [r["started_at"] for r in runs]
+        assert starts == sorted(starts, reverse=True)
+
+    def test_a_range_and_a_date_find_the_run(self, api, registered_pipelines):
+        """D100: a range walks every start day of the window with a filter on the logical date."""
+        name, run = _latest_run(api, registered_pipelines)
+        ranged = api.get("/api/pipeline-executions",
+                         params={"name": name, "start_date": run["date"], "end_date": run["date"]})["body"]
+        dated = api.get("/api/pipeline-executions", params={"name": name, "date": run["date"]})["body"]
+        assert run["execution_id"] in [e["execution_id"] for e in ranged["executions"]]
+        assert run["execution_id"] in [e["execution_id"] for e in dated["executions"]]
+
+    def test_a_bad_range_is_refused(self, api, registered_pipelines):
+        if not registered_pipelines:
+            pytest.skip("No pipelines registered")
+        name = registered_pipelines[0] if isinstance(registered_pipelines[0], str) else registered_pipelines[0]["name"]
+        resp = api.get("/api/pipeline-executions", params={"name": name, "start_date": "2026-13-01"})
+        assert resp["status"] == 400
 
 
 class TestPipelineDAG:
@@ -132,6 +167,26 @@ class TestPipelineDAG:
         name = registered_pipelines[0] if isinstance(registered_pipelines[0], str) else registered_pipelines[0]["name"]
         resp = api.get("/api/pipeline-dag", params={"name": name})
         assert resp["status"] == 200
+        assert resp["body"]["dag_source"] in {"registry", "inferred"}
+
+    def test_a_run_started_on_1_3_draws_its_own_spec_version(self, api, registered_pipelines):
+        """ADR #137 §8: the graph the run ran with, from the spec version its run row names."""
+        name, run = _latest_run(api, registered_pipelines)
+        body = api.get("/api/pipeline-dag", params={"name": name, "pipeline_execution": run["execution_id"]})["body"]
+        assert body["dag_source"] == "run" and body["nodes"]
+
+
+def _latest_run(api, registered_pipelines):
+    """A pipeline with a run started on 1.3, and that run; skips when no pipeline has one."""
+    for p in registered_pipelines:
+        name = p if isinstance(p, str) else p["name"]
+        resp = api.get("/api/pipeline-executions", params={"name": name, "page_size": "1"})
+        if resp["status"] == 503 and resp["body"].get("code") == "INDEX_BUILDING":
+            pytest.skip("run-start-index is still being built")
+        runs = resp["body"].get("executions") or []
+        if runs:
+            return name, runs[0]
+    pytest.skip("No pipeline has a run started on 1.3")
 
 
 class TestPipelineLogs:

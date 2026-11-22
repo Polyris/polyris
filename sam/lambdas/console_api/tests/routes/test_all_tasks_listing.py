@@ -52,15 +52,9 @@ def _mixed_rows():
 
 
 @pytest.fixture
-def no_reconcile(mocker):
-    """_reconcile_orphaned_tasks describes live SFN executions; not under test here."""
-    mocker.patch("routes.tasks._reconcile_orphaned_tasks", side_effect=lambda t: t)
-
-
-@pytest.fixture
 def no_scan(mocker):
     """Nothing in this route may Scan the tokens table any more (see TestSource)."""
-    return mocker.patch("routes.tasks.executions_repo.scan",
+    return mocker.patch("routes.tasks.executions_repo.discover_pipeline_names",
                         side_effect=AssertionError("get_all_tasks must never Scan"))
 
 
@@ -73,7 +67,7 @@ def _body(resp):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestSource:
-    def test_no_filter_fans_out_over_the_window(self, mocker, no_scan, no_reconcile):
+    def test_no_filter_fans_out_over_the_window(self, mocker, no_scan):
         """No pipeline to hash on, so `date` is the shard key and the feed walks it —
         one query per day, never a Scan of the whole table."""
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date",
@@ -86,7 +80,7 @@ class TestSource:
         assert by_date.call_count == Limits.SLA_DAYS
         by_pipeline.assert_not_called()
 
-    def test_pipeline_filter_uses_the_index_not_a_scan(self, mocker, no_scan, no_reconcile):
+    def test_pipeline_filter_uses_the_index_not_a_scan(self, mocker, no_scan):
         """One pipeline, no date: pipeline-date-index, so the tasks half of History
         reaches as far back as the runs half instead of stopping at the window."""
         by_pipeline = mocker.patch("routes.tasks.executions_repo.query_runs_by_pipeline",
@@ -100,7 +94,7 @@ class TestSource:
         assert by_pipeline.call_args.args[0] == "sales"
         by_date.assert_not_called()
 
-    def test_explicit_date_is_one_indexed_query(self, mocker, no_scan, no_reconcile):
+    def test_explicit_date_is_one_indexed_query(self, mocker, no_scan):
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date",
                                return_value=_mixed_rows())
         by_pipeline = mocker.patch("routes.tasks.executions_repo.query_runs_by_pipeline")
@@ -110,7 +104,7 @@ class TestSource:
         by_date.assert_called_once()
         by_pipeline.assert_not_called()
 
-    def test_date_and_pipeline_narrow_the_same_key_condition(self, mocker, no_scan, no_reconcile):
+    def test_date_and_pipeline_narrow_the_same_key_condition(self, mocker, no_scan):
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date",
                                return_value=_mixed_rows())
 
@@ -126,7 +120,7 @@ class TestSource:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestPaging:
-    def test_full_page_hands_back_a_cursor(self, mocker, no_scan, no_reconcile):
+    def test_full_page_hands_back_a_cursor(self, mocker, no_scan):
         rows = [_task_row(name=f"t{i}", started=f"2026-07-08T10:{i:02d}:00Z") for i in range(5)]
         mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=rows)
 
@@ -136,13 +130,13 @@ class TestPaging:
         assert [t["task_name"] for t in body["tasks"]] == ["t4", "t3", "t2"]
         assert body["next"] == "2026-07-08T10:02:00Z"
 
-    def test_no_cursor_when_nothing_older_exists(self, mocker, no_scan, no_reconcile):
+    def test_no_cursor_when_nothing_older_exists(self, mocker, no_scan):
         """`next: null` is the honest "that is all" the old [:limit] slice could not say."""
         mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=[_task_row()])
         body = _body(get_all_tasks(_event(date="2026-07-08", limit=3)))
         assert body["next"] is None
 
-    def test_cursor_serves_the_next_page_without_repeats(self, mocker, no_scan, no_reconcile):
+    def test_cursor_serves_the_next_page_without_repeats(self, mocker, no_scan):
         rows = [_task_row(name=f"t{i}", started=f"2026-07-08T10:{i:02d}:00Z") for i in range(5)]
         mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=rows)
 
@@ -153,8 +147,7 @@ class TestPaging:
         assert second["next"] is None
         assert not {t["task_name"] for t in first["tasks"]} & {t["task_name"] for t in second["tasks"]}
 
-    def test_cursor_starts_the_fan_out_at_its_own_date(self, mocker, no_scan, no_reconcile,
-                                                       frozen_today):
+    def test_cursor_starts_the_fan_out_at_its_own_date(self, mocker, no_scan, frozen_today):
         """Paging deeper must not re-query the days it already served — and so costs
         fewer queries, not more."""
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=[])
@@ -166,8 +159,7 @@ class TestPaging:
         assert "2026-07-15" not in queried          # already served
         assert len(queried) == Limits.SLA_DAYS - 2
 
-    def test_a_cursor_older_than_the_window_queries_nothing(self, mocker, no_scan,
-                                                            no_reconcile, frozen_today):
+    def test_a_cursor_older_than_the_window_queries_nothing(self, mocker, no_scan, frozen_today):
         """The walk never leaves the window, whatever cursor a client sends back."""
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=[])
 
@@ -176,7 +168,7 @@ class TestPaging:
         assert by_date.call_count == 0
         assert body["next"] is None
 
-    def test_cursor_seeds_the_index_read_for_a_pipeline(self, mocker, no_scan, no_reconcile):
+    def test_cursor_seeds_the_index_read_for_a_pipeline(self, mocker, no_scan):
         by_pipeline = mocker.patch("routes.tasks.executions_repo.query_runs_by_pipeline",
                                    return_value=([], None))
 
@@ -190,7 +182,7 @@ class TestPaging:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFilters:
-    def test_status_is_pushed_into_the_query_when_indexed_by_date(self, mocker, no_scan, no_reconcile):
+    def test_status_is_pushed_into_the_query_when_indexed_by_date(self, mocker, no_scan):
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=[])
 
         get_all_tasks(_event(date="2026-07-08", status="failed"))
@@ -199,13 +191,13 @@ class TestFilters:
         assert expr["operator"] == "="
         assert expr["values"][1] == "failed"
 
-    def test_no_status_filter_means_no_filter_expression(self, mocker, no_scan, no_reconcile):
+    def test_no_status_filter_means_no_filter_expression(self, mocker, no_scan):
         """DynamoDB rejects an empty/unused expression — omit it entirely."""
         by_date = mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=[])
         get_all_tasks(_event(date="2026-07-08"))
         assert by_date.call_args.kwargs["filter_expr"] is None
 
-    def test_status_is_applied_in_python_on_the_index_path(self, mocker, no_scan, no_reconcile):
+    def test_status_is_applied_in_python_on_the_index_path(self, mocker, no_scan):
         """The index read takes no FilterExpression (its whole-date accounting counts
         returned rows), so the route must filter — or ?status= would silently do nothing."""
         mocker.patch(
@@ -216,7 +208,7 @@ class TestFilters:
         body = _body(get_all_tasks(_event(pipeline="sales", status="failed")))
         assert [t["task_name"] for t in body["tasks"]] == ["ok"]
 
-    def test_filters_are_echoed_back(self, mocker, no_scan, no_reconcile):
+    def test_filters_are_echoed_back(self, mocker, no_scan):
         mocker.patch("routes.tasks.executions_repo.query_runs_by_date", return_value=[])
         body = _body(get_all_tasks(_event(date="2026-07-08", pipeline="sales", status="failed")))
         assert body["filters"] == {"status": "failed", "date": "2026-07-08", "pipeline": "sales"}
@@ -226,7 +218,7 @@ class TestFilters:
 # Degradation
 # ──────────────────────────────────────────────────────────────────────────────
 
-def test_one_bad_day_does_not_lose_the_feed(mocker, no_scan, no_reconcile):
+def test_one_bad_day_does_not_lose_the_feed(mocker, no_scan):
     """A failing day is logged and skipped — the other 13 still answer (ADR #38)."""
     mocker.patch("routes.tasks.executions_repo.query_runs_by_date",
                  side_effect=[Exception("throttled")] + [[_task_row()]] * (Limits.SLA_DAYS - 1))

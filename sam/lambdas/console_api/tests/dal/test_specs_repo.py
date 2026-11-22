@@ -140,7 +140,7 @@ def test_a_wrapper_step_is_drawn_as_a_task():
 def _dag_route(mocker, registry):
     from routes import pipelines_info
     mocker.patch.object(pipelines_info.pipelines_repo, "get", return_value=registry)
-    mocker.patch.object(pipelines_info.executions_repo, "scan", return_value=[])
+    mocker.patch.object(pipelines_info.executions_repo, "rows_of_pipeline_date", return_value=[])
     response = pipelines_info.get_pipeline_dag("orders", {"queryStringParameters": {"date": "2026-11-18"}})
     return json.loads(response["body"])
 

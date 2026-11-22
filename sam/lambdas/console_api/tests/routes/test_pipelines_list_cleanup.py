@@ -26,7 +26,7 @@ def pipelines_module(mocker):
 
     executions_repo = mocker.MagicMock()
     executions_repo.query_by_date.return_value = []
-    executions_repo.scan.return_value = []
+    executions_repo.discover_pipeline_names.return_value = []
     mocker.patch.object(pipelines_module, 'executions_repo', executions_repo)
 
     return {

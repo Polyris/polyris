@@ -326,3 +326,22 @@ def fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None:
     except (ClientError, BotoCoreError) as err:
         log.warn("fill_triggered_by", "batch_get failed; triggered_by left null",
                  error=str(err))
+
+
+def latest_run_of_date(pipeline: str, date: str) -> Optional[str]:
+    """The run of ``pipeline`` for logical ``date`` that started last, or None when the date has none.
+
+    Found through the pipeline's task rows of the date (``rows_of_pipeline_date``, a
+    query where a scan of the table stood, ADR #137 §5); a run starts with its first
+    task row, so the run whose earliest row started last is the latest.
+    """
+    starts: Dict[str, str] = {}
+    for row in executions_repo.rows_of_pipeline_date(pipeline, date):
+        pipeline_execution = row.get('pipeline_execution')
+        if not pipeline_execution:
+            continue
+        started = row.get('started_at') or ''
+        if pipeline_execution not in starts or (started and (not starts[pipeline_execution]
+                                                             or started < starts[pipeline_execution])):
+            starts[pipeline_execution] = started
+    return max(starts, key=lambda run: (starts[run], run)) if starts else None

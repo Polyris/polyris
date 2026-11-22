@@ -159,13 +159,11 @@ export function usePipelineExecutionsQuery(pipelineName: string, date: string) {
 
 
 /**
- * usePipelineRunsQuery - Every run of a pipeline, newest first, no date window.
+ * usePipelineRunsQuery - A pipeline's runs of the last RUNS_WINDOW_DAYS days, newest first.
  *
- * Backed by pipeline-date-index: omitting `date` makes the API return runs
- * newest-first with an opaque `next` cursor, rather than only the runs that
- * happen to fall inside a hardcoded day window. How far back you can see is
- * therefore governed by the row TTL alone — raising the TTL deepens history
- * with no code change here.
+ * Omitting `date` makes the API read the pipeline's run rows from run-start-index
+ * (ADR #137 §5) and answer newest first with an opaque `next` cursor; only runs
+ * started on 1.3 have run rows.
  *
  * Paginates with useInfiniteQuery: `fetchNextPage()` loads the next (older)
  * page; `hasNextPage` is false once nothing older exists.

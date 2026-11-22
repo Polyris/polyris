@@ -78,14 +78,32 @@ Fields `recent_runs`, `sla`, `waiting_on` and `failed_tasks` are filled only whe
 ### Get Pipeline Status
 
 ```http
-GET /api/pipeline-status?name={pipeline_name}
+GET /api/pipeline-status?name={pipeline_name}&date={YYYY-MM-DD}&pipeline_execution={execution_name}
 ```
+
+Returns one run's tasks: the run named by `pipeline_execution`, or else the latest run of `date` (today by default),
+found through the pipeline's task rows of that date (`pipeline-date-index`; ADR #137 §5). `selected_execution` names
+the run, `null` when the date has none. Each task's status is the one its row holds: the console asks Step Functions
+nothing about a run.
 
 ### Get Pipeline Executions
 
 ```http
-GET /api/pipeline-executions?name={pipeline_name}
+GET /api/pipeline-executions?name={pipeline_name}&page_size=15&before={cursor}
+GET /api/pipeline-executions?name={pipeline_name}&date={YYYY-MM-DD}
+GET /api/pipeline-executions?name={pipeline_name}&start_date={YYYY-MM-DD}&end_date={YYYY-MM-DD}
 ```
+
+A pipeline's runs, newest first, each as `/api/runs` shows it (`execution_id`, `execution_short`, `date`, `status`,
+`failed_tasks`, `started_at`, `finished_at`, `duration_ms`, `triggered_by`):
+- without a date, its history: the pipeline's run rows of the last 90 days by the day each run started
+  (`run-start-index`), a page at a time; pass `next` back as `before` (opaque, `null` once nothing older exists);
+- with `start_date` and `end_date`, the runs whose logical date lies in that range, from every start day of the
+  90-day window, since a run can start before its date or long after it;
+- with `date`, that date's runs from its task rows, runs started before the upgrade included.
+
+Only runs started on 1.3 have run rows, so the history and a range show no run started before the upgrade. While
+DynamoDB builds `run-start-index` after an upgrade, the history and a range answer 503 with `"code": "INDEX_BUILDING"`.
 
 ### Get Pipeline DAG
 
@@ -94,11 +112,12 @@ GET /api/pipeline-dag?name={pipeline_name}&pipeline_execution={execution_name}
 ```
 
 Returns DAG structure with lookup priority:
-1. **Snapshot** — per-execution snapshot from `tokens_table` (if `pipeline_execution` provided)
-2. **Registry** — current DAG from `pipeline_registry`
-3. **Inferred** — reconstructed from task execution data
+1. **Run** — for a `pipeline_execution` started on 1.3, the task specs of the version its run row names: the graph it
+   ran with (ADR #137 §8). **Snapshot** — for a run started before 1.3, its DAG snapshot; 1.4 removes this reader
+2. **Registry** — the task specs of the version the registry names: the current definition
+3. **Inferred** — from the run's task rows, or the latest run's of `date`, when no specs can be read
 
-Response includes `dag_source` field: `'snapshot'` | `'registry'` | `'inferred'`
+Response includes `dag_source` field: `'run'` | `'snapshot'` | `'registry'` | `'inferred'`
 
 ### Run Pipeline
 
@@ -130,10 +149,8 @@ one page at a time:
 
 Paging (same contract as `/api/runs` and `/api/pipeline-executions`): pass the previous
 response's `next` back as `before` to get the rows older than it. **`next` is opaque** —
-don't build one; endpoints encode it differently (this feed uses a `started_at`, the
-execution list a date) and the encoding is not part of the contract. `next: null` means
-the feed is exhausted — it is the only honest end-of-feed signal, since a full page is
-not one.
+don't build one; its encoding is not part of the contract. `next: null` means the feed
+is exhausted — it is the only honest end-of-feed signal, since a full page is not one.
 
 How far back a page can reach depends on the filters:
 - `pipeline` (no date) — `pipeline-date-index`, no window; bounded by the row TTL.

@@ -79,6 +79,7 @@ READS = {
     "query_runs_by_pipeline": lambda repo: repo.query_runs_by_pipeline("orders")[0],
     "query_runs_by_date": lambda repo: repo.query_runs_by_date(DATE, min_rows=10),
     "query_by_date_raw": lambda repo: repo.query_by_date_raw(KeyConditionExpression=Key("date").eq(DATE))["Items"],
+    "rows_of_pipeline_date": lambda repo: repo.rows_of_pipeline_date("orders", DATE),
 }
 
 

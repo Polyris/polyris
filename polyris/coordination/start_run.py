@@ -224,6 +224,9 @@ def task_items(call: Call, specs: Mapping[str, TaskSpec], *, now: datetime) -> L
             task_row.SPEC_ID: call.spec_id, task_row.SPEC_HASH: spec.text_hash, task_row.READINESS: readiness_text(spec),
             task_row.TASK_TYPE: spec.fields[TaskSpecKey.TASK_TYPE],
             task_row.TRIGGERED_BY: triggered_by(call),
+            # When the row was written, as 1.2's registration stamped it: the date indexes project it, and the
+            # console orders a date's runs and the Tasks tab by it.
+            task_row.STARTED_AT: stamp,
             task_row.TTL: retention.ttl(now, retention.HISTORY),
         }
         backfill = call.execution_input.get(RunArg.BACKFILL_ID)

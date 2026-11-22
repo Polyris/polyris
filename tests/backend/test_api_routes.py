@@ -6,9 +6,8 @@ and routes/tasks.py with mocked DAL repositories.
 
 Covers:
 - list_pipelines: the registry's pipelines (the stats on run rows: console_api tests/routes/test_pipelines_list_runs.py)
-- get_pipeline_status: reconciliation, stats counting, sfn_arn field
-- get_pipeline_dag: edges=[] handling, snapshot versioning
-- _reconcile_orphaned_tasks: orphan detection and abort marking
+- get_pipeline_status: the latest run of a date, stats counting, attempt and max_retries
+- get_pipeline_dag: edges=[] handling, a 1.2 run's snapshot, the specs
 """
 
 import json
@@ -105,6 +104,11 @@ class MockRepo:
     def query_by_date_raw(self, **kwargs):
         return {'Items': self.items, 'Count': len(self.items)}
 
+    def rows_of_pipeline_date(self, pipeline_name, date):
+        """One pipeline's task rows of one date (pipeline-date-index), internal rows dropped."""
+        return [i for i in self.items if i.get('pipeline_name') == pipeline_name and i.get('date') == date
+                and not str(i.get('execution_name', '')).startswith(('_', 'dag_snapshot::'))]
+
     def query_by_pipeline_execution(self, pipeline_execution,
                                      projection=None, expr_names=None,
                                      limit=None):
@@ -130,6 +134,7 @@ def test_list_pipelines_basic(mocker):
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
     mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
     from routes.pipelines_list import list_pipelines
@@ -150,6 +155,7 @@ def test_list_pipelines_schedule_from_registry(mocker):
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
     mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
     from routes.pipelines_list import list_pipelines
@@ -179,15 +185,8 @@ def test_pipeline_status_stats_count_all_statuses(mocker):
         {'execution_name': 'e5', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
          'task_name': 't5', 'status': 'skipped', 'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
     ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
-
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    mocker.patch('feed.executions_repo', mock_execs)
     from routes.pipelines_list import get_pipeline_status
     resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
 
@@ -198,79 +197,6 @@ def test_pipeline_status_stats_count_all_statuses(mocker):
     assert stats['total'] == 5
 
 
-def test_pipeline_status_reconciliation_marks_aborted(mocker):
-    """Orphaned waiting tasks become aborted when execution is FAILED."""
-    mock_execs = MockRepo([
-        {'execution_name': 'e1', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
-         'task_name': 't1', 'status': 'success', 'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
-        {'execution_name': 'e2', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
-         'task_name': 't2', 'status': 'waiting_delay', 'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
-        {'execution_name': 'e3', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
-         'task_name': 't3', 'status': 'running', 'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
-    ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'FAILED'}
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
-    from routes.pipelines_list import get_pipeline_status
-    resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
-
-    tasks = resp['tasks']
-    statuses = {t['task_name']: t['status'] for t in tasks}
-    assert statuses['t1'] == 'success'
-    assert statuses['t2'] == 'aborted'
-    assert statuses['t3'] == 'aborted'
-    assert resp['stats']['stopped'] == 2
-
-
-def test_pipeline_status_sfn_arn_field(mocker):
-    """Reconciliation reads sfn_arn (not arn) from registry."""
-    mock_execs = MockRepo([
-        {'execution_name': 'e1', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
-         'task_name': 't1', 'status': 'waiting', 'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
-    ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'ABORTED'}
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
-    from routes.pipelines_list import get_pipeline_status
-    resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
-
-    mock_sfn.describe_execution.assert_called_once()
-    assert resp['tasks'][0]['status'] == 'aborted'
-
-
-def test_pipeline_status_no_reconciliation_when_running(mocker):
-    """No reconciliation when execution is RUNNING."""
-    mock_execs = MockRepo([
-        {'execution_name': 'e1', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1',
-         'task_name': 't1', 'status': 'waiting_delay', 'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
-    ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'RUNNING'}
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
-    from routes.pipelines_list import get_pipeline_status
-    resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
-
-    assert resp['tasks'][0]['status'] == 'waiting_delay'
-
-
 def test_pipeline_status_attempt_and_max_retries_in_task(mocker):
     """attempt and max_retries are present on each task row returned by get_pipeline_status."""
     mock_execs = MockRepo([
@@ -279,15 +205,8 @@ def test_pipeline_status_attempt_and_max_retries_in_task(mocker):
          'date': TODAY, 'started_at': '2026-01-01T00:00:00Z',
          'attempt': Decimal('2'), 'task_config': '{"retries": 3, "timeout": 7200}'},
     ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
-
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    mocker.patch('feed.executions_repo', mock_execs)
     from routes.pipelines_list import get_pipeline_status
     resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
 
@@ -305,15 +224,8 @@ def test_pipeline_status_max_retries_top_level_wins(mocker):
          'max_retries': 5,
          'task_config': '{"retries": 3, "timeout": 7200}'},
     ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
-
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    mocker.patch('feed.executions_repo', mock_execs)
     from routes.pipelines_list import get_pipeline_status
     resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
 
@@ -327,15 +239,8 @@ def test_pipeline_status_attempt_absent_returns_none(mocker):
          'pipeline_execution': 'exec-1', 'task_name': 'extract', 'status': 'success',
          'date': TODAY, 'started_at': '2026-01-01T00:00:00Z'},
     ])
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'SUCCEEDED'}
-
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
+    mocker.patch('feed.executions_repo', mock_execs)
     from routes.pipelines_list import get_pipeline_status
     resp = _parse_response(get_pipeline_status('daily', _make_event({'date': TODAY})))
 
@@ -354,6 +259,7 @@ def test_pipeline_dag_empty_edges(mocker, deploy_specs):
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_info.pipelines_repo', mock_pipelines)
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('parallel', _make_event()))
@@ -368,6 +274,7 @@ def test_pipeline_dag_with_edges(mocker, deploy_specs):
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_info.pipelines_repo', mock_pipelines)
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('chain', _make_event()))
@@ -386,6 +293,7 @@ def test_pipeline_dag_no_dag_in_registry(mocker):
     ])
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_info.pipelines_repo', mock_pipelines)
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('nodag', _make_event({'date': TODAY})))
@@ -406,6 +314,7 @@ def test_pipeline_dag_snapshot_preferred_over_registry(mocker, deploy_specs):
     ])
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_info.pipelines_repo', mock_pipelines)
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('daily', _make_event({
@@ -427,6 +336,7 @@ def test_pipeline_dag_falls_back_to_registry_without_snapshot(mocker, deploy_spe
     ])
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_info.pipelines_repo', mock_pipelines)
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('daily', _make_event({
@@ -443,116 +353,12 @@ def test_pipeline_dag_no_execution_uses_registry(mocker, deploy_specs):
     mock_execs = MockRepo()
 
     mocker.patch('routes.pipelines_info.executions_repo', mock_execs)
+    mocker.patch('feed.executions_repo', mock_execs)
     mocker.patch('routes.pipelines_info.pipelines_repo', mock_pipelines)
     from routes.pipelines_info import get_pipeline_dag
     resp = _parse_response(get_pipeline_dag('daily', _make_event()))
 
     assert resp['dag_source'] == 'registry'
-
-
-# ============================================================
-# _reconcile_orphaned_tasks
-# ============================================================
-
-def test_reconcile_orphaned_tasks_marks_aborted(mocker):
-    """Non-terminal tasks in FAILED execution → aborted."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'FAILED'}
-    tasks = [
-        {'task_name': 'a', 'status': 'success', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-        {'task_name': 'b', 'status': 'waiting_delay', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-        {'task_name': 'c', 'status': 'running', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-    ]
-
-    mocker.patch('routes.tasks.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.tasks.sfn', mock_sfn)
-    from routes.tasks import _reconcile_orphaned_tasks
-    result = _reconcile_orphaned_tasks(tasks)
-
-    assert result[0]['status'] == 'success'
-    assert result[1]['status'] == 'aborted'
-    assert result[2]['status'] == 'aborted'
-
-
-def test_reconcile_all_terminal_no_sfn_call(mocker):
-    """All tasks terminal → no SFN API calls."""
-    mock_sfn = mocker.MagicMock()
-    tasks = [
-        {'task_name': 'a', 'status': 'success', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-        {'task_name': 'b', 'status': 'failed', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-    ]
-
-    mocker.patch('routes.tasks.pipelines_repo', MockRepo())
-    mocker.patch('routes.tasks.sfn', mock_sfn)
-    from routes.tasks import _reconcile_orphaned_tasks
-    _reconcile_orphaned_tasks(tasks)
-
-    mock_sfn.describe_execution.assert_not_called()
-
-
-def test_reconcile_sfn_arn_fallback_to_arn(mocker):
-    """Registry with only 'arn' (no sfn_arn) still enables reconciliation."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'FAILED'}
-    tasks = [
-        {'task_name': 'a', 'status': 'running', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-    ]
-
-    mocker.patch('routes.tasks.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.tasks.sfn', mock_sfn)
-    from routes.tasks import _reconcile_orphaned_tasks
-    result = _reconcile_orphaned_tasks(tasks)
-
-    assert result[0]['status'] == 'aborted'
-
-
-def test_reconcile_multiple_pipelines_independent(mocker):
-    """Tasks from different pipelines reconciled independently."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'p1', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:p1'},
-        {'pipeline_name': 'p2', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:p2'},
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.side_effect = lambda executionArn: (
-        {'status': 'FAILED'} if ':p1:' in executionArn else {'status': 'RUNNING'}
-    )
-    tasks = [
-        {'task_name': 'a', 'status': 'running', 'pipeline_name': 'p1', 'pipeline_execution': 'exec-1'},
-        {'task_name': 'b', 'status': 'running', 'pipeline_name': 'p2', 'pipeline_execution': 'exec-2'},
-    ]
-
-    mocker.patch('routes.tasks.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.tasks.sfn', mock_sfn)
-    from routes.tasks import _reconcile_orphaned_tasks
-    result = _reconcile_orphaned_tasks(tasks)
-
-    assert result[0]['status'] == 'aborted'
-    assert result[1]['status'] == 'running'
-
-
-def test_reconcile_running_execution_unchanged(mocker):
-    """Tasks in RUNNING execution stay unchanged."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:daily'}
-    ])
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'RUNNING'}
-    tasks = [
-        {'task_name': 'a', 'status': 'waiting_delay', 'pipeline_name': 'daily', 'pipeline_execution': 'exec-1'},
-    ]
-
-    mocker.patch('routes.tasks.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.tasks.sfn', mock_sfn)
-    from routes.tasks import _reconcile_orphaned_tasks
-    result = _reconcile_orphaned_tasks(tasks)
-
-    assert result[0]['status'] == 'waiting_delay'
 
 
 # ============================================================

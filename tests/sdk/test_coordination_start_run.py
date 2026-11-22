@@ -91,6 +91,12 @@ def test_each_task_gets_a_row_of_its_run_with_its_readiness_fields_and_spec():
     assert load["spec_hash"] == SPECS["load"].text_hash and load["task_date"] == "2026-11-18"
 
 
+def test_each_row_is_stamped_when_it_was_written_as_the_console_orders_by_it():
+    """The date indexes project started_at; the pipeline page picks a date's latest run and the Tasks tab pages
+    by it, as they did with 1.2's rows (the review of TR-5, "started_at without a writer")."""
+    assert {item["started_at"] for item in items_by_task().values()} == {"2026-11-19T06:00:00.000Z"}
+
+
 def test_a_task_the_run_skips_is_skipped_with_the_run_as_its_origin():
     audit = items_by_task()["audit"]
     assert (audit["status"], audit["skip_origin"]) == ("skipped", "run")

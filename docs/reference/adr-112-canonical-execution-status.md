@@ -12,8 +12,9 @@
 > and `aborted` while other tasks still waited or ran, are gone, and the console shows
 > the count of a running run's failed tasks beside it. A 1.3 run's status comes from its
 > run row's summary of its task statuses, with the mark of a failed direct step
-> (`run_end.shown_status`). Decision 5 is superseded for `/runs`: it asks Step Functions
-> nothing about a run, since the engine keeps the run row true.
+> (`run_end.shown_status`). Decisions 2 and 5, and the reconciliation in decision 7, are
+> superseded: no console route asks Step Functions about a run, since the engine keeps the
+> run row true, so the console no longer derives `timed_out` or `recovered`.
 
 ## Context
 

@@ -375,12 +375,22 @@ describe('PipelineDetail', () => {
             expect(screen.getByText('No runs on this date')).toBeInTheDocument();
         });
 
-        it('says "No runs yet" when there are none (not "none on this date")', () => {
+        it('names its window when there are none (not "none on this date")', () => {
             render(<PipelineDetail {...defaultProps} />);
             fireEvent.click(screen.getByRole('button', { name: /History/i }));
-            // The list spans every date, so an empty list means no runs at all —
-            // never the old "no executions for {date}" dead end.
-            expect(screen.getByText('No runs yet')).toBeInTheDocument();
+            // The list spans every date of the window (ADR #137 §5) — never the old
+            // "no executions for {date}" dead end.
+            expect(screen.getByText('No runs in the last 90 days')).toBeInTheDocument();
+        });
+
+        it('says how many tasks failed beside a run that is still running (ADR #137 §4)', () => {
+            mockRunsQuery.data = { pages: [{ executions: [
+                { execution_id: 'run-1', execution_short: 'run-1', date: '2024-01-15', status: 'running',
+                  failed_tasks: 2, started_at: '2024-01-15T10:00:00Z' },
+            ], next: null }] };
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByRole('button', { name: /History/i }));
+            expect(screen.getByText('running, 2 failed')).toBeInTheDocument();
         });
     });
 

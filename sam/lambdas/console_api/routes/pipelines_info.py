@@ -4,16 +4,16 @@ Team observability (metrics, logs) lives in ee/team/pipelines_info.py — ADR #9
 """
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
-from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import BotoCoreError, ClientError
 
 from dal import executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing
+from feed import latest_run_of_date
 from polyris.constants import TaskSpecKey as K
+from polyris.coordination import run_row
 from polyris.coordination.task_spec import SpecError
-from constants import Limits
 from response import cors_response
 from logger import log
 from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
@@ -67,86 +67,39 @@ def graph_from_specs(specs: Mapping[str, Any]) -> Dict[str, List[Dict[str, Any]]
 
 
 def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
-    """Get DAG structure for a pipeline from snapshot, task specs, or execution data.
+    """A pipeline's graph, or one run's (``pipeline_execution``).
 
-    Priority:
-    1. DAG snapshot (per-execution, survives redeploys) — if pipeline_execution given;
-       only 1.2 runs have one, and 1.4 removes this reader (ADR #137, *Migration*)
-    2. The task specs of the version the registry names (current pipeline definition)
-    3. Inferred from execution data (fallback)
+    Priority (``dag_source``):
+    1. ``run`` — a run started on 1.3: the specs of the version its run row names, the
+       graph it ran with (ADR #137 §8);
+       ``snapshot`` — a run from before 1.3, which has no run row: its DAG snapshot. Only
+       1.2 runs have one, and 1.4 removes this reader (ADR #137, *Migration*; D89);
+    2. ``registry`` — the specs of the version the registry names: the current definition;
+    3. ``inferred`` — from the run's task rows, or the latest run of the date's, when no
+       specs can be read. No route scans the tasks table (ADR #137 §5).
     """
     params = event.get('queryStringParameters') or {}
     date = params.get('date') or datetime.now(timezone.utc).strftime('%Y-%m-%d')
     pipeline_execution = params.get('pipeline_execution', '')
-    
-    # Get execution data to supplement DAG with wait_before info
+
     if pipeline_execution:
-        # Filter by specific execution
-        exec_items = executions_repo.query_by_pipeline_execution(pipeline_execution)
-    else:
-        # Fallback to date filter (with pagination)
-        exec_items = executions_repo.scan(
-            max_items=Limits.MAX_FETCH_ITEMS,
-            FilterExpression=Attr('pipeline_name').eq(pipeline_name) & Attr('date').eq(date)
-        )
-    
-    # Build map of task_name -> wait_before from execution data (use latest value)
-    wait_before_map = {}
-    task_started_at = {}  # Track when each task started to pick latest
-    for item in exec_items:
-        if should_skip_token_row(item):
-            continue
-        task_name = item.get('task_name', '')
-        if task_name:
-            wb = parse_wait_before(item.get('wait_before'))
-            if wb > 0:
-                started_at = item.get('started_at', '')
-                # Keep wait_before from the latest execution of this task
-                if task_name not in task_started_at or started_at > task_started_at[task_name]:
-                    wait_before_map[task_name] = wb
-                    task_started_at[task_name] = started_at
-    
-    # 1. Try DAG snapshot for this specific execution (survives redeploys)
-    if pipeline_execution:
-        try:
-            snapshot_key = f'{DAG_SNAPSHOT_PREFIX}{pipeline_execution}'
-            snapshot_item = executions_repo.get(snapshot_key)
-            if snapshot_item:
-                dag_str = snapshot_item.get('dag', '{}')
-                dag = json.loads(dag_str) if isinstance(dag_str, str) else dag_str
-                if dag.get('nodes') and isinstance(dag.get('edges'), list):
-                    for node in dag['nodes']:
-                        node_id = node.get('id', '')
-                        if node_id in wait_before_map and 'wait_before' not in node:
-                            node['wait_before'] = wait_before_map[node_id]
-                    
-                    return cors_response(200, {
-                        'name': pipeline_name,
-                        'nodes': dag['nodes'],
-                        'edges': dag['edges'],
-                        'dag_source': 'snapshot'
-                    })
-        except Exception as e:
-            log.error("pipelines", "Error getting DAG snapshot", error=str(e))
-    
-    # 2. The current definition: the task specs of the version the registry names
+        run = executions_repo.get(run_row.key(pipeline_execution))
+        if run is not None:
+            dag = _run_graph(pipeline_name, run)
+            if dag is not None:
+                return _graph_response(pipeline_name, dag, 'run')
+        else:
+            dag = _snapshot_graph(pipeline_execution)
+            if dag is not None:
+                return _graph_response(pipeline_name, dag, 'snapshot')
+
+    # The current definition: the task specs of the version the registry names
     try:
         registry_item = pipelines_repo.get(pipeline_name)
         if registry_item:
             dag = graph_from_specs(specs_repo.for_pipeline(registry_item))
             if dag['nodes']:
-                # Enrich nodes with wait_before from execution data
-                for node in dag['nodes']:
-                    node_id = node.get('id', '')
-                    if node_id in wait_before_map and 'wait_before' not in node:
-                        node['wait_before'] = wait_before_map[node_id]
-
-                return cors_response(200, {
-                    'name': pipeline_name,
-                    'nodes': dag['nodes'],
-                    'edges': dag['edges'],
-                    'dag_source': 'registry'
-                })
+                return _graph_response(pipeline_name, dag, 'registry')
     except SpecsMissing as e:
         log.warn("pipelines_info", "Pipeline names no task specs; drawing from its runs",
                  pipeline_name=pipeline_name, error=str(e))
@@ -154,54 +107,89 @@ def get_pipeline_dag(pipeline_name: str, event: Dict) -> Dict:
         log.error("pipelines_info", "Error reading the pipeline's task specs; drawing from its runs",
                   pipeline_name=pipeline_name, error=str(e))
 
-    # Fallback: build DAG from execution data
-    nodes = []
-    edges = []
+    # Fallback: the graph the run's task rows give, or the latest run's of the date
+    run_name = pipeline_execution or latest_run_of_date(pipeline_name, date)
+    rows = executions_repo.query_by_pipeline_execution(run_name) if run_name else []
+    return _graph_response(pipeline_name, _inferred_graph(rows), 'inferred')
+
+
+def _graph_response(pipeline_name: str, dag: Dict[str, Any], source: str) -> Dict:
+    return cors_response(200, {'name': pipeline_name, 'nodes': dag['nodes'], 'edges': dag['edges'],
+                               'dag_source': source})
+
+
+def _run_graph(pipeline_name: str, run: Mapping[str, Any]) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+    """A 1.3 run's graph from the specs of the version its run row names, or None when they cannot be read."""
+    try:
+        dag = graph_from_specs(specs_repo.for_pipeline(run))
+    except (SpecsMissing, SpecError, ClientError, BotoCoreError) as e:
+        log.error("pipelines_info", "Error reading the run's task specs; drawing the pipeline's",
+                  pipeline_name=pipeline_name, run=str(run.get(run_row.TABLE_KEY, '')), error=str(e))
+        return None
+    return dag if dag['nodes'] else None
+
+
+def _snapshot_graph(pipeline_execution: str) -> Optional[Dict[str, Any]]:
+    """A 1.2 run's DAG snapshot (D89; 1.4 removes this reader), with each task's countdown from its rows."""
+    try:
+        snapshot_item = executions_repo.get(f'{DAG_SNAPSHOT_PREFIX}{pipeline_execution}')
+    except (ClientError, BotoCoreError) as e:
+        log.error("pipelines", "Error getting DAG snapshot", error=str(e))
+        return None
+    if not snapshot_item:
+        return None
+    try:
+        dag_str = snapshot_item.get('dag', '{}')
+        dag = json.loads(dag_str) if isinstance(dag_str, str) else dag_str
+    except (json.JSONDecodeError, TypeError) as e:
+        log.error("pipelines", "Unreadable DAG snapshot", pipeline_execution=pipeline_execution, error=str(e))
+        return None
+    if not (isinstance(dag, dict) and dag.get('nodes') and isinstance(dag.get('edges'), list)):
+        return None
+    countdowns = _countdowns(executions_repo.query_by_pipeline_execution(pipeline_execution))
+    for node in dag['nodes']:
+        node_id = node.get('id', '')
+        if node_id in countdowns and 'wait_before' not in node:
+            node['wait_before'] = countdowns[node_id]
+    return dag
+
+
+def _countdowns(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """task_name -> wait_before of a 1.2 run's task rows, which carried it."""
+    countdowns: Dict[str, int] = {}
+    for item in rows:
+        if should_skip_token_row(item) or not item.get('task_name'):
+            continue
+        wait_before = parse_wait_before(item.get('wait_before'))
+        if wait_before > 0:
+            countdowns[item['task_name']] = wait_before
+    return countdowns
+
+
+def _inferred_graph(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """A graph from a run's task rows: a node per task, an edge per dependency the row names."""
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    countdowns = _countdowns(rows)
     seen_tasks = set()
-    
-    for item in exec_items:
+    for item in rows:
         if should_skip_token_row(item):
             continue
-        # Use task_name field directly - don't derive from execution_name
         task_name = item.get('task_name', '')
-        if not task_name:
-            continue
-            
-        if task_name in seen_tasks:
+        if not task_name or task_name in seen_tasks:
             continue
         seen_tasks.add(task_name)
-        
-        node = {
-            'id': task_name,
-            'name': task_name.replace('_', ' ').title(),
-            'type': 'task'
-        }
-        
-        # Add wait_before if present
-        if task_name in wait_before_map:
-            node['wait_before'] = wait_before_map[task_name]
-        
+        node: Dict[str, Any] = {'id': task_name, 'name': task_name.replace('_', ' ').title(), 'type': 'task'}
+        if task_name in countdowns:
+            node['wait_before'] = countdowns[task_name]
         nodes.append(node)
-        
-        # Parse dependencies
         deps_str = item.get('dependencies', '[]')
         try:
             deps = json.loads(deps_str) if isinstance(deps_str, str) else deps_str
         except (json.JSONDecodeError, TypeError, ValueError):
             deps = []
-        
-        for dep in deps:
-            edges.append({
-                'from': dep,
-                'to': task_name
-            })
-    
-    return cors_response(200, {
-        'name': pipeline_name,
-        'nodes': nodes,
-        'edges': edges,
-        'dag_source': 'inferred'
-    })
+        edges.extend({'from': dep, 'to': task_name} for dep in deps)
+    return {'nodes': nodes, 'edges': edges}
 
 
 def register(router) -> None:

@@ -26,7 +26,7 @@ from dal import asset_events_repo, executions_repo, pipelines_repo, specs_repo
 from dal.specs_repo import SpecsMissing
 from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
-from constants import Limits, TASK_SETTLED_STATUSES
+from constants import Limits
 from constants_generated import ManualResolution
 from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
 from response import cors_response, safe_parse_body
@@ -118,80 +118,6 @@ def resolve_task_item(
             return item, execution_name
     
     return None, None
-
-
-# Task-status groupings are canonical (polyris → TASK_SETTLED_STATUSES /
-# TASK_SUCCESS_STATUSES); never re-list them inline.
-
-
-def _reconcile_orphaned_tasks(tasks):
-    """Reconcile tasks stuck in non-terminal status when their execution already failed.
-    
-    When an orchestrator SFN times out or fails, tasks like waiting_delay
-    remain in DynamoDB with their old status. This checks SFN execution
-    status and marks orphaned tasks as 'aborted'.
-    """
-    # Find non-terminal tasks grouped by (pipeline_name, pipeline_execution)
-    pending_execs = {}  # {(pipeline_name, pipeline_execution): [task_indices]}
-    for i, task in enumerate(tasks):
-        if task['status'] not in TASK_SETTLED_STATUSES and task.get('pipeline_execution'):
-            key = (task.get('pipeline_name', ''), task['pipeline_execution'])
-            pending_execs.setdefault(key, []).append(i)
-    
-    if not pending_execs:
-        return tasks
-    
-    # Get SFN ARNs from registry for unique pipeline names
-    pipeline_arns = {}
-    for pipeline_name in set(k[0] for k in pending_execs):
-        try:
-            item = pipelines_repo.get(pipeline_name)
-            if item:
-                pipeline_arns[pipeline_name] = item.get('sfn_arn', '') or item.get('arn', '')
-        except (ClientError, BotoCoreError) as e:
-            log.warn("_reconcile_orphaned_tasks", "Failed to load pipeline registry entry",
-                        pipeline_name=pipeline_name, error=str(e))
-    
-    # Check execution status for each pending group
-    failed_execs = set()
-    for (pipeline_name, exec_name), _ in pending_execs.items():
-        sm_arn = pipeline_arns.get(pipeline_name)
-        if not sm_arn:
-            continue
-        
-        # Construct execution ARN: stateMachine:name → execution:name:exec_name
-        exec_arn = sm_arn.replace(':stateMachine:', ':execution:') + ':' + exec_name
-        try:
-            resp = sfn.describe_execution(executionArn=exec_arn)
-            status = resp.get('status', '')
-            if status in ('FAILED', 'TIMED_OUT', 'ABORTED'):
-                failed_execs.add((pipeline_name, exec_name))
-        except (ClientError, BotoCoreError) as e:
-            log.warn("_reconcile_orphaned_tasks", "Failed to describe pipeline execution",
-                        pipeline_name=pipeline_name, exec_name=exec_name, error=str(e))
-    
-    # Reconcile: mark non-terminal tasks in failed executions as 'aborted'
-    # BUT skip tasks whose wrapper is still running (e.g. restarted tasks)
-    if failed_execs:
-        for (pipeline_name, exec_name), indices in pending_execs.items():
-            if (pipeline_name, exec_name) in failed_execs:
-                for i in indices:
-                    # Check if task has a running wrapper (restart creates new wrapper)
-                    wrapper_arn = tasks[i].get('wrapper_execution_arn', '')
-                    if wrapper_arn:
-                        try:
-                            resp = sfn.describe_execution(executionArn=wrapper_arn)
-                            if resp.get('status', '') == 'RUNNING':
-                                continue  # Wrapper still active, not orphaned
-                        except (ClientError, BotoCoreError) as e:
-                            # Can't check wrapper — fall through to mark aborted.
-                            # This is intentional: stale ARN or missing wrapper means
-                            # the task has no live execution to continue from.
-                            log.info("_reconcile_orphaned_tasks", "Wrapper describe failed, marking aborted",
-                                     wrapper_arn=wrapper_arn, error=str(e))
-                    tasks[i] = {**tasks[i], 'status': 'aborted'}
-    
-    return tasks
 
 
 # The feed reads date-pipeline-index or pipeline-date-index. Each projects only part of
@@ -343,13 +269,10 @@ def get_all_tasks(event: Dict) -> Dict:
             log.warn("get_all_tasks", "batch_get_run_meta failed; run-meta fields left null",
                      error=str(e))
 
+        # The rows as they are: the engine keeps them true, and the console asks Step Functions nothing about a
+        # run (ADR #137 §5).
         tasks = [_format_task_row(i) for i in page]
 
-        # Reconcile: tasks stuck in non-terminal status but execution already failed.
-        # After the cut — it costs an SFN describe per pending execution, and only the
-        # rows being returned are worth paying for.
-        tasks = _reconcile_orphaned_tasks(tasks)
-        
         return cors_response(200, {
             'tasks': tasks,
             'count': len(tasks),

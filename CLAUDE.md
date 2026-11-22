@@ -809,7 +809,7 @@ Releases are cut from git tags. CE tag `vX.Y.Z` builds PyPI + self-hosted bundle
 | # | Topic | Decision |
 |---|-------|---------|
 | 22 | Data source | UI reads DynamoDB only, never SFN API |
-| 23 | DAG lookup | snapshot → registry → inferred |
+| 23 | DAG lookup | superseded by ADR #137 §8: the run's spec version (a 1.2 run's snapshot until 1.4) → registry → inferred |
 | 24 | Registration | `polyris-deploy` boto3 call, not EventBridge |
 | 26 | Testing | pytest-mock (`mocker`) everywhere |
 | 28 | Exceptions | `(ClientError, BotoCoreError)` for AWS calls; route-level catch-all OK |

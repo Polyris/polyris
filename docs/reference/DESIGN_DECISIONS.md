@@ -432,6 +432,8 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 
 ### 22. Data Flow: SFN Executes → DynamoDB Stores → UI Reads
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §4, §5 (1.3.0).** Its one exception goes: no console route asks Step Functions about a run, neither to reconcile a running one nor to mark the tasks of an ended one. The engine keeps the run row true, and a run's status comes from its run row's summary.
+
 **Decision:** All UI reads come from DynamoDB. Step Functions API is used only for control actions and reconciliation of running executions.
 
 **Principle:** The execution engine writes, the database stores, the UI reads from the database.
@@ -461,6 +463,8 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 - `get_all_runs` (All Runs view)
 
 ### 23. DAG Snapshot Per Execution (not per deploy)
+
+**Superseded by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** A run's graph comes from the spec version its run row names, which never changes; new runs write no snapshot. The console reads the snapshots of runs started before 1.3 until 1.4 (D89). Lookup: the run's spec version (a 1.2 run's snapshot) → the registry's version → inferred.
 
 **Decision:** Each execution writes its own DAG snapshot to `tokens_table` with key `dag_snapshot::{execution_name}`. TTL: 120 days (AWS SFN history is 90 days + 30-day buffer).
 

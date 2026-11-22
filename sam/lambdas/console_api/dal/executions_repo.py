@@ -24,7 +24,7 @@ from botocore.exceptions import ClientError
 from polyris.constants import BACKFILLING_INDEX_MESSAGE
 from polyris.coordination import attention as att, run_row
 from config import dynamodb, dynamodb_client, TABLE_NAME
-from utils import scan_all, query_all, should_skip_token_row
+from utils import query_all, should_skip_token_row
 
 #: The two indexes keyed by a task's date, whose every read skips internal and backfill rows.
 DATE_INDEXES = ('date-pipeline-index', 'pipeline-date-index')
@@ -265,6 +265,17 @@ class ExecutionsRepo:
                 kept = [i for i in items if i.get('date', '') > oldest]
                 return kept, oldest
 
+    def rows_of_pipeline_date(self, pipeline_name: str, date: str) -> list:
+        """One pipeline's task rows of one date, every page, from pipeline-date-index; internal and backfill rows
+        dropped. The index projects only part of a row: what tells the date's runs apart and orders them
+        (``pipeline_execution``, ``started_at``, ``status``). A query of one pipeline's date, where a scan of the
+        whole table stood (ADR #137 §5)."""
+        params: dict = {
+            'IndexName': 'pipeline-date-index',
+            'KeyConditionExpression': Key('pipeline_name').eq(pipeline_name) & Key('date').eq(date),
+        }
+        return _task_rows(query_all(self.table, **params))
+
     def query_runs_by_date(self, date: str, min_rows: int, projection: str = None,
                            expr_names: dict = None, filter_expr=None,
                            key_condition=None) -> list:
@@ -390,18 +401,17 @@ class ExecutionsRepo:
                 return rows if want is None else rows[:want]
             params['ExclusiveStartKey'] = last_key
 
-    # ── Scan operations ───────────────────────────────────────────────────
+    # ── The one scan ──────────────────────────────────────────────────────
 
-    def scan(self, max_items: int = None, **kwargs) -> list:
-        """Scan with optional pagination via scan_all helper."""
-        if max_items:
-            return scan_all(self.table, max_items=max_items, **kwargs)
-        response = self.table.scan(**kwargs)
-        return response.get('Items', [])
-
-    def scan_raw(self, **kwargs) -> dict:
-        """Raw scan, returns full boto3 response."""
-        return self.table.scan(**kwargs)
+    def discover_pipeline_names(self, limit: int = 1000) -> list:
+        """The pipeline names on one page of the table: the pipelines list's fallback when the registry is empty
+        (ADR #136 §2). The console's only scan of the tasks table, and one page of at most ``limit`` items,
+        whatever the table's size: every other read is a query of an index or a get by key (ADR #137 §5;
+        ``tests/test_no_table_scans.py``)."""
+        response = self.table.scan(ProjectionExpression='execution_name, pipeline_name', Limit=limit)
+        return sorted({str(item['pipeline_name']) for item in response.get('Items', [])
+                       if item.get('pipeline_name') and item['pipeline_name'] != 'unknown'
+                       and not should_skip_token_row(item)})
 
     # ── Health check ──────────────────────────────────────────────────────
 

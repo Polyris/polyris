@@ -28,11 +28,8 @@ ALLOWED = {
     ("sam/lambdas/coordination/stores.py", "_lookup", "dag"):
         "stores.Registry, deleted in TR-8 with the 1.2 engine",
     # The DAG snapshot of a 1.2 run (dag_snapshot::{run} in pipeline-tokens), kept until 1.4 (D89).
-    ("sam/lambdas/console_api/routes/pipelines_info.py", "get_pipeline_dag", "dag"):
+    ("sam/lambdas/console_api/routes/pipelines_info.py", "_snapshot_graph", "dag"):
         "the 1.2 runs' DAG snapshot reader, removed in 1.4",
-    # A dict of this route's own: the tasks of each execution it groups.
-    ("sam/lambdas/console_api/routes/pipelines_list.py", "get_pipeline_status", "tasks"):
-        "a local dict of execution rows, not the registry",
     # polyris-validate's debug output builds its own list of tasks.
     ("polyris/generators.py", "generate_debug_info", "tasks"): "the debug output's own list",
     # The request body of a backfill: the task subset the user asked for.

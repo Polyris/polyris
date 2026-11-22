@@ -47,9 +47,9 @@ def _get_dynamodb_client():
 
 #: Step Functions calls fail fast, well inside API Gateway's 29 s (Principle #53): botocore's
 #: standard retry mode with two attempts, a 2 s connect and a 4 s read timeout, so one
-#: call gives up within 12 s. Every console call is a control-plane call (describe, list,
-#: start, stop); none waits for an execution. The defaults (a 60 s read, legacy retries) let one
-#: slow call outlast the request.
+#: call gives up within 12 s. Every console call is a control-plane call (list, start, stop);
+#: none waits for an execution, and none asks about a run (ADR #137 §5). The defaults (a 60 s
+#: read, legacy retries) let one slow call outlast the request.
 SFN_CLIENT_CONFIG = {'retries': {'mode': 'standard', 'total_max_attempts': 2},
                      'connect_timeout': 2, 'read_timeout': 4}
 

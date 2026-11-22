@@ -2,28 +2,26 @@
 
 Handles:
 - list_pipelines: List all pipelines with their latest run, recent runs and SLA
-- get_pipeline_status: Get detailed status for a specific pipeline
-- get_pipeline_executions: Get list of pipeline executions
+- get_pipeline_status: One run's tasks: the run asked for, or the latest run of a date
+- get_pipeline_executions: A pipeline's runs: its history, one date's, or a range of dates
 
-Helper functions:
-- _aggregate_executions: Group and aggregate execution data
-- _query_pipeline_by_date_range: Query tokens table by date range
-- _reconcile_running: Reconcile running status with SFN state
+Every run list reads run rows (ADR #137 §5); no route scans the tasks table or asks
+Step Functions about a run.
 """
 import json
 from datetime import datetime, timezone, timedelta
 from typing import Dict
 
-from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 from polyris.constants import ACCESS_DENIED_CODES
 
 from config import sfn
 from dal import executions_repo, pipelines_repo
 from dal.specs_repo import needs_redeploy
-from constants import Limits, normalize_execution_status, derive_execution_status, reconcile_execution_status, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TaskStatus
-from feed import feed_dates, fill_triggered_by, run_counts, run_entry
-from response import cors_response
+from constants import Limits, TaskStatus
+from feed import (feed_dates, latest_run_of_date, page_by_started_at, run_counts, run_entry, run_rows_before,
+                  runs_of_date)
+from response import cors_response, index_building_response
 from logger import log
 from utils import safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries
 
@@ -89,17 +87,11 @@ def list_pipelines(event: Dict) -> Dict:
         log.error("list_pipelines", "Error scanning registry", error=str(e))
         raise
 
-    # An empty registry (pipelines that ran but never registered): discover them from the tokens
+    # An empty registry (pipelines that ran but never registered): discover them from one page of the tokens
     if not pipelines:
         try:
-            scan_kwargs = {
-                'ProjectionExpression': 'pipeline_name',
-                'Limit': 1000  # Reasonable limit for discovery
-            }
-            response = executions_repo.scan_raw(**scan_kwargs)
-            for item in response.get('Items', []):
-                name = item.get('pipeline_name', '')
-                if name and name != 'unknown' and name not in pipelines:
+            for name in executions_repo.discover_pipeline_names():
+                if name not in pipelines:
                     pipelines[name] = {
                         'name': name,
                         'arn': '',
@@ -206,27 +198,19 @@ def _finish_runs(pipeline: Dict, runs: list) -> None:
 
 
 def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
-    """Get detailed status for a specific pipeline."""
-    # Get filters from query params
+    """One run's tasks for the pipeline page: the run asked for, or the latest run of the date.
+
+    The latest run of a date is found through the pipeline's task rows of that date, a
+    query of pipeline-date-index; then its rows are read in full by the run. No scan of
+    the table and no call to Step Functions (ADR #137 §5).
+    """
     params = event.get('queryStringParameters') or {}
     date = params.get('date') or datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    pipeline_execution = params.get('pipeline_execution', '')
-    
-    # Query by pipeline_execution (GSI) if provided, otherwise scan by date
-    if pipeline_execution:
-        # Use GSI for efficient query - returns tasks for specific execution only
-        items = executions_repo.query_by_pipeline_execution(pipeline_execution)
-    else:
-        # Fallback to scan with date filter (with pagination)
-        items = executions_repo.scan(
-            max_items=Limits.MAX_FETCH_ITEMS,
-            FilterExpression=Attr('pipeline_name').eq(pipeline_name) & Attr('date').eq(date)
-        )
-    
-    # Group tasks by execution, deduplicating tasks within each execution
-    execution_tasks = {}  # {pipeline_execution: {tasks: {task_name: item}, started_at: str}}
-    task_map = {}  # Final task map to return
-    
+    selected_execution = params.get('pipeline_execution', '') or latest_run_of_date(pipeline_name, date)
+    items = executions_repo.query_by_pipeline_execution(selected_execution) if selected_execution else []
+
+    # One row per task of the run.
+    task_map = {}
     for item in items:
         # Skip internal/special records (_pause_, _notify_warn_, etc.)
         if should_skip_token_row(item):
@@ -237,37 +221,10 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
         if not task_name:
             # Fallback: extract task name from execution_name
             task_name = exec_name.rsplit('-', 2)[0] if exec_name.count('-') >= 2 else exec_name
-        
-        # Group by pipeline_execution
-        pe = item.get('pipeline_execution', 'unknown')
-        if pe not in execution_tasks:
-            execution_tasks[pe] = {'tasks': {}, 'started_at': item.get('started_at', '')}
-        
-        # Update earliest started_at for this execution
-        started_at = item.get('started_at', '')
-        if started_at and (not execution_tasks[pe]['started_at'] or started_at < execution_tasks[pe]['started_at']):
-            execution_tasks[pe]['started_at'] = started_at
-        
-        execution_tasks[pe]['tasks'][task_name] = item
-    
-    # If pipeline_execution was specified, use that; otherwise pick the latest by started_at
-    selected_execution = None
-    if pipeline_execution:
-        # Use tasks from specified execution
-        if pipeline_execution in execution_tasks:
-            task_map = {k: v for k, v in execution_tasks[pipeline_execution]['tasks'].items()}
-            selected_execution = pipeline_execution
-    else:
-        # Pick the latest execution by started_at
-        best_exec = None
-        for pe, data in execution_tasks.items():
-            if not best_exec or data['started_at'] > execution_tasks[best_exec]['started_at']:
-                best_exec = pe
-        
-        if best_exec:
-            task_map = {k: v for k, v in execution_tasks[best_exec]['tasks'].items()}
-            selected_execution = best_exec
-    
+        task_map[task_name] = item
+    if not task_map:
+        selected_execution = None
+
     # Now build the final task list
     tasks = []
     for task_name, item in task_map.items():
@@ -319,38 +276,6 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'max_retries': resolve_max_retries(item),
         })
     
-    # Reconcile: if the execution is failed/aborted, mark not-yet-settled tasks as
-    # 'aborted' — but skip tasks whose wrapper is still running (e.g. restarted tasks).
-    # "Settled" = terminal or deliberately stopped (TASK_SETTLED_STATUSES, single source).
-    if selected_execution:
-        try:
-            reg_item = pipelines_repo.get(pipeline_name)
-            sm_arn = (reg_item or {}).get('sfn_arn', '') or (reg_item or {}).get('arn', '')
-            if sm_arn:
-                exec_arn = sm_arn.replace(':stateMachine:', ':execution:') + ':' + selected_execution
-                exec_resp = sfn.describe_execution(executionArn=exec_arn)
-                exec_status = exec_resp.get('status', '')
-                if exec_status in ('FAILED', 'TIMED_OUT', 'ABORTED'):
-                    reconciled = []
-                    for t in tasks:
-                        if t['status'] not in TASK_SETTLED_STATUSES:
-                            # Check if wrapper is still running before marking aborted
-                            w_arn = t.get('wrapper_execution_arn', '')
-                            if w_arn:
-                                try:
-                                    w_resp = sfn.describe_execution(executionArn=w_arn)
-                                    if w_resp.get('status', '') == 'RUNNING':
-                                        reconciled.append(t)  # Wrapper alive, not orphaned
-                                        continue
-                                except (ClientError, BotoCoreError):
-                                    pass  # Can't verify wrapper — mark aborted below
-                            reconciled.append({**t, 'status': 'aborted'})
-                        else:
-                            reconciled.append(t)
-                    tasks = reconciled
-        except (ClientError, BotoCoreError) as e:
-            log.error("get_pipeline_status", "Reconciliation check failed", error=str(e))
-    
     # Calculate stats
     stats = {
         'total': len(tasks),
@@ -384,276 +309,82 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
         'server_now_ms': int(datetime.now(timezone.utc).timestamp() * 1000)
     })
 
-def _aggregate_executions(items):
-    """Group task items by pipeline_execution and aggregate status.
-    
-    DATA SOURCE: DynamoDB (see DESIGN_DECISIONS.md #22).
-    DynamoDB is the system of record for all UI reads.
-    Status is derived from task statuses via the canonical helper (ADR #112).
-    """
-    exec_map = {}
-    for item in items:
-        # Skip internal/special records (_pause_, _notify_warn_, etc.)
-        if should_skip_token_row(item):
-            continue
-        pe = item.get('pipeline_execution')
-        if not pe or pe == 'unknown':
-            continue
-        
-        if pe not in exec_map:
-            exec_map[pe] = {
-                'execution_id': pe,
-                'execution_short': item.get('pipeline_execution_short', pe[:20] if pe else ''),
-                'date': item.get('date'),
-                'started_at': item.get('started_at'),
-                'finished_at': item.get('finished_at'),
-                'statuses': set(),
-                'earliest_started': item.get('started_at', ''),
-                'latest_finished': item.get('finished_at', ''),
-                'triggered_by': item.get('triggered_by', ''),
-                # execution_name (base table PK) is always returned by GSI queries;
-                # used by _fill_triggered_by to GetItem triggered_by from base table
-                # when the GSI INCLUDE projection doesn't carry it.
-                '_sample_exec_name': item.get('execution_name', ''),
-            }
-        
-        entry = exec_map[pe]
-        status = item.get('status', 'waiting')
-        entry['statuses'].add(status)
-        
-        # Track earliest started_at and latest finished_at
-        started = item.get('started_at', '')
-        if started and (not entry['earliest_started'] or started < entry['earliest_started']):
-            entry['earliest_started'] = started
-        finished = item.get('finished_at', '')
-        if finished and (not entry['latest_finished'] or finished > entry['latest_finished']):
-            entry['latest_finished'] = finished
-    
-    executions = []
-    for pe, data in exec_map.items():
-        # Canonical derivation (ADR #112) — shared with /runs and the sidebar.
-        status = derive_execution_status(data['statuses'])
-        
-        # Calculate duration for completed executions
-        duration_ms = None
-        if data['earliest_started'] and data['latest_finished']:
-            try:
-                start_dt = datetime.fromisoformat(data['earliest_started'].replace('Z', '+00:00'))
-                end_dt = datetime.fromisoformat(data['latest_finished'].replace('Z', '+00:00'))
-                duration_ms = int((end_dt - start_dt).total_seconds() * 1000)
-            except (ValueError, TypeError) as e:
-                log.warn("pipelines_list", "Bad timestamp on execution; duration_ms left None",
-                         execution_id=pe,
-                         earliest_started=data.get('earliest_started'),
-                         latest_finished=data.get('latest_finished'),
-                         error=str(e))
-        
-        executions.append({
-            'execution_id': pe,
-            'execution_short': data['execution_short'],
-            'date': data['date'],
-            'status': status,
-            'started_at': data['earliest_started'] or data['started_at'],
-            'finished_at': data['latest_finished'] or data['finished_at'],
-            'duration_ms': duration_ms,
-            'triggered_by': data.get('triggered_by') or None,
-            '_sample_exec_name': data.get('_sample_exec_name', ''),
-        })
-    
-    # Sort by started_at descending (newest first)
-    executions.sort(key=lambda x: x.get('started_at') or '', reverse=True)
-    return executions
-
-
-def _query_pipeline_by_date_range(pipeline_name: str, start: datetime, end: datetime):
-    """Query DDB date-pipeline-index GSI for a date range. Returns raw items."""
-    items = []
-    current = start
-    while current.date() <= end.date():
-        date_str = current.strftime('%Y-%m-%d')
-        try:
-            day_items = executions_repo.query_runs_by_date(
-                date_str,
-                min_rows=Limits.MAX_STATS_ITEMS,
-                key_condition=Key('date').eq(date_str) & Key('pipeline_name').eq(pipeline_name),
-                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at, execution_name',
-                expr_names={'#d': 'date', '#s': 'status'}
-            )
-            items.extend(day_items)
-        except (ClientError, BotoCoreError) as e:
-            log.error("_query_pipeline_by_date_range", "Error querying date", error=str(e), date_str=date_str)
-        current += timedelta(days=1)
-    return items
-
-
-def _reconcile_running(executions, pipeline_name: str):
-    """For running executions, verify with SFN they're still alive.
-    
-    The console reads Step Functions only to confirm that a run its tasks call running is
-    still alive (ADR #22, #112 §7): here, in list_pipelines for each pipeline's latest run,
-    and in the /runs feed.
-    """
-    running_execs = [e for e in executions if e.get('status') == 'running']
-    if not running_execs:
-        return
-    
-    # v0.78.14 (ADR #71) — use canonical normalize_execution_status helper
-    # instead of a local mapping. Removes duplication; centralizes the
-    # SFN UPPERCASE → canonical lowercase contract.
-    # Note: previous local map collapsed TIMED_OUT → 'failed'. The canonical
-    # helper preserves 'timed_out' as a distinct value. The terminal check
-    # below (`!= 'running'`) catches both cases, so behavior is unchanged
-    # for the SFN-failed-but-tasks-resolved recovery path.
-    
-    # Get pipeline ARN once for all reconcile calls
-    pipeline_arn = ''
-    try:
-        pipeline_item = pipelines_repo.get(pipeline_name)
-        if pipeline_item:
-            pipeline_arn = pipeline_item.get('sfn_arn', '')
-    except (ClientError, BotoCoreError) as e:
-        log.warning("_reconcile_running", "Cannot fetch pipeline ARN", error=str(e))
-        return  # Can't reconcile without ARN
-    
-    if not pipeline_arn:
-        return
-    
-    for ex in running_execs:
-        new_status = reconcile_sfn_status(ex['execution_id'], pipeline_arn)
-        if new_status is not None:
-            ex['status'] = new_status
-
-
-def check_with_sfn(execution_name, sfn_arn):
-    """The canonical status of a run whose tasks say running, from Step Functions (ADR #112).
-
-    Applies the recovered rule (SFN failed/timed_out but every task resolved) via the
-    canonical ``reconcile_execution_status``. Raises ClientError or BotoCoreError when Step
-    Functions cannot answer; the caller decides what that means.
-    """
-    exec_arn = sfn_arn.replace(':stateMachine:', ':execution:') + ':' + execution_name
-    desc = sfn.describe_execution(executionArn=exec_arn)
-    sfn_status = normalize_execution_status(
-        desc.get('status', ''),
-        log_warn=lambda m, **ctx: log.warn("reconcile_sfn_status", m, **ctx),
-    )
-    all_resolved = False
-    if sfn_status in ('failed', 'timed_out'):
-        try:
-            # execution_name lets should_skip_token_row drop the internal rows that share the run:
-            # warnings (status failed), the pause record and the DAG snapshot (no status).
-            items = executions_repo.query_by_pipeline_execution(
-                execution_name, projection='execution_name, #s', expr_names={'#s': 'status'})
-            task_items = [i for i in items if not should_skip_token_row(i)]
-            all_resolved = bool(task_items) and all(
-                i.get('status') in TASK_SUCCESS_STATUSES for i in task_items)
-        except (ClientError, BotoCoreError) as e:
-            if _access_denied(e):
-                raise
-            # Can't verify recovery — treat as not resolved (ADR #38: still visible)
-            log.warn("reconcile_sfn_status", "Failed to check task resolution",
-                     execution_name=execution_name, error=str(e))
-    return reconcile_execution_status('running', sfn_status, all_resolved)
-
-
-def reconcile_sfn_status(execution_name, sfn_arn):
-    """check_with_sfn, or None when the status can't be determined (ADR #112).
-
-    Callers keep the DynamoDB-derived value on None. Shared by the pipeline execution list
-    and the ``/runs`` feed so both surfaces reconcile identically. A denied call is raised.
-    """
-    if not sfn_arn:
-        return None
-    try:
-        return check_with_sfn(execution_name, sfn_arn)
-    except (ClientError, BotoCoreError) as e:
-        if _access_denied(e):
-            log.error("reconcile_sfn_status", "Step Functions check denied",
-                      execution_name=execution_name, sfn_arn=sfn_arn, error=str(e))
-            raise
-        log.warn("reconcile_sfn_status", "Failed to describe SFN execution",
-                 execution_name=execution_name, sfn_arn=sfn_arn, error=str(e))
-        return None
-
-
 def get_pipeline_executions(pipeline_name: str, event: Dict) -> Dict:
-    """Get list of pipeline executions from DynamoDB (system of record).
-    
-    DATA SOURCE: DynamoDB (see DESIGN_DECISIONS.md #22).
-    Uses date-pipeline-index GSI for efficient queries by logical date.
-    SFN API only used for reconciliation of running executions.
+    """A pipeline's runs for its page (ADR #137 §5, D100): its history, one date's runs, or a range of dates.
+
+    Without a date it reads the pipeline's run rows from run-start-index, the start days
+    of the last ``Limits.RUNS_WINDOW_DAYS`` days newest first, a page at a time
+    (``before``/``next``, opaque). A range (``start_date``/``end_date``) walks every start
+    day of that window with a filter on the run's logical date too: a run can start
+    before its date, or long after it. One ``date`` reads that date's task rows and the
+    run rows of its runs, runs from before 1.3 included (``feed.runs_of_date``). Each
+    run's status comes from its run row's summary; only an opened run reads its task rows.
     """
-    # Get date filter from query params
     params = event.get('queryStringParameters', {}) or {}
     date_filter = params.get('date', '')
     start_date_filter = params.get('start_date', '')
     end_date_filter = params.get('end_date', '')
-    
+    before = params.get('before', '')
+
     try:
-        items = []
-        next_cursor = None  # only the no-date path paginates
-        
+        next_cursor = None  # only the history pages
         if date_filter:
-            # Single date: one GSI query
-            items = executions_repo.query_runs_by_date(
-                date_filter,
-                min_rows=Limits.MAX_STATS_ITEMS,
-                key_condition=Key('date').eq(date_filter) & Key('pipeline_name').eq(pipeline_name),
-                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at, execution_name',
-                expr_names={'#d': 'date', '#s': 'status'}
-            )
+            runs = runs_of_date(date_filter, pipeline_name)
         elif start_date_filter or end_date_filter:
-            # Date range (Calendar month view): query each date via GSI
             try:
-                start = datetime.strptime(start_date_filter, '%Y-%m-%d') if start_date_filter else datetime.now(timezone.utc) - timedelta(days=30)
-                end = datetime.strptime(end_date_filter, '%Y-%m-%d') if end_date_filter else datetime.now(timezone.utc)
-                items = _query_pipeline_by_date_range(pipeline_name, start, end)
+                today = datetime.now(timezone.utc)
+                first = (datetime.strptime(start_date_filter, '%Y-%m-%d') if start_date_filter
+                         else today - timedelta(days=30)).strftime('%Y-%m-%d')
+                last = (datetime.strptime(end_date_filter, '%Y-%m-%d') if end_date_filter
+                        else today).strftime('%Y-%m-%d')
             except ValueError as e:
                 return cors_response(400, {'error': f'Invalid date format: {e}'})
+            runs = [run_entry(item) for item in run_rows_before(
+                '', None, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_name, run_dates=(first, last))]
         else:
-            # No date filter: this pipeline's runs, newest first, via
-            # pipeline-date-index. One indexed query instead of a day-by-day
-            # loop, so there is no window constant — depth is bounded only by
-            # the row TTL. `before` is an opaque cursor (a date, inclusive).
-            items, next_cursor = executions_repo.query_runs_by_pipeline(
-                pipeline_name,
-                min_runs=safe_param_int(params, 'page_size', Limits.RUNS_PAGE_SIZE, 100),
-                before_date=params.get('before', '') or None,
-                projection='pipeline_execution, pipeline_execution_short, #d, #s, started_at, finished_at, execution_name',
-                expr_names={'#d': 'date', '#s': 'status'}
-            )
+            page_size = safe_param_int(params, 'page_size', Limits.RUNS_PAGE_SIZE, 100)
+            rows = run_rows_before(before, page_size + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_name)
+            runs, next_cursor = page_by_started_at([run_entry(item) for item in rows], before, page_size)
+        runs.sort(key=lambda r: r.get('started_at') or '', reverse=True)
 
-        executions = _aggregate_executions(items)
-
-        # Fetch triggered_by from base table (GSI INCLUDE doesn't project it).
-        # Pops _sample_exec_name from each execution as a side effect.
-        fill_triggered_by(executions)
-
-        # Reconcile running executions with SFN (verify still alive)
-        _reconcile_running(executions, pipeline_name)
-        
         # Get pipeline ARN for response (informational)
         pipeline_arn = ''
         try:
             pipeline_item = pipelines_repo.get(pipeline_name)
             if pipeline_item:
                 pipeline_arn = pipeline_item.get('sfn_arn', '')
-        except (ClientError, BotoCoreError):
-            pass  # ARN is informational — response works without it
-        
+        except (ClientError, BotoCoreError) as e:
+            # The ARN is informational: the runs answer without it.
+            log.warn("get_pipeline_executions", "Could not read the pipeline's ARN", error=str(e))
+
         return cors_response(200, {
             'pipeline': pipeline_name,
             'pipeline_arn': pipeline_arn,
-            'executions': executions,
-            # Opaque cursor for the next (older) page; None when nothing older
-            # exists. Only the no-date path paginates — an explicit date or range
-            # is already bounded by the caller.
+            'executions': [_execution(run) for run in runs],
+            # Opaque cursor for the next (older) page; None when nothing older exists.
+            # Only the history pages: a date or a range is bounded by the caller.
             'next': next_cursor,
         })
-    
+    except executions_repo.IndexBuilding:
+        return index_building_response()
     except Exception as e:
         log.error("get_pipeline_executions", "Error", error=str(e))
         return cors_response(500, {'error': f'Failed to list executions: {str(e)}'})
+
+
+def _execution(run: Dict) -> Dict:
+    """A run of the run lists (``feed.run_entry``) as the pipeline page names its fields."""
+    return {
+        'execution_id': run['pipeline_execution'],
+        'execution_short': run['pipeline_execution_short'],
+        'date': run['date'],
+        'status': run['status'],
+        'failed_tasks': run['failed_tasks'],
+        'started_at': run['started_at'],
+        'finished_at': run['finished_at'],
+        'duration_ms': run['duration_ms'],
+        'triggered_by': run['triggered_by'],
+    }
 
 
 def register(router) -> None:

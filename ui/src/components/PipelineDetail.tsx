@@ -9,7 +9,8 @@ import {
     GanttSkeleton,
     ErrorBoundary,
 } from './index';
-import { POLLING, toDateString, formatRelativeTime, formatTriggerSource, formatApiErrorMessage } from '../utils';
+import { POLLING, toDateString, formatRelativeTime, formatRunStatus, formatTriggerSource, formatApiErrorMessage } from '../utils';
+import { RUNS_WINDOW_DAYS } from '../utils/historyWindow';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useToast, useKeyboardShortcuts, SHORTCUTS } from '../hooks';
@@ -646,9 +647,9 @@ function ExecutionDropdown({
     // date with no runs.
     const [filterDate, setFilterDate] = React.useState('');
 
-    // Every run, newest first — no date window. Fetched even while the drawer is
-    // shut: the button shows the count, so gating this on `showHistory` would
-    // render "0" until you opened it.
+    // The pipeline's runs of the last RUNS_WINDOW_DAYS days, newest first (ADR #137 §5).
+    // Fetched even while the drawer is shut: the button shows the count, so gating this
+    // on `showHistory` would render "0" until you opened it.
     const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
         usePipelineRunsQuery(pipelineName);
 
@@ -708,7 +709,7 @@ function ExecutionDropdown({
                         {isLoading && <div className="pd-exec-dropdown-empty">Loading…</div>}
                         {!isLoading && runs.length === 0 && (
                             <div className="pd-exec-dropdown-empty">
-                                {filterDate ? 'No runs on this date' : 'No runs yet'}
+                                {filterDate ? 'No runs on this date' : `No runs in the last ${RUNS_WINDOW_DAYS} days`}
                             </div>
                         )}
                             {runs.map((ex: Execution, i: number) => {
@@ -731,7 +732,7 @@ function ExecutionDropdown({
                                                 {ex.execution_short || (ex.execution_id ? ex.execution_id.substring(0, 8) : ex.date)}...
                                             </span>
                                             <span className={`pd-exec-status-mini ${statusClass}`}>
-                                                {ex.status || 'unknown'}
+                                                {ex.status ? formatRunStatus(ex.status, ex.failed_tasks) : 'unknown'}
                                             </span>
                                         </div>
                                         <div className="pd-dropdown-item-meta">
@@ -748,8 +749,8 @@ function ExecutionDropdown({
                             })}
                         </div>
 
-                    {/* History goes back as far as the rows still exist (row TTL);
-                        there is no window to widen — just keep loading. */}
+                    {/* History goes back RUNS_WINDOW_DAYS days by the day each run started;
+                        a date on the page reaches further. */}
                     {hasNextPage && !filterDate && (
                         <div className="pd-exec-dropdown-more">
                             <Button
