@@ -81,8 +81,9 @@ def applied(item: Mapping[str, Any], row: RowView, judgment: Judgment, run: Opti
             after[task_row.GENERATION] = row.generation + 1
         if move.skip_origin is not None:
             after[task_row.SKIP_ORIGIN] = move.skip_origin
-    after.update(judgment.fields)
-    for name in judgment.removed:
+    fields, removed = row_write.with_reasons_time(judgment.fields, judgment.removed, now)
+    after.update(fields)
+    for name in removed:
         after.pop(name, None)
     entry = row_write.entry_after(status, judgment.due, now, row.key)
     if entry is None:

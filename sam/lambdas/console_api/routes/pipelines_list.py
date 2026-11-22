@@ -14,6 +14,7 @@ from typing import Dict
 
 from botocore.exceptions import ClientError, BotoCoreError
 from polyris.constants import ACCESS_DENIED_CODES
+from polyris.coordination import attention, task_row, task_spec, trigger_rules
 
 from config import sfn
 from dal import executions_repo, pipelines_repo
@@ -197,6 +198,43 @@ def _finish_runs(pipeline: Dict, runs: list) -> None:
     pipeline['status'] = latest['status']
 
 
+def _readiness(item: Dict) -> Dict:
+    """A 1.3 row's readiness fields (dependencies, trigger rule, wait_before, wait_for), or {} for a 1.2 row."""
+    text = item.get(task_row.READINESS)
+    if not text:
+        return {}
+    try:
+        return task_spec.readiness_from_text(str(text))
+    except (ValueError, TypeError) as e:
+        log.warn("pipeline_status", "A task row's readiness cannot be read", execution_name=item.get('execution_name'),
+                 error=str(e))
+        return {}
+
+
+def _why_it_waits(item: Dict, readiness: Dict, rows: Dict[str, Dict]) -> Dict:
+    """Why a task waits (ADR #137 §1): the reasons the dispatcher recorded and since when, the deadline it set, and
+    what its trigger rule makes of its upstreams as the page shows them (``trigger_rules.evaluate``). No route of its
+    own: the page already reads every row of the run."""
+    status = item.get('status')
+    if status not in ('waiting', 'waiting_paused', 'waiting_decision'):
+        return {}
+    due = item.get(attention.DUE)
+    detail: Dict = {
+        'reasons': [str(r) for r in item.get(task_row.REASONS) or []],
+        'reasons_at': item.get(task_row.REASONS_AT),
+        # A deadline a pause holds falls due far in the future: the page shows none (ADR #137 §5).
+        'deadline': due if due and not str(due).startswith('9999') else None,
+    }
+    dependencies = readiness.get('dependencies') or []
+    if status != 'waiting_decision' and dependencies and all(d in rows for d in dependencies):
+        upstreams = [rows[d] for d in dependencies]
+        verdict = trigger_rules.evaluate(readiness.get('trigger_rule') or 'all_success',
+                                         [str(u.get('status', '')) for u in upstreams],
+                                         [u.get(task_row.SKIP_ORIGIN) for u in upstreams])
+        detail['dependency_verdict'] = {'verdict': verdict.verdict, 'reason': verdict.reason}
+    return detail
+
+
 def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
     """One run's tasks for the pipeline page: the run asked for, or the latest run of the date.
 
@@ -228,10 +266,12 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
     # Now build the final task list
     tasks = []
     for task_name, item in task_map.items():
-        # Parse dependencies
+        readiness = _readiness(item)
+        # Parse dependencies: a 1.3 row holds them in its readiness (ADR #137 §8), a 1.2 row as JSON text
         deps_str = item.get('dependencies', '[]')
         try:
-            deps = json.loads(deps_str) if isinstance(deps_str, str) else deps_str
+            deps = readiness.get('dependencies') if readiness else (
+                json.loads(deps_str) if isinstance(deps_str, str) else deps_str)
         except (json.JSONDecodeError, TypeError, ValueError):
             deps = []
         
@@ -248,17 +288,17 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'execution_name': item.get('execution_name', ''),
             'task_name': task_name,
             'status': item.get('status', 'unknown'),
-            'dependencies': deps,
-            'wait_for': item.get('wait_for', '[]'),
+            'dependencies': deps or [],
+            'wait_for': json.dumps(readiness['wait_for']) if readiness.get('wait_for') else item.get('wait_for', '[]'),
             'started_at': item.get('started_at', ''),
             'running_at': item.get('running_at'),
             'finished_at': item.get('finished_at'),
             'error': item.get('error'),
             'result': result,
-            'wait_before': parse_wait_before(item.get('wait_before')),
+            'wait_before': parse_wait_before(readiness.get('wait_before', item.get('wait_before'))),
             'wait_delay_started_ms': safe_int(item.get('wait_delay_started_ms')),
             'wait_delay_until_ms': safe_int(item.get('wait_delay_until_ms')),
-            'trigger_rule': item.get('trigger_rule', 'all_success'),
+            'trigger_rule': readiness.get('trigger_rule') or item.get('trigger_rule', 'all_success'),
             'config': {
             },
             'pipeline_name': item.get('pipeline_name', 'unknown'),
@@ -274,6 +314,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             # Distinct from `attempt` which bumps only on manual Restart.
             'retry_attempt': safe_int(item.get('retry_attempt'), 0),
             'max_retries': resolve_max_retries(item),
+            **_why_it_waits(item, readiness, task_map),
         })
     
     # Calculate stats

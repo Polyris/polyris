@@ -373,3 +373,16 @@ def test_a_pass_reads_a_row_after_its_write_as_dynamodb_holds_it(ddb, case):
 def test_a_row_is_made_ready_only_within_its_run_in_what_a_pass_reads_too():
     with pytest.raises(ValueError, match="made ready only within its run"):
         dispatch_writes.applied({"execution_name": KEY}, row(), ready(), None, now=NOW)
+
+
+def test_a_write_of_the_reasons_records_when_and_their_removal_removes_it():
+    """The console shows since when a task waits for what it waits for (ADR #137 §1)."""
+    from datetime import datetime, timezone
+    from polyris.coordination import row_write, task_row
+    now = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+    fields, removed = row_write.with_reasons_time({task_row.REASONS: ["waits for extract"]}, [], now)
+    assert fields[task_row.REASONS_AT] == "2026-11-22T12:00:00.000Z" and removed == []
+    fields, removed = row_write.with_reasons_time({}, [task_row.REASONS], now)
+    assert fields == {} and removed == [task_row.REASONS, task_row.REASONS_AT]
+    assert row_write.with_reasons_time({}, [task_row.REASONS, task_row.REASONS_AT], now)[1].count(
+        task_row.REASONS_AT) == 1                          # no path twice in one REMOVE

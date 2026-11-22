@@ -43,6 +43,13 @@ export {
 export interface Task {
   task_name: string;
   status: TaskStatus;
+  /** Why a waiting task waits (ADR #137 §1): the reasons the dispatcher recorded, and since when. */
+  reasons?: string[];
+  reasons_at?: string | null;
+  /** The deadline of its wait or of its decision; none while a pause holds it. */
+  deadline?: string | null;
+  /** What its trigger rule makes of its upstreams as the page shows them. */
+  dependency_verdict?: { verdict: string; reason: string };
   pipeline_name: string;
   execution_name: string;
   pipeline_execution_short?: string;

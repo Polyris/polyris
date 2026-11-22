@@ -3,7 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount } from '../../utils';
-import { formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
+import { formatDateTime, formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
 import { logger } from '../../utils/logger';
 import { useKeyboardShortcuts } from '../../hooks';
 import { useTaskOutput } from '../../hooks/useTaskOutput';
@@ -280,6 +280,28 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                     </div>
                 </div>
             )}
+
+            {/* Why it waits (ADR #137 §1): the dispatcher's reasons, since when, its deadline and the rule's verdict */}
+            {(task.reasons?.length || task.deadline || task.dependency_verdict) ? (
+                <div className="detail-section td-why-waits">
+                    <div className="detail-label">Why it waits</div>
+                    {task.reasons && task.reasons.length > 0 && (
+                        <ul className="td-why-waits-reasons">
+                            {task.reasons.map(reason => <li key={reason}>{reason}</li>)}
+                        </ul>
+                    )}
+                    {task.dependency_verdict && (
+                        <p className="text-sm text-secondary"><span>Upstreams: {task.dependency_verdict.reason}</span></p>
+                    )}
+                    <p className="text-sm text-secondary">
+                        <span>
+                            {task.reasons_at ? `Since ${formatDateTime(task.reasons_at)}` : ''}
+                            {task.reasons_at && task.deadline ? ' · ' : ''}
+                            {task.deadline ? `deadline ${formatDateTime(task.deadline)}` : ''}
+                        </span>
+                    </p>
+                </div>
+            ) : null}
 
             {/* Failure — shown at top so it is visible without scrolling */}
             {task.error && (

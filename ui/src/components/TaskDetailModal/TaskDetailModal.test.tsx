@@ -1073,3 +1073,23 @@ describe('TaskDetailModal', () => {
     });
 
 });
+
+describe('TaskDetailModal — why a task waits (ADR #137 §1)', () => {
+    it('shows the reasons, since when, its deadline and the verdict of its upstreams', () => {
+        const task = createTask({
+            task_name: 'load', status: 'waiting', reasons: ['waits for extract'],
+            reasons_at: '2026-11-22T06:00:00.000Z', deadline: '2026-11-22T18:00:00.000Z',
+            dependency_verdict: { verdict: 'wait', reason: 'all_success waits for 1 upstream' },
+        });
+        render(<TaskDetailModal {...createTaskDetailModalProps()} task={task} />);
+        expect(screen.getByText('Why it waits')).toBeInTheDocument();
+        expect(screen.getByText('waits for extract')).toBeInTheDocument();
+        expect(screen.getByText(/Upstreams: all_success waits for 1 upstream/)).toBeInTheDocument();
+        expect(screen.getByText(/Since .* deadline /)).toBeInTheDocument();
+    });
+
+    it('shows nothing of it for a task that does not wait', () => {
+        render(<TaskDetailModal {...createTaskDetailModalProps()} task={createTask({ status: 'success' })} />);
+        expect(screen.queryByText('Why it waits')).toBeNull();
+    });
+});

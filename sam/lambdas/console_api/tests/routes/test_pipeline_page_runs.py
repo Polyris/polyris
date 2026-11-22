@@ -181,3 +181,22 @@ def test_without_specs_the_graph_is_inferred_from_the_latest_run_of_the_date(wor
     body = dag_of(date=TODAY)
     assert body['dag_source'] == 'inferred' and sorted(n['id'] for n in body['nodes']) == ['extract', 'load']
     assert body['edges'] == [{'from': 'extract', 'to': 'load'}]
+
+
+def test_a_waiting_task_shows_why_it_waits(world):
+    """ADR #137 §1: the reasons the dispatcher recorded and since when, its deadline, and what its trigger rule
+    makes of its upstreams, read from the rows of 1.3 (their readiness, not 1.2's fields)."""
+    from polyris.coordination import task_spec
+    run = put_run(world.table, 'orders', '2026-11-20', days_ago(0), summary={'running': 1, 'waiting': 1})
+    readiness = task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': ['extract'],
+                                          'wait_before': 60})
+    put_task(world.table, run, 'extract', '2026-11-20', 'running', started=days_ago(0),
+             readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []}))
+    put_task(world.table, run, 'load', '2026-11-20', 'waiting', started=days_ago(0), readiness=readiness,
+             reasons=['waits for extract'], reasons_at='2026-11-22T06:00:00.000Z', attention='waiting#x',
+             attention_at='2026-11-22T18:00:00.000Z')
+    load = next(t for t in status_of(date='2026-11-20')['tasks'] if t['task_name'] == 'load')
+    assert (load['dependencies'], load['trigger_rule'], load['wait_before']) == (['extract'], 'all_success', 60)
+    assert (load['reasons'], load['reasons_at'], load['deadline']) == (
+        ['waits for extract'], '2026-11-22T06:00:00.000Z', '2026-11-22T18:00:00.000Z')
+    assert load['dependency_verdict']['verdict'] == 'wait'

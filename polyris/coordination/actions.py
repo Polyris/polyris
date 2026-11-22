@@ -56,7 +56,8 @@ _LIVE = frozenset({TaskStatus.DEPS_READY.value, TaskStatus.RUNNING.value})
 REASON_MAX = 4000
 #: What a row's wait wrote that a final status no longer has: the reasons it waited, its countdown, the decision it
 #: waited for. An action that ends the row removes them, so no stale reason or deadline stays on it.
-_WAIT_FIELDS = (task_row.REASONS, task_row.COUNTDOWN_END, task_row.DECISION_SINCE, task_row.DECISION_TIMEOUT)
+_WAIT_FIELDS = (task_row.REASONS, task_row.REASONS_AT, task_row.COUNTDOWN_END, task_row.DECISION_SINCE,
+                task_row.DECISION_TIMEOUT)
 
 
 class ActionRefused(ValueError):

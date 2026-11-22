@@ -39,6 +39,7 @@ def task_update(*, key: str, read_status: str, read_generation: int, writer: str
     """
     status = read_status
     move = None
+    fields, removed = with_reasons_time(fields, removed, now)
     if transition:
         move = transitions.task_transition(transition)
         if read_status not in move.sources or writer not in move.writers:
@@ -79,6 +80,18 @@ def task_update(*, key: str, read_status: str, read_generation: int, writer: str
             "ConditionExpression": LEGACY_ROW_CONDITION if legacy else ROW_CONDITION,
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": typed(values)}
+
+
+def with_reasons_time(fields: Mapping[str, Any], removed: Sequence[str],
+                      now: datetime) -> Tuple[Dict[str, Any], List[str]]:
+    """A write of the reasons records when (``REASONS_AT``), and a removal of them removes that time: the console
+    shows since when a task waits for what it waits for (ADR #137 §1)."""
+    fields, removed = dict(fields), list(removed)
+    if task_row.REASONS in fields:
+        fields.setdefault(task_row.REASONS_AT, format_utc(now))
+    if task_row.REASONS in removed and task_row.REASONS_AT not in removed:
+        removed.append(task_row.REASONS_AT)
+    return fields, removed
 
 
 def entry_after(status: str, due: Optional[datetime], now: datetime, key: str) -> Optional[Tuple[str, str]]:
