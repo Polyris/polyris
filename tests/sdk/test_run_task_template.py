@@ -2157,3 +2157,27 @@ def test_the_deploy_counts_the_environment_run_task_adds_to_an_ecs_task(template
     by_name = {e["Name"]: e["Value"] for e in env}
     assert len(by_name["POLYRIS_RUN_DATE"]) <= limits.PLATFORM_ENV["POLYRIS_RUN_DATE"]
     assert len(RUN_ARN) <= limits.PLATFORM_ENV["POLYRIS_WRAPPER_RUN_ID"]
+
+
+def test_the_deploy_counts_what_run_task_sends_a_batch_task(template):
+    """D118: polyris-deploy measures a Batch task's SubmitJob request as Run_Task_Batch builds it
+    (limits.batch_submit_job), against Batch's 30 KiB."""
+    from polyris import limits
+    sent = template["States"]["Run_Task_Batch"]["Arguments"]
+    env = re.findall(r"'Name': '(POLYRIS_\w+)'", sent["ContainerOverrides"])
+    assert env == list(limits.PLATFORM_ENV)
+    modelled = limits.batch_submit_job({}, "p", "t", {})
+    assert set(modelled) == set(sent) and set(modelled["ContainerOverrides"]) == {"Environment"}
+
+
+def test_the_date_variables_fit_the_bound_the_deploy_counts(template):
+    """D118: a Lambda's or a state machine's payload carries the date variables beside what the input holds."""
+    from polyris import limits
+    from polyris.coordination import run_task_input
+    from sfn_jsonata import evaluate
+    date = limits._LONGEST_DATE
+    run_input = {"date": date, "partition_arg": date, "backfill_id": "x" * 64, "variables": {},
+                 **run_task_input.partition_fields(date)}
+    variables = evaluate(template["States"]["Prepare_Task_Input"]["Output"], input={},
+                         context=_context(run_input))["variables"]
+    assert len(json.dumps(variables, separators=(",", ":"), ensure_ascii=False).encode()) <= limits.DATE_VARIABLES_MAX

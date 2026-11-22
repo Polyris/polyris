@@ -21,15 +21,22 @@ DEFINITION_WARN = 900_000
 
 #: ECS's limit on a RunTask's overrides, as the characters of their JSON.
 ECS_OVERRIDES_MAX = 8192
+#: AWS Batch's limit on a SubmitJob request: 30 KiB of its JSON, a quota AWS does not raise.
+BATCH_PAYLOAD_MAX = 30 * 1024
+#: The most bytes of the date variables run_task adds to the payload of a Lambda or a state machine
+#: (polyris.variables, at the longest date and backfill id); a test renders them against it.
+DATE_VARIABLES_MAX = 1024
+#: The task types whose work gets the variables in its payload (Run_Task_Lambda, Run_Task_SFN).
+_TYPES_WITH_VARIABLES = frozenset({"lambda", "sfn"})
 #: The longest values a run gives the fields of run_task's input that the spec does not: a partition key (an
 #: hour), a run's execution name, a backfill id and a generation.
 _LONGEST_DATE = "2026-11-21T23"
 _LONGEST_EXECUTION = "x" * 80
 _LONGEST_BACKFILL_ID = "x" * 64
 _LARGEST_GENERATION = 10 ** 9
-#: What run_task adds to each container override of an ECS task (its template's Run_Task_ECS), with the most
-#: characters each value can take; None: the value is known here. A parity test compares the names with the
-#: template.
+#: What run_task adds to the environment of an ECS or Batch task (its template's Run_Task_ECS, Run_Task_Batch),
+#: with the most characters each value can take; None: the value is known here. A parity test compares the names
+#: with the template.
 PLATFORM_ENV: Mapping[str, Optional[int]] = {
     "POLYRIS_PIPELINE_NAME": None,
     "POLYRIS_RUN_DATE": len(_LONGEST_DATE),
@@ -38,10 +45,10 @@ PLATFORM_ENV: Mapping[str, Optional[int]] = {
     "POLYRIS_WRAPPER_RUN_ID": 256,                      # run_task's execution ARN
     "POLYRIS_UPSTREAM_STATUSES": None,
 }
-#: What an upstream may be when its dependant starts: a final status, a skip with its origin.
+#: What an upstream may be when its dependant starts: any status, since one_success and one_failed start a task
+#: while its other upstreams still wait or run, and a skip with each origin.
 _START_OUTCOMES: Tuple[Tuple[str, Optional[str]], ...] = (
-    *((s.value, None) for s in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.UPSTREAM_FAILED,
-                                TaskStatus.STOPPED)),
+    *((s.value, None) for s in TaskStatus),
     *((TaskStatus.SKIPPED.value, o) for o in (SkipOrigin.MANUAL, SkipOrigin.RUN, SkipOrigin.RULE)),
 )
 
@@ -102,31 +109,70 @@ def worst_upstreams(dependencies: List[str]) -> Dict[str, Tuple[str, Optional[st
 
 
 def _start_errors(pipeline: str, task_id: str, text: str) -> List[str]:
-    """D118: run_task's input with the statuses of every upstream against Step Functions' 256 KB, and an ECS
-    task's overrides with the environment run_task adds against ECS's 8,192 characters. A wide fan-in passes
-    one status per upstream; the run's variables, which the deploy does not know, are left to the start."""
+    """D118: run_task's input with the statuses of every upstream against Step Functions' 256 KB (with the date
+    variables a Lambda's or a state machine's payload adds), an ECS task's overrides with the environment
+    run_task adds against ECS's 8,192 characters, and a Batch task's SubmitJob request against Batch's 30 KiB.
+    A wide fan-in passes one status per upstream; the run's variables, which the deploy does not know, are left
+    to the start."""
     spec = task_spec.parse(text, expected_hash=task_spec.text_hash(text))
     dependencies = list(spec.fields.get(TaskSpecKey.DEPENDENCIES, []))
     upstreams = worst_upstreams(dependencies)
+    task_type = spec.fields[TaskSpecKey.TASK_TYPE]
     errors: List[str] = []
     try:
-        run_task_input.build(
-            execution_name=f"{task_id}-{_LONGEST_DATE}-{'x' * task_row.SHORT_LENGTH}",
+        size = len(run_task_input.build(
+            execution_name=_longest_execution_name(task_id),
             generation=_LARGEST_GENERATION, task_name=task_id, pipeline_name=pipeline,
             pipeline_execution=_LONGEST_EXECUTION, date=_LONGEST_DATE, partition_arg=_LONGEST_DATE,
-            backfill_id=_LONGEST_BACKFILL_ID, spec=spec, variables={}, cascade="auto", upstreams=upstreams)
+            backfill_id=_LONGEST_BACKFILL_ID, spec=spec, variables={}, cascade="auto",
+            upstreams=upstreams).encode("utf-8"))
     except run_task_input.InputTooLarge as exc:
-        errors.append(f"Task '{task_id}': its run_task input takes {exc.size:,} bytes with the statuses of its "
-                      f"{len(dependencies)} upstreams, over the limit of {run_task_input.PAYLOAD_LIMIT:,} bytes of a "
-                      f"task's input; split the fan-in")
-    if spec.fields[TaskSpecKey.TASK_TYPE] == "ecs":
+        size = exc.size
+    added = DATE_VARIABLES_MAX if task_type in _TYPES_WITH_VARIABLES else 0
+    if size + added > run_task_input.PAYLOAD_LIMIT:
+        variables = f", and its work's payload up to {added:,} more with the date variables" if added else ""
+        errors.append(f"Task '{task_id}': its run_task input takes {size:,} bytes with the statuses of its "
+                      f"{len(dependencies)} upstreams{variables}, over the limit of {run_task_input.PAYLOAD_LIMIT:,} "
+                      f"bytes of a task's input; split the fan-in")
+    if task_type == "ecs":
         size = len(json.dumps(ecs_overrides(spec.fields, pipeline, task_id, upstreams), separators=(",", ":"),
                               ensure_ascii=False))
         if size > ECS_OVERRIDES_MAX:
             errors.append(f"Task '{task_id}': its container overrides take {size:,} characters with the environment "
                           f"run_task adds, the statuses of its {len(dependencies)} upstreams included, over ECS's "
                           f"{ECS_OVERRIDES_MAX:,}")
+    if task_type == "batch":
+        size = len(json.dumps(batch_submit_job(spec.fields, pipeline, task_id, upstreams), separators=(",", ":"),
+                              ensure_ascii=False).encode("utf-8"))
+        if size > BATCH_PAYLOAD_MAX:
+            errors.append(f"Task '{task_id}': its SubmitJob request takes {size:,} bytes with the environment "
+                          f"run_task adds, the statuses of its {len(dependencies)} upstreams included, over AWS "
+                          f"Batch's {BATCH_PAYLOAD_MAX:,} (30 KiB)")
     return errors
+
+
+def _longest_execution_name(task_id: str) -> str:
+    """A task row's key at the longest date a run can give it."""
+    return f"{task_id}-{_LONGEST_DATE}-{'x' * task_row.SHORT_LENGTH}"
+
+
+def _platform_env(pipeline: str, task_id: str,
+                  upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> List[Dict[str, str]]:
+    """The environment run_task gives an ECS or Batch task, at the longest values a run can give it."""
+    known = {"POLYRIS_PIPELINE_NAME": pipeline, "POLYRIS_TASK_NAME": task_id,
+             "POLYRIS_UPSTREAM_STATUSES": run_task_input.upstream_statuses_env(upstreams)}
+    return [{"Name": name, "Value": known[name] if longest is None else "x" * longest}
+            for name, longest in PLATFORM_ENV.items()]
+
+
+def batch_submit_job(fields: Mapping[str, Any], pipeline: str, task_id: str,
+                     upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> Dict[str, Any]:
+    """The SubmitJob request run_task sends a Batch task, as Run_Task_Batch builds it, at the longest values a run
+    can give it."""
+    config = fields.get(TaskSpecKey.TASK_CONFIG) or {}
+    return {"JobDefinition": config.get(TaskConfigKey.JOB_DEFINITION, ""), "JobName": _longest_execution_name(task_id),
+            "JobQueue": config.get(TaskConfigKey.JOB_QUEUE, ""), "Parameters": config.get(TaskConfigKey.PARAMETERS) or {},
+            "ContainerOverrides": {"Environment": _platform_env(pipeline, task_id, upstreams)}}
 
 
 def ecs_overrides(fields: Mapping[str, Any], pipeline: str, task_id: str,
@@ -137,10 +183,7 @@ def ecs_overrides(fields: Mapping[str, Any], pipeline: str, task_id: str,
     containers = overrides.get("ContainerOverrides")
     if not isinstance(containers, list):
         return overrides
-    known = {"POLYRIS_PIPELINE_NAME": pipeline, "POLYRIS_TASK_NAME": task_id,
-             "POLYRIS_UPSTREAM_STATUSES": run_task_input.upstream_statuses_env(upstreams)}
-    env = [{"Name": name, "Value": known[name] if longest is None else "x" * longest}
-           for name, longest in PLATFORM_ENV.items()]
+    env = _platform_env(pipeline, task_id, upstreams)
     overrides["ContainerOverrides"] = [{**c, "Environment": list(c.get("Environment") or []) + env}
                                        for c in containers]
     return overrides

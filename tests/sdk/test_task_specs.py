@@ -219,21 +219,40 @@ def test_a_spec_in_bytes_as_written():
 def test_a_wide_fan_in_against_the_input_of_run_task():
     """D118: one status per upstream reaches the task's run_task, which Step Functions caps at 256 KB."""
     deps = [f"upstream_{i:04d}_" + "x" * 100 for i in range(1999)]
-    [error] = limits.spec_errors(_version([_spec("report", dependencies=deps)]))
+    [error] = limits.spec_errors(_version([_spec("report", task_type="glue", dependencies=deps)]))
     assert error.startswith("Task 'report': its run_task input takes ")
     assert error.endswith(f"bytes with the statuses of its 1999 upstreams, over the limit of "
                           f"{run_task_input.PAYLOAD_LIMIT:,} bytes of a task's input; split the fan-in")
     assert limits.spec_errors(_version([_spec("report", dependencies=deps[:500])])) == []
 
 
+def test_a_lambdas_or_state_machines_input_leaves_room_for_the_date_variables(monkeypatch):
+    """D118: their work's payload carries the date variables beside what the input holds (the review of TR-5)."""
+    deps = [f"u{i:03d}" for i in range(50)]
+    glue = _spec("load", task_type="glue", dependencies=deps)
+    measured = len(limits.run_task_input.build(
+        execution_name=limits._longest_execution_name("load"), generation=limits._LARGEST_GENERATION,
+        task_name="load", pipeline_name="p", pipeline_execution=limits._LONGEST_EXECUTION,
+        date=limits._LONGEST_DATE, partition_arg=limits._LONGEST_DATE, backfill_id=limits._LONGEST_BACKFILL_ID,
+        spec=task_spec.parse(task_spec.canonical_json(glue),
+                             expected_hash=task_spec.text_hash(task_spec.canonical_json(glue))),
+        variables={}, cascade="auto", upstreams=limits.worst_upstreams(deps)).encode())
+    monkeypatch.setattr(run_task_input, "PAYLOAD_LIMIT", measured + 10)
+    assert limits.spec_errors(_version([glue])) == []
+    [error] = limits.spec_errors(_version([{**glue, "task_type": "lambda"}]))
+    assert f"and its work's payload up to {limits.DATE_VARIABLES_MAX:,} more with the date variables" in error
+
+
 def test_the_worst_status_of_an_upstream_takes_the_most_bytes():
+    """Any status: one_success and one_failed start a task while its other upstreams still wait or run, and
+    waiting_decision is longer than every final status (the review of TR-5)."""
     from polyris.constants import SkipOrigin, TaskStatus
     worst = run_task_input.upstream_statuses_env(limits.worst_upstreams(["u"]))
-    final = [(s.value, None) for s in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.UPSTREAM_FAILED,
-                                       TaskStatus.STOPPED)]
+    every = [(s.value, None) for s in TaskStatus]
     skips = [(TaskStatus.SKIPPED.value, o) for o in (SkipOrigin.MANUAL, SkipOrigin.RUN, SkipOrigin.RULE)]
-    for outcome in final + skips:                    # only a skip carries an origin (ADR #138 §3)
+    for outcome in every + skips:                    # only a skip carries an origin (ADR #138 §3)
         assert len(run_task_input.upstream_statuses_env({"u": outcome})) <= len(worst)
+    assert len(worst) > len(run_task_input.upstream_statuses_env({"u": (TaskStatus.UPSTREAM_FAILED.value, None)}))
 
 
 def test_an_ecs_tasks_overrides_with_the_environment_run_task_adds():
@@ -248,6 +267,20 @@ def test_an_ecs_tasks_overrides_with_the_environment_run_task_adds():
                           "included, over ECS's 8,192")
     assert limits.spec_errors(_version([{**ecs, "dependencies": deps[:20]}])) == []
     assert limits.spec_errors(_version([{**ecs, "task_config": {}}])) == []         # no override, no environment
+
+
+def test_a_batch_tasks_submit_job_with_the_environment_run_task_adds():
+    """D118: run_task adds the platform's environment, the upstreams' statuses included, to a Batch task's
+    SubmitJob request, which AWS Batch caps at 30 KiB (the review of TR-5 measured 30,241 bytes at 480 upstreams
+    of 20 characters, which the deploy passed)."""
+    deps = [f"upstream_{i:04d}_xxxxxx" for i in range(480)]
+    config = {"job_definition": "render", "job_queue": "q", "parameters": {"mode": "full"}}
+    batch = _spec("render", task_type="batch", dependencies=deps, task_config=config)
+    [error] = limits.spec_errors(_version([batch]))
+    assert error.startswith("Task 'render': its SubmitJob request takes ")
+    assert error.endswith("bytes with the environment run_task adds, the statuses of its 480 upstreams included, "
+                          "over AWS Batch's 30,720 (30 KiB)")
+    assert limits.spec_errors(_version([{**batch, "dependencies": deps[:100]}])) == []
 
 
 def test_the_specs_together_in_bytes_which_start_run_reads_at_once(monkeypatch):
