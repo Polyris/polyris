@@ -51,11 +51,14 @@ DEFECTS = {
     "R-G1": "A run of an hourly, weekly or monthly partition (a backfill gives such a run its partition key as the "
             "date) fails every task 10 to 15 minutes after its start: the template's $toMillis read the key as a "
             "day (the review of TR-5)",
+    "R-L2": "A run_task the engine superseded (a Stop of its run raised the row's generation) records its late "
+            "success: the row, the date's output or a fact (invariants 5 and 12)",
     "R-C1": "A success transaction that DynamoDB cancels (a conflict, a throttled item, a fact time already "
             "taken) loses the success; run_task must read its row and try again with a new time for each fact",
-    "B-Q1": "A template reads a field its input no longer carries: AWS fails the state with "
-            "States.QueryEvaluationError, while the harness carried undefined on as None and a Catch hid it "
-            "(Failure_Complete of the failure handler, found live in 1.2.0, CR-7)",
+    "B-Q1": "A wait for facts that reaches its limit leaves its task waiting and the run RUNNING (1.2: the "
+            "failure handler read a field its input no longer carried, a Catch hid the expression error, and the "
+            "answer was skipped; F16, CR-7). The task must fail once, with the cause; World._expression_failures "
+            "fails any scenario on such an error (test_rows_view.py)",
     "B-RN1": "A task fails before run_task answers its run (a pause token that cannot be saved): the failure "
              "handler skips the answer on helper_failed, and the run stays RUNNING",
     "B-RN4": "A console action swallows a failed answer to the run (Stop), or answers 500 after the row has changed",

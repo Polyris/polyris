@@ -347,6 +347,18 @@ class World:
         self.runtime.stop_execution(executionArn=found[0].arn, error="Console", cause="stopped by hand")
         self.settle()
 
+    def stop_run_externally(self, run: Run) -> None:
+        """Someone stops the run's own execution in the AWS console; the engine stops the run at its next check."""
+        self.runtime.stop_execution(executionArn=run.arn, error="Console", cause="stopped by hand")
+        self.settle()
+
+    def facts(self, asset: Any) -> List[Dict[str, Any]]:
+        """The facts recorded for `asset`, oldest first."""
+        response = self.ddb.query(TableName=self.stack.tables["AssetEventsTable"],
+                                  KeyConditionExpression="asset_name = :a",
+                                  ExpressionAttributeValues={":a": {"S": asset.name}}, ConsistentRead=True)
+        return [plain(i) for i in response.get("Items", [])]
+
     def time_out_registration(self, run: Run, task: str) -> None:
         """The wrapper's wait for dependencies reaches its timeout."""
         wrapper = self.wrapper(run, task)

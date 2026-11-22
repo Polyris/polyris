@@ -282,6 +282,10 @@ PROBES: Tuple[Probe, ...] = (
     # The date variables read the run's key as a day again: an hourly key fails $toMillis.
     Probe("R-G1", (Edit(RUN_TASK, "$dt := $toMillis($pd & 'T00:00:00Z')", "$dt := $toMillis($cd & 'T00:00:00Z')"),),
           f"{ROWS}::test_a_run_of_an_hourly_weekly_or_monthly_partition_runs_its_tasks[hourly]"),
+    # The success transaction writes the row whatever owns it: a superseded run_task records its late success.
+    Probe("R-L2", (Edit(RUN_TASK, "'ConditionExpression': '#s = :running AND #g = :g'",
+                        "'ConditionExpression': 'attribute_exists(execution_name)'"),),
+          f"{ROWS}::test_a_late_success_of_a_run_task_the_engine_stopped_records_nothing"),
     # A timeout skips the task's retries, as execution_timeout did in 1.2 (the review of ADR #136, B4).
     Probe("R-T2", (Edit(RUN_TASK, '"Condition": "{% $retry_attempt < (',
                         '"Condition": "{% $states.input.error_obj.Error != \'States.Timeout\' and $retry_attempt < ('),),

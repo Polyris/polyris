@@ -63,6 +63,27 @@ def test_the_mapping_s_filters_decide_what_is_delivered(ddb):
     assert handler.seen == ["a"]
 
 
+def test_every_record_is_read_page_by_page(ddb):
+    """GetRecords gives at most 1,000 records a page; reading only the first page lost the rest (the review of
+    TR-5: with one page read, every scenario still passed)."""
+    adapter = StreamAdapter(ddb, TABLE, "k", INSERTS, batch_size=10, page_size=2)
+    for key in "abcde":
+        put(ddb, key)
+    handler = Recorder()
+    adapter.deliver(handler)
+    assert sorted(handler.seen) == list("abcde")
+
+
+def test_a_moto_that_renamed_its_stream_shard_fails_loudly(ddb):
+    from moto.core import DEFAULT_ACCOUNT_ID
+    from moto.dynamodb.models import dynamodb_backends
+    adapter = StreamAdapter(ddb, TABLE, "k", INSERTS, batch_size=10)
+    table = dynamodb_backends[DEFAULT_ACCOUNT_ID]["us-east-1"].tables[TABLE]
+    del table.stream_shard
+    with pytest.raises(AssertionError, match="stream_shard"):
+        adapter._trim()
+
+
 def test_a_failing_shard_holds_only_itself(ddb):
     (first, second), (other,) = on_shards(2)
     adapter = StreamAdapter(ddb, TABLE, "k", INSERTS, batch_size=10, shards=2, hold_on_error=True)

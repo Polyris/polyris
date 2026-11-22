@@ -184,8 +184,10 @@ def _build_frame(jsonata_mod, overrides: dict):
     states = {
         "input": inp,
         "context": {
+            # run_task reads its input from the execution's context (ADR #137 §1), the other templates from
+            # $states.input: each variant is both, or the audit of run_task would meet only undefined.
             "Execution": {"Id": "arn:exec", "Name": "exec-name",
-                          "StartTime": "2026-01-01T00:00:00Z", "Input": {}},
+                          "StartTime": "2026-01-01T00:00:00Z", "Input": inp},
             "State": {"Name": "s", "RetryCount": 0,
                       "EnteredTime": "2026-01-01T00:00:00Z"},
             "StateMachine": {"Id": "arn:sm", "Name": "sm"},

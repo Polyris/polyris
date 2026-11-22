@@ -427,6 +427,28 @@ def test_a_run_of_an_hourly_weekly_or_monthly_partition_runs_its_tasks(world, da
     assert world.status(run, "extract") == "success"
 
 
+@defect("R-L2")
+def test_a_late_success_of_a_run_task_the_engine_stopped_records_nothing(world):
+    """The run's execution is stopped by hand while the work runs; the engine stops the run, raising the row's
+    generation; the work then succeeds (the break review of TR-5, p5)."""
+    orders = asset("ns/orders")
+    run = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [orders]})])), DATE)
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["build"]
+    world.stop_run_externally(run)
+    # The premise: the execution ended while its row ran (invariant 8); the engine stops the row at its check.
+    world.plant(f"invariant 8: the execution of {run.name} ended while {run.execution_name('build')} were not final")
+    world.clock.advance(minutes=31)
+    world.sweep()
+    world.deliver_task_hints()
+    assert world.status(run, "build") == "stopped"
+    world.complete(run, "build", output={"rows": 1})
+    world.deliver_task_hints()
+    assert world.status(run, "build") == "stopped"
+    assert world.stores(run, "build")["output"] is None
+    assert world.facts(orders) == []
+
+
 @defect("R-T2")
 def test_a_timed_out_attempt_goes_through_the_tasks_retries(world):
     retried = {"retries": 1, "retry_delay": timedelta(seconds=10), "execution_timeout": timedelta(minutes=30)}

@@ -46,6 +46,7 @@ class StreamAdapter:
     batch_size: int
     shards: int = 1
     hold_on_error: bool = False
+    page_size: int = 1000                     # GetRecords' Limit; AWS gives at most 1,000 records a page
     pending: List[List[Record]] = field(default_factory=list)
     dropped: List[Record] = field(default_factory=list)
     delayed: List[Record] = field(default_factory=list)
@@ -136,7 +137,7 @@ class StreamAdapter:
             iterator = self.streams.get_shard_iterator(StreamArn=self.arn, ShardId=shard["ShardId"],
                                                        ShardIteratorType="TRIM_HORIZON")["ShardIterator"]
             while iterator:
-                page = self.streams.get_records(ShardIterator=iterator)
+                page = self.streams.get_records(ShardIterator=iterator, Limit=self.page_size)
                 if not page["Records"]:
                     break
                 for record in page["Records"]:
@@ -170,6 +171,10 @@ class StreamAdapter:
         from moto.dynamodb.models import dynamodb_backends
 
         table = dynamodb_backends[DEFAULT_ACCOUNT_ID]["us-east-1"].tables.get(self.table)
+        if table is not None and not hasattr(table, "stream_shard"):
+            # moto renamed its private field: nothing would be trimmed, and each transaction would copy the whole
+            # stream again, the harness slowing down with no cause shown (the review of TR-5).
+            raise AssertionError("moto's table has no stream_shard any more: update StreamAdapter._trim")
         shard = getattr(table, "stream_shard", None)
         if shard is not None and shard.items:
             shard.starting_sequence_number += len(shard.items)
