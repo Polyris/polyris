@@ -102,9 +102,10 @@ VERSION_HASH = ROW_TEXT_HASH
 MAX_TASKS = 2000
 #: A pipeline's specs together, in UTF-8 bytes: Start_Run reads them all into one Lambda at a run's start (D117).
 MAX_VERSION_BYTES = 16 * 1024 * 1024
-#: A task's outlets: run_task's success is one transaction of at most 100 items, the
-#: status, the output and one fact per outlet; Mark Successful writes the same.
-MAX_OUTLETS = 98
+#: A task's outlets: a transaction holds at most 100 items. run_task's success writes the
+#: status, the output and one fact per outlet; Mark Successful writes the same and the run
+#: row's raise (actions.task_action), so the cap is 97.
+MAX_OUTLETS = 97
 #: Every spec names these; the other keys of ``TaskSpecKey`` may be absent.
 REQUIRED = frozenset({K.TASK_ID, K.TASK_TYPE, K.DEPENDENCIES, K.TRIGGER_RULE})
 #: What a task row carries for the dispatcher, which decides on these alone (§8).

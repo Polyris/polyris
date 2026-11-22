@@ -162,6 +162,21 @@ def decision_event(*, transition: str, task_run_id: str, execution_name: str, ta
     return item
 
 
+MANUAL_DECISION = "MANUAL_DECISION"
+#: After run_task's TASK_FINISHED (#20), as the console's decision events have always sorted.
+MANUAL_DECISION_ORDER = "#30"
+
+
+def manual_decision_event(*, task_run_id: str, execution_name: str, task_name: str, pipeline_execution: str,
+                          decision: str, reason: str, operator: str, now: datetime) -> Dict[str, Any]:
+    """An operator's action in the task's timeline (``actions.task_action``): the decision, its reason and who
+    took it, under the row's run_task name, for the timeline's 90 days."""
+    return {"task_run_id": task_run_id, "event_time": format_utc(now) + MANUAL_DECISION_ORDER,
+            "event_type": MANUAL_DECISION, "execution_name": execution_name, "parent_execution_id": pipeline_execution,
+            "task_name": task_name, "decision": decision, "reason": reason or f"Manual {decision} via UI",
+            "operator": operator, "ttl": retention.ttl(now, retention.TIMELINE)}
+
+
 def error_summary(cause: str) -> str:
     """A cause as a timeline event keeps it; run_task's Emit_Task_Finished_Failed cuts it the same way."""
     return cause if len(cause) <= ERROR_SUMMARY_MAX else cause[:ERROR_SUMMARY_MAX] + "..."

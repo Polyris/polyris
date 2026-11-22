@@ -386,7 +386,7 @@ policy and are the same across `sfn`, `lambda_function`, `glue_job`,
 | `wait_before` | int (seconds) or timedelta | 0 | Wait this long before executing (rate limiting) |
 | `trigger_rule` | str | `"all_success"` | Condition on **declared direct upstream** deps — see [Trigger Rules](#trigger-rules) below |
 | `role` | str | `"same"` | Cross-account role: a key of the `roles` dict in `config.py` (e.g. `'analytics'`, see [CONFIGURATION.md](../reference/CONFIGURATION.md)), a role ARN, or `'same'` for the platform's own role |
-| `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 98, each once (the decorator refuses an asset named twice) |
+| `outlets` | list[Asset] | `[]` | Assets produced by this task: at most 97, each once (the decorator refuses an asset named twice) |
 | `inlets` | list[Asset] | `[]` | Assets consumed by this task |
 | `wait_for` | list[Asset] | `[]` | Assets to wait for before running, each for the run's date ([ASSETS.md § Granularity](ASSETS.md#granularity)): `[asset]`, `[asset.within(hours=24)]`, `[asset.consecutive(days=7)]`. The wait lasts 7 days from when the task's own dependencies are met; then the task fails. `polyris-deploy` warns when `orchestration_timeout` is shorter |
 
