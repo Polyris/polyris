@@ -29,13 +29,13 @@ if TYPE_CHECKING:
 ENV_PIPELINE = "POLYRIS_PIPELINE_NAME"
 ENV_DATE = "POLYRIS_RUN_DATE"
 ENV_TABLE = "POLYRIS_TOKENS_TABLE"
-ENV_TASK_NAME = "POLYRIS_TASK_NAME"          # set by run_task wrapper for service tasks
+ENV_TASK_NAME = "POLYRIS_TASK_NAME"          # set by run_task for Glue, ECS and Batch tasks
 #: Set by run_task for Glue, ECS and Batch tasks from 1.3 on (ADR #137 §1, §9): a JSON object from each
 #: direct upstream's name to its status and skip origin in this run.
 ENV_UPSTREAM_STATUSES = "POLYRIS_UPSTREAM_STATUSES"
-ENV_RUN_ID = "POLYRIS_WRAPPER_RUN_ID"        # SFN wrapper execution ARN — used by xcom.push()
+ENV_RUN_ID = "POLYRIS_WRAPPER_RUN_ID"        # the task's run_task execution ARN (1.2's name) — used by xcom.push()
 
-# Field name written to DDB by xcom.push() and read by run_task wrapper's
+# Field name written to DDB by xcom.push() and read by run_task's
 # Check_Task_Pushed state. Coupled constant — must match run_task/sfn.tpl.json;
 # renaming it here requires the matching template edit in the same commit.
 _PUSH_MARKER_FIELD = "_pushed_by_task"
@@ -415,6 +415,7 @@ def pull(
     resp = ddb_client.get_item(
         TableName=table,
         Key={"execution_name": {"S": key}},
+        ConsistentRead=True,          # read just after the upstream's success wrote it
         ProjectionExpression="#r",
         ExpressionAttributeNames={"#r": "result"},
     )
@@ -602,9 +603,11 @@ def get(
 
 
 # Size cap for a single DDB item (soft limit — DDB hard is 400KB, we leave
-# headroom for metadata fields). Matches the runtime ~350KB result cap the
-# wrapper enforces in Save_Success.
+# headroom for the row's other fields).
 _PUSH_MAX_BYTES = 350_000
+#: How long a date's output lives from its latest write: a year (retention.OUTPUT, ADR #137 §5), so a rerun of
+#: the past year that skips the task still finds it. A parity test pins the value.
+_OUTPUT_TTL_SECONDS = 365 * 24 * 60 * 60
 
 
 def push(
@@ -619,7 +622,7 @@ def push(
 ) -> None:
     """Store this task's output for downstream reading.
 
-    Required for service tasks (Glue / ECS / Batch / EMR) whose wrapper only
+    Required for service tasks (Glue / ECS / Batch / EMR) whose run_task only
     sees the AWS API response (JobRunId / TaskArn / QueryExecutionId / etc.) —
     without this call, downstream tasks receive that AWS metadata instead of
     the actual work output.
@@ -629,20 +632,20 @@ def push(
     Args:
         value: JSON-serializable output (``dict``, ``list``, primitive, ``None``).
         pipeline / task / date / table / run_id: context, resolved from
-            ``POLYRIS_*`` env vars if omitted. The wrapper injects these envs
-            into every service-task container / job.
+            ``POLYRIS_*`` env vars if omitted. run_task gives them to every
+            Glue, ECS and Batch task (a Glue job: as job arguments).
         ddb_client: injected for tests; created on demand otherwise.
 
     Raises:
         XComError: value is not JSON-serializable, or serialized > 350KB.
-        XComError: required env var missing (usually means the wrapper wasn't
-            re-deployed — actionable hint in the error message).
+        XComError: a value run_task gives the task is missing (the task does
+            not run under polyris — pass it explicitly to test locally).
         ClientError: DDB UpdateItem failed (permission / throttling).
 
     Note (Lambda):
-        Calling ``xcom.push()`` from a Lambda handler races with the wrapper's
-        Save_Success write. If the push finishes AFTER the handler returns,
-        the wrapper may or may not detect the marker depending on timing. Prefer
+        Calling ``xcom.push()`` from a Lambda handler races with run_task's
+        record of the success. If the push finishes AFTER the handler returns,
+        run_task may or may not see the marker depending on timing. Prefer
         ``return value`` from Lambda. This function emits a ``UserWarning`` if
         ``AWS_LAMBDA_FUNCTION_NAME`` is set. See DATA_PASSING.md.
 
@@ -658,14 +661,14 @@ def push(
     """
     import warnings
 
-    # Lambda-runtime warning — race with wrapper's Save_Success is real. Emit
+    # Lambda-runtime warning — the race with run_task's record of the success is real. Emit
     # once per call so users see it in CloudWatch logs; stacklevel=2 points the
     # warning at the caller's line, not this module.
     if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
         warnings.warn(
             "xcom.push() called from a Lambda handler. Prefer `return value` — "
-            "an async push after the handler returns may race with the wrapper's "
-            "Save_Success write. See docs/features/DATA_PASSING.md#lambda-write-pattern.",
+            "an async push after the handler returns may race with run_task's "
+            "record of the success. See docs/features/DATA_PASSING.md#lambda-write-pattern.",
             UserWarning,
             stacklevel=2,
         )
@@ -694,30 +697,24 @@ def push(
     date = _resolve(date, ctx, (), ENV_DATE, "run date")
     table = _resolve(table, ctx, (), ENV_TABLE, "table name")
 
-    # POLYRIS_TASK_NAME and POLYRIS_WRAPPER_RUN_ID are NEW env vars — an
-    # older wrapper (pre-1.0.0) does not inject them. Convert the generic
-    # PullError from _resolve into an actionable XComError that names the
-    # remediation.
+    # POLYRIS_TASK_NAME and POLYRIS_WRAPPER_RUN_ID come from run_task only: convert the generic
+    # PullError from _resolve into an XComError that says where they come from.
     try:
         task = _resolve(task, ctx, (), ENV_TASK_NAME, "task name")
     except PullError:
         raise XComError(
-            f"xcom.push() requires the '{ENV_TASK_NAME}' environment variable. "
-            "This env var is injected by the polyris wrapper for service tasks. "
-            "If you're seeing this in production, your pipeline is running under "
-            "an older wrapper — run `sam deploy` on the polyris SAM template to "
-            "update it (no per-pipeline redeploy needed). For local testing, pass "
-            "task=... explicitly."
+            f"xcom.push() requires the '{ENV_TASK_NAME}' environment variable, which "
+            "run_task gives every Glue, ECS and Batch task (a Glue job: the argument "
+            f"--{ENV_TASK_NAME}). For local testing, pass task=... explicitly."
         ) from None
 
     try:
-        run_id = _resolve(run_id, ctx, (), ENV_RUN_ID, "wrapper run id")
+        run_id = _resolve(run_id, ctx, (), ENV_RUN_ID, "run_task execution id")
     except PullError:
         raise XComError(
-            f"xcom.push() requires the '{ENV_RUN_ID}' environment variable "
-            "(prevents stale push marker corruption across backfill runs). "
-            "This env var is injected by the polyris wrapper — run `sam deploy` "
-            "on the polyris SAM template to update it."
+            f"xcom.push() requires the '{ENV_RUN_ID}' environment variable, which "
+            "run_task gives every Glue, ECS and Batch task: it keeps an earlier run's "
+            "push from counting as this run's. For local testing, pass run_id=... explicitly."
         ) from None
 
     if ddb_client is None:
@@ -725,18 +722,20 @@ def push(
         ddb_client = boto3.client("dynamodb")  # pragma: no cover
 
     key_name = f"output#{pipeline}#{task}#{date}"
+    now = datetime.now(timezone.utc)
     ddb_client.update_item(
         TableName=table,
         Key={"execution_name": {"S": key_name}},
         UpdateExpression=(
             "SET #r = :r, #p = :p, pushed_at = :now, pushed_run_id = :rid, "
-            "task_name = :tn ADD push_count :one"
+            "task_name = :tn, #ttl = :ttl ADD push_count :one"
         ),
-        ExpressionAttributeNames={"#r": "result", "#p": _PUSH_MARKER_FIELD},
+        ExpressionAttributeNames={"#r": "result", "#p": _PUSH_MARKER_FIELD, "#ttl": "ttl"},
         ExpressionAttributeValues={
             ":r": {"S": serialized},
             ":p": {"BOOL": True},
-            ":now": {"S": datetime.now(timezone.utc).isoformat()},
+            ":now": {"S": now.isoformat()},
+            ":ttl": {"N": str(int(now.timestamp()) + _OUTPUT_TTL_SECONDS)},
             ":rid": {"S": run_id},
             ":tn": {"S": task},
             ":one": {"N": "1"},

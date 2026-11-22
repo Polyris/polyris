@@ -491,32 +491,24 @@ Two records per task-per-day, both in the `pipeline-tokens` DDB table:
 |-------|------|---------|
 | `execution_name` | S (PK) | `output#{pipeline}#{task}#{date}` |
 | `task_name` | S | task_id |
-| `pipeline_name` | S | pipeline identifier |
-| `status` | S | `success` / `failed` / etc. |
-| `result` | S (JSON) | task output (Lambda return, SFN Output, or `xcom.push()` value) |
-| `updated_at` | S (ISO) | last update |
-| `finished_at` | S (ISO) | completion timestamp |
-| `ttl` | N | expiry (120 days) |
-| `run_id` | S | most recent wrapper ARN that touched this row |
-| `attempt` | N | current retry attempt |
-| `task_execution_arn` | S | AWS resource ARN of the task execution |
-| `_pushed_by_task` | BOOL | present only when `xcom.push()` ran this run |
-| `pushed_at` | S (ISO) | when `xcom.push()` was called |
-| `pushed_run_id` | S | wrapper ARN that owned the push (stale-marker rejection) |
-| `push_count` | N (ADD) | number of push calls this run (debug) |
+| `status` | S | `success`, written with the output |
+| `result` | S (JSON) | the task's output: a Lambda's return, a state machine's output, another service's response, or the `xcom.push()` value; a string result is stored as JSON (`"ok"`) |
+| `updated_at` | S (ISO) | last write |
+| `run_id` | S | the `run_task` execution of the latest success |
+| `ttl` | N | a year from the latest write; every write renews it |
+| `_pushed_by_task` | BOOL | present when `xcom.push()` wrote `result` |
+| `pushed_at` | S (ISO) | when `xcom.push()` ran |
+| `pushed_run_id` | S | the `run_task` execution whose task pushed |
+| `push_count` | N (ADD) | number of push calls (debug) |
 | `_manually_resolved` | BOOL | present when the Console wrote a manual-resolution marker (see below) |
 | `_resolution` | S | `mark_success` \| `skip` \| `fail` \| `stop` |
 | `_reason` | S | operator's free-text reason |
 | `_operator` | S | operator email (or `"unknown"` if auth disabled / legacy) |
 | `_pipeline_execution` | S | source pipeline_execution the marker was written from |
 
-Init_Output_Row `REMOVE`s `push_count` at the start of every run so the counter
-resets per-run. Other per-run markers (`_pushed_by_task`, `pushed_at`,
-`pushed_run_id`) are overwritten by `Save_Canonical_Output_Preserve` /
-`Check_Task_Pushed`; the `run_id` stamp lets same-date runs distinguish their
-own writes from a prior run's leftovers.
+`run_task` writes `result` in the same transaction as the task's success. A success whose task pushed keeps the pushed value; one that did not push removes the push fields. `pushed_run_id` keeps a push of an earlier run of the date from counting as this run's.
 
-### `input#{pipeline}#{task}#{date}` — Console preview row (new in 1.0.0)
+### `input#{pipeline}#{task}#{date}` — Console preview row
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -524,10 +516,10 @@ own writes from a prior run's leftovers.
 | `task_name` | S | task_id |
 | `pipeline_name` | S | pipeline identifier |
 | `task_date` | S | task run date (**not** `date` — see GSI note) |
-| `task_input` | S (JSON) | full `{upstream, variables}` snapshot up to ~380 KB |
-| `run_id` | S | wrapper ARN that wrote this input snapshot |
-| `updated_at` | S (ISO) | last update |
-| `ttl` | N | expiry (120 days) |
+| `task_input` | S (JSON) | the `{upstream, variables}` the task's work was given |
+| `run_id` | S | the `run_task` execution that wrote it |
+| `updated_at` | S (ISO) | last write |
+| `ttl` | N | 90 days from the latest write |
 
 **Note on `task_date`:** deliberately mismatched from the `date-pipeline-index`
 GSI's key attribute (`date`) so `input#` rows don't populate that GSI.
@@ -540,7 +532,7 @@ Data flows are keyed on the logical run date, not wall-clock time. Both
 to re-run — as long as your task's return value doesn't include `now()` or
 similar wall-clock inputs.
 
-Same-date re-runs overwrite; different dates never collide. TTL is 120 days.
+Same-date re-runs overwrite; different dates never collide. A date's output lives a year from its latest write, its input 90 days.
 
 ## Migration from 0.99
 

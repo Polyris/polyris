@@ -607,6 +607,30 @@ def test_push_writes_updateitem_to_output_key(monkeypatch):
     assert call["Key"]["execution_name"]["S"] == "output#sales#my-task#2026-07-07"
 
 
+def test_push_renews_the_outputs_lifetime_a_year_from_this_write(monkeypatch):
+    """ADR #137 §5: every write of a date's output renews its TTL; a push of a task that never succeeded left a
+    row that lived for ever (the review of TR-5)."""
+    from datetime import timezone
+    from polyris.coordination import retention
+    from polyris.xcom import _OUTPUT_TTL_SECONDS
+    assert _OUTPUT_TTL_SECONDS == retention.OUTPUT.total_seconds()          # xcom.py imports nothing of polyris
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    before = int(datetime.now(timezone.utc).timestamp())
+    push({"rows": 100}, ddb_client=ddb)
+    call = ddb.calls[0]
+    assert "#ttl = :ttl" in call["UpdateExpression"] and call["ExpressionAttributeNames"]["#ttl"] == "ttl"
+    ttl = int(call["ExpressionAttributeValues"][":ttl"]["N"])
+    assert before + _OUTPUT_TTL_SECONDS <= ttl <= before + _OUTPUT_TTL_SECONDS + 5
+
+
+def test_pull_reads_the_output_consistently():
+    """It runs just after the upstream's success wrote the row (ADR #137 §1)."""
+    ddb = FakeDDB(_item('{"rows": 1}'))
+    pull("t", pipeline="p", date="d", table="t", ddb_client=ddb)
+    assert ddb.calls[0]["ConsistentRead"] is True
+
+
 def test_push_sets_pushed_by_task_marker(monkeypatch):
     _set_push_env(monkeypatch)
     ddb = FakePushDDB()
