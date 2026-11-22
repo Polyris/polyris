@@ -63,6 +63,9 @@ DEFECTS = {
             "that starts days later finds its other upstreams' outputs expired (D121)",
     "R-X1": "An operator's Skip, Fail or Mark Successful of a running task leaves its work running: the dependants "
             "run beside it, and a Restart after a Fail runs two copies (the review of TR-6, B-1)",
+    "R-E2": "A Restart between a pass's read of every row final and its answer: the answer's mark, conditional on "
+            "the run_version the pass read, is refused, and the engine then stops the run with the restarted task "
+            "for an answer it never saw marked (D120)",
     "B-Q1": "A wait for facts that reaches its limit leaves its task waiting and the run RUNNING (1.2: the "
             "failure handler read a field its input no longer carried, a Catch hid the expression error, and the "
             "answer was skipped; F16, CR-7). The task must fail once, with the cause; World._expression_failures "

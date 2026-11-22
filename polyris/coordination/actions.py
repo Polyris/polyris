@@ -412,38 +412,40 @@ def _version_next(run: dispatch.RunView, *, table: str, now: datetime, remove: O
                                                          ":ttl": retention.ttl(now, retention.HISTORY)})}
 
 
-def renewals(run: dispatch.RunView, items: Mapping[str, Mapping[str, Any]], *, request: Mapping[str, Any],
-             now: datetime, table: str) -> List[Dict[str, Any]]:
-    """The renewal of a Restart (§5), as single updates a pass sends one by one: the history TTL of each task row
-    the pass read below the request's, and of the run's input; the year of each task's ``output#``.
+def renewal_keys(run: dispatch.RunView, names: Sequence[str]) -> List[str]:
+    """The items besides the task rows that a Restart's renewal reads the TTL of: the run's input and each task's
+    ``output#`` (§5)."""
+    return [run_row.input_key(run.execution)] + [f"output#{run.pipeline}#{name}#{run.date}" for name in sorted(names)]
 
-    Each is conditional on the item's existence, so none writes an item of the key alone where TTL deleted one,
-    and the input's and the outputs' on a TTL below the request's, so a pass that takes up the renewal again
-    after its budget writes nothing twice. A refused condition is no failure: the item is gone or renewed.
-    The ``output#`` of every task, not only the restarted task's upstreams: a reset row reads its other
-    upstreams' outputs too, possibly long after the Restart."""
+
+def renewals(run: dispatch.RunView, items: Mapping[str, Mapping[str, Any]], *, request: Mapping[str, Any],
+             ttls: Mapping[str, int], now: datetime, table: str) -> List[Dict[str, Any]]:
+    """The renewal of a Restart (§5), as single updates a pass sends one by one: the history TTL of each task row
+    and of the run's input, and the year of each task's ``output#``, for each item that lives less than the request
+    asks, less ``RENEWAL_SLACK``. ``ttls`` are the TTLs read of ``renewal_keys``; an item not read does not exist,
+    and nothing is written for it.
+
+    Each write is conditional on the item's existence, so none writes an item of the key alone where TTL deleted
+    one after the read; a refused condition is no failure. Every task's ``output#``, not only the restarted task's
+    upstreams: a reset row reads its other upstreams' outputs too, possibly long after the Restart."""
     at = parse_utc(str(request["at"]))
-    history, year = retention.ttl(at, retention.HISTORY), retention.ttl(at, retention.OUTPUT)
-    keys = [str(item[task_row.TABLE_KEY]) for _, item in sorted(items.items())
-            if int(item.get(task_row.TTL, 0)) < history]
-    writes = [_renewal(key, ttl=retention.ttl(now, retention.HISTORY), below=None, table=table) for key in keys]
-    writes.append(_renewal(run_row.input_key(run.execution), ttl=retention.ttl(now, retention.HISTORY), below=history,
-                           table=table))
-    pipeline = run.pipeline
-    writes += [_renewal(f"output#{pipeline}#{name}#{run.date}", ttl=retention.ttl(now, retention.OUTPUT), below=year,
-                        table=table) for name in sorted(items)]
+    history = retention.ttl(at - retention.RENEWAL_SLACK, retention.HISTORY)
+    year = retention.ttl(at - retention.RENEWAL_SLACK, retention.OUTPUT)
+    history_ttl, year_ttl = retention.ttl(now, retention.HISTORY), retention.ttl(now, retention.OUTPUT)
+    writes = [_renewal(str(item[task_row.TABLE_KEY]), ttl=history_ttl, table=table)
+              for _, item in sorted(items.items()) if int(item.get(task_row.TTL, 0)) < history]
+    input_key, *outputs = renewal_keys(run, list(items))
+    if input_key in ttls and ttls[input_key] < history:
+        writes.append(_renewal(input_key, ttl=history_ttl, table=table))
+    writes += [_renewal(key, ttl=year_ttl, table=table) for key in outputs if key in ttls and ttls[key] < year]
     return writes
 
 
-def _renewal(key: str, *, ttl: int, below: Optional[int], table: str) -> Dict[str, Any]:
-    condition = "attribute_exists(#key)"
-    values: Dict[str, Any] = {":ttl": ttl}
-    if below is not None:
-        condition += " AND (attribute_not_exists(#ttl) OR #ttl < :below)"
-        values[":below"] = below
+def _renewal(key: str, *, ttl: int, table: str) -> Dict[str, Any]:
     return {"TableName": table, "Key": {task_row.TABLE_KEY: {"S": key}}, "UpdateExpression": "SET #ttl = :ttl",
-            "ConditionExpression": condition, "ExpressionAttributeNames": {"#key": task_row.TABLE_KEY, "#ttl": "ttl"},
-            "ExpressionAttributeValues": row_write.typed(values)}
+            "ConditionExpression": "attribute_exists(#key)",
+            "ExpressionAttributeNames": {"#key": task_row.TABLE_KEY, "#ttl": "ttl"},
+            "ExpressionAttributeValues": row_write.typed({":ttl": ttl})}
 
 
 # ── Stop of a run, Pause and Resume (§3, §4, §5) ──────────────────────────

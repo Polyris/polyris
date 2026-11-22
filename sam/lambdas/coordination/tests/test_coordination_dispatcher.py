@@ -1122,6 +1122,7 @@ def test_a_renewal_write_that_meets_a_transaction_leaves_the_rest_to_the_next_pa
     start(world, [spec("extract")])
     full(world)
     finish(world, "extract", "failed")
+    world.clock.at += timedelta(days=200)            # the run's TTLs are a renewal behind
     restart(world, "extract")
     real, met = world.dispatcher.client.update_item, []
 
@@ -1136,3 +1137,25 @@ def test_a_renewal_write_that_meets_a_transaction_leaves_the_rest_to_the_next_pa
     assert run_row.RENEW_TTL in item(world, RUN_KEY)[run_row.REQUESTS]
     full(world)
     assert item(world, RUN_KEY)[run_row.REQUESTS] == {}                       # the next pass finished it
+
+
+def test_a_narrow_pass_drops_the_pointers_of_a_row_an_action_finished(world):
+    """Rule 40: an operator's action takes the row out of its wait with no decision of a pass (review P4)."""
+    start(world, [spec("extract", wait_for=[{"asset_name": "ns/orders"}])])
+    pointer = {"dependency_key": {"S": "asset:ns/orders"}, "subscriber": {"S": key("extract")}}
+    assert world.client.get_item(TableName=table("SUBSCRIPTIONS_TABLE"), Key=pointer).get("Item")
+    finish(world, "extract", "skipped")                                       # as the console's Skip leaves it
+    world.dispatcher.narrow_pass(RUN_KEY, [key("extract")], source="asset", remaining_ms=lambda: 60_000)
+    assert not world.client.get_item(TableName=table("SUBSCRIPTIONS_TABLE"), Key=pointer).get("Item")
+
+
+def test_a_stop_after_a_restart_is_not_held_up_by_the_renewal(world):
+    """Review P2: the TTLs come after the stop, in what is left of the budget."""
+    start(world, [spec(f"t{i:02d}") for i in range(6)])
+    full(world)
+    world.clock.at += timedelta(days=200)
+    finish(world, "t00", "failed")
+    restart(world, "t00")
+    update(world, RUN_KEY, stop={"by": "ops", "reason": "enough", "at": "2026-11-12T06:01:00.000Z"})
+    full(world)
+    assert {item(world, key(f"t{i:02d}"))["status"] for i in range(6)} == {"stopped"}

@@ -591,3 +591,21 @@ def test_an_action_on_a_running_task_stops_its_work_and_a_restart_runs_one_copy(
     world.skip(run, "extract")
     world.deliver_task_hints()
     assert world.running_tasks(run) == ["load"]     # the skipped work stopped; its dependant runs alone
+
+
+@defect("R-E2")
+def test_a_restart_between_a_passs_read_of_every_row_final_and_its_answer_runs_after_the_runs_end(world):
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    # The pass that load's success wakes reads every row final; a Restart of extract lands before its answer.
+    world.boundary.between(after_read=a_pass_reads_the_run, then=lambda: world.restart(run, "extract"))
+    world.complete(run, "load")
+    world.deliver_task_hints()
+    world.clock.advance(minutes=31)
+    world.sweep()                                  # the answer is marked: the engine stops no run (D120)
+    assert world.running_tasks(run) == ["extract"]
+    world.complete(run, "extract")
+    world.deliver_task_hints()
+    assert world.status(run, "extract") == "success"

@@ -44,7 +44,7 @@ import random
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
@@ -234,6 +234,12 @@ class Dispatcher:
         state = _Pass(run, {}, {}, names, deadline, source, now, check=check, left_read=run.left_at is not None)
         self._read_rows(state, {name: keys[name] for name in judged})
         if targets is not None:
+            # A narrow pass is woken by a fact through the rows' pointers: a row an operator's action finished left
+            # its wait without a decision of a pass, so its pointers go here (Rule 40, ADR #137 §7).
+            for name in judged:
+                row = state.rows.get(name)
+                if row is not None and row.status in transitions.FINAL and row.has_wait_for:
+                    self._drop_pointers(state.items[name])
             # A narrow pass also reads the upstreams its rows name (D117: the rows hold the dependencies).
             upstreams = {d for name in judged if name in state.rows for d in state.rows[name].dependencies} - judged
             self._read_rows(state, {name: keys[name] for name in upstreams if name in keys})
@@ -249,6 +255,8 @@ class Dispatcher:
                 for name in dispatch.upstreams_first(judged, dependencies):
                     if name in state.rows:
                         self._decide(state, name)
+            if targets is None and run_row.RENEW_TTL in state.run.requests:
+                self._renew_ttls(state)                # after the decisions and the stop, within the budget (§5)
             if targets is None:
                 end = self._run_end(state, keys)
                 stopped = self._engine_check(state.run, now, finished=end.finished) if check else None
@@ -275,9 +283,8 @@ class Dispatcher:
         each is cleared once carried out, on the run_version the pass holds. A request that cannot be carried out
         warns and leaves the pass to its decisions: one bad request never holds up its run (Rule 51)."""
         try:
-            renewal = state.run.requests.get(run_row.RENEW_TTL)
-            if renewal is not None:
-                self._renew(state, renewal)
+            if run_row.RENEW_TTL in state.run.requests:
+                self._renewal_pointers(state)
             reset = state.run.requests.get(run_row.RESET_DEPENDANTS)
             if reset is not None and state.run.stopping:
                 self._clear(state, run_row.RESET_DEPENDANTS)
@@ -296,24 +303,72 @@ class Dispatcher:
         self._warn(state.run, subject=f"{state.run.key}-request", task="", item={},
                    error=f"a request of the run could not be carried out: {type(exc).__name__}: {exc}")
 
-    def _renew(self, state: _Pass, request: Mapping[str, Any]) -> None:
-        """The renewal of a Restart (§5): the pointers of each waiting row with wait_for, before any decision, so
-        no fact recorded after the Restart goes unseen; then the TTLs, one write at a time within the budget. A
-        refused condition means the item is gone or renewed already."""
+    def _renewal_pointers(self, state: _Pass) -> None:
+        """The first part of a Restart's renewal (§3, §5): the pointers of each waiting row with wait_for, before
+        any decision, so no fact recorded after the Restart goes unseen. Every waiting row's, not only the restarted
+        one's: a second Restart replaces the request's time before a pass, and a pointer written again costs one
+        write."""
         for name in sorted(state.rows):
             if state.rows[name].status == S.WAITING.value and state.rows[name].has_wait_for:
                 self._within_budget(state)
                 self._put_pointers(state, name)
-        for write in actions.renewals(state.run, state.items, request=request, now=state.now, table=self.tokens_table):
-            self._within_budget(state)
-            try:
-                self.client.update_item(**write)
-            except ClientError as exc:
-                if failures.error_code(exc) == CONFLICT + "Exception":
-                    raise _Left()                      # it met a transaction: the next pass takes the renewal up
-                if not failures.is_condition_failed(exc):
-                    raise
-        self._clear(state, run_row.RENEW_TTL)
+
+    def _renew_ttls(self, state: _Pass) -> None:
+        """The rest of a Restart's renewal (§5), after the pass's decisions and its stop, within what is left of
+        its budget: each item that lives less than the request asks, one write at a time, each counted, so a pass
+        that leaves the rest sets ``left_at`` and the next takes them up from a new read of their TTLs. Then the
+        request is cleared."""
+        request = state.run.requests[run_row.RENEW_TTL]
+        try:
+            ttls = self._read_ttls(actions.renewal_keys(state.run, list(state.items)))
+            for write in actions.renewals(state.run, state.items, request=request, ttls=ttls, now=state.now,
+                                          table=self.tokens_table):
+                self._within_budget(state)
+                try:
+                    self.client.update_item(**write)
+                except ClientError as exc:
+                    if failures.error_code(exc) == CONFLICT + "Exception":
+                        raise _Left()                  # it met a transaction: the next pass takes the renewal up
+                    if not failures.is_condition_failed(exc):
+                        raise
+                state.changed += 1
+            self._clear(state, run_row.RENEW_TTL)
+        except (_Left, CoordinationTransient):
+            raise
+        except (ClientError, BotoCoreError) as exc:
+            failures.reraise_transient(exc)
+            self._request_failed(state, exc)
+        except Exception as exc:  # noqa: BLE001 — one bad request never holds up its run (Rule 51)
+            self._request_failed(state, exc)
+
+    def _read_ttls(self, keys: Sequence[str]) -> Dict[str, int]:
+        """The TTLs of the items ``keys`` names that exist, read consistently by key and nothing else."""
+        return {str(item[task_row.TABLE_KEY]): int(item.get("ttl", 0))
+                for item in self._batch_get(keys, projection=("#k, #t", {"#k": task_row.TABLE_KEY, "#t": "ttl"}))}
+
+    def _batch_get(self, keys: Sequence[str], *,
+                   projection: Optional[Tuple[str, Dict[str, str]]] = None) -> List[Dict[str, Any]]:
+        """The tokens table's items ``keys`` names, consistently and by key, in batches; DynamoDB's unprocessed keys
+        are asked again with a backoff, and a read it leaves incomplete raises (invariant 10: no fail-open)."""
+        found: List[Dict[str, Any]] = []
+        names = sorted(keys)
+        for start in range(0, len(names), READ_BATCH):
+            asked: Dict[str, Any] = {"Keys": [{task_row.TABLE_KEY: {"S": k}} for k in names[start:start + READ_BATCH]],
+                                     "ConsistentRead": True}
+            if projection is not None:
+                asked["ProjectionExpression"], asked["ExpressionAttributeNames"] = projection
+            request: Dict[str, Any] = {self.tokens_table: asked}
+            for attempt in range(READ_ATTEMPTS):
+                response = self.client.batch_get_item(RequestItems=request)
+                found += [_plain(raw) for raw in response.get("Responses", {}).get(self.tokens_table, [])]
+                request = response.get("UnprocessedKeys") or {}
+                if not request:
+                    break
+                self.sleep(min(2.0, 0.05 * (2 ** attempt)))
+            else:
+                raise CoordinationTransient(f"{self.tokens_table}: DynamoDB left keys unread after {READ_ATTEMPTS} "
+                                            "attempts")
+        return found
 
     def _reset(self, state: _Pass, request: Mapping[str, Any]) -> None:
         """The reset of a Restart with dependants (§3): one transaction per row, upstreams first, each raising
@@ -737,24 +792,7 @@ class Dispatcher:
     def _read_rows(self, state: _Pass, keys: Mapping[str, str]) -> None:
         """The rows by key, consistently; a row of another run under the key counts as missing (invariant 11)."""
         by_key = {key: name for name, key in keys.items()}
-        found: Dict[str, Dict[str, Any]] = {}
-        names = sorted(by_key)
-        for start in range(0, len(names), READ_BATCH):
-            request: Dict[str, Any] = {self.tokens_table: {
-                "Keys": [{task_row.TABLE_KEY: {"S": k}} for k in names[start:start + READ_BATCH]],
-                "ConsistentRead": True}}
-            for attempt in range(READ_ATTEMPTS):
-                response = self.client.batch_get_item(RequestItems=request)
-                for raw in response.get("Responses", {}).get(self.tokens_table, []):
-                    item = _plain(raw)
-                    found[str(item[task_row.TABLE_KEY])] = item
-                request = response.get("UnprocessedKeys") or {}
-                if not request:
-                    break
-                self.sleep(min(2.0, 0.05 * (2 ** attempt)))
-            else:
-                raise CoordinationTransient(f"{self.tokens_table}: DynamoDB left keys unread after {READ_ATTEMPTS} "
-                                            "attempts")
+        found = {str(item[task_row.TABLE_KEY]): item for item in self._batch_get(list(by_key))}
         for key, name in by_key.items():
             read = found.get(key)
             view = None

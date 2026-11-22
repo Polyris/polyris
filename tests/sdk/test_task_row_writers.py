@@ -334,7 +334,7 @@ CODE_WRITERS = {
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
     ("coordination/dispatcher.py", "_drop_pointers"): "another table: a row's pointers once it left its wait",
     ("coordination/dispatcher.py", "_put_pointers"): "another table: a waiting row's pointers (actions.pointer_items)",
-    ("coordination/dispatcher.py", "_renew"):
+    ("coordination/dispatcher.py", "_renew_ttls"):
         "a TTL alone, on task rows, the run's input and output#: actions.renewals, conditional on the item",
     ("coordination/dispatcher.py", "_warn"): "warning rows (records.warning_item)",
     ("coordination/dispatcher.py", "_timeline"): "another table: a decision's timeline event (records.decision_event)",

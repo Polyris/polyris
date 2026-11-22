@@ -386,17 +386,29 @@ def test_the_renewal_writes_what_lives_less_than_the_request_and_nothing_ttl_del
     put(ddb, {"execution_name": run_row.input_key(RUN), "ttl": old})
     put(ddb, {"execution_name": "output#orders#extract#2026-11-21", "result": "{}", "ttl": old})
     view = dispatch.run_view(active_run(**{run_row.PIPELINE: "orders"}))
-    writes = actions.renewals(view, rows, request=run_row.request(by="ops", at=format_utc(at)), now=NOW, table=TOKENS)
+    keys = actions.renewal_keys(view, list(rows))
+    assert keys == [run_row.input_key(RUN), "output#orders#extract#2026-11-21", OUTPUT]
+    ttls = {run_row.input_key(RUN): old, "output#orders#extract#2026-11-21": old}      # load wrote no output#
+    writes = actions.renewals(view, rows, request=run_row.request(by="ops", at=format_utc(at)), ttls=ttls, now=NOW,
+                              table=TOKENS)
     assert [w["Key"]["execution_name"]["S"] for w in writes] == [
-        KEY, run_row.input_key(RUN), "output#orders#extract#2026-11-21", OUTPUT]   # extract's row is renewed
+        KEY, run_row.input_key(RUN), "output#orders#extract#2026-11-21"]       # extract's row is renewed already
     for write in writes:
-        try:
-            ddb.update_item(**write)
-        except ddb.exceptions.ConditionalCheckFailedException:
-            pass                                           # gone, or renewed already: nothing to do
+        ddb.update_item(**write)
     assert int(get(ddb, KEY)["ttl"]) == renewed and int(get(ddb, run_row.input_key(RUN))["ttl"]) == renewed
     assert int(get(ddb, "output#orders#extract#2026-11-21")["ttl"]) == retention.ttl(NOW, retention.OUTPUT)
-    assert get(ddb, OUTPUT) == {}                          # load wrote none: no item of the key alone
+    assert get(ddb, OUTPUT) == {}                          # none was read: no item of the key alone
+    # A second Restart within a day renews nothing again (RENEWAL_SLACK).
+    again = actions.renewals(view, {n: get(ddb, i[task_row.TABLE_KEY]) for n, i in rows.items()},
+                             request=run_row.request(by="ops", at=format_utc(NOW + timedelta(hours=2))),
+                             ttls={k: int(get(ddb, k)["ttl"]) for k in ttls}, now=NOW, table=TOKENS)
+    assert again == []
+    item = get(ddb, KEY)
+    ddb.delete_item(TableName=TOKENS, Key={"execution_name": {"S": KEY}})        # TTL deleted it after the read
+    with pytest.raises(ddb.exceptions.ConditionalCheckFailedException):
+        ddb.update_item(**actions.renewals(view, {"load": {**item, task_row.TTL: old}}, ttls={},
+                                           request=run_row.request(by="ops", at=format_utc(at)), now=NOW,
+                                           table=TOKENS)[0])
 
 
 def test_a_restart_clears_every_field_run_task_writes_on_the_row_but_the_attempt():

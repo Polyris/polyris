@@ -27,6 +27,9 @@ BACKFILL_RUNNING = HISTORY
 BACKFILL_ENDED = timedelta(days=90)
 #: A Restart is refused once its run started more than a year ago, less this margin (D109).
 RESTART_TTL_MARGIN = timedelta(days=1)
+#: A Restart's renewal leaves what a write of the last day renewed: a Restart a minute after another renews
+#: nothing twice, and every row still outlives the margin above (ADR #137 §5).
+RENEWAL_SLACK = timedelta(days=1)
 
 
 def ttl(now: datetime, lifetime: timedelta) -> int:

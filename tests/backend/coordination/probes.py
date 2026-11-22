@@ -373,8 +373,8 @@ PROBES: Tuple[Probe, ...] = (
                         "        if not names:\n"),),
           f"{ROWS}::test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_clears"),
     # The renewal leaves the outputs alone, as when only the Restart's own upstreams were renewed.
-    Probe("R-O3", (Edit(ACTIONS, "                        table=table) for name in sorted(items)]",
-                        "                        table=table) for name in sorted(items) if False]"),),
+    Probe("R-O3", (Edit(ACTIONS, "for key in outputs if key in ttls and ttls[key] < year]",
+                        "for key in outputs if key in ttls and ttls[key] < year and False]"),),
           f"{ROWS}::test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_restart"),
     # A Pause that raises no run_version: a pass that read the run row before it still writes deps_ready (§1, §5).
     Probe("R-P1", (Edit(ACTIONS, 'expression=f"SET #pauses = :pauses, {run_row.VERSION_RAISE}, #ttl = :ttl",',
@@ -391,4 +391,13 @@ PROBES: Tuple[Probe, ...] = (
     Probe("R-X1", (Edit(ACTIONS, "run_task_to_stop=run_task_name if row.status in _LIVE else None,",
                         'run_task_to_stop=run_task_name if action == "stop" and row.status in _LIVE else None,'),),
           f"{ROWS}::test_an_action_on_a_running_task_stops_its_work_and_a_restart_runs_one_copy"),
+    # The answer's mark conditional on the run_version the pass read, as before D120.
+    Probe("R-E2", (Edit("polyris/coordination/dispatch_writes.py",
+                        'condition="#order = :order AND (attribute_not_exists(#answered) OR #answered <> :order)",',
+                        'condition="#order = :order AND #rv = :rv_seen",'),
+                   Edit("polyris/coordination/dispatch_writes.py",
+                        'values={**run_row.VERSION_RAISE_VALUES, ":order": run.token_order, ":now": format_utc(now)})',
+                        'values={**run_row.VERSION_RAISE_VALUES, ":order": run.token_order, ":now": format_utc(now), '
+                        '":rv_seen": run.version})')),
+          f"{ROWS}::test_a_restart_between_a_passs_read_of_every_row_final_and_its_answer_runs_after_the_runs_end"),
 )

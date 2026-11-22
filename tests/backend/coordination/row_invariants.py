@@ -115,6 +115,9 @@ class Answer:
     token: str
     unfinished: Tuple[str, ...] = ()
     stop_mark: bool = False
+    #: Rows final when the answering pass began and moved since by another writer (a Restart between the pass's
+    #: read and its answer, D120): unfinished at the answer, and none of the pass's doing.
+    raced: Tuple[str, ...] = ()
 
 
 class RowsView(Protocol):
@@ -256,7 +259,8 @@ def invariant_8(view: RowsView) -> List[str]:
         unfinished = sorted(t.key for t in tasks if t.status not in FINAL)
         if not unfinished and run.token and run.answered != run.token and not run.execution_ended and run.due_at is None:
             found.append(f"invariant 8: every row of {run.id} is final, its token is not answered, and nothing will check it")
-        at_the_end = [t.key for t in tasks if t.status not in FINAL and not (
+        raced = {key for answer in view.answers() if answer.run == run.id for key in answer.raced}
+        at_the_end = [t.key for t in tasks if t.status not in FINAL and t.key not in raced and not (
             run.execution_ended_at and t.waiting_since and t.waiting_since > run.execution_ended_at)]
         if at_the_end and run.execution_ended and not run.stop_mark:
             found.append(f"invariant 8: the execution of {run.id} ended while {', '.join(sorted(at_the_end))} were not "

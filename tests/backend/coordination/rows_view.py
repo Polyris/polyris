@@ -47,6 +47,8 @@ class Observer:
     answers: List[Answer] = field(default_factory=list)
     passes: List[Pass] = field(default_factory=list)
     _ids: Any = field(default_factory=lambda: itertools.count(1))
+    #: Each pass in progress over a run, the run's rows as they were when it began: status and generation by key.
+    _read_before: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
     def install(self, runtime: Any, run_task_arn: str, dispatcher: Any) -> None:
         start, succeed, fail, pass_over = runtime._start, runtime.send_task_success, runtime.send_task_failure, \
@@ -67,16 +69,25 @@ class Observer:
                     run = frame.execution.name
                     rows = self.run_rows(run)
                     run_row = self.read_row(f"_run_{run}") or {}
+                    before = self._read_before.get(run, [{}])[-1]
+                    unfinished = {r["execution_name"]: r for r in rows if r.get("status") not in FINAL}
+                    raced = sorted(k for k, r in unfinished.items() if before.get(k, (None, 0))[0] in FINAL
+                                   and int(r.get("generation", 0)) > before[k][1])
                     self.answers.append(Answer(run, str(kwargs["taskToken"]),
-                                               tuple(sorted(r["execution_name"] for r in rows
-                                                            if r.get("status") not in FINAL)),
-                                               stop_mark="stop" in run_row))
+                                               tuple(sorted(set(unfinished) - set(raced))),
+                                               stop_mark="stop" in run_row, raced=tuple(raced)))
                 return send(**kwargs)
             return answer
 
         def _pass(run_key: str, targets: Any, **kwargs: Any) -> Any:
             first, answered = len(self.log), len(self.answers)
-            result = pass_over(run_key, targets, **kwargs)
+            run = run_key[len("_run_"):]
+            self._read_before.setdefault(run, []).append(
+                {str(r["execution_name"]): (r.get("status"), int(r.get("generation", 0))) for r in self.run_rows(run)})
+            try:
+                result = pass_over(run_key, targets, **kwargs)
+            finally:
+                self._read_before[run].pop()
             calls = self.log[first:]
             reads = [c for c in calls if c.operation in ("GetItem", "BatchGetItem", "Query") and not c.ok]
             closes = [c for c in calls if c.ok and _closes_a_run_row(c)]
