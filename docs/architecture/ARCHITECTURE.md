@@ -434,8 +434,8 @@ One-line inventory — for the detailed per-helper flow diagrams see
 | `polyris-failure-handler` | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
 | `polyris-pause-waiter` | Save pause token, wait for resume callback |
 | `polyris-notify-dependents` _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
-| `polyris-restart-task-helper` _(EXPRESS)_ | Restart failed task |
-| `polyris-restart-wrapper` _(EXPRESS)_ | Restart wrapper execution |
+| `polyris-restart-task-helper` _(EXPRESS)_ | 1.2: restarted a task; nothing calls it in 1.3 |
+| `polyris-restart-wrapper` _(EXPRESS)_ | 1.2: restarted a wrapper execution; nothing calls it in 1.3 |
 
 > Alert delivery and interactive callbacks are **not** separate state
 > machines. They are `lambda:invoke` calls from run_task / failure_handler /

@@ -60,8 +60,8 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 |--------------|--------------|
 | `polyris-failure-handler` | Any task failure that needs alerting / marker writes |
 | `polyris-pause-waiter` | A pipeline paused via Console; blocks until resumed |
-| `polyris-restart-task-helper` | Manual "Restart task" action from Console |
-| `polyris-restart-wrapper` | Manual "Restart pipeline" action from Console |
+| `polyris-restart-task-helper` | Restart of a task of a run started before 1.3; the console's Restart no longer calls it |
+| `polyris-restart-wrapper` | Called by `polyris-restart-task-helper` only |
 | `polyris-registration-helper` | Triggered by `polyris-deploy` after CFN deploy; registers pipeline deps and asset subscriptions |
 | `polyris-register-pipeline` | Deployed but not called by any current code path — superseded by the inline `Register_Pipeline` state in each pipeline's generated SFN |
 

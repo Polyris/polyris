@@ -184,7 +184,9 @@ alerter SFNs) to a single `Send_Alerts` Lambda call in the alerts consolidation.
 
 ### polyris-restart-task-helper (EXPRESS)
 
-Restarts a task the console may restart (finished, `stopped` or `waiting_decision`):
+A 1.2 machine, which goes with the others of 1.2: the console's Restart of 1.3 writes the task row and its run
+row's request instead (ADR #137 §3), and nothing calls this one any more. It restarted a task (finished, `stopped`
+or `waiting_decision`):
 
 ```
 Start

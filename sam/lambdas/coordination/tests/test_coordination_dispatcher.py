@@ -1093,3 +1093,46 @@ def test_a_pointer_the_role_may_not_write_warns(world, monkeypatch):
     restart(world, "extract")
     full(world)
     assert any("asset pointers cannot be written" in w["error"] for w in warnings(world))
+
+
+def test_a_stop_of_the_run_cancels_a_pending_reset(world):
+    """ADR #137 §3: the engine's own stop too, which the console's write did not reach (review P10)."""
+    start(world, [spec("extract"), spec("load", ["extract"])])
+    full(world)
+    finish(world, "extract", "failed")
+    full(world)
+    restart(world, "extract", with_dependants=True)
+    update(world, RUN_KEY, stop={"by": "the engine", "reason": "its execution ended", "at": "2026-11-12T06:02:00.000Z"})
+    full(world)
+    assert run_row.RESET_DEPENDANTS not in item(world, RUN_KEY)[run_row.REQUESTS]
+    assert item(world, key("load"))["status"] == "upstream_failed"          # not reset under the stop
+
+
+def test_a_request_that_cannot_be_carried_out_warns_and_the_pass_decides(world):
+    """Rule 51: a request with no time, as only a hand could leave it, holds up no decision (review P11)."""
+    start(world, [spec("extract")])
+    update(world, RUN_KEY, requests={run_row.RENEW_TTL: {"by": "ops"}})
+    full(world)
+    assert item(world, key("extract"))["status"] == "deps_ready"
+    assert any("request of the run could not be carried out" in w["error"] for w in warnings(world))
+
+
+def test_a_renewal_write_that_meets_a_transaction_leaves_the_rest_to_the_next_pass(world, monkeypatch):
+    from coordination_testkit import client_error
+    start(world, [spec("extract")])
+    full(world)
+    finish(world, "extract", "failed")
+    restart(world, "extract")
+    real, met = world.dispatcher.client.update_item, []
+
+    def update_item(**kwargs):
+        if kwargs.get("UpdateExpression") == "SET #ttl = :ttl" and not met:
+            met.append(1)
+            raise client_error("TransactionConflictException", "UpdateItem")
+        return real(**kwargs)
+
+    monkeypatch.setattr(world.dispatcher.client, "update_item", update_item)
+    assert full(world)["left"] is True
+    assert run_row.RENEW_TTL in item(world, RUN_KEY)[run_row.REQUESTS]
+    full(world)
+    assert item(world, RUN_KEY)[run_row.REQUESTS] == {}                       # the next pass finished it

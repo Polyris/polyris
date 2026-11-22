@@ -243,7 +243,7 @@ class SkipOrigin:
 class ManualResolution:
     """
     The four actions an operator can take on a task via the Console UI.
-    Written by ``console_api/routes/tasks.py::_write_synthetic_output_marker``
+    Written by ``polyris/coordination/actions.py`` (``output_marker``)
     as the ``_resolution`` field on the DDB marker, and read by the SDK
     (``xcom.py::XComManuallyResolvedError``) plus the UI
     (``manualResolution.ts``) — this class is the single source of truth for

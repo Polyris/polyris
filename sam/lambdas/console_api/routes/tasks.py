@@ -11,6 +11,8 @@ Handles task operations:
 - get_task_events: Get task timeline events
 """
 import json
+import random
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -575,10 +577,9 @@ def _emit_marker_blocked_warn(
     pipeline_name: str, task_name: str, date: str,
     action_name: str, operator: str,
 ) -> None:
-    """Emit a `_notify_warn_*` record (Principle #38) when
-    `_write_synthetic_output_marker`'s guard blocks a manual action from
-    landing its marker because real output is already present. Best-effort —
-    a failure here must not block the manual action either."""
+    """Emit a `_notify_warn_*` record (Principle #38) when real output already
+    present keeps an action's marker out of `output#` (`actions.output_marker`,
+    Principle #31). Best-effort — a failure here must not block the action."""
     try:
         # A `manual` warning: the bell reads it by write time, so it shows even
         # when the operator acted on an old partition (ADR #130 §9).
@@ -620,8 +621,10 @@ def _run_task_spec(run_item: Dict, task_name: str) -> Tuple[Optional[Dict], str]
     return dict(spec.fields), ''
 
 
-#: An action whose transaction a row's move cancelled is built again from new reads, this many times in all.
+#: An action whose transaction a row's move cancelled is built again from new reads, this many times in all, after
+#: a short random backoff, as a pass does on a conflict (ADR #137 §7).
 ACTION_ATTEMPTS = 3
+ACTION_BACKOFF_SECONDS = (0.05, 0.25)
 
 
 def _execute_task_action(task_name: str, event: Dict, *, action: str, default_reason: str,
@@ -705,6 +708,7 @@ def _transact(action: str, execution_name: str, item: Dict,
         except executions_repo.transaction_canceled_exception as exc:
             log.info(action, "The transaction was cancelled: built again from new reads", execution_name=execution_name,
                      reasons=[str(r.get('Code', '')) for r in exc.response.get('CancellationReasons', [])])
+            time.sleep(random.uniform(*ACTION_BACKOFF_SECONDS))
             fresh = executions_repo.get(execution_name, consistent=True)
             if fresh is None:
                 return None, item, cors_response(404, {'error': f'Task not found: {execution_name}'})

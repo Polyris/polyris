@@ -163,15 +163,18 @@ GET /api/task-events?name={execution_name}
 ### Task Actions
 
 ```http
-POST /api/task-skip?name={execution_name}       # Skip waiting/failed task
+POST /api/task-skip?name={execution_name}       # Skip a task that has no outcome yet
 POST /api/task-fail?name={execution_name}       # Mark as failed
-POST /api/task-success?name={execution_name}    # Mark as successful
-POST /api/task-stop?name={execution_name}       # Force-stop running task
-POST /api/task-restart?name={execution_name}    # Restart terminal task (409 if not terminal)
-POST /api/task-retry?name={execution_name}      # Retry with same params
+POST /api/task-success?name={execution_name}    # Mark as successful, with the facts of its outlets
+POST /api/task-stop?name={execution_name}       # Stop an unfinished task: it ends stopped
+POST /api/task-restart?name={execution_name}    # Run a finished or undecided task again
+POST /api/task-retry?name={execution_name}      # The same as task-restart (deprecated)
 ```
 
-`task-fail` and `task-success` accept optional body: `{"reason": "..."}`
+Every action accepts an optional body `{"reason": "..."}`; `task-restart` also takes `{"with_dependants": true}`,
+which reruns the dependants that a failure or a stop decided. An action on a running task stops its work too. Each
+answers 409 when the task's status allows no such action, for a task of a run started before 1.3, and for a Restart
+while a Stop of its run is in progress or once its run started more than a year ago, less a day.
 
 ---
 

@@ -256,7 +256,7 @@ def test_a_restart_puts_the_row_back_to_waiting_and_requests_the_renewal(ddb):
     assert int(the_run[run_row.TTL]) == retention.ttl(NOW, retention.HISTORY)
     assert the_run[run_row.REQUESTS] == {run_row.RENEW_TTL: {"by": "ops@example.com", "at": format_utc(NOW)}}
     [event] = write.events
-    assert (event["decision"], event["task_run_id"]) == ("restart", run_name.run_task_name(KEY, START, 2))
+    assert (event["decision"], event["task_run_id"]) == ("restart", "old-run-task")   # the attempt it ends
 
 
 def test_a_restart_counts_its_limits_anew_and_its_pointers_are_as_start_run_writes_them():
@@ -469,3 +469,32 @@ def test_a_pause_opens_an_interval_and_a_resume_closes_it_each_on_the_intervals_
 def test_a_stopped_run_takes_no_pause():
     with pytest.raises(actions.ActionRefused, match="takes no Pause"):
         actions.pause_run(active_run(**{run_row.STOP: {"by": "ops"}}), now=NOW, table=TOKENS)
+
+
+# ── the review of TR-6 a and b: polish ─────────────────────────────────────
+
+
+def test_the_actions_are_the_resolutions_the_marker_names():
+    """Principle #28: the marker's ``_resolution`` is the action's name, which xcom and the UI read."""
+    from polyris.constants import ManualResolution
+    assert set(actions.TASK_ACTIONS) == {ManualResolution.MARK_SUCCESS, ManualResolution.SKIP,
+                                         ManualResolution.FAIL, ManualResolution.STOP}
+
+
+def test_an_action_on_a_run_that_is_not_active_is_refused_by_its_run_row(ddb):
+    row = task(S.STOPPED.value)
+    seed(ddb, row, run_item={**run(), run_row.STATUS: run_row.CREATING})
+    assert not send(ddb, build("skip", row))                # its run row stays closed (review P1)
+
+
+def test_a_second_actions_events_go_under_the_rows_latest_run_task_and_the_wait_fields_go(ddb):
+    row = {**task(S.WAITING_DECISION.value, generation=3), task_row.TASK_RUN_ID: "load-run-task-gen-2",
+           task_row.REASONS: ["waits for a decision"], task_row.DECISION_SINCE: "2026-11-22T11:00:00.000Z",
+           task_row.DECISION_TIMEOUT: 18000}
+    seed(ddb, row)
+    write = build("skip", row, reason="x" * 5000)
+    assert {e["task_run_id"] for e in write.events} == {"load-run-task-gen-2"}            # review P5
+    assert send(ddb, write)
+    written = get(ddb, KEY)
+    assert not {task_row.REASONS, task_row.DECISION_SINCE, task_row.DECISION_TIMEOUT} & set(written)
+    assert len(json.loads(get(ddb, OUTPUT)["result"])["_reason"]) == actions.REASON_MAX   # review P7

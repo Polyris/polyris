@@ -9,6 +9,8 @@ Handles pipeline execution control operations:
 - get_execution_parent: Get parent execution info
 """
 import json
+import random
+import time
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
@@ -16,6 +18,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
 from polyris.coordination import actions, run_row
+from routes.tasks import ACTION_BACKOFF_SECONDS
 from dal import executions_repo, pipelines_repo, backfills_repo
 from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
 from constants import Limits, derive_execution_status
@@ -484,6 +487,7 @@ def _run_action(action: str, pipeline_execution: str, build: Callable[[Dict, dat
         except executions_repo.transaction_canceled_exception:
             log.info(action, "The run row changed under the action: built again from a new read",
                      pipeline_execution=pipeline_execution)
+            time.sleep(random.uniform(*ACTION_BACKOFF_SECONDS))
     else:
         return cors_response(409, {'error': f'{pipeline_execution} kept changing under the {action}; try again',
                                    'pipeline_execution': pipeline_execution})

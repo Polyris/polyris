@@ -50,8 +50,13 @@ MARKER_RESOLUTION = "_resolution"
 MARKER_REASON = "_reason"
 MARKER_OPERATOR = "_operator"
 MARKER_RUN = "_pipeline_execution"
-#: The rows a running run_task holds: Stop stops that execution too.
+#: The rows a running run_task holds: an action stops that execution too.
 _LIVE = frozenset({TaskStatus.DEPS_READY.value, TaskStatus.RUNNING.value})
+#: An operator's reason is free text: the row's error, the marker and the timeline take this much of it.
+REASON_MAX = 4000
+#: What a row's wait wrote that a final status no longer has: the reasons it waited, its countdown, the decision it
+#: waited for. An action that ends the row removes them, so no stale reason or deadline stays on it.
+_WAIT_FIELDS = (task_row.REASONS, task_row.COUNTDOWN_END, task_row.DECISION_SINCE, task_row.DECISION_TIMEOUT)
 
 
 class ActionRefused(ValueError):
@@ -82,6 +87,7 @@ def task_action(*, action: str, task: Mapping[str, Any], run: Mapping[str, Any],
         raise ValueError(f"no such action on a task: {action!r}")
     row = _row_of(task, action)
     view = dispatch.run_view(run)
+    reason = reason[:REASON_MAX]
     stamp = format_utc(now)
     fields: Dict[str, Any] = {task_row.FINISHED_AT: stamp, task_row.STATUS_SINCE: stamp}
     if action == "fail":
@@ -89,7 +95,8 @@ def task_action(*, action: str, task: Mapping[str, Any], run: Mapping[str, Any],
     items: List[Dict[str, Any]] = [
         {"Update": row_write.task_update(key=row.key, read_status=row.status, read_generation=row.generation,
                                          writer=transitions.Writer.CONSOLE, transition=action, fields=fields,
-                                         removed=(), due=None, table=tokens_table, now=now)},
+                                         removed=[f for f in _WAIT_FIELDS if f in task], due=None, table=tokens_table,
+                                         now=now)},
         {"Update": run_raise(view.key, table=tokens_table, now=now)},
     ]
     pipeline, task_name, date = str(task.get("pipeline_name", "")), row.task_id, view.date
@@ -102,13 +109,14 @@ def task_action(*, action: str, task: Mapping[str, Any], run: Mapping[str, Any],
                                                    cascade=cascade, now=now, ttl_days=fact_ttl_days,
                                                    table=asset_events_table)]
     run_task_name = run_name.run_task_name(row.key, view.run_start, row.generation)
-    events = [records.manual_decision_event(task_run_id=run_task_name, execution_name=row.key, task_name=task_name,
+    timeline = _timeline_name(task, run_task_name)
+    events = [records.manual_decision_event(task_run_id=timeline, execution_name=row.key, task_name=task_name,
                                             pipeline_execution=view.execution, decision=action, reason=reason,
                                             operator=operator, now=now)]
     error = task.get(task_row.ERROR)
     if error and action != "fail":
         # The failure an operator resolved stays in the timeline after a Skip or a Mark Successful (1.2 did so).
-        events.insert(0, records.failure_event(task_run_id=run_task_name, execution_name=row.key, task_name=task_name,
+        events.insert(0, records.failure_event(task_run_id=timeline, execution_name=row.key, task_name=task_name,
                                                pipeline_execution=view.execution, partition_key=date,
                                                backfill_id=str(task.get(task_row.BACKFILL_ID) or ""), now=now,
                                                cause=str(error)))
@@ -117,17 +125,24 @@ def task_action(*, action: str, task: Mapping[str, Any], run: Mapping[str, Any],
                        events=events)
 
 
+def _timeline_name(task: Mapping[str, Any], derived: str) -> str:
+    """The name an action's events go under: the row's latest run_task, whose name the console reads the timeline
+    by, or the generation's derived name before any run_task (a row that never became ready)."""
+    return str(task.get(task_row.TASK_RUN_ID) or derived)
+
+
 def run_raise(run_key: str, *, table: str, now: datetime) -> Dict[str, Any]:
     """An action's write of its run row: ``run_version`` raised whatever it is, and the run row due at once when it
-    has no due time (§3); the history TTL renewed, as by every write of the run row (§5)."""
+    has no due time (§3); the history TTL renewed, as by every write of the run row (§5). Only an active run takes
+    an action (the transition table): a run the engine closed before it became active stays closed."""
     names = {**run_row.VERSION_NAMES, "#att": attention.KEY, "#due": attention.DUE, "#ttl": run_row.TTL,
-             "#key": run_row.TABLE_KEY}
+             "#key": run_row.TABLE_KEY, "#status": run_row.STATUS}
     values = {**run_row.VERSION_RAISE_VALUES, ":att": attention.attention(attention.WAITING, run_key),
-              ":now": format_utc(now), ":ttl": retention.ttl(now, retention.HISTORY)}
+              ":now": format_utc(now), ":ttl": retention.ttl(now, retention.HISTORY), ":active": run_row.ACTIVE}
     return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run_key}},
             "UpdateExpression": f"SET {run_row.VERSION_RAISE}, #att = if_not_exists(#att, :att), "
                                 "#due = if_not_exists(#due, :now), #ttl = :ttl",
-            "ConditionExpression": "attribute_exists(#key)",
+            "ConditionExpression": "attribute_exists(#key) AND #status = :active",
             "ExpressionAttributeNames": names, "ExpressionAttributeValues": row_write.typed(values)}
 
 
@@ -205,7 +220,7 @@ def _row_of(task: Mapping[str, Any], action: str) -> dispatch.RowView:
 @dataclass(frozen=True)
 class RestartWrite:
     """What a Restart sends: its transaction, then its timeline event. The pass that carries out its renewal
-    writes the row's ``asset:`` pointers (``renewal_pointers``)."""
+    writes the row's ``asset:`` pointers (``pointer_items``)."""
     items: List[Dict[str, Any]]
     events: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -228,8 +243,9 @@ def restart(*, task: Mapping[str, Any], run: Mapping[str, Any], with_dependants:
              {"Update": run_request(view, run, task_id=row.task_id if with_dependants else None, by=operator,
                                     now=now, table=tokens_table)}]
     event = records.manual_decision_event(
-        task_run_id=run_name.run_task_name(row.key, view.run_start, row.generation), execution_name=row.key,
-        task_name=row.task_id, pipeline_execution=view.execution, decision="restart", reason=reason,
+        task_run_id=_timeline_name(task, run_name.run_task_name(row.key, view.run_start, row.generation)),
+        execution_name=row.key, task_name=row.task_id, pipeline_execution=view.execution, decision="restart",
+        reason=reason[:REASON_MAX],
         operator=operator, now=now)
     return RestartWrite(items=items, events=[event])
 

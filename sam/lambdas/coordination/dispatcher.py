@@ -271,14 +271,30 @@ class Dispatcher:
     # ── requests: the heavy actions a pass carries out (§3, §5) ────────
 
     def _requests(self, state: _Pass) -> None:
-        """The run's renewal, then the reset of a Restart with dependants unless a stop is in progress; each is
-        cleared once carried out, on the run_version the pass holds."""
-        renewal = state.run.requests.get(run_row.RENEW_TTL)
-        if renewal is not None:
-            self._renew(state, renewal)
-        reset = state.run.requests.get(run_row.RESET_DEPENDANTS)
-        if reset is not None and not state.run.stopping:
-            self._reset(state, reset)
+        """The run's renewal, then the reset of a Restart with dependants, which a stop in progress cancels (§3);
+        each is cleared once carried out, on the run_version the pass holds. A request that cannot be carried out
+        warns and leaves the pass to its decisions: one bad request never holds up its run (Rule 51)."""
+        try:
+            renewal = state.run.requests.get(run_row.RENEW_TTL)
+            if renewal is not None:
+                self._renew(state, renewal)
+            reset = state.run.requests.get(run_row.RESET_DEPENDANTS)
+            if reset is not None and state.run.stopping:
+                self._clear(state, run_row.RESET_DEPENDANTS)
+            elif reset is not None:
+                self._reset(state, reset)
+        except (_Left, CoordinationTransient):
+            raise
+        except (ClientError, BotoCoreError) as exc:
+            failures.reraise_transient(exc)
+            self._request_failed(state, exc)
+        except Exception as exc:  # noqa: BLE001 — one bad request never holds up its run (Rule 51)
+            self._request_failed(state, exc)
+
+    def _request_failed(self, state: _Pass, exc: BaseException) -> None:
+        log.error("dispatcher", "a request of the run could not be carried out", run=state.run.key, error=str(exc))
+        self._warn(state.run, subject=f"{state.run.key}-request", task="", item={},
+                   error=f"a request of the run could not be carried out: {type(exc).__name__}: {exc}")
 
     def _renew(self, state: _Pass, request: Mapping[str, Any]) -> None:
         """The renewal of a Restart (§5): the pointers of each waiting row with wait_for, before any decision, so
@@ -293,6 +309,8 @@ class Dispatcher:
             try:
                 self.client.update_item(**write)
             except ClientError as exc:
+                if failures.error_code(exc) == CONFLICT + "Exception":
+                    raise _Left()                      # it met a transaction: the next pass takes the renewal up
                 if not failures.is_condition_failed(exc):
                     raise
         self._clear(state, run_row.RENEW_TTL)
