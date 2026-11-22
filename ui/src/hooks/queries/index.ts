@@ -1,7 +1,7 @@
 // Pipeline queries and mutations
 export {
     usePipelinesQuery,
-    usePipelinesStatsIncomplete,
+    usePipelinesStatsNote,
     usePipelineDetailQuery,
     usePipelineExecutionsQuery,
     usePipelineRunsQuery,

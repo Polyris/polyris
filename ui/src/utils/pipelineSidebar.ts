@@ -6,8 +6,9 @@ import { matchesSearch } from './search';
  * The pipelines sidebar as a flat list of lines, built from the pipeline list.
  *
  * Kept pure so every rule has a table test (`pipelineSidebar.test.ts`):
- * - pipelines that need the viewer (latest run failed, or waits for their
- *   decision) are pinned under "Needs attention", and stay in their group too;
+ * - pipelines that need the viewer (latest run failed, has a failed task while it
+ *   still runs, or waits for their decision) are pinned under "Needs attention", and
+ *   stay in their group too;
  * - groups come only from `DAG(group=)`, trimmed and compared without case; a
  *   pipeline without one goes to "Ungrouped", listed last. With no group at
  *   all, the list is flat;
@@ -41,9 +42,11 @@ export function isFailure(status: string | undefined): boolean {
     return !!status && Object.hasOwn(FAILURE, status) && FAILURE[status as PipelineStatus];
 }
 
-/** True when a pipeline needs the viewer: its latest run failed, or waits for their decision. */
-export function needsAttention(p: Pick<PipelineWithUI, 'status' | 'waiting_on'>): boolean {
-    return isFailure(p.status) || p.waiting_on === 'waiting_decision';
+/** True when a pipeline needs the viewer: its latest run failed, has a failed task while it still runs
+ *  (it ends only once every task has, ADR #137 §4), or waits for their decision. */
+export function needsAttention(p: Pick<PipelineWithUI, 'status' | 'waiting_on' | 'failed_tasks'>): boolean {
+    return isFailure(p.status) || p.waiting_on === 'waiting_decision'
+        || (p.status === 'running' && (p.failed_tasks ?? 0) > 0);
 }
 
 /** Group key of the pipelines that set no `group=`. Shown as "Ungrouped". */

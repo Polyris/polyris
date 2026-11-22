@@ -14,11 +14,14 @@ interface PipelineDetailData {
     statusError: string | null;
 }
 
+/** What a partial /api/pipelines answer says about its statuses: the run index is still being
+ *  built after an upgrade (`index_building`, ADR #137 §5), or a start day could not be read. */
+export type PipelinesStatsNote = 'index_building' | 'incomplete' | null;
+
 /** /api/pipelines?stats=true, as one cache entry shared by the hooks below. */
 interface PipelinesAnswer {
     pipelines: PipelineWithUI[];
-    /** A read the statuses rest on failed or was cut short: they can be out of date. */
-    statsIncomplete: boolean;
+    statsNote: PipelinesStatsNote;
 }
 
 async function fetchPipelines(): Promise<PipelinesAnswer> {
@@ -27,7 +30,9 @@ async function fetchPipelines(): Promise<PipelinesAnswer> {
         // The status lets the System status tell an API that answered from one it cannot reach.
         throw new ApiError(data.error, typeof data.status === 'number' ? data.status : undefined);
     }
-    return { pipelines: data.pipelines || [], statsIncomplete: data.stats_incomplete === true };
+    const statsNote: PipelinesStatsNote = data.index_building === true ? 'index_building'
+        : data.stats_incomplete === true ? 'incomplete' : null;
+    return { pipelines: data.pipelines || [], statsNote };
 }
 
 /**
@@ -44,18 +49,19 @@ export function usePipelinesQuery(options: { refetchInterval?: number | false } 
 }
 
 /**
- * usePipelinesStatsIncomplete - True when the last /api/pipelines answer said a read its
- * statuses rest on failed or was cut short (`stats_incomplete`). Same cache entry as
- * usePipelinesQuery; it does not fetch on its own schedule.
+ * usePipelinesStatsNote - Why the last /api/pipelines answer's statuses may be out of date:
+ * the run index is still being built (`index_building`), or a read they rest on failed
+ * (`stats_incomplete`); null when they are whole. Same cache entry as usePipelinesQuery;
+ * it does not fetch on its own schedule.
  */
-export function usePipelinesStatsIncomplete(): boolean {
-    const { data } = useQuery<PipelinesAnswer, Error, boolean>({
+export function usePipelinesStatsNote(): PipelinesStatsNote {
+    const { data } = useQuery<PipelinesAnswer, Error, PipelinesStatsNote>({
         queryKey: queryKeys.pipelines,
         queryFn: fetchPipelines,
-        select: answer => answer.statsIncomplete,
+        select: answer => answer.statsNote,
         staleTime: 10 * 1000,
     });
-    return data ?? false;
+    return data ?? null;
 }
 
 /**

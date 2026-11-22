@@ -42,6 +42,15 @@ describe('buildSidebarLines', () => {
         expect(show(lines)).toEqual(['§attention 1', 'a-decide', '§all 2', 'a-decide', 'b-paused']);
     });
 
+    it('pins a running run with a failed task: it ends only once every task has (ADR #137 §4)', () => {
+        const lines = build([
+            p('a-failing', { status: 'running', failed_tasks: 1 }),
+            p('b-running', { status: 'running', failed_tasks: 0 }),
+        ]);
+        expect(show(lines)).toEqual(['§attention 1', 'a-failing', '§all 2', 'a-failing', 'b-running']);
+        expect(needsAttention({ status: 'success', failed_tasks: 1 })).toBe(false);   // a finished run says its status
+    });
+
     it.each(['running', 'aborted', 'recovered', 'success', 'idle', 'unknown-status', 'constructor', undefined])('does not pin a pipeline whose last run is %s', status => {
         expect(show(build([p('one', { status })]))).toEqual(['one']);
         expect(needsAttention({ status })).toBe(false);

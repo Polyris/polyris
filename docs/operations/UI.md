@@ -53,14 +53,14 @@ The polyris Web Console is a React-based single-page application for monitoring 
 ### Pipelines sidebar
 
 The sidebar lists every registered pipeline, one line each. It reads the runs of the last 14 days:
-- **Status icon** — the latest run's status (success, failed, running, aborted); for a running run that waits for an operator, a question mark (a decision) or a pause sign; a small hollow circle when the pipeline has no run in those 14 days. When the tasks of the latest run still say running, the console asks Step Functions, so a run whose execution died shows as failed, timed out or aborted.
+- **Status icon** — the latest run's status (success, failed, running, aborted); for a running run that waits for an operator, a question mark (a decision) or a pause sign; a small hollow circle when the pipeline has no run in those 14 days. A run is running until every task has finished; its name and hover say how many tasks failed. Only runs started on 1.3 count, so after the upgrade a pipeline's status appears with its first run.
 - **Pipeline name** — truncated; hover for the full name and schedule
 - **Run sparkline** — up to the last 10 runs, oldest on the left, coloured by status; empty slots are a faint track, so the newest run is always the rightmost bar. Hover it, or read the row with a screen reader, for the runs spelled out
 - **Schedule** — see the table below; hidden on tablets, where the sidebar is narrow
 
 The row of the open pipeline is highlighted; when the pipeline is listed twice, under **Needs attention** and in its group, only the first row you can see is.
 
-**Needs attention.** Pipelines whose latest run failed, timed out, or waits for your decision are also listed on top. A run that is running without waiting for a decision, a paused run or an aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
+**Needs attention.** Pipelines whose latest run failed, timed out, waits for your decision, or is still running with a failed task are also listed on top. A run that is running without a failed task or a decision to wait for, a paused run or an aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
 
 **Groups.** Set `group=` on the `DAG` to list a pipeline under that group ([DSL reference](../features/DSL.md#dag-parameters)); groups are compared without case. Pipelines without a group go under **Ungrouped**, at the bottom. When no pipeline sets a group, the list is flat. Click a group to fold it, or use the button next to the count to fold or unfold all of them; the console remembers folded groups in this browser. A folded group still shows how many of its pipelines need attention, and is highlighted when it holds the open pipeline. A group you add shows after the pipeline's next deploy or run.
 

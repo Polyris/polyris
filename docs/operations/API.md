@@ -53,24 +53,27 @@ Response (with `stats=true`):
       "schedule": "cron(0 10 ? * MON *)",
       "status": "running",
       "waiting_on": "waiting_decision",
+      "failed_tasks": 1,
       "paused": false,
       "sla": 85,
       "recent_runs": [
-        { "date": "2026-02-19", "exec": "a1b2c3d4", "status": "running" },
-        { "date": "2026-02-18", "exec": "e5f6g7h8", "status": "failed" },
-        { "date": "2026-02-17", "exec": "i9j0k1l2", "status": "success" }
+        { "date": "2026-02-19", "started_at": "2026-02-19T06:00:01.204Z", "exec": "a1b2c3d4", "status": "running", "failed_tasks": 1 },
+        { "date": "2026-02-18", "started_at": "2026-02-18T06:00:00.871Z", "exec": "e5f6g7h8", "status": "failed", "failed_tasks": 2 },
+        { "date": "2026-02-17", "started_at": "2026-02-17T06:00:02.019Z", "exec": "i9j0k1l2", "status": "success", "failed_tasks": 0 }
       ]
     }
   ],
-  "stats_incomplete": false
+  "stats_incomplete": false,
+  "index_building": false
 }
 ```
 
-Fields `recent_runs`, `sla` and `waiting_on` are filled only when `stats=true`; they cover the last 14 days.
+Fields `recent_runs`, `sla`, `waiting_on` and `failed_tasks` are filled only when `stats=true`. They come from the run rows of the runs started in the last 14 days (`run-start-index`, ADR #137 §5); only runs started on 1.3 have one.
 
-- `status` is the latest run's status, `idle` when there is none in those days. When the latest run's tasks still say `running`, Step Functions is asked about it, so a run whose execution failed, timed out or was stopped shows that status.
+- `recent_runs` are the last 10 of those runs whose logical date is within the 14 days, newest first by date, then by start.
+- `status` is the latest run's status, `idle` when there is none: `running` until every task of the run has finished, with `failed_tasks` counting the ones that failed, then `success`, `failed` or `aborted`. It comes from the run row's summary; the console asks Step Functions nothing about a run, so a run stopped in the AWS console shows `running` until the engine's next check of it, up to about 30 minutes.
 - `waiting_on` is `waiting_decision` or `waiting_paused` when the latest run is running but waits for an operator, else `null`.
-- `stats_incomplete` is `true` when a read the statuses rest on did not happen: a day could not be read, or Step Functions could not confirm a running run (the call failed, or came after the first 12 s of the request). Some statuses may be out of date. A call the console API is not allowed to make fails the request with a 500 instead, and so does a pipeline registry it cannot read.
+- `stats_incomplete` is `true` when a start day could not be read: some statuses may be out of date. `index_building` is `true` while DynamoDB builds `run-start-index` after an upgrade, about 8 minutes on a large table; the statuses show once it is ready. A call the console API is not allowed to make fails the request with a 500 instead, and so does a pipeline registry it cannot read.
 
 ### Get Pipeline Status
 

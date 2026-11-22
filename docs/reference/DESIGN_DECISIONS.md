@@ -9404,6 +9404,8 @@ Each time the console showed the task ended while its run stayed `RUNNING` until
 
 ## ADR #136 — The pipelines list says what its statuses rest on, and groups only what a DAG names
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0, D94).** Decisions 3 and 5 are superseded: the list reads the run rows of the last 14 start days from `run-start-index`, each run's status and `waiting_on` from its run row's summary, and asks Step Functions nothing about a run; the engine keeps the run row true. `stats_incomplete` now means a start day that could not be read, and `index_building` says that DynamoDB is still building the index after an upgrade. A running latest run carries the count of its failed tasks (`failed_tasks`), and such a pipeline is pinned under **Needs attention** too. The API is otherwise unchanged.
+
 **Context.** The console's pipelines sidebar was redesigned in 1.2.1: one line per pipeline, the latest run's status, the last 10 runs, and a **Needs attention** section on top. Four things in the old list stood in the way.
 - `/api/pipelines` computed `today_stats` and `progress` for one day, chosen by its `date` parameter. The new sidebar reads neither: it shows runs, not a day's task counts.
 - The sidebar made a group from the part of a name before the first `-`. `acme-orders` and `acme-billing` became `acme` whether or not the user meant it, and `daily-report` became `daily`.

@@ -379,16 +379,18 @@ export interface PipelineRowProps {
 }
 
 export interface RunSparklineProps {
-  runs: Array<{ status: string; date?: string }>;
+  runs: Array<{ status: string; date?: string; failed_tasks?: number }>;
 }
 
 export interface PipelineWithUI extends Pipeline {
   status?: string;
   group?: string;
-  recent_runs?: Array<{ status: string; date?: string }>;
+  recent_runs?: Array<{ status: string; date?: string; failed_tasks?: number }>;
   arn?: string;
   /** The latest run is running but waits for an operator: a decision or a resume. */
   waiting_on?: Extract<TaskStatus, 'waiting_decision' | 'waiting_paused'> | null;
+  /** How many tasks of the latest run failed; a run is running until every task has finished (ADR #137 §4). */
+  failed_tasks?: number;
   /** Deployed with an older format than the platform reads, or before 1.3: its runs fail until
    *  polyris-deploy runs again (the registry's format_version, ADR #137). */
   needs_redeploy?: boolean;

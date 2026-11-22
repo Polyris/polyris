@@ -5,7 +5,7 @@ import { EmptyState } from './EmptyState';
 import {
     StatusIcon, Search, Inbox, ChevronDown, ChevronRight, Circle, X, AlertTriangle,
 } from '../utils/icons';
-import { formatSchedule } from '../utils/formatters';
+import { formatRunStatus, formatSchedule } from '../utils/formatters';
 import { connectionProblem } from '../utils/api';
 import { logger } from '../utils/logger';
 import { RECENT_WINDOW_DAYS } from '../utils/historyWindow';
@@ -14,7 +14,7 @@ import type { SidebarLine, SidebarSection } from '../utils/pipelineSidebar';
 import config from '../lib/config';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
-import { usePipelinesQuery, usePipelinesStatsIncomplete } from '@/hooks/queries';
+import { usePipelinesQuery, usePipelinesStatsNote } from '@/hooks/queries';
 import { useIsMobileWidth, useKeyboardShortcuts, usePersistedState, transforms, SHORTCUTS } from '@/hooks';
 import type { PipelineRowProps, PipelineWithUI, RunSparklineProps } from '@/types';
 
@@ -77,7 +77,7 @@ function describeRuns(runs: ReadonlyArray<{ status: string }>): string {
  * folded group's count still update in place; the rows follow once both have
  * left, or once a pipeline is opened from the keyboard. A failed refetch keeps the last
  * list and says, above it, from when its statuses are (the System status says why); a
- * partial one (`stats_incomplete`) is said there too.
+ * partial one (`stats_incomplete`, or `index_building` while the run index is built) is said there too.
  */
 export function PipelinesSidebar() {
     const {
@@ -90,7 +90,7 @@ export function PipelinesSidebar() {
         sidebarOpen: s.sidebarOpen, setSidebarOpen: s.setSidebarOpen,
     })));
     const { data: fetched = [], isLoading: loading, isError, error, refetch, dataUpdatedAt } = usePipelinesQuery();
-    const statsIncomplete = usePipelinesStatsIncomplete();
+    const statsNote = usePipelinesStatsNote();
     const [held, setHeld] = useState<PipelineWithUI[] | null>(null);
     const holders = useRef({ pointer: false, focus: false });
     const latest = useMemo(() => new Map(fetched.map(p => [p.name, p])), [fetched]);
@@ -421,13 +421,15 @@ export function PipelinesSidebar() {
                 </div>
             )}
 
-            {!loading && pipelines.length > 0 && (isError || statsIncomplete) && (
+            {!loading && pipelines.length > 0 && (isError || statsNote) && (
                 <div className="sb-note" role="status">
                     <AlertTriangle size={14} className="sb-note__icon" aria-hidden="true" />
                     <span>
                         {isError
                             ? `Couldn't refresh the list. Statuses as of ${new Date(dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}.`
-                            : 'Some runs could not be read or confirmed, so a status may be out of date.'}
+                            : statsNote === 'index_building'
+                                ? 'The index of runs is still being built after the upgrade; statuses show once it is ready.'
+                                : 'Some runs could not be read, so a status may be out of date.'}
                     </span>
                 </div>
             )}
@@ -461,9 +463,10 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
     // `status` is the latest run within the window /api/pipelines reads; 'idle' means none there.
     const status = p.status || 'idle';
     const waitingOn = status === 'running' && p.waiting_on ? p.waiting_on : null;
+    const shown = formatRunStatus(status, p.failed_tasks);
     const lastRun = status === 'idle' ? `no run in the last ${RECENT_WINDOW_DAYS} days`
-        : waitingOn ? `${status}, ${WAITING_ON_LABELS[waitingOn]}`
-        : status;
+        : waitingOn ? `${shown}, ${WAITING_ON_LABELS[waitingOn]}`
+        : shown;
     const schedule = formatSchedule(p.schedule, p.asset_schedule);
     const fullSchedule = formatSchedule(p.schedule, p.asset_schedule, { full: true });
     const runs = (p.recent_runs ?? []).slice(0, SPARK_SLOTS);
@@ -511,7 +514,7 @@ function RunSparkline({ runs }: RunSparklineProps) {
                 <span
                     key={i}
                     className={`sb-spark__bar sb-spark__bar--${run.status}`}
-                    title={`${run.date ?? ''}: ${run.status}`}
+                    title={`${run.date ?? ''}: ${formatRunStatus(run.status, run.failed_tasks)}`}
                 />
             ))}
         </span>

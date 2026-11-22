@@ -12,6 +12,8 @@ from polyris.constants import PipelineStatus, TaskStatus
 PIPELINE_STATUSES = {v for k, v in vars(PipelineStatus).items() if not k.startswith("_")}
 #: What `waiting_on` may say: the latest run waits for an operator, or nothing (ADR #136).
 WAITING_ON = {None, TaskStatus.WAITING_DECISION.value, TaskStatus.WAITING_PAUSED.value}
+#: The statuses a run's summary gives (ADR #112, ADR #137 §4).
+RUN_STATUSES = {"running", "success", "failed", "aborted"}
 
 
 # =============================================================================
@@ -53,6 +55,8 @@ class TestPipelinesSidebarContract:
         body = resp["body"]
         assert isinstance(body, dict), f"expected an object, got {type(body).__name__}"
         assert isinstance(body.get("stats_incomplete"), bool)
+        assert isinstance(body.get("index_building"), bool)          # run-start-index still built (ADR #137 §5)
+        assert not body["index_building"] or body["stats_incomplete"]
         assert isinstance(body.get("pipelines"), list)
 
     def test_each_pipeline_carries_its_latest_status_runs_and_wait(self, api):
@@ -71,10 +75,14 @@ class TestPipelinesSidebarContract:
                 continue
             assert isinstance(runs, list) and len(runs) <= 10, f"{name}: recent_runs {runs!r}"
             for run in runs:
-                assert {"date", "exec", "status"} <= set(run), f"{name}: run {run!r}"
-                assert run["status"] in PIPELINE_STATUSES - {PipelineStatus.IDLE}, f"{name}: run {run!r}"
+                assert {"date", "started_at", "exec", "status", "failed_tasks"} <= set(run), f"{name}: run {run!r}"
+                # From the run row's summary; no console route asks Step Functions (ADR #137 §4, §5).
+                assert run["status"] in RUN_STATUSES, f"{name}: run {run!r}"
             if runs:
                 assert p["status"] == runs[0]["status"], f"{name}: status is not the latest run's"
+                assert p["failed_tasks"] == runs[0]["failed_tasks"], f"{name}: failed_tasks is not the latest run's"
+            ordered = [(r["date"], r["started_at"]) for r in runs]
+            assert ordered == sorted(ordered, reverse=True), f"{name}: recent_runs not newest first: {ordered}"
 
 
 class TestPipelineStatus:

@@ -5,7 +5,7 @@ Tests critical business logic in routes/pipelines_list.py, routes/pipelines_info
 and routes/tasks.py with mocked DAL repositories.
 
 Covers:
-- list_pipelines: stats calculation, status derivation, progress, SLA
+- list_pipelines: the registry's pipelines (the stats on run rows: console_api tests/routes/test_pipelines_list_runs.py)
 - get_pipeline_status: reconciliation, stats counting, sfn_arn field
 - get_pipeline_dag: edges=[] handling, snapshot versioning
 - _reconcile_orphaned_tasks: orphan detection and abort marking
@@ -13,7 +13,7 @@ Covers:
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from decimal import Decimal
 # pytest-mock: mocker fixture used instead of unittest.mock
 from botocore.exceptions import ClientError
@@ -140,127 +140,6 @@ def test_list_pipelines_basic(mocker):
     assert names == {'daily', 'weekly'}
 
 
-def test_list_pipelines_stats_succeeded(mocker):
-    """Stats show succeeded when all tasks are success/skipped."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'skipped', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['status'] == 'success'
-    assert 'today_stats' not in p and 'progress' not in p  # removed: no reader (CHANGELOG)
-
-
-def test_list_pipelines_stats_failed(mocker):
-    """Card status is 'failed' when the (last) run failed (ADR #112 / option c), once every task is final (D68)."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'failed', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['status'] == 'failed'
-
-
-def test_list_pipelines_status_is_last_run(mocker):
-    """Card status reflects the MOST RECENT run, not a per-day aggregate (ADR #112 / c).
-
-    An older run failed, but the latest run (a later date) succeeded — the card is
-    'success'.
-    """
-    yesterday = (datetime.fromisoformat(TODAY) - timedelta(days=1)).strftime('%Y-%m-%d')
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        # Older run (yesterday) — failed
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-old', 'status': 'failed', 'date': yesterday},
-        # Latest run (today) — success
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-new', 'status': 'success', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['status'] == 'success', "card should reflect the latest run, not the older failed one"
-    # Both runs appear in the sparkline, newest first.
-    assert p['recent_runs'][0]['status'] == 'success'
-
-
-def test_list_pipelines_stats_running(mocker):
-    """Stats show running when tasks are in progress."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'running', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'waiting', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    # The latest run is still running, so list_pipelines asks Step Functions (ADR #112 §7).
-    mock_sfn = mocker.MagicMock()
-    mock_sfn.describe_execution.return_value = {'status': 'RUNNING'}
-    mocker.patch('routes.pipelines_list.sfn', mock_sfn)
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['status'] == 'running'
-    mock_sfn.describe_execution.assert_called_once()
-
-
-def test_list_pipelines_sla_excludes_aborted(mocker):
-    """SLA excludes aborted (user-stopped) runs from the denominator (ADR #112).
-
-    Runs: success, aborted, failed. Aborted is not a system failure, so it is
-    excluded entirely — SLA = successes / (completed non-aborted) = 1/2 = 50%.
-    """
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-2', 'status': 'aborted', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-3', 'status': 'failed', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['sla'] == 50
-
-
 def test_list_pipelines_schedule_from_registry(mocker):
     """list_pipelines returns schedule field from registry."""
     mock_pipelines = MockRepo([
@@ -280,50 +159,6 @@ def test_list_pipelines_schedule_from_registry(mocker):
     assert by_name['daily']['schedule'] == 'cron(0 8 * * ? *)'
     assert by_name['weekly']['schedule'] == 'cron(0 10 ? * MON *)'
     assert by_name['manual']['schedule'] == ''
-
-
-def test_list_pipelines_recent_runs(mocker):
-    """Stats include recent_runs sparkline data including in-progress runs."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo([
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-1', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-2', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-2', 'status': 'failed', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-3', 'status': 'success', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'run-3', 'status': 'running', 'date': TODAY},
-    ])
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    runs = p['recent_runs']
-    assert len(runs) == 3
-    statuses = {r['status'] for r in runs}
-    assert statuses == {'success', 'failed', 'running'}
-
-
-def test_list_pipelines_recent_runs_empty_when_no_history(mocker):
-    """recent_runs is None when no execution history exists."""
-    mock_pipelines = MockRepo([
-        {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
-    ])
-    mock_execs = MockRepo()
-
-    mocker.patch('routes.pipelines_list.executions_repo', mock_execs)
-    mocker.patch('routes.pipelines_list.pipelines_repo', mock_pipelines)
-    mocker.patch('routes.pipelines_list.sfn', mocker.MagicMock())
-    from routes.pipelines_list import list_pipelines
-    resp = _parse_response(list_pipelines(_make_event({'stats': 'true'})))
-
-    p = resp['pipelines'][0]
-    assert p['recent_runs'] is None
 
 
 # ============================================================
