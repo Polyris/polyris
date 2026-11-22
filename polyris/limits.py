@@ -13,7 +13,7 @@ import json
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .constants import SkipOrigin, TaskConfigKey, TaskSpecKey, TaskStatus
-from .coordination import deadlines, run_row, run_task_input, task_row, task_spec
+from .coordination import deadlines, run_name, run_row, run_task_input, task_row, task_spec
 
 #: Step Functions' limit on a definition, with a warning before it.
 DEFINITION_MAX = 1_000_000
@@ -168,9 +168,9 @@ def _platform_env(pipeline: str, task_id: str,
 def batch_submit_job(fields: Mapping[str, Any], pipeline: str, task_id: str,
                      upstreams: Mapping[str, Tuple[str, Optional[str]]]) -> Dict[str, Any]:
     """The SubmitJob request run_task sends a Batch task, as Run_Task_Batch builds it, at the longest values a run
-    can give it."""
+    can give it: the job's name is run_task's execution name (run_name.run_task_name, at most 80 characters)."""
     config = fields.get(TaskSpecKey.TASK_CONFIG) or {}
-    return {"JobDefinition": config.get(TaskConfigKey.JOB_DEFINITION, ""), "JobName": _longest_execution_name(task_id),
+    return {"JobDefinition": config.get(TaskConfigKey.JOB_DEFINITION, ""), "JobName": "x" * run_name.MAX_NAME,
             "JobQueue": config.get(TaskConfigKey.JOB_QUEUE, ""), "Parameters": config.get(TaskConfigKey.PARAMETERS) or {},
             "ContainerOverrides": {"Environment": _platform_env(pipeline, task_id, upstreams)}}
 

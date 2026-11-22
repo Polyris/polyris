@@ -93,9 +93,11 @@ runs after a failure never reads an older run's output of the same date:
   `XComMissingError` naming the status, or returns `None` with
   `raise_on_missing=False`.
 
-A task's result is stored as JSON, a string result included (`"ok"`, with its
-quotes), and reaches its dependants as the value the task returned. A string
-result that an older version stored as it was reaches them as that string.
+A task's result is stored as JSON and reaches its dependants as the value the
+task returned: a string as that string (stored with its quotes, `"ok"`). A
+string of JSON text (`json.dumps(...)`) reaches them parsed, as in 1.2. A
+string result that an older version stored as it was reaches them as that
+string.
 
 An upstream that succeeded always has its output, because the output is written
 together with the success. If it is missing anyway, the task fails with that
@@ -492,7 +494,7 @@ Two records per task-per-day, both in the `pipeline-tokens` DDB table:
 | `execution_name` | S (PK) | `output#{pipeline}#{task}#{date}` |
 | `task_name` | S | task_id |
 | `status` | S | `success`, written with the output |
-| `result` | S (JSON) | the task's output: a Lambda's return, a state machine's output, another service's response, or the `xcom.push()` value; a string result is stored as JSON (`"ok"`) |
+| `result` | S (JSON) | the task's output: a Lambda's return, a state machine's output, another service's response, or the `xcom.push()` value; a string that is not JSON text is stored as a JSON string (`"ok"`) |
 | `updated_at` | S (ISO) | last write |
 | `run_id` | S | the `run_task` execution of the latest success |
 | `ttl` | N | a year from the latest write; every write renews it |

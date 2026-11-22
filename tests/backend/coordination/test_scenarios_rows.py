@@ -322,19 +322,20 @@ def test_a_task_after_a_final_failure_gets_its_status_and_never_an_older_runs_ou
 
 
 @defect("R-J1")
-@pytest.mark.parametrize("returned", ["ok", "", JSON_NULL, 42, ["a", 1], {"rows": 1}],
-                         ids=["string", "empty-string", "null", "number", "list", "object"])
-def test_a_dependant_reads_whatever_its_upstream_returned_a_string_included(world, returned):
+@pytest.mark.parametrize("returned, read", [("ok", "ok"), ("", ""), (JSON_NULL, None), (42, 42), (["a", 1], ["a", 1]),
+                                            ({"rows": 1}, {"rows": 1}), ('{"a": 1}', {"a": 1})],
+                         ids=["string", "empty-string", "null", "number", "list", "object", "json-text"])
+def test_a_dependant_reads_whatever_its_upstream_returned_a_string_included(world, returned, read):
     """The review of TR-5: a string result stored as it was ("ok") is no JSON, the dependant's read failed at every
-    attempt, and it never ran. A result is stored as JSON, and reaches the dependant as it was returned."""
-    value = None if returned is JSON_NULL else returned
+    attempt, and it never ran. A result is stored as JSON and read back as it was returned; a string of JSON text
+    (json.dumps) is read parsed, as 1.2 read it (the review of TR-5e)."""
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.deliver_task_hints()
     world.complete(run, "extract", output=returned)
     world.deliver_task_hints()
-    assert json.loads(world.stores(run, "extract")["output"]["result"]) == value
+    assert json.loads(world.stores(run, "extract")["output"]["result"]) == read
     assert world.running_tasks(run) == ["load"]
-    assert world.work_input(run, "load")["upstream"]["extract"]["output"] == value
+    assert world.work_input(run, "load")["upstream"]["extract"]["output"] == read
 
 
 @defect("R-J1")

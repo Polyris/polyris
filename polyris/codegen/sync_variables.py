@@ -32,12 +32,14 @@ TEMPLATE_PATH = REPO_ROOT / "sam" / "sfn_templates" / "helpers" / "run_task" / "
 _OUTPUT_RE = re.compile(r'"(\{%[^"]*\$dateVars[^"]*%\})"')
 
 # Fixed JSONata scaffolding around the generated object. ``$cd`` is the run's date, a
-# partition key of any granularity; ``$pd`` the first day of that partition and ``$dt``
-# its midnight in milliseconds, which the day forms read. All come from run_task's input
+# partition key of any granularity; ``$pd`` the first day of that partition (``$cd`` when
+# an older dispatcher's input lacks it, Principle #49) and ``$dt`` its midnight in
+# milliseconds, which the day forms read. All come from run_task's input
 # (``run_task_input.Key``, read from the execution's context); the suffix merges the
 # computed vars with the run's own ``variables``, which win.
 _INPUT = "$states.context.Execution.Input"
-_PREFIX = ("{% ( $cd := " + _INPUT + ".date; $pd := " + _INPUT + ".partition_date; "
+_PREFIX = ("{% ( $cd := " + _INPUT + ".date; $pd := $exists(" + _INPUT + ".partition_date) ? "
+           + _INPUT + ".partition_date : $cd; "
            "$dt := $toMillis($pd & 'T00:00:00Z'); $dateVars := { ")
 _SUFFIX = (" }; $vars := $exists(" + _INPUT + ".variables) ? " + _INPUT + ".variables : {}; "
            "$merged := $merge([$dateVars, $vars]); "

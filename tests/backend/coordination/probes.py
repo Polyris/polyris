@@ -272,7 +272,7 @@ PROBES: Tuple[Probe, ...] = (
           f"{ROWS}::test_a_task_beside_an_upstream_that_still_runs_never_reads_its_older_output"),
     # The catcher parses the cause again: a cut cause fails it, and the task skips its retries.
     Probe("R-A1", (Edit(RUN_TASK, "$m := $match($causeStr, /\\\"ExecutionArn\\\"\\\\s*:\\\\s*\\\"([^\\\"]+)\\\"/, 1); "
-                                  "$count($m) > 0 ? $m.groups[0] : '')",
+                                  "$count($m) > 0 ? $m[0].groups[0] : '')",
                         "$parsed := $parse($causeStr); $exists($parsed.ExecutionArn) ? $parsed.ExecutionArn : '')"),),
           f"{ROWS}::test_a_failure_whose_cause_was_cut_still_goes_through_the_tasks_retries"),
     # The success neither retries an unnamed error nor reads its row after one: it waits for a decision.

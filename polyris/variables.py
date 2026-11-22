@@ -17,7 +17,8 @@ are ``run_task_input.Key``):
 * ``$cd`` — the run's date: ``YYYY-MM-DD``, or the key of an hourly, weekly or monthly
   partition (``date``)
 * ``$pd`` — the first day of that partition, ``YYYY-MM-DD`` (``partition_date``, which
-  ``run_task_input.partition_fields`` computes); ``$cd`` for a daily run
+  ``run_task_input.partition_fields`` computes); ``$cd`` for a daily run, and for an input an
+  older dispatcher built without it (Principle #49)
 * ``$dt`` — ``$toMillis($pd & 'T00:00:00Z')`` (that day as epoch millis)
 
 A day form reads ``$pd`` or ``$dt``, never ``$cd``: a weekly key is no date.

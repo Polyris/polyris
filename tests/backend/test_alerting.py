@@ -168,6 +168,7 @@ class TestRetryLoopComposesWithHumanDecision:
         'Claim', 'Read_Claim', 'Check_Should_Retry', 'Prepare_Retry_Wait', 'Save_Retry_Wait_Delay',
         'Wait_Before_Retry', 'Increment_Retry', 'Save_Retry_Attempt', 'Emit_Task_Retry_Started',
         'Emit_Task_Started', 'Emit_Task_Finished_Success',
+        'Emit_Task_Finished_Failed',            # records the counter in the timeline, as the two above; reads none
     }
 
     @classmethod
@@ -911,12 +912,17 @@ class TestRestartNamePrefix:
 
     def test_first_attempt_has_no_restart_prefix_at_runtime(self):
         """Evaluate the conditional against representative attempts, not just its text."""
+        import hashlib
+
         import jsonata
         name_expr = self.rt['States']['Run_Task_SFN']['Arguments']['Name']
         names = []
         for attempt in (1, 2):
             j = jsonata.Jsonata(name_expr[2:-2].strip())
-            j.assign('states', {'context': {'Execution': {'Input': {'execution_name': 'load-2026-11-18-x'}}}})
+            j.assign('states', {'context': {'Execution': {'Input': {'execution_name': 'load-2026-11-18-x'},
+                                                          'Id': 'arn:run'},
+                                            'State': {'EnteredTime': '2026-11-18T06:00:00.000Z'}}})
+            j.register_lambda('hash', lambda text, alg: hashlib.sha256(str(text).encode()).hexdigest())  # Step Functions'
             j.assign('attempt', attempt)
             names.append(j.evaluate(None))
         assert names[0].startswith('load-2026-11-18-x-') and names[1].startswith('restart-load-2026-11-18-x-')

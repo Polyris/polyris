@@ -1179,17 +1179,25 @@ def test_a_text_that_starts_like_json_and_is_not_reaches_the_task_without_an_out
 
 
 @pytest.mark.parametrize("state, field", [("Run_Task_SFN", "Output"), ("Run_Task_Lambda", "Payload")])
-@pytest.mark.parametrize("value, stored", [("ok", '"ok"'), ("", '""'), ('say "hi"', '"say \\"hi\\""'),
-                                           ({"rows": 1}, '{"rows":1}'), ([1, "a"], '[1,"a"]'), (42, "42"),
-                                           (True, "true"), (None, "null")])
-def test_a_result_is_stored_as_json_a_string_included(template, state, field, value, stored):
-    """A string result stored as it was ("ok") is no JSON, and no reader could parse it (the review of TR-5)."""
+@pytest.mark.parametrize("value, stored, read", [
+    ("ok", '"ok"', "ok"), ("", '""', ""), ('say "hi"', '"say \\"hi\\""', 'say "hi"'),     # text: a JSON string
+    ('{"a": 1}', '{"a": 1}', {"a": 1}), ("[1]", "[1]", [1]), ("123", "123", 123),         # JSON text: as it is,
+    ("true", "true", True),                                                               # parsed, as in 1.2
+    ({"rows": 1}, '{"rows":1}', {"rows": 1}), ([1, "a"], '[1,"a"]', [1, "a"]), (42, "42", 42), (True, "true", True),
+    (None, "null", None)])
+def test_a_result_is_stored_as_json_text_as_1_2_read_it(template, state, field, value, stored, read):
+    """A string that starts like JSON is JSON text (json.dumps), stored as it is and read parsed, as in 1.2; any
+    other string is stored as a JSON string, since "ok" stored as it was is no JSON, and no reader could parse it
+    (the reviews of TR-5 and TR-5e). The reader decides "starts like JSON" by the same characters."""
     from jsonata.utils import Utils
     from sfn_jsonata import evaluate
     result = {field: Utils.NULL_VALUE if value is None else value}
     out = evaluate(template["States"][state]["Output"], input={"upstream_outputs": {}}, context=_context({}),
                    result=result)
-    assert out["task_output"] == stored and json.loads(out["task_output"]) == value
+    assert out["task_output"] == stored and json.loads(out["task_output"]) == read
+    jsonish = re.search(r"in (\[[^\]]*\]) \?", template["States"][state]["Output"]).group(1)
+    assert jsonish in template["States"]["Read_Upstream_Outputs"]["ItemProcessor"]["States"]["Get_Dep_Output"][
+        "Output"]
     assert evaluate(template["States"][state]["Output"], input={}, context=_context({}), result={})[
         "task_output"] == "{}"
 
@@ -1614,6 +1622,12 @@ def test_a_success_that_cannot_be_recorded_waits_for_a_decision_with_its_cause(t
     assert states["Success_Not_Recorded"]["Next"] == "Get_Decision_Timeout"
 
 
+#: The writes the row does not depend on: a permanent error there (a missing grant, an input# over 400 KB) costs
+#: seconds before the work starts or ends (the review of TR-5e).
+BEST_EFFORT = {"Emit_Task_Started", "Emit_Task_Retry_Started", "Emit_Task_Finished_Success",
+               "Emit_Task_Finished_Failed", "Save_Input_Record"}
+
+
 def test_every_dynamodb_state_retries_any_error_but_an_answer_for_minutes(template):
     """The review of TR-5: three tries in seven seconds, on error names nobody had seen, failed a claim for good and
     left a success waiting for a decision. A condition that failed is an answer, and an expression error or an
@@ -1632,7 +1646,10 @@ def test_every_dynamodb_state_retries_any_error_but_an_answer_for_minutes(templa
                 assert rest["ErrorEquals"] == ["States.ALL"] and rest["MaxDelaySeconds"] == 60, name
                 waited = sum(min(rest["IntervalSeconds"] * rest["BackoffRate"] ** i, 60)
                              for i in range(rest["MaxAttempts"]))
-                assert waited >= (14 if name == "Record_Success" else 120), name   # the success: five sends
+                if name in BEST_EFFORT:
+                    assert waited <= 10, name      # a timeline event or the console's preview: seconds, not minutes
+                else:
+                    assert waited >= (14 if name == "Record_Success" else 120), name   # the success: five entries
             if "ItemProcessor" in state:
                 walk(state["ItemProcessor"]["States"])
 
@@ -1648,18 +1665,47 @@ def test_a_lambda_that_crashed_or_timed_out_is_a_failed_attempt(template):
 
 
 def test_a_long_task_id_keeps_the_childs_name_unique(template):
-    """A task id of up to 128 bytes: the name keeps its tail of the start's time, so a retry or a second run of
-    the date never meets ExecutionAlreadyExists (the review of TR-5)."""
-    from datetime import timedelta
-    from sfn_jsonata import NOW, evaluate
+    """A task id of up to 128 bytes: the name ends in a hash of this run_task execution and of this entry of the
+    work state, never the clock, so another run, another generation or a retry never meets ExecutionAlreadyExists,
+    while the state's own retry of the start sends the same name (the reviews of TR-5 and TR-5e: six digits of
+    the milliseconds repeat every 1,000 seconds)."""
+    from sfn_jsonata import evaluate
     expr = template["States"]["Run_Task_SFN"]["Arguments"]["Name"]
-    run_input = {"execution_name": "t" * 128 + "-2026-11-18--2026-11-18-0000abcd"}
-    names = {evaluate(expr, context=_context(run_input), variables={"attempt": a}, now=NOW + timedelta(seconds=s))
-             for a, s in ((1, 0), (1, 1), (2, 0))}
-    assert len(names) == 3 and all(len(n) <= 80 and re.search(r"-\d{6}$", n) for n in names)
-    short = evaluate(expr, context=_context({"execution_name": "extract-2026-11-18--2026-11-18-0000abcd"}),
-                     variables={"attempt": 2})
+    key = "t" * 128 + "-2026-11-18--2026-11-18-0000abcd"
+
+    def name(run_id, entered, attempt=1, row=key):
+        context = {"Execution": {"Input": {"execution_name": row}, "Id": run_id, "Name": "x"},
+                   "State": {"EnteredTime": entered}}
+        return evaluate(expr, context=context, variables={"attempt": attempt})
+
+    first = name("arn:run-1", "2026-11-18T06:00:00.000Z")
+    assert first == name("arn:run-1", "2026-11-18T06:00:00.000Z")                  # its own retry: the same
+    others = {name("arn:run-2", "2026-11-18T06:00:00.000Z"), name("arn:run-1", "2026-11-18T06:05:00.000Z")}
+    assert first not in others and len(others) == 2
+    assert all(len(n) <= 80 and re.search(r"-[0-9a-f]{12}$", n) for n in others | {first})
+    short = name("arn:run-1", "2026-11-18T06:00:00.000Z", attempt=2, row="extract-2026-11-18--2026-11-18-0000abcd")
     assert short.startswith("restart-extract-2026-11-18--2026-11-18-0000abcd-")
+
+
+def test_a_batch_job_is_named_after_its_run_task_execution(template):
+    """Batch takes at most 128 letters, digits, - and _: a long task id or a dot in it failed every SubmitJob."""
+    from polyris import limits
+    from polyris.coordination import run_name
+    assert template["States"]["Run_Task_Batch"]["Arguments"]["JobName"] == "{% $states.context.Execution.Name %}"
+    assert len(limits.batch_submit_job({}, "p", "t", {})["JobName"]) == run_name.MAX_NAME <= 128
+
+
+def test_an_input_without_the_partition_fields_is_a_daily_runs(template):
+    """Principle #49: a dispatcher older than the partition fields gives none; run_task acts as before for it."""
+    from sfn_jsonata import evaluate
+    run_input = {"date": "2026-11-18", "partition_arg": "2026-11-18", "variables": {}}
+    variables = evaluate(template["States"]["Prepare_Task_Input"]["Output"], input={},
+                         context=_context(run_input))["variables"]
+    assert (variables["date_iso"], variables["previous_date"]) == ("2026-11-18", "2026-11-17")
+    old = {k: v for k, v in SUCCESS_RUN.items() if k not in ("partition_date", "granularity")}
+    _, _, fact, _ = _transaction(template, run=old)
+    assert fact["Put"]["Item"]["partition_date"] == {"S": "2026-11-18"}
+    assert fact["Put"]["Item"]["granularity"] == {"S": "daily"}
 
 
 @pytest.mark.parametrize("cause, arn", [
@@ -1704,7 +1750,8 @@ def test_a_task_that_waits_for_a_decision_ends_its_timeline_with_the_failure(tem
     run_input = {"execution_name": "load-x", "pipeline_execution": "orders-run-x", "date": "2026-11-21",
                  "task_name": "load", "timeline_ttl_seconds": 7776000}
     item = evaluate(emit["Arguments"]["Item"], input={"error": "e" * 600}, context=_context(run_input),
-                    variables={"attempt": 1})
+                    variables={"attempt": 1, "retry_attempt": 2})
+    assert item["retry_attempt"] == {"N": "2"}             # "Task failed after retry 2", as 1.2 showed
     model = records.failure_event(task_run_id="x", execution_name="x", task_name="x", pipeline_execution="x",
                                   partition_key="x", backfill_id="", now=NOW, cause="e" * 600)
     assert set(model) <= set(item) and item["status"] == {"S": "failed"}
