@@ -242,3 +242,32 @@ def test_a_page_whose_last_run_has_a_twin_at_the_end_of_the_read_still_says_olde
     assert status == 200 and len(first['runs']) == 3 and first['next']
     status, second = runs(limit=2, before=first['next'])
     assert [r['pipeline_execution'] for r in second['runs']] == ['orders-run-2026-11-20-older001']
+
+
+def test_a_date_filter_shows_every_run_of_a_date_that_outgrows_a_page(table, mocker):
+    """Review of TR-6d, P-1: the read cut a date of more than 2,000 task rows on a pipeline boundary, and the runs
+    of every pipeline past the cut were gone without a word. moto ends no page at 1 MB, so ``Limit`` stands in."""
+    from dal import executions_repo
+    today = NOW.strftime('%Y-%m-%d')
+    runs_of_day = {name: put_run(table, name, today, days_ago(0), suffix=f'{name[0]}{name[0]}{name[0]}00001',
+                                 summary={'success': 1})
+                   for name in ('a_big', 'b_big', 'c_small')}
+    with table.batch_writer() as batch:
+        for name, count in (('a_big', 1100), ('b_big', 1100), ('c_small', 1)):
+            for i in range(count):
+                put_task(batch, runs_of_day[name], f't{i:04d}', today, 'success', started=days_ago(0))
+    real = type(executions_repo).table.fget(executions_repo)
+
+    class Paged:
+        """The moto table, with pages of 500 items."""
+        name = real.name
+
+        def query(self, **kwargs):
+            return real.query(**{'Limit': 500, **kwargs})
+
+        def __getattr__(self, item):
+            return getattr(real, item)
+
+    mocker.patch.object(type(executions_repo), 'table', new_callable=mocker.PropertyMock, return_value=Paged())
+    status, body = runs(date=today)
+    assert status == 200 and sorted(names(body)) == sorted(runs_of_day.values())

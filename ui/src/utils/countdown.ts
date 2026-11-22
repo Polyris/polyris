@@ -6,12 +6,31 @@
  * - DAGGraphFlow.jsx (graph node badges)
  * 
  * Handles three scenarios:
- * 1. waiting_delay with deadline (wait_delay_until_ms) - count down from deadline
+ * 1. waiting_delay with deadline (wait_delay_until_ms), or a 1.3 row that is waiting with a
+ *    countdown end (countdown_end, through waitUntilMs) - count down from deadline
  * 2. waiting_delay with start time only - compute remaining from elapsed
  * 3. deps_ready - show full wait_before (countdown not started yet, isPending=true)
  */
 
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
+
+/**
+ * When a task's wait ends, in ms: a 1.2 row's wait_delay_until_ms, or the end of a 1.3 row's
+ * wait_before countdown (countdown_end, ADR #137 §1). 1.3 has no waiting_delay status: the row
+ * stays waiting while it counts down.
+ */
+export function waitUntilMs(
+    task: { wait_delay_until_ms?: number | null; countdown_end?: string | null } | null | undefined,
+): number | undefined {
+    if (task?.wait_delay_until_ms) return task.wait_delay_until_ms;
+    const end = task?.countdown_end ? Date.parse(task.countdown_end) : NaN;
+    return Number.isFinite(end) ? end : undefined;
+}
+
+/** Whether a task counts down its wait_before now: 1.2's waiting_delay, or a waiting 1.3 row with a countdown end. */
+export function isCountingDownWait(status: string, untilMs: number | null | undefined): boolean {
+    return status === 'waiting_delay' || (status === 'waiting' && !!untilMs && untilMs > 0);
+}
 
 /**
  * Compute countdown state for a task's wait_before delay.
@@ -75,7 +94,7 @@ export function computeWaitCountdown({
         return result;
     }
 
-    const isWaitingDelay = status === 'waiting_delay';
+    const isWaitingDelay = isCountingDownWait(status, waitDelayUntilMs);
     const isDepsReady = status === 'deps_ready';
     const isTerminal = TASK_SETTLED_STATUSES.includes(status) || status === 'running';
 

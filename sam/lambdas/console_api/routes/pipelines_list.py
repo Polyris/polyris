@@ -212,18 +212,23 @@ def _readiness(item: Dict) -> Dict:
 
 
 def _why_it_waits(item: Dict, readiness: Dict, rows: Dict[str, Dict]) -> Dict:
-    """Why a task waits (ADR #137 §1): the reasons the dispatcher recorded and since when, the deadline it set, and
-    what its trigger rule makes of its upstreams as the page shows them (``trigger_rules.evaluate``). No route of its
-    own: the page already reads every row of the run."""
+    """Why a task waits (ADR #137 §1): the reasons the dispatcher recorded and since when, the end of its
+    ``wait_before`` countdown or the deadline of its wait or decision, and what its trigger rule makes of its upstreams
+    as the page shows them (``trigger_rules.evaluate``). No route of its own: the page already reads every row of the
+    run."""
     status = item.get('status')
     if status not in ('waiting', 'waiting_paused', 'waiting_decision'):
         return {}
     due = item.get(attention.DUE)
+    # A ready task that counts down its wait_before falls due when the countdown ends, when it starts: the console's
+    # countdown, no deadline (review of TR-6d). A deadline a pause holds falls due far in the future: the page shows
+    # none (ADR #137 §5).
+    countdown_end = item.get(task_row.COUNTDOWN_END) if status == 'waiting' else None
     detail: Dict = {
         'reasons': [str(r) for r in item.get(task_row.REASONS) or []],
         'reasons_at': item.get(task_row.REASONS_AT),
-        # A deadline a pause holds falls due far in the future: the page shows none (ADR #137 §5).
-        'deadline': due if due and not str(due).startswith('9999') else None,
+        'countdown_end': countdown_end,
+        'deadline': due if due and not countdown_end and not str(due).startswith('9999') else None,
     }
     dependencies = readiness.get('dependencies') or []
     if status != 'waiting_decision' and dependencies and all(d in rows for d in dependencies):
@@ -426,6 +431,7 @@ def _execution(run: Dict) -> Dict:
         'date': run['date'],
         'status': run['status'],
         'failed_tasks': run['failed_tasks'],
+        'failed_step': run.get('failed_step'),
         'started_at': run['started_at'],
         'finished_at': run['finished_at'],
         'duration_ms': run['duration_ms'],

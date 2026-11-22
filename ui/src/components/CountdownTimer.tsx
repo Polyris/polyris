@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { formatCountdown, computeWaitCountdown, isInRetryWait } from '../utils';
+import { formatCountdown, computeWaitCountdown, isInRetryWait, isCountingDownWait } from '../utils';
 import { Hourglass, Timer, Check } from '@/utils/icons';
 import { TASK_STATUS, isTerminalStatus, MS } from '@/utils/constants';
 
@@ -27,7 +27,7 @@ export function CountdownTimer({
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
 
     // Tick when actively counting down: initial wait_before delay OR in-SFN retry wait
-    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
+    const isActivelyCountingDown = isCountingDownWait(status, waitDelayUntilMs)
         || (status === TASK_STATUS.RUNNING && !!waitDelayUntilMs);
 
     useEffect(() => {

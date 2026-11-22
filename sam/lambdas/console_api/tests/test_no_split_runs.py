@@ -107,9 +107,10 @@ def test_at_least_one_module_is_actually_covered():
 def test_list_pipelines_queries_exactly_the_dates_feed_dates_produces(mocker):
     """The behavioural half: freeze the clock, let both `list_pipelines` and
     `feed.feed_dates('')` run for real, and check the reads of run-start-index landed on
-    the exact same start days (ADR #137 §5). Mocks only the DDB boundary (`runs_started`)
-    and the registry listing — never `feed_dates` itself, so this fails if the two ever
-    drift instead of only if the call disappears.
+    the exact same start days (ADR #137 §5). It spies on the repository's read of a start
+    day (`runs_started`) to record the days read, and stubs the registry listing: a spy,
+    not a boundary, kept because the days are what it checks. Never `feed_dates` itself,
+    so this fails if the two ever drift instead of only if the call disappears.
     """
     from datetime import datetime, timezone
     import feed

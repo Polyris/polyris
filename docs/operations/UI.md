@@ -224,7 +224,7 @@ Quick reference for REST API endpoints
 
 Shows recent alerts, whatever the date of the run:
 - Failed tasks of the last 48 hours, one per run
-- Every task waiting for a decision, with when it fails unless you decide; first, the most urgent first
+- Tasks waiting for a decision, one per run, with when it fails unless you decide; first, the most urgent first
 - Coordination warnings, named by their kind (see [alerts.md](../features/alerts.md))
 
 Click notification to navigate to related task/pipeline.

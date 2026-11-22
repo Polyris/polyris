@@ -16,7 +16,7 @@ records carry a ``date`` (ADR #137 §5), so both indexes list them. A census tes
 (``tests/test_date_index_readers.py``) fails for a read of them anywhere else.
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -276,7 +276,7 @@ class ExecutionsRepo:
         }
         return _task_rows(query_all(self.table, **params))
 
-    def query_runs_by_date(self, date: str, min_rows: int, projection: str = None,
+    def query_runs_by_date(self, date: str, min_rows: Optional[int], projection: str = None,
                            expr_names: dict = None, filter_expr=None,
                            key_condition=None) -> list:
         """Task rows for one date, newest-first-by-nothing, via date-pipeline-index.
@@ -293,7 +293,7 @@ class ExecutionsRepo:
         ``pipeline_name``, so a row-count cut lands mid-pipeline and does exactly that.
 
         Stops once ``min_rows`` rows are covered and drops the pipeline it stopped inside
-        (it may be half-read). Keeps reading while only one pipeline is buffered, so a
+        (it may be half-read); ``None`` reads the whole date. Keeps reading while only one pipeline is buffered, so a
         single busy pipeline is never the one dropped — otherwise its day would vanish
         whole. When the date fits in one DynamoDB page there is nothing to cut and the
         whole day comes back, ``min_rows`` or not.
@@ -324,7 +324,7 @@ class ExecutionsRepo:
             # Only cut on a pipeline boundary, and only once a second pipeline is in
             # the buffer — otherwise the cut pipeline is the only one and the day
             # comes back empty.
-            if len(rows) >= min_rows and len({r.get('pipeline_name') for r in rows}) > 1:
+            if min_rows is not None and len(rows) >= min_rows and len({r.get('pipeline_name') for r in rows}) > 1:
                 partial = rows[-1].get('pipeline_name')     # index order: the last one
                 return [r for r in rows if r.get('pipeline_name') != partial]
 

@@ -86,6 +86,12 @@ found through the pipeline's task rows of that date (`pipeline-date-index`; ADR 
 the run, `null` when the date has none. Each task's status is the one its row holds: the console asks Step Functions
 nothing about a run.
 
+A task that waits (`waiting`, `waiting_paused`, `waiting_decision`) also says why (ADR #137 §1): `reasons`, the
+reasons the engine recorded, and `reasons_at`, since when; `countdown_end`, when a ready task's `wait_before`
+countdown ends and it starts; `deadline`, when its wait or its decision fails, `null` while a pause holds it or the
+task counts down; and, while it waits for its upstreams, `dependency_verdict`: what its trigger rule makes of them
+(`verdict`, `reason`, and per upstream its `name`, `status` and what it `counts_as`).
+
 ### Get Pipeline Executions
 
 ```http
@@ -95,7 +101,7 @@ GET /api/pipeline-executions?name={pipeline_name}&start_date={YYYY-MM-DD}&end_da
 ```
 
 A pipeline's runs, newest first, each as `/api/runs` shows it (`execution_id`, `execution_short`, `date`, `status`,
-`failed_tasks`, `started_at`, `finished_at`, `duration_ms`, `triggered_by`):
+`failed_tasks`, `failed_step`, `started_at`, `finished_at`, `duration_ms`, `triggered_by`):
 - without a date, its history: the pipeline's run rows of the last 90 days by the day each run started
   (`run-start-index`), a page at a time; pass `next` back as `before` (opaque, `null` once nothing older exists);
 - with `start_date` and `end_date`, the runs whose logical date lies in that range, from every start day of the
@@ -151,6 +157,9 @@ Paging (same contract as `/api/runs` and `/api/pipeline-executions`): pass the p
 response's `next` back as `before` to get the rows older than it. **`next` is opaque** —
 don't build one; its encoding is not part of the contract. `next: null` means the feed
 is exhausted — it is the only honest end-of-feed signal, since a full page is not one.
+A page never splits the rows that share a `started_at`, and every task of a run started
+by `Start_Run` shares its run's: a page holds whole runs, so it may return more than
+`limit` tasks.
 
 How far back a page can reach depends on the filters:
 - `pipeline` (no date) — `pipeline-date-index`, no window; bounded by the row TTL.
@@ -218,6 +227,7 @@ Returns pipeline runs, `started_at`-descending:
       "pipeline_execution_short": "-2026-05-31-ab12cd34",
       "status": "running",           // running | success | failed | aborted
       "failed_tasks": 1,             // tasks of the run that failed
+      "failed_step": null,           // a failed direct step, which has no row: {"step": "notify", "error": "..."}
       "started_at": "...", "finished_at": null,
       "date": "2026-05-31",
       "duration_ms": null,

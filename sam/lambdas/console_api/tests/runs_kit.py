@@ -45,6 +45,17 @@ def open_tables(mocker, resource) -> Any:
     return resource.Table(name)
 
 
+def open_registry(mocker, resource, *pipelines: Dict[str, Any]) -> Any:
+    """Create the registry table with these pipelines and point the console's pipelines repository at it."""
+    logical, name = kit.TABLES["PIPELINES_TABLE"]
+    kit.create_tables(resource, {logical: name})
+    mocker.patch.object(importlib.import_module("dal.pipelines_repo").pipelines_repo, "_table_name", name)
+    registry = resource.Table(name)
+    for item in pipelines:
+        registry.put_item(Item=item)
+    return registry
+
+
 def freeze(mocker, *modules: str) -> None:
     """Fix ``datetime.now`` at ``NOW`` in ``feed`` and in each module named."""
     for module in ("feed", *modules):

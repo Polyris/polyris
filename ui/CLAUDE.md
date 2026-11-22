@@ -195,6 +195,14 @@ A hook that turns an API answer into a status returns a tagged state, and its de
 
 A list fed by a query renders its error state (what failed, and a retry) when the query failed and holds no data. React Query's `data = []` default makes a failed first load look like "nothing here": the pipelines sidebar told users to deploy their first pipeline whenever `/api/pipelines` failed. Check `isError` before the empty state, and render it with `EmptyState` and `formatApiErrorMessage` as `AllTasksView` does; `PipelinesSidebar.test.tsx` pins it.
 
+## State the UI keeps by an id needs an id per event
+
+The bell keeps "read" and "cleared" by a notification's `id`. The API gave every notification of a run one id, and in 1.3 a run goes on after a failure: a later decision request of a run whose failure was read or cleared showed nothing, and its task failed at its deadline. An id that the UI keeps state by names the event (`/api/notifications`: its kind, the task row and when its entry falls due), never its container (review of TR-6d; `test_each_notification_names_its_event_so_a_later_request_of_the_same_run_is_new`).
+
+## A time is named by what happens at it
+
+The task detail showed the end of a `wait_before` countdown, when the task starts, as its "deadline", because both came from the row's due time. The API returns each time under its own name (`countdown_end`, `deadline`), and the UI labels it by what happens then. A release that removes a status (1.3's `waiting_delay`) moves every UI branch on it to the new shape: the graph's countdown waited for that status and showed nothing for 1.3 rows (`utils/countdown.test.ts`).
+
 ## A hold on the UI is released by every way its reason can end
 
 The pipelines sidebar keeps its rows still while the pointer or the focus is in the list. A blur releases the focus hold, but a focused row that unmounts fires no blur: when every listed pipeline was gone, the list stayed held, empty, while new pipelines arrived. Release the hold on that path too (`a held list that lost every row lets go`), and list each way the reason for a hold can end before you add one.

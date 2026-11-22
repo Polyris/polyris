@@ -7,8 +7,8 @@ first load, and the bell's search of backfill records on every poll. Every read 
 task rows is now a query of an index or a get by key.
 
 The census walks the console's code, and the paid overlay's when it is checked out
-beside it, for every call that scans: a table's `scan`, `scan_all` and a repository
-method that wraps one. Each one left is named below with why it is no scan of the
+beside it, for every call that scans: a table's `scan`, a client's paginator of `scan`,
+`scan_all` and a repository method that wraps one. Each one left is named below with why it is no scan of the
 tasks table, or a bounded one.
 """
 import ast
@@ -56,6 +56,8 @@ def _scans():
             if not isinstance(node, ast.Call):
                 continue
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
+            if name == "get_paginator" and any(isinstance(a, ast.Constant) and a.value == "scan" for a in node.args):
+                name = "scan"           # a client's paginator of scan: the review of TR-6d planted one unseen
             if name not in SCANS:
                 continue
             containing = [f for f in functions if f.lineno <= node.lineno <= (f.end_lineno or f.lineno)]
@@ -73,6 +75,15 @@ def test_no_route_scans_the_tasks_table():
 def test_the_census_sees_the_scans_it_allows():
     """A guard that matches nothing guards nothing: each allowed scan is still where it says."""
     assert _scans() >= set(ALLOWED)
+
+
+def test_the_census_sees_a_client_paginator_of_scan(tmp_path, monkeypatch):
+    """Review of TR-6d: a route that scanned through ``get_paginator("scan")`` passed the census unseen."""
+    route = tmp_path / "routes" / "planted.py"
+    route.parent.mkdir()
+    route.write_text("def planted(client):\n    return client.get_paginator('scan').paginate(TableName='t')\n")
+    monkeypatch.setitem(globals(), "_sources", lambda: iter([(tmp_path, route)]))
+    assert _scans() == {("routes/planted.py", "planted")}
 
 
 @pytest.fixture

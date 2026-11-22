@@ -9,7 +9,7 @@ import {
     GanttSkeleton,
     ErrorBoundary,
 } from './index';
-import { POLLING, toDateString, formatRelativeTime, formatRunStatus, formatTriggerSource, formatApiErrorMessage } from '../utils';
+import { POLLING, toDateString, formatRelativeTime, formatRunStatus, formatTriggerSource, formatApiErrorMessage, isCountingDownWait, waitUntilMs } from '../utils';
 import { RUNS_WINDOW_DAYS } from '../utils/historyWindow';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -147,7 +147,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- derive countdown flag from the latest tasks
         setHasActiveCountdown(tasks.some(
-            t => ['deps_ready', 'waiting_delay'].includes(t.status) && Number(t.wait_before || 0) > 0
+            t => (t.status === 'deps_ready' || isCountingDownWait(t.status, waitUntilMs(t))) && Number(t.wait_before || 0) > 0
         ));
     }, [tasks]);
 
@@ -650,8 +650,12 @@ function ExecutionDropdown({
     // The pipeline's runs of the last RUNS_WINDOW_DAYS days, newest first (ADR #137 §5).
     // Fetched even while the drawer is shut: the button shows the count, so gating this
     // on `showHistory` would render "0" until you opened it.
-    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
+    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, isError, error, refetch } =
         usePipelineRunsQuery(pipelineName);
+    // A failed load is never "no runs" (ui/CLAUDE.md): a 503 while the run index builds says so.
+    const loadError = isError && !data
+        ? formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))
+        : null;
 
     const allRuns = React.useMemo(
         () => (data?.pages ?? []).flatMap((p: { executions: Execution[] }) => p.executions),
@@ -707,7 +711,13 @@ function ExecutionDropdown({
 
                     <div className="pd-exec-dropdown-list">
                         {isLoading && <div className="pd-exec-dropdown-empty">Loading…</div>}
-                        {!isLoading && runs.length === 0 && (
+                        {!isLoading && loadError && (
+                            <div className="pd-exec-dropdown-empty" role="alert">
+                                <span>Couldn&apos;t load runs: {loadError}</span>
+                                <Button variant="ghost" size="sm" onClick={() => refetch()}>Retry</Button>
+                            </div>
+                        )}
+                        {!isLoading && !loadError && runs.length === 0 && (
                             <div className="pd-exec-dropdown-empty">
                                 {filterDate ? 'No runs on this date' : `No runs in the last ${RUNS_WINDOW_DAYS} days`}
                             </div>
@@ -731,8 +741,12 @@ function ExecutionDropdown({
                                             <span className="pd-dropdown-item-title">
                                                 {ex.execution_short || (ex.execution_id ? ex.execution_id.substring(0, 8) : ex.date)}...
                                             </span>
-                                            <span className={`pd-exec-status-mini ${statusClass}`}>
+                                            <span
+                                                className={`pd-exec-status-mini ${statusClass}`}
+                                                title={ex.failed_step ? `step ${ex.failed_step.step} failed: ${ex.failed_step.error}` : undefined}
+                                            >
                                                 {ex.status ? formatRunStatus(ex.status, ex.failed_tasks) : 'unknown'}
+                                                {ex.failed_step ? `, step ${ex.failed_step.step} failed` : ''}
                                             </span>
                                         </div>
                                         <div className="pd-dropdown-item-meta">

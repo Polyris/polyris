@@ -14,7 +14,7 @@ import ReactFlow, {
     Panel
 } from 'reactflow';
 import dagre from 'dagre';
-import { formatCountdown, formatWaitBadge, formatDuration, isInRetryWait } from '../utils';
+import { formatCountdown, formatWaitBadge, formatDuration, isInRetryWait, isCountingDownWait, waitUntilMs } from '../utils';
 import { TASK_SUCCESS_STATUSES, TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { taskTypeBadge } from '../utils/taskTypeBadge';
 import { mergeNodePositions } from '../utils/reactFlowHelpers';
@@ -71,28 +71,29 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
     
     // Tick when actively counting down: initial wait_before delay OR in-SFN retry wait
-    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
-        || (status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms);
+    const untilMs = waitUntilMs(task);
+    const isActivelyCountingDown = isCountingDownWait(status, untilMs)
+        || (status === TASK_STATUS.RUNNING && !!untilMs);
 
     // Compute now first so isRetryWaiting can guard the early-return below
     const nowMs = tick + (serverOffsetMs || 0);
-    const isRetryWaiting = isInRetryWait(status, task?.wait_delay_until_ms, nowMs);
+    const isRetryWaiting = isInRetryWait(status, untilMs, nowMs);
 
     // Only run interval when actually counting down
     useEffect(() => {
         if (!isActivelyCountingDown || isTerminal) return;
         // Tick for retry wait even when task has no wait_before configured
-        if (!waitBefore && !task?.wait_delay_until_ms) return;
+        if (!waitBefore && !untilMs) return;
         const interval = setInterval(() => setTick(Date.now()), MS.TICK_INTERVAL);
         return () => clearInterval(interval);
-    }, [isActivelyCountingDown, waitBefore, task?.wait_delay_until_ms, isTerminal]);
+    }, [isActivelyCountingDown, waitBefore, untilMs, isTerminal]);
 
     // Show badge for retry wait even when task has no wait_before configured
     if (isTerminal || ((!waitBefore || waitBefore <= 0) && !isRetryWaiting)) return null;
     const badge = formatWaitBadge({
         status,
         waitBefore,
-        waitDelayUntilMs: task?.wait_delay_until_ms,
+        waitDelayUntilMs: untilMs,
         waitDelayStartedMs: task?.wait_delay_started_ms,
         nowMs,
         formatFn: formatCountdown

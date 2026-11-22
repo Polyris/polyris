@@ -18,9 +18,12 @@ const mockDetailQuery: {
     data: { tasks: typeof mockTasks; dag: typeof mockDag; serverOffsetMs: number; selectedExecution: null; statusError?: string | null } | undefined;
     isLoading: boolean; isError: boolean; error: Error | null; refetch: ReturnType<typeof vi.fn>;
 } = { data: { tasks: mockTasks, dag: mockDag, serverOffsetMs: 0, selectedExecution: null }, isLoading: false, isError: false, error: null, refetch: vi.fn() };
-const mockRunsQuery: { data: unknown; fetchNextPage: () => void; hasNextPage: boolean; isFetchingNextPage: boolean; isLoading: boolean } = {
+const mockRunsQuery: {
+    data: unknown; fetchNextPage: () => void; hasNextPage: boolean; isFetchingNextPage: boolean; isLoading: boolean;
+    isError: boolean; error: Error | null; refetch: ReturnType<typeof vi.fn>;
+} = {
     data: { pages: [] }, fetchNextPage: vi.fn(), hasNextPage: false,
-    isFetchingNextPage: false, isLoading: false,
+    isFetchingNextPage: false, isLoading: false, isError: false, error: null, refetch: vi.fn(),
 };
 const mockExecQuery = { data: mockExecList };
 const mockPipelinesQuery = { data: [createPipeline({ recent_runs: [{ date: '2024-01-15' }] })] };
@@ -319,6 +322,30 @@ describe('PipelineDetail', () => {
         afterEach(() => {
             mockPipelinesQuery.data = [createPipeline({ recent_runs: [{ date: '2024-01-15' }] })];
             mockRunsQuery.data = { pages: [] };   // don't leak runs between tests
+            mockRunsQuery.isError = false;
+            mockRunsQuery.error = null;
+        });
+
+        it('names a failed direct step of a run, which has no row of its own (review of TR-6d)', () => {
+            mockRunsQuery.data = { pages: [{ executions: [createExecution({
+                status: 'failed', failed_tasks: 0, failed_step: { step: 'notify', error: 'AccessDenied' },
+            })] }] };
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByRole('button', { name: /History/i }));
+            expect(screen.getByTitle('step notify failed: AccessDenied')).toHaveTextContent('step notify failed');
+        });
+
+        it('says the runs could not load, never "no runs", and offers a retry (review of TR-6d)', () => {
+            // While DynamoDB builds the run index after an upgrade, /api/pipeline-executions answers 503.
+            mockRunsQuery.data = undefined;
+            mockRunsQuery.isError = true;
+            mockRunsQuery.error = new Error('The run index is being built');
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByRole('button', { name: /History/i }));
+            expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load runs");
+            expect(screen.queryByText(/No runs in the last/)).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+            expect(mockRunsQuery.refetch).toHaveBeenCalled();
         });
 
         // The dropdown lists every run it can still see rather than only the

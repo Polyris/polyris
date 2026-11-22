@@ -16,7 +16,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from tests.runs_kit import NOW, days_ago, freeze, iso, open_tables, put_run, put_task
+from tests.runs_kit import NOW, days_ago, freeze, iso, open_registry, open_tables, put_run, put_task
 from tests.specs_kit import deploy_specs, spec, use_specs_table
 
 TODAY = NOW.strftime('%Y-%m-%d')
@@ -31,9 +31,9 @@ def world(mocker):
         table = open_tables(mocker, resource)
         use_specs_table(mocker, resource)
         freeze(mocker, 'routes.pipelines_list', 'routes.pipelines_info')
-        mocker.patch.object(pipelines_list.pipelines_repo, 'get', return_value=None)
+        registry = open_registry(mocker, resource)
         sfn = mocker.patch.object(pipelines_list, 'sfn')
-        yield type('World', (), {'table': table, 'resource': resource})
+        yield type('World', (), {'table': table, 'resource': resource, 'registry': registry})
         assert sfn.method_calls == [], "no route asks Step Functions about a run (ADR #137 §5)"
 
 
@@ -61,7 +61,7 @@ def test_the_history_is_the_pipelines_run_rows_newest_first_a_page_at_a_time(wor
     assert ids(rest) == made[2:] and rest['next'] is None
     assert first['executions'][0] == {
         'execution_id': made[0], 'execution_short': made[0][-20:], 'date': '2026-11-21', 'status': 'success',
-        'failed_tasks': 0, 'started_at': iso(days_ago(0)), 'finished_at': iso(days_ago(0, hour=7)),
+        'failed_tasks': 0, 'failed_step': None, 'started_at': iso(days_ago(0)), 'finished_at': iso(days_ago(0, hour=7)),
         'duration_ms': 3600 * 1000, 'triggered_by': 'schedule'}
 
 
@@ -149,13 +149,12 @@ def dag_of(**query):
     return json.loads(pipelines_info.get_pipeline_dag('orders', {'queryStringParameters': query or None})['body'])
 
 
-def test_a_1_3_run_draws_the_spec_version_its_run_row_names(world, mocker):
+def test_a_1_3_run_draws_the_spec_version_its_run_row_names(world):
     """§8: the graph the run ran with, though the registry names a newer version."""
-    from routes import pipelines_info
 
     ran = deploy_specs(world.resource, 'orders', [spec('extract'), spec('load', dependencies=['extract'])])
     current = deploy_specs(world.resource, 'orders', [spec('extract')])
-    mocker.patch.object(pipelines_info.pipelines_repo, 'get', return_value={'pipeline_name': 'orders', **current})
+    world.registry.put_item(Item={'pipeline_name': 'orders', **current})
     run = put_run(world.table, 'orders', TODAY, days_ago(0), summary={'success': 2},
                   spec_id=ran['spec_id'], task_count=ran['task_count'])
     body = dag_of(pipeline_execution=run)
@@ -189,7 +188,7 @@ def test_a_waiting_task_shows_why_it_waits(world):
     from polyris.coordination import task_spec
     run = put_run(world.table, 'orders', '2026-11-20', days_ago(0), summary={'running': 1, 'waiting': 1})
     readiness = task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': ['extract'],
-                                          'wait_before': 60})
+                                          'orchestration_timeout': 43200, 'wait_before': 60})
     put_task(world.table, run, 'extract', '2026-11-20', 'running', started=days_ago(0),
              readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []}))
     put_task(world.table, run, 'load', '2026-11-20', 'waiting', started=days_ago(0), readiness=readiness,
@@ -197,7 +196,33 @@ def test_a_waiting_task_shows_why_it_waits(world):
              attention_at='2026-11-22T18:00:00.000Z')
     load = next(t for t in status_of(date='2026-11-20')['tasks'] if t['task_name'] == 'load')
     assert (load['dependencies'], load['trigger_rule'], load['wait_before']) == (['extract'], 'all_success', 60)
-    assert (load['reasons'], load['reasons_at'], load['deadline']) == (
-        ['waits for extract'], '2026-11-22T06:00:00.000Z', '2026-11-22T18:00:00.000Z')
+    assert (load['reasons'], load['reasons_at'], load['deadline'], load['countdown_end']) == (
+        ['waits for extract'], '2026-11-22T06:00:00.000Z', '2026-11-22T18:00:00.000Z', None)
     assert load['dependency_verdict']['verdict'] == 'wait'
     assert load['dependency_verdict']['upstreams'] == [{'name': 'extract', 'status': 'running', 'counts_as': 'pending'}]
+
+
+def test_a_task_counting_down_its_wait_before_shows_when_it_starts_and_no_deadline(world):
+    """Review of TR-6d, P-3: the row falls due when its countdown ends (deadlines.due_time), when it starts."""
+    from polyris.coordination import task_spec
+    run = put_run(world.table, 'orders', '2026-11-20', days_ago(0), summary={'success': 1, 'waiting': 1})
+    put_task(world.table, run, 'extract', '2026-11-20', 'success', started=days_ago(0),
+             readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': []}))
+    put_task(world.table, run, 'load', '2026-11-20', 'waiting', started=days_ago(0),
+             readiness=task_spec.canonical_json({'trigger_rule': 'all_success', 'dependencies': ['extract'],
+                                                 'wait_before': 600}),
+             reasons=['counting down its wait_before'], reasons_at='2026-11-22T06:00:00.000Z',
+             countdown_end='2026-11-22T06:10:00.000Z', attention='waiting#x', attention_at='2026-11-22T06:10:00.000Z')
+    load = next(t for t in status_of(date='2026-11-20')['tasks'] if t['task_name'] == 'load')
+    assert (load['countdown_end'], load['deadline']) == ('2026-11-22T06:10:00.000Z', None)
+
+
+def test_the_history_names_a_failed_direct_step(world):
+    """Review of TR-6d, P-8: a run that failed by a direct step alone showed failed with no task failed."""
+    from polyris.coordination import run_row
+    put_run(world.table, 'orders', TODAY, days_ago(0), summary={'success': 2}, finished=days_ago(0, hour=7),
+            step_failure={run_row.STEP_MARK_STEP: 'notify', run_row.STEP_MARK_ERROR: 'AccessDenied'})
+    status, body = executions()
+    [run] = body['executions']
+    assert (status, run['status'], run['failed_tasks']) == (200, 'failed', 0)
+    assert run['failed_step'] == {'step': 'notify', 'error': 'AccessDenied'}

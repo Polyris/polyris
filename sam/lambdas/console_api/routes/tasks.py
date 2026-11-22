@@ -254,7 +254,8 @@ def get_all_tasks(event: Dict) -> Dict:
         page, next_cursor = page_by_started_at(rows, before, limit)
 
         # Fields the index read lacks (_TASKS_BACKFILL), from the base table for the
-        # current page only (bounded cost: ≤ limit rows = ≤ 5 BatchGetItem calls).
+        # current page only. A page holds whole runs (page_by_started_at), so a run of
+        # 2,000 tasks costs 20 BatchGetItem calls, whatever the limit.
         try:
             names = [r['execution_name'] for r in page if r.get('execution_name')]
             if names:

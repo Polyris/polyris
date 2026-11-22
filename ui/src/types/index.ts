@@ -48,6 +48,8 @@ export interface Task {
   reasons_at?: string | null;
   /** The deadline of its wait or of its decision; none while a pause holds it. */
   deadline?: string | null;
+  /** When a ready task's wait_before countdown ends, and the task starts (a 1.3 row that is `waiting`). */
+  countdown_end?: string | null;
   /** What its trigger rule makes of its upstreams as the page shows them. */
   dependency_verdict?: {
     verdict: string;

@@ -464,7 +464,7 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 
 ### 23. DAG Snapshot Per Execution (not per deploy)
 
-**Superseded by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** A run's graph comes from the spec version its run row names, which never changes; new runs write no snapshot. The console reads the snapshots of runs started before 1.3 until 1.4 (D89). Lookup: the run's spec version (a 1.2 run's snapshot) → the registry's version → inferred.
+**Superseded by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** A run's graph comes from the spec version its run row names, which never changes; new runs write no snapshot. The console reads the snapshots of runs started before 1.3 until 1.4. Lookup: the run's spec version (a 1.2 run's snapshot) → the registry's version → inferred.
 
 **Decision:** Each execution writes its own DAG snapshot to `tokens_table` with key `dag_snapshot::{execution_name}`. TTL: 120 days (AWS SFN history is 90 days + 30-day buffer).
 
@@ -9408,7 +9408,7 @@ Each time the console showed the task ended while its run stayed `RUNNING` until
 
 ## ADR #136 — The pipelines list says what its statuses rest on, and groups only what a DAG names
 
-> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0, D94).** Decisions 3 and 5 are superseded: the list reads the run rows of the last 14 start days from `run-start-index`, each run's status and `waiting_on` from its run row's summary, and asks Step Functions nothing about a run; the engine keeps the run row true. `stats_incomplete` now means a start day that could not be read, and `index_building` says that DynamoDB is still building the index after an upgrade. A running latest run carries the count of its failed tasks (`failed_tasks`), and such a pipeline is pinned under **Needs attention** too. The API is otherwise unchanged.
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** Decisions 3 and 5 are superseded: the list reads the run rows of the last 14 start days from `run-start-index`, each run's status and `waiting_on` from its run row's summary, and asks Step Functions nothing about a run; the engine keeps the run row true. `stats_incomplete` now means a start day that could not be read, and `index_building` says that DynamoDB is still building the index after an upgrade. A running latest run carries the count of its failed tasks (`failed_tasks`), and such a pipeline is pinned under **Needs attention** too. The API is otherwise unchanged.
 
 **Context.** The console's pipelines sidebar was redesigned in 1.2.1: one line per pipeline, the latest run's status, the last 10 runs, and a **Needs attention** section on top. Four things in the old list stood in the way.
 - `/api/pipelines` computed `today_stats` and `progress` for one day, chosen by its `date` parameter. The new sidebar reads neither: it shows runs, not a day's task counts.

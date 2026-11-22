@@ -9,8 +9,8 @@ The Console shows a notification for every event that needs your attention:
 | Trigger | Notification kind |
 |---------|-------------------|
 | Task fails and retries are exhausted (or `retries=0`) | Decision required — the task is in `waiting_decision`, blocking downstream |
-| Task's dependency window expires (`wait_for=[asset.within(...)]` timed out) | Decision required |
-| polyris could not coordinate a task: it can no longer be woken and was aborted, its wake-up came late, an asset-scheduled run could not start, its dependent tasks were not notified, or a registration step failed | Warning, named by its kind |
+| Task's wait for its dependencies or assets reaches its limit (`orchestration_timeout`, or 7 days for `wait_for`) | Failure — the task is `failed` with the reason |
+| polyris could not coordinate a task: its run's wake-ups were lost and the sweeper woke it late, an asset-scheduled run could not start, a direct step failed, or the engine could not carry out a write, a request or a stop | Warning, named by its kind |
 | A manual action found real output and kept it instead of writing its marker | Warning |
 
 Successful runs do not generate notifications — the Console shows their status in the pipeline list.
@@ -35,7 +35,7 @@ Click the notification → opens Task Detail modal. The task's **Actions** tab h
 
 | Action | When to use |
 |--------|-------------|
-| **Restart** | Retry the whole task with a fresh `attempt=1`. Use when the failure was transient (dependency was down, quota reset) |
+| **Restart** | Run the task again from its wait: it waits for its dependencies and assets again, and its attempt count goes on. Use when the failure was transient (dependency was down, quota reset) |
 | **Mark success** | Manually mark the task successful with a synthetic marker. Use when you verified the work is actually done (checked S3, checked the target table) and just want downstream to continue |
 | **Skip** | Mark the task `skipped`. Use when the task is not needed for this run (bad input data, partition already handled elsewhere) — downstream `all_success` sees it as a skip cascade |
 | **Fail** | Mark the task `failed`. Use when the failure is real and the run should stop cleanly. Downstream `all_success` chains propagate `upstream_failed` |

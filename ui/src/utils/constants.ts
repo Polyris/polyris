@@ -65,7 +65,7 @@ export const TERMINAL_STATUSES = new Set<string>(TASK_TERMINAL_STATUSES);
 export const isTerminalStatus = (status: string) => TERMINAL_STATUSES.has(status);
 
 // "Why waiting" reasons for tooltip
-export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | WaitForEntry[]; wait_before?: number; wait_delay_until_ms?: number } | null): string | null => {
+export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | WaitForEntry[]; wait_before?: number; wait_delay_until_ms?: number; countdown_end?: string | null } | null): string | null => {
     if (!task) return null;
     
     const status = task.status;
@@ -87,6 +87,10 @@ export const getWaitingReason = (task: { status?: string; dependencies?: string[
     
     switch (status) {
         case TASK_STATUS.WAITING:
+            // A 1.3 row counting down its wait_before is ready: its upstreams have finished.
+            if (task.countdown_end) {
+                return 'Counting down its wait_before';
+            }
             if ((task.dependencies?.length ?? 0) > 0 && waitForAssets.length > 0) {
                 return `Waiting for tasks: ${task.dependencies!.join(', ')} and assets: ${waitForAssets.join(', ')}`;
             }

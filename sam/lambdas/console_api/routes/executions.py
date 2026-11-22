@@ -77,9 +77,9 @@ def _build_backfill_run_rows(
     Backfills would quietly vanish from the feed as soon as you paged.
 
     **Filters run before the page is cut, and the repo is asked for no limit at all.**
-    ``list_recent`` scans the sentinel unconditionally — its ``limit`` buys no capacity,
-    it only truncates an already-materialised list — so slicing first just spends the
-    page on records the filters are about to drop. ``?status=completed`` with a run of
+    ``list_recent`` with a ``limit`` stops once it has that many records, before any
+    filter here has run, so slicing first just spends the page on records the filters
+    are about to drop. ``?status=completed`` with a run of
     recent ``partial`` backfills would then answer "no runs found" while completed ones
     sat right behind them, and an empty page has no last row, so no cursor, so the feed
     would stop there for good. ``limit + 1`` for the same reason
@@ -211,9 +211,11 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
                 'finished_at': item.get('finished_at')
             })
         
-        # Sort by started_at; a row without one sorts first instead of failing the sort,
-        # which the catch below turned into an empty list for every run.
-        children.sort(key=lambda x: x.get('started_at') or '')
+        # Sort by started_at, then the task's name: every row of a 1.3 run carries its run's one
+        # started_at (Start_Run), so the name keeps the order the same from one read to the next.
+        # A row without one sorts first instead of failing the sort, which the catch below
+        # turned into an empty list for every run.
+        children.sort(key=lambda x: (x.get('started_at') or '', x.get('task_name') or ''))
         
         return cors_response(200, {
             'pipeline_execution': execution_name,

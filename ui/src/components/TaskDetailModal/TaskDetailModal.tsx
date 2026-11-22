@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
-import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount } from '../../utils';
+import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount, waitUntilMs } from '../../utils';
 import { formatDateTime, formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
 import { logger } from '../../utils/logger';
 import { useKeyboardShortcuts } from '../../hooks';
@@ -296,7 +296,8 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                     <p className="text-sm text-secondary">
                         <span>
                             {task.reasons_at ? `Since ${formatDateTime(task.reasons_at)}` : ''}
-                            {task.reasons_at && task.deadline ? ' · ' : ''}
+                            {task.reasons_at && (task.deadline || task.countdown_end) ? ' · ' : ''}
+                            {task.countdown_end ? `starts ${formatDateTime(task.countdown_end)}` : ''}
                             {task.deadline ? `deadline ${formatDateTime(task.deadline)}` : ''}
                         </span>
                     </p>
@@ -471,7 +472,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         {/* Wait Before - with live countdown */}
                         <CountdownTimer 
                             waitBefore={Number(task.wait_before || dag?.nodes?.find(n => n.id === task.task_name)?.wait_before || 0)}
-                            waitDelayUntilMs={task.wait_delay_until_ms ?? null}
+                            waitDelayUntilMs={waitUntilMs(task) ?? null}
                             waitDelayStartedMs={task.wait_delay_started_ms ?? null}
                             status={task.status}
                             serverOffsetMs={serverOffsetMs}

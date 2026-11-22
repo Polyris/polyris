@@ -14,7 +14,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from tests.runs_kit import NOW, days_ago, freeze, open_tables, put_run, put_task
+from tests.runs_kit import NOW, days_ago, freeze, kit, open_registry, open_tables, put_run, put_task
 
 TODAY = NOW.strftime('%Y-%m-%d')
 
@@ -24,11 +24,12 @@ def table(mocker):
     from routes import pipelines_list
 
     with mock_aws():
-        table = open_tables(mocker, boto3.resource('dynamodb', region_name='us-east-1'))
+        resource = boto3.resource('dynamodb', region_name='us-east-1')
+        table = open_tables(mocker, resource)
         freeze(mocker)
-        mocker.patch.object(pipelines_list.pipelines_repo, 'list_all', return_value=[
-            {'pipeline_name': 'orders', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:orders'},
-            {'pipeline_name': 'billing', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:billing'}])
+        open_registry(mocker, resource,
+                      {'pipeline_name': 'orders', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:orders'},
+                      {'pipeline_name': 'billing', 'sfn_arn': 'arn:aws:states:us-east-1:123:stateMachine:billing'})
         sfn = mocker.patch.object(pipelines_list, 'sfn')
         yield table
         assert sfn.method_calls == [], "the console asks Step Functions nothing about a run (ADR #137 §5)"
@@ -160,11 +161,9 @@ def test_without_stats_nothing_reads_the_runs(table, mocker):
     read.assert_not_called()
 
 
-def test_a_registry_that_cannot_be_read_fails_the_request(table, mocker):
+def test_a_registry_that_cannot_be_read_fails_the_request(table):
     """ADR #136: a list without the registry has no groups and misses idle pipelines; never a 200."""
-    from routes import pipelines_list
 
-    mocker.patch.object(pipelines_list.pipelines_repo, 'list_all', side_effect=ClientError(
-        {'Error': {'Code': 'ProvisionedThroughputExceededException', 'Message': 'slow down'}}, 'Scan'))
-    with pytest.raises(ClientError, match='ProvisionedThroughputExceededException'):
+    boto3.resource('dynamodb', region_name='us-east-1').Table(kit.TABLES['PIPELINES_TABLE'][1]).delete()
+    with pytest.raises(ClientError, match='ResourceNotFoundException'):
         body()

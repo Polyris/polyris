@@ -48,9 +48,11 @@ def feed_dates(before: str = '', days: int = Limits.SLA_DAYS) -> List[str]:
     ``date`` is the natural shard key for a time-ordered feed across all pipelines, so
     the fan-out is the correct access pattern here rather than debt (ADR #108). The
     page starts at the cursor's date and walks back to the edge of the window of
-    ``days`` days: everything newer than the cursor was already served, and a row's
-    ``started_at`` is never earlier than its logical ``date``, so no older row can hide
-    on a newer date. Without a cursor the walk starts today. Bounded by ``days``
+    ``days`` days: everything newer than the cursor was already served. A row whose
+    ``started_at`` is earlier than its logical ``date`` hides on a newer date: a run
+    can start before its date (ADR #137 §5), and the Tasks feed, which walks logical
+    dates, shows such a run's tasks once its date is walked. Without a cursor the walk
+    starts today. Bounded by ``days``
     queries, and shorter the deeper you page. The run lists walk start days the same
     way (:func:`run_rows_before`).
 
@@ -88,7 +90,8 @@ def page_by_started_at(rows: List[Dict], before: str, limit: int, *, more: bool 
     A page never ends *inside* a group of rows sharing one ``started_at``. The cursor is
     a strict ``<``, so a twin left behind would be filtered out by the very cursor that
     was supposed to fetch it — gone for good. Absorbing the twins instead (the page runs
-    a little long; ties are millisecond-precision, so in practice never) is what makes a
+    long: every task row a ``Start_Run`` writes carries its one ``started_at``, so a page
+    of tasks holds whole runs, whatever ``limit`` says) is what makes a
     plain timestamp sufficient here: it is the same rule the reads below it follow —
     ``query_runs_by_pipeline`` cuts on whole dates, ``query_runs_by_date`` on whole
     pipelines, and this on whole instants. A composite cursor would only be buying back
@@ -262,13 +265,15 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
 
     A 1.3 run shows as its run row says, read in one ``BatchGetItem`` for the date. A
     run from before 1.3 has no run row: its status is derived from its task rows, and
-    its trigger read from one of them. Reads whole pipelines of the date
-    (``query_runs_by_date``), so no run's task set is split (ADR #113).
+    its trigger read from one of them. Reads the whole date: a cut on a pipeline
+    boundary (ADR #113) kept every run's task set whole but dropped, without a word,
+    the runs of every pipeline past it once a date outgrew one DynamoDB page (review
+    of TR-6d).
     """
     key: Any = Key('date').eq(date)
     if pipeline:
         key = key & Key('pipeline_name').eq(pipeline)
-    items = executions_repo.query_runs_by_date(date, min_rows=Limits.RUNS_MIN_ROWS_PER_DATE, key_condition=key,
+    items = executions_repo.query_runs_by_date(date, min_rows=None, key_condition=key,
                                                projection=_DATE_PROJECTION, expr_names=_DATE_NAMES)
     groups: Dict[str, Dict[str, Any]] = {}
     for item in items:
@@ -309,21 +314,20 @@ def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
             'duration_ms': duration_ms(started_at, finished_at), 'triggered_by': None,
             '_sample_exec_name': group['sample'],
         })
-    fill_triggered_by(legacy, id_field='pipeline_execution')
+    fill_triggered_by(legacy)
     return runs + legacy
 
 
-def fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None:
+def fill_triggered_by(executions: list) -> None:
     """Back-fill triggered_by on runs from before 1.3, read through an index that does not project it.
 
-    Each entry names one of its task rows in ``_sample_exec_name``, which this pops;
-    ``id_field`` names each run.
+    Each entry names one of its task rows in ``_sample_exec_name``, which this pops.
     """
-    samples = {}  # id_field value → sample execution_name
+    samples = {}  # pipeline_execution → sample execution_name
     for e in executions:
         name = e.pop('_sample_exec_name', None)
         if name and not e.get('triggered_by'):
-            samples[e[id_field]] = name
+            samples[e['pipeline_execution']] = name
 
     if not samples:
         return
@@ -333,7 +337,7 @@ def fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None:
         for e in executions:
             if e.get('triggered_by'):
                 continue
-            sample = samples.get(e[id_field])
+            sample = samples.get(e['pipeline_execution'])
             if sample:
                 e['triggered_by'] = (meta.get(sample) or {}).get('triggered_by') or None
     except (ClientError, BotoCoreError) as err:
