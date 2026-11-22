@@ -9,7 +9,9 @@ pass never replaces a newer count (``SUMMARY_CONDITION``).
 The outcome is ADR #112's derivation over the final rows, with the run row's
 mark of a failed direct step: ``failed`` when a row failed or a step did,
 ``aborted`` when every final failure is a stop, an abort or an
-``upstream_failed``, and ``success`` otherwise.
+``upstream_failed``, and ``success`` otherwise. The console's run lists show
+the same outcome from the summary, and ``running`` with the count of the
+run's failed tasks until then (``shown_status``, ``failed_tasks``).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
-from ..constants import ExecutionStatus, derive_execution_status
+from ..constants import ExecutionStatus, TaskStatus, derive_execution_status
 from . import run_row
 from .transitions import FINAL
 
@@ -46,6 +48,25 @@ def outcome(counts: Mapping[str, int], *, task_count: int, step_failed: bool) ->
     if step_failed:
         return ExecutionStatus.FAILED
     return derive_execution_status(present)
+
+
+def shown_status(counts: Optional[Mapping[str, int]], *, step_failed: bool) -> str:
+    """The run's status as the console shows it, from its run row's summary and step mark (§4).
+
+    ``running`` until every row the summary counts is final, then the outcome. A run
+    row without a summary yet, before the first full pass over its run, is running.
+    """
+    counts = counts or {}
+    return outcome(counts, task_count=sum(counts.values()), step_failed=step_failed) or ExecutionStatus.RUNNING
+
+
+def failed_tasks(counts: Optional[Mapping[str, int]]) -> int:
+    """How many of the run's rows are ``failed``: what the console shows beside a run that is still running (§4).
+
+    Only ``failed``, the status that makes the run ``failed`` once every row is final;
+    a task that waits for a decision has not failed finally yet.
+    """
+    return int((counts or {}).get(TaskStatus.FAILED.value, 0))
 
 
 def failure_cause(failed_tasks: Sequence[str], *, step_failure: Optional[str] = None) -> str:

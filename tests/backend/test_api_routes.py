@@ -163,14 +163,13 @@ def test_list_pipelines_stats_succeeded(mocker):
 
 
 def test_list_pipelines_stats_failed(mocker):
-    """Card status is 'failed' when the (last) run failed (ADR #112 / option c)."""
+    """Card status is 'failed' when the (last) run failed (ADR #112 / option c), once every task is final (D68)."""
     mock_pipelines = MockRepo([
         {'pipeline_name': 'daily', 'sfn_arn': 'arn:...', 'description': ''},
     ])
     mock_execs = MockRepo([
         {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'success', 'date': TODAY},
         {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'failed', 'date': TODAY},
-        {'pipeline_name': 'daily', 'pipeline_execution': 'exec-1', 'status': 'waiting', 'date': TODAY},
     ])
 
     mocker.patch('routes.pipelines_list.executions_repo', mock_execs)

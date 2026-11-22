@@ -6,6 +6,13 @@
 > every surface (History `/runs`, the execution-history dropdown `/pipeline-executions`,
 > the sidebar, and SLA). No IAM changes. Supersedes the *value choice* (not the
 > mechanism) of ADR #71 — see "Supersedes" below.
+>
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §4 (1.3.0).** The derivation returns
+> `running` until every task is final: its two early branches, which returned `failed`
+> and `aborted` while other tasks still waited or ran, are gone, and the console shows
+> the count of a running run's failed tasks beside it. A 1.3 run's status comes from its
+> run row's summary of its task statuses, with the mark of a failed direct step
+> (`run_end.shown_status`).
 
 ## Context
 

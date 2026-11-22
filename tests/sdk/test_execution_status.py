@@ -22,18 +22,23 @@ class TestDeriveExecutionStatus:
         (["success"], ExecutionStatus.SUCCESS),
         (["success", "succeeded", "skipped"], ExecutionStatus.SUCCESS),
         (["success", "skipped"], ExecutionStatus.SUCCESS),
-        # Failure outranks everything.
+        # Once every task is final, a failure outranks everything.
         (["failed"], ExecutionStatus.FAILED),
         (["success", "failed"], ExecutionStatus.FAILED),
         (["failed", "aborted"], ExecutionStatus.FAILED),
-        (["running", "failed"], ExecutionStatus.FAILED),
         # Interruption without a genuine failure → aborted.
         (["aborted"], ExecutionStatus.ABORTED),
         (["stopped"], ExecutionStatus.ABORTED),
         (["upstream_failed"], ExecutionStatus.ABORTED),
         (["success", "aborted"], ExecutionStatus.ABORTED),
         (["success", "stopped", "upstream_failed"], ExecutionStatus.ABORTED),
-        (["running", "aborted"], ExecutionStatus.ABORTED),
+        # A failed or stopped task does not end its run while another is not final (ADR #137 §4, D68).
+        (["running", "failed"], ExecutionStatus.RUNNING),
+        (["waiting", "failed", "success"], ExecutionStatus.RUNNING),
+        (["running", "aborted"], ExecutionStatus.RUNNING),
+        (["deps_ready", "stopped"], ExecutionStatus.RUNNING),
+        (["waiting_decision", "success"], ExecutionStatus.RUNNING),
+        (["waiting_paused", "upstream_failed"], ExecutionStatus.RUNNING),
     ])
     def test_derivation(self, task_statuses, expected):
         assert derive_execution_status(task_statuses) == expected

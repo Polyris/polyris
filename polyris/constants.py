@@ -369,27 +369,22 @@ _DERIVE_TERMINAL = _DERIVE_RESOLVED | _DERIVE_FAILURE | _DERIVE_STOPPED
 def derive_execution_status(task_statuses):
     """Derive a pipeline-execution status from its task statuses (DynamoDB only).
 
-    The single source of this derivation (ADR #112). Returns one of the
-    DynamoDB-derivable canonical values: 'running', 'success', 'failed', 'aborted'.
-    ('timed_out' and 'recovered' are reconciliation-only — see
-    ``reconcile_execution_status``.) A genuine task failure outranks an interruption;
-    an interruption (stopped/aborted/upstream_failed) without a failure is 'aborted'.
+    The single source of this derivation (ADR #112, as ADR #137 §4 amends it).
+    Returns one of the DynamoDB-derivable canonical values: 'running', 'success',
+    'failed', 'aborted'. A run is 'running' until every task is final: a failed or
+    stopped task does not end it while others still wait or run (the console shows
+    the count of its failed tasks beside it). Once every task is final, a genuine
+    failure outranks an interruption, and an interruption (stopped/aborted/
+    upstream_failed) without a failure is 'aborted'.
     """
     statuses = set(task_statuses)
-    if not statuses:
+    if not statuses or not statuses.issubset(_DERIVE_TERMINAL):
         return ExecutionStatus.RUNNING
-    is_completed = statuses.issubset(_DERIVE_TERMINAL)
-    has_failure = bool(statuses & _DERIVE_FAILURE)
-    has_stopped = bool(statuses & _DERIVE_STOPPED)
-    if is_completed:
-        if has_stopped and not has_failure:
-            return ExecutionStatus.ABORTED
-        return ExecutionStatus.FAILED if has_failure else ExecutionStatus.SUCCESS
-    if has_failure:
+    if statuses & _DERIVE_FAILURE:
         return ExecutionStatus.FAILED
-    if has_stopped:
+    if statuses & _DERIVE_STOPPED:
         return ExecutionStatus.ABORTED
-    return ExecutionStatus.RUNNING
+    return ExecutionStatus.SUCCESS
 
 
 def reconcile_execution_status(base, sfn_status, all_tasks_resolved):

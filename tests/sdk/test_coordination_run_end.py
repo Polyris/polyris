@@ -39,6 +39,31 @@ def test_a_cleanup_that_succeeded_after_a_failure_does_not_make_the_run_succeed(
     assert run_end.outcome({"failed": 1, "success": 1}, task_count=2, step_failed=False) == ExecutionStatus.FAILED
 
 
+@pytest.mark.parametrize("counts,step_failed,expected", [
+    (None, False, ExecutionStatus.RUNNING),                                 # no summary yet: before the first pass
+    ({}, False, ExecutionStatus.RUNNING),
+    ({"success": 2, "failed": 1, "waiting": 1}, False, ExecutionStatus.RUNNING),   # a failure, others not final
+    ({"success": 2, "waiting_decision": 1}, False, ExecutionStatus.RUNNING),
+    ({"success": 3, "running": 1}, True, ExecutionStatus.RUNNING),          # a step's mark waits for the rows too
+    ({"success": 3, "failed": 1}, False, ExecutionStatus.FAILED),
+    ({"success": 3, "stopped": 1}, False, ExecutionStatus.ABORTED),
+    ({"success": 4}, True, ExecutionStatus.FAILED),
+    ({"success": 3, "skipped": 1, "failed": 0}, False, ExecutionStatus.SUCCESS),
+])
+def test_the_console_shows_a_run_running_until_every_row_its_summary_counts_is_final(counts, step_failed, expected):
+    """§4, D68: the run lists show the outcome only once every row is final."""
+    assert run_end.shown_status(counts, step_failed=step_failed) == expected
+
+
+@pytest.mark.parametrize("counts,expected", [
+    (None, 0), ({}, 0), ({"success": 3}, 0),
+    ({"failed": 2, "running": 1}, 2),
+    ({"failed": 1, "upstream_failed": 3, "stopped": 1, "waiting_decision": 1}, 1),   # only a final `failed`
+])
+def test_the_count_beside_a_run_is_its_failed_rows(counts, expected):
+    assert run_end.failed_tasks(counts) == expected
+
+
 def test_the_derivation_and_the_core_agree_on_what_is_final():
     """outcome hands only final rows to derive_execution_status, which must count them all as finished."""
     assert _DERIVE_TERMINAL == FINAL
