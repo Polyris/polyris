@@ -70,20 +70,14 @@ DEFECTS = {
             "failure handler read a field its input no longer carried, a Catch hid the expression error, and the "
             "answer was skipped; F16, CR-7). The task must fail once, with the cause; World._expression_failures "
             "fails any scenario on such an error (test_rows_view.py)",
-    "B-RN1": "A task fails before run_task answers its run (a pause token that cannot be saved): the failure "
-             "handler skips the answer on helper_failed, and the run stays RUNNING",
     "B-RN4": "A console action swallows a failed answer to the run (Stop), or answers 500 after the row has changed",
     "B-F3": "run_task cannot record a fact after the task succeeded: the consumers hang and nothing says why",
     "B-U4": "The hourly catch-up counts a fact recorded after the one it replays: a cascade='none' backfill "
             "completes an AND consumer",
     "B-S2": "The console's Stop of a run calls a repository method that does not exist: 500, and the run stays RUNNING",
-    "B-R3": "A restart that cannot take the row over or start the new wrapper leaves no trace, though the console "
-            "says the task was restarted",
     "B-M3": "Mark Successful records a backfill's facts with cascade='auto': a cascade='none' backfill starts consumers",
     "B-P1": "Asset arrives during a pause: subscription deleted, status stays waiting, resume ignores it, hang",
     "B-P2": "Task deps finish during a pause, assets missing: resume runs the task without its assets",
-    "B-P3": "A task saves its pause token while resume runs: resume misses it, it waits for its 12-hour heartbeat",
-    "B-P4": "pause_waiter cannot save the token: nobody can release the task; it runs after 12 hours, paused or not",
     "B-M2": "A Mark Successful whose fact cannot be recorded reports plain success: the tasks waiting on it hang silently",
     "B-F2": "One unreadable fact fails every task waiting on its asset",
     "B-W1": "A wrapper claim whose write applied but whose answer was lost ends as superseded: the task never runs",
@@ -94,7 +88,6 @@ DEFECTS = {
             "meanwhile runs on the old success, or is blocked again by the old failure",
     "B-U3": "A push subscription outlives what made it: an asset dropped from the schedule, or a pipeline moved to a cron, "
             "keeps its subscription and gets a warning for every fact",
-    "B-O2": "A wrapper a restart replaced registers again and takes the row back: the task runs twice",
     "B-O3": "Registration wakes a pre-upgrade wrapper with deps_ready after an operator's decision: the task runs at once",
     "B-O4": "run_task writes running over an operator's decision whose stops failed: the task runs",
     "B-O5": "A task an operator decided while it was held by a pause is released to run after the resume",

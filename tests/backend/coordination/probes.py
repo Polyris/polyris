@@ -80,42 +80,11 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-P1", (Edit("polyris/coordination/transitions.py",
                         "            or old.get(run_row.PAUSES) != new.get(run_row.PAUSES)\n", ""),),
           f"{SCENARIOS}::test_an_asset_arriving_during_a_pause_wakes_the_task_after_resume"),
-    # The old warning rows were found by partition date, not by write time: older ones never reached the bell.
-    # The old pause waiter saved the token without an attention entry, so only resume could release it.
-    Probe("B-P3", (
-        Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
-             "paused_at = :paused_at, attention = :attention, attention_at = :due, attempts = :zero",
-             "paused_at = :paused_at, attempts = :zero"),
-        Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
-             "          \":attention\": {\n"
-             "            \"S\": \"{% 'paused#' & $substring($hash($states.input.execution_name, 'SHA-256'), 0, 1) %}\"\n"
-             "          },\n"
-             "          \":due\": {\n"
-             "            \"S\": \"{% $fromMillis($toMillis($now()) + 600000) %}\"\n"
-             "          },\n",
-             ""),
-    ), f"{SCENARIOS}::test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper"),
-    # Without its catcher, a pause waiter that cannot save the token just fails: nobody releases the task.
-    Probe("B-P4", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
-                        ',\n'
-                        '        {\n'
-                        '          "ErrorEquals": [\n'
-                        '            "States.ALL"\n'
-                        '          ],\n'
-                        '          "Comment": "Without a saved token nothing can release the task, and'
-                        ' it would run when its 12-hour pause heartbeat ran out, paused or not. Fail its'
-                        ' pause wait instead, with the cause.",\n'
-                        '          "Output": "{% $merge([$states.input, {\'save_error\':'
-                        ' $states.errorOutput}]) %}",\n'
-                        '          "Next": "Fail_Pause_Wait"\n'
-                        '        }',
-                        ""),),
-          f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
     # The old registration replaced the row whatever it held.
-    Probe("B-O1", (Edit("polyris/coordination/ownership.py",
-                        'RAISE = "generation = if_not_exists(generation, :zero) + :one"',
-                        'RAISE = "generation = if_not_exists(generation, :one) + :zero"'),),
-          f"{SCENARIOS}::test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped"),
+    # run_task's success without the generation fence: the superseded work takes the row back from the Skip.
+    Probe("B-O1", (Edit(RUN_TASK, "'ConditionExpression': '#s = :running AND #g = :g'",
+                        "'ConditionExpression': '(#s = :running OR #s <> :running) AND (#g = :g OR #g <> :g)'"),),
+          f"{SCENARIOS}::test_an_operator_skip_holds_when_the_run_task_could_not_be_stopped"),
     # Without the cutover every consumer subscribed now reacts to every fact the catch-up replays.
     Probe("B-U2", (Edit("sam/lambdas/coordination/asset_fanout.py",
                         '        if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):\n',
@@ -149,9 +118,10 @@ PROBES: Tuple[Probe, ...] = (
                         '                "current_date": f"{{% {_RUN_DATE} %}}",\n')),
           f"{SCENARIOS}::test_a_pushed_run_of_a_pipeline_with_variables_carries_the_facts_partition"),
     # The old hand-over kept the finished status until the new wrapper registered.
-    Probe("B-R2", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
-                        '"SET generation = if_not_exists(generation, :zero) + :one, #s = :stopped REMOVE',
-                        '"SET generation = if_not_exists(generation, :zero) + :one, #s = if_not_exists(#s, :stopped) REMOVE'),),
+    # A Restart that leaves the old final status: a dependant restarted beside it runs on it (B-R2).
+    Probe("B-R2", (Edit("polyris/coordination/transitions.py",
+                        '_task("restart", FINAL | {S.WAITING_DECISION.value}, S.WAITING.value,',
+                        '_task("restart", FINAL | {S.WAITING_DECISION.value}, S.SUCCESS.value,'),),
           f"{SCENARIOS}::test_a_restart_never_lets_a_dependant_run_on_the_old_status"),
     # Without the drop, a subscription the pipeline no longer has stays and is evaluated for every fact.
     Probe("B-U3", (Edit("sam/lambdas/coordination/asset_fanout.py",
@@ -168,17 +138,6 @@ PROBES: Tuple[Probe, ...] = (
                         '"subscribed_at = if_not_exists(subscribed_at, :now)"',
                         '"subscribed_at = :now"'),),
           f"{SCENARIOS}::test_a_consumer_registered_again_keeps_its_subscription_time"),
-    # The old model: a wrapper retried its wait and re-registered over whatever row another wrapper owned.
-    Probe("B-O2", (Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
-                        '"StepFunctions.ExecutionLimitExceeded"\n          ],\n          "IntervalSeconds": 5,',
-                        '"StepFunctions.ExecutionLimitExceeded",\n            "States.Timeout"\n          ],\n'
-                        '          "IntervalSeconds": 5,'),
-                   Edit(REGISTRATION,
-                        '"ConditionExpression": "attribute_not_exists(execution_name) OR ((generation = :g OR '
-                        'attribute_not_exists(generation)) AND (wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)))",',
-                        '"ConditionExpression": "attribute_not_exists(execution_name) OR generation = :g OR '
-                        'wrapper_execution_arn <> :self OR #s IN (:waiting, :paused)",')),
-          f"{SCENARIOS}::test_a_wrapper_a_restart_replaced_never_takes_the_row_back"),
     # Waking a superseded wrapper with deps_ready: a pre-upgrade wrapper has no claim to fail.
     Probe("B-O3", (Edit(REGISTRATION,
                         '"Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",\n'
@@ -200,14 +159,15 @@ PROBES: Tuple[Probe, ...] = (
                         '"ConditionExpression": "(#s = :deps_ready OR #s <> :deps_ready) AND (#g = :g OR #g <> :g)",'),),
           f"{SCENARIOS}::test_run_task_never_starts_a_task_an_operator_decided_after_its_wait"),
     # The pause wait's heartbeat retry saved its token over an operator's decision, unconditionally.
-    Probe("B-O5", (Edit("sam/sfn_templates/helpers/pause_waiter/sfn.tpl.json",
-                        '"ConditionExpression": "(generation = :g OR attribute_not_exists(generation))",',
-                        '"ConditionExpression": "(generation = :g OR attribute_exists(execution_name))",'),),
+    # An operator's Skip of a held row that does not take it out of the pause: the Resume releases it to run.
+    Probe("B-O5", (Edit("polyris/coordination/transitions.py",
+                        '_task("skip", _NO_OUTCOME_YET, S.SKIPPED.value,',
+                        '_task("skip", _NO_OUTCOME_YET, S.WAITING_PAUSED.value,'),),
           f"{SCENARIOS}::test_a_task_an_operator_decided_while_paused_is_never_released_to_run"),
     # Mark Successful without its facts in its transaction: the tasks waiting on them hang (invariant 12).
     Probe("B-M2", (Edit(ACTIONS, '    if action == "mark_success":\n        items += [{"Put": fact}',
                         '    if False:\n        items += [{"Put": fact}'),),
-          f"{SCENARIOS}::test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it"),
+          f"{SCENARIOS}::test_a_mark_success_whose_fact_cannot_be_recorded_records_nothing_and_a_restart_records_it"),
     # Without the guard an unreadable fact raises out of the reader and fails the waiting task.
     Probe("B-F2", (Edit("sam/lambdas/coordination/stores.py",
                         "            return self.registry.fact(item)\n        except ValueError as exc:\n",
@@ -221,19 +181,11 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-Q1", (Edit("polyris/coordination/deadlines.py", "WAIT_FOR_LIMIT = timedelta(days=7)\n",
                         "WAIT_FOR_LIMIT = timedelta(days=7000)\n"),),
           f"{SCENARIOS}::test_a_dependency_wait_that_times_out_fails_the_task_once"),
-    # ADR #135: the flag that told the failure handler run_task had answered, and its catch.
-    Probe("B-RN1", (Edit("sam/sfn_templates/helpers/failure_handler/sfn.tpl.json",
-                         "\"Condition\": \"{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' %}\"",
-                         "\"Condition\": \"{% $exists($states.input.orchestration_token) and $states.input.orchestration_token != '' and $not($exists($states.input.helper_failed) and $states.input.helper_failed = true) %}\""),
-                    Edit("sam/sfn_templates/dependency_wrapper/sfn.tpl.json",
-                         "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput} | %}\"",
-                         "'task_name': $states.input.task_name} | %}\",\n      \"Catch\": [\n        {\n          \"ErrorEquals\": [\n            \"States.ALL\"\n          ],\n          \"Output\": \"{% $states.input ~> |$| {'error': $states.errorOutput, 'helper_failed': true} | %}\"")),
-          f"{SCENARIOS}::test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause"),
     # A console action that answers 500 after its row changed: a timeline write that fails escapes the route.
     Probe("B-RN4", (Edit(TASKS_ROUTE, "        except (ClientError, BotoCoreError) as e:\n            log.error(action, \"Could not "
                          "write the timeline event\"",
                          "        except KeyError as e:\n            log.error(action, \"Could not write the timeline event\""),),
-          f"{SCENARIOS}::test_a_console_action_whose_run_cannot_be_told_says_so"),
+          f"{SCENARIOS}::test_a_console_action_whose_timeline_cannot_be_written_still_applies"),
     # A run's answer that failed counts as given: the run stays RUNNING with every row final (§4).
     Probe("R-E1", (Edit(DISPATCHER, "            failures.reraise_transient(exc)\n            self._warn(run, subject=f\"{run.key}-answer\"",
                         "            return True\n            self._warn(run, subject=f\"{run.key}-answer\""),),
@@ -312,10 +264,6 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-S2", (Edit(EXECUTIONS_ROUTE, "            executions_repo.transact_write([{'Update': update}])",
                         "            executions_repo.transact_writes([{'Update': update}])"),),
           f"{SCENARIOS}::test_stopping_a_run_ends_its_execution"),
-    Probe("B-R3", (Edit("sam/sfn_templates/helpers/restart_task/sfn.tpl.json",
-                        '"IntervalSeconds": 5,\n          "MaxAttempts": 2,\n          "BackoffRate": 2,\n          "JitterStrategy": "FULL"\n        }\n      ],\n      "Catch": [\n        {\n          "ErrorEquals": [\n            "States.ALL"\n          ],\n          "Comment": "The restart did not happen: say so in the bell, then fail.",\n          "Output": "{% $states.input ~> |$| {\'restart_error\': $states.errorOutput} | %}",\n          "Next": "Warn_Restart_Failed"\n        }\n      ]',
-                        '"IntervalSeconds": 5,\n          "MaxAttempts": 2,\n          "BackoffRate": 2,\n          "JitterStrategy": "FULL"\n        }\n      ]'),),
-          f"{SCENARIOS}::test_a_restart_that_cannot_start_its_wrapper_says_so_and_can_be_repeated"),
     Probe("B-M3", (Edit(TASKS_ROUTE, "outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',",
                         "outlets=outlets, cascade='auto',"),),
           f"{SCENARIOS}::test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers"),
