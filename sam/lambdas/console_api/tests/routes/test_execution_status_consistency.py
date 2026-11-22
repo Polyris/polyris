@@ -35,8 +35,9 @@ def _task_rows(statuses, pe='p-2024-01-15-abc', pipeline='test-pipeline', date='
 def _runs_status(mocker, rows, date='2024-01-15'):
     from routes import executions
     mocker.patch.object(executions.executions_repo, 'query_runs_by_date', return_value=list(rows))
+    # Runs from before 1.3: no run row, so the status is derived from the task rows (ADR #137 §4).
+    mocker.patch.object(executions.executions_repo, 'batch_get_run_meta', return_value={})
     mocker.patch.object(executions.backfills_repo, 'list_recent', return_value=[])
-    mocker.patch.object(executions.pipelines_repo, 'get', return_value=None)  # no ARN → no reconcile
     resp = executions.get_all_runs({'queryStringParameters': {'date': date}})
     body = json.loads(resp['body'])
     execs = [r for r in body['runs'] if r['kind'] == 'execution']

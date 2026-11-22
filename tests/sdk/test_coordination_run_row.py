@@ -158,3 +158,27 @@ def test_the_index_keys_refuse_a_naive_time():
 
     with pytest.raises(ValueError, match="timezone-aware"):
         run_row.index_keys(datetime(2026, 11, 18, 6, 0))
+
+
+def _tokens_table() -> dict:
+    from pathlib import Path
+
+    import yaml
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)
+    template = yaml.load((Path(__file__).parents[2] / "sam" / "template.yaml").read_text(), Loader=Loader)
+    return template["Resources"]["PipelineTokensTable"]["Properties"]
+
+
+def test_the_index_the_run_lists_read_is_the_one_the_template_creates():
+    """Principle #28: its keys are the run row's, and it projects what the lists show, which a change would replace."""
+    table = _tokens_table()
+    index = next(i for i in table["GlobalSecondaryIndexes"] if i["IndexName"] == run_row.START_INDEX)
+    assert [k["AttributeName"] for k in index["KeySchema"]] == [run_row.START_DAY, run_row.STARTED_AT]
+    assert index["Projection"] == {"ProjectionType": "INCLUDE", "NonKeyAttributes": list(run_row.INDEX_FIELDS)}
+    declared = {a["AttributeName"]: a["AttributeType"] for a in table["AttributeDefinitions"]}
+    assert (declared[run_row.START_DAY], declared[run_row.STARTED_AT]) == ("S", "S")
+    assert set(run_row.INDEX_FIELDS) <= set(run_row.FIELDS)

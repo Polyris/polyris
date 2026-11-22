@@ -194,6 +194,12 @@ ACCESS_DENIED_CODES: frozenset[str] = frozenset({
     "AuthFailure",
 })
 
+# DynamoDB answers a read of a global secondary index that is still being built with a
+# ValidationException carrying this message. An upgrade that adds an index reaches the Lambdas
+# before the index is built, and the same read succeeds once it is: the coordination Lambdas
+# retry it (Principle #53), and the console says the index is being built (ADR #137 §5).
+BACKFILLING_INDEX_MESSAGE = "Cannot read from backfilling global secondary index"
+
 
 # Schedule presets
 SCHEDULE_PRESETS = {

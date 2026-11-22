@@ -23,10 +23,12 @@ import pytest
 
 ROUTES = pathlib.Path(__file__).resolve().parent.parent
 _TREES = [ROUTES / 'routes', ROUTES / 'ee']      # `ee/` exists only in the merged EE build
+#: The run lists' shared reads, which derive the status of a run from before 1.3 from its task rows.
+_SHARED = [ROUTES / 'feed.py']
 
-# The canonical derivation and the helper that wraps it (ADR #112). A module calling
-# either is turning task rows into runs.
-_DERIVES = {'derive_execution_status', '_aggregate_executions'}
+# The canonical derivation and the helpers that wrap it (ADR #112, ADR #137 §4). A module
+# calling one is turning task rows into runs.
+_DERIVES = {'derive_execution_status', '_aggregate_executions', 'shown_status'}
 
 # Reads that may hand back half a pipeline.
 _SPLITS = {'query_by_date'}
@@ -46,9 +48,9 @@ def _calls(tree):
 
 
 def _route_modules():
-    return sorted(p for tree in _TREES if tree.exists()
-                  for p in tree.rglob('*.py')
-                  if p.name != '__init__.py' and 'tests' not in p.parts)
+    return sorted([p for tree in _TREES if tree.exists()
+                   for p in tree.rglob('*.py')
+                   if p.name != '__init__.py' and 'tests' not in p.parts] + _SHARED)
 
 
 @pytest.mark.parametrize('path', _route_modules(), ids=lambda p: p.name)
@@ -86,7 +88,7 @@ def test_at_least_one_module_is_actually_covered():
     """And that the walk finds the surfaces, rather than quietly matching nothing."""
     aggregating = [p.name for p in _route_modules()
                    if _calls(ast.parse(p.read_text())) & _DERIVES]
-    assert {'executions.py', 'pipelines_list.py'} <= set(aggregating)
+    assert 'feed.py' in aggregating
 
 
 # ──────────────────────────────────────────────────────────────────────────────

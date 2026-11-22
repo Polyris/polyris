@@ -172,7 +172,7 @@ def test_each_item_start_run_writes_enters_only_the_indexes_meant_for_it():
     the_call = call()
     assert entered(set(start_run.input_item(the_call, now=NOW))) == set()
     run_indexes = entered(_set_names(start_run.run_row_write(the_call, now=NOW)))
-    assert run_indexes <= {"attention-index", "run-start-index"} and "attention-index" in run_indexes
+    assert run_indexes == {"attention-index", "run-start-index"}
     for item in start_run.task_items(the_call, SPECS, now=NOW):
         assert {"pipeline-execution-index", "date-pipeline-index", "pipeline-date-index"} <= entered(set(item))
         assert entered(set(item)) - {"pipeline-execution-index", "date-pipeline-index", "pipeline-date-index",

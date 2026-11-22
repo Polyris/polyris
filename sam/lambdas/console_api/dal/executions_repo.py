@@ -8,7 +8,7 @@ pipelines, health, notifications, backfill.
 Table schema:
     PK: execution_name (str)
     GSIs: pipeline-execution-index (pipeline_execution), date-pipeline-index (date, pipeline_name),
-    pipeline-date-index (pipeline_name, date)
+    pipeline-date-index (pipeline_name, date), run-start-index (start_day, started_at: run rows only)
 
 Every read of the two date indexes goes through this repository, and drops the
 internal rows and the backfill records with ``should_skip_token_row``: backfill
@@ -16,9 +16,13 @@ records carry a ``date`` (ADR #137 §5), so both indexes list them. A census tes
 (``tests/test_date_index_readers.py``) fails for a read of them anywhere else.
 """
 
-from boto3.dynamodb.conditions import Key
+from typing import Any
 
-from polyris.coordination import attention as att
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
+
+from polyris.constants import BACKFILLING_INDEX_MESSAGE
+from polyris.coordination import attention as att, run_row
 from config import dynamodb, dynamodb_client, TABLE_NAME
 from utils import scan_all, query_all, should_skip_token_row
 
@@ -26,6 +30,16 @@ from utils import scan_all, query_all, should_skip_token_row
 DATE_INDEXES = ('date-pipeline-index', 'pipeline-date-index')
 #: What ``should_skip_token_row`` reads, which a projection that names other fields must name too.
 _SKIP_FIELDS = ('execution_name', 'pipeline_name')
+
+
+class IndexBuilding(Exception):
+    """A read of an index DynamoDB is still building: an upgrade added it, and the same read succeeds once it is
+    built (ADR #137 §5; about 8 minutes on a table of 1.2's size). Transient: the console says so."""
+
+
+def _building(exc: ClientError) -> bool:
+    error = exc.response.get('Error', {})
+    return error.get('Code') == 'ValidationException' and BACKFILLING_INDEX_MESSAGE in str(error.get('Message', ''))
 
 
 def _skippable(params: dict) -> dict:
@@ -48,6 +62,9 @@ def _task_rows(items: list) -> list:
 
 class ExecutionsRepo:
     """Repository for pipeline-executions (tokens) table."""
+
+    #: Raised by a read of an index DynamoDB is still building (``runs_started``); a route catches it here.
+    IndexBuilding = IndexBuilding
 
     def __init__(self):
         self._table_name = TABLE_NAME
@@ -335,6 +352,43 @@ class ExecutionsRepo:
             rows.extend(response.get('Items', []))
         rows.sort(key=lambda r: str(r.get(att.DUE, '')), reverse=True)
         return rows[:limit]
+
+    # ── GSI: run-start-index ──────────────────────────────────────────────
+
+    def runs_started(self, start_day: str, *, before: str | None = None, pipeline: str | None = None,
+                     run_dates: tuple[str, str] | None = None, want: int | None = None) -> list:
+        """Run rows whose execution started on ``start_day`` (UTC), newest first, from run-start-index (ADR #137 §5).
+
+        ``before`` keeps the runs that started before it (a ``started_at``: the feeds' cursor), ``pipeline`` one
+        pipeline's, and ``run_dates`` those whose logical date lies between its two dates, inclusive. ``want``
+        stops the read once that many rows are in. The index holds run rows only and projects what the run lists
+        show (``run_row.INDEX_FIELDS``). Raises ``IndexBuilding`` while DynamoDB builds the index.
+        """
+        key: Any = Key(run_row.START_DAY).eq(start_day)
+        if before:
+            key = key & Key(run_row.STARTED_AT).lt(before)
+        params: dict = {'IndexName': run_row.START_INDEX, 'KeyConditionExpression': key, 'ScanIndexForward': False}
+        condition: Any = None
+        if pipeline:
+            condition = Attr(run_row.PIPELINE).eq(pipeline)
+        if run_dates:
+            dates = Attr(run_row.RUN_DATE).between(*run_dates)
+            condition = dates if condition is None else condition & dates
+        if condition is not None:
+            params['FilterExpression'] = condition
+        rows: list = []
+        while True:
+            try:
+                response = self.table.query(**params)
+            except ClientError as exc:
+                if _building(exc):
+                    raise IndexBuilding(str(exc)) from exc
+                raise
+            rows.extend(response.get('Items', []))
+            last_key = response.get('LastEvaluatedKey')
+            if not last_key or (want is not None and len(rows) >= want):
+                return rows if want is None else rows[:want]
+            params['ExclusiveStartKey'] = last_key
 
     # ── Scan operations ───────────────────────────────────────────────────
 

@@ -2,28 +2,44 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
-import { HISTORY_WINDOW_DAYS, historyDatePlaceholder, historyEmptyState, isHistoryWindowed } from './historyWindow';
+import {
+    RECENT_WINDOW_DAYS, RUNS_WINDOW_DAYS, historyDatePlaceholder, historyEmptyState, isHistoryWindowed,
+} from './historyWindow';
 
-describe('History window', () => {
-    it('is the console API\'s window (Limits.SLA_DAYS) — Principle #28', () => {
-        // process.cwd() is ui/ under vitest; the console API sits one level up.
-        const source = readFileSync(resolve(process.cwd(), '../sam/lambdas/console_api/constants.py'), 'utf-8');
-        const match = source.match(/^\s*SLA_DAYS\s*=\s*(\d+)/m);
-        expect(match, 'SLA_DAYS not found in console_api/constants.py').not.toBeNull();
-        expect(HISTORY_WINDOW_DAYS).toBe(Number(match![1]));
+/** A `NAME = N` constant of console_api/constants.py; process.cwd() is ui/ under vitest. */
+function consoleConstant(name: string): number {
+    const source = readFileSync(resolve(process.cwd(), '../sam/lambdas/console_api/constants.py'), 'utf-8');
+    const match = source.match(new RegExp(`^\\s*${name}\\s*=\\s*(\\d+)`, 'm'));
+    expect(match, `${name} not found in console_api/constants.py`).not.toBeNull();
+    return Number(match![1]);
+}
+
+describe('History windows', () => {
+    it('are the console API\'s windows (Limits.RUNS_WINDOW_DAYS, Limits.SLA_DAYS) — Principle #28', () => {
+        expect(RUNS_WINDOW_DAYS).toBe(consoleConstant('RUNS_WINDOW_DAYS'));
+        expect(RECENT_WINDOW_DAYS).toBe(consoleConstant('SLA_DAYS'));
     });
 
-    it('applies only without a pipeline and a date', () => {
-        expect(isHistoryWindowed({ pipeline: '', date: '' })).toBe(true);
-        expect(isHistoryWindowed({ pipeline: 'sales', date: '' })).toBe(false);
-        expect(isHistoryWindowed({ pipeline: '', date: '2026-11-14' })).toBe(false);
+    it('apply to Runs without a date, and to Tasks without a pipeline and a date', () => {
+        expect(isHistoryWindowed('runs', { pipeline: '', date: '' })).toBe(true);
+        expect(isHistoryWindowed('runs', { pipeline: 'sales', date: '' })).toBe(true);
+        expect(isHistoryWindowed('runs', { pipeline: '', date: '2026-11-14' })).toBe(false);
+        expect(isHistoryWindowed('tasks', { pipeline: '', date: '' })).toBe(true);
+        expect(isHistoryWindowed('tasks', { pipeline: 'sales', date: '' })).toBe(false);
+        expect(isHistoryWindowed('tasks', { pipeline: '', date: '2026-11-14' })).toBe(false);
     });
 
-    it('names the window in the date filter and the empty state', () => {
-        expect(historyDatePlaceholder(true)).toBe(`Last ${HISTORY_WINDOW_DAYS} days`);
-        expect(historyDatePlaceholder(false)).toBe('All dates');
-        expect(historyEmptyState('runs', false, true).title).toBe(`No runs in the last ${HISTORY_WINDOW_DAYS} days`);
-        expect(historyEmptyState('tasks', true, true).description).toContain(`only the last ${HISTORY_WINDOW_DAYS} days`);
+    it('are named in the date filter and the empty state', () => {
+        expect(historyDatePlaceholder('runs', true)).toBe(`Last ${RUNS_WINDOW_DAYS} days`);
+        expect(historyDatePlaceholder('tasks', true)).toBe(`Last ${RECENT_WINDOW_DAYS} days`);
+        expect(historyDatePlaceholder('runs', false)).toBe('All dates');
+        expect(historyEmptyState('runs', false, true)).toEqual({
+            title: `No runs in the last ${RUNS_WINDOW_DAYS} days`, description: 'To see older runs, pick a date.',
+        });
+        expect(historyEmptyState('runs', true, true).description)
+            .toContain(`Without a date, only the last ${RUNS_WINDOW_DAYS} days`);
+        expect(historyEmptyState('tasks', true, true).description)
+            .toContain(`Without a pipeline or a date, only the last ${RECENT_WINDOW_DAYS} days`);
         expect(historyEmptyState('tasks', true, false).description).toBe('Try adjusting your filters or search');
     });
 });

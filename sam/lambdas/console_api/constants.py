@@ -102,7 +102,10 @@ class Limits:
     FEED_MIN_ROWS_PER_DAY = 500      # either feed, per day of the fan-out
 
     # Time limits
-    SLA_DAYS = 14  # the History window the UI names: ui/src/utils/historyWindow.ts (parity test there)
+    SLA_DAYS = 14  # the Tasks tab's and the pipelines list's window: ui/src/utils/historyWindow.ts (parity test there)
+    # The start days the Runs tab and a pipeline's runs read from run-start-index (ADR #137 §5): as long as
+    # Step Functions keeps an execution's history. ui/src/utils/historyWindow.ts names it (parity test there).
+    RUNS_WINDOW_DAYS = 90
     PARALLEL_DATE_QUERIES = 14      # Worker cap when fanning date queries out one-per-day
     TTL_DAYS = 30
     MAX_NOTIFICATION_HOURS = 168    # Max 7 days for notifications

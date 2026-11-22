@@ -285,6 +285,11 @@ export const formatTriggerSource = (value: string | null | undefined): string | 
     return TRIGGER_SOURCE_LABELS[value] ?? value;
 };
 
+/** A run's status as the run lists show it: a run that is still running says how many of its
+ *  tasks failed (`failed_tasks`, ADR #137 §4), since it ends only once every task has. */
+export const formatRunStatus = (status: string, failedTasks?: number | null): string =>
+    status === 'running' && failedTasks ? `running, ${failedTasks} failed` : status;
+
 // Human-readable schedule label for a pipeline. Single source of truth for
 // schedule display — used by the sidebar, command palette, and anywhere else
 // a schedule is shown.

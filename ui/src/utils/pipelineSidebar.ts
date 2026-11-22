@@ -14,7 +14,7 @@ import { matchesSearch } from './search';
  * - a search matches a pipeline's name and group; the matches keep their
  *   groups (all open), with no "Needs attention".
  *
- * A pipeline's `status` is its latest run within HISTORY_WINDOW_DAYS
+ * A pipeline's `status` is its latest run within RECENT_WINDOW_DAYS
  * (`utils/historyWindow.ts`), or 'idle' when it has none there.
  */
 

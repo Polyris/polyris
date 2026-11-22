@@ -208,6 +208,10 @@ Resources:
           AttributeType: S
         - AttributeName: attention_at
           AttributeType: S
+        - AttributeName: start_day
+          AttributeType: S
+        - AttributeName: started_at
+          AttributeType: S
       GlobalSecondaryIndexes:
         - IndexName: pipeline-execution-index
           KeySchema:
@@ -300,6 +304,25 @@ Resources:
               - finished_at
               - started_at
               - attempts
+        # ADR #137 §5: sparse. Only run rows carry `start_day`, the UTC day their execution
+        # started; the run lists walk the start days newest first. It projects what they show
+        # (run_row.INDEX_FIELDS): a run's status comes from its summary and its step mark.
+        - IndexName: run-start-index
+          KeySchema:
+            - AttributeName: start_day
+              KeyType: HASH
+            - AttributeName: started_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - pipeline_name
+              - run_date
+              - status
+              - finished_at
+              - triggered_by
+              - summary
+              - step_failure
       # ADR #137 §7: a change of a row that the transition table marks wakes the dispatcher.
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES

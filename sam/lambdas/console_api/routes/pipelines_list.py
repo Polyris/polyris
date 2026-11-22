@@ -23,7 +23,7 @@ from config import sfn
 from dal import executions_repo, pipelines_repo
 from dal.specs_repo import needs_redeploy
 from constants import Limits, normalize_execution_status, derive_execution_status, reconcile_execution_status, TASK_SETTLED_STATUSES, TASK_SUCCESS_STATUSES, TaskStatus
-from feed import feed_dates
+from feed import feed_dates, fill_triggered_by
 from response import cors_response
 from logger import log
 from utils import safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries
@@ -549,34 +549,6 @@ def _aggregate_executions(items):
     return executions
 
 
-def _fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None:
-    """Back-fill triggered_by on executions fetched via a GSI that doesn't project it.
-
-    id_field: key used to identify each execution (default 'execution_id';
-              get_all_runs uses 'pipeline_execution').
-    """
-    samples = {}  # id_field value → sample execution_name
-    for e in executions:
-        name = e.pop('_sample_exec_name', None)
-        if name and not e.get('triggered_by'):
-            samples[e[id_field]] = name
-
-    if not samples:
-        return
-
-    try:
-        meta = executions_repo.batch_get_run_meta(list(samples.values()))
-        for e in executions:
-            if e.get('triggered_by'):
-                continue
-            sample = samples.get(e[id_field])
-            if sample:
-                e['triggered_by'] = (meta.get(sample) or {}).get('triggered_by') or None
-    except (ClientError, BotoCoreError) as err:
-        log.warn("_fill_triggered_by", "batch_get failed; triggered_by left null",
-                 error=str(err))
-
-
 def _query_pipeline_by_date_range(pipeline_name: str, start: datetime, end: datetime):
     """Query DDB date-pipeline-index GSI for a date range. Returns raw items."""
     items = []
@@ -739,7 +711,7 @@ def get_pipeline_executions(pipeline_name: str, event: Dict) -> Dict:
 
         # Fetch triggered_by from base table (GSI INCLUDE doesn't project it).
         # Pops _sample_exec_name from each execution as a side effect.
-        _fill_triggered_by(executions)
+        fill_triggered_by(executions)
 
         # Reconcile running executions with SFN (verify still alive)
         _reconcile_running(executions, pipeline_name)

@@ -54,6 +54,12 @@ PAUSES = "pauses"                # the pause intervals, at most ten (§5)
 CHECKS = "checks"                # how many checks of the sweeper moved its due time, from which the next backs off
 TTL = "ttl"
 
+#: The sparse index of run rows by the UTC day their execution started (§5), which the run lists read, and what
+#: it projects besides its keys: what the lists show (template.yaml; a parity test pins both). A change of its
+#: projection would replace the index.
+START_INDEX = "run-start-index"
+INDEX_FIELDS = (PIPELINE, RUN_DATE, STATUS, FINISHED_AT, TRIGGERED_BY, SUMMARY, STEP_FAILURE)
+
 #: Every field of the run row besides its key, its summary's time and its due time; a test builds the
 #: largest row from it, so a field added here is measured.
 FIELDS = (STATUS, TOKEN, TOKEN_ORDER, ANSWERED, STOP, STOP_DONE, RUN_VERSION, LEFT_AT, EXECUTION, EXECUTION_ARN, RUN_START,

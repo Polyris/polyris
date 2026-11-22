@@ -8806,6 +8806,8 @@ is derived purely from task records; no run-level status record is introduced.
 
 ### 108. A pipeline's runs are read through an inverted GSI; the cross-pipeline feed keeps its per-date fan-out
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** The Runs tab, without a filter or with a pipeline filter, reads run rows from `run-start-index`: the start days of the last 90 days, newest first, until its page is full, each run's status from its run row's summary. A date filter still reads the task rows of its date. The Tasks tab keeps the reads below.
+
 **Context.** Runs are derived, not stored: task rows are grouped by `pipeline_execution`
 and the run status comes from `derive_execution_status()` (ADR #112). The only index into
 them was `date-pipeline-index` (**HASH `date`**, RANGE `pipeline_name`), which answers

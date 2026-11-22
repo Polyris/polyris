@@ -1,9 +1,13 @@
-"""Shared paging for the History feeds (``/api/runs`` + ``/api/tasks``).
+"""Shared paging for the History feeds (``/api/runs`` + ``/api/tasks``) and the run lists.
 
-Both feeds answer the same question — *"what happened, newest first"* — over the same
-task rows, so they page the same way: an opaque ``before`` cursor carrying a
-``started_at``, meaning **"give me what is older than T"**. ``next`` in the response
-is the cursor for the older page, or ``None`` when nothing older exists.
+Both feeds answer the same question — *"what happened, newest first"* — so they page
+the same way: an opaque ``before`` cursor carrying a ``started_at``, meaning **"give me
+what is older than T"**. ``next`` in the response is the cursor for the older page, or
+``None`` when nothing older exists.
+
+The run lists of 1.3 (the Runs tab, a pipeline's runs, the pipelines list) read run
+rows from ``run-start-index`` (ADR #137 §5): :func:`run_rows_before` walks the start
+days newest first, and :func:`run_entry` gives each run its status from its summary.
 
 Why ``started_at`` and not a DynamoDB key: the runs feed merges two sources whose only
 shared ordering attribute is ``started_at`` (executions and Backfills, ADR #95), and it
@@ -17,11 +21,16 @@ on ``date`` and fans the window out one query per day, a pipeline-filtered feed 
 """
 
 from datetime import datetime, date as date_cls, timezone, timedelta
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from boto3.dynamodb.conditions import Key
+from botocore.exceptions import BotoCoreError, ClientError
+
+from polyris.coordination import run_end, run_row, task_row
 from dal import executions_repo
 from constants import Limits
 from logger import log
+from utils import should_skip_token_row
 
 
 def is_older(row: Dict, before: str) -> bool:
@@ -33,22 +42,23 @@ def is_older(row: Dict, before: str) -> bool:
     return not before or (row.get('started_at') or '') < before
 
 
-def feed_dates(before: str = '') -> List[str]:
+def feed_dates(before: str = '', days: int = Limits.SLA_DAYS) -> List[str]:
     """Dates one page of a cross-pipeline feed fans out over, newest first.
 
     ``date`` is the natural shard key for a time-ordered feed across all pipelines, so
     the fan-out is the correct access pattern here rather than debt (ADR #108). The
-    page starts at the cursor's date and walks back to the edge of the SLA window:
-    everything newer than the cursor was already served, and a row's ``started_at`` is
-    never earlier than its logical ``date``, so no older row can hide on a newer date.
-    Without a cursor the walk starts today. Bounded by ``Limits.SLA_DAYS`` queries, and
-    shorter the deeper you page.
+    page starts at the cursor's date and walks back to the edge of the window of
+    ``days`` days: everything newer than the cursor was already served, and a row's
+    ``started_at`` is never earlier than its logical ``date``, so no older row can hide
+    on a newer date. Without a cursor the walk starts today. Bounded by ``days``
+    queries, and shorter the deeper you page. The run lists walk start days the same
+    way (:func:`run_rows_before`).
 
     An unparseable cursor degrades to today rather than 4xx — same contract as
     ``safe_param_int``: a bad query param costs you the cursor, not the feed.
     """
     today = datetime.now(timezone.utc).date()
-    oldest = today - timedelta(days=Limits.SLA_DAYS - 1)
+    oldest = today - timedelta(days=days - 1)
 
     start = today
     if before:
@@ -156,3 +166,163 @@ def pipeline_rows_before(
         # `want` rows.
         if cursor is None or count_fn(rows) > want:
             return rows
+
+
+def run_rows_before(before: str, want: Optional[int], *, days: int, pipeline: str = '',
+                    run_dates: Optional[Tuple[str, str]] = None,
+                    keep: Optional[Callable[[Mapping[str, Any]], bool]] = None) -> List[Dict]:
+    """Run rows older than the cursor, newest first, from the start days of a window of ``days`` days (ADR #137 §5).
+
+    The shard key is the day a run started, not its logical date, so the walk stops
+    once ``want`` rows are read: no run on an older start day started later. Pass
+    ``want`` one above the page, for the reason :func:`pipeline_rows_before` gives,
+    and None to read the whole window: a list keyed by logical dates (``run_dates``)
+    must, since a run may start before its date or long after it. ``pipeline`` keeps
+    one pipeline's runs, and ``keep`` the rows it accepts, which alone count toward
+    ``want``. Raises ``executions_repo.IndexBuilding`` while DynamoDB builds the index.
+    """
+    rows: List[Dict] = []
+    for day in feed_dates(before, days):
+        read = executions_repo.runs_started(
+            day, before=before or None, pipeline=pipeline or None, run_dates=run_dates,
+            want=None if want is None or keep is not None else want - len(rows))
+        rows.extend(item for item in read if keep is None or keep(item))
+        if want is not None and len(rows) >= want:
+            break
+    return rows
+
+
+def run_counts(item: Mapping[str, Any]) -> Optional[Dict[str, int]]:
+    """A run row's summary: its rows per status, or None before the first full pass wrote one (ADR #137 §4)."""
+    summary = item.get(run_row.SUMMARY)
+    if not isinstance(summary, Mapping):
+        return None
+    return {str(status): int(count) for status, count in summary.items()}
+
+
+def run_entry(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """A run row as the run lists show it (ADR #137 §4): its status from its summary and step mark, and while it
+    runs the count of its failed tasks; its finish and duration once it has ended."""
+    pipeline_execution = str(item[run_row.TABLE_KEY])[len(run_row.KEY_PREFIX):]
+    counts = run_counts(item)
+    status = run_end.shown_status(counts, step_failed=bool(item.get(run_row.STEP_FAILURE)))
+    started_at = item.get(run_row.STARTED_AT) or None
+    finished_at = (item.get(run_row.FINISHED_AT) or None) if status != 'running' else None
+    return {
+        'pipeline_name': item.get(run_row.PIPELINE, ''),
+        'pipeline_execution': pipeline_execution,
+        'pipeline_execution_short': task_row.short(pipeline_execution),
+        'status': status,
+        'failed_tasks': run_end.failed_tasks(counts),
+        'date': item.get(run_row.RUN_DATE),
+        'started_at': started_at,
+        'finished_at': finished_at,
+        'duration_ms': duration_ms(started_at, finished_at),
+        'triggered_by': item.get(run_row.TRIGGERED_BY) or None,
+    }
+
+
+def duration_ms(started_at: Optional[str], finished_at: Optional[str]) -> Optional[int]:
+    """Milliseconds from ``started_at`` to ``finished_at``, or None without both or with one unreadable."""
+    if not started_at or not finished_at:
+        return None
+    try:
+        start = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+        end = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
+    except (ValueError, TypeError) as e:
+        log.warn("feed", "Bad timestamp on a run; duration_ms left None",
+                 started_at=started_at, finished_at=finished_at, error=str(e))
+        return None
+    return int((end - start).total_seconds() * 1000)
+
+
+#: What a date's runs read of their task rows: date-pipeline-index projects every field (template.yaml).
+_DATE_PROJECTION = ('pipeline_execution, pipeline_execution_short, pipeline_name, '
+                    '#d, #s, started_at, finished_at, execution_name')
+_DATE_NAMES = {'#d': 'date', '#s': 'status'}
+#: What a run list reads of a run row it fetches by key: what run-start-index projects, and its start.
+RUN_ROW_FIELDS = (*run_row.INDEX_FIELDS, run_row.STARTED_AT)
+
+
+def runs_of_date(date: str, pipeline: str = '') -> List[Dict[str, Any]]:
+    """The runs of one logical date, found through its task rows (ADR #137 §4, §5), with no window.
+
+    A 1.3 run shows as its run row says, read in one ``BatchGetItem`` for the date. A
+    run from before 1.3 has no run row: its status is derived from its task rows, and
+    its trigger read from one of them. Reads whole pipelines of the date
+    (``query_runs_by_date``), so no run's task set is split (ADR #113).
+    """
+    key: Any = Key('date').eq(date)
+    if pipeline:
+        key = key & Key('pipeline_name').eq(pipeline)
+    items = executions_repo.query_runs_by_date(date, min_rows=Limits.RUNS_MIN_ROWS_PER_DATE, key_condition=key,
+                                               projection=_DATE_PROJECTION, expr_names=_DATE_NAMES)
+    groups: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        if should_skip_token_row(item):
+            continue
+        pipeline_execution, name = item.get('pipeline_execution'), item.get('pipeline_name', '')
+        if not pipeline_execution or pipeline_execution == 'unknown' or not name or name == 'unknown':
+            continue
+        group = groups.setdefault(pipeline_execution, {
+            'pipeline_name': name, 'date': item.get('date'), 'statuses': [], 'started_at': '', 'finished_at': '',
+            'short': item.get('pipeline_execution_short') or task_row.short(pipeline_execution),
+            'sample': item.get('execution_name', '')})
+        group['statuses'].append(item.get('status', 'waiting'))
+        started, finished = item.get('started_at') or '', item.get('finished_at') or ''
+        if started and (not group['started_at'] or started < group['started_at']):
+            group['started_at'] = started
+        if finished > group['finished_at']:
+            group['finished_at'] = finished
+    if not groups:
+        return []
+    run_items = executions_repo.batch_get_run_meta([run_row.key(pe) for pe in groups], RUN_ROW_FIELDS)
+    runs: List[Dict[str, Any]] = []
+    legacy: List[Dict[str, Any]] = []
+    for pipeline_execution, group in groups.items():
+        run_item = run_items.get(run_row.key(pipeline_execution))
+        if run_item is not None:
+            runs.append(run_entry(run_item))
+            continue
+        counts = run_end.summary(group['statuses'])
+        status = run_end.shown_status(counts, step_failed=False)
+        started_at = group['started_at'] or None
+        finished_at = (group['finished_at'] or None) if status != 'running' else None
+        legacy.append({
+            'pipeline_name': group['pipeline_name'], 'pipeline_execution': pipeline_execution,
+            'pipeline_execution_short': group['short'], 'status': status,
+            'failed_tasks': run_end.failed_tasks(counts), 'date': group['date'],
+            'started_at': started_at, 'finished_at': finished_at,
+            'duration_ms': duration_ms(started_at, finished_at), 'triggered_by': None,
+            '_sample_exec_name': group['sample'],
+        })
+    fill_triggered_by(legacy, id_field='pipeline_execution')
+    return runs + legacy
+
+
+def fill_triggered_by(executions: list, id_field: str = 'execution_id') -> None:
+    """Back-fill triggered_by on runs from before 1.3, read through an index that does not project it.
+
+    Each entry names one of its task rows in ``_sample_exec_name``, which this pops;
+    ``id_field`` names each run.
+    """
+    samples = {}  # id_field value → sample execution_name
+    for e in executions:
+        name = e.pop('_sample_exec_name', None)
+        if name and not e.get('triggered_by'):
+            samples[e[id_field]] = name
+
+    if not samples:
+        return
+
+    try:
+        meta = executions_repo.batch_get_run_meta(list(samples.values()))
+        for e in executions:
+            if e.get('triggered_by'):
+                continue
+            sample = samples.get(e[id_field])
+            if sample:
+                e['triggered_by'] = (meta.get(sample) or {}).get('triggered_by') or None
+    except (ClientError, BotoCoreError) as err:
+        log.warn("fill_triggered_by", "batch_get failed; triggered_by left null",
+                 error=str(err))

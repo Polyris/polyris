@@ -1,7 +1,7 @@
 """Execution routes for Console API.
 
 Handles pipeline execution control operations:
-- get_all_runs: List all pipeline executions
+- get_all_runs: The Runs tab: run rows newest first, with the backfills
 - stop_execution: Stop a run: its stop mark, which the dispatcher carries out (ADR #137 §4)
 - pause_execution: Pause a run: tasks that run go on, none starts (ADR #137 §5)
 - resume_execution: Resume a paused run
@@ -14,16 +14,14 @@ import time
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
-from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
 from polyris.coordination import actions, run_row
 from routes.tasks import ACTION_BACKOFF_SECONDS
-from dal import executions_repo, pipelines_repo, backfills_repo
-from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
-from constants import Limits, derive_execution_status
-from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
-from response import cors_response, safe_parse_body
+from dal import executions_repo, backfills_repo
+from constants import Limits
+from feed import duration_ms, page_by_started_at, run_entry, run_rows_before, runs_of_date
+from response import cors_response, index_building_response, safe_parse_body
 from logger import log
 from auth import operator_display
 from utils import safe_param_int, should_skip_token_row
@@ -65,9 +63,9 @@ def _build_backfill_run_rows(
 ) -> List[Dict]:
     """Build unified-feed rows for Backfills (``kind='backfill'``) — ADR #95.
 
-    Backfills live in pipeline-tokens under a sentinel ``pipeline_name`` and are
-    excluded from the execution rows in ``get_all_runs`` by
-    ``should_skip_token_row``; they are merged into ``/api/runs`` here as
+    Backfills live in pipeline-tokens under a sentinel ``pipeline_name``; no run
+    list reads them (they are no run rows, and ``should_skip_token_row`` drops them
+    from a date's task rows), so they are merged into ``/api/runs`` here as
     first-class rows. Status stays in the 6-state Backfill vocabulary (ADR #56)
     — no normalization to execution statuses; the ``kind`` field lets the UI
     interpret it. Children are not embedded: a backfill row expands on demand
@@ -103,16 +101,6 @@ def _build_backfill_run_rows(
     for bf in matching[:limit + 1]:
         started_at = bf.get('started_at', '') or ''
         finished_at = bf.get('finished_at', '') or ''
-        duration_ms = None
-        if started_at and finished_at:
-            try:
-                start_dt = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                end_dt = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
-                duration_ms = int((end_dt - start_dt).total_seconds() * 1000)
-            except (ValueError, TypeError) as e:
-                log.warn("get_all_runs", "Bad timestamp on backfill; duration_ms left None",
-                         backfill_id=bf.get('backfill_id'), error=str(e))
-
         rows.append({
             'kind': 'backfill',
             'id': bf.get('backfill_id'),
@@ -129,26 +117,24 @@ def _build_backfill_run_rows(
             'downstream': bf.get('cascade'),
             'granularity': bf.get('granularity'),
             'date': None,
-            'duration_ms': duration_ms,
+            'duration_ms': duration_ms(started_at, finished_at),
         })
     return rows
 
 
-_RUNS_PROJECTION = ('pipeline_execution, pipeline_execution_short, pipeline_name, '
-                    '#d, #s, started_at, finished_at, execution_name')
-_RUNS_EXPR_NAMES = {'#d': 'date', '#s': 'status'}
-
-
 def get_all_runs(event: Dict) -> Dict:
-    """Get all pipeline runs across pipelines from DynamoDB.
-    
-    DATA SOURCE: DynamoDB (see DESIGN_DECISIONS.md #22).
-    Uses date-pipeline-index GSI for efficient queries by logical date.
+    """The Runs tab: every pipeline's runs, newest first, with the backfills (ADR #95).
 
-    Pages with an opaque ``before`` cursor and answers with ``next`` (see ``feed.py``),
-    so the row count is what the feed actually holds rather than whatever survived a
-    silent slice. Backfills page through the same cursor — they carry ``started_at``
-    too, which is what makes one cursor enough for the merged feed (ADR #95).
+    Without a date it reads run rows from run-start-index (ADR #137 §5): the start days
+    of the last ``Limits.RUNS_WINDOW_DAYS`` days, newest first, stopping once the page is
+    full, with a pipeline filter or without. Only runs started on 1.3 have run rows. A
+    date filter finds its runs through the task rows of that date, with no window, runs
+    from before 1.3 included (``feed.runs_of_date``). Each run's status comes from its
+    run row's summary; the console asks Step Functions nothing about a run (§4).
+
+    Pages with an opaque ``before`` cursor and answers with ``next`` (see ``feed.py``).
+    Backfills page through the same cursor: they carry ``started_at`` too, which is
+    what makes one cursor enough for the merged feed (ADR #95).
     """
     params = event.get('queryStringParameters', {}) or {}
     limit = safe_param_int(params, 'limit', Limits.RUNS_FEED_LIMIT, 200)
@@ -156,160 +142,22 @@ def get_all_runs(event: Dict) -> Dict:
     date_filter = params.get('date', '')
     pipeline_filter = params.get('pipeline', '')
     status_filter = params.get('status', '')
-    
+
+    def keeps(run: Dict) -> bool:
+        return not status_filter or run['status'] == status_filter
+
     try:
-        all_items = []
-        
         if date_filter:
-            # Single date: one GSI query. Already bounded, so the cursor only pages
-            # what came back — no narrowing to do on the read itself.
-            key_cond = Key('date').eq(date_filter)
-            if pipeline_filter:
-                key_cond = key_cond & Key('pipeline_name').eq(pipeline_filter)
-            all_items = executions_repo.query_runs_by_date(
-                date_filter,
-                min_rows=Limits.RUNS_MIN_ROWS_PER_DATE,
-                key_condition=key_cond,
-                projection=_RUNS_PROJECTION,
-                expr_names=_RUNS_EXPR_NAMES,
-            )
-        elif pipeline_filter:
-            # One pipeline, no date: ask pipeline-date-index directly (ADR #108).
-            # No day-loop and no window — how far back you can see is bounded by
-            # the row TTL, not by SLA_DAYS. The cross-pipeline branch below cannot
-            # do this: with no pipeline to hash on, `date` is the only shard key.
-            all_items = pipeline_rows_before(
-                pipeline_filter, before, limit,
-                # A run is older than the cursor iff any of its rows is: the run's
-                # started_at is the earliest of them.
-                count_fn=lambda rows: len({
-                    r.get('pipeline_execution') for r in rows
-                    if r.get('pipeline_execution')
-                    and not should_skip_token_row(r)
-                    and is_older(r, before)
-                }),
-                projection=_RUNS_PROJECTION,
-                expr_names=_RUNS_EXPR_NAMES,
-            )
+            runs = [r for r in runs_of_date(date_filter, pipeline_filter) if keeps(r)]
         else:
-            # Default: the SLA window, walked back from the cursor's date. This feed
-            # is a cross-pipeline time series, so `date` is the natural shard key and
-            # a per-date fan-out is the correct access pattern here (unlike the
-            # per-pipeline path, which uses pipeline-date-index and needs no window
-            # at all).
-            for date_str in feed_dates(before):
-                try:
-                    day_items = executions_repo.query_runs_by_date(
-                        date_str,
-                        min_rows=Limits.FEED_MIN_ROWS_PER_DAY,
-                        projection=_RUNS_PROJECTION,
-                        expr_names=_RUNS_EXPR_NAMES,
-                    )
-                    all_items.extend(day_items)
-                except Exception as e:
-                    log.error("get_all_runs", "Error querying date", error=str(e), date_str=date_str)
-        
-        # Group by pipeline_execution and aggregate task statuses.
-        exec_map = {}
-        for item in all_items:
-            # Skip internal/special records (_pause_, _notify_warn_, etc.)
-            if should_skip_token_row(item):
-                continue
-            pe = item.get('pipeline_execution')
-            p_name = item.get('pipeline_name', '')
-            if not pe or pe == 'unknown' or not p_name or p_name == 'unknown':
-                continue
-            
-            if pe not in exec_map:
-                exec_map[pe] = {
-                    'pipeline_name': p_name,
-                    'pipeline_execution': pe,
-                    'pipeline_execution_short': item.get('pipeline_execution_short', pe[:20] if pe else ''),
-                    'date': item.get('date'),
-                    'started_at': item.get('started_at', ''),
-                    'finished_at': item.get('finished_at', ''),
-                    'statuses': set(),
-                    '_sample_exec_name': item.get('execution_name', ''),
-                }
-            
-            entry = exec_map[pe]
-            entry['statuses'].add(item.get('status', 'waiting'))
-            
-            started = item.get('started_at', '')
-            if started and (not entry['started_at'] or started < entry['started_at']):
-                entry['started_at'] = started
-            finished = item.get('finished_at', '')
-            if finished and (not entry['finished_at'] or finished > entry['finished_at']):
-                entry['finished_at'] = finished
-        
-        all_runs = []
-        for pe, data in exec_map.items():
-            # Canonical derivation (ADR #112) — one source shared with all surfaces.
-            status = derive_execution_status(data['statuses'])
+            # The status is derived from each run row, so it filters here, and the walk counts only what it keeps.
+            runs = run_rows_before(before, limit + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_filter,
+                                   keep=lambda item: keeps(run_entry(item)))
+            runs = [run_entry(item) for item in runs]
+        all_runs = [{'kind': 'execution', **run} for run in runs]
 
-            # Calculate duration
-            duration_ms = None
-            if data['started_at'] and data['finished_at']:
-                try:
-                    start_dt = datetime.fromisoformat(data['started_at'].replace('Z', '+00:00'))
-                    end_dt = datetime.fromisoformat(data['finished_at'].replace('Z', '+00:00'))
-                    duration_ms = int((end_dt - start_dt).total_seconds() * 1000)
-                except (ValueError, TypeError) as e:
-                    log.warn("get_all_runs", "Bad timestamp on run; duration_ms left None",
-                             pipeline_execution=pe,
-                             started_at=data.get('started_at'),
-                             finished_at=data.get('finished_at'),
-                             error=str(e))
-
-            all_runs.append({
-                'kind': 'execution',
-                'pipeline_name': data['pipeline_name'],
-                'pipeline_execution': pe,
-                'pipeline_execution_short': data['pipeline_execution_short'],
-                'status': status,
-                'started_at': data['started_at'] or None,
-                'finished_at': data['finished_at'] or None,
-                'date': data['date'],
-                'duration_ms': duration_ms,
-                '_sample_exec_name': data.get('_sample_exec_name', ''),
-            })
-
-        # Fetch triggered_by from base table (GSI INCLUDE doesn't project it).
-        # Pops _sample_exec_name from each run as a side effect.
-        _fill_triggered_by(all_runs, id_field='pipeline_execution')
-
-        # Drop what earlier pages already served before reconciling: a run newer than
-        # the cursor cannot appear on this page, and reconciling it would spend an SFN
-        # describe on a row nobody will see. The paging contract is still enforced
-        # below, in page_by_started_at — this is only about not paying for it twice.
-        all_runs = [r for r in all_runs if is_older(r, before)]
-
-        # Reconcile 'running' executions against SFN (ADR #112, decision b) so /runs and
-        # the execution dropdown agree on stuck-running / timed_out / recovered. ARNs are
-        # resolved once per pipeline; only running rows incur an SFN call. Runs BEFORE the
-        # status filter so a reconciled status filters correctly.
-        arn_cache = {}
-        for r in all_runs:
-            if r['status'] != 'running':
-                continue
-            pname = r['pipeline_name']
-            if pname not in arn_cache:
-                try:
-                    item = pipelines_repo.get(pname)
-                    arn_cache[pname] = item.get('sfn_arn', '') if item else ''
-                except (ClientError, BotoCoreError):
-                    arn_cache[pname] = ''
-            new_status = reconcile_sfn_status(r['pipeline_execution'], arn_cache[pname])
-            if new_status is not None:
-                r['status'] = new_status
-
-        if status_filter:
-            all_runs = [r for r in all_runs if r['status'] == status_filter]
-
-        
-        # Merge Backfills as first-class 'backfill' rows (ADR #95). Backfills
-        # are excluded from the execution rows above by should_skip_token_row,
-        # so there is no double-count — they enter only here.
+        # Merge Backfills as first-class 'backfill' rows (ADR #95). Backfill records are no run rows and no task
+        # rows, so there is no double-count: they enter only here.
         all_runs.extend(
             _build_backfill_run_rows(limit, status_filter, pipeline_filter, date_filter, before)
         )
@@ -329,6 +177,8 @@ def get_all_runs(event: Dict) -> Dict:
                 'date': date_filter
             }
         })
+    except executions_repo.IndexBuilding:
+        return index_building_response()
     except Exception as e:
         log.error("get_all_runs", "Error", error=str(e))
         return cors_response(500, {'error': f'Failed to get runs: {str(e)}'})

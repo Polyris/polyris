@@ -139,6 +139,8 @@ export interface Execution {
   partition_key?: string;
   /** How this execution was triggered: 'console_run' | 'schedule' | 'asset' | 'backfill' | 'unknown'. */
   triggered_by?: string;
+  /** How many of the run's tasks failed: shown while the run is still running (ADR #137 §4). */
+  failed_tasks?: number;
   [key: string]: unknown;
 }
 

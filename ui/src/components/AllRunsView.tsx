@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useClientRoute } from '@/hooks/useClientRoute';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
-import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
+import { formatDuration, formatApiErrorMessage, formatRunStatus, formatTriggerSource } from '../utils';
 import {
     Search,
     Inbox,
@@ -181,14 +181,12 @@ export function AllRunsView({
                 aria-label="Filter by status"
             >
                 <option value="">All Statuses</option>
-                {/* Mirrors ExecutionStatus (generated/enums.ts, ADR #112) — keep in sync. */}
+                {/* The statuses a run's summary gives (ADR #112, ADR #137 §4). */}
                 <optgroup label="Runs">
                     <option value="running">Running</option>
                     <option value="success">Succeeded</option>
                     <option value="failed">Failed</option>
-                    <option value="timed_out">Timed out</option>
                     <option value="aborted">Aborted</option>
-                    <option value="recovered">Recovered</option>
                 </optgroup>
                 {showBackfills && (
                     <optgroup label="Backfills">
@@ -203,7 +201,7 @@ export function AllRunsView({
             <DatePicker
                 value={filter.date}
                 onChange={d => onFilterChange({ ...filter, date: d })}
-                placeholder={historyDatePlaceholder(isHistoryWindowed(filter))}
+                placeholder={historyDatePlaceholder('runs', isHistoryWindowed('runs', filter))}
                 ariaLabel="Filter by date"
             />
 
@@ -249,8 +247,8 @@ export function AllRunsView({
                 ) : total === 0 ? (
                     <EmptyState
                         icon={hasActiveFilters || search ? Search : Inbox}
-                        title={historyEmptyState('runs', !!(hasActiveFilters || search), isHistoryWindowed(filter)).title}
-                        description={historyEmptyState('runs', !!(hasActiveFilters || search), isHistoryWindowed(filter)).description}
+                        title={historyEmptyState('runs', !!(hasActiveFilters || search), isHistoryWindowed('runs', filter)).title}
+                        description={historyEmptyState('runs', !!(hasActiveFilters || search), isHistoryWindowed('runs', filter)).description}
                     />
                 ) : (
                     <table className="table-full" aria-label="Pipeline executions">
@@ -300,7 +298,7 @@ export function AllRunsView({
                                             </span>
                                         ) : (
                                             <span className={`task-status-badge ${run.status}`}>
-                                                {run.status}
+                                                {formatRunStatus(run.status, run.failed_tasks)}
                                             </span>
                                         )}
                                     </td>

@@ -192,7 +192,7 @@ export function AllTasksView({
             <DatePicker
                 value={filter.date}
                 onChange={d => onFilterChange({ ...filter, date: d })}
-                placeholder={historyDatePlaceholder(isHistoryWindowed(filter))}
+                placeholder={historyDatePlaceholder('tasks', isHistoryWindowed('tasks', filter))}
                 ariaLabel="Filter by date"
             />
 
@@ -239,8 +239,8 @@ export function AllTasksView({
                 ) : total === 0 ? (
                     <EmptyState
                         icon={hasActiveFilters || search ? Search : Inbox}
-                        title={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed(filter)).title}
-                        description={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed(filter)).description}
+                        title={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed('tasks', filter)).title}
+                        description={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed('tasks', filter)).description}
                     />
                 ) : (
                     <table className="table-full" aria-label="Task executions">

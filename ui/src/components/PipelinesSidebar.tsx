@@ -8,7 +8,7 @@ import {
 import { formatSchedule } from '../utils/formatters';
 import { connectionProblem } from '../utils/api';
 import { logger } from '../utils/logger';
-import { HISTORY_WINDOW_DAYS } from '../utils/historyWindow';
+import { RECENT_WINDOW_DAYS } from '../utils/historyWindow';
 import { buildSidebarLines, groupKey, isFailure, needsAttention, REDEPLOY_HINT, UNGROUPED } from '../utils/pipelineSidebar';
 import type { SidebarLine, SidebarSection } from '../utils/pipelineSidebar';
 import config from '../lib/config';
@@ -56,7 +56,7 @@ function rowPipelineName(key: string): string | null {
 
 /** "7 success, 2 failed" for the runs a sparkline draws (screen readers and the hover title). */
 function describeRuns(runs: ReadonlyArray<{ status: string }>): string {
-    if (runs.length === 0) return `no runs in the last ${HISTORY_WINDOW_DAYS} days`;
+    if (runs.length === 0) return `no runs in the last ${RECENT_WINDOW_DAYS} days`;
     const counts = new Map<string, number>();
     runs.forEach(r => counts.set(r.status, (counts.get(r.status) ?? 0) + 1));
     return `last ${runs.length} run${runs.length === 1 ? '' : 's'}: ${[...counts].map(([s, n]) => `${n} ${s}`).join(', ')}`;
@@ -461,7 +461,7 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
     // `status` is the latest run within the window /api/pipelines reads; 'idle' means none there.
     const status = p.status || 'idle';
     const waitingOn = status === 'running' && p.waiting_on ? p.waiting_on : null;
-    const lastRun = status === 'idle' ? `no run in the last ${HISTORY_WINDOW_DAYS} days`
+    const lastRun = status === 'idle' ? `no run in the last ${RECENT_WINDOW_DAYS} days`
         : waitingOn ? `${status}, ${WAITING_ON_LABELS[waitingOn]}`
         : status;
     const schedule = formatSchedule(p.schedule, p.asset_schedule);
@@ -494,7 +494,7 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
 }
 
 /**
- * RunSparkline - the last runs within HISTORY_WINDOW_DAYS as bars, oldest on the
+ * RunSparkline - the last runs within RECENT_WINDOW_DAYS as bars, oldest on the
  * left. Empty slots pad the left side as a faint track, so the newest run is always
  * the rightmost bar. Colour tells the status; the row's accessible name and the
  * hover title spell the runs out.

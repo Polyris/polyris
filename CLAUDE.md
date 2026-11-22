@@ -451,7 +451,7 @@ Regression tests: `test_lambda_packages_polyris_via_requirements`, `test_lambda_
 
 | Repo | Table suffix | PK | SK | GSIs |
 |------|-------------|----|----|------|
-| `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130) |
+| `executions_repo` | `pipeline-tokens` | `execution_name` | — | `pipeline-execution-index`, `date-pipeline-index`, `pipeline-date-index`, `backfill-id-index`, `attention-index` (sparse, ADR #130), `run-start-index` (sparse: run rows, ADR #137 §5) |
 | `subscriptions_repo` (query_subscriptions `qs_dal`) | `dep-subscriptions` | `dependency_key` | `subscriber` | `subscriber-index` |
 | `pipelines_repo` | `pipeline-registry` | `pipeline_name` | — | — |
 | `specs_repo` (reads only; `polyris-deploy` writes) | `pipeline-specs` | `pk` | `sk` | — |

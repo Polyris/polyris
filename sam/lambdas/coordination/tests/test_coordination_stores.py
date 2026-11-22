@@ -87,6 +87,10 @@ def test_a_malformed_registry_entry_raises(reg, registry):
     (client_error("ServiceUnavailable"), True),
     (client_error("AccessDeniedException"), False),
     (client_error("ValidationException"), False),
+    # An index an upgrade added is still being built: the same read succeeds once it is (Principle #53).
+    (ClientError({"Error": {"Code": "ValidationException",
+                            "Message": "Cannot read from backfilling global secondary index: run-start-index"}},
+                 "Query"), True),
     (ClientError({"Error": {"Code": "SomeNewServerError"}, "ResponseMetadata": {"HTTPStatusCode": 503}}, "Op"), True),
     (ClientError({"Error": {"Code": "AccessDeniedException"}, "ResponseMetadata": {"HTTPStatusCode": 400}}, "Op"), False),
     (EndpointConnectionError(endpoint_url="https://dynamodb"), True),

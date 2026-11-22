@@ -186,7 +186,7 @@ while a Stop of its run is in progress or once its run started more than a year 
 GET /api/runs?pipeline={name}&status={status}&date={YYYY-MM-DD}&limit=50&before={cursor}
 ```
 
-Returns pipeline executions, `started_at`-descending:
+Returns pipeline runs, `started_at`-descending:
 
 ```jsonc
 {
@@ -194,12 +194,14 @@ Returns pipeline executions, `started_at`-descending:
     {
       "kind": "execution",
       "pipeline_name": "acme-daily",
-      "pipeline_execution": "acme-daily-2026-05-31-ab12cd34",
-      "pipeline_execution_short": "ab12cd34",
-      "status": "success",           // running | success | failed | timed_out | aborted | recovered
-      "started_at": "...", "finished_at": "...",
+      "pipeline_execution": "acme-daily-run-2026-05-31-ab12cd34",
+      "pipeline_execution_short": "-2026-05-31-ab12cd34",
+      "status": "running",           // running | success | failed | aborted
+      "failed_tasks": 1,             // tasks of the run that failed
+      "started_at": "...", "finished_at": null,
       "date": "2026-05-31",
-      "duration_ms": 42000
+      "duration_ms": null,
+      "triggered_by": "schedule"
     }
   ],
   "count": 1,
@@ -211,13 +213,24 @@ Returns pipeline executions, `started_at`-descending:
 Paging: pass the previous response's `next` back as `before` to get the rows older
 than it; `next` is opaque (see `/api/tasks`). `next: null` means the feed is exhausted.
 
+A run's status comes from its run row's summary of its tasks (ADR #137 §4): `running`
+until every task has finished, with `failed_tasks` counting the ones that failed, then
+`success`, `failed` or `aborted` (a stop or an `upstream_failed` without a failure); a
+failed direct step makes a finished run `failed`. `finished_at` and `duration_ms` are
+set once the run has finished. The console asks Step Functions nothing about a run: the
+engine keeps the run row true, and a run stopped in the AWS console shows `running` until
+the engine's next check of it, up to about 30 minutes.
+
 Filter semantics:
-- `status` — literal match against execution status vocabulary.
+- `status` — literal match against that status.
 - `pipeline` — matches `pipeline_name`.
-- `date` — matches the execution's logical date.
-- Reach: `pipeline` (no date) reads `pipeline-date-index` with no window (bounded by
-  the row TTL); `date` is that one logical date; neither is the last 14 days
-  (`Limits.SLA_DAYS`), fanned out one query per day (ADR #108).
+- `date` — matches the run's logical date.
+- Reach: without `date`, the run rows of the last 90 days by the day each run started
+  (`run-start-index`, `Limits.RUNS_WINDOW_DAYS`), with `pipeline` or without; only runs
+  started on 1.3 have one. `date` reads that one logical date's task rows, with no window,
+  so it also finds the runs started before the upgrade, whose status comes from their tasks.
+- While DynamoDB builds `run-start-index` after an upgrade (about 8 minutes on a large
+  table), a read without `date` answers 503 with `"code": "INDEX_BUILDING"` and says so.
 
 Expand a row on demand via `GET /api/execution-children?id=` (execution);
 children are not embedded.

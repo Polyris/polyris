@@ -187,9 +187,11 @@ runs / tasks** loads the next page and appends it.
 Two paginations sit in that footer and they are not the same thing: the `‹ ›` pager
 walks the rows already loaded, ten at a time; **Show older** extends the feed itself.
 
-How far back you can go depends on the filter: one pipeline reaches as far as the rows
-still exist (bounded by their TTL), a date reaches that date, and no filter reaches the
-last 14 days.
+How far back you can go depends on the filter. **Runs** without a date reach the runs
+started in the last 90 days, with a pipeline chosen or not; only runs started on 1.3 are
+there. **Tasks** with one pipeline reach as far as the rows still exist (bounded by their
+TTL), and without a filter the last 14 days. A date reaches that date in both, runs started
+before the upgrade included.
 
 ### Tasks View
 - **Pipeline** — Filter by pipeline name
@@ -198,7 +200,8 @@ last 14 days.
 - **Date** — Filter by execution date
 
 ### Runs View
-A single table of pipeline executions (ADR #95).
+A single table of pipeline executions (ADR #95). A run is running until every task has
+finished; while it runs, its status says how many tasks failed (`running, 2 failed`).
 - **Pipeline** — Filter by pipeline name
 - **Status** — Filter by run status (succeeded/failed/running/aborted)
 - **Date** — Filter by the run's logical date
