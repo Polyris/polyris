@@ -20,6 +20,30 @@ if CONSOLE_API not in sys.path:
 
 import pytest  # noqa: E402
 
+# No backend test may reach a real AWS account: a run of test_api_routes.py once sent a real DynamoDB Query with
+# the developer's default profile (TR-6d; AWS denied it). The developer's AWS settings are cleared and fake
+# credentials set before any test module imports code that builds a client, and again around every test.
+_AMBIENT_ENV = (
+    "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+)
+_FAKE_AWS = {"AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing", "AWS_DEFAULT_REGION": "us-east-1",
+             "AWS_CONFIG_FILE": os.devnull, "AWS_SHARED_CREDENTIALS_FILE": os.devnull}
+for _name in _AMBIENT_ENV:
+    os.environ.pop(_name, None)
+os.environ.update(_FAKE_AWS)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_aws(monkeypatch):
+    """Every backend test runs on fake credentials and without the developer's AWS settings."""
+    for name in _AMBIENT_ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in _FAKE_AWS.items():
+        monkeypatch.setenv(name, value)
+
+
 SPECS_TABLE = "test-pipeline-specs"
 
 
