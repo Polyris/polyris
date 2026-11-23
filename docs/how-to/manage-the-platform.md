@@ -33,7 +33,11 @@ Before it changes anything, `polyris-up` checks the platform and refuses when:
 - 1.2 has not finished adopting the rows and facts of older versions, or finished less than 48 hours ago: until then they need code that 1.3 removes;
 - a run is in flight.
 
-Each refusal says what to do. To upgrade although a run is in flight or 1.2's adoption has not settled, pass `--accept-stopped-runs`: no run of 1.2 goes on after the upgrade, so start those runs again after step 5. No flag upgrades a platform older than 1.2.0.
+Each refusal says what to do. To upgrade although a run is in flight or 1.2's adoption has not settled, pass `--accept-stopped-runs`. No flag upgrades a platform older than 1.2.0.
+
+No run of 1.2 goes on after the upgrade. Once the update has succeeded, `polyris-up` stops what 1.2 left running and prints the runs it stopped: start those again after step 5. A run of a pipeline that you have redeployed since is kept.
+
+If the upgrade is interrupted, or `polyris-up` reports that it could not stop an execution, fix the cause and run `polyris-up` again. It stops what is left and goes on, also while CloudFormation still cleans up after the update.
 
 ## Change a setting
 

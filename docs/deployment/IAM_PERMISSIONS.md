@@ -63,14 +63,17 @@ Scope all `Resource` fields to your polyris stack's namespace where the service 
 
 ### Upgrade from 1.2 to 1.3
 
-Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it ([manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13)). `PowerUserAccess` covers what that takes; a least-privilege installer role needs these actions beside the ones above:
+Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it, and once the update has succeeded it stops what 1.2 left running ([manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13)). `PowerUserAccess` covers what that takes; a least-privilege installer role needs these actions beside the ones above:
 
 | AWS service | Actions | Resource | Why |
 |-------------|---------|----------|-----|
-| `states` | `ListExecutions` | `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*` | The check for a run in flight lists the running executions of the engine's Standard state machines |
+| `states` | `ListExecutions` | `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*`, and each pipeline's state machine if its `config.py` gives it another namespace | The check for a run in flight lists the running executions of the engine's Standard state machines; the stop lists those and the pipelines' |
+| `states` | `StopExecution` | `arn:aws:states:*:*:execution:${Namespace}-${Stage}-polyris-*`, and the executions of such pipelines | The stop of what 1.2 left running |
+| `states` | `ListStateMachines` | `*` | The stop finds by its name the state machine of a pipeline that the registry does not name |
 | `dynamodb` | `GetItem` | The `pipeline-tokens` table | The engine's health row tells 1.2 from an older platform, and records when 1.2 finished adopting older rows and facts |
+| `dynamodb` | `Scan` | The `pipeline-registry` table | The stop reads the pipelines' state machines there |
 
-A denied call refuses the upgrade before anything has changed, and the message names the action.
+A denied call of a check, or of the registry's read, refuses the upgrade before anything has changed, and the message names the action. The stop runs after the update: if one of its calls is denied, `polyris-up` says so; grant the action and run it again. It also reads the creation time of `pipeline-specs` (`dynamodb:DescribeTable`) and each pipeline's state machine (`states:DescribeStateMachine`), which the install's list has.
 
 ## Deploy — per-pipeline `polyris-deploy`
 

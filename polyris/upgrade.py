@@ -206,8 +206,8 @@ def _check_drained(sfn: Any, target: Target) -> None:
             f"A run is in flight on {target.stack_name}: executions are running ({', '.join(running)}).",
             "Nothing adopts a 1.2 run. Let the runs finish or stop them, and disable the pipelines' schedules so "
             "that no new run starts; then run polyris-up again.",
-            f"To upgrade now, pass {_c(OVERRIDE_FLAG, CYAN)}: no run of 1.2 goes on after the upgrade, so start "
-            "them again after the redeploy.")
+            f"To upgrade now, pass {_c(OVERRIDE_FLAG, CYAN)}: polyris-up then stops what 1.2 left running, and "
+            "prints the runs to start again after the redeploy.")
 
 
 # ── What 1.2 left running ────────────────────────────────────────────────────

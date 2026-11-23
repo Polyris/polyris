@@ -23,9 +23,9 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from fake_states import FakeStates
+from fake_states import FakeStates, refuse
 from polyris import __version__
-from polyris import up
+from polyris import up, upgrade
 from polyris.platform import (
     PLATFORM_TAG_KEY,
     PLATFORM_TAG_VALUE,
@@ -76,6 +76,12 @@ def isolated_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
 
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """The stop of 1.2's executions lists again at once, without its pause between two listings."""
+    monkeypatch.setattr(upgrade, "STOP_SETTLE_S", 0)
+
+
 def _template() -> Dict[str, Any]:
     return {
         "Transform": "AWS::Serverless-2016-10-31",
@@ -111,14 +117,24 @@ def _write_archive(path: Path, version: str = __version__, extra: Dict[str, byte
 
 
 class FakeCfn:
-    """Records calls; answers like CloudFormation for the paths polyris-up uses."""
+    """Records calls; answers like CloudFormation for the paths polyris-up uses.
+
+    ``updated`` is what an executed change set changes of its stack (its Description, its Outputs),
+    and ``progress`` the statuses the stack passes through after it, one per describe_stacks, before
+    it settles. ``on_wait`` is called with the waiter's name whenever polyris-up waits for a stack.
+    """
 
     def __init__(self, stacks: List[Dict[str, Any]] | None = None, change_status: str = "CREATE_COMPLETE",
-                 status_reason: str = "", changes: List[Dict[str, Any]] | None = None):
+                 status_reason: str = "", changes: List[Dict[str, Any]] | None = None,
+                 updated: Dict[str, Any] | None = None, progress: List[str] | None = None):
         self.stacks = {s["StackName"]: s for s in (stacks or [])}
         self.change_status = change_status
         self.status_reason = status_reason
         self.changes = changes or [{"ResourceChange": {"Action": "Add", "ResourceType": "AWS::Lambda::Function"}}]
+        self.updated = updated or {}
+        self.progress = list(progress or [])
+        self._progress: List[str] = []
+        self.on_wait = None
         self.calls: List[tuple] = []
 
     # describe_stacks / paginator
@@ -129,7 +145,10 @@ class FakeCfn:
         if StackName not in self.stacks:
             raise ClientError({"Error": {"Code": "ValidationError",
                                          "Message": f"Stack with id {StackName} does not exist"}}, "DescribeStacks")
-        return {"Stacks": [self.stacks[StackName]]}
+        stack = self.stacks[StackName]
+        if self._progress:
+            stack = {**stack, "StackStatus": self._progress.pop(0)}
+        return {"Stacks": [stack]}
 
     def get_paginator(self, name):
         fake = self
@@ -160,19 +179,32 @@ class FakeCfn:
     def execute_change_set(self, **kw):
         self.calls.append(("execute_change_set", kw))
         kwargs = self.last_change_set
+        previous = self.stacks.get(kw["StackName"], {})
         self.stacks[kw["StackName"]] = {
-            "StackName": kw["StackName"], "Tags": kwargs["Tags"], "StackStatus": "CREATE_COMPLETE",
+            **{key: previous[key] for key in ("Parameters", "Description") if key in previous},
+            "StackName": kw["StackName"], "Tags": kwargs["Tags"],
+            "StackStatus": f"{kwargs['ChangeSetType']}_COMPLETE",
             "Outputs": [{"OutputKey": "ConsoleUiUrl", "OutputValue": "https://d123.cloudfront.net"}],
+            **self.updated,
         }
+        self._progress = list(self.progress)
 
     def delete_stack(self, StackName):
         self.calls.append(("delete_stack", StackName))
         self.stacks.pop(StackName)
 
     def get_waiter(self, name):
+        fake = self
+
         class _W:
             def wait(self, **kw):
-                return None
+                fake.calls.append(("wait", name))
+                if fake.on_wait:
+                    fake.on_wait(name)
+                fake._progress = []
+                for stack in fake.stacks.values():       # the stack settles
+                    if stack.get("StackStatus") == "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS":
+                        stack["StackStatus"] = "UPDATE_COMPLETE"
         return _W()
 
     def names(self) -> List[str]:
@@ -1053,8 +1085,19 @@ def test_registry_skips_state_machines_being_deleted(fake_cfn, s3, mocker):
 # polyris/upgrade.py's own tests cover each check; these cover what polyris-up does with them.
 
 TOKENS = "acme-dev-polyris-pipeline-tokens"
+REGISTRY = "acme-dev-polyris-pipeline-registry"
+SPECS = "acme-dev-polyris-pipeline-specs"
 ENGINE_1_2 = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter",
               "dep-run-task-helper", "bulk-backfill")
+MACHINES = f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:"
+#: What the stack of acme-dev names once it runs 1.3, beside its tasks table.
+OUTPUTS_1_3 = [*ROWS_OUTPUTS, {"OutputKey": "PipelineRegistryTable", "OutputValue": REGISTRY},
+               {"OutputKey": "PipelineSpecsTable", "OutputValue": SPECS},
+               {"OutputKey": "ConsoleUiUrl", "OutputValue": "https://d123.cloudfront.net"}]
+#: What the update to this polyris changes of the stack, and the cleanup it then passes through.
+UPGRADED = {"updated": {"Description": f"Polyris platform v{__version__}",
+                        "Outputs": [{"OutputKey": "PipelineTokensTable", "OutputValue": TOKENS}, *OUTPUTS_1_3]},
+            "progress": ["UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"]}
 
 
 def _deployed(version: str | None = "1.2.3", *, outputs: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
@@ -1064,20 +1107,26 @@ def _deployed(version: str | None = "1.2.3", *, outputs: List[Dict[str, str]] | 
     return _platform("acme-dev", StackStatus="UPDATE_COMPLETE", **described,
                      Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"},
                                  {"ParameterKey": "Stage", "ParameterValue": "dev"}],
-                     Outputs=[{"OutputKey": "PipelineTokensTable", "OutputValue": TOKENS}, *(outputs or [])])
+                     Outputs=[{"OutputKey": "PipelineTokensTable", "OutputValue": TOKENS},
+                              {"OutputKey": "PipelineRegistryTable", "OutputValue": REGISTRY}, *(outputs or [])])
 
 
 @pytest.fixture
 def platform_1_2(fake_cfn) -> FakeStates:
     """A 1.2 platform that is ready for 1.3: its adoption settled three days ago, and nothing runs.
 
-    Returns its Step Functions, where a test starts what it needs running.
+    Returns its Step Functions, where a test starts what it needs running. ``pipeline-specs`` is
+    there as the 1.3 update creates it: what started before this moment is 1.2's.
     """
     finished = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     ddb = boto3.client("dynamodb", region_name=REGION)
     ddb.create_table(TableName=TOKENS, BillingMode="PAY_PER_REQUEST",
                      KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
                      AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}])
+    for table, key in ((REGISTRY, "pipeline_name"), (SPECS, "pk")):
+        ddb.create_table(TableName=table, BillingMode="PAY_PER_REQUEST",
+                         KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
+                         AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}])
     ddb.put_item(TableName=TOKENS, Item={
         "execution_name": {"S": "_engine_health"}, "adoption_generation": {"N": "1"},
         "adopt_tasks_cursor": {"S": ""}, "adopt_tasks_until": {"S": finished},
@@ -1093,6 +1142,22 @@ def platform_1_2(fake_cfn) -> FakeStates:
 def _a_run_in_flight(states: FakeStates, machine: str = "dependency-wrapper") -> None:
     states.run(f"acme-dev-polyris-{machine}", "orders-run-2026-11-23-ab12cd34",
                started=datetime.now(timezone.utc) - timedelta(hours=1))
+
+
+def _pipeline(states: FakeStates, name: str, *, registered: bool = True) -> None:
+    """A deployed pipeline: its state machine, and its registry row, with the ARN only once it ``registered``."""
+    states.machine(f"acme-dev-polyris-{name}")
+    arn = {"sfn_arn": {"S": f"{MACHINES}acme-dev-polyris-{name}"}} if registered else {}
+    boto3.client("dynamodb", region_name=REGION).put_item(
+        TableName=REGISTRY, Item={"pipeline_name": {"S": name}, **arn})
+
+
+def _a_1_2_run(states: FakeStates, pipeline: str = "orders") -> None:
+    """A run of ``pipeline`` that started an hour before the 1.3 update: its execution, a wrapper and its work."""
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    states.run(f"acme-dev-polyris-{pipeline}", f"{pipeline}-run-2026-11-23-ab12cd34", started=started)
+    states.run("acme-dev-polyris-dependency-wrapper", f"{pipeline}-extract-wrapper", started=started)
+    states.run("acme-dev-polyris-dep-run-task-helper", f"{pipeline}-extract-work", started=started)
 
 
 def test_up_upgrades_a_1_2_platform_that_is_ready(fake_cfn, platform_1_2, s3, tmp_path, capsys):
@@ -1176,3 +1241,143 @@ def test_up_makes_no_such_checks_for_a_release_that_keeps_1_2s_engine(fake_cfn, 
     assert up._run(up.run_up, args) == 0
 
     assert "checking the platform" not in capsys.readouterr().out
+
+
+def test_up_stops_what_1_2_left_running_as_the_cleanup_begins(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """The cleanup that deletes 1.2's state machines waits for their executions (TR-0 A2), so they are
+    stopped before polyris-up waits for the stack to settle; the runs to start again are printed."""
+    _pipeline(platform_1_2, "orders")
+    _a_1_2_run(platform_1_2)
+    fake_cfn["cfn"] = cfn = FakeCfn([_deployed()], **UPGRADED)
+    stopped_when_the_wait_began: List[str] = []
+    cfn.on_wait = lambda waiter: stopped_when_the_wait_began.extend(platform_1_2.stopped)
+    updated_when_stopped: List[bool] = []
+    platform_1_2.on_stop = lambda name: updated_when_stopped.append("execute_change_set" in cfn.names())
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
+
+    assert up._run(up.run_up, args) == 0
+
+    assert stopped_when_the_wait_began == ["orders-run-2026-11-23-ab12cd34", "orders-extract-wrapper",
+                                           "orders-extract-work"]
+    assert updated_when_stopped == [True] * 3, "nothing is stopped before the update has succeeded"
+    assert platform_1_2.running() == []
+    out = capsys.readouterr().out
+    assert "Stopped what 1.2 left running: 1 run(s), and 2 execution(s) of the engine's state machines." in out
+    assert "acme-dev-polyris-orders  orders-run-2026-11-23-ab12cd34  (started " in out
+    assert "start these again once their pipelines are redeployed" in out
+
+
+def test_up_keeps_what_started_after_the_1_3_update(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """An ordinary update of a platform that runs 1.3 stops none of its runs."""
+    _pipeline(platform_1_2, "orders")
+    later = datetime.now(timezone.utc) + timedelta(hours=1)
+    platform_1_2.run("acme-dev-polyris-orders", "orders-run-2026-11-24-0f0f0f0f", started=later)
+    platform_1_2.run("acme-dev-polyris-dep-run-task-helper", "extract-work", started=later)
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.3.0a1", outputs=OUTPUTS_1_3)], **UPGRADED)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    listed = {params["stateMachineArn"] for name, params in platform_1_2.calls if name == "ListExecutions"}
+    assert {f"{MACHINES}acme-dev-polyris-orders", f"{MACHINES}acme-dev-polyris-dep-run-task-helper"} <= listed
+    assert platform_1_2.stopped == []
+    assert "Stopped what 1.2 left running" not in capsys.readouterr().out
+
+
+def test_every_polyris_up_stops_what_is_left_of_1_2(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """Also one with nothing to change: an upgrade interrupted after its update is finished by the next run."""
+    _pipeline(platform_1_2, "orders")
+    _a_1_2_run(platform_1_2)
+    fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
+                              status_reason="didn't contain changes")
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    out = capsys.readouterr().out
+    assert "already up to date" in out and "Stopped what 1.2 left running: 1 run(s)" in out
+    assert platform_1_2.running() == []
+
+
+def test_up_finishes_an_upgrade_that_was_interrupted_in_its_cleanup(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """The stack is updated and its cleanup waits for a wrapper: polyris-up stops it and waits, where
+    it used to say the stack is busy."""
+    platform_1_2.run("acme-dev-polyris-dependency-wrapper", "orders-extract-wrapper",
+                     started=datetime.now(timezone.utc) - timedelta(hours=1))
+    stack = _deployed(__version__, outputs=OUTPUTS_1_3)
+    stack["StackStatus"] = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"
+    fake_cfn["cfn"] = cfn = FakeCfn([stack], change_status="FAILED", status_reason="didn't contain changes")
+    cfn.on_wait = lambda waiter: cfn.calls.append(("stopped", list(platform_1_2.stopped)))
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    assert ("stopped", ["orders-extract-wrapper"]) in cfn.calls, "before it waits for the stack"
+    assert cfn.names().index("wait") < cfn.names().index("create_change_set")
+    out = capsys.readouterr().out
+    assert "acme-dev is still cleaning up after its last update" in out and "already up to date" in out
+
+
+def test_up_still_refuses_a_stack_that_another_update_keeps_busy(fake_cfn, platform_1_2, capsys):
+    """A cleanup on a platform below 1.3 has nothing of 1.2 to stop: it is some other update's."""
+    stack = _deployed()
+    stack["StackStatus"] = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"
+    fake_cfn["cfn"] = FakeCfn([stack])
+
+    assert up._run(up.run_up, _up_args()) == 1
+
+    assert "busy (UPDATE_COMPLETE_CLEANUP_IN_PROGRESS)" in capsys.readouterr().err
+
+
+def test_up_says_what_it_could_not_stop_and_how_to_go_on(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    _pipeline(platform_1_2, "orders")
+    _a_1_2_run(platform_1_2)
+    platform_1_2.denied.add("StopExecution")
+    fake_cfn["cfn"] = FakeCfn([_deployed()], **UPGRADED)
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
+
+    assert up._run(up.run_up, args) == 1
+
+    err = capsys.readouterr().err
+    assert "acme-dev is updated, but polyris-up could not stop what 1.2 left running" in err
+    assert "AccessDeniedException" in err and "run polyris-up again" in err
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_up_is_refused_before_the_update_when_it_may_not_read_the_registry(
+        fake_cfn, platform_1_2, s3, tmp_path, capsys, flag):
+    """The stop reads the registry after the update: better refused now, while nothing has changed."""
+    fake_cfn["dynamodb"] = ddb = boto3.client("dynamodb", region_name=REGION)
+    refuse(ddb, "Scan")
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=flag)
+
+    assert up._run(up.run_up, args) == 1
+
+    assert f"polyris-up may not call dynamodb:Scan on {REGISTRY}" in capsys.readouterr().err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
+def test_up_finds_a_pipeline_the_registry_does_not_name_by_its_state_machines_name(
+        fake_cfn, platform_1_2, s3, tmp_path):
+    """A pipeline whose registration never finished, and one that has only its stack."""
+    _pipeline(platform_1_2, "pending", registered=False)
+    platform_1_2.machine("acme-dev-polyris-unregistered")
+    platform_1_2.machine("acme-prod-polyris-pending")                     # another platform's pipeline
+    for machine in ("acme-dev-polyris-pending", "acme-dev-polyris-unregistered", "acme-prod-polyris-pending"):
+        platform_1_2.run(machine, f"a-run-of-{machine}", started=datetime.now(timezone.utc) - timedelta(hours=1))
+    fake_cfn["cfn"] = FakeCfn([_deployed(), {"StackName": "acme-dev-polyris-unregistered", "Tags": []}], **UPGRADED)
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
+
+    assert up._run(up.run_up, args) == 0
+
+    assert platform_1_2.running() == ["a-run-of-acme-prod-polyris-pending"]
+    assert "ListStateMachines" in platform_1_2.operations()
+
+
+def test_up_stops_nothing_for_a_release_that_keeps_1_2s_engine(fake_cfn, platform_1_2, s3, tmp_path):
+    _pipeline(platform_1_2, "orders")
+    _a_1_2_run(platform_1_2)
+    fake_cfn["cfn"] = FakeCfn([_deployed()], progress=["UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"])
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.2.4")))
+
+    assert up._run(up.run_up, args) == 0
+
+    assert platform_1_2.stopped == []
+
