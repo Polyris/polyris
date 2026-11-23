@@ -1,6 +1,6 @@
 # ADR #137 — Tasks as rows: one dispatcher starts the tasks, one token per run
 
-> **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 10 (2026-11-23: what building it settled — the operator actions and the requests a pass carries out (§3, §4), a Restart taken for about nine months with no renewal of the run's rows (§3, §5), a Stop after a done stop, a run's `stale` status, the removal of `fact_version` from facts and of ADR #125's row-level `max_retries`, and the upgrade steps of `polyris-up` (*Migration*); revision 9, 2026-11-18: the results of TR-0's probes; revision 8, 2026-11-17: the plan review's decisions). Target release: 1.3.0.
+> **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 10 (2026-11-23: what building it settled — the operator actions and the requests a pass carries out (§3, §4), a Restart taken for about nine months with no renewal of the run's rows (§3, §5), a Stop after a done stop, a run's `stale` status, the removal of `fact_version` from facts and of ADR #125's row-level `max_retries`, the public status sets kept as they were, and the upgrade steps of `polyris-up` (*Migration*); revision 9, 2026-11-18: the results of TR-0's probes; revision 8, 2026-11-17: the plan review's decisions). Target release: 1.3.0.
 >
 > **Supersedes:**
 > - ADR #130 in part: *ADR #130 after this ADR* lists each section, invariant and rule.
@@ -158,7 +158,7 @@ Each invariant has a test in the coordination harness, written before the code t
 
 ### 3. Who writes which transition
 
-This section is the table of invariant 7. `TERMINAL_STATUSES` and `SETTLED_STATUSES` become one set, `SETTLED_STATUSES`. *Final* means a status in it: `success`, `skipped`, `failed`, `upstream_failed` and `stopped`, and `succeeded` and `aborted` on rows written before 1.3. The *Wakes* column says whether a transition wakes the dispatcher through the stream (§7). The *Attention* column gives the row's entry in `attention-index` after the write (§6): a due time is an entry of the `waiting` kind, which a row has only for a time of its own (invariant 9).
+This section is the table of invariant 7. *Final* means a status in `SETTLED_STATUSES` (`transitions.FINAL`), which is `TERMINAL_STATUSES` and `stopped`: `success`, `skipped`, `failed`, `upstream_failed` and `stopped`, and `succeeded` and `aborted` on rows written before 1.3. The *Wakes* column says whether a transition wakes the dispatcher through the stream (§7). The *Attention* column gives the row's entry in `attention-index` after the write (§6): a due time is an entry of the `waiting` kind, which a row has only for a time of its own (invariant 9).
 
 **Task rows.**
 
@@ -605,7 +605,7 @@ A 1.2 pipeline can still be started until its redeploy: by Run in the console, b
 - Waiting for tasks of the same run has no limit of its own, and waiting for `wait_for` facts gets 7 days by default, counted from when the task's own dependencies are met. A set `orchestration_timeout` still caps all waiting.
 - A pause lasts until it is lifted and uses up no waiting limit. The "+12h" button and `/api/execution-extend` are gone, and on resume every ready task starts at once.
 - The stack output `DependencyWrapperArn` and its export are gone, and the 1.2 wrappers' logs are deleted with their log groups.
-- `polyris.TERMINAL_STATUSES` is gone: it merges into `SETTLED_STATUSES`, which also holds `stopped`. `FAILURE_STATUSES` gains `stopped`, and `derive_execution_status` returns `running` until every row is final (§4). `waiting_delay` leaves the statuses, so a leftover 1.2 row in it shows the icon of an unknown status.
+- `polyris.TERMINAL_STATUSES` and `FAILURE_STATUSES` keep their members, and the engine reads neither: a row is final by `SETTLED_STATUSES`, which holds `stopped`, and a trigger rule counts `stopped` as a failure through the engine's own set (`transitions.FINAL_FAILURES`, ADR #138). Merging the public sets would fix nothing and move the console's counters. `derive_execution_status` returns `running` until every row is final (§4). `waiting_delay` leaves the statuses: a leftover 1.2 row in it shows as stale.
 - The step classes `Choice`, `Map`, `Sensor` and `ShortCircuit`, and the `Condition` helper, are gone. They never had a generator, so a pipeline that used one failed when it was generated.
 - `DAG` loses thirteen fields that nothing read: `timetable`, `catchup`, `default_timeout`, `params`, `template_searchpath`, `template_undefined`, `render_template_as_native_obj`, `max_active_tasks`, `max_active_runs`, `dagrun_timeout`, `sla_miss_callback`, `access_control` and `doc_md`. A `dag.py` that sets one fails with an error that names it: remove the line, since it never had an effect. A default time limit for every task is `execution_timeout` in `default_args`.
 - A task may list at most 97 outlets, and each asset once. The decorator rejects an asset listed twice, and `polyris-deploy` refuses more outlets, or a task whose spec exceeds `run_task`'s 256 KB input (§8).
