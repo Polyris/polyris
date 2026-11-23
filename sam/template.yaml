@@ -808,15 +808,11 @@ Resources:
             Effect: Allow
             Action:
               - states:StartExecution
-              - states:StartSyncExecution
               - states:DescribeExecution
               - states:StopExecution
               - states:ListExecutions
               - states:RedriveExecution
               - states:InvokeHTTPEndpoint
-              - states:SendTaskSuccess
-              - states:SendTaskFailure
-              - states:SendTaskHeartbeat
               - states:DescribeStateMachine
               - states:ListStateMachines
             Resource: "*"
@@ -840,8 +836,6 @@ Resources:
             Resource:
               - !GetAtt PipelineTokensTable.Arn
               - !Sub "${PipelineTokensTable.Arn}/index/*"
-              - !GetAtt DependencySubscriptionsTable.Arn
-              - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
               - !GetAtt PipelineRegistryTable.Arn
               - !Sub "${PipelineRegistryTable.Arn}/index/*"
               - !GetAtt AssetEventsTable.Arn
