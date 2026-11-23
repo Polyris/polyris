@@ -4,12 +4,13 @@
 Before the update, ``check`` refuses a platform that is older than 1.2.0, whose
 1.2 has not finished adopting older rows and facts for 48 hours, or that has a
 run in flight. Once 1.3 is installed, ``stop_leftovers`` stops what 1.2 left
-running.
+running, and ``wait_for_index`` waits for the index that the console's run
+lists read.
 
 The rules are pure and live in ``polyris/platform.py``. This module is their
-AWS side: it reads and stops through the boto3 clients its caller passes.
-``polyris/up.py`` decides when each step runs and prints what it returns or
-raises.
+AWS side: it reads and stops through the boto3 clients its caller passes, and
+says when it waits. ``polyris/up.py`` decides when each step runs and prints
+what it returns or raises.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Seque
 
 from botocore.exceptions import ClientError
 
-from ._ansi import CYAN
+from ._ansi import CYAN, YELLOW
 from ._ansi import c as _c
 from .constants import ACCESS_DENIED_CODES
 from .coordination import run_row, sweep
@@ -57,6 +58,9 @@ STOP_CAUSE = ("polyris-up stopped this execution: the platform runs 1.3 now, whi
               "started. Start the run again after its pipeline's redeploy.")
 #: How long the stop waits before it lists again: ListExecutions shows a new execution only after a moment.
 STOP_SETTLE_S = 2.0
+#: How often the wait for the index asks DynamoDB, and how long it waits at most: as long as for a stack.
+INDEX_POLL_S = 15.0
+INDEX_WAIT_S = 3600.0
 
 
 class Refused(Exception):
@@ -332,4 +336,48 @@ def _stop(sfn: Any, execution: str) -> bool:
             raise
         return False
     return True
+
+
+# ── The index that 1.3 adds ──────────────────────────────────────────────────
+
+
+def wait_for_index(dynamodb: Any, target: Target, *, sleep: Callable[[float], None] = time.sleep) -> bool:
+    """Wait until DynamoDB has built ``run-start-index`` on the tasks table, and say so (ADR #137 §5).
+
+    The 1.3 update adds the index, and CloudFormation reports the table updated
+    while DynamoDB still builds it: about 8 minutes on 100,000 rows (TR-0).
+    Until it is active a read of it fails, and the console's run lists say that
+    it is being built. True once it is active; False for a stack that names no
+    tasks table, a table without the index, and an index still being built
+    after an hour.
+    """
+    table, index = target.tokens_table, run_row.START_INDEX
+    if not table:
+        return False
+    waited = 0.0
+    while True:
+        status = _index_status(dynamodb, table, index)
+        if status == "ACTIVE":
+            if waited:
+                print(f"   {index} is active")
+            return True
+        if status is None:
+            print(_c(f"   {table} has no {index}, which the console's run lists read. The stack's events name "
+                     "what went wrong with the table.", YELLOW))
+            return False
+        if waited >= INDEX_WAIT_S:
+            print(_c(f"   {index} is still being built. The console's run lists say so until it is active; "
+                     "nothing else waits for it.", YELLOW))
+            return False
+        if not waited:
+            print(f"   waiting for DynamoDB to build {index} on {table}, which the console's run lists read: "
+                  "about 8 minutes on 100,000 rows")
+        sleep(INDEX_POLL_S)
+        waited += INDEX_POLL_S
+
+
+def _index_status(dynamodb: Any, table: str, index: str) -> Optional[str]:
+    """``ACTIVE``, ``CREATING``… of a table's global secondary index; None when it has no such index."""
+    indexes = dynamodb.describe_table(TableName=table)["Table"].get("GlobalSecondaryIndexes") or []
+    return next((str(found.get("IndexStatus", "")) for found in indexes if found.get("IndexName") == index), None)
 

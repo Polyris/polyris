@@ -1,8 +1,10 @@
 """Tests for polyris/upgrade.py — polyris-up's move of a platform from 1.2 to 1.3 (ADR #137, *Migration and upgrade*).
 
-Boundaries (Principle #14): DynamoDB runs on moto. Step Functions is a real
-boto3 client that ``fake_states.FakeStates`` answers, so botocore validates
-each request against the service's model; the module's own code runs as it is.
+Boundaries (Principle #14): DynamoDB runs on moto, and where a test needs an
+index that is still being built, botocore's Stubber answers ``DescribeTable``.
+Step Functions is a real boto3 client that ``fake_states.FakeStates`` answers,
+so botocore validates each request against the service's model; the module's
+own code runs as it is.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 import pytest
 from botocore.exceptions import ClientError
+from botocore.stub import Stubber
 from moto import mock_aws
 
 from fake_states import ACCOUNT, REGION, FakeStates, refuse
@@ -452,4 +455,71 @@ def test_a_table_that_cannot_be_read_is_not_taken_for_a_missing_one(dynamodb):
 
     with pytest.raises(ClientError, match="AccessDeniedException"):
         upgrade.rows_engine_since(dynamodb, _target())
+
+
+# ── The index that 1.3 adds ──────────────────────────────────────────────────
+
+
+def _table(*indexes: tuple) -> dict:
+    """DescribeTable's answer for the tasks table with these (name, status) indexes."""
+    described = {"TableName": TOKENS}
+    if indexes:
+        described["GlobalSecondaryIndexes"] = [{"IndexName": name, "IndexStatus": status} for name, status in indexes]
+    return {"Table": described}
+
+
+BUILDING = _table(("attention-index", "ACTIVE"), ("run-start-index", "CREATING"))
+BUILT = _table(("attention-index", "ACTIVE"), ("run-start-index", "ACTIVE"))
+
+
+@pytest.fixture
+def described():
+    """A DynamoDB client whose DescribeTable gives the answers a test queues, in order."""
+    client = boto3.client("dynamodb", region_name=REGION, aws_access_key_id="testing",
+                          aws_secret_access_key="testing")
+    with Stubber(client) as stubber:
+        def queue(*answers: dict):
+            for answer in answers:
+                stubber.add_response("describe_table", answer, {"TableName": TOKENS})
+            return client
+
+        yield queue
+        stubber.assert_no_pending_responses()
+
+
+def _wait(client, target=None):
+    slept: list = []
+    return upgrade.wait_for_index(client, target or _target(), sleep=slept.append), slept
+
+
+def test_an_index_that_is_active_needs_no_wait(described, capsys):
+    assert _wait(described(BUILT)) == (True, [])
+    assert capsys.readouterr().out == ""
+
+
+def test_the_wait_says_that_it_waits_until_dynamodb_has_built_the_index(described, capsys):
+    """CloudFormation reports the table updated while the index is still being built (TR-0 A3)."""
+    assert _wait(described(BUILDING, BUILDING, BUILT)) == (True, [upgrade.INDEX_POLL_S] * 2)
+
+    out = capsys.readouterr().out
+    assert out.count(f"waiting for DynamoDB to build run-start-index on {TOKENS}") == 1
+    assert out.rstrip().endswith("run-start-index is active")
+
+
+def test_the_wait_ends_after_its_hour_and_says_what_follows(described, capsys, monkeypatch):
+    monkeypatch.setattr(upgrade, "INDEX_WAIT_S", 2 * upgrade.INDEX_POLL_S)
+
+    assert _wait(described(BUILDING, BUILDING, BUILDING)) == (False, [upgrade.INDEX_POLL_S] * 2)
+
+    assert "run-start-index is still being built. The console's run lists say so" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("table", [_table(("attention-index", "ACTIVE")), _table()], ids=["other indexes", "none"])
+def test_a_tasks_table_without_the_index_is_said(described, capsys, table):
+    assert _wait(described(table)) == (False, [])
+    assert f"{TOKENS} has no run-start-index" in capsys.readouterr().out
+
+
+def test_a_stack_that_names_no_tasks_table_has_no_index_to_wait_for(described):
+    assert _wait(described(), _target({"StackName": "bare"})) == (False, [])
 
