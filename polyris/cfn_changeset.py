@@ -26,6 +26,8 @@ _NO_CHANGES_MARKERS = ("didn't contain changes", "No updates are to be performed
 STACK_WAIT_DELAY_S = 10
 STACK_WAIT_MAX_ATTEMPTS = 360
 _CHANGE_SET_MAX_WAIT_S = 600
+# An update that has succeeded: the stack is usable, and CloudFormation is deleting what the new template dropped.
+CLEANUP_STATUS = "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS"
 
 
 class ChangeSetError(Exception):
@@ -149,17 +151,34 @@ def wait_for_stack(cfn, *, stack_name: str, waiter: str) -> None:
     )
 
 
-def execute_change_set(cfn, *, stack_name: str, change_set: Dict[str, Any], disable_rollback: bool = False) -> None:
+def execute_change_set(
+    cfn,
+    *,
+    stack_name: str,
+    change_set: Dict[str, Any],
+    disable_rollback: bool = False,
+    on_cleanup: Optional[Callable[[], None]] = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
     """Execute a ready change set and block until the stack settles.
 
     With ``disable_rollback`` a failed operation keeps what it already changed
     (``UPDATE_FAILED``) instead of rolling back, so it can be fixed forward.
+
+    ``on_cleanup`` is called once an update has succeeded and CloudFormation
+    starts to delete what the new template dropped (``CLEANUP_STATUS``): the
+    moment to end whatever would hold that deletion up. A create never calls
+    it, nor does an update that fails, or whose cleanup is over before a poll
+    sees it.
     """
     if disable_rollback:
         cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"], DisableRollback=True)
     else:
         cfn.execute_change_set(StackName=stack_name, ChangeSetName=change_set["ChangeSetName"])
-    waiter_name = "stack_create_complete" if change_set.get("ChangeSetType") == "CREATE" else "stack_update_complete"
+    created = change_set.get("ChangeSetType") == "CREATE"
+    if on_cleanup is not None and not created and _reaches_cleanup(cfn, stack_name, sleep):
+        on_cleanup()
+    waiter_name = "stack_create_complete" if created else "stack_update_complete"
     try:
         wait_for_stack(cfn, stack_name=stack_name, waiter=waiter_name)
     except WaiterError as e:
@@ -167,6 +186,16 @@ def execute_change_set(cfn, *, stack_name: str, change_set: Dict[str, Any], disa
             f"Stack {stack_name} did not finish: {e}. The events above (or the CloudFormation console) "
             f"name the failing resource."
         )
+
+
+def _reaches_cleanup(cfn, stack_name: str, sleep: Callable[[float], None]) -> bool:
+    """Wait while an update runs; True once it has succeeded and its cleanup has begun."""
+    for _ in range(STACK_WAIT_MAX_ATTEMPTS):
+        status = stack_status(cfn, stack_name)
+        if status != "UPDATE_IN_PROGRESS":
+            return status == CLEANUP_STATUS
+        sleep(STACK_WAIT_DELAY_S)
+    return False
 
 
 def start_event_watcher(cfn, stack_name: str) -> Callable[[], None]:
