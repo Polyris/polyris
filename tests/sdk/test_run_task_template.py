@@ -1695,19 +1695,6 @@ def test_a_batch_job_is_named_after_its_run_task_execution(template):
     assert len(limits.batch_submit_job({}, "p", "t", {})["JobName"]) == run_name.MAX_NAME <= 128
 
 
-def test_an_input_without_the_partition_fields_is_a_daily_runs(template):
-    """Principle #49: a dispatcher older than the partition fields gives none; run_task acts as before for it."""
-    from sfn_jsonata import evaluate
-    run_input = {"date": "2026-11-18", "partition_arg": "2026-11-18", "variables": {}}
-    variables = evaluate(template["States"]["Prepare_Task_Input"]["Output"], input={},
-                         context=_context(run_input))["variables"]
-    assert (variables["date_iso"], variables["previous_date"]) == ("2026-11-18", "2026-11-17")
-    old = {k: v for k, v in SUCCESS_RUN.items() if k not in ("partition_date", "granularity")}
-    _, _, fact, _ = _transaction(template, run=old)
-    assert fact["Put"]["Item"]["partition_date"] == {"S": "2026-11-18"}
-    assert fact["Put"]["Item"]["granularity"] == {"S": "daily"}
-
-
 @pytest.mark.parametrize("cause, arn", [
     ('{"ExecutionArn":"arn:aws:states:us-east-1:1:execution:child:abc","Input":"{\\"rows\\": \\"xxx',
      "arn:aws:states:us-east-1:1:execution:child:abc"),               # cut at 32,768 characters: no JSON

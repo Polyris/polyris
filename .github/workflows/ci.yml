@@ -115,13 +115,12 @@ jobs:
         run: |
           # rsa = pure-Python RS256 JWT verify in auth.py (ADR #65).
           # moto = real (in-memory) AWS backends for tests that exercise actual
-          # boto3 calls rather than mocking them (Principle #14) — e.g.
-          # console_api/tests/routes/test_reconcile_sfn_status.py against a real
-          # Step Functions backend.
+          # boto3 calls rather than mocking them (Principle #14) — e.g. the
+          # coordination Lambdas' tests against real DynamoDB tables and streams.
           pip install pytest pytest-mock boto3 "rsa>=4.9" "moto>=4.0.0" pyyaml
-          # console_api/routes/backfill.py imports polyris.partitions /
-          # polyris.granularity. In the deployed Lambda the polyris package is
-          # bundled via Makefile; for CI install it editable so imports match runtime.
+          # The console and the coordination Lambdas import polyris: the deployed
+          # Lambda installs it from requirements.txt (ADR #102); CI installs this
+          # checkout editable, so the imports match the code under test.
           pip install -e .
 
       - name: Validate Lambda handlers syntax

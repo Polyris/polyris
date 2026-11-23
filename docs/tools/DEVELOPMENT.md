@@ -82,7 +82,7 @@ All tests run automatically on push/PR to main via GitHub Actions (`.github/work
 | Job | What runs |
 |-----|-----------|
 | **Python 3.11/3.12** | ruff lint, mypy, smoke tests, `pytest tests/`, trigger rules, pipeline imports |
-| **Lambda Tests** | Syntax check, logger sync, every Lambda suite (console_api, coordination, query_subscriptions, …) |
+| **Lambda Tests** | Syntax check, logger sync, every Lambda suite (console_api, coordination, bucket_cleanup, …) |
 | **SFN Templates** | ASL JSON validation, `test_sfn_flow.py` (graph integrity), JSONata expression tests |
 | **SAM** | `cfn-lint sam/template.yaml` |
 | **UI** | npm lint, typecheck, `vitest run`, `next build` |

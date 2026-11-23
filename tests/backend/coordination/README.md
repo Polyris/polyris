@@ -37,7 +37,7 @@ python -m pytest tests/backend/coordination
 - every state machine with a `DefinitionUri` is loaded with its `DefinitionSubstitutions` resolved the way CloudFormation resolves them. A template wired to the wrong table therefore writes to the wrong moto table, and a substitution the template does not define fails the load;
 - `deploy_pipeline(dag)` generates a pipeline's ASL with the real generator and loads it.
 
-`test_platform_stack.py` runs a one-task pipeline end to end: pipeline execution → `dependency_wrapper` → registration helper → `run_task` → the user's task → success.
+`test_platform_stack.py` runs a one-task pipeline end to end: pipeline execution → `Start_Run` → the dispatcher → `run_task` → the user's task → success, and the run's answer.
 
 ## Scenarios (`test_scenarios*.py`)
 

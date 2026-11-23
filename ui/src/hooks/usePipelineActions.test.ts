@@ -333,6 +333,21 @@ describe('usePipelineActions', () => {
       expect(calls.some(url => url.startsWith('/task-stop'))).toBe(false);
     });
 
+    it('says there is no run to stop instead of closing the dialog as if it had (TR-8, P-5)', async () => {
+      const props = { ...defaultProps, executions: [] as typeof defaultProps.executions, selectedExecution: null };
+      const { result } = renderHook(() => usePipelineActions(props), { wrapper: createWrapper() });
+
+      act(() => {
+        result.current.handleStop();
+      });
+      await act(async () => {
+        await result.current.executeModalAction();
+      });
+
+      expect(mockApiPost).not.toHaveBeenCalled();
+      expect(defaultProps.showToast).toHaveBeenCalledWith('No active execution to stop', 'warning');
+    });
+
     it('should execute skip task action', async () => {
       mockApiPost.mockResolvedValue({ success: true });
       

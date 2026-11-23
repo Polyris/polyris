@@ -393,14 +393,12 @@
 .sb-spark { display: flex; gap: 1px; align-items: stretch; height: 12px; flex-shrink: 0; }
 .sb-spark__bar { width: 3px; border-radius: 1px; background: var(--bg-tertiary); }
 .sb-spark__bar--running { background: var(--running); animation: spark-pulse 1.5s ease-in-out infinite; }
-.sb-spark__bar--failed, .sb-spark__bar--timed_out { background: var(--error); }
+.sb-spark__bar--failed { background: var(--error); }
 /* Light mode: a 3px bar needs 3:1 against the row, also when selected (WCAG 1.4.11);
    the plain success, warning and orange tokens reach about 2:1 on white */
 .sb-spark__bar--success { background: color-mix(in srgb, var(--success) 70%, black); }
-.sb-spark__bar--recovered { background: color-mix(in srgb, var(--warning) 70%, black); }
 .sb-spark__bar--aborted { background: color-mix(in srgb, var(--aborted) 75%, black); }
 [data-theme="dark"] .sb-spark__bar--success { background: var(--success); }
-[data-theme="dark"] .sb-spark__bar--recovered { background: var(--warning); }
 [data-theme="dark"] .sb-spark__bar--aborted { background: var(--aborted); }
 /* No run in the window: a small hollow circle, quiet next to real statuses, still 3:1 */
 .sb-row__idle { color: color-mix(in srgb, var(--text-muted) 70%, black); }

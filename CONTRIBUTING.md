@@ -49,7 +49,7 @@ make test
 
 # Or by area:
 make test-sdk           # pytest tests/sdk/
-make test-lambdas       # every Lambda suite: console_api, coordination, query_subscriptions, …
+make test-lambdas       # every Lambda suite: console_api, coordination, bucket_cleanup, …
 make test-sfn-jsonata   # JSONata expression tests (requires Node.js)
 make test-ui            # vitest (requires npm install in ui/)
 ```
@@ -99,7 +99,6 @@ polyris/
 │   ├── lambdas/          # Lambda function code
 │   │   ├── console_api/  # REST API (24 free endpoints)
 │   │   ├── coordination/ # Start_Run, the dispatcher, the sweeper and asset fan-out (ADR #137)
-│   │   ├── query_subscriptions/     # Downstream subscriber lookup
 │   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
 │   ├── sfn_templates/    # Step Functions ASL templates
 │   └── template.yaml    # SAM template

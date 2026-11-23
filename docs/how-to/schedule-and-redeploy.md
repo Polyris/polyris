@@ -78,13 +78,13 @@ Practical consequence: a change to task retry policy, trigger rule, or DAG topol
 
 If you changed `schedule="cron(0 8 * * ? *)"` to `schedule="cron(0 6 * * ? *)"`, the current in-flight run (triggered at 08:00) is unaffected. The scheduler fires next at 06:00 tomorrow, not 08:00.
 
-### Registration re-fires. DAG snapshot in the registry updates.
+### A run keeps the version it started with.
 
-`polyris-deploy` writes the updated DAG snapshot to `pipeline-registry` DDB after the CFN deploy completes. The Console UI reflects the new topology within seconds. In-flight runs continue to render against their *own* snapshot (captured at run start), so their DAG view in the Console keeps showing the old shape until they finish.
+`polyris-deploy` writes the pipeline's task specs as a new version in `pipeline-specs` before the CFN deploy, and each run reads the version it started with. The Console shows the new graph for the runs that start after the deploy; a run in flight keeps its own graph.
 
-### Task-config changes: read at task START, not at wrapper start.
+### Task settings change from the next run.
 
-The dependency wrapper for a task that's currently in `waiting` state reads its `task_config` (retries, retry_delay, timeouts, trigger_rule) from the DAG snapshot captured when the pipeline execution started. So even for tasks that haven't fired yet in the current run, a redeploy that changes those parameters does not affect them. They pick up the new values on the *next* pipeline execution.
+A task's retries, retry delay, time limits and trigger rule come from its run's version. A redeploy that changes them does not touch a run in flight, the tasks that have not started yet in it included: they take the new values on the *next* run.
 
 ### What redeploy CANNOT recover
 

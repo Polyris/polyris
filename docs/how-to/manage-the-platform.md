@@ -19,11 +19,11 @@ If a change would replace or remove a DynamoDB table, S3 bucket, the Cognito use
 
 ## Upgrade from 1.2 to 1.3
 
-1.3 adopts no run that 1.2 started, so this upgrade has steps of its own. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`) and run its `polyris-up`.
+1.3 adopts no run that 1.2 started, so this upgrade has steps of its own. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until its adoption of older rows has been finished for 48 hours.
 
 1. Install polyris 1.3 and run `polyris-validate --all` in the folder that holds your pipelines' folders. Fix what it reports: a pipeline it refuses cannot be redeployed in step 5.
 2. Grant the roles their new permissions: [IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#upgrade-from-12-to-13).
-3. Disable the pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`), so that no new run starts. Then let the runs in flight finish, or stop them.
+3. Disable the pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`), so that no new run starts. Deal with failed runs: a run started on 1.2 takes no action after the upgrade. Then let the runs in flight finish, or stop them.
 4. Run `polyris-up`.
 5. Redeploy every pipeline with `polyris-deploy`. The redeploy turns the pipeline's schedule back on.
 

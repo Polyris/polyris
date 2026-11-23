@@ -204,8 +204,6 @@
 .task-status-badge.stale { background: var(--skipped-light); color: var(--skipped); }
 .task-status-badge.skipped { background: var(--skipped-light); color: var(--skipped); }
 .task-status-badge.upstream_failed { background: var(--error-light); color: var(--error); }
-.task-status-badge.timed_out { background: var(--error-light); color: var(--error); }
-.task-status-badge.recovered { background: var(--warning-light); color: var(--warning); }
 .task-status-badge.waiting_paused { background: #fef3c7; color: #d97706; }
 .task-status-badge.waiting_decision, .task-status-badge.decision { 
     background: var(--decision-light); color: var(--decision); 

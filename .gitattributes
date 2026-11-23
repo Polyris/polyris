@@ -6,6 +6,5 @@ sam/lambdas/console_api/constants_generated.py linguist-generated=true
 ui/src/generated/** linguist-generated=true
 
 # sam/lambdas/_shared/logger.py → copied into each Lambda (make sync-loggers)
-sam/lambdas/query_subscriptions/logger.py linguist-generated=true
 sam/lambdas/console_api/logger.py linguist-generated=true
 sam/lambdas/coordination/logger.py linguist-generated=true

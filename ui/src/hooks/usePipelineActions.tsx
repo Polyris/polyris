@@ -416,6 +416,9 @@ export function usePipelineActions({
                     logger.error('actions', 'Stop did not complete', result);
                     showToast(`Stop did not complete — ${getApiErrorMessage(result)}`, 'error');
                 }
+            } else {
+                // No run to stop: say so, as Pause does, instead of closing the dialog as if it had (TR-8, P-5).
+                showToast('No active execution to stop', 'warning');
             }
             
             setModal(prev => ({ ...prev, isOpen: false }));
