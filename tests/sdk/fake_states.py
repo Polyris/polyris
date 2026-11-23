@@ -69,6 +69,8 @@ class FakeStates:
         self.page_size = 100
         #: Called with an execution's name just before its stop takes effect: what a race does meanwhile.
         self.on_stop: Optional[Callable[[str], None]] = None
+        #: Executions (by name) that a listing still shows but that are gone when their stop arrives.
+        self.gone_on_stop: Set[str] = set()
         self._params: Dict[str, Any] = {}
         self.client.meta.events.register_first("before-parameter-build.*.*", self._remember)
         self.client.meta.events.register("before-call.*.*", self._answer)
@@ -147,7 +149,7 @@ class FakeStates:
 
     def _stop_execution(self, executionArn, error=None, cause=None):
         execution = next((e for e in self.executions if e.arn == executionArn), None)
-        if execution is None:
+        if execution is None or execution.name in self.gone_on_stop:
             return _error("ExecutionDoesNotExist", f"Execution Does Not Exist: '{executionArn}'")
         if self.on_stop:
             self.on_stop(execution.name)

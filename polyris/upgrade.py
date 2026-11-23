@@ -3,18 +3,21 @@
 1.3 runs tasks as rows and deletes 1.2's engine, and nothing adopts a 1.2 run.
 Before the update, ``check`` refuses a platform that is older than 1.2.0, whose
 1.2 has not finished adopting older rows and facts for 48 hours, or that has a
-run in flight.
+run in flight. Once 1.3 is installed, ``stop_leftovers`` stops what 1.2 left
+running.
 
 The rules are pure and live in ``polyris/platform.py``. This module is their
-AWS side: it reads through the boto3 clients its caller passes. ``polyris/up.py``
-decides when each step runs and prints what it raises.
+AWS side: it reads and stops through the boto3 clients its caller passes.
+``polyris/up.py`` decides when each step runs and prints what it returns or
+raises.
 """
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from botocore.exceptions import ClientError
 
@@ -26,6 +29,7 @@ from .platform import (
     ADOPTION_SETTLE,
     BULK_BACKFILL_MACHINE,
     OLDEST_UPGRADABLE,
+    OUTPUT_SPECS_TABLE,
     OUTPUT_TOKENS_TABLE,
     PARAM_NAMESPACE,
     PARAM_STAGE,
@@ -47,6 +51,12 @@ OVERRIDE_FLAG = "--accept-stopped-runs"
 ENGINE_MACHINES = REMOVED_STANDARD_MACHINES + (BULK_BACKFILL_MACHINE, RUN_TASK_MACHINE)
 #: How many running executions of one state machine the check counts before it says "or more".
 _COUNT_UP_TO = 100
+#: What the history of an execution that polyris-up stopped says.
+STOP_ERROR = "Polyris.Upgrade"
+STOP_CAUSE = ("polyris-up stopped this execution: the platform runs 1.3 now, which adopts no run that 1.2 "
+              "started. Start the run again after its pipeline's redeploy.")
+#: How long the stop waits before it lists again: ListExecutions shows a new execution only after a moment.
+STOP_SETTLE_S = 2.0
 
 
 class Refused(Exception):
@@ -59,23 +69,29 @@ class Refused(Exception):
 
 @dataclass(frozen=True)
 class Target:
-    """The deployed platform a step acts on: its stack, where its state machines are, and its tasks table."""
+    """The deployed platform a step acts on: its stack, where its state machines are, and its tables."""
 
     stack_name: str
-    #: The ARN of any of its state machines, up to the end of ``{Namespace}-{Stage}-polyris-``.
+    #: What the names of its state machines, and of its pipelines', start with: ``{Namespace}-{Stage}-polyris-``.
+    name_prefix: str
+    #: The ARN of any of its state machines, up to the end of that prefix.
     machine_prefix: str
     #: The tasks table (``pipeline-tokens``); empty when the stack names none.
     tokens_table: str
+    #: ``pipeline-specs``, which the 1.3 update adds; empty when the stack names none.
+    specs_table: str
 
     @classmethod
     def of(cls, stack: Mapping[str, Any], *, partition: str, region: str, account: str) -> "Target":
         """The target a describe_stacks entry describes, in this account and region."""
-        params = parameters_of(stack)
+        params, outputs = parameters_of(stack), outputs_of(stack)
         prefix = platform_prefix(params.get(PARAM_NAMESPACE, ""), params.get(PARAM_STAGE, ""))
         return cls(
             stack_name=str(stack.get("StackName", "")),
+            name_prefix=prefix,
             machine_prefix=state_machine_arn(partition=partition, region=region, account=account, name=prefix),
-            tokens_table=outputs_of(stack).get(OUTPUT_TOKENS_TABLE, ""),
+            tokens_table=outputs.get(OUTPUT_TOKENS_TABLE, ""),
+            specs_table=outputs.get(OUTPUT_SPECS_TABLE, ""),
         )
 
     def machine(self, name: str) -> str:
@@ -93,12 +109,16 @@ def permission(action: str, resource: str) -> Iterator[None]:
     try:
         yield
     except ClientError as e:
-        if e.response.get("Error", {}).get("Code", "") not in ACCESS_DENIED_CODES:
+        if _code(e) not in ACCESS_DENIED_CODES:
             raise
         raise Refused(
             f"polyris-up may not call {action} on {resource}, which its checks before the upgrade to 1.3 need.",
             "Grant it to the role that runs polyris-up (docs/deployment/IAM_PERMISSIONS.md), then run it again.",
         ) from e
+
+
+def _code(error: ClientError) -> str:
+    return str(error.response.get("Error", {}).get("Code", ""))
 
 
 def check(*, sfn: Any, dynamodb: Any, target: Target, deployed: Optional[str], override: bool, now: datetime) -> None:
@@ -175,7 +195,7 @@ def _check_drained(sfn: Any, target: Target) -> None:
             with permission("states:ListExecutions", arn):
                 page = sfn.list_executions(stateMachineArn=arn, statusFilter="RUNNING", maxResults=_COUNT_UP_TO)
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code", "") != "StateMachineDoesNotExist":
+            if _code(e) != "StateMachineDoesNotExist":
                 raise
             continue                                       # a state machine that is not there runs nothing
         count = len(page.get("executions", []))
@@ -188,3 +208,128 @@ def _check_drained(sfn: Any, target: Target) -> None:
             "that no new run starts; then run polyris-up again.",
             f"To upgrade now, pass {_c(OVERRIDE_FLAG, CYAN)}: no run of 1.2 goes on after the upgrade, so start "
             "them again after the redeploy.")
+
+
+# ── What 1.2 left running ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class StoppedRun:
+    """A run that the stop ended, for the user to start again: a pipeline's execution, or a backfill's."""
+
+    machine: str            # the state machine's name
+    name: str               # the execution's
+    started: datetime
+
+
+@dataclass
+class Stopped:
+    """What ``stop_leftovers`` ended."""
+
+    runs: List[StoppedRun] = field(default_factory=list)
+    #: Executions of the engine's own state machines (wrappers, ``run_task``), which belong to those runs.
+    engine: int = 0
+
+
+def rows_engine_since(dynamodb: Any, target: Target) -> Optional[datetime]:
+    """When the 1.3 update ran on this platform: the creation of ``pipeline-specs``, the table that update adds.
+
+    No run of 1.3 can have started before it, so what started earlier is
+    1.2's. The table is still there on a later ``polyris-up``, which finds
+    1.2's leftovers by it again. None for a stack that names no such table, or
+    whose table is gone.
+    """
+    if not target.specs_table:
+        return None
+    try:
+        created = dynamodb.describe_table(TableName=target.specs_table)["Table"].get("CreationDateTime")
+    except ClientError as e:
+        if _code(e) != "ResourceNotFoundException":
+            raise
+        return None
+    return created if isinstance(created, datetime) else None
+
+
+def stop_leftovers(
+    sfn: Any,
+    *,
+    target: Target,
+    pipelines: Sequence[str],
+    started_before: Optional[datetime],
+    sleep: Callable[[float], None] = time.sleep,
+) -> Stopped:
+    """Stop what 1.2 left running on a platform that runs 1.3 (ADR #137, *Migration and upgrade*).
+
+    A wrapper that waits on its token never ends, and the cleanup that deletes
+    its state machine waits for it; a pipeline's run left running blocks the
+    deletion of the pipeline's stack. Nothing adopts a 1.2 run, so:
+
+    - **Which.** Every execution of the Standard state machines that 1.3
+      deletes: none of them can be 1.3's. And every execution of
+      ``bulk_backfill``, of the pipelines' state machines (``pipelines``,
+      their ARNs) and of ``run_task`` that started before ``started_before``,
+      the time the 1.3 update ran, so a pipeline redeployed since keeps its
+      1.3 runs. With None that time is unknown, and those are left alone.
+    - **Order.** What starts other executions first: ``bulk_backfill``, the
+      pipelines' executions and the wrappers; then ``run_task``.
+    - **Until.** It lists again until a listing shows nothing it has not
+      stopped: a wrapper can start ``run_task`` between a listing and its
+      stop, and ``ListExecutions`` shows a new execution only after a moment.
+
+    It is idempotent: with nothing left, it stops nothing.
+    """
+    order: List[Tuple[str, Optional[datetime]]] = [(target.machine(name), None) for name in REMOVED_STANDARD_MACHINES]
+    starters: Set[str] = set()
+    if started_before is not None:
+        starters = {target.machine(BULK_BACKFILL_MACHINE), *pipelines}
+        order = [(target.machine(BULK_BACKFILL_MACHINE), started_before),
+                 *((pipeline, started_before) for pipeline in pipelines),
+                 *order,
+                 (target.machine(RUN_TASK_MACHINE), started_before)]
+    stopped = Stopped()
+    seen: Set[str] = set()
+    while True:
+        before = len(seen)
+        for machine, cutoff in order:
+            for execution in _running(sfn, machine, cutoff):
+                if execution["executionArn"] in seen:
+                    continue                               # stopped already: a listing can lag behind a stop
+                seen.add(execution["executionArn"])
+                if not _stop(sfn, execution["executionArn"]):
+                    continue
+                if machine in starters:
+                    stopped.runs.append(StoppedRun(machine=machine.rsplit(":", 1)[-1], name=execution["name"],
+                                                   started=execution["startDate"]))
+                else:
+                    stopped.engine += 1
+        if len(seen) == before:
+            return stopped
+        sleep(STOP_SETTLE_S)
+
+
+def _running(sfn: Any, machine: str, before: Optional[datetime]) -> List[Dict[str, Any]]:
+    """A state machine's running executions that started before ``before`` (all of them, with None).
+
+    None of a state machine that does not exist: a pipeline destroyed since
+    its registration, or one of 1.2's that CloudFormation has deleted.
+    """
+    executions: List[Dict[str, Any]] = []
+    try:
+        for page in sfn.get_paginator("list_executions").paginate(stateMachineArn=machine, statusFilter="RUNNING"):
+            executions.extend(e for e in page.get("executions", []) if before is None or e["startDate"] < before)
+    except ClientError as e:
+        if _code(e) != "StateMachineDoesNotExist":
+            raise
+    return executions
+
+
+def _stop(sfn: Any, execution: str) -> bool:
+    """Stop an execution; False when it is gone already."""
+    try:
+        sfn.stop_execution(executionArn=execution, error=STOP_ERROR, cause=STOP_CAUSE)
+    except ClientError as e:
+        if _code(e) != "ExecutionDoesNotExist":
+            raise
+        return False
+    return True
+

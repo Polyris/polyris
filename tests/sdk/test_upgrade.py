@@ -21,11 +21,13 @@ from polyris.coordination.times import format_utc
 NOW = datetime(2026, 11, 23, 12, tzinfo=timezone.utc)
 PREFIX = "acme-dev-polyris-"
 TOKENS = f"{PREFIX}pipeline-tokens"
+SPECS = f"{PREFIX}pipeline-specs"
 STACK = {
     "StackName": "acme-dev",
     "Parameters": [{"ParameterKey": "Namespace", "ParameterValue": "acme"},
                    {"ParameterKey": "Stage", "ParameterValue": "dev"}],
-    "Outputs": [{"OutputKey": P.OUTPUT_TOKENS_TABLE, "OutputValue": TOKENS}],
+    "Outputs": [{"OutputKey": P.OUTPUT_TOKENS_TABLE, "OutputValue": TOKENS},
+                {"OutputKey": P.OUTPUT_SPECS_TABLE, "OutputValue": SPECS}],
 }
 #: 1.2's thirteen state machines: the engine's six Standard ones, its four Express ones, and three test tasks.
 STANDARD_1_2 = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter",
@@ -93,12 +95,14 @@ def _refusal(dynamodb, states, **kw) -> upgrade.Refused:
 # ── The target ───────────────────────────────────────────────────────────────
 
 
-def test_a_target_names_the_platforms_state_machines_and_its_tasks_table():
+def test_a_target_names_the_platforms_state_machines_and_its_tables():
     target = _target()
-    assert target.stack_name == "acme-dev" and target.tokens_table == TOKENS
+    assert (target.stack_name, target.tokens_table, target.specs_table) == ("acme-dev", TOKENS, SPECS)
+    assert target.name_prefix == PREFIX
     assert target.machine("dependency-wrapper") == (
         f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:acme-dev-polyris-dependency-wrapper")
-    assert _target({"StackName": "bare"}).tokens_table == ""
+    bare = _target({"StackName": "bare"})
+    assert (bare.tokens_table, bare.specs_table) == ("", "")
 
 
 def test_the_check_lists_the_engines_standard_state_machines_of_1_2():
@@ -279,3 +283,173 @@ def test_an_error_that_is_no_denial_is_not_a_refusal(dynamodb, states, failing):
 
     with pytest.raises(ClientError, match="ThrottlingException"):
         _check(dynamodb, states)
+
+
+# ── What 1.2 left running ────────────────────────────────────────────────────
+
+UPDATED = NOW - timedelta(hours=2)                 # when the 1.3 update ran
+BEFORE = UPDATED - timedelta(hours=1)
+AFTER = UPDATED + timedelta(minutes=30)
+WRAPPER, RUN_TASK, BACKFILL = PREFIX + "dependency-wrapper", PREFIX + "dep-run-task-helper", PREFIX + "bulk-backfill"
+ORDERS = PREFIX + "orders"
+
+
+@pytest.fixture
+def left(states) -> FakeStates:
+    """A 1.2 run that an upgrade left in flight, with the backfill that started it."""
+    states.machine(ORDERS)
+    states.run(RUN_TASK, "extract-work", started=BEFORE)
+    states.run(WRAPPER, "load-wrapper", started=BEFORE)
+    states.run(WRAPPER, "extract-wrapper", started=BEFORE - timedelta(seconds=1))
+    states.run(PREFIX + "pause-waiter", "load-pause", started=BEFORE)
+    states.run(ORDERS, "orders-run-2026-11-22-ab12cd34", started=BEFORE)
+    states.run(BACKFILL, "backfill-orders-2026-11", started=BEFORE)
+    return states
+
+
+def _stop(states, *, pipelines=(ORDERS,), started_before=UPDATED):
+    slept: list = []
+    stopped = upgrade.stop_leftovers(
+        states.client, target=_target(), pipelines=[f"arn:aws:states:{REGION}:{ACCOUNT}:stateMachine:{name}"
+                                                    for name in pipelines],
+        started_before=started_before, sleep=slept.append)
+    return stopped, slept
+
+
+def test_the_stop_ends_what_1_2_left_running_and_what_starts_others_first(left):
+    stopped, slept = _stop(left)
+
+    assert left.running() == []
+    # bulk_backfill, the pipelines' executions and the wrappers; then run_task.
+    assert left.stopped == ["backfill-orders-2026-11", "orders-run-2026-11-22-ab12cd34", "load-wrapper",
+                            "extract-wrapper", "load-pause", "extract-work"]
+    assert stopped.runs == [upgrade.StoppedRun(machine=BACKFILL, name="backfill-orders-2026-11", started=BEFORE),
+                            upgrade.StoppedRun(machine=ORDERS, name="orders-run-2026-11-22-ab12cd34", started=BEFORE)]
+    assert stopped.engine == 4
+    assert slept == [upgrade.STOP_SETTLE_S], "one more listing, which showed nothing new"
+    assert {(stop["error"], stop["cause"]) for stop in left.stops} == {(upgrade.STOP_ERROR, upgrade.STOP_CAUSE)}
+
+
+def test_the_stop_keeps_what_started_after_the_update(left):
+    """A pipeline redeployed meanwhile, from CI or another terminal, keeps its first 1.3 run."""
+    left.run(ORDERS, "orders-run-2026-11-23-0f0f0f0f", started=AFTER)
+    left.run(RUN_TASK, "extract-work-of-1-3", started=AFTER)
+    left.run(BACKFILL, "backfill-of-1-3", started=AFTER)
+
+    _stop(left)
+
+    assert left.running() == ["backfill-of-1-3", "extract-work-of-1-3", "orders-run-2026-11-23-0f0f0f0f"]
+
+
+def test_the_stop_ends_every_execution_of_a_state_machine_1_3_deletes_whenever_it_started(left):
+    """Once it is being deleted, a state machine of 1.2 can have no execution of 1.3."""
+    left.run(WRAPPER, "started-during-the-update", started=AFTER)
+
+    _stop(left)
+
+    assert "started-during-the-update" in left.stopped
+
+
+def test_without_the_time_of_the_update_the_stop_ends_only_what_1_3_deletes(left):
+    stopped, _ = _stop(left, started_before=None)
+
+    assert sorted(left.stopped) == ["extract-wrapper", "load-pause", "load-wrapper"]
+    assert (stopped.runs, stopped.engine) == ([], 3)
+    listed = {params["stateMachineArn"].rsplit(":", 1)[-1] for name, params in left.calls if name == "ListExecutions"}
+    assert listed == {PREFIX + name for name in P.REMOVED_STANDARD_MACHINES}
+
+
+def test_the_stop_lists_again_until_a_listing_shows_nothing_new(left):
+    """A wrapper can start run_task between a listing and its stop, and ListExecutions shows a new
+    execution only after a moment."""
+    def a_wrapper_starts_its_work(name: str) -> None:
+        if name == "load-wrapper":
+            left.run(RUN_TASK, "load-work", started=BEFORE, hidden=1)
+
+    left.on_stop = a_wrapper_starts_its_work
+
+    stopped, slept = _stop(left)
+
+    assert left.running() == [] and left.stopped[-1] == "load-work"
+    assert stopped.engine == 5
+    assert slept == [upgrade.STOP_SETTLE_S] * 2
+
+
+def test_the_stop_ends_an_execution_once_though_listings_lag_behind_it(states):
+    states.run(WRAPPER, "extract-wrapper", started=BEFORE, lingers=3)
+
+    stopped, _ = _stop(states)
+
+    assert states.stopped == ["extract-wrapper"] and stopped.engine == 1
+
+
+def test_the_stop_is_idempotent(left):
+    _stop(left)
+
+    stopped, slept = _stop(left)
+
+    assert (stopped.runs, stopped.engine, slept) == ([], 0, [])
+    assert len(left.stops) == 6
+
+
+def test_the_stop_reads_every_page_of_a_listing(states):
+    states.page_size = 2
+    for n in range(5):
+        states.run(WRAPPER, f"wrapper-{n}", started=BEFORE - timedelta(minutes=n))
+
+    stopped, _ = _stop(states)
+
+    assert states.running() == [] and stopped.engine == 5
+
+
+def test_the_stop_passes_over_what_is_gone(left):
+    """A state machine that CloudFormation has deleted, a pipeline destroyed since it registered, and
+    an execution that ended between its listing and its stop."""
+    del left.machines[_target().machine("failure-handler")]
+    left.gone_on_stop.add("load-pause")
+
+    stopped, _ = _stop(left, pipelines=(ORDERS, PREFIX + "destroyed"))
+
+    assert "load-pause" not in left.stopped and stopped.engine == 3
+    assert len(stopped.runs) == 2
+
+
+def test_the_stop_touches_no_other_state_machine(left):
+    """Express executions end within five minutes on their own, and a test task's is a task's work."""
+    left.run(PREFIX + "test-success", "tried-by-hand", started=BEFORE)
+
+    _stop(left)
+
+    assert left.running() == ["tried-by-hand"]
+    listed = {params["stateMachineArn"].rsplit(":", 1)[-1] for name, params in left.calls if name == "ListExecutions"}
+    assert listed == {PREFIX + name for name in STANDARD_1_2} | {ORDERS}
+
+
+@pytest.mark.parametrize("operation", ["ListExecutions", "StopExecution"])
+def test_a_denied_call_of_the_stop_reaches_the_caller(left, operation):
+    """polyris-up says what could not be stopped and how to go on; nothing is passed over in silence."""
+    left.denied.add(operation)
+
+    with pytest.raises(ClientError, match="AccessDeniedException"):
+        _stop(left)
+
+
+def test_the_1_3_update_ran_when_it_created_pipeline_specs(dynamodb):
+    assert upgrade.rows_engine_since(dynamodb, _target()) is None, "no such table: 1.3 was never installed"
+
+    dynamodb.create_table(TableName=SPECS, BillingMode="PAY_PER_REQUEST",
+                          KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+                          AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}])
+    since = upgrade.rows_engine_since(dynamodb, _target())
+
+    assert since == dynamodb.describe_table(TableName=SPECS)["Table"]["CreationDateTime"]
+    assert since.tzinfo is not None, "it is compared with an execution's start"
+    assert upgrade.rows_engine_since(dynamodb, _target({"StackName": "a 1.2 stack names no such table"})) is None
+
+
+def test_a_table_that_cannot_be_read_is_not_taken_for_a_missing_one(dynamodb):
+    refuse(dynamodb, "DescribeTable")
+
+    with pytest.raises(ClientError, match="AccessDeniedException"):
+        upgrade.rows_engine_since(dynamodb, _target())
+
