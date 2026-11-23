@@ -595,8 +595,36 @@ class World:
                            body={"date": run.date, "pipeline_execution": run.name, "with_dependants": True})
 
     def upgrade_platform(self) -> None:
-        """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are."""
-        raise NeedsBinding("rows-migration", "the upgrade from 1.2")
+        """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are (ADR #137,
+        *Migration*, the flag that overrides the drain).
+
+        The World runs 1.3's engine alone, so the runs it started stand in for 1.2's and are made into what 1.2
+        leaves: polyris-up stopped their executions as the update's cleanup began; they have no run row and no
+        run input; their task rows carry none of 1.3's fields (readiness, spec version, run start); and each
+        waiting row keeps the `waiting` entry 1.2 gave it, first due after 10 minutes.
+        """
+        from polyris.coordination import attention, run_row, task_row
+        from polyris.coordination.times import format_utc
+
+        table = self.resource.Table(self.stack.tables["PipelineTokensTable"])
+        rows = [i for i in self._items() if task_row.is_task_key(str(i["execution_name"])) and "generation" in i]
+        for execution in list(self.runtime.executions.values()):
+            if execution.status == "RUNNING":
+                self.runtime.stop_execution(executionArn=execution.arn, cause="polyris-up: the platform runs 1.3")
+        for run in sorted({str(i["pipeline_execution"]) for i in rows}):
+            table.delete_item(Key={run_row.TABLE_KEY: run_row.key(run)})
+            table.delete_item(Key={run_row.TABLE_KEY: run_row.input_key(run)})
+        due = format_utc(self.clock.read() + attention.FIRST_DUE)
+        for item in rows:
+            names = {"#r": task_row.READINESS, "#h": task_row.SPEC_HASH, "#v": task_row.SPEC_ID,
+                     "#s": task_row.RUN_START}
+            expression, values = "REMOVE #r, #h, #v, #s", {}
+            if item.get("status") == "waiting":
+                names.update({"#att": attention.KEY, "#due": attention.DUE})
+                values = {":att": attention.attention(attention.WAITING, str(item["execution_name"])), ":due": due}
+                expression = "SET #att = :att, #due = :due " + expression
+            table.update_item(Key={"execution_name": item["execution_name"]}, UpdateExpression=expression,
+                              ExpressionAttributeNames=names, **({"ExpressionAttributeValues": values} if values else {}))
 
     # ── the tasks table's stream (ADR #137 §7): wired with the dispatcher in TR-4 ──
 

@@ -15,4 +15,4 @@ console (TR-6); `rows-migration` with the removals and the upgrade from 1.2
 """
 
 STAGES = ("rows-core", "rows-run-task", "rows-ops", "rows-migration")
-BOUND_STAGES: frozenset = frozenset({"rows-core", "rows-run-task", "rows-ops"})
+BOUND_STAGES: frozenset = frozenset({"rows-core", "rows-run-task", "rows-ops", "rows-migration"})

@@ -266,15 +266,16 @@ def test_a_limit_due_in_a_pause_fires_after_the_resume_moved_by_the_paused_time(
     assert world.status(run, "load") == "failed"
 
 
-@needs_binding("rows-migration")
 @defect("R-U1")
 def test_a_1_2_row_left_in_flight_across_the_upgrade_is_stopped_with_the_cause(world):
+    """ADR #137, Migration: a 1.2 run has no run row, so none of its rows starts; the sweeper stops each waiting
+    row when its 1.2 entry falls due, with the cause on the row, by the rule for a row whose run row is missing."""
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
     world.upgrade_platform()
     world.clock.advance(minutes=30)
     world.sweep()
-    assert world.status(run, "load") == "stopped"
-    assert warnings_of(world, WarningKind.COORDINATION)
+    assert world.status(run, "load") == world.status(run, "extract") == "stopped"
+    assert world.row(run, "load")["error"] == "its run row is missing"
 
 
 @defect("R-C1")
