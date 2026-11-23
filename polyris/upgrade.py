@@ -357,6 +357,25 @@ def _stop(sfn: Any, execution: str) -> bool:
 # ── The index that 1.3 adds ──────────────────────────────────────────────────
 
 
+def left_by_1_2(sfn: Any, target: Target) -> bool:
+    """Whether a state machine of 1.2's engine is still there, ACTIVE or DELETING: an upgrade whose cleanup did not
+    delete it (interrupted, or DELETE_FAILED) left 1.2 behind, and its executions may still run.
+
+    A platform that finished its upgrade has none of them, and this is all that
+    polyris-up then asks of it (``states:DescribeStateMachine``, which the
+    install's permissions have): the stop's listings are for an upgrade only.
+    """
+    for name in REMOVED_STANDARD_MACHINES:
+        try:
+            sfn.describe_state_machine(stateMachineArn=target.machine(name))
+        except ClientError as e:
+            if _code(e) == "StateMachineDoesNotExist":
+                continue
+            raise
+        return True
+    return False
+
+
 def wait_for_index(dynamodb: Any, target: Target, *, sleep: Callable[[float], None] = time.sleep) -> bool:
     """Wait until DynamoDB has built ``run-start-index`` on the tasks table, and say so (ADR #137 §5).
 

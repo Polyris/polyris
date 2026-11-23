@@ -624,8 +624,9 @@ def run_up(args: argparse.Namespace) -> None:
     template = json.loads((root / manifest.template).read_text())
     # A release that runs tasks as rows deletes 1.2's engine, and nothing adopts a 1.2 run (ADR #137).
     rows_engine = runs_tasks_as_rows(manifest.version, template.get("Outputs") or {})
-    if existing and rows_engine and not runs_tasks_as_rows(deployed, outputs_of(existing)):
-        _check_before_upgrade(session, existing, region=region, account=account, deployed=deployed,
+    upgrading = bool(existing) and rows_engine and not runs_tasks_as_rows(deployed, outputs_of(existing or {}))
+    if upgrading:
+        _check_before_upgrade(session, existing or {}, region=region, account=account, deployed=deployed,
                               override=args.accept_stopped_runs)
     bucket = artifacts_bucket_name(account, region)
     ensure_artifacts_bucket(s3, bucket, region=region, owner=account)
@@ -648,9 +649,11 @@ def run_up(args: argparse.Namespace) -> None:
 
     _header("CloudFormation")
     assert stack_name  # set on both branches above
-    # On a platform that runs 1.3, every polyris-up stops what 1.2 left running (ADR #137, *Migration*).
+    # The update from 1.2 deletes 1.2's state machines: their executions are stopped as its cleanup begins (ADR #137,
+    # *Migration*). Any other update, 1.3 to 1.3 among them, stops nothing then.
     stop_leftovers = (functools.partial(_stop_leftovers, session, cfn, stack_name, region=region, account=account)
-                      if existing is not None and rows_engine else None)
+                      if upgrading else None)
+    after_update = existing is not None and rows_engine
     try:
         change_set = create_change_set(cfn, stack_name=stack_name, capabilities=CAPABILITIES,
                                        template_url=template_url, parameters=parameters,
@@ -667,9 +670,9 @@ def run_up(args: argparse.Namespace) -> None:
                           "then run polyris-up again.")
         print(_c(f"\n✅ {stack_name} is already up to date (v{manifest.version}).", BOLD_GREEN))
         _print_outputs(existing or {})
-        if stop_leftovers:
+        if after_update:
             _after_update(session, cfn, stack_name, region=region, account=account,
-                          flags=next_step_flags(args, stack_name))
+                          flags=next_step_flags(args, stack_name), upgrading=upgrading)
         return
     _summarize_change_set(change_set)
     risky = replaced_data_resources(change_set)
@@ -703,7 +706,8 @@ def run_up(args: argparse.Namespace) -> None:
     if PARAM_ADMIN_EMAIL in values and values[PARAM_ADMIN_EMAIL] and existing is None:
         print(f"   Login:    {values[PARAM_ADMIN_EMAIL]} — Cognito has emailed a temporary password.")
     flags = next_step_flags(args, stack_name)
-    if stop_leftovers and _after_update(session, cfn, stack_name, region=region, account=account, flags=flags):
+    if after_update and _after_update(session, cfn, stack_name, region=region, account=account, flags=flags,
+                                      upgrading=upgrading):
         return                  # what comes next is the redeploy of those pipelines, not a first one
     print("\n   Next — a first pipeline that runs right away:")
     print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
@@ -744,11 +748,13 @@ def _stop_leftovers(
 ) -> None:
     """Stop what 1.2 left running on a platform that runs 1.3, and print the runs to start again.
 
-    polyris-up calls it as an update's cleanup begins, so that the deletion of
-    1.2's state machines does not wait for their executions, and at the end of
-    every run, so that an upgrade interrupted after its update still finishes
-    it (ADR #137, *Migration and upgrade*). ``pipelines`` are the platform's,
-    when the caller has read them already.
+    polyris-up calls it as the cleanup of the update from 1.2 begins, so that
+    the deletion of 1.2's state machines does not wait for their executions;
+    at the end of that run; and at the end of a later run while 1.2's state
+    machines are still there, or at its start while the stack still cleans up,
+    so that an interrupted upgrade is finished (ADR #137, *Migration and
+    upgrade*). ``pipelines`` are the platform's, when the caller has read them
+    already.
     """
     try:
         stack = describe_stack(cfn, stack_name) or {}
@@ -777,19 +783,30 @@ def _stop_leftovers(
         print("   Nothing adopts a 1.2 run: start these again once their pipelines are redeployed.")
 
 
-def _after_update(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str, flags: str) -> bool:
-    """What every polyris-up does on a platform that runs 1.3, once its stack has settled (ADR #137,
-    *Migration and upgrade*). True when it listed pipelines to redeploy.
+def _after_update(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str, flags: str,
+                  upgrading: bool) -> bool:
+    """What polyris-up does on a platform that runs 1.3, once its stack has settled (ADR #137, *Migration and
+    upgrade*). True when it listed pipelines to redeploy.
 
-    It stops what 1.2 left running, once more: the listings at the cleanup may
+    After the update from 1.2, or while 1.2's state machines are still there,
+    it stops what 1.2 left running once more: the listings at the cleanup may
     not have shown everything, and an upgrade interrupted after its update is
-    finished here. It waits for the index that the console's run lists read.
-    And it lists the pipelines that still need a redeploy.
+    finished here. A platform that finished its upgrade is asked nothing more
+    (``upgrade.left_by_1_2``). It waits for the index that the console's run
+    lists read, and lists the pipelines that still need a redeploy.
     """
     stack = describe_stack(cfn, stack_name) or {}
-    pipelines = deployed_pipelines(session, cfn, stack, stack_name)
-    _stop_leftovers(session, cfn, stack_name, region=region, account=account, pipelines=pipelines)
-    upgrade.wait_for_index(session.client("dynamodb"), _target(session, stack, region=region, account=account))
+    target = _target(session, stack, region=region, account=account)
+    try:
+        pipelines = deployed_pipelines(session, cfn, stack, stack_name)
+        left = upgrading or upgrade.left_by_1_2(session.client("stepfunctions"), target)
+    except (ClientError, BotoCoreError) as e:
+        raise UpError(f"{stack_name} is updated, but polyris-up could not read its pipelines and state machines: {e}",
+                      "Fix the cause (docs/deployment/IAM_PERMISSIONS.md lists the permissions), then run "
+                      "polyris-up again.")
+    if left:
+        _stop_leftovers(session, cfn, stack_name, region=region, account=account, pipelines=pipelines)
+    upgrade.wait_for_index(session.client("dynamodb"), target)
     return _list_redeploys(pipelines, flags)
 
 

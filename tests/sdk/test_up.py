@@ -1291,8 +1291,10 @@ def test_up_keeps_what_started_after_the_1_3_update(fake_cfn, platform_1_2, s3, 
     assert "Stopped what 1.2 left running" not in capsys.readouterr().out
 
 
-def test_every_polyris_up_stops_what_is_left_of_1_2(fake_cfn, platform_1_2, s3, tmp_path, capsys):
-    """Also one with nothing to change: an upgrade interrupted after its update is finished by the next run."""
+def test_a_polyris_up_stops_what_is_left_of_1_2_while_its_state_machines_are_there(fake_cfn, platform_1_2, s3,
+                                                                                    tmp_path, capsys):
+    """Also one with nothing to change: an upgrade interrupted after its update is finished by the next run, as
+    long as a state machine of 1.2 is left (upgrade.left_by_1_2)."""
     _pipeline(platform_1_2, "orders")
     _a_1_2_run(platform_1_2)
     fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
@@ -1303,6 +1305,23 @@ def test_every_polyris_up_stops_what_is_left_of_1_2(fake_cfn, platform_1_2, s3, 
     out = capsys.readouterr().out
     assert "already up to date" in out and "Stopped what 1.2 left running: 1 run(s)" in out
     assert platform_1_2.running() == []
+
+
+def test_a_platform_that_finished_its_upgrade_is_asked_for_no_execution(fake_cfn, platform_1_2, s3, tmp_path,
+                                                                       capsys):
+    """The architect's review of TR-8 (B-1): every polyris-up on 1.3 listed and stopped executions, which the
+    install's permissions do not grant, and failed after a good update with a message about 1.2. Once none of
+    1.2's state machines is left, it only sees so (DescribeStateMachine)."""
+    for name in ENGINE_1_2[:4]:                     # REMOVED_STANDARD_MACHINES: the upgrade's cleanup deleted them
+        platform_1_2.machines.pop(f"{MACHINES}acme-dev-polyris-{name}")
+    _pipeline(platform_1_2, "orders", redeployed=True)
+    fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
+                              status_reason="didn't contain changes")
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    assert "already up to date" in capsys.readouterr().out
+    assert not {"ListExecutions", "StopExecution", "ListStateMachines"} & set(platform_1_2.operations())
 
 
 def test_up_finishes_an_upgrade_that_was_interrupted_in_its_cleanup(fake_cfn, platform_1_2, s3, tmp_path, capsys):
