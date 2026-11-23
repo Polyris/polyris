@@ -136,8 +136,8 @@ def test_register_pipeline_omits_registered_at():
 
 def test_register_pipeline_still_writes_other_metadata():
     """The row keeps getting refreshed on every run for everything that IS
-    runtime-owned — sfn_arn, tasks, dag, schedule, asset_schedule, etc. If this
-    regresses to only writing a subset, the UI's pipeline detail goes stale."""
+    runtime-owned — sfn_arn, schedule, asset_schedule, the spec version, etc. If
+    this regresses to only writing a subset, the UI's pipeline detail goes stale."""
     from polyris import DAG, task
 
     with DAG("p", schedule="rate(1 day)", group="g") as dag:
@@ -151,8 +151,8 @@ def test_register_pipeline_still_writes_other_metadata():
     attr_values = args["ExpressionAttributeValues"]
 
     for field in (
-        ":sfn_arn", ":description", ":pipeline_group", ":tasks",
-        ":dag", ":schedule", ":asset_schedule", ":last_execution",
+        ":sfn_arn", ":description", ":pipeline_group", ":spec_id",
+        ":task_count", ":schedule", ":asset_schedule", ":last_execution",
     ):
         assert field in attr_values, f"missing {field}"
 

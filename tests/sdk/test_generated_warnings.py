@@ -49,8 +49,6 @@ def _branch_error(branch):
 @pytest.mark.parametrize("state,kind,subject,task_name,error_input", [
     ("Warn_Registration_Failed", "coordination", f"{RUN}-register_pipeline", "Register_Pipeline",
      {"_registration_error": {"Error": "DynamoDB.AccessDeniedException"}}),
-    ("Warn_Snapshot_Failed", "coordination", f"{RUN}-save_dag_snapshot", "Save_DAG_Snapshot",
-     {"_snapshot_error": {"Error": "DynamoDB.AccessDeniedException"}}),
     ("Warn_WriteSubscription_Failed", "coordination", f"{RUN}-write_subscription-lake/prices", "WriteSubscription",
      {"_asset_name": "lake/prices", "_subscription_error": {"Error": "DynamoDB.AccessDeniedException"}}),
     ("Warn_Start_Run_Failed", "coordination", f"{RUN}-start_run", "Start_Run", _branch_error("Start_Run")),

@@ -285,9 +285,12 @@ class TestGeneratorEnrichmentBranches:
             def run():
                 pass
             run()
-        blob = _json.dumps(_json.loads(generate_step_function_json(dag)))
+        # The task's config reaches run_task through its spec (ADR #137 §8), not through the definition.
+        from polyris.generators import build_spec_version
+        blob = _json.dumps(build_spec_version(dag).texts)
         assert "G.1X" in blob          # worker_type
         assert "number_of_workers" in blob
+        assert "G.1X" not in generate_step_function_json(dag)
 
     def test_parallel_branch_warnings_propagate(self):
         asl = {"StartAt": "P",

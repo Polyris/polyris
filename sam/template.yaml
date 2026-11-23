@@ -1426,12 +1426,6 @@ Resources:
             Resource:
               - !GetAtt AssetEventsTable.Arn
               - !Sub "${AssetEventsTable.Arn}/index/asset-partition-index"
-          # Declared granularity of facts written before ADR #130; a pipeline's state machine.
-          - Effect: Allow
-            Action:
-              - dynamodb:GetItem
-            Resource:
-              - !GetAtt PipelineRegistryTable.Arn
           # A run's spec version (ADR #137 §8, D117): a pass queries its task names, a start gets one text.
           - Effect: Allow
             Action:
@@ -1577,6 +1571,12 @@ Resources:
                 Resource:
                   - !GetAtt DependencySubscriptionsTable.Arn
                   - !GetAtt AssetSubscriptionsTable.Arn
+              # A push consumer's registry entry: its schedule and the cutover of its subscription (ADR #130 §6.1).
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
               # A subscription its pipeline no longer has (asset dropped from the schedule,
               # pipeline destroyed) is deleted, so it starts nothing (ADR #130 §6.1).
               - Effect: Allow
@@ -1647,6 +1647,12 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt AssetSubscriptionsTable.Arn
+              # A push consumer's registry entry, read by the retries and the catch-up (ADR #130 §6.1).
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
               # Push retries and the catch-up start consumer pipelines (deterministic names).
               - Effect: Allow
                 Action:

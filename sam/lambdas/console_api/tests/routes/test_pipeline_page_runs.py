@@ -159,6 +159,7 @@ def test_a_1_3_run_draws_the_spec_version_its_run_row_names(world):
                   spec_id=ran['spec_id'], task_count=ran['task_count'])
     body = dag_of(pipeline_execution=run)
     assert body['dag_source'] == 'run' and [n['id'] for n in body['nodes']] == ['extract', 'load']
+    assert {n['task_type'] for n in body['nodes']} == {'sfn'}            # the type badge of each node
     assert body['edges'] == [{'from': 'extract', 'to': 'load'}]
     assert dag_of()['dag_source'] == 'registry' and [n['id'] for n in dag_of()['nodes']] == ['extract']
 

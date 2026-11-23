@@ -157,8 +157,8 @@ PROBES: Tuple[Probe, ...] = (
           f"{SCENARIOS}::test_a_mark_success_whose_fact_cannot_be_recorded_records_nothing_and_a_restart_records_it"),
     # Without the guard an unreadable fact raises out of the reader and fails the waiting task.
     Probe("B-F2", (Edit("sam/lambdas/coordination/stores.py",
-                        "            return self.registry.fact(item)\n        except ValueError as exc:\n",
-                        "            return self.registry.fact(item)\n        except KeyError as exc:\n"),),
+                        "            return fact_from_item(item)\n        except ValueError as exc:\n",
+                        "            return fact_from_item(item)\n        except KeyError as exc:\n"),),
           f"{SCENARIOS}::test_an_unreadable_fact_fails_no_waiting_task"),
     Probe("B-N1", (Edit("polyris/coordination/records.py",
                         "        att.KEY: att.attention(att.WARN, execution_name),\n        att.DUE: format_utc(now),\n",

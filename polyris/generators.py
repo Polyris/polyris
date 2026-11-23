@@ -25,7 +25,6 @@ from .steps import (
 )
 from .assets import Asset, AssetRef, AssetConsecutiveRef, AssetAll, AssetAny, _flatten_asset_names
 from .schema import column_to_dict
-from .coordination.records import DAG_SNAPSHOT_PREFIX
 from .coordination import retention, run_row, task_spec
 from .coordination import start_run as start_run_contract
 from .coordination.start_run import Arg, RunArg
@@ -841,9 +840,7 @@ def _build_task_config_and_arn(task: Task) -> Tuple[Dict[TaskConfigKey, Any], st
     generated ASL expects — not a missing value.
 
     Shared between the task's spec (_task_spec, which Start_Run's rows and
-    run_task's input come from) and _build_dag_visualization_nodes_edges (so
-    task_config is also stored in the registry's dag_metadata, from which the
-    1.2 restart helper rebuilds a restarted 1.2 task's settings).
+    run_task's input come from) and _build_dag_visualization_nodes_edges.
     """
     task_arn = task.arn
     task_config: Dict[TaskConfigKey, Any] = {}
@@ -1191,17 +1188,9 @@ def _build_dag_visualization_nodes_edges(dag: DAG) -> Tuple[List[Dict[str, Any]]
     """Build the canonical (nodes, edges) pair for DAG visualization.
 
     Single source of truth for what a "node" looks like in visualization JSON —
-    used by both generate_dag_json (the public polyris-output/polyris-validate
-    surface) and _build_pipeline_metadata (whose dag_metadata is what gets
-    stored in the pipeline registry and per-execution snapshots, and is what
-    /pipeline-dag's registry fallback returns for "current structure"/blueprint
-    mode). These were previously two independent implementations that had
-    quietly drifted apart: generate_dag_json had `type`/`trigger_rule`/tracked
-    steps that _build_pipeline_metadata's version lacked, while
-    _build_pipeline_metadata had `wait_for` (asset pull dependency) that
-    generate_dag_json lacked. Unifying means every consumer gets the full
-    field set, not whichever subset its particular caller happened to add
-    over time.
+    used by generate_dag_json (the public polyris-output/polyris-validate
+    surface). Until 1.3 the registry and each run's snapshot stored a second
+    copy (ADR #137 §8: the console draws a run from its spec version now).
 
     Only includes business tasks that go through the wrapper (@task.sfn,
     GlueTask, ECSTask, AthenaTask, EMRTask, BatchTask) plus directly-tracked
@@ -1250,44 +1239,11 @@ def _build_dag_visualization_nodes_edges(dag: DAG) -> Tuple[List[Dict[str, Any]]
     return nodes, edges
 
 
-def _build_pipeline_metadata(dag: DAG) -> Tuple[List, Dict, Dict]:
-    """Build tasks_metadata, dag_metadata, and asset_schedule.
-    
-    Pure data transformation — no I/O, no side effects.
-    
-    Returns:
-        Tuple of (tasks_metadata, dag_metadata, asset_schedule)
-    """
-    # Tasks metadata for registration
-    tasks_metadata = []
-    for task in dag.tasks:
-        task_meta: Dict[str, Any] = {
-            "task_id": task.task_id,
-            "task_type": task.task_type,
-            "dependencies": [d.node_id for d in task.dependencies]
-        }
-        if task.skip_on_backfill:
-            task_meta["skip_on_backfill"] = True
-        if task.outlets:
-            task_meta["outlets"] = [_serialize_outlet(a) for a in task.outlets]
-        if task.inlets:
-            task_meta["inlets"] = [_serialize_inlet(a) for a in task.inlets]
-        if task.wait_for:
-            wait_for_assets = _serialize_wait_for_metadata(task.wait_for)
-            if wait_for_assets:
-                task_meta["wait_for"] = wait_for_assets
-        tasks_metadata.append(task_meta)
-    
-    # DAG visualization metadata — shared builder (see _build_dag_visualization_nodes_edges)
-    _nodes, _edges = _build_dag_visualization_nodes_edges(dag)
-    dag_metadata: Dict[str, Any] = {"nodes": _nodes, "edges": _edges}
-    
-    # Asset schedule (for asset-triggered pipelines)
-    asset_schedule = {}
+def _asset_schedule(dag: DAG) -> Dict:
+    """The schedule of an asset-triggered pipeline, as the registry stores it; {} for any other."""
     if dag.is_asset_triggered and dag.asset_schedule_info:
-        asset_schedule = dag.asset_schedule_info
-    
-    return tasks_metadata, dag_metadata, asset_schedule
+        return dag.asset_schedule_info
+    return {}
 
 
 def _task_spec(task: Task) -> Dict[str, Any]:
@@ -1355,8 +1311,7 @@ def build_spec_version(dag: DAG) -> task_spec.Version:
 
 def _build_registration_chain(
     dag: DAG,
-    tasks_metadata: List,
-    dag_metadata: Dict,
+    *,
     asset_schedule: Dict,
     registry_table: str,
     tokens_table: str,
@@ -1366,7 +1321,7 @@ def _build_registration_chain(
     """Build the registration state chain that runs before tasks.
 
     Produces states: Define_Inputs (optional) → Register_Pipeline →
-    [Warn_Registration_Failed] → Save_DAG_Snapshot → [Warn_Snapshot_Failed] →
+    [Warn_Registration_Failed] →
     Register_Asset_Subscriptions (optional, with WriteSubscription +
     Warn_WriteSubscription_Failed + Subscription_Skipped inside its Map) →
     Check_Register_Only / Registration_Complete
@@ -1377,11 +1332,9 @@ def _build_registration_chain(
     
     Args:
         dag: DAG for metadata (dag_id, description, variables, schedule)
-        tasks_metadata: From _build_pipeline_metadata
-        dag_metadata: From _build_pipeline_metadata
-        asset_schedule: From _build_pipeline_metadata
+        asset_schedule: From _asset_schedule
         registry_table: DynamoDB table name for pipeline registry
-        tokens_table: DynamoDB table name for tokens/snapshots
+        tokens_table: DynamoDB table name for tokens (its warnings)
         asset_subscriptions_table: DynamoDB table name for asset subscriptions
             (read by the platform's asset-fanout function — must be the table
             in its ASSET_SUBSCRIPTIONS_TABLE, both sourced from the SAM stack's
@@ -1420,8 +1373,8 @@ def _build_registration_chain(
             "Next": "Register_Pipeline"
         }
 
-    # Compute next state after Save_DAG_Snapshot (used for both success and warn paths)
-    _after_snapshot = "Register_Asset_Subscriptions" if asset_schedule.get("assets") else "Check_Register_Only"
+    # The state after the registry's write, on its success and on its warning path alike.
+    _after_registry = "Register_Asset_Subscriptions" if asset_schedule.get("assets") else "Check_Register_Only"
 
     # Register_Pipeline — refreshes DAG metadata on each execution.
     # Deliberately does NOT touch `registered_at`: that field means "last
@@ -1448,13 +1401,14 @@ def _build_registration_chain(
                 "SET sfn_arn = :sfn_arn, "
                 "#description = :description, "
                 "pipeline_group = :pipeline_group, "
-                "#tasks = :tasks, "
-                "#dag = :dag, "
                 "#schedule = :schedule, "
                 "asset_schedule = :asset_schedule, "
                 "last_execution = :last_execution, "
                 "spec_id = :spec_id, "
-                "task_count = :task_count"
+                "task_count = :task_count "
+                # 1.2 wrote the graph and every task into the registry; the spec version names them now
+                # (ADR #137 §8), and a run removes what an older deploy left.
+                "REMOVE #tasks, #dag"
             ),
             "ExpressionAttributeNames": {
                 "#description": "description",
@@ -1466,8 +1420,6 @@ def _build_registration_chain(
                 ":sfn_arn": {"S": JSONATA_SFN_ARN},
                 ":description": {"S": dag.description or ""},
                 ":pipeline_group": {"S": dag.group or ""},
-                ":tasks": {"S": json.dumps(tasks_metadata)},
-                ":dag": {"S": json.dumps(dag_metadata)},
                 ":schedule": {"S": dag.schedule if isinstance(dag.schedule, str) else ""},
                 ":asset_schedule": {"S": json.dumps(asset_schedule)},
                 ":last_execution": {"S": JSONATA_EXECUTION_NAME},
@@ -1488,7 +1440,7 @@ def _build_registration_chain(
             "Output": "{% $merge([$states.input, {'_registration_error': $states.errorOutput.Cause}]) %}",
             "Next": "Warn_Registration_Failed"
         }],
-        "Next": "Save_DAG_Snapshot"
+        "Next": _after_registry
     }
 
     # Warn_Registration_Failed — writes a _notify_warn_ record so the UI shows the failure
@@ -1506,56 +1458,9 @@ def _build_registration_chain(
         "Catch": [{
             "ErrorEquals": ["States.ALL"],
             "Output": "{% $sift($states.input, function($v, $k) { $k != '_registration_error' }) %}",
-            "Next": "Save_DAG_Snapshot"
+            "Next": _after_registry
         }],
-        "Next": "Save_DAG_Snapshot"
-    }
-
-    # Save DAG snapshot per execution — ensures UI shows correct DAG for each run
-    # even after pipeline definition changes (key = dag_snapshot::{execution_name})
-    states["Save_DAG_Snapshot"] = {
-        "Type": "Task",
-        "Comment": "Snapshot DAG structure for this execution (survives redeploys)",
-        "Resource": "arn:aws:states:::dynamodb:putItem",
-        "Arguments": {
-            "TableName": tokens_table,
-            "Item": {
-                "execution_name": {"S": f"{{% '{DAG_SNAPSHOT_PREFIX}' & $states.context.Execution.Name %}}"},
-                "pipeline_name": {"S": dag.dag_id},
-                "pipeline_execution": {"S": JSONATA_EXECUTION_NAME},
-                "dag": {"S": json.dumps(dag_metadata)},
-                "snapshot_at": {"S": JSONATA_NOW},
-                "ttl": {"N": "{% $string($floor($toMillis($now()) / 1000) + 10368000) %}"}
-            }
-        },
-        "Output": JSONATA_PASS_INPUT,
-        "Retry": [_STANDARD_DYNAMODB_RETRY],
-        "Catch": [{
-            "ErrorEquals": ["States.ALL"],
-            "Output": "{% $merge([$states.input, {'_snapshot_error': $states.errorOutput.Cause}]) %}",
-            "Next": "Warn_Snapshot_Failed"
-        }],
-        "Next": _after_snapshot
-    }
-
-    # Warn_Snapshot_Failed — writes a _notify_warn_ record and continues to next state
-    states["Warn_Snapshot_Failed"] = {
-        "Type": "Task",
-        "Comment": "Write snapshot failure to UI notifications",
-        "Resource": "arn:aws:states:::dynamodb:putItem",
-        "Arguments": {
-            "TableName": tokens_table,
-            "Item": _warning_item("$states.context.Execution.Name & '-save_dag_snapshot'", "Save_DAG_Snapshot",
-                                  dag.dag_id, "'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error)")
-        },
-        "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
-        "Retry": [_STANDARD_DYNAMODB_RETRY],
-        "Catch": [{
-            "ErrorEquals": ["States.ALL"],
-            "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
-            "Next": _after_snapshot
-        }],
-        "Next": _after_snapshot
+        "Next": _after_registry
     }
 
     # Asset subscription registration for asset-triggered pipelines
@@ -1695,13 +1600,10 @@ def generate_step_function_json(
     branches += [_direct_step_branch(step, number, dag, _tokens_table, marks_run=has_rows)
                  for number, step in enumerate(direct_steps, start=1)]
 
-    # 2. Build metadata (tasks, DAG viz, asset schedule)
-    tasks_metadata, dag_metadata, asset_schedule = _build_pipeline_metadata(dag)
-
-    # 3. Build registration state chain
+    # 2. Build registration state chain
     states, start_at = _build_registration_chain(
-        dag, tasks_metadata, dag_metadata, asset_schedule,
-        _registry_table, _tokens_table, _asset_subscriptions_table, specs,
+        dag, asset_schedule=_asset_schedule(dag), registry_table=_registry_table, tokens_table=_tokens_table,
+        asset_subscriptions_table=_asset_subscriptions_table, specs=specs,
     )
 
     # 4. The Parallel; the execution fails after it when a branch recorded an error

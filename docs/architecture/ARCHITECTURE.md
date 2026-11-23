@@ -311,8 +311,7 @@ dynamodb.update_item (direct boto3 call from deploy.py)
      └─ pipeline_registry ──── SET registered_at = <now>
      ▼
 sfn.start_execution(register_only=true)  ← fire-and-forget
-     ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, tasks, dag, ...]
-     ├─ Save_DAG_Snapshot ──────► tokens_table [putItem]
+     ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, spec_id, task_count, ...]
      └─ RegisterAssetSubscriptions (if asset triggers)
           └─ Map ──────────────► asset_subscriptions [putItem]
 ```

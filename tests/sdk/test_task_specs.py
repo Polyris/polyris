@@ -156,8 +156,9 @@ def test_register_pipeline_names_the_version_and_its_task_count():
     assert values[":spec_id"] == {"S": version.spec_id} and values[":task_count"] == {"N": "8"}
     assert "spec_id = :spec_id" in state["Arguments"]["UpdateExpression"]
     assert [c["ErrorEquals"] for c in state["Catch"]] == [["States.DataLimitExceeded"], ["States.ALL"]]
-    # The 1.2 engine reads the registry's tasks and dag until TR-4 and TR-8 (Principle #39).
-    assert {":tasks", ":dag"} <= set(values)
+    # The spec version names the tasks and the graph: a run removes 1.2's copies from the registry (TR-8).
+    assert not {":tasks", ":dag"} & set(values)
+    assert state["Arguments"]["UpdateExpression"].endswith("REMOVE #tasks, #dag")
 
 
 def test_the_same_asset_twice_in_outlets_is_refused():

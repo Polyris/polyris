@@ -11,7 +11,7 @@ Each column on the `pipeline-registry` row has an owner — either `polyris-depl
 (the CLI) or the generated pipeline SFN (which refreshes metadata on every run,
 including `register_only=true` self-registrations). `registered_at` means "last
 polyris-deploy" and is owned by the CLI; `sfn_arn`, `description`,
-`pipeline_group`, `tasks`, `dag`, `schedule`, `asset_schedule`, and
+`pipeline_group`, `schedule`, `asset_schedule`, and
 `last_execution`, `spec_id` and `task_count` are owned by the runtime.
 `format_version` (`task_spec.REGISTRY_FORMAT_FIELD`) is deploy-owned, written
 with `registered_at`: the console compares it with `task_spec.FORMAT_VERSION`
@@ -165,8 +165,8 @@ template) fails `tests/sdk/test_task_config_contract.py`.
 ## A new task field goes through the task's spec (ADR #137 §8, §9)
 
 A run's tasks are rows that `Start_Run` writes from the pipeline's task specs; no task
-field reaches a task through the pipeline's state machine any more (its registration still
-copies task metadata into the registry's `tasks` and `dag` until those go, ADR #137 §8).
+field reaches a task through the pipeline's state machine any more (its registration
+removes the `tasks` and `dag` that 1.2 wrote in the registry, ADR #137 §8).
 A field that must reach the engine changes these places in the same commit:
 
 1. `polyris/constants.py` → `TaskSpecKey` (then `python -m polyris.codegen.sync_enums`),
@@ -264,8 +264,8 @@ dataclass default.
 
 ## All DynamoDB write states in `_build_registration_chain` must carry Retry + Catch
 
-`Register_Pipeline`, `Save_DAG_Snapshot`, and `WriteSubscription` (inside
-`Register_Asset_Subscriptions` Map) are all DynamoDB `putItem` states.
+`Register_Pipeline` and `WriteSubscription` (inside
+`Register_Asset_Subscriptions` Map) are DynamoDB write states.
 A `ThrottlingException` on any of them aborts the entire registration flow
 before tasks start and, without a `_notify_warn_` Catch path, the failure is
 invisible in the UI.

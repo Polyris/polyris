@@ -41,7 +41,7 @@ from logger import log
 from dispatcher import Dispatcher
 from polyris.constants import WarningKind
 from polyris.coordination import run_row, start_run
-from stores import FactStore, Registry
+from stores import FactStore
 
 #: Stop starting new records with this much of the invocation left.
 RESERVE_MS = 10_000
@@ -200,8 +200,7 @@ class AssetFanout:
         cutover = row.get("subscribed_at") or (entry or {}).get("registered_at")
         if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):
             return 0
-        registry = Registry(self.dispatcher.resource, self.dispatcher.pipelines_table)
-        evidence = registry.fact(fact)
+        evidence = fact_from_item(fact)
         schedule, scheduled = self._schedule(entry, consumer)
         if not scheduled or (schedule is not None and asset not in sp.asset_names(schedule)):
             # The pipeline was destroyed, switched to a cron schedule, or dropped this asset (B-U3).
@@ -211,7 +210,7 @@ class AssetFanout:
             return 0             # unreadable: warned, and the row stays until the schedule is fixed
         every_event = fact.get("cascade") == "all" or schedule.operator == sp.OR
         if fact.get("cascade") != "all":
-            reader = FactStore(self.dispatcher.resource, self.dispatcher.asset_events_table, registry,
+            reader = FactStore(self.dispatcher.resource, self.dispatcher.asset_events_table,
                                self.dispatcher.clock(), on_unreadable=self.unreadable_fact)
             # The schedule is judged as it stood when the triggering fact arrived: `.within()` as of its time,
             # and no fact recorded after it, so a retry, a late record or the catch-up gives the same answer.

@@ -60,7 +60,7 @@ from polyris.coordination.times import format_utc
 from polyris.coordination.asset_conditions import Evaluation
 from polyris.coordination.asset_conditions import evaluate as evaluate_assets
 from polyris.coordination.partition import partition_date
-from stores import FactStore, Registry
+from stores import FactStore
 
 S = TaskStatus
 #: The rows whose run_task may be running: a stop of one stops that execution too (§4).
@@ -819,8 +819,7 @@ class Dispatcher:
         if known is not None:
             return known                                       # the rows that wait for the same facts read them once
         self._within_budget(state)                             # reading the facts takes time
-        registry = Registry(self.resource, self.pipelines_table)
-        reader = FactStore(self.resource, self.asset_events_table, registry, state.now,
+        reader = FactStore(self.resource, self.asset_events_table, state.now,
                            on_unreadable=lambda item, exc: self._unreadable_fact(state.run, item, exc))
         evaluation = evaluate_assets(asset_spec.parse(wait_for), target=partition_date(state.run.date), now=state.now,
                                      reader=reader)

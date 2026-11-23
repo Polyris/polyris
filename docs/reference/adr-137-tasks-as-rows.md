@@ -758,7 +758,7 @@ The harness comes first, before the code it tests, and each test comes before th
 | Trigger rules (ADR #138) | the truth table against `evaluate` | unit |
 | The run row (§3) | the largest row under 5 KB; a Pause past ten intervals merges the two oldest | unit |
 | Specs and limits (§8) | a version item or a text dropped or altered stops the deploy before `create_change_set`; a text written once; golden spec files; `1.0` read back as `1`; outlets, duplicates, and bytes as sent | unit |
-| No reader of the registry's `tasks` or `dag` (§8) | a census, which exempts `stores.Registry` until the change that deletes it | unit |
+| No reader of the registry's `tasks` or `dag` (§8) | a census (`test_registry_readers.py`); `stores.Registry` went in TR-8 | unit |
 | `Start_Run` (§1) | it returns once active, and the activation wakes the first pass; the stop mark refuses a late attempt; a mark written first survives; the token order; the `Catch` fails after the `Parallel` | harness |
 | Passes (§7) | one pass per run per batch; a pass over a `creating` run returns at once; a dropped or delayed record. A pass out of budget wakes the next through `left_at`, and a run where no write gets through wakes at most one more; a summary written only when it changed. A pass over an unchanged run writes one log line, and a stream pass calls no `DescribeExecution` | harness |
 | Lost hints (invariant 9, §7) | a dropped stream record, a lost activation and a lost Resume heal at the run row's next check, within 30 minutes, with one warning per run that counts the rows. On a busy run, rows within `LOST_HINT_GRACE`, rows found under `left_at` and rows whose countdown ended count for none | harness |

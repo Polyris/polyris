@@ -24,9 +24,6 @@ KEYS = {"tasks", "dag"}
 
 #: (file, enclosing function, key): why each read is not one of the registry's fields.
 ALLOWED = {
-    # The 1.2 engine's outlet granularity lookup; it goes with the 1.1.4 code in TR-8.
-    ("sam/lambdas/coordination/stores.py", "_lookup", "dag"):
-        "stores.Registry, deleted in TR-8 with the 1.2 engine",
     # The DAG snapshot of a 1.2 run (dag_snapshot::{run} in pipeline-tokens), kept until 1.4 (D89).
     ("sam/lambdas/console_api/routes/pipelines_info.py", "_snapshot_graph", "dag"):
         "the 1.2 runs' DAG snapshot reader, removed in 1.4",

@@ -13,7 +13,7 @@
             "S": "step_direct_dynamodb"
           }
         },
-        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #tasks = :tasks, #dag = :dag, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution, spec_id = :spec_id, task_count = :task_count",
+        "UpdateExpression": "SET sfn_arn = :sfn_arn, #description = :description, pipeline_group = :pipeline_group, #schedule = :schedule, asset_schedule = :asset_schedule, last_execution = :last_execution, spec_id = :spec_id, task_count = :task_count REMOVE #tasks, #dag",
         "ExpressionAttributeNames": {
           "#description": "description",
           "#tasks": "tasks",
@@ -29,12 +29,6 @@
           },
           ":pipeline_group": {
             "S": ""
-          },
-          ":tasks": {
-            "S": "[{\"task_id\": \"process\", \"task_type\": \"sfn\", \"dependencies\": []}]"
-          },
-          ":dag": {
-            "S": "{\"nodes\": [{\"id\": \"process\", \"name\": \"process\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": []}"
           },
           ":schedule": {
             "S": ""
@@ -84,7 +78,7 @@
           "Next": "Warn_Registration_Failed"
         }
       ],
-      "Next": "Save_DAG_Snapshot"
+      "Next": "Check_Register_Only"
     },
     "Warn_Registration_Failed": {
       "Type": "Task",
@@ -152,130 +146,6 @@
             "States.ALL"
           ],
           "Output": "{% $sift($states.input, function($v, $k) { $k != '_registration_error' }) %}",
-          "Next": "Save_DAG_Snapshot"
-        }
-      ],
-      "Next": "Save_DAG_Snapshot"
-    },
-    "Save_DAG_Snapshot": {
-      "Type": "Task",
-      "Comment": "Snapshot DAG structure for this execution (survives redeploys)",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
-      "Arguments": {
-        "TableName": "${tokens_table}",
-        "Item": {
-          "execution_name": {
-            "S": "{% 'dag_snapshot::' & $states.context.Execution.Name %}"
-          },
-          "pipeline_name": {
-            "S": "step_direct_dynamodb"
-          },
-          "pipeline_execution": {
-            "S": "{% $states.context.Execution.Name %}"
-          },
-          "dag": {
-            "S": "{\"nodes\": [{\"id\": \"process\", \"name\": \"process\", \"type\": \"task\", \"task_type\": \"sfn\"}], \"edges\": []}"
-          },
-          "snapshot_at": {
-            "S": "{% $now() %}"
-          },
-          "ttl": {
-            "N": "{% $string($floor($toMillis($now()) / 1000) + 10368000) %}"
-          }
-        }
-      },
-      "Output": "{% $states.input %}",
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "DynamoDB.ProvisionedThroughputExceededException",
-            "DynamoDB.ThrottlingException",
-            "DynamoDB.InternalServerError",
-            "States.Timeout"
-          ],
-          "IntervalSeconds": 1,
-          "MaxAttempts": 3,
-          "BackoffRate": 2,
-          "JitterStrategy": "FULL"
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Output": "{% $merge([$states.input, {'_snapshot_error': $states.errorOutput.Cause}]) %}",
-          "Next": "Warn_Snapshot_Failed"
-        }
-      ],
-      "Next": "Check_Register_Only"
-    },
-    "Warn_Snapshot_Failed": {
-      "Type": "Task",
-      "Comment": "Write snapshot failure to UI notifications",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
-      "Arguments": {
-        "TableName": "${tokens_table}",
-        "Item": {
-          "execution_name": {
-            "S": "{% '_notify_warn_coordination_' & $states.context.Execution.Name & '-save_dag_snapshot' %}"
-          },
-          "kind": {
-            "S": "coordination"
-          },
-          "task_name": {
-            "S": "Save_DAG_Snapshot"
-          },
-          "pipeline_name": {
-            "S": "step_direct_dynamodb"
-          },
-          "pipeline_execution": {
-            "S": "{% $states.context.Execution.Name %}"
-          },
-          "task_date": {
-            "S": "{% ($states.input.variables.current_date ? $states.input.variables.current_date : ($states.input.current_date ? $states.input.current_date : ($states.input.scheduled_time ? $substringBefore($states.input.scheduled_time, 'T') : $substringBefore($states.context.Execution.StartTime, 'T')))) %}"
-          },
-          "status": {
-            "S": "failed"
-          },
-          "error": {
-            "S": "{% 'Save_DAG_Snapshot failed: ' & $string($states.input._snapshot_error) %}"
-          },
-          "finished_at": {
-            "S": "{% $now() %}"
-          },
-          "attention": {
-            "S": "{% 'warn#' & $substring($hash($states.context.Execution.Name & '-save_dag_snapshot', 'SHA-256'), 0, 1) %}"
-          },
-          "attention_at": {
-            "S": "{% $now() %}"
-          },
-          "ttl": {
-            "N": "{% $string($floor($toMillis($now()) / 1000) + 8 * 86400) %}"
-          }
-        }
-      },
-      "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "DynamoDB.ProvisionedThroughputExceededException",
-            "DynamoDB.ThrottlingException",
-            "DynamoDB.InternalServerError",
-            "States.Timeout"
-          ],
-          "IntervalSeconds": 1,
-          "MaxAttempts": 3,
-          "BackoffRate": 2,
-          "JitterStrategy": "FULL"
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Output": "{% $sift($states.input, function($v, $k) { $k != '_snapshot_error' }) %}",
           "Next": "Check_Register_Only"
         }
       ],

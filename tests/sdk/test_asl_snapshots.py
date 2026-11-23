@@ -486,78 +486,27 @@ def test_all_scenarios_have_register_pipeline():
         assert asl["StartAt"] in asl["States"], f"{name}: StartAt points to missing state"
 
 
-def test_all_scenarios_have_dag_snapshot():
-    """Every DAG has Save_DAG_Snapshot state that chains from Register_Pipeline."""
+def test_no_scenario_writes_a_dag_snapshot():
+    """1.3 draws a run from its spec version (ADR #137 §8): Register_Pipeline goes straight on, and no state
+    writes a dag_snapshot:: row (the console reads 1.2's until 1.4)."""
     from polyris.generators import generate_step_function_json
 
     for name, builder in ALL_SCENARIOS.items():
-        dag = builder()
-        asl = json.loads(generate_step_function_json(dag))
-        states = asl["States"]
-
-        # Save_DAG_Snapshot must exist
-        assert "Save_DAG_Snapshot" in states, f"{name}: missing Save_DAG_Snapshot"
-
-        # Register_Pipeline must chain to Save_DAG_Snapshot
-        assert states["Register_Pipeline"]["Next"] == "Save_DAG_Snapshot", (
-            f"{name}: Register_Pipeline.Next should be Save_DAG_Snapshot"
-        )
-
-        # Save_DAG_Snapshot must write to tokens table
-        snapshot = states["Save_DAG_Snapshot"]
-        assert snapshot["Type"] == "Task", f"{name}: Save_DAG_Snapshot should be Task"
-        assert "dynamodb:putItem" in snapshot["Resource"], f"{name}: should write to DDB"
-        item = snapshot["Arguments"]["Item"]
-        assert "execution_name" in item, f"{name}: snapshot must have execution_name key"
-        assert "dag" in item, f"{name}: snapshot must store dag"
-
-        # Save_DAG_Snapshot.Next must be Check_Register_Only or Register_Asset_Subscriptions
-        assert snapshot["Next"] in ("Check_Register_Only", "Register_Asset_Subscriptions"), (
-            f"{name}: Save_DAG_Snapshot.Next={snapshot['Next']} unexpected"
-        )
-
-
-def test_dag_snapshot_uses_provided_tokens_table():
-    """Save_DAG_Snapshot uses tokens_table parameter when provided."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_chain()
-    asl = json.loads(generate_step_function_json(dag, tokens_table="my-tokens-table"))
-    snapshot = asl["States"]["Save_DAG_Snapshot"]
-    assert snapshot["Arguments"]["TableName"] == "my-tokens-table"
-
-
-def test_dag_snapshot_default_placeholder():
-    """Save_DAG_Snapshot uses ${tokens_table} placeholder when no table provided."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_chain()
-    asl = json.loads(generate_step_function_json(dag))
-    snapshot = asl["States"]["Save_DAG_Snapshot"]
-    assert snapshot["Arguments"]["TableName"] == "${tokens_table}"
-
-
-def test_dag_snapshot_has_ttl():
-    """Save_DAG_Snapshot includes TTL for automatic expiry."""
-    from polyris.generators import generate_step_function_json
-
-    dag = _build_chain()
-    asl = json.loads(generate_step_function_json(dag))
-    snapshot = asl["States"]["Save_DAG_Snapshot"]
-    item = snapshot["Arguments"]["Item"]
-    assert "ttl" in item, "Save_DAG_Snapshot must include TTL"
-    assert item["ttl"]["N"].startswith("{%"), "TTL should be JSONata expression"
+        text = generate_step_function_json(builder())
+        states = json.loads(text)["States"]
+        assert "dag_snapshot::" not in text, name
+        assert states["Register_Pipeline"]["Next"] in ("Check_Register_Only", "Register_Asset_Subscriptions"), name
 
 
 def test_registration_states_have_standard_retry():
-    """Register_Pipeline and Save_DAG_Snapshot carry DynamoDB throttling Retry blocks."""
+    """Register_Pipeline carries the DynamoDB throttling Retry block."""
     from polyris.generators import generate_step_function_json
 
     dag = _build_chain()
     asl = json.loads(generate_step_function_json(dag))
     states = asl["States"]
 
-    for state_name in ("Register_Pipeline", "Save_DAG_Snapshot"):
+    for state_name in ("Register_Pipeline",):
         assert "Retry" in states[state_name], f"{state_name}: missing Retry block"
         retry = states[state_name]["Retry"][0]
         assert "DynamoDB.ThrottlingException" in retry["ErrorEquals"], (
@@ -567,7 +516,7 @@ def test_registration_states_have_standard_retry():
 
 
 def test_registration_states_have_catch_routing_to_warn():
-    """Register_Pipeline and Save_DAG_Snapshot Catch blocks route to Warn states."""
+    """Register_Pipeline's Catch routes to its Warn state, which goes on with the registration."""
     from polyris.generators import generate_step_function_json
 
     dag = _build_chain()
@@ -578,14 +527,9 @@ def test_registration_states_have_catch_routing_to_warn():
         "Register_Pipeline Catch must route to Warn_Registration_Failed"
     )
     assert "Warn_Registration_Failed" in states, "Warn_Registration_Failed state must exist"
-    assert states["Warn_Registration_Failed"]["Next"] == "Save_DAG_Snapshot", (
-        "Warn_Registration_Failed must continue to Save_DAG_Snapshot"
+    assert states["Warn_Registration_Failed"]["Next"] == states["Register_Pipeline"]["Next"], (
+        "Warn_Registration_Failed must go on where Register_Pipeline does"
     )
-
-    assert states["Save_DAG_Snapshot"]["Catch"][0]["Next"] == "Warn_Snapshot_Failed", (
-        "Save_DAG_Snapshot Catch must route to Warn_Snapshot_Failed"
-    )
-    assert "Warn_Snapshot_Failed" in states, "Warn_Snapshot_Failed state must exist"
 
 
 def test_warn_registration_states_write_notify_warn_record():
@@ -596,7 +540,7 @@ def test_warn_registration_states_write_notify_warn_record():
     asl = json.loads(generate_step_function_json(dag, tokens_table="my-tokens"))
     states = asl["States"]
 
-    for warn_name in ("Warn_Registration_Failed", "Warn_Snapshot_Failed"):
+    for warn_name in ("Warn_Registration_Failed",):
         warn = states[warn_name]
         assert warn["Type"] == "Task"
         assert warn["Arguments"]["TableName"] == "my-tokens"
