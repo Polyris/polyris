@@ -586,7 +586,7 @@ A 1.2 pipeline can still be started until its redeploy: by Run in the console, b
 | Timeline | the `WRAPPER_STARTED` event |
 | Warnings | the `fact` kind, and the `failed_facts` of Mark Successful, since a status and its facts are one write; the `zombie` and `notify` kinds, which only removed paths write |
 | DSL | the step classes `Choice`, `Map`, `Sensor` and `ShortCircuit` and the `Condition` helper; the thirteen `DAG` fields that nothing reads (*Consequences*) |
-| 1.1.4 compatibility | the close of skips that pre-upgrade wrappers consumed, the `fact_version` gates, the cutover taken from `registered_at`, the `$exists` guards for older callers, the registry lookup of an old fact's granularity, the `UpstreamFailed` mapping and `run_task`'s `attempt` conditions. The generation's branches for rows without one go too, so the fence becomes `generation = :g` |
+| 1.1.4 compatibility | the close of skips that pre-upgrade wrappers consumed, the `fact_version` gates and the field, whose 1.2 readers the same deploy replaces, the cutover taken from `registered_at`, the `$exists` guards for older callers, the registry lookup of an old fact's granularity, the `UpstreamFailed` mapping and `run_task`'s `attempt` conditions. The generation's branches for rows without one go too, so the fence becomes `generation = :g` |
 | Tests | the tests of the deleted templates and step classes; the test of the wrapper's execution names, which a test of `run_task`'s names replaces; most run-answer tests; the harness's frozen v1.1.4 wrapper; the scenarios and probes that test only tokens |
 
 ## Consequences

@@ -9,7 +9,6 @@ import yaml
 
 from polyris.coordination import attention as att
 from polyris.coordination.records import (
-    FACT_VERSION,
     PARTITION_INDEX,
     PARTITION_INDEX_PROJECTION,
     asset_fact_item,
@@ -143,7 +142,7 @@ class TestAssetFactItem:
         item = fact_item()
         assert item["partition_key"] == item["execution_date"] == "2026-W46"
         assert item["partition_date"] == "2026-11-09"     # Monday of ISO week 46
-        assert item["fact_version"] == FACT_VERSION
+        assert "fact_version" not in item         # 1.2's readers of it are replaced in the same deploy (Principle #39)
         assert item["event_time"] == "2026-11-12T06:00:00.123Z"
 
     @pytest.mark.parametrize("overrides", [

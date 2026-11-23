@@ -49,10 +49,6 @@ FAILURE_EVENTS = frozenset({"fail_wait", "fail_start", "fail_dead"})
 FINISHED_EVENT_ORDER = "#20"
 #: The characters of a cause the timeline keeps, as 1.2 did; the row keeps more, the execution all of it.
 ERROR_SUMMARY_MAX = 500
-#: Every fact carries it, though 1.3 reads it nowhere: 1.2's readers skip a fact without it, and a rollback
-#: of the upgrade runs them again (Principle #39). 1.4 stops writing it.
-FACT_VERSION = 2
-
 #: The GSI on ``asset-events`` that asset conditions read (template.yaml).
 #: Its items carry exactly what :func:`fact_from_item` needs.
 PARTITION_INDEX = "asset-partition-index"
@@ -230,7 +226,6 @@ def asset_fact_item(
         "source_dag": source_dag,
         "source_task": source_task,
         "uri": uri,
-        "fact_version": FACT_VERSION,
         "ttl": int((now + timedelta(days=ttl_days)).timestamp()),
     }
 

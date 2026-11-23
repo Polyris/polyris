@@ -170,7 +170,6 @@ def fact(asset: str, key: str, *, event_time: str = "2026-11-12T04:00:00.000Z", 
         "source_dag": "producer",
         "source_task": "build",
         "uri": f"s3://bucket/{asset}",
-        "fact_version": 2,
     }
     item.update(extra)
     return item
