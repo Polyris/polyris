@@ -145,7 +145,6 @@ export function StatusIcon({ status, size = 16, className = '' }: { status: stri
         
         // Waiting states
         waiting: <Clock size={size} className={`${baseClass} text-gray-400`} />,
-        waiting_delay: <Clock size={size} className={`${baseClass} text-amber-500`} />,
         waiting_decision: <HelpCircle size={size} className={`${baseClass} text-amber-500`} />,
         waiting_paused: <Pause size={size} className={`${baseClass} text-amber-500`} />,
         

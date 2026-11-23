@@ -106,19 +106,6 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
 
 ---
 
-### Task stuck in "waiting_delay"
-
-**Symptoms:** Task shows countdown but never proceeds.
-
-**Check:**
-1. `wait_delay_until_ms` timestamp — when should it end?
-2. Server time sync — any clock skew?
-3. Wrapper SFN execution — is Wait state active?
-
-**Fix:** Usually resolves itself. If not, restart the task.
-
----
-
 ### Task fails immediately
 
 **Symptoms:** Task goes to "failed" within seconds.

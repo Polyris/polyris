@@ -41,7 +41,7 @@ def test_the_table_covers_the_nine_rules_and_every_status():
     assert set(TABLE["two_upstreams"]["rules"]) == set(TABLE["three_upstreams"]["rules"]) == tr.KNOWN_RULES
     stored = {status for values in TABLE["letters"].values() for status, _ in values}
     assert stored == {s for s in tr.FINAL | {"waiting", "waiting_paused", "deps_ready", "running",
-                                            "waiting_decision", "waiting_delay", "pending"}}
+                                            "waiting_decision", "pending"}}
 
 
 @pytest.mark.parametrize("rule,column,symbol", cells("two_upstreams"))

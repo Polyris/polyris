@@ -22,7 +22,6 @@ export const STATUS_COLORS = {
     upstream_failed: 'error',
     skipped: 'skipped',
     stopped: 'stopped',
-    waiting_delay: 'warning',
     partial: 'warning',
     aborted: 'aborted',
     stale: 'muted',     // a run or task row from before 1.3 left unfinished
@@ -106,9 +105,6 @@ export const getWaitingReason = (task: { status?: string; dependencies?: string[
                 return 'Dependencies ready, countdown starting...';
             }
             return 'Dependencies ready, starting soon...';
-            
-        case TASK_STATUS.WAITING_DELAY:
-            return 'Countdown in progress';
             
         case TASK_STATUS.WAITING_PAUSED:
             return 'Pipeline is paused';

@@ -406,7 +406,6 @@ A rule reads the final outcomes of its task's direct upstreams: a failed task is
 | `deps_ready` *(signal, not persisted)* | `notify_dependents`/`registration`'s callback payload when deps satisfy the rule — the wrapper resumes and the task actually runs; not a status you'll see stored |
 | `deps_blocked` *(signal, not persisted)* | Callback payload when a genuine failure blocks a success-requiring rule — resolves to the persisted `upstream_failed` |
 | `deps_skip` *(signal, not persisted)* | Callback payload when a rule's condition legitimately never occurred (ADR #115) — resolves to the persisted `skipped` |
-| `waiting_delay` | wait_before countdown |
 | `waiting_paused` | Pipeline paused, task waiting for resume |
 | `waiting_decision` | Waiting for manual decision (interactive notification) |
 | `pending` | Pending redrive (SFN) |
@@ -468,12 +467,6 @@ No always-on control plane, so idle cost is near zero.
                     │ DEPS_READY│  │WAITING_PAUSED│  │DEPS_BLOCKED   │
                     │           │  │(pipe paused) │  │→upstream_failed│
                     └───────────┘  └─────────────┘  └───────────────┘
-                          │
-                          ▼
-                    ┌───────────────────┐
-                    │  WAITING_DELAY    │
-                    │ (countdown timer) │
-                    └───────────────────┘
                           │
                           ▼
                     ┌───────────────────┐
@@ -544,12 +537,6 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting. The sweeper re-checks a waiting task 10, 20, then every 30 minutes; if the console's System status says the periodic re-check is not running, that check is not happening.
 3. Check `dependency_subscriptions`: one row per dependency, key `{upstream}-{pipeline_execution_short}`, subscriber = the task's `execution_name`.
 4. Check the upstream's **notify_dependents** execution — did it run?
-
-### Task stuck in "waiting_delay"
-
-1. Check `wait_delay_until_ms` - when should countdown end?
-2. Check server time sync - is there clock skew?
-3. Check wrapper SFN execution - is Wait state active?
 
 ### Pipeline doesn't start
 

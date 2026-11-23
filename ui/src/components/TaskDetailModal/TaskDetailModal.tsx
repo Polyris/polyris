@@ -694,7 +694,6 @@ function DerivedTimeline({ task }: { task: Task }) {
     const statusEvents: Record<string, { badge: string; badgeClass: string; text: string; useTime?: string }> = {
         'waiting': { badge: 'Waiting', badgeClass: 'td-event-waiting', text: 'Waiting for upstream dependencies' },
         'deps_ready': { badge: 'Ready', badgeClass: 'td-event-ready', text: 'Dependencies satisfied, queued for execution' },
-        'waiting_delay': { badge: 'Delayed', badgeClass: 'td-event-waiting', text: 'Waiting for delay timer' },
         'running': { badge: 'Running', badgeClass: 'td-event-running', text: 'Task is currently executing' },
         'success': { badge: 'Success', badgeClass: 'td-event-success', text: 'Task completed successfully', useTime: task.finished_at },
         'succeeded': { badge: 'Success', badgeClass: 'td-event-success', text: 'Task completed successfully', useTime: task.finished_at },

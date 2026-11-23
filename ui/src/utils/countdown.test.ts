@@ -26,7 +26,6 @@ describe('the countdown of a 1.3 row (review of TR-6d, P-3)', () => {
         expect(state.isCountingDown).toBe(true);
         expect(state.remainingSeconds).toBe(30 * 60);
         expect(isCountingDownWait('waiting', undefined)).toBe(false);
-        expect(isCountingDownWait('waiting_delay', undefined)).toBe(true);
     });
 
     it('does not say it waits for an upstream that has finished', () => {

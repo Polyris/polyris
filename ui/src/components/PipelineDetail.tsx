@@ -219,7 +219,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     const [showHistory, setShowHistory] = useState(false);
 
     const stats = useMemo(() => ({
-        active: filteredTasks.filter(t => t.status === 'running' || t.status === 'deps_ready' || t.status === 'waiting_delay').length,
+        active: filteredTasks.filter(t => t.status === 'running' || t.status === 'deps_ready').length,
         failed: filteredTasks.filter(t => t.status === 'failed' || t.status === 'upstream_failed').length,
         wait: filteredTasks.filter(t => t.status === 'waiting').length,
         stopped: filteredTasks.filter(t => t.status === 'stopped' || t.status === 'aborted').length,

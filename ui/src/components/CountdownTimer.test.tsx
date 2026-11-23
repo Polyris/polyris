@@ -37,14 +37,14 @@ describe('CountdownTimer', () => {
 
         it('waitBefore is null', () => {
             const { container } = render(
-                <CountdownTimer waitBefore={null} waitDelayUntilMs={null} waitDelayStartedMs={null} status="waiting_delay" serverOffsetMs={0} />
+                <CountdownTimer waitBefore={null} waitDelayUntilMs={null} waitDelayStartedMs={null} status="waiting" serverOffsetMs={0} />
             );
             expect(container.innerHTML).toBe('');
         });
 
         it('waitBefore is 0', () => {
             const { container } = render(
-                <CountdownTimer waitBefore={0} waitDelayUntilMs={null} waitDelayStartedMs={null} status="waiting_delay" serverOffsetMs={0} />
+                <CountdownTimer waitBefore={0} waitDelayUntilMs={null} waitDelayStartedMs={null} status="waiting" serverOffsetMs={0} />
             );
             expect(container.innerHTML).toBe('');
         });
@@ -76,11 +76,11 @@ describe('CountdownTimer', () => {
         });
     });
 
-    describe('waiting_delay state (active countdown)', () => {
+    describe('a waiting row that counts down its wait_before (active countdown)', () => {
         it('shows hourglass icon', () => {
             const futureMs = nowMs + 120_000; // 2 minutes from now
             render(
-                <CountdownTimer waitBefore={300} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 180_000} status="waiting_delay" serverOffsetMs={0} />
+                <CountdownTimer waitBefore={300} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 180_000} status="waiting" serverOffsetMs={0} />
             );
             expect(screen.getByTestId('icon-hourglass')).toBeInTheDocument();
             expect(screen.getByText('Waiting to Start')).toBeInTheDocument();
@@ -89,7 +89,7 @@ describe('CountdownTimer', () => {
         it('shows remaining text', () => {
             const futureMs = nowMs + 60_000;
             render(
-                <CountdownTimer waitBefore={120} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 60_000} status="waiting_delay" serverOffsetMs={0} />
+                <CountdownTimer waitBefore={120} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 60_000} status="waiting" serverOffsetMs={0} />
             );
             expect(screen.getByText(/remaining/)).toBeInTheDocument();
         });
@@ -97,7 +97,7 @@ describe('CountdownTimer', () => {
         it('shows progress bar', () => {
             const futureMs = nowMs + 60_000;
             const { container } = render(
-                <CountdownTimer waitBefore={120} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 60_000} status="waiting_delay" serverOffsetMs={0} />
+                <CountdownTimer waitBefore={120} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 60_000} status="waiting" serverOffsetMs={0} />
             );
             // Progress bar uses ct-progress-fill class
             const progressBar = container.querySelector('.ct-progress-fill');
@@ -107,7 +107,7 @@ describe('CountdownTimer', () => {
         it('shows "Task will start after countdown"', () => {
             const futureMs = nowMs + 30_000;
             render(
-                <CountdownTimer waitBefore={60} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 30_000} status="waiting_delay" serverOffsetMs={0} />
+                <CountdownTimer waitBefore={60} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 30_000} status="waiting" serverOffsetMs={0} />
             );
             expect(screen.getByText('Task will start after countdown')).toBeInTheDocument();
         });
@@ -163,7 +163,7 @@ describe('CountdownTimer', () => {
             // This just verifies the component doesn't crash with offset
             const futureMs = nowMs + 10_000;
             const { container } = render(
-                <CountdownTimer waitBefore={60} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 50_000} status="waiting_delay" serverOffsetMs={5000} />
+                <CountdownTimer waitBefore={60} waitDelayUntilMs={futureMs} waitDelayStartedMs={nowMs - 50_000} status="waiting" serverOffsetMs={5000} />
             );
             expect(container.innerHTML).not.toBe('');
         });

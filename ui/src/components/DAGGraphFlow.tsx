@@ -51,7 +51,6 @@ const STATUS_COLORS: Record<string, { bg: string; border: string }> = {
     failed: { bg: 'var(--error-light)', border: 'var(--error)' },
     upstream_failed: { bg: 'var(--error-light)', border: 'var(--error)' },
     waiting: { bg: 'var(--bg-tertiary)', border: 'var(--border)' },
-    waiting_delay: { bg: 'var(--warning-light)', border: 'var(--warning)' },
     waiting_decision: { bg: 'var(--decision-light)', border: 'var(--decision)' },
     waiting_paused: { bg: '#fef3c7', border: '#f59e0b' },
     deps_ready: { bg: 'var(--accent-light)', border: 'var(--accent)' },
@@ -511,7 +510,6 @@ export function DAGGraphFlow({
             running: '#3b82f6',
             failed: '#ef4444',
             waiting: '#94a3b8',
-            waiting_delay: '#eab308',
             waiting_paused: '#f59e0b',
             waiting_decision: '#f97316',
             deps_ready: '#6366f1',
@@ -527,7 +525,7 @@ export function DAGGraphFlow({
         const total = dag?.nodes?.length || 0;
         const success = tasks?.filter(t => t.status === 'success' || t.status === 'succeeded').length || 0;
         const skipped = tasks?.filter(t => t.status === 'skipped').length || 0;
-        const running = tasks?.filter(t => t.status === 'running' || t.status === 'deps_ready' || t.status === 'waiting_delay').length || 0;
+        const running = tasks?.filter(t => t.status === 'running' || t.status === 'deps_ready').length || 0;
         const failed = tasks?.filter(t => TASK_SETTLED_STATUSES.includes(t.status) && !TASK_SUCCESS_STATUSES.includes(t.status)).length || 0;
         return { total, success, skipped, running, failed };
     }, [dag, tasks]);

@@ -29,12 +29,6 @@ class TaskStatus(str, Enum):
                     │
                     ▼
         ┌───────────────────┐
-        │  WAITING_DELAY    │
-        │ (countdown timer) │
-        └───────────────────┘
-                    │
-                    ▼
-        ┌───────────────────┐
         │      RUNNING      │
         │ (task executing)  │
         └───────────────────┘
@@ -56,7 +50,6 @@ class TaskStatus(str, Enum):
     # Active states
     WAITING = "waiting"                    # Initial: waiting for dependencies
     DEPS_READY = "deps_ready"              # Dependencies satisfied, ready to run
-    WAITING_DELAY = "waiting_delay"        # In countdown timer (wait_before)
     WAITING_PAUSED = "waiting_paused"      # Pipeline is paused
     WAITING_DECISION = "waiting_decision"  # Waiting for manual decision
     RUNNING = "running"                    # Task is executing
@@ -117,24 +110,18 @@ ACTIVE_STATUSES: Set[str] = {
 WAITING_STATUSES: Set[str] = {
     TaskStatus.WAITING.value,
     TaskStatus.DEPS_READY.value,
-    TaskStatus.WAITING_DELAY.value,
     TaskStatus.WAITING_PAUSED.value,
     TaskStatus.WAITING_DECISION.value,
 }
 
 # Statuses the coordination reconciler may act on (ADR #130 §2): the task is
 # still waiting for its dependencies. Deliberately narrower than
-# WAITING_STATUSES — deps_ready, waiting_delay and waiting_decision are past
-# the dependency wait and belong to the wrapper / run_task.
+# WAITING_STATUSES — deps_ready and waiting_decision are past the dependency
+# wait and belong to run_task. A wait_before countdown is a waiting row with its
+# end (ADR #137 §1); 1.2's waiting_delay status went with it.
 RECONCILABLE_STATUSES: Set[str] = {
     TaskStatus.WAITING.value,
     TaskStatus.WAITING_PAUSED.value,
-}
-
-# Statuses that show countdown in UI
-COUNTDOWN_STATUSES: Set[str] = {
-    TaskStatus.DEPS_READY.value,
-    TaskStatus.WAITING_DELAY.value,
 }
 
 # Statuses that can be stopped via UI
@@ -143,7 +130,6 @@ STOPPABLE_STATUSES: Set[str] = {
     TaskStatus.PENDING.value,
     TaskStatus.WAITING.value,
     TaskStatus.WAITING_PAUSED.value,
-    TaskStatus.WAITING_DELAY.value,
     TaskStatus.DEPS_READY.value,
     TaskStatus.WAITING_DECISION.value,
 }

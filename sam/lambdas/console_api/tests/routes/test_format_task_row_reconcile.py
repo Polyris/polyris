@@ -9,7 +9,7 @@ ADR #137 §5: the console asks Step Functions nothing about a run.)
 from routes.tasks import _format_task_row
 
 
-def _raw_item(status="waiting_delay", wrapper_arn="", pipeline_execution="run1",
+def _raw_item(status="waiting", wrapper_arn="", pipeline_execution="run1",
               pipeline_name="sales"):
     return {
         "execution_name": "extract-2024-01-15-abc12345",

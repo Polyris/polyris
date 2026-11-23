@@ -346,7 +346,7 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
         'total': len(tasks),
         'success': len([t for t in tasks if t['status'] in ['success', 'succeeded']]),
         'running': len([t for t in tasks if t['status'] in ['running', 'deps_ready']]),
-        'waiting': len([t for t in tasks if t['status'] in ['waiting', 'waiting_delay', 'waiting_paused', 'waiting_decision']]),
+        'waiting': len([t for t in tasks if t['status'] in ['waiting', 'waiting_paused', 'waiting_decision']]),
         'failed': len([t for t in tasks if t['status'] in ['failed', 'upstream_failed']]),
         'skipped': len([t for t in tasks if t['status'] == 'skipped']),
         'stopped': len([t for t in tasks if t['status'] in ['stopped', 'aborted']]),

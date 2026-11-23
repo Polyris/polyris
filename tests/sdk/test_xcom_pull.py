@@ -782,8 +782,7 @@ def test_the_statuses_xcom_reads_are_the_platforms():
     assert _SUCCESS == TaskStatus.SUCCESS.value
 
 
-@pytest.mark.parametrize("status", ["waiting", "deps_ready", "running", "waiting_decision", "waiting_delay",
-                                    "unknown", None])
+@pytest.mark.parametrize("status", ["waiting", "deps_ready", "running", "waiting_decision", "unknown", None])
 def test_get_an_upstream_with_no_output_in_this_run_yet_is_never_read_from_the_table(status):
     """A one_success task starts while its other upstreams still wait or run, and their date's output# may hold
     an older run's output (the review of TR-5): xcom refuses it, naming the status."""

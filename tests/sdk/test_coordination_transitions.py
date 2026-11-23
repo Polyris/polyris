@@ -8,7 +8,7 @@ from polyris.coordination import transitions as t
 
 S = TaskStatus
 STATUSES = frozenset(s.value for s in S)
-#: The statuses 1.3 writes; ``succeeded``, ``aborted``, ``waiting_delay`` and ``pending`` occur only on older rows.
+#: The statuses 1.3 writes; ``succeeded``, ``aborted`` and ``pending`` occur only on older rows.
 WRITTEN = frozenset({"waiting", "waiting_paused", "deps_ready", "running", "waiting_decision",
                      "success", "skipped", "failed", "upstream_failed", "stopped"})
 
