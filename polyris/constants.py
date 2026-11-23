@@ -294,9 +294,7 @@ class PipelineStatus:
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
-    TIMED_OUT = "timed_out"
     ABORTED = "aborted"
-    RECOVERED = "recovered"
     IDLE = "idle"
 
 
@@ -308,8 +306,9 @@ class PipelineStatus:
 class ExecutionStatus:
     """Pipeline-execution status. Canonical lowercase form.
 
-    AWS Step Functions returns these statuses in UPPERCASE; normalize at
-    the boundary using `normalize_execution_status` before use. Canonical
+    The console reads a run's status from its run row, or derives it from its
+    task rows (``derive_execution_status``); it never asks Step Functions
+    (ADR #137 §5, which removed ``timed_out`` and ``recovered``). Canonical
     "success" (not "succeeded") system-wide per ADR #112 — supersedes ADR #71's
     value choice. `stopped` is a task-only status (restartable UI-stop) and is
     intentionally absent here: a stopped execution derives/reconciles to `aborted`.
@@ -317,9 +316,7 @@ class ExecutionStatus:
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
-    TIMED_OUT = "timed_out"
     ABORTED = "aborted"
-    RECOVERED = "recovered"  # Derived: SFN reports failed/timed_out but all tasks resolved
     # Derived: a run from before 1.3 with a task row left unfinished. 1.3 finishes no such row, and the upgrade
     # stopped the run's execution (ADR #137, Migration), so it stays so until its rows expire. Goes with 1.4.
     STALE = "stale"
@@ -329,44 +326,9 @@ EXECUTION_STATUS_CANONICAL: Set[str] = {
     ExecutionStatus.RUNNING,
     ExecutionStatus.SUCCESS,
     ExecutionStatus.FAILED,
-    ExecutionStatus.TIMED_OUT,
     ExecutionStatus.ABORTED,
-    ExecutionStatus.RECOVERED,
     ExecutionStatus.STALE,
 }
-
-_EXECUTION_STATUS_UPPERCASE_MAP = {
-    'RUNNING': ExecutionStatus.RUNNING,
-    'SUCCEEDED': ExecutionStatus.SUCCESS,   # SFN uppercase → canonical 'success' (ADR #112)
-    'FAILED': ExecutionStatus.FAILED,
-    'TIMED_OUT': ExecutionStatus.TIMED_OUT,
-    'ABORTED': ExecutionStatus.ABORTED,
-    # SFN never emits STOPPED for an execution; map defensively to aborted.
-    'STOPPED': ExecutionStatus.ABORTED,
-    # Legacy / task-form aliases for the success state → canonical 'success'.
-    'SUCCESS': ExecutionStatus.SUCCESS,
-    'success': ExecutionStatus.SUCCESS,
-    'succeeded': ExecutionStatus.SUCCESS,
-}
-
-
-def normalize_execution_status(status, log_warn=None):
-    """Normalize a pipeline-execution status to canonical lowercase.
-
-    See ADR #71 for full reasoning. Idempotent on canonical inputs.
-    """
-    if status is None:
-        return None
-    if status in EXECUTION_STATUS_CANONICAL:
-        return status
-    mapped = _EXECUTION_STATUS_UPPERCASE_MAP.get(status)
-    if mapped is not None:
-        return mapped
-    if log_warn is not None:
-        log_warn("Unexpected execution status; cannot normalize",
-                 status=status)
-    return status
-
 
 # Task-status groupings used to derive a pipeline-execution status (ADR #112).
 # 'succeeded' is accepted as an input alias for the canonical 'success'.
@@ -395,22 +357,6 @@ def derive_execution_status(task_statuses):
     if statuses & _DERIVE_STOPPED:
         return ExecutionStatus.ABORTED
     return ExecutionStatus.SUCCESS
-
-
-def reconcile_execution_status(base, sfn_status, all_tasks_resolved):
-    """Refine a derived 'running' status against the authoritative SFN status (ADR #112).
-
-    Only a 'running' base is reconciled — terminal derivations are trusted. ``sfn_status``
-    must already be canonical (see ``normalize_execution_status``). When SFN reports a
-    failure/timeout but every task resolved, the execution is 'recovered'.
-    """
-    if base != ExecutionStatus.RUNNING:
-        return base
-    if not sfn_status or sfn_status == ExecutionStatus.RUNNING:
-        return base
-    if sfn_status in (ExecutionStatus.FAILED, ExecutionStatus.TIMED_OUT) and all_tasks_resolved:
-        return ExecutionStatus.RECOVERED
-    return sfn_status
 
 
 # =============================================================================

@@ -25,8 +25,6 @@ export const STATUS_COLORS = {
     waiting_delay: 'warning',
     partial: 'warning',
     aborted: 'aborted',
-    timed_out: 'error',
-    recovered: 'warning',
     stale: 'muted',     // a run or task row from before 1.3 left unfinished
     // Asset statuses
     updated: 'success',

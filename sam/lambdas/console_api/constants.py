@@ -11,7 +11,7 @@ The previous hand-maintained copies were an unguarded SSoT duplicate (the
 drift check only validates constants_generated); their dead console-only
 extras (TriggerRule.DEFAULT/EARLY_TRIGGER/WAIT_ALL, PipelineStatus.PAUSED/
 ABORTED) were removed in the same pass. Only console-specific constants
-(EventType, Limits, BackfillLimits, SFN_STATUS_MAP, validators) remain
+(EventType, Limits, BackfillLimits, validators) remain
 defined here. Regenerate the imported names via `make generate-enums`.
 """
 from constants_generated import (
@@ -32,10 +32,7 @@ from constants_generated import (
     BACKFILL_TERMINAL_STATUSES,
     BACKFILL_ACTIVE_STATUSES,
     EXECUTION_STATUS_CANONICAL,
-    _EXECUTION_STATUS_UPPERCASE_MAP,
-    normalize_execution_status,
     derive_execution_status,
-    reconcile_execution_status,
 )
 
 
@@ -61,16 +58,6 @@ class EventType:
     MANUAL_DECISION = 'MANUAL_DECISION'
     RETRY_SCHEDULED = 'RETRY_SCHEDULED'  # reserved — no SFN state emits this yet
 
-
-# SFN status to internal status mapping
-SFN_STATUS_MAP = {
-    'RUNNING': TaskStatus.RUNNING,
-    'SUCCEEDED': TaskStatus.SUCCESS,
-    'FAILED': TaskStatus.FAILED,
-    'TIMED_OUT': TaskStatus.FAILED,
-    'ABORTED': TaskStatus.ABORTED,
-    'PENDING_REDRIVE': TaskStatus.PENDING,
-}
 
 
 # Limits and defaults

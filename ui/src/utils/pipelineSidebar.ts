@@ -26,10 +26,8 @@ import { matchesSearch } from './search';
  */
 const FAILURE: Record<PipelineStatus, boolean> = {
     failed: true,
-    timed_out: true,
     running: false,
     aborted: false,
-    recovered: false,
     success: false,
     idle: false,
 };
