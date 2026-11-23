@@ -161,7 +161,7 @@ def test_the_tasks_feed_back_fills_what_its_indexes_lack():
     indexes = _index_attributes()
     formatted = {"execution_name", "task_name", "pipeline_name", "status", "date", "started_at",
                  "running_at", "finished_at", "dependencies", "pipeline_execution", "wait_for",
-                 "wrapper_execution_arn", "triggered_by", "attempt", "retry_attempt", "task_config"}
+                 "run_task_helper_arn", "triggered_by", "attempt", "retry_attempt", "task_config"}
     for index in ("date-pipeline-index", "pipeline-date-index"):
         missing = formatted - (indexes[index] or formatted) - set(_TASKS_BACKFILL)
         assert not missing, f"{index}: {sorted(missing)} neither projected nor back-filled"
