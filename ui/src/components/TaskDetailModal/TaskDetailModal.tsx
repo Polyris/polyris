@@ -623,7 +623,6 @@ interface TimelineTabProps {
 }
 
 const EVENT_LABELS: Record<string, string> = {
-    WRAPPER_STARTED: 'Wrapper',
     DEPS_READY: 'Deps ready',
     DEPS_SKIPPED: 'Deps skipped',
     DEPS_BLOCKED: 'Deps blocked',
@@ -651,7 +650,6 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                     {EVENT_LABELS[evt.event_type] ?? evt.event_type.replaceAll('_', ' ')}
                                 </span>
                                 <span className="td-event-text">
-                                    {evt.event_type === 'WRAPPER_STARTED' && `Task wrapper started (attempt ${evt.attempt || 1})`}
                                     {evt.event_type === 'DEPS_READY' && `Dependencies satisfied${evt.dependencies ? `: ${evt.dependencies}` : ''}`}
                                     {evt.event_type === 'DEPS_SKIPPED' && `Trigger condition not met: ${evt.reason || 'task skipped'}`}
                                     {evt.event_type === 'DEPS_BLOCKED' && `Blocked: ${evt.reason || 'upstream failed'}`}
@@ -667,7 +665,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                         <>Task failed{evt.retry_attempt && evt.retry_attempt > 0 ? ` after retry ${evt.retry_attempt}` : ''}{evt.error_summary ? `: ${evt.error_summary}` : ''}</>
                                     )}
                                     {evt.event_type === 'MANUAL_DECISION' && <><User size={12} className="inline mr-1" />{evt.decision?.toUpperCase() || 'Action'}: {evt.reason || 'via UI'}</>}
-                                    {!['WRAPPER_STARTED', 'DEPS_READY', 'DEPS_SKIPPED', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
+                                    {!['DEPS_READY', 'DEPS_SKIPPED', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
                                 </span>
                             </div>
                         ))}

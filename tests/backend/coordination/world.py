@@ -227,12 +227,11 @@ class World:
 
     def _expression_failures(self) -> List[str]:
         """A template expression that failed, caught or not (D107): always a template bug, and a Catch can hide
-        it. ``KNOWN_FAILING_EXPRESSIONS`` names the few in templates ADR #137 removes, and nothing else."""
-        from invariants import KNOWN_FAILING_EXPRESSIONS
-
+        it. The interpreter fails a state the way AWS does, an expression that evaluates to undefined included:
+        `Failure_Complete` read fields its input no longer had, and every scenario passed while the live failure
+        handler failed (1.2.0, CR-7). No template is excepted: those that knew failing ones went in 1.3 (TR-8)."""
         return [f"expression failed in {failure['machine']}.{failure['state']}: {failure['cause']}"
-                for failure in self.runtime.expression_errors
-                if (failure["machine"].rsplit("polyris-", 1)[-1], failure["state"]) not in KNOWN_FAILING_EXPRESSIONS]
+                for failure in self.runtime.expression_errors]
 
     def rows_view(self) -> StackView:
         """The stack as ADR #137's invariants read it, now."""

@@ -1,18 +1,13 @@
-"""The wake contract between the coordination Lambdas and the state machines (ADR #130 §3, §6).
+"""The error names the coordination Lambdas and the state machines share (ADR #137 §1, §4).
 
-The dependency wrapper routes on the signal names. The registration helper
-fails a wait with COORDINATION_ERROR, a name the wrapper's Retry never
-matches. The state machines retry a coordination Lambda on TRANSIENT_ERROR,
-the error name it reports for a transient failure. Contract tests compare
-these values with the templates.
+A state machine retries a coordination Lambda on TRANSIENT_ERROR, the error name
+it reports for a transient failure (``Start_Run``'s Retry). Step Functions
+answers DEAD_TOKEN_CODES for a task token that can no longer be signalled: its
+wait ended or its execution is gone, which is no failure of the answer (ADR #135),
+so nothing retries on them. Contract tests compare these values with the
+templates and the Lambdas.
 """
 
-DEPS_READY = "deps_ready"
-DEPS_SKIP = "deps_skip"
-DEPS_BLOCKED = "deps_blocked"
-SIGNALS = frozenset({DEPS_READY, DEPS_SKIP, DEPS_BLOCKED})
-
-COORDINATION_ERROR = "CoordinationError"
 TRANSIENT_ERROR = "CoordinationTransient"
 
 #: Step Functions error codes for a task token that can no longer be signalled:

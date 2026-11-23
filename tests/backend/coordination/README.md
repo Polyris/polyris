@@ -61,7 +61,7 @@ Scenarios speak only the `World` API in `world.py` and build pipelines only thro
 | `plant(violation)` | a violation the test makes on purpose, to see a check find it: the end of the scenario does not count it |
 | `status`, `row`, `stores`, `work_input`, `timeline`, `running_tasks`, `task_runs`, `run_task_transitions`, `warnings`, `notifications`, `pipeline_status`, `push_runs`, `push_subscribers` | what a scenario asserts on: `stores` are a task's `output#` and `input#` rows, `work_input` what its work was given, `run_task_transitions` the state transitions of each of its `run_task` executions (`Execution.transitions`, as Step Functions bills them), and `notifications` the calls `run_task` made to the notify function, which the World records and answers as the free build does |
 
-After every step the World checks ADR #137's invariants of the bound stages (below), and that no template expression failed, caught or not (D107): such a failure is always a template bug, and a `Catch` can hide it. `KNOWN_FAILING_EXPRESSIONS` (`invariants.py`) names the few that fail in templates 1.3 deletes, and `test_meta.py` keeps that list to templates ADR #137 removes. A scenario that breaks one fails, whatever it asserts itself; `test_rows_view.py` tests the check. ADR #130's invariants retired with its engine (D115).
+After every step the World checks ADR #137's invariants of the bound stages (below), and that no template expression failed, caught or not (D107): such a failure is always a template bug, and a `Catch` can hide it. No template is excepted. A scenario that breaks one fails, whatever it asserts itself; `test_rows_view.py` tests the check. ADR #130's invariants retired with its engine (D115).
 
 ### ADR #137's invariants (`row_invariants.py`)
 

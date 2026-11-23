@@ -69,8 +69,7 @@ def test_a_write_that_takes_a_row_out_of_its_wait_without_the_dispatcher_is_caug
 
 
 def test_a_template_expression_that_failed_fails_the_scenario_even_when_a_catch_took_it(world):
-    """D107: a Catch can hide an expression that failed, so the World reports every one at each step, those of
-    KNOWN_FAILING_EXPRESSIONS aside."""
+    """D107: a Catch can hide an expression that failed, so the World reports every one at each step."""
     world.runtime.expression_errors.append({"machine": "acme-dev-polyris-orders", "state": "Warn_Start_Run_Failed",
                                             "cause": "undefined is not a value"})
     found = [v for v in world.check_invariants() if v.startswith("expression failed")]

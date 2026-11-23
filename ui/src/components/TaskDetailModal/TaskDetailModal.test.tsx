@@ -695,7 +695,7 @@ describe('TaskDetailModal', () => {
             render(<TaskDetailModal {...defaultProps} taskEvents={events} />);
             fireEvent.click(screen.getByText('History'));
             expect(screen.getByText(/Real events from task execution/)).toBeInTheDocument();
-            expect(screen.getByText(/4 events/)).toBeTruthy();
+            expect(screen.getByText(/3 events/)).toBeTruthy();
         });
 
         it('shows derived status for tasks without events', () => {
