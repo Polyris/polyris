@@ -1,22 +1,8 @@
-"""The generation that names a task row's owner (ADR #130 §2.1, D40)."""
-
-import pytest
+"""The generation that names a task row's owner (ADR #137 §3, Rule 47)."""
 
 from polyris.coordination import ownership
 
 
-@pytest.mark.parametrize("value,legacy", [
-    (None, True), ("", True), (0, True), ("0", True), (0.0, True),   # a pre-upgrade row or owner
-    (1, False), ("2", False), (3.0, False),
-])
-def test_only_rows_nobody_raised_count_as_legacy(value, legacy):
-    from decimal import Decimal
-
-    assert ownership.is_legacy(value) is legacy
-    if isinstance(value, int):
-        assert ownership.is_legacy(Decimal(value)) is legacy        # as DynamoDB returns it
-
-
-def test_a_raised_generation_never_matches_a_legacy_owner():
+def test_no_owner_of_1_3_matches_a_row_that_1_2_left_without_a_generation():
+    """The stop of a row 1.2 left in flight writes it under LEGACY; every 1.3 row starts at FIRST and only rises."""
     assert ownership.FIRST > ownership.LEGACY
-    assert ownership.RAISE_VALUES == {":zero": ownership.LEGACY, ":one": 1}

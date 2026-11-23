@@ -22,8 +22,8 @@ from .times import format_utc
 _serializer = TypeSerializer()
 #: A task row's write is conditional on what its writer read of it.
 ROW_CONDITION = f"#status = :read AND {task_row.FENCE}"
-#: The same for a row that a 1.2 run left with no generation or with 0, which 1.2's templates write when their
-#: input has none (``ownership.is_legacy``); only its stop writes such a row.
+#: The same for a row that a 1.2 run left with no generation or with 0 (``ownership.LEGACY``); only its stop writes
+#: such a row (*Migration*).
 LEGACY_ROW_CONDITION = "#status = :read AND (attribute_not_exists(#g) OR #g = :legacy)"
 
 
