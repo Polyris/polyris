@@ -258,8 +258,8 @@ value a user might want to set via `DAG(default_args={...})`.
 The `dag()` function in `helpers.py` accepts `**kwargs` to stay compatible with
 `DAG` fields added in the future. Every call to `DAG(...)` inside its `wrapper`
 must end with `**kwargs` — omitting it silently drops any field not listed
-explicitly in the decorator signature (e.g. `group`, `variables`, `doc_md`,
-`default_timeout`). The user sees no error; the field just resets to its
+explicitly in the decorator signature (e.g. `group`, `variables`, `tags`).
+The user sees no error; the field just resets to its
 dataclass default.
 
 ## All DynamoDB write states in `_build_registration_chain` must carry Retry + Catch

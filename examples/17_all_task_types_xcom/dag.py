@@ -77,14 +77,6 @@ with DAG(
     schedule="cron(0 6 * * ? *)",   # 06:00 UTC daily
     description="Every polyris 1.0.0 task type, each fully participating in xcom.",
     tags=["example", "xcom", "smoke", "reference"],
-    doc_md=(
-        "Chain of 8 tasks covering every supported task type in 1.0.0. Each "
-        "task reads its upstream via xcom (native inject or xcom.get()) and "
-        "writes its output via xcom (native return or xcom.push()). Athena is "
-        "the one asymmetric hop — its output is AWS metadata (QueryExecutionId) "
-        "which the following Lambda unpacks into a real payload. EMR is "
-        "excluded — xcom.push() unsupported in 1.0.0. See dag.py docstring."
-    ),
     variables={
         "silver_threshold": SILVER_THRESHOLD,
     },

@@ -23,7 +23,6 @@ with DAG(
     schedule="cron(0 5 * * ? *)",          # 05:00 UTC every day
     description="Daily analytics: ingest → clean → aggregate → report → publish.",
     tags=["example", "analytics", "daily"],
-    doc_md="End-to-end reference pipeline combining several services.",
     default_args={
         "retries": 2,
         "retry_exponential_backoff": True,

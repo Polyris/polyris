@@ -84,7 +84,6 @@ with DAG(
 | `tags` | list | No | Tags for organization |
 | `group` | str | No | Group the console's sidebar lists the pipeline under, e.g. `"orders"`; compared without case. Without it, the pipeline is listed under *Ungrouped*, or in a flat list when no pipeline sets a group. A change shows after the next deploy or run |
 | `variables` | dict | No | Pipeline variables |
-| `max_active_tasks` | int | No | Max concurrent tasks (default: 16) |
 | `default_args` | dict | No | Default params for all tasks (see below) |
 
 ### Default Args

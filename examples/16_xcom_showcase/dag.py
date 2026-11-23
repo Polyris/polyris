@@ -60,13 +60,6 @@ with DAG(
     schedule="cron(0 5 * * ? *)",   # 05:00 UTC daily
     description="Every XCom reader/writer path in one pipeline (1.0.0 features).",
     tags=["example", "xcom", "reference"],
-    doc_md=(
-        "Deploy and open Task Detail for each task to see every 1.0.0 XCom "
-        "feature — uniform xcom.get(), xcom.push() for service tasks, primitive "
-        "parsing, loud errors, colored Console cards, AWS-metadata banner. "
-        "See lambda_handlers/ and glue_scripts/ next to dag.py for the actual "
-        "handler code."
-    ),
     default_args={
         "execution_timeout": timedelta(minutes=15),
         "orchestration_timeout": timedelta(hours=1),

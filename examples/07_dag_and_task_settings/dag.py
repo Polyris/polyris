@@ -5,8 +5,6 @@ The settings that matter once a pipeline is in production:
   - retry policy with exponential backoff, jitter, and a cap
   - per-task execution timeout and per-task orchestration timeout
   - `skip_on_backfill` — don't re-run a live scraper when backfilling history
-  - `catchup=False` — only run going forward, don't fill the gap since start_date
-  - `max_active_tasks` / `max_active_runs` — concurrency limits
   - a bounded active window with `start_date` / `end_date`
 
 Run it locally (no AWS):  polyris-validate -v
@@ -22,11 +20,8 @@ with DAG(
     dag_id="operational-demo",
     group="features",
     schedule="@daily",
-    description="Production knobs: retries, timeouts, backfill, concurrency.",
+    description="Production knobs: retries, timeouts, backfill.",
     tags=["example", "operations"],
-    catchup=False,                         # don't backfill the gap since start_date
-    max_active_tasks=4,                    # at most 4 tasks running at once
-    max_active_runs=1,                     # one DAG run at a time
     start_date=datetime(2026, 1, 1),
     end_date=datetime(2027, 1, 1),
 ) as dag:
