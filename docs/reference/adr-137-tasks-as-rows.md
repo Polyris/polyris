@@ -18,7 +18,7 @@
 > - ADR #112: a run with a failed task stays `running`, with the number of its failed tasks, until every row is final, and a failed direct step makes the run `failed` (§4).
 > - ADR #120, decisions 2 and 3: the output marker and Mark Successful's asset facts join the action's transaction (§3).
 > - ADR #123: a task takes each upstream's status from its own run, and an output only from an upstream that succeeded or that an operator or the run skipped (§1). Every write to `output#` renews its TTL for a year, and `input#` lives 90 days from each write (§5).
-> - ADR #125: `run_task`'s `attempt` guard goes; the generation and the execution name replace it. The counters the console shows stay.
+> - ADR #125: `run_task`'s `attempt` guard goes; the generation and the execution name replace it. The counters the console shows stay, and the denominator of the retries comes from the run's spec: the paid route that wrote `max_retries` on a row goes, since nothing read it.
 > - ADR #107: the work states no longer retry `States.Timeout` on their own, so a timeout is one failed attempt of the task's retry loop (§1).
 > - ADR #108, `TaskConfigKey`: the contract it pins runs from the SDK through the task spec (§8) to `run_task`, whose input the dispatcher builds (§9). Two ADRs carry the number 108, this one and the inline one on the runs feed below; renumbering one of them is a separate docs task.
 > - ADR #22: its one exception goes. The console no longer reconciles a run's status against Step Functions, and `reconcile_execution_status` goes with the statuses `timed_out` and `recovered`; the dispatcher judges an ended execution (§4).

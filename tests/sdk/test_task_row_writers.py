@@ -338,9 +338,20 @@ CODE_WRITERS = {
     ("console_api/routes/tasks.py", "_emit_marker_blocked_warn"): "warning rows",
 }
 
+#: The paid overlay, when it is checked out next to this repository: its writers are classified too, under
+#: ``ee/`` (the final review of TR-6, P-24; test_repository_calls.py reads it the same way).
+OVERLAY = REPO.parent / "polyris-ee" / "sam" / "lambdas" / "console_api" / "ee"
 CODE_FILES = (sorted((REPO / "sam/lambdas/console_api/routes").glob("*.py"))
               + [REPO / "sam/lambdas/console_api/utils.py"]
-              + sorted(COORDINATION.glob("*.py")))
+              + sorted(COORDINATION.glob("*.py"))
+              + (sorted(p for p in OVERLAY.rglob("*.py") if "tests" not in p.parts) if OVERLAY.is_dir() else []))
+
+
+def _name(path: Path) -> str:
+    """A file's name in CODE_WRITERS: from sam/lambdas here, from ``ee/`` in the paid overlay."""
+    if OVERLAY in path.parents:
+        return str(Path("ee") / path.relative_to(OVERLAY))
+    return str(path.relative_to(REPO / "sam/lambdas"))
 #: The DynamoDB write calls; in the coordination Lambdas every one of them is classified, whatever its table.
 WRITE_CALLS = ("put_item", "update_item", "delete_item", "transact_write_items", "batch_write_item")
 
@@ -361,12 +372,19 @@ def _code_writers() -> Dict[Tuple[str, str], str]:
                     "tasks" in target or target == "self.table")
                 coordination_write = path.parent == COORDINATION and method in WRITE_CALLS
                 if repo_write or table_write or coordination_write:
-                    found[(str(path.relative_to(REPO / "sam/lambdas")), function.name)] = ast.get_source_segment(
+                    found[(_name(path), function.name)] = ast.get_source_segment(
                         path.read_text(), function) or ""
     return found
 
 
 CODE = _code_writers()
+
+
+def test_the_census_reads_the_paid_overlay_when_it_is_checked_out():
+    """A writer of task rows in the overlay is classified like one here (P-24)."""
+    if not OVERLAY.is_dir():
+        pytest.skip("the paid overlay is not checked out next to this repository")
+    assert any(OVERLAY in path.parents for path in CODE_FILES)
 
 
 def test_every_code_writer_has_a_role():

@@ -398,15 +398,6 @@ def parse_task_config(raw) -> Dict:
 
 
 def resolve_max_retries(item: Dict):
-    """Return the task's current max_retries, preferring the EE-editable
-    top-level field over the registration-written task_config blob.
-
-    EE update_task_config writes 'max_retries' directly on the DDB row;
-    the registration SFN embeds 'retries' inside the 'task_config' JSON
-    string.  The top-level field is always more recent when present.
-    Returns None if neither source is set.
-    """
-    top = item.get('max_retries')
-    if top is not None:
-        return safe_int(top)
+    """The max_retries of a row of a run from before 1.3: ``retries`` in the ``task_config`` its registration wrote
+    on the row. A 1.3 row's comes from its run's spec (ADR #137 §8). None when unset."""
     return parse_task_config(item.get('task_config')).get('retries')

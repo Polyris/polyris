@@ -235,13 +235,7 @@ def test_route_table_completeness():
 
     # Config mutation stays Team — must be ABSENT from the OSS-stripped build.
     # (In the full build ee adds it; this assert only holds when ee is stripped.)
-    try:
-        import ee  # noqa: F401
-        ee_present = True
-    except ImportError:
-        ee_present = False
-    if not ee_present:
-        assert ('PUT', '/api/task-config') not in ROUTES, "task-config PUT must be Team-only"
+    assert ('PUT', '/api/task-config') not in ROUTES, "no build has the task-config PUT: run_task reads the spec"
 
     # Loose free-floor sanity check; the full build adds Team routes on top.
     assert len(ROUTES) >= 24

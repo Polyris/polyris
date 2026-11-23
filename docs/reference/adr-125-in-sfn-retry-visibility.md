@@ -65,6 +65,10 @@ the single source of truth for the denominator in the UI badge. **No new
 EE live-edit case (`ee/team/tasks.py` writes it directly) and `task_config.retries`
 registration case.
 
+> **Amended by ADR #137 (1.3):** the live edit is gone, since `run_task` reads the
+> retries from the task's spec, and a 1.3 row carries no `max_retries`: the console
+> takes the denominator from the run's spec (`max_retries` in `/api/pipeline-status`).
+
 ### Fields the row carries after this change
 
 | Field | Writer | Semantics |
