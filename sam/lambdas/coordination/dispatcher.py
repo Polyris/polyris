@@ -717,9 +717,16 @@ class Dispatcher:
             item = self._get(key)
             if item is None or task_row.STATUS not in item:
                 continue
-            row = dispatch.stop_view(item)
-            judgment = dispatch.stop(row, now=now, cause="its run row is missing")
-            items = dispatch_writes.task_write(row, judgment, None, table=self.tokens_table, now=now)
+            try:
+                row = dispatch.stop_view(item)
+                judgment = dispatch.stop(row, now=now, cause="its run row is missing")
+                items = dispatch_writes.task_write(row, judgment, None, table=self.tokens_table, now=now)
+            except Exception as exc:  # noqa: BLE001 — one row that cannot be stopped never holds up the others (Rule 51)
+                run = dispatch.RunView(key=run_key, execution=run_key[len(run_row.KEY_PREFIX):], status="", version=0)
+                self._warn(run, subject=key, task=str(item.get(task_row.TASK_NAME, "")), item=item,
+                           error=f"{key}: its run row is missing, and it could not be stopped: "
+                                 f"{type(exc).__name__}: {exc}")
+                continue
             if items and self._send_items(items):
                 stopped += 1
         result = {"run": run_key, "source": source, "action": "orphans", "stopped": stopped}

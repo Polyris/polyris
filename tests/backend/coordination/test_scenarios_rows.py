@@ -268,10 +268,12 @@ def test_a_limit_due_in_a_pause_fires_after_the_resume_moved_by_the_paused_time(
 
 @defect("R-U1")
 def test_a_1_2_row_left_in_flight_across_the_upgrade_is_stopped_with_the_cause(world):
-    """ADR #137, Migration: a 1.2 run has no run row, so none of its rows starts; the sweeper stops each waiting
-    row when its 1.2 entry falls due, with the cause on the row, by the rule for a row whose run row is missing."""
+    """ADR #137, Migration: a 1.2 run has no run row, so none of its rows starts; when a waiting row's 1.2 entry
+    falls due, the sweeper's pass stops every row of the run, with the cause on the row, by the rule for a row whose
+    run row is missing. extract counts down its wait_before in 1.2's waiting_delay, a status 1.3 no longer has
+    (the break review of TR-8): it stops too, and fails no pass."""
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.upgrade_platform()
+    world.upgrade_platform(statuses={"extract": "waiting_delay"})
     world.clock.advance(minutes=30)
     world.sweep()
     assert world.status(run, "load") == world.status(run, "extract") == "stopped"

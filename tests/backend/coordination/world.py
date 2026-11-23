@@ -594,14 +594,15 @@ class World:
         self._call_console("/api/task-restart", query={"name": task},
                            body={"date": run.date, "pipeline_execution": run.name, "with_dependants": True})
 
-    def upgrade_platform(self) -> None:
+    def upgrade_platform(self, *, statuses: Optional[Dict[str, str]] = None) -> None:
         """Install 1.3 over the 1.2 platform the World runs, with the runs in flight left as they are (ADR #137,
         *Migration*, the flag that overrides the drain).
 
         The World runs 1.3's engine alone, so the runs it started stand in for 1.2's and are made into what 1.2
         leaves: polyris-up stopped their executions as the update's cleanup began; they have no run row and no
         run input; their task rows carry none of 1.3's fields (readiness, spec version, run start); and each
-        waiting row keeps the `waiting` entry 1.2 gave it, first due after 10 minutes.
+        waiting row keeps the `waiting` entry 1.2 gave it, first due after 10 minutes. `statuses` gives a task's
+        row a status that only 1.2 wrote, by task name, such as `waiting_delay` for a countdown of wait_before.
         """
         from polyris.coordination import attention, run_row, task_row
         from polyris.coordination.times import format_utc
@@ -619,7 +620,12 @@ class World:
             names = {"#r": task_row.READINESS, "#h": task_row.SPEC_HASH, "#v": task_row.SPEC_ID,
                      "#s": task_row.RUN_START}
             expression, values = "REMOVE #r, #h, #v, #s", {}
-            if item.get("status") == "waiting":
+            older = (statuses or {}).get(str(item.get("task_name")))
+            if older is not None:
+                names["#st"] = task_row.STATUS
+                values = {":st": older}
+                expression = "SET #st = :st " + expression
+            elif item.get("status") == "waiting":
                 names.update({"#att": attention.KEY, "#due": attention.DUE})
                 values = {":att": attention.attention(attention.WAITING, str(item["execution_name"])), ":due": due}
                 expression = "SET #att = :att, #due = :due " + expression

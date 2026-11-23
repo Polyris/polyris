@@ -7,7 +7,8 @@ from polyris.coordination import attention, ownership, run_row
 from polyris.coordination import transitions as t
 
 S = TaskStatus
-STATUSES = frozenset(s.value for s in S)
+#: Every status a row may carry: TaskStatus, and those only rows from before 1.3 carry (transitions.OLDER_NOT_FINAL).
+STATUSES = frozenset(s.value for s in S) | t.OLDER_NOT_FINAL
 #: The statuses 1.3 writes; ``succeeded``, ``aborted`` and ``pending`` occur only on older rows.
 WRITTEN = frozenset({"waiting", "waiting_paused", "deps_ready", "running", "waiting_decision",
                      "success", "skipped", "failed", "upstream_failed", "stopped"})

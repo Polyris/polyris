@@ -708,6 +708,41 @@ def test_a_row_a_12_run_left_in_flight_is_stopped_without_readiness_fields(world
     assert "attention" not in stopped
 
 
+@pytest.mark.parametrize("countdown", ["aaa_countdown", "zzz_countdown"])
+def test_every_row_a_12_run_left_is_stopped_a_countdown_in_waiting_delay_too(world, countdown):
+    """The break review of TR-8: TaskStatus lost waiting_delay, and with it the stop's sources, so a 1.2 row that
+    counted down failed the whole pass, before or after the waiting row in the order of the keys. The table takes
+    the statuses only older rows carry (transitions.OLDER_NOT_FINAL)."""
+    keys = []
+    for task, status, due in [(countdown, "waiting_delay", None), ("load", "waiting", "2026-11-12T05:00:00.000Z")]:
+        name = f"{task}-2026-11-12-run-2026-11-12-0ld0ld01"
+        keys.append(name)
+        row = {"execution_name": name, "task_name": task, "status": status, "pipeline_execution": "old-run",
+               "generation": 1, **({"attention": attention.attention(attention.WAITING, name), "attention_at": due}
+                                   if due else {})}
+        world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in row.items()})
+    result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
+                                        check=True, orphan_keys=[keys[1]])
+    assert (result["action"], result["stopped"]) == ("orphans", 2)
+    assert {item(world, k)["status"] for k in keys} == {"stopped"}
+
+
+def test_a_row_of_a_run_without_its_run_row_that_cannot_be_stopped_warns_and_the_others_stop(world):
+    """Rule 51: a status no table knows fails no pass; the bell names the row."""
+    keys = []
+    for task, status in [("aaa_odd", "no-such-status"), ("load", "waiting")]:
+        name = f"{task}-2026-11-12-run-2026-11-12-0ld0ld01"
+        keys.append(name)
+        world.client.put_item(TableName=table("TOKENS_TABLE"), Item={k: _ser.serialize(v) for k, v in {
+            "execution_name": name, "task_name": task, "status": status, "pipeline_execution": "old-run",
+            "generation": 1}.items()})
+    result = world.dispatcher.full_pass(run_row.key("old-run"), source="sweeper", remaining_ms=lambda: 60_000,
+                                        check=True, orphan_keys=keys)
+    assert result["stopped"] == 1 and item(world, keys[1])["status"] == "stopped"
+    warning = item(world, f"_notify_warn_coordination_{keys[0]}")
+    assert "could not be stopped" in warning["error"] and item(world, keys[0])["status"] == "no-such-status"
+
+
 # ── one row never holds up its run; a moved run ends the pass (from the review of TR-4) ──────────────
 
 def _finish_clean(world, task: str, status: str = "success") -> None:
