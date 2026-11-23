@@ -148,13 +148,13 @@ RUN_CHANGES = {
     "new_token": (run(run_token="t1", answered_order=1), run(run_token="t2")),
     "stop": (run(), run(stop={"by": "ops", "reason": "bad input"})),
     "engine_stop": (run("creating"), run("creating", stop={"by": "engine"})),
-    "request": (run(), run(requests={"renew_ttl": {"at": "2026-11-18T10:00:00Z"}})),
+    "request": (run(), run(requests={"pointers": {"at": "2026-11-18T10:00:00Z"}})),
     "task_action": (run(), run(attention="waiting#a", attention_at="2026-11-18T10:00:00Z", run_version=2)),
     "reset": (run(run_version=2), run(run_version=3)),
     "pause": (run(pauses=[]), run(pauses=[{"from": "2026-11-18T10:00:00Z"}])),
     "resume": (run(pauses=[{"from": "2026-11-18T10:00:00Z"}]),
                run(pauses=[{"from": "2026-11-18T10:00:00Z", "to": "2026-11-18T11:00:00Z"}])),
-    "clear_request": (run(requests={"renew_ttl": {"at": "t"}}), run(requests={})),
+    "clear_request": (run(requests={"pointers": {"at": "t"}}), run(requests={})),
     "answer": (run(run_token="t1"), run(run_token="t1", answered_order=1, finished_at="2026-11-18T12:00:00Z")),
     "stop_done": (run(stop={"by": "ops"}), run(stop={"by": "ops"}, stop_done="2026-11-18T12:00:00Z")),
 }
@@ -185,7 +185,9 @@ def test_no_run_row_write_leads_back_to_creating():
     (run(left_at="a"), run(left_at="b"), True),                                          # and again
     (run(left_at="2026-11-18T10:00:00Z"), run(), False),                                 # the sweeper clears it
     (run(summary={"running": 1}), run(summary={"success": 1}), False),                   # a summary
-    (run(requests={"renew_ttl": {"at": "a"}}), run(requests={"renew_ttl": {"at": "b"}}), True),  # a request anew
+    (run(requests={"pointers": {"at": "a"}}), run(requests={"pointers": {"at": "b"}}), True),  # a request anew
+    (run(stop={"by": "ops", "at": "a"}, stop_done="d"), run(stop={"by": "ops", "at": "b"}), True),  # a new Stop
+    (run(stop={"by": "ops", "at": "a"}), run(stop={"by": "ops", "at": "a"}, summary={"stopped": 1}), False),
     (run(), None, False),                                                                # a deletion
 ])
 def test_left_at_set_wakes_and_the_writes_outside_the_table_do_not(old, new, woken):

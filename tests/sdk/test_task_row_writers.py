@@ -130,7 +130,7 @@ RUN_ROW_WRITERS: Dict[str, Tuple[Tuple[str, ...], Callable[[], Mapping[str, Any]
         RUN, {run_row.REQUESTS: {}}, task_id="extract", by="ops", now=NOW, table=TOKENS)),
     "actions.reset": (("reset",), lambda: actions.reset(_reset_row(), dispatch.row_view(_reset_row()), RUN, now=NOW,
                                                         table=TOKENS)[1]["Update"]),
-    "actions.clear_request": (("clear_request",), lambda: actions.clear_request(RUN, run_row.RENEW_TTL, table=TOKENS,
+    "actions.clear_request": (("clear_request",), lambda: actions.clear_request(RUN, run_row.POINTERS, table=TOKENS,
                                                                                 now=NOW)),
     "actions.stop_run": (("stop",), lambda: actions.stop_run(_run_item(), by="ops", reason="", now=NOW, table=TOKENS)),
     "actions.pause_run": (("pause",), lambda: actions.pause_run(_run_item(), now=NOW, table=TOKENS)),
@@ -317,8 +317,6 @@ CODE_WRITERS = {
     ("coordination/dispatcher.py", "_send"): "the run row: dispatch_writes (answer, summary, stop, due time)",
     ("coordination/dispatcher.py", "_drop_pointers"): "another table: a row's pointers once it left its wait",
     ("coordination/dispatcher.py", "_put_pointers"): "another table: a waiting row's pointers (actions.pointer_items)",
-    ("coordination/dispatcher.py", "_renew_ttls"):
-        "a TTL alone, on task rows, the run's input and output#: actions.renewals, conditional on the item",
     ("coordination/dispatcher.py", "_warn"): "warning rows (records.warning_item)",
     ("coordination/dispatcher.py", "_timeline"): "another table: a decision's timeline event (records.decision_event)",
     ("coordination/start_run.py", "_start"): "another table: the asset: pointers (start_run.pointer_items)",

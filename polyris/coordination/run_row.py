@@ -78,8 +78,9 @@ STEP_MAX = 80
 ERROR_MAX = 128
 #: A task id that a request names; polyris-deploy refuses a longer one (TR-3).
 TASK_ID_MAX = 128
-#: The kinds of request (§3): the renewal of the history TTL, and Restart with dependants' reset.
-RENEW_TTL = "renew_ttl"
+#: The kinds of request (§3): the asset pointers of the rows a Restart put back to wait, and Restart with
+#: dependants' reset.
+POINTERS = "pointers"
 RESET_DEPENDANTS = "reset_dependants"
 
 #: The error with which the dispatcher answers a failed run (§9). The generated pipeline takes it in a

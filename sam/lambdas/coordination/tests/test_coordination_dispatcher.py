@@ -1004,7 +1004,7 @@ def test_a_timeline_that_cannot_be_written_holds_up_no_decision(world):
     assert item(world, key("extract"))["status"] == "deps_ready" and timeline(world, "extract") == []
 
 
-# ── requests: a Restart's renewal and the reset of its dependants (ADR #137 §3, §5) ─────────────────────────
+# ── requests: a Restart's pointers and the reset of its dependants (ADR #137 §3) ──────────────────────────────
 
 def restart(world, task: str, *, with_dependants: bool = False) -> None:
     """The console's Restart, through the builder it sends (coordination.actions)."""
@@ -1038,28 +1038,50 @@ def test_a_restart_with_dependants_reruns_what_the_failure_decided_and_the_reque
     assert run["summary"] == {"success": 4} and "attention" not in run
 
 
-def test_a_restart_renews_its_runs_rows_and_writes_the_pointers_of_its_waiting_rows(world):
+def test_a_restart_writes_the_pointers_of_the_rows_it_put_back_to_wait_and_renews_nothing(world):
+    """D126: no TTL is renewed; the pass writes the pointers of the rows that wait since the request alone, the one
+    a row lost when it left its wait (Rule 40), and not those of a row that waits since Start_Run."""
     wait_for = [{"asset_name": "ns/orders"}]
-    start(world, [spec("extract", wait_for=wait_for), spec("load", ["extract"])])
+    start(world, [spec("extract", wait_for=wait_for), spec("load", ["extract"]),
+                  spec("audit", wait_for=[{"asset_name": "ns/audit"}])])
     full(world)
     finish(world, "extract", "failed")
     full(world)
-    world.client.delete_item(TableName=table("SUBSCRIPTIONS_TABLE"),
+    world.client.delete_item(TableName=table("SUBSCRIPTIONS_TABLE"),      # extract left its wait (Rule 40)
                              Key={"dependency_key": {"S": "asset:ns/orders"}, "subscriber": {"S": key("extract")}})
-    output = f"output#orders#load#{DATE}"
-    world.client.put_item(TableName=table("TOKENS_TABLE"), Item={"execution_name": {"S": output}, "ttl": {"N": "1"}})
-    world.clock.at += timedelta(days=200)
+    world.clock.at += timedelta(days=2)              # 1.2's renewal would have rewritten every TTL by now
+    load_ttl = item(world, key("load"))["ttl"]
+    puts = []
+    real = world.dispatcher.client.put_item
+
+    def put_item(**kwargs):
+        if kwargs["TableName"] == table("SUBSCRIPTIONS_TABLE"):
+            puts.append(kwargs["Item"]["subscriber"]["S"])
+        return real(**kwargs)
+
+    world.dispatcher.client.put_item = put_item
     restart(world, "extract")
     full(world)
-    later = world.clock.at
-    for row_key in (key("load"), run_row.input_key(EXECUTION)):
-        assert int(item(world, row_key)["ttl"]) >= int((later + timedelta(days=455)).timestamp()), row_key
-    assert int(item(world, output)["ttl"]) == int((later + timedelta(days=365)).timestamp())
-    assert item(world, f"output#orders#extract#{DATE}") == {}                    # none was written: none made
-    pointer = world.client.get_item(TableName=table("SUBSCRIPTIONS_TABLE"), Key={
-        "dependency_key": {"S": "asset:ns/orders"}, "subscriber": {"S": key("extract")}}).get("Item")
-    assert pointer and pointer["run"]["S"] == RUN_KEY
+    assert puts == [key("extract")]                  # audit waits since Start_Run: its pointer is there already
+    assert item(world, key("load"))["ttl"] == load_ttl                             # nothing renewed
     assert item(world, RUN_KEY)[run_row.REQUESTS] == {}
+
+
+def test_a_second_restart_before_a_pass_keeps_the_first_requests_time(world):
+    """The pointers request keeps its first time (if_not_exists), so both restarted rows get their pointers."""
+    start(world, [spec("a", wait_for=[{"asset_name": "ns/a"}]), spec("b", wait_for=[{"asset_name": "ns/b"}])])
+    full(world)
+    finish(world, "a", "failed")
+    finish(world, "b", "failed")
+    full(world)
+    restart(world, "a")
+    first = item(world, RUN_KEY)[run_row.REQUESTS][run_row.POINTERS]["at"]
+    world.clock.at += timedelta(minutes=3)
+    restart(world, "b")
+    assert item(world, RUN_KEY)[run_row.REQUESTS][run_row.POINTERS]["at"] == first
+    full(world)
+    subscribers = sorted(p["subscriber"]["S"] for p in world.client.scan(TableName=table("SUBSCRIPTIONS_TABLE"))["Items"])
+    assert subscribers == sorted([key("a"), key("b")])
 
 
 def test_a_narrow_pass_over_a_run_with_a_pending_reset_decides_nothing_and_leaves_it_to_the_full_pass(world):
@@ -1111,32 +1133,10 @@ def test_a_stop_of_the_run_cancels_a_pending_reset(world):
 def test_a_request_that_cannot_be_carried_out_warns_and_the_pass_decides(world):
     """Rule 51: a request with no time, as only a hand could leave it, holds up no decision (review P11)."""
     start(world, [spec("extract")])
-    update(world, RUN_KEY, requests={run_row.RENEW_TTL: {"by": "ops"}})
+    update(world, RUN_KEY, requests={run_row.POINTERS: {"by": "ops"}})
     full(world)
     assert item(world, key("extract"))["status"] == "deps_ready"
     assert any("request of the run could not be carried out" in w["error"] for w in warnings(world))
-
-
-def test_a_renewal_write_that_meets_a_transaction_leaves_the_rest_to_the_next_pass(world, monkeypatch):
-    from coordination_testkit import client_error
-    start(world, [spec("extract")])
-    full(world)
-    finish(world, "extract", "failed")
-    world.clock.at += timedelta(days=200)            # the run's TTLs are a renewal behind
-    restart(world, "extract")
-    real, met = world.dispatcher.client.update_item, []
-
-    def update_item(**kwargs):
-        if kwargs.get("UpdateExpression") == "SET #ttl = :ttl" and not met:
-            met.append(1)
-            raise client_error("TransactionConflictException", "UpdateItem")
-        return real(**kwargs)
-
-    monkeypatch.setattr(world.dispatcher.client, "update_item", update_item)
-    assert full(world)["left"] is True
-    assert run_row.RENEW_TTL in item(world, RUN_KEY)[run_row.REQUESTS]
-    full(world)
-    assert item(world, RUN_KEY)[run_row.REQUESTS] == {}                       # the next pass finished it
 
 
 def test_a_narrow_pass_drops_the_pointers_of_a_row_an_action_finished(world):
@@ -1149,13 +1149,23 @@ def test_a_narrow_pass_drops_the_pointers_of_a_row_an_action_finished(world):
     assert not world.client.get_item(TableName=table("SUBSCRIPTIONS_TABLE"), Key=pointer).get("Item")
 
 
-def test_a_stop_after_a_restart_is_not_held_up_by_the_renewal(world):
-    """Review P2: the TTLs come after the stop, in what is left of the budget."""
-    start(world, [spec(f"t{i:02d}") for i in range(6)])
+def test_a_stop_after_a_restart_writes_no_pointer_and_clears_the_request(world):
+    """Review of TR-6, B-2: a pass that stops the run writes no pointer it would delete at once."""
+    start(world, [spec(f"t{i:02d}", wait_for=[{"asset_name": f"ns/a{i}"}]) for i in range(6)])
     full(world)
-    world.clock.at += timedelta(days=200)
     finish(world, "t00", "failed")
+    full(world)
     restart(world, "t00")
     update(world, RUN_KEY, stop={"by": "ops", "reason": "enough", "at": "2026-11-12T06:01:00.000Z"})
+    puts = []
+    real = world.dispatcher.client.put_item
+
+    def put_item(**kwargs):
+        if kwargs["TableName"] == table("SUBSCRIPTIONS_TABLE"):
+            puts.append(kwargs)
+        return real(**kwargs)
+
+    world.dispatcher.client.put_item = put_item
     full(world)
     assert {item(world, key(f"t{i:02d}"))["status"] for i in range(6)} == {"stopped"}
+    assert puts == [] and run_row.POINTERS not in item(world, RUN_KEY)[run_row.REQUESTS]

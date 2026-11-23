@@ -21,16 +21,16 @@ def test_a_ttl_counts_from_the_write():
 
 
 @pytest.mark.parametrize("after,allowed", [
-    (timedelta(days=363), True),
-    (timedelta(days=364) - timedelta(seconds=1), True),
-    (timedelta(days=364), False),                          # a year less a day (RESTART_TTL_MARGIN)
+    (timedelta(days=270), True),
+    (timedelta(days=275) - timedelta(seconds=1), True),
+    (timedelta(days=275), False),                          # a year less 90 days (RESTART_TTL_MARGIN, D126)
     (timedelta(days=400), False),
 ])
-def test_a_restart_is_refused_once_its_run_started_a_year_ago_less_a_day(after, allowed):
+def test_a_restart_is_refused_once_its_run_started_a_year_ago_less_90_days(after, allowed):
     assert r.restart_allowed(STARTED, STARTED + after) is allowed
 
 
-def test_the_last_accepted_restart_still_finds_a_day_of_its_upstreams_outputs():
+def test_the_last_accepted_restart_still_finds_90_days_of_its_upstreams_outputs():
     """An upstream's output# was written after its run started, so it lives at least until then + a year."""
     last = STARTED + r.YEAR - r.RESTART_TTL_MARGIN - timedelta(seconds=1)
     assert r.restart_allowed(STARTED, last)

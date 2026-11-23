@@ -181,8 +181,9 @@ def task_row_wakes(old: Optional[Mapping[str, Any]], new: Optional[Mapping[str, 
 def run_row_wakes(old: Optional[Mapping[str, Any]], new: Optional[Mapping[str, Any]]) -> bool:
     """Whether this change of a run row wakes the dispatcher (§7).
 
-    It does when the run became active, a stop mark or a request arrived, the
-    pause opened or closed, or a pass set ``left_at``. Its insert does not: a
+    It does when the run became active, a stop mark or a request arrived (a
+    new Stop after a done one too), the pause opened or closed, or a pass set
+    ``left_at``. Its insert does not: a
     pass over a ``creating`` run would return at once. Neither do a new token,
     the answer, a cleared request, the stop done, a summary, a due time, or the
     sweeper's clearing of ``left_at``.
@@ -191,7 +192,7 @@ def run_row_wakes(old: Optional[Mapping[str, Any]], new: Optional[Mapping[str, A
         return False
     old_requests = old.get(run_row.REQUESTS) or {}
     return ((old.get(run_row.STATUS) == _CREATING and new.get(run_row.STATUS) == _ACTIVE)
-            or (run_row.STOP in new and run_row.STOP not in old)
+            or (new.get(run_row.STOP) is not None and new.get(run_row.STOP) != old.get(run_row.STOP))
             or old.get(run_row.PAUSES) != new.get(run_row.PAUSES)
             or any(old_requests.get(kind) != request for kind, request in (new.get(run_row.REQUESTS) or {}).items())
             or new.get(run_row.LEFT_AT) not in (None, old.get(run_row.LEFT_AT)))

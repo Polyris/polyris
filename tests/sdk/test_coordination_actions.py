@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import pytest
+from botocore.exceptions import ClientError
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 from polyris.constants import TaskStatus
@@ -254,7 +255,7 @@ def test_a_restart_puts_the_row_back_to_waiting_and_requests_the_renewal(ddb):
     the_run = get(ddb, run_row.key(RUN))
     assert the_run[run_row.RUN_VERSION] == 6 and the_run[attention.DUE] == format_utc(NOW)
     assert int(the_run[run_row.TTL]) == retention.ttl(NOW, retention.HISTORY)
-    assert the_run[run_row.REQUESTS] == {run_row.RENEW_TTL: {"by": "ops@example.com", "at": format_utc(NOW)}}
+    assert the_run[run_row.REQUESTS] == {run_row.POINTERS: {"by": "ops@example.com", "at": format_utc(NOW)}}
     [event] = write.events
     assert (event["decision"], event["task_run_id"]) == ("restart", "old-run-task")   # the attempt it ends
 
@@ -285,7 +286,7 @@ def test_a_restart_with_dependants_requests_their_reset_and_a_second_waits_for_i
     assert not send(ddb, restart_of({**again, task_row.GENERATION: 3}, with_dependants=True))
     # A plain Restart beside the reset renews the request of the renewal by kind.
     assert send(ddb, restart_of({**again, task_row.GENERATION: 3}, run_item=get(ddb, run_row.key(RUN))))
-    assert set(get(ddb, run_row.key(RUN))[run_row.REQUESTS]) == {run_row.RENEW_TTL, run_row.RESET_DEPENDANTS}
+    assert set(get(ddb, run_row.key(RUN))[run_row.REQUESTS]) == {run_row.POINTERS, run_row.RESET_DEPENDANTS}
 
 
 @pytest.mark.parametrize("fields, refused", [
@@ -301,11 +302,12 @@ def test_a_restart_waits_for_a_stop_of_its_run_to_be_done(fields, refused):
             restart_of(finished(), run_item=active_run(**fields))
 
 
-def test_a_restart_is_refused_a_year_less_a_day_after_its_run_started():
+def test_a_restart_is_refused_nine_months_after_its_run_started():
+    """D126: nothing renews a run's rows, so a Restart needs the 90 days its rerun reads them in."""
     started = datetime(2026, 11, 21, 6, 0, 0, 123000, tzinfo=timezone.utc)
-    assert restart_of(finished(), now=started + timedelta(days=363, hours=23)).items
-    with pytest.raises(actions.ActionRefused, match="more than a year ago"):
-        restart_of(finished(), now=started + timedelta(days=364, minutes=1))
+    assert restart_of(finished(), now=started + timedelta(days=274, hours=23)).items
+    with pytest.raises(actions.ActionRefused, match="more than nine months ago"):
+        restart_of(finished(), now=started + timedelta(days=275, minutes=1))
 
 
 def test_a_restart_takes_only_a_final_or_undecided_row():
@@ -366,49 +368,14 @@ def test_a_reset_raises_run_version_from_its_read_so_a_second_from_the_same_read
 
 
 def test_a_cleared_request_goes_by_kind_on_the_version_read(ddb):
-    requests = {run_row.RENEW_TTL: {"by": "a", "at": "t"}, run_row.RESET_DEPENDANTS: {"by": "a", "at": "t"}}
+    requests = {run_row.POINTERS: {"by": "a", "at": "t"}, run_row.RESET_DEPENDANTS: {"by": "a", "at": "t"}}
     put(ddb, active_run(**{run_row.REQUESTS: requests}))
     view = dispatch.run_view(active_run())
-    ddb.update_item(**actions.clear_request(view, run_row.RENEW_TTL, table=TOKENS, now=NOW))
+    ddb.update_item(**actions.clear_request(view, run_row.POINTERS, table=TOKENS, now=NOW))
     the_run = get(ddb, run_row.key(RUN))
     assert set(the_run[run_row.REQUESTS]) == {run_row.RESET_DEPENDANTS} and the_run[run_row.RUN_VERSION] == 6
     with pytest.raises(ddb.exceptions.ConditionalCheckFailedException):
         ddb.update_item(**actions.clear_request(view, run_row.RESET_DEPENDANTS, table=TOKENS, now=NOW))
-
-
-def test_the_renewal_writes_what_lives_less_than_the_request_and_nothing_ttl_deleted(ddb):
-    at = NOW - timedelta(hours=1)
-    old, renewed = retention.ttl(at - timedelta(days=200), retention.HISTORY), retention.ttl(NOW, retention.HISTORY)
-    rows = {"load": {**task(S.FAILED.value), task_row.TTL: old},
-            "extract": {**task(S.SUCCESS.value), task_row.TABLE_KEY: "extract-key", task_row.TTL: renewed}}
-    for item in rows.values():
-        put(ddb, item)
-    put(ddb, {"execution_name": run_row.input_key(RUN), "ttl": old})
-    put(ddb, {"execution_name": "output#orders#extract#2026-11-21", "result": "{}", "ttl": old})
-    view = dispatch.run_view(active_run(**{run_row.PIPELINE: "orders"}))
-    keys = actions.renewal_keys(view, list(rows))
-    assert keys == [run_row.input_key(RUN), "output#orders#extract#2026-11-21", OUTPUT]
-    ttls = {run_row.input_key(RUN): old, "output#orders#extract#2026-11-21": old}      # load wrote no output#
-    writes = actions.renewals(view, rows, request=run_row.request(by="ops", at=format_utc(at)), ttls=ttls, now=NOW,
-                              table=TOKENS)
-    assert [w["Key"]["execution_name"]["S"] for w in writes] == [
-        KEY, run_row.input_key(RUN), "output#orders#extract#2026-11-21"]       # extract's row is renewed already
-    for write in writes:
-        ddb.update_item(**write)
-    assert int(get(ddb, KEY)["ttl"]) == renewed and int(get(ddb, run_row.input_key(RUN))["ttl"]) == renewed
-    assert int(get(ddb, "output#orders#extract#2026-11-21")["ttl"]) == retention.ttl(NOW, retention.OUTPUT)
-    assert get(ddb, OUTPUT) == {}                          # none was read: no item of the key alone
-    # A second Restart within a day renews nothing again (RENEWAL_SLACK).
-    again = actions.renewals(view, {n: get(ddb, i[task_row.TABLE_KEY]) for n, i in rows.items()},
-                             request=run_row.request(by="ops", at=format_utc(NOW + timedelta(hours=2))),
-                             ttls={k: int(get(ddb, k)["ttl"]) for k in ttls}, now=NOW, table=TOKENS)
-    assert again == []
-    item = get(ddb, KEY)
-    ddb.delete_item(TableName=TOKENS, Key={"execution_name": {"S": KEY}})        # TTL deleted it after the read
-    with pytest.raises(ddb.exceptions.ConditionalCheckFailedException):
-        ddb.update_item(**actions.renewals(view, {"load": {**item, task_row.TTL: old}}, ttls={},
-                                           request=run_row.request(by="ops", at=format_utc(at)), now=NOW,
-                                           table=TOKENS)[0])
 
 
 def test_a_restart_clears_every_field_run_task_writes_on_the_row_but_the_attempt():
@@ -443,15 +410,34 @@ def test_a_reset_row_with_a_limit_is_due_at_it_as_the_pass_reads(ddb):
 
 
 def test_a_stop_of_a_run_marks_it_raises_it_makes_it_due_and_cancels_a_pending_reset(ddb):
-    reset = {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t", "task": "load"}, run_row.RENEW_TTL: {"by": "a", "at": "t"}}
+    reset = {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t", "task": "load"}, run_row.POINTERS: {"by": "a", "at": "t"}}
     put(ddb, active_run(**{run_row.REQUESTS: reset}))
     ddb.update_item(**actions.stop_run(get(ddb, run_row.key(RUN)), by="ops", reason="wrong data", now=NOW,
                                        table=TOKENS))
     the_run = get(ddb, run_row.key(RUN))
     assert the_run[run_row.STOP] == {"by": "ops", "reason": "wrong data", "at": format_utc(NOW)}
     assert the_run[run_row.RUN_VERSION] == 6 and the_run[attention.DUE] == format_utc(NOW)
-    assert set(the_run[run_row.REQUESTS]) == {run_row.RENEW_TTL}             # the renewal goes on
-    assert actions.stop_run(the_run, by="ops", reason="again", now=NOW, table=TOKENS) is None
+    assert set(the_run[run_row.REQUESTS]) == {run_row.POINTERS}             # a pass clears it under the stop
+    assert actions.stop_run(the_run, by="ops", reason="again", now=NOW, table=TOKENS) is None   # in progress
+
+
+def test_a_stop_after_a_done_stop_starts_a_new_one_and_a_pause_is_taken(ddb):
+    """Review of TR-6, B-1: a Restart after a done stop may run tasks again; a second Stop was a silent no-op,
+    and a Pause was refused for good."""
+    done = {run_row.STOP: {"by": "ops", "reason": "first", "at": "2026-11-21T06:00:00.000Z"},
+            run_row.STOP_DONE: "2026-11-21T06:01:00.000Z"}
+    put(ddb, active_run(**done))
+    assert actions.pause_run(get(ddb, run_row.key(RUN)), now=NOW, table=TOKENS) is not None
+    write = actions.stop_run(get(ddb, run_row.key(RUN)), by="ops", reason="again", now=NOW, table=TOKENS)
+    ddb.update_item(**write)
+    the_run = get(ddb, run_row.key(RUN))
+    assert the_run[run_row.STOP] == {"by": "ops", "reason": "again", "at": format_utc(NOW)}
+    assert run_row.STOP_DONE not in the_run and the_run[run_row.RUN_VERSION] == 6
+    assert dispatch.run_view(the_run).stopping
+    with pytest.raises(actions.ActionRefused, match="stop is in progress"):
+        actions.pause_run(the_run, now=NOW, table=TOKENS)
+    with pytest.raises(ClientError):                    # built from the done stop's read, it applies once
+        ddb.update_item(**write)
 
 
 def test_a_stop_built_before_a_reset_was_requested_is_refused_so_it_cancels_it_when_built_again(ddb):

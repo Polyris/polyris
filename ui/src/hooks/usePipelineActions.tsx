@@ -1,10 +1,10 @@
 import { logger } from '@/utils/logger';
-import { TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { toDateString } from '@/utils/formatters';
 import { useState, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, getUpstreamTasks, getDownstreamTasks, getApiErrorMessage } from '@/utils';
 import { queryKeys } from '@/lib/queryClient';
+import { useAppStore } from '@/stores/useAppStore';
 import { 
     Rocket, 
     StopCircle, 
@@ -85,7 +85,10 @@ export function usePipelineActions({
         taskContext: null
     });
     const [triggerParams, setTriggerParams] = useState('{}');
-    const [executionPaused, setExecutionPaused] = useState(false);
+    // One owner of the paused state: the store, which the page sets from the run row (ADR #137 §5). A flag of
+    // the hook's own sent Pause for a run the page showed as paused (the review of TR-6).
+    const executionPaused = useAppStore(s => s.executionPaused);
+    const setExecutionPaused = useAppStore(s => s.setExecutionPaused);
     const [actionPending, setActionPending] = useState(false);
     // Which action is in flight, for button loading labels: 'run' | 'pause' | 'resume' | 'stop'.
     const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -183,7 +186,7 @@ export function usePipelineActions({
         } finally {
             setPendingAction(null);
         }
-    }, [selectedPipeline, executions, selectedExecution, executionPaused, showToast, handleRefresh]);
+    }, [selectedPipeline, executions, selectedExecution, executionPaused, setExecutionPaused, showToast, handleRefresh]);
     
     // ========== Task Actions ==========
     const handleTaskAction = useCallback((action: string, task: Task | null = null) => {
@@ -400,30 +403,19 @@ export function usePipelineActions({
         }
         
         if (action === 'stopPipeline') {
-            const incompleteTasks = tasks.filter(t => 
-                !TASK_SETTLED_STATUSES.includes(t.status)
-            );
-            
-            // api.post answers with { ok: false, error } instead of throwing: read each answer, or a
-            // failed stop goes unseen (/execution-stop answered 500 on every run until 1.2.0).
-            const failures: string[] = [];
-            for (const task of incompleteTasks) {
-                if (task.execution_name) {
-                    const result = await api.post(`/task-stop?name=${task.execution_name}`, {});
-                    if (result.error) failures.push(`${task.task_name ?? task.execution_name}: ${getApiErrorMessage(result)}`);
-                }
-            }
-            
+            // One Stop of the run: its stop mark, which the engine carries out, dependants first (ADR #137 §4).
+            // Stopping each task from the browser first let the engine decide their dependants in between: a
+            // task that should have stopped started (the review of TR-6).
             const currentExecution = resolveCurrentExecution(executions, selectedExecution);
-            
             const execId = currentExecution?.execution_id || selectedExecution?.execution_id;
             if (execId) {
+                // api.post answers with { ok: false, error } instead of throwing: read the answer, or a failed
+                // stop goes unseen (/execution-stop answered 500 on every run until 1.2.0).
                 const result = await api.post(`/execution-stop?pipeline_execution=${encodeURIComponent(execId)}`, {});
-                if (result.error) failures.push(`the run: ${getApiErrorMessage(result)}`);
-            }
-            if (failures.length > 0) {
-                logger.error('actions', 'Stop did not complete', failures);
-                showToast(`Stop did not complete — ${failures.join('; ')}`, 'error');
+                if (result.error) {
+                    logger.error('actions', 'Stop did not complete', result);
+                    showToast(`Stop did not complete — ${getApiErrorMessage(result)}`, 'error');
+                }
             }
             
             setModal(prev => ({ ...prev, isOpen: false }));
@@ -470,7 +462,7 @@ export function usePipelineActions({
             setPendingAction(null);
         }
     }, [
-        modal.action, triggerParams, selectedPipeline, selectedTask, tasks, executions,
+        modal.action, triggerParams, selectedPipeline, selectedTask, executions,
         selectedExecution, date, setDate, setSelectedExecution,
         showToast, invalidateAll, withDependants
     ]);

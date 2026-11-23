@@ -558,7 +558,8 @@ def test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_
 
 
 @defect("R-O3")
-def test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_restart(world):
+def test_a_late_restart_is_refused_and_one_within_nine_months_finds_its_upstreams_outputs(world):
+    """D126: nothing renews a run's rows, so a Restart is taken only while its rerun has 90 days of them."""
     orders = pipeline("orders", [("extract", {}), ("lookup", {}), ("load", {})],
                       [("extract", "load"), ("lookup", "load")])
     run = world.start_run(world.deploy(orders), DATE)
@@ -567,15 +568,20 @@ def test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_re
     world.complete(run, "extract", status="failed")
     world.fail_task(run, "extract")
     world.deliver_task_hints()
-    world.clock.advance(days=363)                  # within the year less a day: the Restart is accepted
+    world.clock.advance(days=270)                  # within nine months: the Restart is accepted
     world.restart_with_dependants(run, "extract")
     world.deliver_task_hints()
-    world.clock.advance(days=3)                    # lookup's output, a year from its write, would be gone
+    world.clock.advance(days=60)                   # its rerun ends two months later
     world.expire_ttl()
     world.complete(run, "extract")
     world.deliver_task_hints()
     assert world.running_tasks(run) == ["load"]
     assert world.work_input(run, "load")["upstream"]["lookup"]["output"] == {"rows": 3}
+    world.complete(run, "load", status="failed")
+    world.fail_task(run, "load")
+    world.deliver_task_hints()
+    with pytest.raises(AssertionError, match="409"):    # day 330: past nine months, its rerun could find nothing
+        world.restart(run, "load")
 
 
 @defect("R-X1")
@@ -609,3 +615,20 @@ def test_a_restart_between_a_passs_read_of_every_row_final_and_its_answer_runs_a
     world.complete(run, "extract")
     world.deliver_task_hints()
     assert world.status(run, "extract") == "success"
+
+
+def test_a_stop_after_a_done_stop_and_a_restart_stops_the_rerun(world):
+    """Review of TR-6, B-1: once a stop is done, a Restart runs its task again (ADR #137 §4); a Stop then starts a
+    new stop and the rerun stops, where it was a silent no-op that answered "stopping"."""
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["extract"]
+    world.stop_run(run)
+    world.deliver_task_hints()
+    assert (world.status(run, "extract"), world.status(run, "load")) == ("stopped", "stopped")
+    world.restart(run, "extract")
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["extract"]
+    assert world.stop_run(run)["stopping"] is True
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == [] and world.status(run, "extract") == "stopped"

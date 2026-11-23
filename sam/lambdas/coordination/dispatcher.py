@@ -56,7 +56,7 @@ from logger import log
 from polyris.constants import TaskSpecKey, TaskStatus, WarningKind
 from polyris.coordination import actions, asset_spec, dispatch, dispatch_writes, pauses, records, run_input, run_row
 from polyris.coordination import run_name, run_task_input, spec_store, sweep, task_row, task_spec, transitions
-from polyris.coordination.times import format_utc
+from polyris.coordination.times import format_utc, parse_utc
 from polyris.coordination.asset_conditions import Evaluation
 from polyris.coordination.asset_conditions import evaluate as evaluate_assets
 from polyris.coordination.partition import partition_date
@@ -245,7 +245,7 @@ class Dispatcher:
             self._read_rows(state, {name: keys[name] for name in upstreams if name in keys})
         try:
             if targets is None and run.requests:
-                self._requests(state)                  # the renewal, then a reset: before any decision (§3, §5)
+                self._requests(state)                  # a Restart's pointers, then a reset: before any decision (§3)
             if run.stopping:
                 self._stop_rows(state, judged)
             elif targets is not None and run_row.RESET_DEPENDANTS in run.requests:
@@ -255,8 +255,6 @@ class Dispatcher:
                 for name in dispatch.upstreams_first(judged, dependencies):
                     if name in state.rows:
                         self._decide(state, name)
-            if targets is None and run_row.RENEW_TTL in state.run.requests:
-                self._renew_ttls(state)                # after the decisions and the stop, within the budget (§5)
             if targets is None:
                 end = self._run_end(state, keys)
                 stopped = self._engine_check(state.run, now, finished=end.finished) if check else None
@@ -279,12 +277,15 @@ class Dispatcher:
     # ── requests: the heavy actions a pass carries out (§3, §5) ────────
 
     def _requests(self, state: _Pass) -> None:
-        """The run's renewal, then the reset of a Restart with dependants, which a stop in progress cancels (§3);
-        each is cleared once carried out, on the run_version the pass holds. A request that cannot be carried out
+        """A Restart's pointers, then the reset of a Restart with dependants; a stop in progress cancels both (§3).
+        Each is cleared once carried out, on the run_version the pass holds. A request that cannot be carried out
         warns and leaves the pass to its decisions: one bad request never holds up its run (Rule 51)."""
         try:
-            if run_row.RENEW_TTL in state.run.requests:
-                self._renewal_pointers(state)
+            pointers = state.run.requests.get(run_row.POINTERS)
+            if pointers is not None and state.run.stopping:
+                self._clear(state, run_row.POINTERS)       # the stop drops the rows' pointers anyway
+            elif pointers is not None:
+                self._restart_pointers(state, pointers)
             reset = state.run.requests.get(run_row.RESET_DEPENDANTS)
             if reset is not None and state.run.stopping:
                 self._clear(state, run_row.RESET_DEPENDANTS)
@@ -303,48 +304,20 @@ class Dispatcher:
         self._warn(state.run, subject=f"{state.run.key}-request", task="", item={},
                    error=f"a request of the run could not be carried out: {type(exc).__name__}: {exc}")
 
-    def _renewal_pointers(self, state: _Pass) -> None:
-        """The first part of a Restart's renewal (§3, §5): the pointers of each waiting row with wait_for, before
-        any decision, so no fact recorded after the Restart goes unseen. Every waiting row's, not only the restarted
-        one's: a second Restart replaces the request's time before a pass, and a pointer written again costs one
-        write."""
+    def _restart_pointers(self, state: _Pass, request: Mapping[str, Any]) -> None:
+        """The asset pointers of the rows a Restart put back to wait (§3), before any decision, so no fact recorded
+        after the Restart goes unseen; then the request is cleared. Only the rows that wait since the request: those
+        that wait since Start_Run kept theirs. The request keeps its first time, so a second Restart before this
+        pass loses no row of the first (the review of TR-6: from every waiting row on each pass, the step held up
+        the decisions)."""
+        since = parse_utc(str(request["at"]))
         for name in sorted(state.rows):
-            if state.rows[name].status == S.WAITING.value and state.rows[name].has_wait_for:
+            row = state.rows[name]
+            waited = row.times.waiting_since
+            if row.status == S.WAITING.value and row.has_wait_for and waited is not None and waited >= since:
                 self._within_budget(state)
                 self._put_pointers(state, name)
-
-    def _renew_ttls(self, state: _Pass) -> None:
-        """The rest of a Restart's renewal (§5), after the pass's decisions and its stop, within what is left of
-        its budget: each item that lives less than the request asks, one write at a time, each counted, so a pass
-        that leaves the rest sets ``left_at`` and the next takes them up from a new read of their TTLs. Then the
-        request is cleared."""
-        request = state.run.requests[run_row.RENEW_TTL]
-        try:
-            ttls = self._read_ttls(actions.renewal_keys(state.run, list(state.items)))
-            for write in actions.renewals(state.run, state.items, request=request, ttls=ttls, now=state.now,
-                                          table=self.tokens_table):
-                self._within_budget(state)
-                try:
-                    self.client.update_item(**write)
-                except ClientError as exc:
-                    if failures.error_code(exc) == CONFLICT + "Exception":
-                        raise _Left()                  # it met a transaction: the next pass takes the renewal up
-                    if not failures.is_condition_failed(exc):
-                        raise
-                state.changed += 1
-            self._clear(state, run_row.RENEW_TTL)
-        except (_Left, CoordinationTransient):
-            raise
-        except (ClientError, BotoCoreError) as exc:
-            failures.reraise_transient(exc)
-            self._request_failed(state, exc)
-        except Exception as exc:  # noqa: BLE001 — one bad request never holds up its run (Rule 51)
-            self._request_failed(state, exc)
-
-    def _read_ttls(self, keys: Sequence[str]) -> Dict[str, int]:
-        """The TTLs of the items ``keys`` names that exist, read consistently by key and nothing else."""
-        return {str(item[task_row.TABLE_KEY]): int(item.get("ttl", 0))
-                for item in self._batch_get(keys, projection=("#k, #t", {"#k": task_row.TABLE_KEY, "#t": "ttl"}))}
+        self._clear(state, run_row.POINTERS)
 
     def _batch_get(self, keys: Sequence[str], *,
                    projection: Optional[Tuple[str, Dict[str, str]]] = None) -> List[Dict[str, Any]]:

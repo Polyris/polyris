@@ -611,6 +611,10 @@ except (ClientError, BotoCoreError) as e:
 
 **Operator actions write rows; the engine does the rest (ADR #137 §3, §4).** The console sends a transaction that `polyris/coordination/actions.py` builds from its reads (a task's Skip, Fail, Mark Successful, Stop, Restart; a run's Stop, Pause, Resume) and stops, starts and answers nothing itself, apart from the `run_task` of a task it stops. A Stop of a run is its stop mark: the dispatcher stops the unfinished rows dependants first, each stopped row's `run_task`, then the run's execution, and answers the run. Every AWS call a coordination Lambda makes needs its grant in `sam/template.yaml`; `test_reconcile_role_allows_exactly_the_calls_the_code_makes` walks the dispatcher's paths, so a new path joins that walk (the renewal's pointer write lacked `dynamodb:PutItem` until the walk took a Restart).
 
+**A repeated action is a no-op only while the first one is in progress.** Once the state it left is gone, it acts again or refuses, and its answer says what it did, not what was asked. A Stop of a run whose stop was done, after a Restart ran its task again, answered "stopping" and changed nothing, and a Pause was refused for good (review of TR-6; `test_a_stop_after_a_done_stop_and_a_restart_stops_the_rerun`).
+
+**A step a pass repeats until its request clears records its progress or keeps off the decisions' path.** A Restart's pointer step rewrote the pointers of every waiting row before any decision, on every pass until it cleared, and under a Stop wrote pointers it deleted at once; it writes those of the rows waiting since its request alone, keeps the first request's time, and none under a Stop (review of TR-6; `test_a_restart_writes_the_pointers_of_the_rows_it_put_back_to_wait_and_renews_nothing`).
+
 ---
 
 ## CloudFormation custom resources (Lambda-backed)

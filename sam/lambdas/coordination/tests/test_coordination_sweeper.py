@@ -235,7 +235,7 @@ def test_a_move_after_a_write_that_raised_run_version_is_refused_and_puts_back_n
     for task in ("extract", "load"):
         _set(tokens, _key(task), status="success", finished_at=format_utc(NOW))
     due = format_utc(clock.now)
-    _set(tokens, RUN_KEY, requests={run_row.RENEW_TTL: {"by": "ops", "at": due}}, **{att.DUE: due})
+    _set(tokens, RUN_KEY, requests={run_row.POINTERS: {"by": "ops", "at": due}}, **{att.DUE: due})
 
     make().run()
 

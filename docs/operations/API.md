@@ -212,7 +212,9 @@ POST /api/task-retry?name={execution_name}      # The same as task-restart (depr
 Every action accepts an optional body `{"reason": "..."}`; `task-restart` also takes `{"with_dependants": true}`,
 which reruns the dependants that a failure or a stop decided. An action on a running task stops its work too. Each
 answers 409 when the task's status allows no such action, for a task of a run started before 1.3, and for a Restart
-while a Stop of its run is in progress or once its run started more than a year ago, less a day.
+while a Stop of its run is in progress or once its run started more than nine months ago (a year less 90 days).
+A Stop of a run whose stop is done starts a new stop, and `/api/execution-pause` refuses only while a stop is in
+progress.
 
 ---
 

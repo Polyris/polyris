@@ -25,11 +25,10 @@ INPUT = timedelta(days=90)
 TIMELINE = timedelta(days=90)
 BACKFILL_RUNNING = HISTORY
 BACKFILL_ENDED = timedelta(days=90)
-#: A Restart is refused once its run started more than a year ago, less this margin (D109).
-RESTART_TTL_MARGIN = timedelta(days=1)
-#: A Restart's renewal leaves what a write of the last day renewed: a Restart a minute after another renews
-#: nothing twice, and every row still outlives the margin above (ADR #137 §5).
-RENEWAL_SLACK = timedelta(days=1)
+#: A Restart is refused once its run started more than a year ago, less this margin: about nine months. The
+#: rerun has these 90 days to read what its run wrote before it expires; nothing renews it (ADR #137 §3, §5).
+#: An older date runs again instead.
+RESTART_TTL_MARGIN = timedelta(days=90)
 
 
 def ttl(now: datetime, lifetime: timedelta) -> int:

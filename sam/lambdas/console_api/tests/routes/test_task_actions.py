@@ -222,7 +222,7 @@ def test_a_restart_puts_a_final_or_undecided_row_back_to_waiting_and_requests_th
     written = row(world)
     assert (written["status"], written["generation"], written["attempt"]) == ("waiting", 3, 1)
     assert "error" not in written and task_row.RUN_TASK_ARN not in written
-    assert set(run_item(world)[run_row.REQUESTS]) == {run_row.RENEW_TTL}
+    assert set(run_item(world)[run_row.REQUESTS]) == {run_row.POINTERS}
     assert [e["decision"] for e in world.events.scan()["Items"]] == ["restart"]
     world.sfn.start_execution.assert_not_called()         # the dispatcher starts it, from the stream
 
@@ -241,10 +241,10 @@ def test_a_restart_with_dependants_requests_their_reset(world):
     assert run_item(world)[run_row.REQUESTS][run_row.RESET_DEPENDANTS]["task"] == "load"
 
 
-def test_a_restart_of_a_run_that_started_a_year_ago_or_before_1_3_is_refused(world):
-    seed(world, "failed", started=timedelta(days=364, minutes=1))
+def test_a_restart_of_a_run_that_started_nine_months_ago_or_before_1_3_is_refused(world):
+    seed(world, "failed", started=timedelta(days=275, minutes=1))
     response = act(world, "restart_task")
-    assert response["statusCode"] == 409 and "more than a year ago" in json.loads(response["body"])["error"]
+    assert response["statusCode"] == 409 and "more than nine months ago" in json.loads(response["body"])["error"]
     world.table.delete_item(Key={run_row.TABLE_KEY: run_row.key(RUN)})
     assert "before 1.3" in json.loads(act(world, "restart_task")["body"])["error"]
 

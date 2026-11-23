@@ -59,8 +59,8 @@ DEFECTS = {
             "its answer marked; it must rerun the task and its dependants, and answer the run nothing twice (D120)",
     "R-R3": "A dependant that another failed upstream still blocks is reset by every pass of a Restart with "
             "dependants: the reset and its block come round without end, and the request never clears (D121)",
-    "R-O3": "A Restart late in its run's year renews only the restarted task's upstreams' outputs: a reset dependant "
-            "that starts days later finds its other upstreams' outputs expired (D121)",
+    "R-O3": "A Restart late in its run's year is taken though nothing renews the run's rows: a reset dependant "
+            "that starts days later finds its other upstreams' outputs expired (D121, D126: within nine months)",
     "R-X1": "An operator's Skip, Fail or Mark Successful of a running task leaves its work running: the dependants "
             "run beside it, and a Restart after a Fail runs two copies (the review of TR-6, B-1)",
     "R-E2": "A Restart between a pass's read of every row final and its answer: the answer's mark, conditional on "

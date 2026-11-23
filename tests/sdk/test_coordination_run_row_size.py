@@ -75,7 +75,7 @@ def largest_run_row():
         run_end.SUMMARY_AT: ISO,
         run_row.STEP_FAILURE: run_row.step_mark(step="s" * 300, error="States." + "e" * 300),
         run_row.REQUESTS: {
-            run_row.RENEW_TTL: run_row.request(by=who, at=ISO),
+            run_row.POINTERS: run_row.request(by=who, at=ISO),
             run_row.RESET_DEPENDANTS: run_row.request(by=who, at=ISO, task="t" * run_row.TASK_ID_MAX),
         },
         run_row.PAUSES: pauses.to_item(intervals),

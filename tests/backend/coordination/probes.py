@@ -308,9 +308,9 @@ PROBES: Tuple[Probe, ...] = (
                         "        if not names:\n"),),
           f"{ROWS}::test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_clears"),
     # The renewal leaves the outputs alone, as when only the Restart's own upstreams were renewed.
-    Probe("R-O3", (Edit(ACTIONS, "for key in outputs if key in ttls and ttls[key] < year]",
-                        "for key in outputs if key in ttls and ttls[key] < year and False]"),),
-          f"{ROWS}::test_a_reset_dependant_finds_its_other_upstreams_output_long_after_a_late_restart"),
+    Probe("R-O3", (Edit("polyris/coordination/retention.py", "RESTART_TTL_MARGIN = timedelta(days=90)",
+                        "RESTART_TTL_MARGIN = timedelta(days=1)"),),
+          f"{ROWS}::test_a_late_restart_is_refused_and_one_within_nine_months_finds_its_upstreams_outputs"),
     # A Pause that raises no run_version: a pass that read the run row before it still writes deps_ready (§1, §5).
     Probe("R-P1", (Edit(ACTIONS, 'expression=f"SET #pauses = :pauses, {run_row.VERSION_RAISE}, #ttl = :ttl",',
                         'expression="SET #pauses = :pauses, #ttl = :ttl",'),),
