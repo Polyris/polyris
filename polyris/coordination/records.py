@@ -49,7 +49,8 @@ FAILURE_EVENTS = frozenset({"fail_wait", "fail_start", "fail_dead"})
 FINISHED_EVENT_ORDER = "#20"
 #: The characters of a cause the timeline keeps, as 1.2 did; the row keeps more, the execution all of it.
 ERROR_SUMMARY_MAX = 500
-#: Facts written by ADR #130 writers. Older facts have no version.
+#: Every fact carries it, though 1.3 reads it nowhere: 1.2's readers skip a fact without it, and a rollback
+#: of the upgrade runs them again (Principle #39). 1.4 stops writing it.
 FACT_VERSION = 2
 
 #: The GSI on ``asset-events`` that asset conditions read (template.yaml).
@@ -244,19 +245,17 @@ def _iso_date(text: str) -> date:
     return date.fromisoformat(text)
 
 
-def fact_from_item(item: Mapping[str, Any], *, declared_granularity: Optional[str] = None) -> Fact:
+def fact_from_item(item: Mapping[str, Any]) -> Fact:
     """Read an ``asset-events`` row, old or new, as a :class:`Fact`.
 
-    Rows written before ADR #130 have no ``partition_date`` and no
-    ``granularity``. Their date comes from ``execution_date``. Their
-    granularity is the outlet's ``declared_granularity`` when the caller found
-    it in the producer's registry entry, and otherwise the granularity whose
-    format the key uses.
+    Rows written before ADR #130 that 1.2 could not adopt have no
+    ``partition_date`` and no ``granularity``: their date comes from
+    ``execution_date``, and their granularity from the format of the key.
     """
     key = str(item.get("partition_key") or item.get("execution_date") or "")
     raw_date = item.get("partition_date")
     pd = _iso_date(str(raw_date)) if raw_date else partition_date(key)
-    granularity = str(item.get("granularity") or declared_granularity or detect_granularity(key))
+    granularity = str(item.get("granularity") or detect_granularity(key))
     if granularity not in GRANULARITIES:
         raise ValueError(
             f"asset fact {item.get('asset_name')!r} has granularity {granularity!r}; "

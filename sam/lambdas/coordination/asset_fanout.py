@@ -33,7 +33,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 import env
 from polyris.coordination import asset_spec as sp
 from polyris.coordination.asset_conditions import evaluate as evaluate_assets
-from polyris.coordination.records import FACT_VERSION, fact_from_item, push_retry_item, warning_item
+from polyris.coordination.records import fact_from_item, push_retry_item, warning_item
 from polyris.coordination.run_name import KIND_AND, KIND_EVENT, run_name
 from polyris.coordination.times import parse_utc
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient, reraise_transient
@@ -84,12 +84,7 @@ class AssetFanout:
             sequence = str(record["dynamodb"]["SequenceNumber"])
             try:
                 fact = fact_of(record)
-                if fact.get("fact_version") != FACT_VERSION:
-                    # A writer before ADR #130 wrote it, and started its own consumers then.
-                    log.info("asset_fanout", "a fact of a version before ADR #130; skipped", sequence=sequence,
-                             asset_name=str(fact.get("asset_name", "")))
-                    continue
-                fact_from_item(fact, declared_granularity="daily")     # a fact nobody could read is poison
+                fact_from_item(fact)                                   # a fact nobody could read is poison
                 # Push first: consumers are few and only the hourly catch-up replays a missed one, while
                 # waiters are many and the sweeper re-checks every one the budget leaves (ADR #130 §6.1).
                 self.push(fact, remaining_ms=remaining_ms)
@@ -162,7 +157,7 @@ class AssetFanout:
         if fact.get("cascade") == "none":
             return counts            # a cascade='none' backfill starts no consumer (ADR #57)
         try:
-            fact_from_item(fact, declared_granularity="daily")
+            fact_from_item(fact)
         except (KeyError, TypeError, ValueError) as exc:
             # The stream warned about it when it was recorded; a replay skips it with a log line (Principle #51).
             log.error("asset_fanout", "an unreadable fact starts no consumer", asset_name=str(fact.get("asset_name", "")),
@@ -194,10 +189,9 @@ class AssetFanout:
         """Start the consumer `row` names if the fact completes its schedule; 1 when this call started it."""
         asset, consumer, sfn_arn = str(fact["asset_name"]), str(row["pipeline_name"]), str(row["sfn_arn"])
         entry = self._registry_entry(consumer)
-        # A consumer reacts only to facts recorded after it subscribed (B-U2). A row an older SDK wrote has
-        # no subscribed_at, and the registered_at its runs rewrite would move: the pipeline's last deploy,
-        # stamped in the registry by polyris-deploy, is the cutover instead.
-        cutover = row.get("subscribed_at") or (entry or {}).get("registered_at")
+        # A consumer reacts only to facts recorded after it subscribed (B-U2): its registration writes
+        # subscribed_at once (if_not_exists), and the redeploy that 1.3 needs gives every row one.
+        cutover = row.get("subscribed_at")
         if cutover and parse_utc(str(fact["event_time"])) < parse_utc(str(cutover)):
             return 0
         evidence = fact_from_item(fact)

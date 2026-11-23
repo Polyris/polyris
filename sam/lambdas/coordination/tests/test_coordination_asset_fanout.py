@@ -277,7 +277,7 @@ def test_an_or_schedule_starts_once_per_event(fanout, asset_events, pushed, sfn)
 
 
 @pytest.mark.parametrize("subscribed_at,starts", [
-    (None, True),                               # a row an older version wrote: no cutover
+    (None, True),                               # a row without one: no cutover
     ("2026-11-12T03:00:00.000Z", True),         # subscribed before the fact
     ("2026-11-12T05:00:00.000Z", False),        # subscribed after it (B-U2)
 ])
@@ -371,23 +371,6 @@ def test_a_deployed_pipeline_without_a_registry_schedule_is_reported_and_keeps_i
     assert consumers.get_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"}).get("Item")
 
 
-@pytest.mark.parametrize("event_time,started", [
-    ("2026-11-12T04:00:00.000Z", 0),            # before the pipeline's last deploy
-    ("2026-11-12T05:30:00.000Z", 1),            # after it, though before the run that moved the row's time
-], ids=["before-deploy", "after-deploy"])
-def test_a_row_an_older_sdk_wrote_takes_its_cutover_from_the_last_deploy(
-        fanout, asset_events, consumers, registry, pushed, sfn, event_time, started):
-    """B-U2 for rows without subscribed_at. A pipeline built before 1.2 rewrites the row's registered_at on
-    every run, so a cutover taken from it would skip a fact recorded while a run was starting."""
-    pushed({"operator": "AND", "assets": ["ns/a"]})
-    registry.update_item(Key={"pipeline_name": "pushed"}, UpdateExpression="SET registered_at = :t",
-                         ExpressionAttributeValues={":t": "2026-11-12T05:00:00.123456+00:00"})   # polyris-deploy's stamp
-    consumers.update_item(Key={"asset_name": "ns/a", "pipeline_name": "pushed"},
-                          UpdateExpression="SET registered_at = :t", ExpressionAttributeValues={":t": "2026-11-12T06:00:00.000Z"})
-    _push(fanout, asset_events, fact("ns/a", DATE, event_time=event_time))
-    assert len(sfn.started) == started
-
-
 @pytest.mark.parametrize("code,outcome", [
     ("ExecutionAlreadyExists", "nothing"), ("StateMachineDoesNotExist", "warning"),
     ("AccessDeniedException", "warning"), ("ThrottlingException", "retry"),
@@ -461,18 +444,6 @@ def test_a_poison_record_is_reported_and_the_shard_moves_on(fanout, rows, tokens
     assert sfn.started                           # the good record after it was handled
     warning = [i for i in tokens.scan()["Items"] if i["execution_name"].startswith("_notify_warn_coordination_record:")]
     assert len(warning) == 1 and "not-a-partition" in warning[0]["error"]
-
-
-def test_a_fact_written_before_adr_130_starts_nothing(fanout, rows, tokens, asset_events, stream, pushed, sfn):
-    """It started its own consumers when it was written; pushing it again would start them twice."""
-    from coordination_testkit import legacy_fact
-
-    rows.start([_spec("load")])
-    pushed({"operator": "AND", "assets": ["ns/orders"]})
-    asset_events.put_item(Item=legacy_fact("ns/orders", DATE, event_time="2026-11-12T04:00:00.000Z"))
-    assert fanout.handle(stream(), _plenty) == {"batchItemFailures": []}
-    assert (sfn.started, sfn.succeeded) == ([], [])
-    assert not [i for i in tokens.scan()["Items"] if i["execution_name"].startswith(("_notify_warn_", "_retry_push_"))]
 
 
 def test_a_raw_transient_error_still_redelivers(fanout, asset_events, stream, mocker):

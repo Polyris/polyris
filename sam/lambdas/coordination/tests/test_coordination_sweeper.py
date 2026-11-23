@@ -609,10 +609,7 @@ def test_the_catch_up_runs_hourly_and_never_starts_a_run_twice(make, tokens, ass
     assert len(sfn.started) == 1
 
 
-def test_the_catch_up_replays_only_new_facts_of_the_last_48_hours(make, asset_events, pushed, sfn, clock):
-    from coordination_testkit import legacy_fact
-
-    asset_events.put_item(Item=legacy_fact("ns/a", "2026-11-12", event_time="2026-11-12T05:00:00.000Z"))
+def test_the_catch_up_replays_only_the_facts_of_the_last_48_hours(make, asset_events, pushed, sfn, clock):
     asset_events.put_item(Item=fact("ns/a", "2026-11-09", event_time="2026-11-09T05:00:00.000Z"))
 
     assert make().run()["facts_replayed"] == 0

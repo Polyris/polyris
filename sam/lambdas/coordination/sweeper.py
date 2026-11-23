@@ -39,7 +39,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from polyris.constants import WarningKind
 from polyris.coordination import attention as att
 from polyris.coordination import dispatch_writes, run_row, sweep, task_row
-from polyris.coordination.records import FACT_VERSION, warning_item
+from polyris.coordination.records import warning_item
 from polyris.coordination.times import format_utc, parse_utc
 import env
 import dispatcher as dispatching
@@ -391,9 +391,8 @@ class Sweeper:
                 if self.monotonic() >= deadline:
                     self._save_catch_up(cursor=cursor, within={"asset": asset, "after": after} if after else None)
                     return {"catch_up": "partial", "facts_replayed": replayed}
-                if fact.get("fact_version") == FACT_VERSION:
-                    self.fanout.push(fact)
-                    replayed += 1
+                self.fanout.push(fact)
+                replayed += 1
                 after = event_time
             cursor = asset
         self._save_catch_up(done_at=now)
