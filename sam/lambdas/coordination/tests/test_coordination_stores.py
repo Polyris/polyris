@@ -8,6 +8,8 @@ from coordination_testkit import NOW, TABLES, client_error, fact
 
 import env
 import failures
+import stores
+from polyris.coordination import records, task_row
 from stores import FactStore
 
 @pytest.fixture
@@ -101,3 +103,30 @@ def test_every_client_fails_fast_inside_the_lambda_timeout(ddb, monkeypatch):
         config = client.meta.config
         assert config.retries == {"mode": "standard", "total_max_attempts": 3}
         assert (config.connect_timeout, config.read_timeout) == (2, 5)
+
+
+RUN = "orders-run-2026-11-21-0a1b2c3d"
+
+
+class _Pages:
+    """A DynamoDB client whose index query answers page by page."""
+
+    def __init__(self, *pages):
+        self.pages, self.calls = list(pages), []
+
+    def query(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.pages.pop(0)
+
+
+def test_the_rows_of_a_run_are_read_from_its_index_page_by_page_task_rows_only():
+    load, report = task_row.key("load", "2026-11-21", RUN), task_row.key("report", "2026-11-21", RUN)
+    client = _Pages({"Items": [{"execution_name": {"S": load}},
+                               {"execution_name": {"S": f"{records.WARNING_PREFIX}coordination_load"}}],
+                     "LastEvaluatedKey": {"execution_name": {"S": load}}},
+                    {"Items": [{"execution_name": {"S": report}}]})
+    assert stores.run_row_keys(client, "tokens", RUN) == [load, report]
+    first, second = client.calls
+    assert first["IndexName"] == task_row.RUN_ROWS_INDEX and first["ExpressionAttributeValues"] == {
+        ":run": {"S": RUN}}
+    assert "ExclusiveStartKey" not in first and second["ExclusiveStartKey"] == {"execution_name": {"S": load}}

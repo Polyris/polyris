@@ -1,4 +1,4 @@
-"""Reads of facts for the dispatcher and AssetFanout (ADR #130 §4, ADR #137 §7).
+"""Reads of facts and of a run's rows for the dispatcher and AssetFanout (ADR #130 §4, ADR #137 §7).
 
 ``FactStore`` reads an asset's facts from the partition index plus a
 consistent read of the recent writes, which closes the index's lag. A fact
@@ -14,6 +14,7 @@ from boto3.dynamodb.conditions import Key
 
 import env
 from polyris.coordination.asset_conditions import Fact, merge_facts
+from polyris.coordination import task_row
 from polyris.coordination.records import PARTITION_INDEX, fact_from_item
 from polyris.coordination.times import format_utc
 
@@ -77,3 +78,21 @@ class FactStore:
             if "LastEvaluatedKey" not in response:
                 return facts
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+
+def run_row_keys(client: Any, table: str, pipeline_execution: str) -> List[str]:
+    """The keys of the task rows that ``task_row.RUN_ROWS_INDEX`` files under a run, every page of them. The index
+    is read eventually: a row it does not show yet waits for a later read."""
+    kwargs: Dict[str, Any] = {
+        "TableName": table, "IndexName": task_row.RUN_ROWS_INDEX, "KeyConditionExpression": "#run = :run",
+        "ExpressionAttributeNames": {"#run": task_row.PIPELINE_EXECUTION},
+        "ExpressionAttributeValues": {":run": {"S": pipeline_execution}}, "ProjectionExpression": task_row.TABLE_KEY}
+    keys: List[str] = []
+    while True:
+        page = client.query(**kwargs)
+        keys += [str(item[task_row.TABLE_KEY]["S"]) for item in page.get("Items", [])
+                 if task_row.is_task_key(str(item[task_row.TABLE_KEY]["S"]))]
+        if "LastEvaluatedKey" not in page:
+            return keys
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+

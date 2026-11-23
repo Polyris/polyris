@@ -13,7 +13,7 @@ it is its own run's.
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from . import ownership, run_row, task_spec
 from .deadlines import RowTimes
@@ -93,22 +93,6 @@ def is_task_key(name: str) -> bool:
     """Whether ``name`` keys a task row: not one of the platform's own rows (``_``), a store (``output#``,
     ``input#``) or a 1.2 run's DAG snapshot. A task_id may not start with ``_`` (``limits.spec_errors``)."""
     return not name.startswith("_") and "#" not in name and not name.startswith(DAG_SNAPSHOT_PREFIX)
-
-
-def run_rows(client: Any, table: str, pipeline_execution: str) -> List[str]:
-    """The keys of the task rows that ``RUN_ROWS_INDEX`` files under a run, every page of them. The index is read
-    eventually: a row it does not show yet waits for a later read."""
-    kwargs: Dict[str, Any] = {
-        "TableName": table, "IndexName": RUN_ROWS_INDEX, "KeyConditionExpression": "#run = :run",
-        "ExpressionAttributeNames": {"#run": PIPELINE_EXECUTION},
-        "ExpressionAttributeValues": {":run": {"S": pipeline_execution}}, "ProjectionExpression": TABLE_KEY}
-    keys: List[str] = []
-    while True:
-        page = client.query(**kwargs)
-        keys += [str(item[TABLE_KEY]["S"]) for item in page.get("Items", []) if is_task_key(str(item[TABLE_KEY]["S"]))]
-        if "LastEvaluatedKey" not in page:
-            return keys
-        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
 
 def key(task: str, date: str, pipeline_execution: str) -> str:

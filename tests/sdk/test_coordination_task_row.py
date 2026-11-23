@@ -42,27 +42,3 @@ def test_the_index_of_a_runs_rows_is_keyed_by_its_execution():
     indexes = template["Resources"]["PipelineTokensTable"]["Properties"]["GlobalSecondaryIndexes"]
     [index] = [i for i in indexes if i["IndexName"] == task_row.RUN_ROWS_INDEX]
     assert index["KeySchema"] == [{"AttributeName": task_row.PIPELINE_EXECUTION, "KeyType": "HASH"}]
-
-
-class _Pages:
-    """A DynamoDB client whose index query answers page by page."""
-
-    def __init__(self, *pages):
-        self.pages, self.calls = list(pages), []
-
-    def query(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.pages.pop(0)
-
-
-def test_the_rows_of_a_run_are_read_from_its_index_page_by_page_task_rows_only():
-    load, report = task_row.key("load", "2026-11-21", RUN), task_row.key("report", "2026-11-21", RUN)
-    client = _Pages({"Items": [{"execution_name": {"S": load}},
-                               {"execution_name": {"S": f"{records.WARNING_PREFIX}coordination_load"}}],
-                     "LastEvaluatedKey": {"execution_name": {"S": load}}},
-                    {"Items": [{"execution_name": {"S": report}}]})
-    assert task_row.run_rows(client, "tokens", RUN) == [load, report]
-    first, second = client.calls
-    assert first["IndexName"] == task_row.RUN_ROWS_INDEX and first["ExpressionAttributeValues"] == {
-        ":run": {"S": RUN}}
-    assert "ExclusiveStartKey" not in first and second["ExclusiveStartKey"] == {"execution_name": {"S": load}}

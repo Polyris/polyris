@@ -60,6 +60,7 @@ from polyris.coordination.times import format_utc, parse_utc
 from polyris.coordination.asset_conditions import Evaluation
 from polyris.coordination.asset_conditions import evaluate as evaluate_assets
 from polyris.coordination.partition import partition_date
+import stores
 from stores import FactStore
 
 S = TaskStatus
@@ -217,8 +218,8 @@ class Dispatcher:
         if run_item is None:
             # Every row of the run, not only the ones that woke this pass: a row that waits for other rows has no
             # due time, so no check of its own would come (ADR #137 §3, invariant 11).
-            keys = orphan_keys | set(task_row.run_rows(self.client, self.tokens_table,
-                                                         run_key[len(run_row.KEY_PREFIX):]))
+            keys = orphan_keys | set(stores.run_row_keys(self.client, self.tokens_table,
+                                                           run_key[len(run_row.KEY_PREFIX):]))
             return self.stop_orphans(run_key, sorted(keys), source=source, deadline=deadline)
         run = dispatch.run_view(run_item)
         if check and run.status == run_row.CREATING:
