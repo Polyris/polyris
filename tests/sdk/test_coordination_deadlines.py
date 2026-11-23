@@ -161,3 +161,12 @@ def test_in_a_pause_a_decision_deadline_falls_due_far_in_the_future():
 @pytest.mark.parametrize("status", ["waiting_paused", "success", "failed", "skipped", "upstream_failed", "stopped"])
 def test_rows_a_pause_holds_and_final_rows_have_no_due_time(status):
     assert d.due_time(d.RowTimes(status=status, waiting_since=T0, orchestration_timeout=HOUR), ()) is None
+
+
+def test_a_deadline_a_pause_holds_is_shown_as_none_and_any_other_as_it_is():
+    """One reading of the far future a pause holds a deadline at, for every reader (review of TR-6, P-13)."""
+    held = d.FAR_FUTURE.isoformat()
+    assert d.shown(held) is None
+    assert d.shown("2026-11-23T10:00:00+00:00") == "2026-11-23T10:00:00+00:00"
+    with pytest.raises(ValueError):
+        d.shown("soon")

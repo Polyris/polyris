@@ -35,12 +35,13 @@ Click the notification → opens Task Detail modal. The task's **Actions** tab h
 
 | Action | When to use |
 |--------|-------------|
-| **Restart** | Run the task again from its wait: it waits for its dependencies and assets again, and its attempt count goes on. Use when the failure was transient (dependency was down, quota reset) |
-| **Mark success** | Manually mark the task successful with a synthetic marker. Use when you verified the work is actually done (checked S3, checked the target table) and just want downstream to continue |
-| **Skip** | Mark the task `skipped`. Use when the task is not needed for this run (bad input data, partition already handled elsewhere) — downstream `all_success` sees it as a skip cascade |
-| **Fail** | Mark the task `failed`. Use when the failure is real and the run should stop cleanly. Downstream `all_success` chains propagate `upstream_failed` |
+| **Restart** | Run the task again from its wait: it waits for its dependencies and assets again, and its attempt count goes on. Tick *Also rerun the dependants its failure or stop decided* to rerun them too. Use when the failure was transient (dependency was down, quota reset) |
+| **Mark success** | Mark the task `success` and record the facts of its outlets: its dependants start. Use when you verified the work is actually done (checked S3, checked the target table) |
+| **Skip** | Mark the task `skipped`. Its dependants run as after a success: `all_success` counts a skip by an operator as done ([ADR #138](../reference/adr-138-trigger-rules-after-run-end-change.md)). Use when the task is not needed for this run (bad input data, partition already handled elsewhere) |
+| **Fail** | Mark the task `failed`. Dependants that need its success end `upstream_failed`, and the rest of the run goes on until every task is final. Use when the failure is real |
+| **Stop** | Stop an unfinished task and its work: it ends `stopped`, which its dependants' rules count as a failure. Use when a running task does the wrong thing |
 
-All four actions record the operator identity + timestamp + free-text reason on the task's synthetic-output marker (see [DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics](DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics) for what downstream tasks see).
+Skip, Fail, Mark success and Stop record the operator identity, timestamp and free-text reason on the task's synthetic-output marker, unless the task's real output is already there; Restart writes none (see [DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics](DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics) for what downstream tasks see).
 
 ## Reading notifications programmatically
 

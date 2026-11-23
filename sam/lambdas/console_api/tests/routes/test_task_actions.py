@@ -214,7 +214,7 @@ def run_item(world):
 
 
 @pytest.mark.parametrize("status", ["failed", "success", "skipped", "upstream_failed", "stopped", "waiting_decision"])
-def test_a_restart_puts_a_final_or_undecided_row_back_to_waiting_and_requests_the_renewal(world, status):
+def test_a_restart_puts_a_final_or_undecided_row_back_to_waiting_and_requests_its_pointers(world, status):
     """A stopped task too: Stop's own message tells the operator to restart it."""
     seed(world, status, error="boom", run_task_helper_arn=ARN, attempt=1)
     response = act(world, "restart_task")

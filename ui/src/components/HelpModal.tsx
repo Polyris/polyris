@@ -734,9 +734,6 @@ function ApiReferenceTab() {
                     <ApiEndpointDetail method="POST" path="/api/task-stop?name=X" desc="Stop a running task"
                         example={`curl -X POST "${BASE}/api/task-stop?name=stage_listings-2026-02-17-acme-daily"`}
                     />
-                    <ApiEndpointDetail method="POST" path="/api/task-retry?name=X" desc="Retry a failed task"
-                        example={`curl -X POST "${BASE}/api/task-retry?name=stage_listings-2026-02-17-acme-daily"`}
-                    />
                 </div>
             </div>
             

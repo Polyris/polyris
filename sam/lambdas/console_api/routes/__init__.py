@@ -26,7 +26,7 @@ from .executions import (
 )
 from .tasks import (
     get_all_tasks, get_task_config, get_task_events,
-    retry_task, skip_task, fail_task, mark_success, stop_task, restart_task
+    skip_task, fail_task, mark_success, stop_task, restart_task
 )
 from .pipelines_list import (
     list_pipelines, get_pipeline_status, get_pipeline_executions
@@ -46,7 +46,6 @@ __all__ = [
     'get_all_tasks',
     'get_task_config',
     'get_task_events',
-    'retry_task',
     'skip_task',
     'fail_task',
     'mark_success',

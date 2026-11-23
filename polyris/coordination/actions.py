@@ -21,12 +21,14 @@ A transaction refused because a row moved is built again from new reads, while
 the action still applies. The timeline events and the stop of the row's
 ``run_task`` follow the transaction, best effort: the row holds the state.
 
-A Restart puts the row back to ``waiting`` with the run's request in the same
-transaction: the renewal of the history TTL, and for Restart with dependants
-the reset of the dependants that a failure or a stop decided. The dispatcher
-carries the requests out in passes through the builders below (``renewals``,
-``reset_set``, ``reset``, ``clear_request``), since they touch every row of a
-run and the console answers within API Gateway's 30 seconds.
+A Restart puts the row back to ``waiting`` with the run's requests in the same
+transaction: the ``asset:`` pointers of the rows it puts back to wait, and for
+Restart with dependants the reset of the dependants that a failure or a stop
+decided. The dispatcher carries the requests out in passes through the builders
+below (``pointer_items``, ``reset_set``, ``reset``, ``clear_request``), since
+they touch every row of a run and the console answers within API Gateway's 30
+seconds. Nothing renews a run's rows: a Restart is taken while they outlive its
+rerun (``retention.restart_allowed``, D126).
 """
 
 from __future__ import annotations
@@ -220,7 +222,7 @@ def _row_of(task: Mapping[str, Any], action: str) -> dispatch.RowView:
 
 @dataclass(frozen=True)
 class RestartWrite:
-    """What a Restart sends: its transaction, then its timeline event. The pass that carries out its renewal
+    """What a Restart sends: its transaction, then its timeline event. The pass that carries out its request
     writes the row's ``asset:`` pointers (``pointer_items``)."""
     items: List[Dict[str, Any]]
     events: List[Dict[str, Any]] = field(default_factory=list)
@@ -231,8 +233,8 @@ def restart(*, task: Mapping[str, Any], run: Mapping[str, Any], with_dependants:
     """The transaction of a Restart of the task row ``task`` of the run row ``run``, from the caller's reads.
 
     The row waits again as ``Start_Run`` wrote it, its limits counted anew; the run row raises ``run_version``,
-    lives a year and 90 days from now, falls due at once and carries the request: the renewal of the history
-    TTL, and with ``with_dependants`` the reset of the task's dependants (§3, §5).
+    lives a year and 90 days from now, falls due at once and carries the requests: the pointers of the rows it
+    puts back to wait, and with ``with_dependants`` the reset of the task's dependants (§3, §5).
     """
     row = _row_of(task, "restart")
     view = dispatch.run_view(run)
@@ -349,7 +351,7 @@ def run_request(run: dispatch.RunView, run_item: Mapping[str, Any], *, task_id: 
 
 def pointer_items(task: Mapping[str, Any], *, run_key: str, now: datetime) -> List[Dict[str, Any]]:
     """The row's ``asset:{name}`` pointers, as ``Start_Run`` writes them, for a row that waits again (Rule 40): the
-    renewal writes those of each waiting row, a Restart's included, and a reset those of its row."""
+    request of a Restart writes those of each row waiting since it, and a reset those of its row."""
     ttl = retention.ttl(now, retention.HISTORY)
     return [{**key, start_run.POINTER_RUN: run_key, start_run.POINTER_TTL: ttl}
             for key in dispatch_writes.pointers(task)]
@@ -423,8 +425,8 @@ def _version_next(run: dispatch.RunView, *, table: str, now: datetime, remove: O
 
 def stop_run(run: Mapping[str, Any], *, by: str, reason: str, now: datetime, table: str) -> Optional[Dict[str, Any]]:
     """The console's Stop of a run (§4): the stop mark with who asked and why, ``run_version`` raised, the run row
-    due at once; a pending reset of a Restart with dependants is cancelled (§3), as read. The dispatcher stops the
-    rows. None while a stop is in progress: a second Stop then changes nothing. Once a stop is done, a Restart may
+    due at once. The dispatcher stops the rows, and drops a pending reset of a Restart with dependants (§3). None
+    while a stop is in progress: a second Stop then changes nothing. Once a stop is done, a Restart may
     have run tasks again, so a Stop starts a new stop: a new mark, and the done one goes (the review of TR-6)."""
     view = dispatch.run_view(run)
     if view.stopping:
@@ -432,8 +434,8 @@ def stop_run(run: Mapping[str, Any], *, by: str, reason: str, now: datetime, tab
     if not view.active:
         raise ActionRefused(f"{view.execution}: a run that is not active yet takes no Stop")
     stamp = format_utc(now)
-    names = {**run_row.VERSION_NAMES, "#status": run_row.STATUS, "#stop": run_row.STOP, "#req": run_row.REQUESTS,
-             "#reset": run_row.RESET_DEPENDANTS, "#att": attention.KEY, "#due": attention.DUE, "#ttl": run_row.TTL}
+    names = {**run_row.VERSION_NAMES, "#status": run_row.STATUS, "#stop": run_row.STOP, "#att": attention.KEY,
+             "#due": attention.DUE, "#ttl": run_row.TTL}
     values = {**run_row.VERSION_RAISE_VALUES, ":active": run_row.ACTIVE, ":now": stamp,
               ":mark": run_row.stop_mark(by=by, reason=reason, at=stamp),
               ":att": attention.attention(attention.WAITING, view.key), ":ttl": retention.ttl(now, retention.HISTORY)}
@@ -442,14 +444,7 @@ def stop_run(run: Mapping[str, Any], *, by: str, reason: str, now: datetime, tab
     if view.stop is not None:                    # a done stop, as read: a new one replaces its mark
         names["#done"] = run_row.STOP_DONE
         condition = "#status = :active AND attribute_exists(#done)"
-    removed = ["#done"] if view.stop is not None else []
-    if run_row.RESET_DEPENDANTS in view.requests:
-        removed.append("#req.#reset")
-        condition += " AND attribute_exists(#req.#reset)"
-    else:
-        condition += " AND attribute_not_exists(#req.#reset)"
-    if removed:
-        expression += " REMOVE " + ", ".join(removed)
+        expression += " REMOVE #done"
     return _run_write(view, expression=expression, condition=condition, names=names, values=values, table=table)
 
 

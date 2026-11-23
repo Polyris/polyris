@@ -38,6 +38,7 @@ from typing import Optional, Sequence
 
 from ..constants import TaskStatus
 from . import attention
+from .times import parse_utc
 from .pauses import Interval, is_paused
 
 S = TaskStatus
@@ -135,6 +136,14 @@ def decision_deadline(row: RowTimes, intervals: Sequence[Interval]) -> Optional[
     if is_paused(intervals):
         return FAR_FUTURE
     return moved(row.decision_since, row.decision_timeout, intervals)
+
+
+def shown(due: str) -> Optional[str]:
+    """A row's due time as a reader shows its deadline: none while a pause holds it at ``FAR_FUTURE``.
+
+    Raises ``ValueError`` for a due time it cannot read: the reader skips it and says so (Principle #51).
+    """
+    return None if parse_utc(due) >= FAR_FUTURE else due
 
 
 def start_deadlines(row: RowTimes, intervals: Sequence[Interval]) -> Optional[StartDeadlines]:

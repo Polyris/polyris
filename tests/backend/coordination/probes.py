@@ -254,7 +254,7 @@ PROBES: Tuple[Probe, ...] = (
     Probe("B-M3", (Edit(TASKS_ROUTE, "outlets=outlets, cascade=run_input.from_item(stored).cascade if stored else 'auto',",
                         "outlets=outlets, cascade='auto',"),),
           f"{SCENARIOS}::test_mark_successful_keeps_a_cascade_none_backfill_from_starting_consumers"),
-    # A Restart whose renewal writes no pointers: a fact recorded after it never wakes the restarted task.
+    # A Restart whose request writes no pointers: a fact recorded after it never wakes the restarted task.
     Probe("B-R1", (Edit(DISPATCHER, "                self._within_budget(state)\n                self._put_pointers(state, name)\n",
                         "                self._within_budget(state)\n"),),
           f"{SCENARIOS}::test_a_restarted_task_is_still_gated_on_its_assets"),
@@ -307,7 +307,7 @@ PROBES: Tuple[Probe, ...] = (
     Probe("R-R3", (Edit(DISPATCHER, "        if not names:\n            self._clear(state, run_row.RESET_DEPENDANTS)\n",
                         "        if not names:\n"),),
           f"{ROWS}::test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_clears"),
-    # The renewal leaves the outputs alone, as when only the Restart's own upstreams were renewed.
+    # A Restart taken a day short of a year: nothing renews the outputs its rerun reads (D126).
     Probe("R-O3", (Edit("polyris/coordination/retention.py", "RESTART_TTL_MARGIN = timedelta(days=90)",
                         "RESTART_TTL_MARGIN = timedelta(days=1)"),),
           f"{ROWS}::test_a_late_restart_is_refused_and_one_within_nine_months_finds_its_upstreams_outputs"),

@@ -15,7 +15,6 @@ import os
 from datetime import datetime, timezone
 from decimal import Decimal
 # pytest-mock: mocker fixture used instead of unittest.mock
-from botocore.exceptions import ClientError
 
 os.environ.setdefault('DYNAMODB_TABLE', 'test-tokens')
 os.environ.setdefault('PIPELINES_TABLE', 'test-registry')
@@ -115,10 +114,6 @@ class MockRepo:
         items = [i for i in self.items
                  if i.get('pipeline_execution') == pipeline_execution]
         return items[:limit] if limit else items
-
-    @property
-    def conditional_check_exception(self):
-        return ClientError
 
 
 # ============================================================

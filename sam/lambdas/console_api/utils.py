@@ -71,7 +71,8 @@ def is_internal_record(execution_name: str) -> bool:
     """Check if a pipeline-tokens record is internal/special (not a real task execution).
 
     Internal records use _ prefix:
-    - _pause_{pipeline_execution} — pause state
+    - _run_{pipeline_execution} — the run row (its pauses, stop mark and requests); _run_{…}#input — its input
+    - _pause_{pipeline_execution} — a 1.2 run's pause; 1.3 writes none
     - _notify_warn_{kind}_{execution_name} — infrastructure warning (visible in Notifications bell)
 
     Canonical output store records (``output#pipeline#task#date``, written by the
@@ -171,52 +172,6 @@ def retrieve_result(result: Any) -> Any:
         log.error("retrieve_result", "Error retrieving result from S3", error=str(e))
         # Return the reference with error info
         return {**result, '_retrieval_error': str(e)}
-
-
-def compute_pipeline_execution_short(pipeline_execution: str) -> str:
-    """
-    Compute pipeline_execution_short from full pipeline_execution.
-    
-    Equal to polyris.coordination.task_row.short, which names the run in its
-    task rows' keys (a test compares them):
-    - Take last 20 characters
-    - Remove '.' and ':' characters (Step Functions ARN compatibility)
-    
-    Args:
-        pipeline_execution: Full pipeline execution ID
-    
-    Returns:
-        Sanitized short ID (max 20 chars), or empty string if no input
-    """
-    if not pipeline_execution:
-        return ''
-    
-    # Take last 20 chars
-    short = pipeline_execution[-20:] if len(pipeline_execution) > 20 else pipeline_execution
-    
-    # Remove . and : (same as wrapper JSONata: $replace($replace(..., '.', ''), ':', ''))
-    short = short.replace('.', '').replace(':', '')
-    
-    return short
-
-
-def ensure_pipeline_execution_short(pipeline_execution: str, existing_short: str = '') -> str:
-    """
-    Ensure pipeline_execution_short has a valid value.
-    
-    Uses existing value if present, otherwise computes from pipeline_execution.
-    This is critical for notify_dependents to work correctly.
-    
-    Args:
-        pipeline_execution: Full pipeline execution ID
-        existing_short: Existing short value (if any)
-    
-    Returns:
-        Valid pipeline_execution_short (max 20 chars), or empty string if no input
-    """
-    if existing_short:
-        return existing_short
-    return compute_pipeline_execution_short(pipeline_execution)
 
 
 def parse_wait_before(value) -> int:
@@ -390,72 +345,6 @@ def validate_date(date_str: str) -> tuple:
         return False, "Invalid date"
 
 
-def validate_execution_name(name: str) -> tuple:
-    """
-    Validate execution_name format.
-    
-    Args:
-        name: Execution name to validate
-    
-    Returns:
-        (is_valid: bool, error_message: str or None)
-    """
-    if not name:
-        return False, "Execution name is required"
-    
-    if len(name) > Limits.EXECUTION_NAME_MAX_LENGTH:
-        return False, f"Execution name too long (max {Limits.EXECUTION_NAME_MAX_LENGTH} chars)"
-    
-    # Check for invalid characters
-    if not re.match(r'^[\w\-]+$', name):
-        return False, "Execution name contains invalid characters"
-    
-    return True, None
-
-
-def validate_pipeline_name(name: str) -> tuple:
-    """
-    Validate pipeline_name format.
-    
-    Args:
-        name: Pipeline name to validate
-    
-    Returns:
-        (is_valid: bool, error_message: str or None)
-    """
-    if not name:
-        return False, "Pipeline name is required"
-    
-    if len(name) > 64:
-        return False, "Pipeline name too long (max 64 chars)"
-    
-    if not re.match(r'^[\w\-]+$', name):
-        return False, "Pipeline name contains invalid characters"
-    
-    return True, None
-
-
-def validate_required_fields(data: Dict, required: List[str]) -> tuple:
-    """
-    Validate that required fields are present in data.
-    
-    Args:
-        data: Dictionary to validate
-        required: List of required field names
-    
-    Returns:
-        (is_valid: bool, missing_fields: List[str])
-    """
-    if not data:
-        return False, required
-    
-    missing = [field for field in required if not data.get(field)]
-    return len(missing) == 0, missing
-
-
-# Schema column defaults — kept in sync with `polyris.schema._COLUMN_DEFAULTS`.
-# Backend works with the serialized dict form (omit-on-default), so any key
-# present here that holds a non-default value counts as a "rich" constraint.
 _SCHEMA_COLUMN_DEFAULTS = {
     'description': '',
     'nullable':       True,

@@ -444,13 +444,6 @@ class ExecutionsRepo:
         """The TransactionCanceledException a refused condition raises, for try/except."""
         return dynamodb_client.exceptions.TransactionCanceledException
 
-    # ── Conditional check exception ───────────────────────────────────────
-
-    @property
-    def conditional_check_exception(self):
-        """Access the ConditionalCheckFailedException for try/except."""
-        return dynamodb.meta.client.exceptions.ConditionalCheckFailedException
-
 
 # Singleton instance
 executions_repo = ExecutionsRepo()

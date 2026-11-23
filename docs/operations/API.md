@@ -54,7 +54,6 @@ Response (with `stats=true`):
       "status": "running",
       "waiting_on": "waiting_decision",
       "failed_tasks": 1,
-      "paused": false,
       "sla": 85,
       "recent_runs": [
         { "date": "2026-02-19", "started_at": "2026-02-19T06:00:01.204Z", "exec": "a1b2c3d4", "status": "running", "failed_tasks": 1 },
@@ -206,7 +205,6 @@ POST /api/task-fail?name={execution_name}       # Mark as failed
 POST /api/task-success?name={execution_name}    # Mark as successful, with the facts of its outlets
 POST /api/task-stop?name={execution_name}       # Stop an unfinished task: it ends stopped
 POST /api/task-restart?name={execution_name}    # Run a finished or undecided task again
-POST /api/task-retry?name={execution_name}      # The same as task-restart (deprecated)
 ```
 
 Every action accepts an optional body `{"reason": "..."}`; `task-restart` also takes `{"with_dependants": true}`,

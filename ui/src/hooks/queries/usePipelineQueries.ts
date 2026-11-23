@@ -112,7 +112,7 @@ export function usePipelineDetailQuery(pipelineName: string, date: string, execu
                 const fullId = statusData.selected_execution;
                 // Prefer the backend-computed short (same value the history list shows). If a
                 // task-less execution doesn't carry it, fall back to the same rule as the
-                // backend's compute_pipeline_execution_short (last 20 chars, strip '.'/':')
+                // backend's task_row.short (last 20 chars, strip '.'/':')
                 // so we never render a naive prefix like "hello-wo".
                 const shortId = tasks[0]?.pipeline_execution_short
                     || fullId.slice(-20).replace(/[.:]/g, '');

@@ -15,7 +15,7 @@ class TestTaskActions:
     """POST /api/task-skip, -fail, -success, -stop, -restart"""
 
     @pytest.mark.parametrize("path", ["/api/task-skip", "/api/task-fail", "/api/task-success", "/api/task-stop",
-                                      "/api/task-restart", "/api/task-retry"])
+                                      "/api/task-restart"])
     def test_a_task_that_does_not_exist_is_404(self, api, path):
         resp = api.post(path, body={"date": "2000-01-01"}, params={"name": GHOST_TASK})
         assert resp["status"] == 404, resp

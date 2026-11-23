@@ -10,9 +10,9 @@ goes the other way, dependants first (§4).
 - A full pass covers every row of the run, then decides the run's end: the
   summary, the answer of its token and its mark, the stop done, and the removal
   of the run row's due time (§4, §3). Before any decision it carries out the
-  run's requests through ``coordination.actions``: a Restart's renewal (the
-  pointers of each waiting row, then the TTLs) and the reset of a Restart with
-  dependants, each cleared once done (§3, §5).
+  run's requests through ``coordination.actions``: a Restart's pointers (those
+  of the rows waiting since it) and the reset of a Restart with dependants, each
+  cleared once done (§3, §5).
 - A narrow pass covers the rows a fact wakes and their direct upstreams; it
   leaves the run's end to the next full pass (§7).
 - A refused write is decided again once from a new read of the run row, the row
@@ -890,7 +890,7 @@ class Dispatcher:
 
 
 def _arn_of(state_machine: str, execution: str) -> str:
-    """An execution's ARN from its state machine's (CLAUDE.md, "Stop pipeline hierarchy")."""
+    """An execution's ARN from its state machine's: the same name after `:execution:` in place of `:stateMachine:`."""
     return f"{state_machine.replace(':stateMachine:', ':execution:')}:{execution}"
 
 

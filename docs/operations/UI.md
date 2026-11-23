@@ -139,7 +139,7 @@ Click any task to open the detail modal with:
 - Status, duration, timestamps
 
 **Actions Tab:**
-- Skip, Fail, Stop, Restart buttons
+- Skip, Fail, Mark Successful, Stop, Restart buttons
 
 ### From Task Modal
 
@@ -147,9 +147,10 @@ Click a task to open detail modal with actions:
 
 | Action | Description |
 |--------|-------------|
-| **Skip** | Mark as skipped, notify dependents |
-| **Fail** | Mark as failed, notify dependents |
-| **Stop** | Force stop running execution |
+| **Skip** | Mark as skipped: its dependants run as after a success |
+| **Fail** | Mark as failed: dependants that need its success end `upstream_failed`, and the rest of the run goes on |
+| **Mark Successful** | Mark as successful and record the facts of its outlets: its dependants start |
+| **Stop** | Stop an unfinished task and its work: it ends `stopped`, which its dependants' rules count as a failure |
 | **Restart** | Run a finished or undecided task again; tick *Also rerun the dependants its failure or stop decided* to rerun them too |
 
 ### Pipeline Actions

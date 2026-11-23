@@ -6,29 +6,13 @@ Utility commands for maintaining and validating the polyris codebase.
 
 ## API Input Validation
 
-The Console API includes validation helpers in `utils.py`:
+The Console API validates a date from a request with `validate_date` in `utils.py`:
 
 ```python
-from utils import validate_date, validate_execution_name, validate_pipeline_name
+from utils import validate_date
 
-# Date validation (YYYY-MM-DD format)
 valid, error = validate_date('2025-01-15')  # (True, None)
 valid, error = validate_date('invalid')     # (False, 'Date must be in YYYY-MM-DD format')
-
-# Execution name validation
-valid, error = validate_execution_name('task-2025-01-15-abc123')
-
-# Pipeline name validation
-valid, error = validate_pipeline_name('my-pipeline')
-```
-
-All backfill endpoints validate date inputs before processing:
-
-```python
-# backfill.py
-valid, error = validate_date(start_date)
-if not valid:
-    return cors_response(400, {'error': f'start_date: {error}'})
 ```
 
 ---
@@ -53,7 +37,7 @@ pytest tests/sdk/test_smoke.py -v              # Core: DAG structure, ASL genera
 pytest tests/sdk/test_asl_snapshots.py -v      # Golden file comparison of generated JSON
 pytest tests/sdk/test_sfn_flow.py -v           # SFN template graph validation (every orchestration template)
 pytest tests/sdk/test_templates.py -v          # orchestration_timeout, route table, resilience
-pytest tests/backend/test_api_routes.py -v         # All 25 free API routes registered
+pytest tests/backend/test_api_routes.py -v         # All 24 free API routes registered
 pytest tests/sdk/test_coordination_trigger_rules.py -v  # The nine trigger rules and their truth table (polyris/coordination)
 
 # Update ASL snapshots after intentional changes

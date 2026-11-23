@@ -226,7 +226,7 @@ def test_route_table_completeness():
     # build that 404s these is the regression this guard exists to catch.
     free_intervention = [
         ('POST', '/api/task-skip'), ('POST', '/api/task-fail'), ('POST', '/api/task-success'),
-        ('POST', '/api/task-stop'), ('POST', '/api/task-restart'), ('POST', '/api/task-retry'),
+        ('POST', '/api/task-stop'), ('POST', '/api/task-restart'),
         ('POST', '/api/execution-stop'), ('POST', '/api/execution-pause'),
         ('POST', '/api/execution-resume'),
     ]
@@ -244,7 +244,7 @@ def test_route_table_completeness():
         assert ('PUT', '/api/task-config') not in ROUTES, "task-config PUT must be Team-only"
 
     # Loose free-floor sanity check; the full build adds Team routes on top.
-    assert len(ROUTES) >= 25
+    assert len(ROUTES) >= 24
 
     # Critical *free* routes must always exist (present in both tiers).
     critical = [

@@ -162,7 +162,7 @@ def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     walk(pass_over())                                                            # a missing run row stops its rows
     assert len(sfn.started) == 2 and sfn.succeeded, "the walk must start both rows and answer the run"
 
-    # A second run: a Restart's renewal (the pointers of a waiting row, the TTLs), then a Stop of the run, which
+    # A second run: a Restart's pointers (those of the row it put back to wait), then a Stop of the run, which
     # stops a started row's run_task and the run's execution (ADR #137 §3, §4, §5).
     from datetime import timedelta
 
@@ -191,7 +191,7 @@ def _walk_the_dispatcher(rows, ddb) -> Tuple[Set[Call], Set[Read]]:
     write = actions.restart(task=item(execution_name("extract", other)), run=item(other_key), with_dependants=False,
                             operator="ops", reason="rerun", now=now, tokens_table=tokens)
     client.transact_write_items(TransactItems=write.items)
-    walk(full_pass_of_other())                                                   # the renewal; extract again
+    walk(full_pass_of_other())                                                   # the pointers; extract again
     client.update_item(**actions.stop_run(item(other_key), by="ops", reason="done", now=now, table=tokens))
     walk(full_pass_of_other())                                                   # the stop
     assert sfn.stopped, "the walk must stop a run_task and the run's execution"

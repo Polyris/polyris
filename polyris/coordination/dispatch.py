@@ -73,7 +73,7 @@ class RunView:
     summary: Optional[Mapping[str, int]] = None
     date: str = ""                         # the run's date, by which its rows are keyed
     left_at: Optional[str] = None          # when a pass last left rows (§7)
-    #: The heavy actions that wait on the run, by kind (run_row.request): its renewal, a reset (§3).
+    #: The heavy actions that wait on the run, by kind (run_row.request): a Restart's pointers, a reset (§3).
     requests: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     pipeline: str = ""
     started_at: Optional[datetime] = None  # the execution's StartTime

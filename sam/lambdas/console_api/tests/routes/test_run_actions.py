@@ -80,23 +80,21 @@ def test_a_run_without_its_run_row_or_not_active_yet_is_refused(world):
 
 
 def test_a_change_of_the_run_row_under_the_write_is_read_again(world):
-    """A Restart with dependants between the console's read and its write: the Stop, refused, is built again from
-    the new read and cancels the reset that came meanwhile."""
+    """Another operator's Stop between the console's read and its write: this Stop, refused, is built again from
+    the new read, finds the stop in progress and changes nothing."""
     import config
     seed(world)
     landed = []
 
-    def a_restart_lands(params, **_):
+    def another_stop_lands(params, **_):
         if not landed:
             landed.append(1)
             world.table.update_item(Key={run_row.TABLE_KEY: run_row.key(RUN)},
-                                    UpdateExpression="SET #rv = :rv", ExpressionAttributeNames={"#rv": "run_version"},
-                                    ExpressionAttributeValues={":rv": 9})
-            world.table.update_item(Key={run_row.TABLE_KEY: run_row.key(RUN)},
-                                    UpdateExpression="SET #r = :r", ExpressionAttributeNames={"#r": "requests"},
-                                    ExpressionAttributeValues={":r": {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t"}}})
+                                    UpdateExpression="SET #s = :s", ExpressionAttributeNames={"#s": run_row.STOP},
+                                    ExpressionAttributeValues={":s": run_row.stop_mark(
+                                        by="first", reason="", at="2026-11-23T00:00:00.000Z")})
 
-    config._dynamodb_client.meta.events.register("before-parameter-build.dynamodb.TransactWriteItems", a_restart_lands)
+    config._dynamodb_client.meta.events.register("before-parameter-build.dynamodb.TransactWriteItems",
+                                                  another_stop_lands)
     assert call(world, "stop_execution")[0] == 200
-    run = the_run(world)
-    assert run_row.STOP in run and run[run_row.REQUESTS] == {}          # the reset that came meanwhile is cancelled
+    assert the_run(world)[run_row.STOP]["by"] == "first" and landed == [1]

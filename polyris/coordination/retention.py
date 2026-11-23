@@ -1,4 +1,4 @@
-"""How long each row of a run lives, and until when a Restart may renew them (ADR #137 §5, D108, D109).
+"""How long each row of a run lives, and until when a Restart is taken (ADR #137 §5, D108, D109, D126).
 
 A run writes rows with three lifetimes, each counted from the row's latest write:
 
@@ -43,8 +43,8 @@ def restart_allowed(run_started_at: datetime, now: datetime) -> bool:
 
     Every row the Restart needs outlives the margin: the upstreams' ``output#``
     lives a year from its last write, after the run started, and the history a
-    year and 90 days. DynamoDB may delete a row at any time after its TTL, so a
-    renewal that came later could find rows of the run gone (§3).
+    year and 90 days. Nothing renews them (§3), and DynamoDB may delete a row at
+    any time after its TTL: a later Restart could find rows of the run gone.
     """
     if run_started_at.tzinfo is None or now.tzinfo is None:
         raise ValueError("timestamps must be timezone-aware")

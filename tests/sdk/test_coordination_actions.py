@@ -242,7 +242,7 @@ def restart_of(row: Dict[str, Any], *, run_item: Optional[Dict[str, Any]] = None
                            operator="ops@example.com", reason="rerun", now=now, tokens_table=TOKENS)
 
 
-def test_a_restart_puts_the_row_back_to_waiting_and_requests_the_renewal(ddb):
+def test_a_restart_puts_the_row_back_to_waiting_and_requests_its_pointers(ddb):
     row = finished()
     seed(ddb, row, run_item=active_run())
     write = restart_of(row)
@@ -284,7 +284,7 @@ def test_a_restart_with_dependants_requests_their_reset_and_a_second_waits_for_i
     put(ddb, {**get(ddb, KEY), task_row.STATUS: S.FAILED.value})
     # Built from a read before the first request: its condition refuses it.
     assert not send(ddb, restart_of({**again, task_row.GENERATION: 3}, with_dependants=True))
-    # A plain Restart beside the reset renews the request of the renewal by kind.
+    # A plain Restart beside the reset adds the request of its pointers by kind.
     assert send(ddb, restart_of({**again, task_row.GENERATION: 3}, run_item=get(ddb, run_row.key(RUN))))
     assert set(get(ddb, run_row.key(RUN))[run_row.REQUESTS]) == {run_row.POINTERS, run_row.RESET_DEPENDANTS}
 
@@ -409,7 +409,9 @@ def test_a_reset_row_with_a_limit_is_due_at_it_as_the_pass_reads(ddb):
 # ── Stop of a run, Pause and Resume (§3, §4, §5) ───────────────────────────
 
 
-def test_a_stop_of_a_run_marks_it_raises_it_makes_it_due_and_cancels_a_pending_reset(ddb):
+def test_a_stop_of_a_run_marks_it_raises_it_makes_it_due_and_leaves_its_requests_to_the_dispatcher(ddb):
+    """The dispatcher drops a pending reset under a stop (test_a_stop_of_the_run_cancels_a_pending_reset): the
+    console's Stop cancelled it too, the same work twice (review of TR-6, P-9)."""
     reset = {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t", "task": "load"}, run_row.POINTERS: {"by": "a", "at": "t"}}
     put(ddb, active_run(**{run_row.REQUESTS: reset}))
     ddb.update_item(**actions.stop_run(get(ddb, run_row.key(RUN)), by="ops", reason="wrong data", now=NOW,
@@ -417,7 +419,7 @@ def test_a_stop_of_a_run_marks_it_raises_it_makes_it_due_and_cancels_a_pending_r
     the_run = get(ddb, run_row.key(RUN))
     assert the_run[run_row.STOP] == {"by": "ops", "reason": "wrong data", "at": format_utc(NOW)}
     assert the_run[run_row.RUN_VERSION] == 6 and the_run[attention.DUE] == format_utc(NOW)
-    assert set(the_run[run_row.REQUESTS]) == {run_row.POINTERS}             # a pass clears it under the stop
+    assert set(the_run[run_row.REQUESTS]) == {run_row.RESET_DEPENDANTS, run_row.POINTERS}   # a pass clears both
     assert actions.stop_run(the_run, by="ops", reason="again", now=NOW, table=TOKENS) is None   # in progress
 
 
@@ -440,11 +442,7 @@ def test_a_stop_after_a_done_stop_starts_a_new_one_and_a_pause_is_taken(ddb):
         ddb.update_item(**write)
 
 
-def test_a_stop_built_before_a_reset_was_requested_is_refused_so_it_cancels_it_when_built_again(ddb):
-    read = active_run()
-    put(ddb, active_run(**{run_row.REQUESTS: {run_row.RESET_DEPENDANTS: {"by": "a", "at": "t", "task": "x"}}}))
-    with pytest.raises(ddb.exceptions.ConditionalCheckFailedException):
-        ddb.update_item(**actions.stop_run(read, by="ops", reason="", now=NOW, table=TOKENS))
+def test_a_run_that_is_not_active_yet_takes_no_stop():
     with pytest.raises(actions.ActionRefused, match="not active"):
         actions.stop_run(active_run(**{run_row.STATUS: run_row.CREATING}), by="ops", reason="", now=NOW, table=TOKENS)
 

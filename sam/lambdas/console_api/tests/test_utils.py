@@ -5,7 +5,6 @@ Tests utility functions that are used across all route modules.
 
 from decimal import Decimal
 
-import pytest
 
 
 class TestIsExecutionName:
@@ -320,67 +319,6 @@ class TestResolvePagerduty:
         }
         # Should NOT raise
         resolve_pagerduty(item)
-
-
-class TestComputePipelineExecutionShort:
-    """compute_pipeline_execution_short's own docstring documents it as a
-    hand-maintained mirror of polyris.coordination.task_row.short, which keys
-    a run's task rows (last 20 chars, strip '.' and ':'). These tests pin the boundary cases (exactly 20 chars,
-    empty input, dots/colons) that a JSONata-mirroring function is most likely to silently drift on."""
-
-    def test_empty_returns_empty(self):
-        from console_api.utils import compute_pipeline_execution_short
-        assert compute_pipeline_execution_short('') == ''
-
-    def test_shorter_than_20_is_unchanged_apart_from_stripping(self):
-        from console_api.utils import compute_pipeline_execution_short
-        assert compute_pipeline_execution_short('a.b:c') == 'abc'
-
-    def test_exactly_20_chars_boundary(self):
-        from console_api.utils import compute_pipeline_execution_short
-        s = 'x' * 20
-        assert compute_pipeline_execution_short(s) == s
-
-    def test_over_20_chars_takes_last_20(self):
-        from console_api.utils import compute_pipeline_execution_short
-        s = '2026-07-21T12:34:56.789Z-abc123def456ghi789jkl'
-        # Mirrors task_row.short: last 20 chars of the RAW string, THEN
-        # strip '.'/':' — not "take 20 chars after stripping".
-        expected = s[-20:].replace('.', '').replace(':', '')
-        assert compute_pipeline_execution_short(s) == expected
-
-    def test_dots_and_colons_stripped_after_truncation_not_before(self):
-        """Order matters: truncate to the last 20 raw characters FIRST, then
-        strip '.'/':' — stripping first would shift which characters end up
-        in the final 20, silently diverging from task_row.short (which
-        truncates the name itself, before any replace)."""
-        from console_api.utils import compute_pipeline_execution_short
-        s = 'arn:aws:states:us-east-1:123456789012:execution:x:y'
-        assert compute_pipeline_execution_short(s) == '789012executionxy'
-
-
-    @pytest.mark.parametrize("name", ["", "a.b:c", "x" * 20, "2026-07-21T12:34:56.789Z-abc123def456ghi789jkl",
-                                      "arn:aws:states:us-east-1:123456789012:execution:x:y"])
-    def test_it_is_the_task_rows_short_name(self, name):
-        """The console finds a run's task rows by the key Start_Run writes (ADR #137 §3)."""
-        from console_api.utils import compute_pipeline_execution_short
-        from polyris.coordination import task_row
-        assert compute_pipeline_execution_short(name) == task_row.short(name)
-
-
-class TestEnsurePipelineExecutionShort:
-    def test_existing_short_wins_over_computing(self):
-        from console_api.utils import ensure_pipeline_execution_short
-        assert ensure_pipeline_execution_short('irrelevant:full.value', 'kept-as-is') == 'kept-as-is'
-
-    def test_falls_back_to_compute_when_no_existing(self):
-        from console_api.utils import ensure_pipeline_execution_short, compute_pipeline_execution_short
-        full = 'sales-hourly-2026-07-16-abc123def456'
-        assert ensure_pipeline_execution_short(full, '') == compute_pipeline_execution_short(full)
-
-    def test_empty_both_yields_empty(self):
-        from console_api.utils import ensure_pipeline_execution_short
-        assert ensure_pipeline_execution_short('', '') == ''
 
 
 class TestDictSchemaRichness:

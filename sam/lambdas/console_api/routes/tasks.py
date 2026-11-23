@@ -503,16 +503,6 @@ def get_task_events(execution_name: str, event: Dict) -> Dict:
     })
 
 
-def retry_task(task_name: str, event: Dict) -> Dict:
-    """Retry a failed/skipped task.
-
-    DEPRECATED: This endpoint is deprecated. Use restart_task instead.
-    This function now simply delegates to restart_task for backward compatibility.
-    """
-    # Delegate to restart_task for actual functionality
-    return restart_task(task_name, event)
-
-
 def _emit_marker_blocked_warn(
     pipeline_name: str, task_name: str, date: str,
     action_name: str, operator: str,
@@ -723,8 +713,8 @@ def restart_task(task_name: str, event: Dict) -> Dict:
     (ADR #137 §3).
 
     One transaction that ``coordination.actions.restart`` builds: the row back to ``waiting`` and its run row's
-    request, which the dispatcher carries out in passes (the renewal of the run's rows, the reset of the
-    dependants). Supports both execution_name (full) and task_name (requires date lookup).
+    requests, which the dispatcher carries out in passes (the pointers of the rows it puts back to wait, the
+    reset of the dependants). Supports both execution_name (full) and task_name (requires date lookup).
     """
     body, err = safe_parse_body(event)
     if err:
@@ -765,7 +755,6 @@ def register(router) -> None:
     router.add('GET', '/api/task-output', get_task_output, 'name')
     router.add('GET', '/api/task-events', get_task_events, 'name')
     # Task intervention — free (ADR #110): fix a stuck/failed task on a live run.
-    router.add('POST', '/api/task-retry', retry_task, 'name')
     router.add('POST', '/api/task-skip', skip_task, 'name')
     router.add('POST', '/api/task-fail', fail_task, 'name')
     router.add('POST', '/api/task-success', mark_success, 'name')

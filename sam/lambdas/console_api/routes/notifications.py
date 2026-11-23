@@ -19,7 +19,7 @@ from response import cors_response
 from logger import log
 from utils import safe_param_int
 from polyris.coordination import attention, deadlines
-from polyris.coordination.times import format_utc, parse_utc
+from polyris.coordination.times import format_utc
 
 
 def get_notifications(event: Dict) -> Dict:
@@ -114,9 +114,9 @@ def _decision(entry: Dict) -> Dict:
 
 
 def _deadline(due: str) -> Optional[str]:
-    """The decision's deadline, or None while a pause holds it (``deadlines.FAR_FUTURE``) or it cannot be read."""
+    """The decision's deadline, or None while a pause holds it or it cannot be read."""
     try:
-        return due if parse_utc(due) < deadlines.FAR_FUTURE else None
+        return deadlines.shown(due)
     except ValueError:
         log.warn("notifications", "Unreadable decision deadline", attention_at=due)
         return None

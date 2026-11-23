@@ -14,7 +14,7 @@ from typing import Dict, Optional
 
 from botocore.exceptions import ClientError, BotoCoreError
 from polyris.constants import ACCESS_DENIED_CODES, TaskConfigKey, TaskSpecKey
-from polyris.coordination import attention, dispatch, run_row, task_row, trigger_rules
+from polyris.coordination import attention, deadlines, dispatch, run_row, task_row, trigger_rules
 
 from config import sfn
 from dal import executions_repo, pipelines_repo, specs_repo
@@ -238,11 +238,17 @@ def _why_it_waits(item: Dict, readiness: Dict, rows: Dict[str, Dict]) -> Dict:
     # countdown, no deadline (review of TR-6d). A deadline a pause holds falls due far in the future: the page shows
     # none (ADR #137 §5).
     countdown_end = item.get(task_row.COUNTDOWN_END) if status == 'waiting' else None
+    deadline = None
+    if due and not countdown_end:
+        try:
+            deadline = deadlines.shown(str(due))
+        except ValueError:
+            log.warn('pipelines', 'Unreadable deadline', execution_name=item.get('execution_name'), due=due)
     detail: Dict = {
         'reasons': [str(r) for r in item.get(task_row.REASONS) or []],
         'reasons_at': item.get(task_row.REASONS_AT),
         'countdown_end': countdown_end,
-        'deadline': due if due and not countdown_end and not str(due).startswith('9999') else None,
+        'deadline': deadline,
     }
     dependencies = readiness.get('dependencies') or []
     if status != 'waiting_decision' and dependencies and all(d in rows for d in dependencies):

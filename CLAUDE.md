@@ -373,7 +373,7 @@ sam/
     helpers/
       run_task/sfn.tpl.json
   lambdas/
-    console_api/      # REST API (25 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
+    console_api/      # REST API (24 free routes; the ee/ overlay adds the Team routes), DAL repos, route handlers
     coordination/     # the dispatcher (reconcile), start-run, asset-fanout, sweeper (ADR #137): decide each row, start run_task, start push consumers, re-check
 ui/                   # React 19 + Next.js 16 + Zustand 5 + React Query 5
 tests/
@@ -562,7 +562,7 @@ After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums
 
 Routes self-register via `ROUTE_MODULES` list (ADR #97). Each module exposes `register(router)`; `main.py` exposes the assembled `ROUTES` table `(METHOD, '/api/path') → (handler_fn, 'param_key')`.
 
-**Surface (ADR #98, #110):** 25 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume/extend). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
+**Surface (ADR #98, #110):** 24 free routes in the OSS build; the full build adds the Team routes. Free = authoring + basic read + running + live-run intervention (task actions skip/fail/success/stop/restart, execution stop/pause/resume). Team = pipeline-level lifecycle, backfill, assets console, alert integrations, PATs, observability, config mutation.
 
 Path params go via query string (`/api/tokens?id=…`) — single `/{proxy+}` integration means no `template.yaml` change for new routes.
 
@@ -610,7 +610,7 @@ except (ClientError, BotoCoreError) as e:
 
 **Re-raise permission errors** — never return `{}` or `[]` silently on AccessDeniedException.
 
-**A fallback that keeps a derived value says it did.** When a check that confirms a value fails, is skipped or comes too late, and the code keeps the value it had, the answer carries a flag the UI shows. `/api/pipelines` kept a run `running` when Step Functions could not confirm it, and its `stats_incomplete` said nothing, so a dead run looked alive (1.2.1 review, ADR #136; `test_a_check_step_functions_cannot_answer_marks_the_stats_incomplete`). When the fallback would look whole and is not, fail the request instead: a registry it could not read was replaced by a tokens scan without groups or schedules, and then by an empty 200 (`test_a_registry_that_cannot_be_read_fails_the_request`).
+**A fallback that keeps a derived value says it did.** When a check that confirms a value fails, is skipped or comes too late, and the code keeps the value it had, the answer carries a flag the UI shows. `/api/pipelines` kept a run `running` when Step Functions could not confirm it, and its `stats_incomplete` said nothing, so a dead run looked alive (1.2.1 review, ADR #136). In 1.3 the flag says a start day could not be read (`test_a_start_day_that_cannot_be_read_marks_the_stats_incomplete`). When the fallback would look whole and is not, fail the request instead: a registry it could not read was replaced by a tokens scan without groups or schedules, and then by an empty 200 (`test_a_registry_that_cannot_be_read_fails_the_request`).
 
 **A new AWS call in `console_api` needs its IAM action on `ConsoleApiRole` in the same change.** Step Functions calls are pinned by `tests/sdk/test_console_api_sfn_iam_parity.py`; a missing `states:ListStateMachines` left `/api/health` at 503 on every stack until the ADR #131 live smoke caught it.
 
@@ -654,7 +654,8 @@ executions_repo.put(warning_item(
 The row carries no `date`: the bell reads it from `attention-index` (`warn#{h}`) by write time, so a warning about an old partition still shows. A row with a `date` and no `attention` reaches the bell only while that date is in its window — the B-N1 bug. SFN templates and generated ASL write the same shape; a contract test compares each with `warning_item`.
 
 **Special prefixes in `pipeline-tokens`** — internal records:
-- `_pause_{pipeline_execution}` — pause state
+- `_run_{pipeline_execution}` — the run row: its token, stop mark, pauses (`pauses`) and requests (ADR #137 §5)
+- `_pause_{pipeline_execution}` — a 1.2 run's pause; 1.3 writes none, and those 1.2 left expire
 - `_notify_warn_{kind}_{execution_name}` — infrastructure warning (`records.warning_item`)
 
 **CRITICAL:** All console loops iterating `pipeline-tokens` items MUST skip internal rows with `utils.should_skip_token_row(item)` (or `is_internal_record(name)`), never with a prefix check of their own. (The dispatcher reads its run's rows by key, and the sweeper only the due entries of the `waiting` and `decision` kinds, so neither meets an internal row.)
