@@ -536,3 +536,21 @@ def test_a_tasks_table_without_the_index_is_said(described, capsys, table):
 def test_a_stack_that_names_no_tasks_table_has_no_index_to_wait_for(described):
     assert _wait(described(), _target({"StackName": "bare"})) == (False, [])
 
+
+# ── What 1.2 left behind (the architect's review of TR-8, B-1) ──────────────
+
+
+def test_a_state_machine_of_1_2_that_is_left_says_1_2_left_something(states):
+    assert upgrade.left_by_1_2(states.client, _target())
+
+
+def test_a_platform_without_1_2_s_state_machines_has_nothing_of_1_2_left():
+    assert not upgrade.left_by_1_2(FakeStates().client, _target())
+
+
+def test_a_denied_look_at_1_2_s_state_machines_is_no_answer(states):
+    """No fail-open: polyris-up says the read failed, never that nothing is left."""
+    states.denied.add("DescribeStateMachine")
+    with pytest.raises(ClientError):
+        upgrade.left_by_1_2(states.client, _target())
+
