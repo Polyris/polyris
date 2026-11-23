@@ -225,6 +225,19 @@ def test_a_run_in_flight_is_refused(dynamodb, states, machine):
     assert states.stopped == [], "a check stops nothing"
 
 
+def test_a_platform_whose_state_machines_cannot_be_found_is_not_taken_for_drained(dynamodb):
+    """A check that sees nothing fails closed: no state machine under the names the stack gives is no
+    proof that nothing runs."""
+    _health(dynamodb)
+
+    refused = _refusal(dynamodb, FakeStates())
+
+    assert str(refused) == ("polyris-up found none of the engine's state machines of acme-dev "
+                            "(acme-dev-polyris-dependency-wrapper and the others), so it cannot tell whether a run "
+                            "is in flight.")
+    assert "--accept-stopped-runs" in refused.todo[-1]
+
+
 def test_the_refusal_counts_what_runs_on_each_state_machine(dynamodb, states):
     _health(dynamodb)
     states.page_size = 2

@@ -1323,6 +1323,20 @@ def test_up_finishes_an_upgrade_that_was_interrupted_in_its_cleanup(fake_cfn, pl
     assert "acme-dev is still cleaning up after its last update" in out and "already up to date" in out
 
 
+def test_up_stops_nothing_for_a_stack_that_is_no_platform(fake_cfn, platform_1_2, capsys):
+    """`--stack my-app` on a stack that only looks like one in its cleanup: refused before any stop."""
+    platform_1_2.run("acme-dev-polyris-dependency-wrapper", "someone-elses",
+                     started=datetime.now(timezone.utc) - timedelta(hours=1))
+    fake_cfn["cfn"] = FakeCfn([{"StackName": "acme-dev", "StackStatus": "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
+                                "Tags": [], "Description": "Polyris platform v1.3.0",
+                                "Parameters": [{"ParameterKey": "TableName", "ParameterValue": "invoices"}]}])
+
+    assert up._run(up.run_up, _up_args(stack="acme-dev", yes=True)) == 1
+
+    assert "not a Polyris platform stack" in capsys.readouterr().err
+    assert platform_1_2.calls == []
+
+
 def test_up_still_refuses_a_stack_that_another_update_keeps_busy(fake_cfn, platform_1_2, capsys):
     """A cleanup on a platform below 1.3 has nothing of 1.2 to stop: it is some other update's."""
     stack = _deployed()

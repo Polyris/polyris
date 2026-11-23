@@ -408,6 +408,11 @@ cd pipelines/my-pipeline && polyris-deploy --stage dev --profile <profile>
 
 **Neither `polyris-up` nor `polyris-deploy` may shell out to the `aws` / `sam` CLIs** — deploys go through `polyris/cfn_changeset.py` (boto3 change sets). The user-side promise is "Python and AWS credentials".
 
+**The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*).** `polyris-up` checks a platform below 1.3 before it changes anything (`upgrade.check`): older than 1.2.0, 1.2's adoption not settled for 48 hours, a run in flight. On a platform that runs 1.3 it stops what 1.2 left running, as an update's cleanup begins and at the end of every run (`upgrade.stop_leftovers`), waits for `run-start-index` and lists the pipelines to redeploy. The rules are pure, in `polyris/platform.py`; `polyris/upgrade.py` is their AWS side. Three things to keep:
+- A step that stops executions runs only on a platform that runs 1.3, read from the stack (`platform.runs_tasks_as_rows`), and it stops an execution of a state machine that 1.3 keeps only when it started before the 1.3 update created `pipeline-specs`.
+- Every execution under a name in `platform.REMOVED_STANDARD_MACHINES` counts as 1.2's, so no state machine may get such a name back; a new Standard state machine of the engine joins the names in `platform.py` (`tests/sdk/test_platform.py` fails until it does).
+- A check that cannot see what it checks refuses: `upgrade.check` refuses a platform none of whose engine state machines it finds.
+
 **Pre-deploy resource check:** `polyris-deploy` runs two advisory checks before generating the CloudFormation template:
 
 1. **Existence check** — verifies all external AWS resources (SFN ARNs, Lambda names, Glue jobs, ECS clusters/task definitions, Batch queues/job definitions, Athena workgroups) exist. Aborts deploy if any resource is missing.

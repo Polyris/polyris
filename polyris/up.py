@@ -10,6 +10,12 @@
    ``polyris-artifacts-<account>-<region>``;
 5. deploy through a CloudFormation change set and print the console URL.
 
+On an existing platform it also makes the move from 1.2 to 1.3 (ADR #137,
+*Migration and upgrade*): it checks a platform below 1.3 before step 4, while
+nothing has changed, stops what 1.2 left running once the update has
+succeeded, waits for the index the console's run lists read, and lists the
+pipelines to redeploy. Those steps are in ``polyris/upgrade.py``.
+
 It runs from any directory and writes nothing there. The pure logic lives in
 ``polyris/platform.py``; this module is the AWS and terminal side.
 """
@@ -555,11 +561,11 @@ def run_up(args: argparse.Namespace) -> None:
     if existing:
         deployed = version_from_description(existing.get("Description"))
         print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {installing})")
-        if existing.get("StackStatus") == CLEANUP_STATUS and runs_tasks_as_rows(deployed, outputs_of(existing)):
-            # Its last update succeeded and still deletes what it dropped: an upgrade to 1.3 that was
-            # interrupted, whose cleanup waits for what 1.2 left running (ADR #137, *Migration*).
-            existing = _finish_cleanup(session, cfn, str(existing["StackName"]), region=region, account=account)
-        elif existing.get("StackStatus", "").endswith("_IN_PROGRESS"):
+        # A stack whose last update succeeded and still deletes what it dropped is an upgrade to 1.3 that
+        # was interrupted: its cleanup waits for what 1.2 left running (ADR #137, *Migration*).
+        cleaning_up = (existing.get("StackStatus") == CLEANUP_STATUS
+                       and runs_tasks_as_rows(deployed, outputs_of(existing)))
+        if existing.get("StackStatus", "").endswith("_IN_PROGRESS") and not cleaning_up:
             raise UpError(f"Stack {stack_name} is busy ({existing['StackStatus']}). Try again when it finishes.")
         if not is_platform_shaped(existing):
             raise UpError(f"Stack {stack_name} is not a Polyris platform stack — refusing to change it.",
@@ -568,6 +574,8 @@ def run_up(args: argparse.Namespace) -> None:
             print(_c(f"   {stack_name} was not created by polyris-up; it will be adopted (tagged and "
                      "switched to release artifacts).", YELLOW))
             _confirm_yes("Continue?")
+        if cleaning_up:
+            existing = _finish_cleanup(session, cfn, str(existing["StackName"]), region=region, account=account)
         values: Dict[str, str] = {}
     else:
         if args.stack or args.namespace_from_flags:
@@ -730,21 +738,28 @@ def _check_before_upgrade(
         print(_c(f"   {upgrade.OVERRIDE_FLAG}: 1.2's adoption and the runs in flight were not checked.", YELLOW))
 
 
-def _stop_leftovers(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str) -> None:
+def _stop_leftovers(
+    session: boto3.Session, cfn, stack_name: str, *, region: str, account: str,
+    pipelines: Optional[Sequence["DeployedPipeline"]] = None,
+) -> None:
     """Stop what 1.2 left running on a platform that runs 1.3, and print the runs to start again.
 
     polyris-up calls it as an update's cleanup begins, so that the deletion of
     1.2's state machines does not wait for their executions, and at the end of
     every run, so that an upgrade interrupted after its update still finishes
-    it (ADR #137, *Migration and upgrade*).
+    it (ADR #137, *Migration and upgrade*). ``pipelines`` are the platform's,
+    when the caller has read them already.
     """
     try:
         stack = describe_stack(cfn, stack_name) or {}
         target = _target(session, stack, region=region, account=account)
         sfn = session.client("stepfunctions")
         since = upgrade.rows_engine_since(session.client("dynamodb"), target)
-        machines = (_pipeline_machines(sfn, deployed_pipelines(session, cfn, stack, stack_name), target)
-                    if since else [])
+        machines: List[str] = []
+        if since:
+            if pipelines is None:
+                pipelines = deployed_pipelines(session, cfn, stack, stack_name)
+            machines = _pipeline_machines(sfn, pipelines, target)
         stopped = upgrade.stop_leftovers(sfn, target=target, pipelines=machines, started_before=since)
     except (ClientError, BotoCoreError) as e:
         raise UpError(
@@ -771,10 +786,11 @@ def _after_update(session: boto3.Session, cfn, stack_name: str, *, region: str, 
     finished here. It waits for the index that the console's run lists read.
     And it lists the pipelines that still need a redeploy.
     """
-    _stop_leftovers(session, cfn, stack_name, region=region, account=account)
     stack = describe_stack(cfn, stack_name) or {}
+    pipelines = deployed_pipelines(session, cfn, stack, stack_name)
+    _stop_leftovers(session, cfn, stack_name, region=region, account=account, pipelines=pipelines)
     upgrade.wait_for_index(session.client("dynamodb"), _target(session, stack, region=region, account=account))
-    return _list_redeploys(deployed_pipelines(session, cfn, stack, stack_name), flags)
+    return _list_redeploys(pipelines, flags)
 
 
 def _list_redeploys(pipelines: Sequence["DeployedPipeline"], flags: str) -> bool:
@@ -1038,7 +1054,7 @@ def build_up_parser() -> argparse.ArgumentParser:
                         help="If the update fails, keep what it already changed instead of rolling back "
                              "(for an upgrade whose release notes ask for it; a first install always rolls back)")
     parser.add_argument("--accept-stopped-runs", action="store_true",   # upgrade.OVERRIDE_FLAG, which the refusals name
-                        help="Upgrade a 1.2 platform to 1.3 although a run is in flight, or 1.2 finished adopting "
+                        help="Upgrade a 1.2 platform to 1.3 although a run may be in flight, or 1.2 finished adopting "
                              "older rows less than 48 hours ago. polyris-up stops what 1.2 left running "
                              "(a platform older than 1.2 is never upgraded)")
     colorize_parser(parser)

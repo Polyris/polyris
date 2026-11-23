@@ -58,6 +58,9 @@ STOP_CAUSE = ("polyris-up stopped this execution: the platform runs 1.3 now, whi
               "started. Start the run again after its pipeline's redeploy.")
 #: How long the stop waits before it lists again: ListExecutions shows a new execution only after a moment.
 STOP_SETTLE_S = 2.0
+#: How many executions the stop asks for per listing, the most that ListExecutions gives: on a platform that
+#: runs 1.3, every polyris-up lists what runs on run_task.
+_PAGE = 1000
 #: How often the wait for the index asks DynamoDB, and how many times at most: an hour, as for a stack.
 INDEX_POLL_S = 15.0
 INDEX_POLLS = 240
@@ -192,7 +195,10 @@ def _check_adoption(health: Optional[Mapping[str, str]], *, stack: str, now: dat
 
 
 def _check_drained(sfn: Any, target: Target) -> None:
+    anyway = (f"To upgrade now, pass {_c(OVERRIDE_FLAG, CYAN)}: polyris-up then stops what 1.2 left running, and "
+              "prints the runs to start again after the redeploy.")
     running: List[str] = []
+    found = 0
     for name in ENGINE_MACHINES:
         arn = target.machine(name)
         try:
@@ -202,16 +208,24 @@ def _check_drained(sfn: Any, target: Target) -> None:
             if _code(e) != "StateMachineDoesNotExist":
                 raise
             continue                                       # a state machine that is not there runs nothing
+        found += 1
         count = len(page.get("executions", []))
         if count:
             running.append(f"{count}{' or more' if page.get('nextToken') else ''} of {arn.rsplit(':', 1)[-1]}")
+    if not found:
+        # A check that sees nothing has not found the platform drained: it says so.
+        raise Refused(
+            f"polyris-up found none of the engine's state machines of {target.stack_name} "
+            f"({target.name_prefix}{ENGINE_MACHINES[0]} and the others), so it cannot tell whether a run is "
+            "in flight.",
+            "The stack's Namespace and Stage parameters name them: check that this is the platform's stack.",
+            anyway)
     if running:
         raise Refused(
             f"A run is in flight on {target.stack_name}: executions are running ({', '.join(running)}).",
             "Nothing adopts a 1.2 run. Let the runs finish or stop them, and disable the pipelines' schedules so "
             "that no new run starts; then run polyris-up again.",
-            f"To upgrade now, pass {_c(OVERRIDE_FLAG, CYAN)}: polyris-up then stops what 1.2 left running, and "
-            "prints the runs to start again after the redeploy.")
+            anyway)
 
 
 # ── What 1.2 left running ────────────────────────────────────────────────────
@@ -319,7 +333,9 @@ def _running(sfn: Any, machine: str, before: Optional[datetime]) -> List[Dict[st
     """
     executions: List[Dict[str, Any]] = []
     try:
-        for page in sfn.get_paginator("list_executions").paginate(stateMachineArn=machine, statusFilter="RUNNING"):
+        pages = sfn.get_paginator("list_executions").paginate(
+            stateMachineArn=machine, statusFilter="RUNNING", PaginationConfig={"PageSize": _PAGE})
+        for page in pages:
             executions.extend(e for e in page.get("executions", []) if before is None or e["startDate"] < before)
     except ClientError as e:
         if _code(e) != "StateMachineDoesNotExist":
