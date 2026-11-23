@@ -108,10 +108,10 @@ class TestAttention:
 
 class TestWarningItem:
     def test_shape(self):
-        item = warning_item(kind="zombie", execution_name="load-2026-11-12-x", task_name="load",
+        item = warning_item(kind="coordination", execution_name="load-2026-11-12-x", task_name="load",
                             pipeline_name="p", pipeline_execution="p-run-2026-11-12-x",
                             task_date="2026-10-01", error="wrapper stopped", now=NOW)
-        assert item["execution_name"] == "_notify_warn_zombie_load-2026-11-12-x"
+        assert item["execution_name"] == "_notify_warn_coordination_load-2026-11-12-x"
         assert item["attention"] == att.attention(att.WARN, "load-2026-11-12-x")
         assert item["attention_at"] == item["finished_at"] == "2026-11-12T06:00:00.123Z"
         assert item["task_date"] == "2026-10-01"

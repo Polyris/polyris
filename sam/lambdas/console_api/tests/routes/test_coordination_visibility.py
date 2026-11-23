@@ -40,7 +40,7 @@ def tokens(mocker):
         yield resource.Table(name)
 
 
-def _warning(tokens, *, kind="zombie", task="load", task_date="2026-10-13", minutes_ago=10):
+def _warning(tokens, *, kind="coordination", task="load", task_date="2026-10-13", minutes_ago=10):
     tokens.put_item(Item=warning_item(
         kind=kind, execution_name=f"{task}-{task_date}-run", task_name=task, pipeline_name="orders",
         pipeline_execution="orders-run", task_date=task_date, error=f"{kind} happened",
@@ -61,16 +61,16 @@ def test_a_warning_about_an_old_partition_reaches_the_bell(tokens, mocker):
 
     [shown] = _bell(mocker)
 
-    assert (shown["type"], shown["kind"], shown["date"]) == ("warning", "zombie", "2026-10-13")
-    assert shown["task_name"] == "load" and shown["error"] == "zombie happened"
-    assert shown["id"] == "_notify_warn_zombie_load-2026-10-13-run"
+    assert (shown["type"], shown["kind"], shown["date"]) == ("warning", "coordination", "2026-10-13")
+    assert shown["task_name"] == "load" and shown["error"] == "coordination happened"
+    assert shown["id"] == "_notify_warn_coordination_load-2026-10-13-run"
 
 
 def test_two_kinds_of_warning_about_one_task_are_both_shown(tokens, mocker):
-    _warning(tokens, kind="notify")
+    _warning(tokens, kind="push")
     _warning(tokens, kind="sweeper", minutes_ago=5)
 
-    assert sorted(n["kind"] for n in _bell(mocker)) == ["notify", "sweeper"]
+    assert sorted(n["kind"] for n in _bell(mocker)) == ["push", "sweeper"]
 
 
 def test_warnings_outside_the_window_and_over_the_limit_are_left_out(tokens, mocker):

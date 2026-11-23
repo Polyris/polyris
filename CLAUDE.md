@@ -645,7 +645,7 @@ Rules from latent `UiBootstrap` bugs found when ADR #131 first enabled it:
 from polyris.coordination.records import warning_item
 
 executions_repo.put(warning_item(
-    kind="notify",                      # a WarningKind; add a member there for a new kind
+    kind="coordination",                # a WarningKind; add a member there for a new kind
     execution_name=execution_name, task_name=task_name, pipeline_name=pipeline_name,
     pipeline_execution=pipeline_execution, task_date=date,
     error=f'Context: {error}', now=datetime.now(timezone.utc),

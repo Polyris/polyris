@@ -121,20 +121,20 @@ describe('Notifications', () => {
 
         it('names a coordination warning by its kind, with its error on hover', () => {
             mockQueryData.current = [createNotification({
-                id: 'w1', type: 'warning', kind: 'zombie', pipeline_name: 'orders', task_name: 'load',
+                id: 'w1', type: 'warning', kind: 'push', pipeline_name: 'orders', task_name: 'load',
                 time_ago: '2m ago', error: 'the wrapper execution is ABORTED',
             })];
             render(<Notifications onNavigate={onNavigate} />);
 
             fireEvent.click(screen.getByTitle('1 notifications'));
-            const subtitle = screen.getByText('Task can no longer be woken • load • 2m ago');
+            const subtitle = screen.getByText('Asset-scheduled run not started • load • 2m ago');
             expect(subtitle).toHaveAttribute('title', 'the wrapper execution is ABORTED');
             expect(screen.getByLabelText('View orders warning')).toBeInTheDocument();
         });
 
         it('opens a warning on the partition date of its task', () => {
             mockQueryData.current = [createNotification({
-                id: 'w3', type: 'warning', kind: 'zombie', pipeline_name: 'orders',
+                id: 'w3', type: 'warning', kind: 'push', pipeline_name: 'orders',
                 pipeline_execution: 'orders-run-2026-10-13-ab', date: '2026-10-13',
             })];
             render(<Notifications onNavigate={onNavigate} />);

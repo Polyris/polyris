@@ -257,15 +257,14 @@ class WarningKind:
     Written by the coordination Lambdas, the console, the SFN templates and the
     generated pipeline state machines as the ``kind`` of a ``_notify_warn_`` row
     (``records.warning_item``), and shown by the UI bell. Regenerate after a
-    change (``make generate-enums``).
+    change (``make generate-enums``). 1.2's ``zombie``, ``notify`` and ``fact``
+    went with the paths that wrote them (ADR #137, *What is removed*); the bell
+    names a row of theirs that 1.2 left by its generic label.
     """
     COORDINATION = "coordination"  # a wake-up path failed, registration could not finish, or a run could not be told how its task ended
-    ZOMBIE = "zombie"              # a waiting task can no longer be woken; it was aborted
     PUSH = "push"                  # a pipeline scheduled on an asset could not be started
     SWEEPER = "sweeper"            # the sweeper woke a task whose wake-up hint was lost
-    NOTIFY = "notify"              # notify_dependents failed after a task finished
     MANUAL = "manual"              # a manual action kept the task's real output instead of its marker
-    FACT = "fact"                  # a task or a manual action could not record the asset facts it owed
     STEP = "step"                  # a direct step failed; its run fails once every branch has ended (ADR #137 §1)
 
 
