@@ -11,7 +11,7 @@ curl -fsSL https://github.com/Polyris/polyris/releases/latest/download/install.s
 polyris-up
 ```
 
-It updates the stack in place and keeps its settings. With nothing new it reports "already up to date". An older polyris won't roll back a newer platform unless you pass `--allow-downgrade`.
+It updates the stack in place and keeps its settings. With nothing new it reports "already up to date". An older polyris won't roll back a newer platform unless you pass `--allow-downgrade`, and nothing rolls a 1.3 platform back below 1.3: a failed update rolls itself back.
 
 When the release notes ask for it, add `--disable-rollback`. A failed update then keeps what it already changed instead of rolling back; fix the cause its events name and run the same command again.
 

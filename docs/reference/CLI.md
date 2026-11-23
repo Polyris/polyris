@@ -42,7 +42,7 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
 | `--yes` | Don't ask for confirmation |
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
-| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses. A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
+| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses. A pre-release such as `1.3.0rc1` counts as older than `1.3.0`. No flag rolls a platform that runs 1.3 back below 1.3: a pipeline deployed for 1.3 would not run on 1.2 |
 | `--disable-rollback` | If the update fails, keep what it already changed (`UPDATE_FAILED`) instead of rolling back. Fix the cause and run the same command again; if the release has nothing more to change, retry the failed update from the CloudFormation console. A first install always rolls back. Use it when the release notes ask for it |
 | `--accept-stopped-runs` | Upgrade a 1.2 platform to 1.3 although a run may be in flight (one is, or the check found none of the engine's state machines), or although 1.2 finished adopting older rows and facts less than 48 hours ago. `polyris-up` stops what 1.2 left running and prints the runs to start again. It never covers a platform older than 1.2.0 |
 

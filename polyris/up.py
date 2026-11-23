@@ -62,6 +62,7 @@ from .platform import (
     artifacts_bucket_name,
     default_stack_name,
     is_downgrade,
+    leaves_tasks_as_rows,
     is_platform_shaped,
     is_platform_stack,
     outputs_of,
@@ -624,6 +625,11 @@ def run_up(args: argparse.Namespace) -> None:
     template = json.loads((root / manifest.template).read_text())
     # A release that runs tasks as rows deletes 1.2's engine, and nothing adopts a 1.2 run (ADR #137).
     rows_engine = runs_tasks_as_rows(manifest.version, template.get("Outputs") or {})
+    if existing and leaves_tasks_as_rows(deployed, outputs_of(existing), manifest.version, template.get("Outputs") or {}):
+        raise UpError(f"{stack_name} runs v{deployed or 'unknown'}, which runs tasks as rows; v{manifest.version} would "
+                      "put 1.2's engine back, and no pipeline deployed for 1.3 would run on it.",
+                      "No flag allows this. Install polyris 1.3 or newer (re-run install.sh). A failed update "
+                      "rolls itself back.")
     upgrading = bool(existing) and rows_engine and not runs_tasks_as_rows(deployed, outputs_of(existing or {}))
     if upgrading:
         _check_before_upgrade(session, existing or {}, region=region, account=account, deployed=deployed,

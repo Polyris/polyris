@@ -474,3 +474,15 @@ def test_the_adoption_finished_when_the_later_scan_was_past_its_hour():
 ])
 def test_the_adoption_has_not_finished(health):
     assert P.adoption_finished_at(health, now=NOW) is None
+
+
+@pytest.mark.parametrize("deployed,installing,leaves", [
+    ("1.3.0", "1.2.3", True),            # the way back to 1.2: no flag allows it
+    ("1.3.0rc1", "1.2.3", True),
+    ("1.3.1", "1.3.0", False),           # a rollback within 1.3 keeps the engine
+    ("1.2.3", "1.3.0", False),           # the upgrade
+    ("1.2.3", "1.2.2", False),           # a rollback within 1.2
+])
+def test_leaving_the_engine_that_runs_tasks_as_rows(deployed, installing, leaves):
+    assert P.leaves_tasks_as_rows(deployed, [], installing, []) is leaves
+

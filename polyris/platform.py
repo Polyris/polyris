@@ -490,6 +490,17 @@ def runs_tasks_as_rows(version: Optional[str], outputs: Iterable[str]) -> bool:
     return series >= ROWS_ENGINE if series is not None else OUTPUT_START_RUN in set(outputs)
 
 
+def leaves_tasks_as_rows(deployed: Optional[str], deployed_outputs: Iterable[str], installing: str,
+                         template_outputs: Iterable[str]) -> bool:
+    """Whether installing ``installing`` over a platform that runs tasks as rows would put 1.2's engine back.
+
+    No flag allows it: a pipeline deployed for 1.3 has no engine on 1.2, and
+    every run of it would fail. The way back from a failed update is its
+    automatic rollback (ADR #137, *Migration and upgrade*).
+    """
+    return runs_tasks_as_rows(deployed, deployed_outputs) and not runs_tasks_as_rows(installing, template_outputs)
+
+
 def adoption_finished_at(health: Optional[Mapping[str, Any]], *, now: datetime) -> Optional[datetime]:
     """When 1.2 finished adopting the rows and facts an older version wrote, as its ``_engine_health``
     row records it; None while it has not, or when the row does not say.

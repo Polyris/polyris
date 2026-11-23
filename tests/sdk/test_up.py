@@ -914,6 +914,18 @@ def test_up_refuses_to_roll_back_a_newer_platform(fake_cfn, s3, tmp_path, capsys
     assert up._run(up.run_up, _up_args(archive=archive, allow_downgrade=True)) == 0
 
 
+def test_up_never_puts_1_2_back_under_a_platform_that_runs_1_3(fake_cfn, s3, tmp_path, capsys):
+    """The architect's review of TR-8 (A-15), the maintainer's choice: a pipeline deployed for 1.3 has no engine on
+    1.2, so no flag rolls a 1.3 platform back below 1.3."""
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
+                                         Description="Polyris platform v1.3.0")])
+    archive = str(_write_archive(tmp_path / "a.zip", version="1.2.3"))
+
+    assert up._run(up.run_up, _up_args(archive=archive, allow_downgrade=True)) == 1
+    assert "No flag allows this" in capsys.readouterr().err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
 def test_up_never_finishes_someone_elses_pending_stack(fake_cfn, tmp_path, capsys):
     other = {"StackName": "other-app", "StackStatus": "REVIEW_IN_PROGRESS", "Tags": [],
              "_change_sets": [{"ChangeSetName": "their-tool-123"}]}
