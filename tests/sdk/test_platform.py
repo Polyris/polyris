@@ -352,14 +352,38 @@ def test_rewrite_template_rejects_any_unpackaged_local_path():
     ("1.2.0", "1.10.0", False),
     (None, "1.0.0", False),
     ("1.2.0", "0.0.0-dev", False),  # unknown versions never block
+    # A pre-release (PEP 440) is older than its release, and newer than the release before it.
+    ("1.3.0", "1.3.0rc1", True),
+    ("1.3.0rc1", "1.3.0", False),
+    ("1.3.0rc1", "1.2.3", True),
+    ("1.2.3", "1.3.0rc1", False),
+    ("1.3.0rc2", "1.3.0rc1", True),
+    ("1.3.0rc1", "1.3.0b2", True),
+    ("1.3.0b1", "1.3.0a2", True),
+    ("1.3.0rc1", "1.3.0rc1", False),
 ])
 def test_is_downgrade(deployed, installing, expected):
     assert P.is_downgrade(deployed, installing) is expected
 
 
-def test_parse_version():
-    assert P.parse_version("1.10.2") == (1, 10, 2)
-    assert P.parse_version("v1.0") is None and P.parse_version(None) is None
+def test_parse_version_orders_a_pre_release_before_its_release():
+    assert P.parse_version("1.10.2") == ((1, 10, 2), (3, 0))
+    assert P.parse_version("1.3.0rc1") == ((1, 3, 0), (2, 1))
+    in_order = ["1.2.3", "1.3.0a1", "1.3.0a2", "1.3.0b1", "1.3.0rc1", "1.3.0rc2", "1.3.0", "1.3.1", "1.10.0"]
+    assert sorted(reversed(in_order), key=P.parse_version) == in_order
+
+
+@pytest.mark.parametrize("unknown", [None, "", "v1.0", "0.0.0-dev", "1.3.0rc", "1.3.0-rc1", "1.3.0rc1x", "1.3.0.dev1"])
+def test_parse_version_reads_nothing_else(unknown):
+    assert P.parse_version(unknown) is None
+
+
+def test_this_polyris_has_a_version_polyris_up_can_order():
+    """A version parse_version cannot read never counts as a rollback, and names no release for the
+    checks of an upgrade: a branch that carries a pre-release must carry one polyris-up orders."""
+    import polyris
+
+    assert P.parse_version(polyris.__version__) is not None
 
 
 

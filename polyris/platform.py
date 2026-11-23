@@ -397,15 +397,28 @@ def parameters_of(stack: Mapping[str, Any]) -> Dict[str, str]:
     return {p["ParameterKey"]: p.get("ParameterValue", "") for p in stack.get("Parameters") or []}
 
 
-def parse_version(version: Optional[str]) -> Optional[Tuple[int, ...]]:
-    """'1.2.0' → (1, 2, 0). None for anything that isn't dotted integers (e.g. '0.0.0-dev')."""
-    if not version or not re.fullmatch(r"\d+(\.\d+)*", version):
+# ── Versions ─────────────────────────────────────────────────────────────────
+
+# A release, and the pre-release it may be (PEP 440): 1.3.0a1 < 1.3.0b1 < 1.3.0rc1 < 1.3.0.
+_VERSION_RE = re.compile(r"(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?")
+_PRE_RELEASE = {"a": 0, "b": 1, "rc": 2}
+_FINAL = (3, 0)
+
+
+def parse_version(version: Optional[str]) -> Optional[Tuple[Tuple[int, ...], Tuple[int, int]]]:
+    """A key that orders versions as PEP 440 does: the release, then the pre-release it is.
+
+    '1.2.0' → ((1, 2, 0), (3, 0)); '1.3.0rc1' → ((1, 3, 0), (2, 1)), which sorts
+    before '1.3.0'. None for anything else (e.g. '0.0.0-dev').
+    """
+    match = _VERSION_RE.fullmatch(version or "")
+    if not match:
         return None
-    return tuple(int(part) for part in version.split("."))
+    release = tuple(int(part) for part in match.group(1).split("."))
+    return release, ((_PRE_RELEASE[match.group(2)], int(match.group(3))) if match.group(2) else _FINAL)
 
 
 def is_downgrade(deployed: Optional[str], installing: str) -> bool:
     """True when ``installing`` is an older release than ``deployed``. Unknown versions never block."""
     old, new = parse_version(deployed), parse_version(installing)
     return old is not None and new is not None and new < old
-

@@ -14,6 +14,8 @@ If the commit fails (for example, GPG cannot sign), or you decline the push, the
 
 Before tagging, smoke-test current `main` on a dev account (root `CLAUDE.md` Principle #15).
 
+Between releases a branch may carry a pre-release version in the three version files, such as `1.3.0rc1`. `polyris-up` orders it as PEP 440 does, after `1.2.3` and before `1.3.0`, so an archive built from the branch upgrades a released platform and is itself upgraded by the release. A pre-release has no tag, so the two pins stay on the last release until `release.sh` moves them; `release.sh` cuts `vX.Y.Z` only.
+
 ## What the tag publishes
 
 Pushing the `v*` tag starts [`.github/workflows/release.yml`](../../.github/workflows/release.yml). It builds the platform archive, creates the GitHub Release as a **draft** (notes generated from PR titles and commits), attaches every asset, and only then **publishes** it — 5–10 minutes after the push. Watch it with `gh run list --workflow release.yml`.
