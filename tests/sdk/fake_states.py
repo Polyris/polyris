@@ -40,6 +40,26 @@ def refuse(client: Any, operation: str, code: str = "AccessDeniedException") -> 
     client.meta.events.register_first("before-call.*.*", answer)
 
 
+def answering(client: Any, operation: str, *answers: Dict[str, Any], where: Optional[Dict[str, Any]] = None) -> None:
+    """Make a real client give these answers to its next calls of ``operation``, in order, and its own
+    after them. ``where`` narrows it to the calls whose parameters include these."""
+    queue = list(answers)
+    seen: Dict[str, Any] = {}
+
+    def remember(params, model, **_) -> None:
+        if model.name == operation:
+            seen.clear()
+            seen.update(params)
+
+    def answer(model, **_):
+        if model.name != operation or not queue or any(seen.get(k) != v for k, v in (where or {}).items()):
+            return None
+        return AWSResponse(None, 200, {}, None), queue.pop(0)
+
+    client.meta.events.register_first("before-parameter-build.*.*", remember)
+    client.meta.events.register_first("before-call.*.*", answer)
+
+
 @dataclass
 class Execution:
     arn: str

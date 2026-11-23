@@ -37,6 +37,8 @@ Each refusal says what to do. To upgrade although a run is in flight or 1.2's ad
 
 No run of 1.2 goes on after the upgrade. Once the update has succeeded, `polyris-up` stops what 1.2 left running and prints the runs it stopped: start those again after step 5. A run of a pipeline that you have redeployed since is kept.
 
+After the update, `polyris-up` waits until DynamoDB has built the index that the console's run lists read (`run-start-index`): about 8 minutes on a table of 100,000 rows. You can interrupt that wait; the console says that the index is being built until it is. At the end it lists the pipelines that still need a redeploy, with the command for each. A later `polyris-up` lists them again, until none is left.
+
 If the upgrade is interrupted, or `polyris-up` reports that it could not stop an execution, fix the cause and run `polyris-up` again. It stops what is left and goes on, also while CloudFormation still cleans up after the update.
 
 ## Change a setting

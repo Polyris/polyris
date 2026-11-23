@@ -23,7 +23,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from fake_states import FakeStates, refuse
+from fake_states import FakeStates, answering, refuse
 from polyris import __version__
 from polyris import up, upgrade
 from polyris.platform import (
@@ -78,8 +78,9 @@ def isolated_cache(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch):
-    """The stop of 1.2's executions lists again at once, without its pause between two listings."""
+    """The stop of 1.2's executions lists again at once, and the wait for the index asks again at once."""
     monkeypatch.setattr(upgrade, "STOP_SETTLE_S", 0)
+    monkeypatch.setattr(upgrade, "INDEX_POLL_S", 0)
 
 
 def _template() -> Dict[str, Any]:
@@ -1122,7 +1123,12 @@ def platform_1_2(fake_cfn) -> FakeStates:
     ddb = boto3.client("dynamodb", region_name=REGION)
     ddb.create_table(TableName=TOKENS, BillingMode="PAY_PER_REQUEST",
                      KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
-                     AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}])
+                     AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"},
+                                           {"AttributeName": "start_day", "AttributeType": "S"}],
+                     # The index that the 1.3 update adds: it is there, built, once the update is through.
+                     GlobalSecondaryIndexes=[{"IndexName": "run-start-index",
+                                              "KeySchema": [{"AttributeName": "start_day", "KeyType": "HASH"}],
+                                              "Projection": {"ProjectionType": "ALL"}}])
     for table, key in ((REGISTRY, "pipeline_name"), (SPECS, "pk")):
         ddb.create_table(TableName=table, BillingMode="PAY_PER_REQUEST",
                          KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
@@ -1144,12 +1150,14 @@ def _a_run_in_flight(states: FakeStates, machine: str = "dependency-wrapper") ->
                started=datetime.now(timezone.utc) - timedelta(hours=1))
 
 
-def _pipeline(states: FakeStates, name: str, *, registered: bool = True) -> None:
-    """A deployed pipeline: its state machine, and its registry row, with the ARN only once it ``registered``."""
+def _pipeline(states: FakeStates, name: str, *, registered: bool = True, redeployed: bool = False) -> None:
+    """A deployed pipeline: its state machine and its registry row. The row has the ARN only once the
+    pipeline ``registered``, and the format only once 1.3's polyris-deploy ``redeployed`` it."""
     states.machine(f"acme-dev-polyris-{name}")
     arn = {"sfn_arn": {"S": f"{MACHINES}acme-dev-polyris-{name}"}} if registered else {}
+    deployed_format = {"format_version": {"N": "1"}} if redeployed else {}
     boto3.client("dynamodb", region_name=REGION).put_item(
-        TableName=REGISTRY, Item={"pipeline_name": {"S": name}, **arn})
+        TableName=REGISTRY, Item={"pipeline_name": {"S": name}, **arn, **deployed_format})
 
 
 def _a_1_2_run(states: FakeStates, pipeline: str = "orders") -> None:
@@ -1380,4 +1388,74 @@ def test_up_stops_nothing_for_a_release_that_keeps_1_2s_engine(fake_cfn, platfor
     assert up._run(up.run_up, args) == 0
 
     assert platform_1_2.stopped == []
+
+
+def test_up_lists_the_pipelines_that_still_need_a_redeploy_with_the_command_for_each(
+        fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """Until its redeploy a 1.2 pipeline's runs fail at once: the list says which, and how."""
+    _pipeline(platform_1_2, "orders")
+    _pipeline(platform_1_2, "customers", redeployed=True)                  # from CI, while the upgrade ran
+    _pipeline(platform_1_2, "pending", registered=False)
+    boto3.client("dynamodb", region_name=REGION).put_item(TableName=REGISTRY, Item={      # destroyed since
+        "pipeline_name": {"S": "retired"}, "sfn_arn": {"S": f"{MACHINES}acme-dev-polyris-retired"}})
+    fake_cfn["cfn"] = FakeCfn([_deployed(), {"StackName": "acme-dev-polyris-unregistered", "Tags": []}], **UPGRADED)
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), stack="acme-dev")
+
+    assert up._run(up.run_up, args) == 0
+
+    out = capsys.readouterr().out
+    assert "3 pipeline(s) were deployed with an older pipeline format. Their runs fail at once" in out
+    listed = [line.strip() for line in out.splitlines() if line.strip().startswith("polyris-deploy --select")]
+    assert listed == [f"polyris-deploy --select {name} --stack acme-dev --region {REGION}"
+                      for name in ("orders", "pending", "unregistered")]
+    assert "polyris-deploy --all" in out
+    assert "a first pipeline" not in out, "the redeploy comes next"
+
+
+def test_up_lists_none_once_every_pipeline_is_redeployed(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    _pipeline(platform_1_2, "orders", redeployed=True)
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.3.0a1", outputs=OUTPUTS_1_3)], **UPGRADED)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    out = capsys.readouterr().out
+    assert "older pipeline format" not in out and "polyris-deploy --select" not in out
+    assert "a first pipeline" in out
+
+
+def test_up_with_nothing_to_change_still_lists_the_pipelines_to_redeploy(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    _pipeline(platform_1_2, "orders")
+    fake_cfn["cfn"] = FakeCfn([_deployed(__version__, outputs=OUTPUTS_1_3)], change_status="FAILED",
+                              status_reason="didn't contain changes")
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    out = capsys.readouterr().out
+    assert "already up to date" in out and f"polyris-deploy --select orders --region {REGION}" in out
+
+
+def test_up_waits_until_dynamodb_has_built_the_index_that_1_3_adds(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """CloudFormation reports the table updated while the index is still being built (TR-0 A3)."""
+    building = {"Table": {"TableName": TOKENS, "GlobalSecondaryIndexes": [
+        {"IndexName": "run-start-index", "IndexStatus": "CREATING", "Backfilling": True}]}}
+    fake_cfn["dynamodb"] = ddb = boto3.client("dynamodb", region_name=REGION)
+    answering(ddb, "DescribeTable", building, building, where={"TableName": TOKENS})
+    fake_cfn["cfn"] = FakeCfn([_deployed()], **UPGRADED)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    out = capsys.readouterr().out
+    assert out.index("is up: acme-dev") < out.index(f"waiting for DynamoDB to build run-start-index on {TOKENS}")
+    assert "run-start-index is active" in out
+
+
+def test_up_makes_none_of_this_of_a_first_install(fake_cfn, s3, tmp_path, capsys):
+    """A new platform has nothing of 1.2, its index is built with its table, and it has no pipeline yet."""
+    fake_cfn["stepfunctions"] = (states := FakeStates()).client
+    args = _up_args(namespace="acme", stage="dev", admin_email="", archive=str(_write_archive(tmp_path / "a.zip")))
+
+    assert up._run(up.run_up, args) == 0
+
+    assert states.calls == []
+    assert "a first pipeline" in capsys.readouterr().out
 

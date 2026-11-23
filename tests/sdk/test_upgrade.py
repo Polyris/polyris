@@ -507,7 +507,7 @@ def test_the_wait_says_that_it_waits_until_dynamodb_has_built_the_index(describe
 
 
 def test_the_wait_ends_after_its_hour_and_says_what_follows(described, capsys, monkeypatch):
-    monkeypatch.setattr(upgrade, "INDEX_WAIT_S", 2 * upgrade.INDEX_POLL_S)
+    monkeypatch.setattr(upgrade, "INDEX_POLLS", 2)
 
     assert _wait(described(BUILDING, BUILDING, BUILDING)) == (False, [upgrade.INDEX_POLL_S] * 2)
 

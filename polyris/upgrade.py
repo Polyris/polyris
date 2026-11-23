@@ -58,9 +58,9 @@ STOP_CAUSE = ("polyris-up stopped this execution: the platform runs 1.3 now, whi
               "started. Start the run again after its pipeline's redeploy.")
 #: How long the stop waits before it lists again: ListExecutions shows a new execution only after a moment.
 STOP_SETTLE_S = 2.0
-#: How often the wait for the index asks DynamoDB, and how long it waits at most: as long as for a stack.
+#: How often the wait for the index asks DynamoDB, and how many times at most: an hour, as for a stack.
 INDEX_POLL_S = 15.0
-INDEX_WAIT_S = 3600.0
+INDEX_POLLS = 240
 
 
 class Refused(Exception):
@@ -354,26 +354,26 @@ def wait_for_index(dynamodb: Any, target: Target, *, sleep: Callable[[float], No
     table, index = target.tokens_table, run_row.START_INDEX
     if not table:
         return False
-    waited = 0.0
+    polls = 0
     while True:
         status = _index_status(dynamodb, table, index)
         if status == "ACTIVE":
-            if waited:
+            if polls:
                 print(f"   {index} is active")
             return True
         if status is None:
             print(_c(f"   {table} has no {index}, which the console's run lists read. The stack's events name "
                      "what went wrong with the table.", YELLOW))
             return False
-        if waited >= INDEX_WAIT_S:
+        if polls >= INDEX_POLLS:
             print(_c(f"   {index} is still being built. The console's run lists say so until it is active; "
                      "nothing else waits for it.", YELLOW))
             return False
-        if not waited:
+        if not polls:
             print(f"   waiting for DynamoDB to build {index} on {table}, which the console's run lists read: "
                   "about 8 minutes on 100,000 rows")
         sleep(INDEX_POLL_S)
-        waited += INDEX_POLL_S
+        polls += 1
 
 
 def _index_status(dynamodb: Any, table: str, index: str) -> Optional[str]:

@@ -71,9 +71,9 @@ Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it, and once the u
 | `states` | `StopExecution` | `arn:aws:states:*:*:execution:${Namespace}-${Stage}-polyris-*`, and the executions of such pipelines | The stop of what 1.2 left running |
 | `states` | `ListStateMachines` | `*` | The stop finds by its name the state machine of a pipeline that the registry does not name |
 | `dynamodb` | `GetItem` | The `pipeline-tokens` table | The engine's health row tells 1.2 from an older platform, and records when 1.2 finished adopting older rows and facts |
-| `dynamodb` | `Scan` | The `pipeline-registry` table | The stop reads the pipelines' state machines there |
+| `dynamodb` | `Scan` | The `pipeline-registry` table | The stop reads the pipelines' state machines there, and the list of pipelines to redeploy their formats |
 
-A denied call of a check, or of the registry's read, refuses the upgrade before anything has changed, and the message names the action. The stop runs after the update: if one of its calls is denied, `polyris-up` says so; grant the action and run it again. It also reads the creation time of `pipeline-specs` (`dynamodb:DescribeTable`) and each pipeline's state machine (`states:DescribeStateMachine`), which the install's list has.
+A denied call of a check, or of the registry's read, refuses the upgrade before anything has changed, and the message names the action. The stop runs after the update: if one of its calls is denied, `polyris-up` says so; grant the action and run it again. It also reads the creation time of `pipeline-specs` and the state of `run-start-index` on `pipeline-tokens` (`dynamodb:DescribeTable`), and each pipeline's state machine (`states:DescribeStateMachine`), which the install's list has.
 
 ## Deploy — per-pipeline `polyris-deploy`
 

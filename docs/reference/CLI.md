@@ -48,7 +48,7 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`).
 
-Before it upgrades a platform below 1.3, `polyris-up` checks it, and refuses one that is older than 1.2.0, whose 1.2 has not finished adopting older rows and facts for 48 hours, or that has a run in flight. Each refusal says what to do. On a platform that runs 1.3, every `polyris-up` stops the executions that 1.2 left running, and prints the runs it stopped. The steps of that upgrade: [manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13).
+Before it upgrades a platform below 1.3, `polyris-up` checks it, and refuses one that is older than 1.2.0, whose 1.2 has not finished adopting older rows and facts for 48 hours, or that has a run in flight. Each refusal says what to do. On a platform that runs 1.3, every `polyris-up` stops the executions that 1.2 left running and prints the runs it stopped, waits until DynamoDB has built `run-start-index`, which the console's run lists read, and lists the pipelines that still need a redeploy, with the command for each. The steps of that upgrade: [manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13).
 
 ---
 

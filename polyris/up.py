@@ -36,6 +36,7 @@ from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, 
 from . import __version__, upgrade
 from ._ansi import BOLD, BOLD_GREEN, CYAN, RED, YELLOW, colorize_parser
 from ._ansi import c as _c
+from .coordination import task_spec
 from .platform import (
     CAPABILITIES,
     OUTPUT_CONSOLE_URL,
@@ -659,7 +660,8 @@ def run_up(args: argparse.Namespace) -> None:
         print(_c(f"\n✅ {stack_name} is already up to date (v{manifest.version}).", BOLD_GREEN))
         _print_outputs(existing or {})
         if stop_leftovers:
-            stop_leftovers()
+            _after_update(session, cfn, stack_name, region=region, account=account,
+                          flags=next_step_flags(args, stack_name))
         return
     _summarize_change_set(change_set)
     risky = replaced_data_resources(change_set)
@@ -692,9 +694,9 @@ def run_up(args: argparse.Namespace) -> None:
     _print_outputs(stack)
     if PARAM_ADMIN_EMAIL in values and values[PARAM_ADMIN_EMAIL] and existing is None:
         print(f"   Login:    {values[PARAM_ADMIN_EMAIL]} — Cognito has emailed a temporary password.")
-    if stop_leftovers:
-        stop_leftovers()        # again: what the listings at the cleanup did not show yet
     flags = next_step_flags(args, stack_name)
+    if stop_leftovers and _after_update(session, cfn, stack_name, region=region, account=account, flags=flags):
+        return                  # what comes next is the redeploy of those pipelines, not a first one
     print("\n   Next — a first pipeline that runs right away:")
     print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
     print(f"     {_c(f'cd hello-world && polyris-deploy{flags}', CYAN)}   then press Run in the console")
@@ -760,6 +762,40 @@ def _stop_leftovers(session: boto3.Session, cfn, stack_name: str, *, region: str
         print("   Nothing adopts a 1.2 run: start these again once their pipelines are redeployed.")
 
 
+def _after_update(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str, flags: str) -> bool:
+    """What every polyris-up does on a platform that runs 1.3, once its stack has settled (ADR #137,
+    *Migration and upgrade*). True when it listed pipelines to redeploy.
+
+    It stops what 1.2 left running, once more: the listings at the cleanup may
+    not have shown everything, and an upgrade interrupted after its update is
+    finished here. It waits for the index that the console's run lists read.
+    And it lists the pipelines that still need a redeploy.
+    """
+    _stop_leftovers(session, cfn, stack_name, region=region, account=account)
+    stack = describe_stack(cfn, stack_name) or {}
+    upgrade.wait_for_index(session.client("dynamodb"), _target(session, stack, region=region, account=account))
+    return _list_redeploys(deployed_pipelines(session, cfn, stack, stack_name), flags)
+
+
+def _list_redeploys(pipelines: Sequence["DeployedPipeline"], flags: str) -> bool:
+    """Print the pipelines that still need a redeploy, with the command for each; False when none does.
+
+    polyris-deploy writes the pipeline format it deployed with to the registry.
+    A pipeline deployed before 1.3 names none, and its runs fail at once: the
+    wrapper they start is gone.
+    """
+    stale = [pipeline.name for pipeline in pipelines if task_spec.needs_redeploy(pipeline.format_version)]
+    if not stale:
+        return False
+    print(_c(f"\n   {len(stale)} pipeline(s) were deployed with an older pipeline format. Their runs fail at once "
+             "until you redeploy them:", YELLOW))
+    for name in stale:
+        print(f"     {_c(f'polyris-deploy --select {name}{flags}', CYAN)}")
+    print(f"   Run each in its pipeline's folder, with the --stage you deploy it with. "
+          f"{_c('polyris-deploy --all', CYAN)} in the folder above them redeploys every pipeline.")
+    return True
+
+
 def _pipeline_machines(sfn, pipelines: Sequence["DeployedPipeline"], target: upgrade.Target) -> List[str]:
     """The ARNs of the pipelines' state machines: the registry names them, and ListStateMachines
     finds by its name the one the registry does not name."""
@@ -814,12 +850,16 @@ class DeployedPipeline:
     name: str
     #: Its state machine as the registry names it; empty for one that never registered, or has not finished.
     sfn_arn: str = ""
+    #: The pipeline format it was deployed with, as the registry holds it; None for one deployed before 1.3.
+    format_version: Optional[str] = None
 
 
 def _registry_rows(dynamodb, table: str) -> List[Dict[str, Any]]:
     """Every row of the pipeline registry; none when the table is gone."""
     try:
-        pages = dynamodb.get_paginator("scan").paginate(TableName=table, ProjectionExpression="pipeline_name, sfn_arn")
+        pages = dynamodb.get_paginator("scan").paginate(
+            TableName=table, ProjectionExpression="pipeline_name, sfn_arn, #format",
+            ExpressionAttributeNames={"#format": task_spec.REGISTRY_FORMAT_FIELD})
         return [item for page in pages for item in page.get("Items", [])]
     except ClientError as e:
         if "ResourceNotFoundException" in str(e):
@@ -859,7 +899,7 @@ def deployed_pipelines(session, cfn, stack: Dict[str, Any], stack_name: str) -> 
             # No ARN yet (registration still running or failed) or an unknown
             # state: count it as live — a false "still deployed" is recoverable
             # with --yes, deleting the platform under a live pipeline is not.
-            found[name] = DeployedPipeline(name, arn)
+            found[name] = DeployedPipeline(name, arn, row.get(task_spec.REGISTRY_FORMAT_FIELD, {}).get("N"))
     return sorted(found.values(), key=lambda pipeline: pipeline.name)
 
 
