@@ -937,10 +937,10 @@ describe('TaskDetailModal', () => {
 
 
     describe('AWS Console links', () => {
-        it('shows only the Wrapper link for non-SFN tasks (no states task execution)', () => {
+        it('shows only the run_task link for non-SFN tasks (no states task execution)', () => {
             // default factory task is a lambda with no task_execution_arn
             render(<TaskDetailModal {...defaultProps} />);
-            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /run_task/i })).toBeInTheDocument();
             expect(screen.queryByRole('link', { name: /^Task$/i })).not.toBeInTheDocument();
         });
 
@@ -951,25 +951,25 @@ describe('TaskDetailModal', () => {
             });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByRole('link', { name: /^Task$/i })).toBeInTheDocument();
-            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /run_task/i })).toBeInTheDocument();
         });
 
-        it('shows pending placeholder for running task without wrapper ARN', () => {
-            const task = createRunningTask({ wrapper_execution_arn: null });
+        it('shows pending placeholder for running task without a run_task ARN', () => {
+            const task = createRunningTask({ run_task_arn: null });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByText(/awaiting start/i)).toBeInTheDocument();
-            expect(screen.queryByRole('link', { name: /Wrapper/i })).not.toBeInTheDocument();
+            expect(screen.queryByRole('link', { name: /run_task/i })).not.toBeInTheDocument();
         });
 
-        it('shows active Wrapper link for running task that already has an ARN', () => {
+        it('shows active run_task link for running task that already has an ARN', () => {
             const task = createRunningTask();
             render(<TaskDetailModal {...defaultProps} task={task} />);
-            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /run_task/i })).toBeInTheDocument();
             expect(screen.queryByText(/awaiting start/i)).not.toBeInTheDocument();
         });
 
         it('hides the AWS Console section entirely for non-running tasks without ARNs', () => {
-            const task = createTask({ status: 'waiting', wrapper_execution_arn: null, task_execution_arn: null });
+            const task = createTask({ status: 'waiting', run_task_arn: null, task_execution_arn: null });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.queryByText('AWS Console')).not.toBeInTheDocument();
         });

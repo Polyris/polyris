@@ -126,16 +126,16 @@ def resolve_task_item(
 # a row (sam/template.yaml), and DynamoDB rejects a query whose ProjectionExpression names
 # an attribute the index does not project. So the index reads take no projection, and the
 # fields that either index lacks are read from the base table for the returned page.
-# retry_attempt (ADR #125) counts in-SFN auto-retries within one wrapper; `attempt`
-# counts manual-restart generations across wrappers.
-_TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', 'wrapper_execution_arn', task_row.READINESS,
+# retry_attempt (ADR #125) counts in-SFN auto-retries within one run_task execution;
+# `attempt` counts the task's runs across Restarts.
+_TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', task_row.RUN_TASK_ARN, task_row.READINESS,
                    *executions_repo.RUN_META_FIELDS)
 
 
 def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
     """Project one pipeline-tokens row to a History tasks-feed row; ``stale`` marks a row of a run from before 1.3
     that is not final (``feed.is_stale``)."""
-    # Calculate duration if possible — use running_at (actual task start) not started_at (wrapper start)
+    # Calculate duration if possible — use running_at (its work's start), not started_at (its row's)
     duration_ms = None
     actual_start = item.get('running_at') or item.get('started_at')
     if actual_start and item.get('finished_at'):
@@ -166,15 +166,15 @@ def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
         'dependencies': dependencies_of(item, readiness),
         'wait_for': wait_for_text(item, readiness),
         'pipeline_execution': item.get('pipeline_execution'),
-        'wrapper_execution_arn': item.get('wrapper_execution_arn'),
+        'run_task_arn': item.get(task_row.RUN_TASK_ARN),
         'notification_failed': item.get('notification_failed'),
         'triggered_by': item.get('triggered_by'),
         'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
-        # retry_attempt (ADR #125) is the in-SFN auto-retry index within the current wrapper
-        # — reset to 0 on every wrapper start, bumped by Save_Retry_Attempt on each retry.
+        # retry_attempt (ADR #125) is the in-SFN auto-retry index within the task's run_task
+        # execution — 0 at its start, bumped by Save_Retry_Attempt on each retry.
         # `attempt > 1` = manual restart; `retry_attempt > 0` = auto-retry. Distinct axes.
         'retry_attempt': safe_int(item.get('retry_attempt'), 0),
-        # max_retries is static config (auto-retries per wrapper run). Not displayed in the
+        # max_retries is static config (auto-retries per run of the task). Not displayed in the
         # list view (a static ceiling in a live feed is misleading). Included for the task
         # detail panel to surface alongside attempt.
         'max_retries': max_retries,

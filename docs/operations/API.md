@@ -85,6 +85,8 @@ found through the pipeline's task rows of that date (`pipeline-date-index`; ADR 
 the run, `null` when the date has none. Each task's status is the one its row holds: the console asks Step Functions
 nothing about a run. `run` says what the run row holds and the task rows do not: `paused`, whether a pause holds the
 run, and `stopping`, whether a Stop of it is in progress (ADR #137 §3, §5); `null` for a run started before 1.3.
+Each task names its latest `run_task` execution in `run_task_arn` (here and in `/api/tasks`), and its output is read
+from the date's store, never from the task's row.
 
 A task that waits (`waiting`, `waiting_paused`, `waiting_decision`) also says why (ADR #137 §1): `reasons`, the
 reasons the engine recorded, and `reasons_at`, since when; `countdown_end`, when a ready task's `wait_before`

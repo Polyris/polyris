@@ -545,7 +545,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         
                         {/* AWS Console Links — shown when ARNs are present, or while
                             running so the user knows where to look once the ARN lands. */}
-                        {(task.task_execution_arn || task.wrapper_execution_arn || task.status === 'running') && (
+                        {(task.task_execution_arn || task.run_task_arn || task.status === 'running') && (
                             <div className="detail-section">
                                 <div className="detail-label">AWS Console</div>
                                 <div className="flex flex-col gap-xs mt-sm">
@@ -553,9 +553,9 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         URL, so the direct "Task" link is correct only when the
                                         task's execution ARN is itself a Step Functions execution
                                         (SFN tasks). Other task types (ECS / Glue / Athena / …)
-                                        have no states ARN, so they get only the Wrapper link —
+                                        have no states ARN, so they get only the run_task link —
                                         AWS's own console surfaces the real resource link on the
-                                        wrapper execution page. */}
+                                        run_task execution page (ADR #137 §1). */}
                                     {task.task_execution_arn?.includes(':states:') && (
                                         <a
                                             href={buildAwsConsoleUrl(task.task_execution_arn)}
@@ -567,31 +567,20 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                             <ExternalLink size={10} className="opacity-50" />
                                         </a>
                                     )}
-                                    {task.wrapper_execution_arn ? (
+                                    {task.run_task_arn ? (
                                         <a
-                                            href={buildAwsConsoleUrl(task.wrapper_execution_arn)}
+                                            href={buildAwsConsoleUrl(task.run_task_arn)}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="td-link-primary"
                                         >
-                                            <RotateCcw size={12} /> Wrapper
+                                            <RotateCcw size={12} /> run_task
                                             <ExternalLink size={10} className="opacity-50" />
                                         </a>
                                     ) : task.status === 'running' && (
-                                        <span className="td-link-muted td-link-pending" title="Execution ARN will appear once the wrapper starts">
-                                            <RotateCcw size={12} /> Wrapper — awaiting start
+                                        <span className="td-link-muted td-link-pending" title="The execution's ARN appears once its run_task starts">
+                                            <RotateCcw size={12} /> run_task — awaiting start
                                         </span>
-                                    )}
-                                    {task.pagerduty_enabled && task.wrapper_arn && (
-                                        <a
-                                            href={`https://app.pagerduty.com/incidents?search=${encodeURIComponent(task.wrapper_arn)}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="td-link-muted"
-                                        >
-                                            <AlertTriangle size={12} /> PagerDuty
-                                            <ExternalLink size={10} className="opacity-50" />
-                                        </a>
                                     )}
                                 </div>
                             </div>

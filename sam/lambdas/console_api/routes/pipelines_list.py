@@ -25,7 +25,7 @@ from feed import (dependencies_of, feed_dates, is_stale, latest_run_of_date, pag
                   run_counts, run_entry, run_rows_before, runs_of_date, wait_for_text)
 from response import cors_response, index_building_response
 from logger import log
-from utils import (safe_int, safe_param_int, retrieve_result, parse_wait_before, should_skip_token_row, resolve_max_retries,
+from utils import (safe_int, safe_param_int, parse_wait_before, should_skip_token_row, resolve_max_retries,
                    parse_task_config)
 
 def list_pipelines(event: Dict) -> Dict:
@@ -299,16 +299,6 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
     tasks = []
     for task_name, item in task_map.items():
         readiness = readiness_of(item)
-        
-        # Parse result
-        result_str = item.get('result', '{}')
-        try:
-            result = json.loads(result_str) if isinstance(result_str, str) else result_str
-            # Handle Claim Check - retrieve from S3 if it's a reference
-            result = retrieve_result(result)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            result = {}
-        
         tasks.append({
             'execution_name': item.get('execution_name', ''),
             'task_name': task_name,
@@ -319,7 +309,6 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'running_at': item.get('running_at'),
             'finished_at': item.get('finished_at'),
             'error': item.get('error'),
-            'result': result,
             'wait_before': parse_wait_before(readiness.get('wait_before', item.get('wait_before'))),
             'wait_delay_started_ms': safe_int(item.get('wait_delay_started_ms')),
             'wait_delay_until_ms': safe_int(item.get('wait_delay_until_ms')),
@@ -328,13 +317,13 @@ def get_pipeline_status(pipeline_name: str, event: Dict) -> Dict:
             'pipeline_execution': item.get('pipeline_execution'),
             'pipeline_execution_short': item.get('pipeline_execution_short'),
             'task_execution_arn': item.get('task_execution_arn'),
-            'wrapper_execution_arn': item.get('wrapper_execution_arn'),
+            'run_task_arn': item.get(task_row.RUN_TASK_ARN),          # the task's run_task execution, its latest
             'notification_failed': item.get('notification_failed'),
             'task_type': item.get('task_type', 'sfn'),
             'date': item.get('date', date),
             'attempt': safe_int(item.get('attempt')) if item.get('attempt') is not None else None,
-            # retry_attempt (ADR #125) — in-SFN auto-retry index for the current wrapper.
-            # Distinct from `attempt` which bumps only on manual Restart.
+            # retry_attempt (ADR #125) — in-SFN auto-retry index within the task's run_task execution.
+            # Distinct from `attempt`, which counts the task's runs across Restarts.
             'retry_attempt': safe_int(item.get('retry_attempt'), 0),
             'max_retries': retries[task_name] if task_name in retries else resolve_max_retries(item),
             **_why_it_waits(item, readiness, task_map),

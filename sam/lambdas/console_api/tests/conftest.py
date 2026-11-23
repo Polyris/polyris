@@ -110,7 +110,6 @@ def sample_task_item():
         'date': '2024-01-15',
         'started_at': '2024-01-15T10:00:00Z',
         'attempt': 1,
-        'wrapper_execution_arn': 'arn:aws:states:us-east-1:123456789012:execution:wrapper:extract-123',
         'run_task_helper_arn': 'arn:aws:states:us-east-1:123456789012:execution:helper:extract-123'
     }
 

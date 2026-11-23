@@ -79,13 +79,12 @@ export interface Task {
   max_retries?: number;
   tags?: string[] | Record<string, string>;
   lambda_arn?: string;
-  wrapper_arn?: string;
-  wrapper_execution_arn?: string;
+  /** The task's latest run_task execution (ADR #137 §1), which the modal links to. */
+  run_task_arn?: string;
   task_arn?: string;
   task_execution_arn?: string;
   task_type?: string;
   is_decision_task?: boolean;
-  pagerduty_enabled?: boolean;
   slack_notification_failed?: boolean;
   notification_failed?: boolean;
   attempt?: number;
