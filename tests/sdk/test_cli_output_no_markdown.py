@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULES = ["polyris/cli.py", "polyris/up.py", "polyris/cfn_changeset.py", "polyris/platform.py"]
+MODULES = ["polyris/cli.py", "polyris/up.py", "polyris/upgrade.py", "polyris/cfn_changeset.py", "polyris/platform.py"]
 
 
 def _docstring_nodes(tree: ast.AST) -> set[int]:

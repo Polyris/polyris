@@ -44,8 +44,11 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
 | `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses. A pre-release such as `1.3.0rc1` counts as older than `1.3.0` |
 | `--disable-rollback` | If the update fails, keep what it already changed (`UPDATE_FAILED`) instead of rolling back. Fix the cause and run the same command again; if the release has nothing more to change, retry the failed update from the CloudFormation console. A first install always rolls back. Use it when the release notes ask for it |
+| `--accept-stopped-runs` | Upgrade a 1.2 platform to 1.3 although a run is in flight, or although 1.2 finished adopting older rows and facts less than 48 hours ago. No run of 1.2 goes on after the upgrade. It never covers a platform older than 1.2.0 |
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`).
+
+Before it upgrades a platform below 1.3, `polyris-up` checks it, and refuses one that is older than 1.2.0, whose 1.2 has not finished adopting older rows and facts for 48 hours, or that has a run in flight. Each refusal says what to do. The steps of that upgrade: [manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13).
 
 ---
 

@@ -6,6 +6,7 @@ sam/template.yaml (Principle #28).
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -46,7 +47,8 @@ def test_parameter_names_exist_in_template(template, name):
     assert name in template["Parameters"]
 
 
-@pytest.mark.parametrize("name", [P.OUTPUT_CONSOLE_URL, P.OUTPUT_TEST_SFN_ARN])
+@pytest.mark.parametrize("name", [P.OUTPUT_CONSOLE_URL, P.OUTPUT_TEST_SFN_ARN, P.OUTPUT_TOKENS_TABLE,
+                                  P.OUTPUT_REGISTRY_TABLE, P.OUTPUT_SPECS_TABLE, P.OUTPUT_START_RUN])
 def test_outputs_exist_in_template(template, name):
     assert name in template["Outputs"]
 
@@ -391,3 +393,84 @@ def test_cognito_has_no_self_sign_up(template):
     """Every Cognito user is a console admin (console_api auth.py), so sign-up must be admin-only."""
     pool = template["Resources"]["CognitoUserPool"]["Properties"]
     assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
+
+
+# ── The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*) ─────────────
+
+
+def _state_machines(template) -> dict:
+    """Every state machine of the template: {its name after the platform's prefix: STANDARD | EXPRESS}."""
+    prefix = P.platform_prefix("${Namespace}", "${Stage}")
+    found = {}
+    for res in template["Resources"].values():
+        if res["Type"].endswith("::StateMachine"):
+            props = res["Properties"]
+            name = (props.get("StateMachineName") or props["Name"])["value"]
+            assert name.startswith(prefix), name
+            found[name[len(prefix):]] = props.get("StateMachineType") or props.get("Type") or "STANDARD"
+    return found
+
+
+def test_the_engines_state_machines_are_named_as_the_template_names_them(template):
+    """polyris-up lists and stops executions by these names (Principle #28). A Standard state machine
+    that joins the template is the engine's, and joins the upgrade's checks, or it is a task's work."""
+    standard = {name for name, kind in _state_machines(template).items() if kind == "STANDARD"}
+    assert standard == {P.RUN_TASK_MACHINE, P.BULK_BACKFILL_MACHINE, "test-quick", "test-success", "test-failure"}
+
+
+def test_no_state_machine_has_a_name_that_1_3_removed(template):
+    """Every execution under a removed name counts as 1.2's, so no state machine may get such a name back."""
+    assert not set(P.REMOVED_STANDARD_MACHINES) & set(_state_machines(template))
+
+
+def test_state_machine_names_and_arns():
+    assert P.platform_prefix("acme", "dev") == "acme-dev-polyris-"
+    assert P.state_machine_arn(partition="aws", region="eu-central-1", account="123", name="acme-dev-polyris-x") == (
+        "arn:aws:states:eu-central-1:123:stateMachine:acme-dev-polyris-x")
+    assert P.outputs_of({"Outputs": [{"OutputKey": "A", "OutputValue": "1"}, {"OutputKey": "B"}]}) == {"A": "1", "B": ""}
+    assert P.outputs_of({}) == {}
+
+
+def test_release_series():
+    assert P.release_series("1.3.0rc1") == (1, 3) == P.release_series("1.3.7")
+    assert P.release_series("2") == (2, 0)
+    assert P.release_series(None) is None and P.release_series("0.0.0-dev") is None
+
+
+@pytest.mark.parametrize("version,outputs,expected", [
+    ("1.2.3", [], False),
+    ("1.3.0rc1", [], True),                           # a pre-release of 1.3.0 has the engine
+    ("1.3.0", [], True),
+    ("2.0.0", [], True),
+    ("1.2.3", [P.OUTPUT_START_RUN], False),           # the version decides when the stack carries one
+    (None, [], False),                                # sam deploy carries none: 1.2 has no such output
+    (None, [P.OUTPUT_START_RUN], True),
+    ("0.0.0-dev", [P.OUTPUT_START_RUN], True),        # a local build's version names no release
+])
+def test_runs_tasks_as_rows(version, outputs, expected):
+    assert P.runs_tasks_as_rows(version, outputs) is expected
+
+
+NOW = datetime(2026, 11, 23, 12, tzinfo=timezone.utc)
+
+
+def _health(**over) -> dict:
+    """The adoption fields of ``_engine_health`` as 1.2's sweeper left them once both scans were done."""
+    return {"adoption_generation": "1", "adopt_tasks_cursor": "", "adopt_tasks_until": "2026-11-20T10:00:00.000Z",
+            "adopt_facts_cursor": "", "adopt_facts_until": "2026-11-20T11:00:00.000Z", **over}
+
+
+def test_the_adoption_finished_when_the_later_scan_was_past_its_hour():
+    assert P.adoption_finished_at(_health(), now=NOW) == datetime(2026, 11, 20, 11, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("health", [
+    None,                                                          # no row: the sweeper never ran
+    {"checked_at": "2026-11-23T11:55:00.000Z"},                    # the self-check wrote, the adoption not yet
+    _health(adopt_tasks_cursor='{"execution_name": "t-2026"}'),    # the task scan is under way
+    _health(adopt_facts_until=""),                                 # the fact scan has not finished a first pass
+    _health(adopt_facts_until="2026-11-23T12:30:00.000Z"),         # its hour of repeats still runs
+    _health(adopt_tasks_until="yesterday"),                        # a time nobody can read
+])
+def test_the_adoption_has_not_finished(health):
+    assert P.adoption_finished_at(health, now=NOW) is None

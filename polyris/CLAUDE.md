@@ -593,8 +593,8 @@ Never write raw `\033[...m` escape codes outside `_ansi.py`.
 
 CLI output is plain terminal text, not Markdown: never wrap a command in backticks — a terminal
 prints them literally. Highlight it instead: `f"Run {c('polyris-destroy', CYAN)} first"`.
-`tests/sdk/test_cli_output_no_markdown.py` enforces this for `up.py`, `cfn_changeset.py` and
-`platform.py`; extend its `MODULES` list when you add a CLI module.
+`tests/sdk/test_cli_output_no_markdown.py` enforces this for `up.py`, `upgrade.py`, `cfn_changeset.py`
+and `platform.py`; extend its `MODULES` list when you add a CLI module.
 
 ---
 

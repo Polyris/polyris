@@ -61,6 +61,17 @@ Every resource in a polyris stack carries its billing tags ([INFRASTRUCTURE.md#t
 
 Scope all `Resource` fields to your polyris stack's namespace where the service supports it (e.g. `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*`). CloudFormation itself cannot be scoped tighter than the stack name.
 
+### Upgrade from 1.2 to 1.3
+
+Before it upgrades a 1.2 platform to 1.3, `polyris-up` checks it ([manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13)). `PowerUserAccess` covers what that takes; a least-privilege installer role needs these actions beside the ones above:
+
+| AWS service | Actions | Resource | Why |
+|-------------|---------|----------|-----|
+| `states` | `ListExecutions` | `arn:aws:states:*:*:stateMachine:${Namespace}-${Stage}-polyris-*` | The check for a run in flight lists the running executions of the engine's Standard state machines |
+| `dynamodb` | `GetItem` | The `pipeline-tokens` table | The engine's health row tells 1.2 from an older platform, and records when 1.2 finished adopting older rows and facts |
+
+A denied call refuses the upgrade before anything has changed, and the message names the action.
+
 ## Deploy — per-pipeline `polyris-deploy`
 
 After install, `polyris-deploy` runs from a developer's laptop or a CI job to ship one pipeline at a time. Each pipeline becomes a small CFN stack (`${namespace}-${stage}-polyris-${pipeline}`) containing the pipeline's dependency-wrapper state machines. Before it touches the stack, `polyris-deploy` writes the pipeline's task specs to the `pipeline-specs` DDB table, reads them back and checks them; without the `PipelineTaskSpecs` permissions below it stops there, with the cause. After the stack deploys, it writes the deploy time and the pipeline's format to the `pipeline-registry` DDB table directly.

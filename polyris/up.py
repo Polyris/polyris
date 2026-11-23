@@ -24,13 +24,14 @@ import sys
 import tempfile
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound, WaiterError
 
-from . import __version__
+from . import __version__, upgrade
 from ._ansi import BOLD, BOLD_GREEN, CYAN, RED, YELLOW, colorize_parser
 from ._ansi import c as _c
 from .platform import (
@@ -53,6 +54,7 @@ from .platform import (
     is_downgrade,
     is_platform_shaped,
     is_platform_stack,
+    outputs_of,
     parameters_of,
     platform_tags,
     replaced_data_resources,
@@ -62,6 +64,7 @@ from .platform import (
     release_asset_url,
     resolve_parameters,
     rewrite_template,
+    runs_tasks_as_rows,
     select_platform_stack,
     ui_prefix,
     validate_namespace_stage,
@@ -600,11 +603,16 @@ def run_up(args: argparse.Namespace) -> None:
             f"{stack_name} runs v{deployed}; this would roll it back to v{manifest.version}.",
             "Install the newer polyris (re-run install.sh) — or pass --allow-downgrade if the rollback is intended.",
         )
+    template = json.loads((root / manifest.template).read_text())
+    # A release that runs tasks as rows deletes 1.2's engine, and nothing adopts a 1.2 run (ADR #137).
+    rows_engine = runs_tasks_as_rows(manifest.version, template.get("Outputs") or {})
+    if existing and rows_engine and not runs_tasks_as_rows(deployed, outputs_of(existing)):
+        _check_before_upgrade(session, existing, region=region, account=account, deployed=deployed,
+                              override=args.accept_stopped_runs)
     bucket = artifacts_bucket_name(account, region)
     ensure_artifacts_bucket(s3, bucket, region=region, owner=account)
     function_keys, sfn_keys, prefix = upload_artifacts(s3, bucket, root, manifest, owner=account)
 
-    template = json.loads((root / manifest.template).read_text())
     template = rewrite_template(template, bucket=bucket, function_keys=function_keys,
                                 state_machine_keys=sfn_keys, version=manifest.version)
     template_url = _upload_template(s3, bucket=bucket, region=region, version=manifest.version,
@@ -672,6 +680,27 @@ def run_up(args: argparse.Namespace) -> None:
     print("\n   Next — a first pipeline that runs right away:")
     print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
     print(f"     {_c(f'cd hello-world && polyris-deploy{flags}', CYAN)}   then press Run in the console")
+
+
+def _target(session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str) -> upgrade.Target:
+    return upgrade.Target.of(stack, partition=session.get_partition_for_region(region), region=region,
+                             account=account)
+
+
+def _check_before_upgrade(
+    session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str, deployed: Optional[str],
+    override: bool,
+) -> None:
+    """Check a platform below 1.3 before it is upgraded, while nothing has changed (ADR #137, *Migration*)."""
+    print("   checking the platform before its upgrade to 1.3")
+    try:
+        upgrade.check(sfn=session.client("stepfunctions"), dynamodb=session.client("dynamodb"),
+                      target=_target(session, stack, region=region, account=account), deployed=deployed,
+                      override=override, now=datetime.now(timezone.utc))
+    except upgrade.Refused as e:
+        raise UpError(str(e), *e.todo)
+    if override:
+        print(_c(f"   {upgrade.OVERRIDE_FLAG}: 1.2's adoption and the runs in flight were not checked.", YELLOW))
 
 
 def next_step_flags(args: argparse.Namespace, stack_name: str) -> str:
@@ -870,6 +899,10 @@ def build_up_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-rollback", action="store_true",
                         help="If the update fails, keep what it already changed instead of rolling back "
                              "(for an upgrade whose release notes ask for it; a first install always rolls back)")
+    parser.add_argument("--accept-stopped-runs", action="store_true",   # upgrade.OVERRIDE_FLAG, which the refusals name
+                        help="Upgrade a 1.2 platform to 1.3 although a run is in flight, or 1.2 finished adopting "
+                             "older rows less than 48 hours ago. No run of 1.2 goes on after the upgrade "
+                             "(a platform older than 1.2 is never upgraded)")
     colorize_parser(parser)
     return parser
 

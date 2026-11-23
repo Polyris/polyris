@@ -17,6 +17,24 @@ When the release notes ask for it, add `--disable-rollback`. A failed update the
 
 If a change would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user, `polyris-up` lists it and asks before continuing. Without a terminal (CI) it stops unless you pass `--accept-data-loss`; `--yes` never covers data loss.
 
+## Upgrade from 1.2 to 1.3
+
+1.3 adopts no run that 1.2 started, so this upgrade has steps of its own. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`) and run its `polyris-up`.
+
+1. Install polyris 1.3 and run `polyris-validate --all` in the folder that holds your pipelines' folders. Fix what it reports: a pipeline it refuses cannot be redeployed in step 5.
+2. Grant the roles their new permissions: [IAM_PERMISSIONS.md](../deployment/IAM_PERMISSIONS.md#upgrade-from-12-to-13).
+3. Disable the pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`), so that no new run starts. Then let the runs in flight finish, or stop them.
+4. Run `polyris-up`.
+5. Redeploy every pipeline with `polyris-deploy`. The redeploy turns the pipeline's schedule back on.
+
+Before it changes anything, `polyris-up` checks the platform and refuses when:
+
+- the platform is older than 1.2.0;
+- 1.2 has not finished adopting the rows and facts of older versions, or finished less than 48 hours ago: until then they need code that 1.3 removes;
+- a run is in flight.
+
+Each refusal says what to do. To upgrade although a run is in flight or 1.2's adoption has not settled, pass `--accept-stopped-runs`: no run of 1.2 goes on after the upgrade, so start those runs again after step 5. No flag upgrades a platform older than 1.2.0.
+
 ## Change a setting
 
 Set one template parameter and keep the rest:

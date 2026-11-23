@@ -1,10 +1,11 @@
 """Tests for polyris-up / polyris-down (polyris/up.py, ADR #131).
 
-Boundaries (Principle #14): S3 and STS run on moto; the release download is
-mocked at ``urllib.request.urlopen``. CloudFormation is a small fake client,
-because moto cannot expand the SAM transform or run change sets — the fake
-records every call so the tests can assert the exact request polyris-up
-sends.
+Boundaries (Principle #14): S3, STS and DynamoDB run on moto; the release
+download is mocked at ``urllib.request.urlopen``. CloudFormation is a small
+fake client, because moto cannot expand the SAM transform or run change sets
+— the fake records every call so the tests can assert the exact request
+polyris-up sends. Step Functions, where a test of the move from 1.2 to 1.3
+needs executions, is ``fake_states.FakeStates`` behind a real boto3 client.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import hashlib
 import io
 import json
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -21,6 +23,7 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
+from fake_states import FakeStates
 from polyris import __version__
 from polyris import up
 from polyris.platform import (
@@ -33,6 +36,12 @@ from polyris.platform import (
 
 ACCOUNT = "123456789012"  # moto's default account
 REGION = "eu-central-1"
+#: An older platform that already runs 1.3's engine, by its version or, for a stack that names none,
+#: by the output 1.3 adds. An update of one makes no checks of the move from 1.2 (ADR #137, *Migration*),
+#: which the tests under "The move from 1.2 to 1.3" cover.
+OLDER = "1.3.0a1"
+ROWS_OUTPUTS = [{"OutputKey": "StartRunFunctionArn",
+                 "OutputValue": f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:acme-dev-polyris-start-run"}]
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -172,13 +181,19 @@ class FakeCfn:
 
 @pytest.fixture
 def fake_cfn(aws, mocker):
-    """Route the session's CloudFormation client to a FakeCfn; S3/STS stay on moto."""
-    holder: Dict[str, FakeCfn] = {"cfn": FakeCfn()}
+    """Route the session's CloudFormation client to a FakeCfn; S3/STS stay on moto.
+
+    A test may put its own client for another service into the holder under the
+    service's name (``fake_cfn["stepfunctions"] = FakeStates().client``).
+    """
+    holder: Dict[str, Any] = {"cfn": FakeCfn()}
     real_client = boto3.Session.client
 
     def client(self, service, *a, **kw):
         if service == "cloudformation":
             return holder["cfn"]
+        if service in holder:
+            return holder[service]
         return real_client(self, service, *a, **kw)
 
     mocker.patch.object(boto3.Session, "client", client)
@@ -425,7 +440,7 @@ def test_up_new_install_names_the_archive_version(fake_cfn, s3, tmp_path, capsys
 
 
 def test_up_update_keeps_previous_parameters(fake_cfn, s3, tmp_path):
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v1.0.0",
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description=f"Polyris platform v{OLDER}",
                                          Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"},
                                                      {"ParameterKey": "AdminEmail", "ParameterValue": "a@b.c"}])])
     args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), param=["EnablePitr=true"])
@@ -443,7 +458,7 @@ def test_up_disable_rollback_keeps_a_failed_update_and_says_how_to_go_on(fake_cf
     """ADR #130 D13: an upgrade that fails is fixed forward, so it must not roll back."""
     from botocore.exceptions import WaiterError
 
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v1.0.0",
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description=f"Polyris platform v{OLDER}",
                                          Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])])
     args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), disable_rollback=True)
     mocker.patch("polyris.cfn_changeset.wait_for_stack",
@@ -458,7 +473,7 @@ def test_up_disable_rollback_keeps_a_failed_update_and_says_how_to_go_on(fake_cf
 
 
 def test_up_rolls_back_a_failed_update_by_default(fake_cfn, s3, tmp_path):
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description="Polyris platform v1.0.0",
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Description=f"Polyris platform v{OLDER}",
                                          Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])])
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
     [execute] = [kw for name, kw in fake_cfn["cfn"].calls if name == "execute_change_set"]
@@ -467,7 +482,7 @@ def test_up_rolls_back_a_failed_update_by_default(fake_cfn, s3, tmp_path):
 
 def test_up_on_a_failed_update_with_nothing_to_change_is_not_up_to_date(fake_cfn, s3, tmp_path, capsys):
     """A stack left UPDATE_FAILED by --disable-rollback stays half-updated until its failure is retried."""
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_FAILED", Description="Polyris platform v1.0.0",
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_FAILED", Description=f"Polyris platform v{OLDER}",
                                          Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"}])],
                               change_status="FAILED", status_reason="didn't contain changes")
 
@@ -496,7 +511,8 @@ def test_up_never_keeps_a_failed_first_install(fake_cfn, s3, tmp_path, capsys, m
 
 
 def test_up_no_changes(fake_cfn, s3, tmp_path, capsys):
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[])],
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
+                                         Outputs=ROWS_OUTPUTS)],
                               change_status="FAILED", status_reason="didn't contain changes")
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
     assert "already up to date" in capsys.readouterr().out
@@ -537,7 +553,8 @@ def test_up_refuses_busy_stack(fake_cfn, capsys):
 
 
 def test_up_data_replacement_needs_confirmation(fake_cfn, s3, tmp_path, capsys):
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[])], changes=[
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
+                                         Outputs=ROWS_OUTPUTS)], changes=[
         {"ResourceChange": {"LogicalResourceId": "PipelineTokensTable", "ResourceType": "AWS::DynamoDB::Table",
                             "Action": "Modify", "Replacement": "True"}}])
     assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
@@ -650,7 +667,8 @@ def _sam_stack(name="legacy-dev", namespace="acme", stage="dev"):
     return {"StackName": name, "StackStatus": "UPDATE_COMPLETE", "Tags": [{"Key": "team", "Value": "data"}],
             "Parameters": [{"ParameterKey": "Namespace", "ParameterValue": namespace},
                            {"ParameterKey": "Stage", "ParameterValue": stage},
-                           {"ParameterKey": "EnableCognitoAuth", "ParameterValue": "true"}]}
+                           {"ParameterKey": "EnableCognitoAuth", "ParameterValue": "true"}],
+            "Outputs": ROWS_OUTPUTS}
 
 
 def test_up_on_a_sam_deployed_namespace_points_at_adoption(fake_cfn, s3, tmp_path, capsys):
@@ -751,7 +769,8 @@ def test_yes_does_not_cover_data_loss(fake_cfn, s3, tmp_path, capsys):
     replace_table = [{"ResourceChange": {"LogicalResourceId": "PipelineTokensTable",
                                          "ResourceType": "AWS::DynamoDB::Table",
                                          "Action": "Modify", "Replacement": "True"}}]
-    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[])],
+    fake_cfn["cfn"] = FakeCfn([_platform("acme-dev", StackStatus="UPDATE_COMPLETE", Parameters=[],
+                                         Outputs=ROWS_OUTPUTS)],
                               changes=replace_table)
     archive = str(_write_archive(tmp_path / "a.zip"))
 
@@ -1027,3 +1046,133 @@ def test_registry_skips_state_machines_being_deleted(fake_cfn, s3, mocker):
 
     mocker.patch.object(session, "client", side_effect=client)
     assert up.pipelines_on_platform(session, FakeCfn([stack]), stack, "acme-dev") == []
+
+
+# ── The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*) ─────────────
+#
+# polyris/upgrade.py's own tests cover each check; these cover what polyris-up does with them.
+
+TOKENS = "acme-dev-polyris-pipeline-tokens"
+ENGINE_1_2 = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter",
+              "dep-run-task-helper", "bulk-backfill")
+
+
+def _deployed(version: str | None = "1.2.3", *, outputs: List[Dict[str, str]] | None = None) -> Dict[str, Any]:
+    """The stack of the platform acme-dev at ``version``; None is a stack that `sam deploy` made,
+    which names no version. ``outputs`` are those it has beside its tasks table."""
+    described = {"Description": f"Polyris platform v{version}"} if version else {}
+    return _platform("acme-dev", StackStatus="UPDATE_COMPLETE", **described,
+                     Parameters=[{"ParameterKey": "Namespace", "ParameterValue": "acme"},
+                                 {"ParameterKey": "Stage", "ParameterValue": "dev"}],
+                     Outputs=[{"OutputKey": "PipelineTokensTable", "OutputValue": TOKENS}, *(outputs or [])])
+
+
+@pytest.fixture
+def platform_1_2(fake_cfn) -> FakeStates:
+    """A 1.2 platform that is ready for 1.3: its adoption settled three days ago, and nothing runs.
+
+    Returns its Step Functions, where a test starts what it needs running.
+    """
+    finished = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    ddb = boto3.client("dynamodb", region_name=REGION)
+    ddb.create_table(TableName=TOKENS, BillingMode="PAY_PER_REQUEST",
+                     KeySchema=[{"AttributeName": "execution_name", "KeyType": "HASH"}],
+                     AttributeDefinitions=[{"AttributeName": "execution_name", "AttributeType": "S"}])
+    ddb.put_item(TableName=TOKENS, Item={
+        "execution_name": {"S": "_engine_health"}, "adoption_generation": {"N": "1"},
+        "adopt_tasks_cursor": {"S": ""}, "adopt_tasks_until": {"S": finished},
+        "adopt_facts_cursor": {"S": ""}, "adopt_facts_until": {"S": finished}})
+    states = FakeStates()
+    for name in ENGINE_1_2:
+        states.machine(f"acme-dev-polyris-{name}")
+    fake_cfn["cfn"] = FakeCfn([_deployed()])
+    fake_cfn["stepfunctions"] = states.client
+    return states
+
+
+def _a_run_in_flight(states: FakeStates, machine: str = "dependency-wrapper") -> None:
+    states.run(f"acme-dev-polyris-{machine}", "orders-run-2026-11-23-ab12cd34",
+               started=datetime.now(timezone.utc) - timedelta(hours=1))
+
+
+def test_up_upgrades_a_1_2_platform_that_is_ready(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 0
+
+    assert "checking the platform before its upgrade to 1.3" in capsys.readouterr().out
+    assert "execute_change_set" in fake_cfn["cfn"].names()
+
+
+def test_up_refuses_a_1_2_platform_with_a_run_in_flight_before_it_changes_anything(
+        fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    _a_run_in_flight(platform_1_2)
+
+    assert up._run(up.run_up, _up_args(archive=str(_write_archive(tmp_path / "a.zip")))) == 1
+
+    err = capsys.readouterr().err
+    assert "A run is in flight on acme-dev" in err and "--accept-stopped-runs" in err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+    assert up.bucket_owner_status(s3, artifacts_bucket_name(ACCOUNT, REGION), owner=ACCOUNT) == "missing"
+    assert platform_1_2.stopped == []
+
+
+def test_up_with_the_flag_upgrades_a_platform_with_a_run_in_flight(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    _a_run_in_flight(platform_1_2)
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True)
+
+    assert up._run(up.run_up, args) == 0
+
+    assert "--accept-stopped-runs: 1.2's adoption and the runs in flight were not checked." in capsys.readouterr().out
+    assert "execute_change_set" in fake_cfn["cfn"].names()
+
+
+def test_up_never_upgrades_a_platform_older_than_1_2(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    fake_cfn["cfn"] = FakeCfn([_deployed("1.1.4")])
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")), accept_stopped_runs=True, yes=True)
+
+    assert up._run(up.run_up, args) == 1
+
+    err = capsys.readouterr().err
+    assert "acme-dev runs v1.1.4, and 1.3 upgrades a platform from 1.2 only" in err
+    assert "--accept-stopped-runs does not cover this check" in err
+    assert "create_change_set" not in fake_cfn["cfn"].names()
+
+
+def test_up_tells_a_sam_deployed_1_2_from_1_1_4_by_the_health_row(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """`sam deploy` stamps no version into the stack: the row only 1.2 writes tells."""
+    fake_cfn["cfn"] = FakeCfn([_deployed(None)])
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip")))
+    assert up._run(up.run_up, args) == 0
+
+    boto3.client("dynamodb", region_name=REGION).delete_item(
+        TableName=TOKENS, Key={"execution_name": {"S": "_engine_health"}})
+    fake_cfn["cfn"] = FakeCfn([_deployed(None)])
+    assert up._run(up.run_up, args) == 1
+    assert "acme-dev looks older than 1.2.0" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stack", [
+    _deployed("1.3.0rc1"),                               # a pre-release of 1.3.0 runs 1.3's engine
+    _deployed("1.3.0"),
+    _deployed(None, outputs=ROWS_OUTPUTS),               # from `sam deploy`: the output 1.3 adds tells
+], ids=["1.3.0rc1", "1.3.0", "sam deploy of 1.3"])
+def test_up_makes_no_such_checks_on_a_platform_that_runs_1_3(fake_cfn, platform_1_2, s3, tmp_path, capsys, stack):
+    """In 1.3 a run_task execution is running almost all the time: a check for runs in flight
+    would refuse every patch release."""
+    fake_cfn["cfn"] = FakeCfn([stack])
+    _a_run_in_flight(platform_1_2, "dep-run-task-helper")
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.3.1")), yes=True)
+
+    assert up._run(up.run_up, args) == 0
+
+    assert "checking the platform" not in capsys.readouterr().out
+    assert "execute_change_set" in fake_cfn["cfn"].names()
+
+
+def test_up_makes_no_such_checks_for_a_release_that_keeps_1_2s_engine(fake_cfn, platform_1_2, s3, tmp_path, capsys):
+    """An --archive of a 1.2 build deletes nothing a run needs."""
+    _a_run_in_flight(platform_1_2)
+    args = _up_args(archive=str(_write_archive(tmp_path / "a.zip", version="1.2.4")))
+
+    assert up._run(up.run_up, args) == 0
+
+    assert "checking the platform" not in capsys.readouterr().out

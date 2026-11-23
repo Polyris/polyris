@@ -16,7 +16,10 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+
+from .coordination.times import parse_utc
 
 # ── Release archive contract ─────────────────────────────────────────────────
 
@@ -62,6 +65,11 @@ OUTPUT_CONSOLE_URL = "ConsoleUiUrl"
 # ARN of the built-in test Step Function (succeeds after ~1 s); the target of
 # `polyris-init <name> --hello`.
 OUTPUT_TEST_SFN_ARN = "TestQuickSfnArn"
+# The tables polyris-up and polyris-down read, and the output that 1.3 adds with its engine.
+OUTPUT_TOKENS_TABLE = "PipelineTokensTable"
+OUTPUT_REGISTRY_TABLE = "PipelineRegistryTable"
+OUTPUT_SPECS_TABLE = "PipelineSpecsTable"
+OUTPUT_START_RUN = "StartRunFunctionArn"
 
 # AWS caps IAM role names at 64 characters. The longest role in the template
 # is "{Namespace}-{Stage}-polyris-sweeper-schedule-role" (31 fixed
@@ -418,7 +426,89 @@ def parse_version(version: Optional[str]) -> Optional[Tuple[Tuple[int, ...], Tup
     return release, ((_PRE_RELEASE[match.group(2)], int(match.group(3))) if match.group(2) else _FINAL)
 
 
+def release_series(version: Optional[str]) -> Optional[Tuple[int, int]]:
+    """'1.3.0' and '1.3.0rc1' → (1, 3): the minor release a version belongs to. None when unknown."""
+    parsed = parse_version(version)
+    if parsed is None:
+        return None
+    major, minor = (parsed[0] + (0,))[:2]
+    return major, minor
+
+
 def is_downgrade(deployed: Optional[str], installing: str) -> bool:
     """True when ``installing`` is an older release than ``deployed``. Unknown versions never block."""
     old, new = parse_version(deployed), parse_version(installing)
     return old is not None and new is not None and new < old
+
+
+# ── The move from 1.2 to 1.3 (ADR #137, *Migration and upgrade*) ─────────────
+#
+# 1.3 runs tasks as rows and deletes 1.2's engine. Nothing adopts a 1.2 run, so
+# polyris-up checks a 1.2 platform before it upgrades it and stops what 1.2
+# left running. These are the rules; polyris/upgrade.py is their AWS side.
+
+#: The first release whose engine runs tasks as rows.
+ROWS_ENGINE = (1, 3)
+#: The oldest release that 1.3 upgrades. 1.1.4 goes through 1.2 first: 1.3 removes the code that kept it working.
+OLDEST_UPGRADABLE = (1, 2)
+#: How long after 1.2 finished adopting older rows and facts 1.3 may be installed: until then they still need the
+#: compatibility code that 1.3 removes.
+ADOPTION_SETTLE = timedelta(hours=48)
+
+#: 1.2's Standard state machines that 1.3 deletes, by the end of their names. The other four it deletes are
+#: Express: ListExecutions lists no execution of theirs, and each ends within five minutes on its own.
+REMOVED_STANDARD_MACHINES = ("dependency-wrapper", "registration-helper", "failure-handler", "pause-waiter")
+#: The engine's Standard state machines that 1.3 keeps. bulk_backfill starts runs; run_task runs a task's work.
+BULK_BACKFILL_MACHINE = "bulk-backfill"
+RUN_TASK_MACHINE = "dep-run-task-helper"
+
+
+def platform_prefix(namespace: str, stage: str) -> str:
+    """What the names of a platform's state machines and of its pipelines' stacks start with."""
+    return f"{namespace}-{stage}-polyris-"
+
+
+def state_machine_arn(*, partition: str, region: str, account: str, name: str) -> str:
+    """The ARN of the state machine ``name`` in this account and region."""
+    return f"arn:{partition}:states:{region}:{account}:stateMachine:{name}"
+
+
+def outputs_of(stack: Mapping[str, Any]) -> Dict[str, str]:
+    """A describe_stacks entry's outputs as {key: value}."""
+    return {o["OutputKey"]: o.get("OutputValue", "") for o in stack.get("Outputs") or []}
+
+
+def runs_tasks_as_rows(version: Optional[str], outputs: Iterable[str]) -> bool:
+    """Whether a platform has 1.3's engine: a deployed one (its stack's version and outputs) or the
+    one a release installs (its manifest's version and its template's outputs).
+
+    The version decides, and a pre-release of 1.3.0 has the engine. A stack
+    deployed with ``sam deploy`` carries no version; then the output that 1.3
+    adds tells.
+    """
+    series = release_series(version)
+    return series >= ROWS_ENGINE if series is not None else OUTPUT_START_RUN in set(outputs)
+
+
+def adoption_finished_at(health: Optional[Mapping[str, Any]], *, now: datetime) -> Optional[datetime]:
+    """When 1.2 finished adopting the rows and facts an older version wrote, as its ``_engine_health``
+    row records it; None while it has not, or when the row does not say.
+
+    1.2's sweeper keeps two scans there, ``tasks`` and ``facts``
+    (``sam/lambdas/coordination/sweeper.py`` of v1.2.x, ``adopt``): a cursor
+    while a scan is under way, and from its first full pass the time its hour
+    of repeats ends. A scan has finished once that time has passed and no
+    cursor is left; the adoption, once both have.
+    """
+    ends: List[datetime] = []
+    for scan in ("tasks", "facts"):
+        until = (health or {}).get(f"adopt_{scan}_until")
+        if not until or (health or {}).get(f"adopt_{scan}_cursor"):
+            return None
+        try:
+            ends.append(parse_utc(str(until)))
+        except ValueError:
+            return None
+    finished = max(ends)
+    return finished if finished <= now else None
+

@@ -2,8 +2,19 @@
 
 Until 2.0, a minor release may change how runs behave, remove console routes, stack outputs and DSL parameters that had no effect, add deploy-time limits, and require upgrade steps. Each such change is listed under "Breaking", and `polyris-up` checks the upgrade's preconditions itself.
 
+### Upgrading to 1.3.0 (ADR #137)
+
+1.3 runs tasks as rows and deletes 1.2's engine, and it adopts no run that 1.2 started. Upgrade from 1.2, in a quiet window. A platform older than 1.2.0 goes to 1.2 first: install that release (`POLYRIS_REF=v1.2.3` with `install.sh`), run its `polyris-up`, and wait until its adoption of older rows has been finished for 48 hours.
+
+1. **Your pipelines' code.** Install polyris 1.3 and run `polyris-validate --all` in the folder that holds your pipelines' folders. Fix what it reports: a step class or a `DAG` field that 1.3 removes, or a pipeline beyond a limit. Such a pipeline cannot be redeployed in step 5, and stops with the upgrade.
+2. **The roles.** The role that runs `polyris-deploy` needs four DynamoDB actions on the new `pipeline-specs` table, and the role that runs `polyris-up` the permissions of its checks ([IAM_PERMISSIONS.md](docs/deployment/IAM_PERMISSIONS.md#upgrade-from-12-to-13)). `PowerUserAccess` covers both.
+3. **Drain.** Disable the pipelines' schedules (EventBridge Scheduler, the schedules named `…-schedule`), so that no new run starts. Deal with failed runs: a run started on 1.2 takes no action after the upgrade. Then let the runs in flight finish, or stop them.
+4. **Upgrade.** Run `polyris-up`. Before it changes anything, it checks the platform and refuses one that is older than 1.2.0, whose 1.2 has not finished adopting older rows and facts or finished less than 48 hours ago, or that has a run in flight; each refusal says what to do. `--accept-stopped-runs` skips the last two checks, never the first: no run of 1.2 goes on after the upgrade. A failed update rolls back to 1.2.
+5. **Redeploy every pipeline** with `polyris-deploy`. Until then a pipeline's runs fail at once. The redeploy turns the pipeline's schedule back on, also one that was off on purpose before the upgrade; `is_paused_upon_creation=True` keeps a schedule off. Then start again the runs whose schedule fired during the window.
+
 ### Breaking
 
+- **`polyris-up` checks a 1.2 platform before it upgrades it (ADR #137, *Migration and upgrade*).** It refuses a platform older than 1.2.0, a platform with a run in flight (a running execution of one of the engine's Standard state machines), and one whose 1.2 has not finished adopting older rows and facts, or finished less than 48 hours ago. `--accept-stopped-runs` overrides the last two checks, never the first. The role that runs `polyris-up` needs `states:ListExecutions` on the platform's state machines and `dynamodb:GetItem` on `pipeline-tokens` for them; a denied call refuses the upgrade and names the action.
 - The step classes `Choice`, `Map`, `Sensor` and `ShortCircuit`, and the `Condition` helper, are gone. They never worked: no generator existed for them, so a pipeline that used one failed when it was generated. To wait for data, use `wait_for`. A test now fails for any exported step without a generator.
 - The console route `GET /api/execution-parent` is gone: it looked for a row that runs of 1.3 do not write, and named no run of theirs. A task's row names its run (`pipeline_execution`), and `/api/pipeline-status?pipeline_execution=` reads it. `/api/pipelines` no longer answers `paused`, which was always `false` (a pause belongs to a run), and `/api/pipeline-status` no longer answers each task's empty `config`.
 - The console route `POST /api/pipeline-register` is gone. Nothing called it: `polyris-deploy` registers each pipeline, and the console has no button for it. To register a pipeline by hand, run `polyris-register`. The free console now serves 27 routes.
