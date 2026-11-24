@@ -3,18 +3,22 @@
 It runs against a deployed platform whose console API is ``POLYRIS_API_URL``,
 with the pipelines of ``tests/e2e/coordination_smoke/dag.py`` deployed (see that
 file). Every scenario picks a run date no other run uses, so facts that earlier
-runs recorded never decide it. Covered: the ``wait_for`` rows of PLAN §2.6,
-Mark Successful, a restart, the push AND rule and two consumers with one task
-id. The upgrade rehearsal, schedules and fault injection are manual checks.
+runs recorded never decide it. Covered, for assets: the ``wait_for`` rows of
+PLAN §2.6, Mark Successful, a restart, the push AND rule and two consumers with
+one task id. For tasks (ADR #137 §3–§5, ADR #138): a chain, a final failure and
+the rules it decides, retries and the decision that follows, a Stop of a running
+task and a Restart with dependants, a Pause and a Resume of a run, a Stop of a
+run, and a countdown. The upgrade rehearsal, schedules, the task types and fault
+injection are manual checks.
 
     POLYRIS_API_URL=https://... POLYRIS_ID_TOKEN=plrs_... pytest tests/e2e/test_coordination_smoke.py -v
 
-The run takes about 15 minutes.
+The run takes about 25 minutes.
 """
 
 import random
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytest
@@ -69,11 +73,20 @@ class Console:
         assert response["status"] == 200, response
         return list(response["body"].get("runs", []))
 
-    def act(self, action: str, name: str, day: str, run: str) -> None:
-        """An operator's action on a task: success, fail, restart."""
-        response = self.api.post(f"/api/task-{action}", body={"date": day, "pipeline_execution": run},
+    def act(self, action: str, name: str, day: str, run: str, **body: Any) -> None:
+        """An operator's action on a task: success, fail, skip, stop, restart (``with_dependants=True``)."""
+        response = self.api.post(f"/api/task-{action}", body={"date": day, "pipeline_execution": run, **body},
                                  params={"name": name})
         assert response["status"] in (200, 202), f"{action} on {name}: {response}"
+
+    def run_action(self, action: str, run: str) -> None:
+        """An operator's action on a run: stop, pause, resume."""
+        params = {"pipeline_execution": run} if action == "stop" else {"id": run}
+        response = self.api.post(f"/api/execution-{action}", body={"reason": "smoke"}, params=params)
+        assert response["status"] in (200, 202), f"{action} of {run}: {response}"
+
+    def run_status(self, pipeline: str, day: str) -> List[str]:
+        return [str(r.get("status")) for r in self.runs(pipeline, day)]
 
     def produce(self, producer: Tuple[str, str], day: str) -> str:
         """Run a producer for `day` and wait until its task succeeded, which records its fact."""
@@ -83,14 +96,15 @@ class Console:
         return run
 
 
-def eventually(check: Callable[[], Any], what: str, timeout: float = TIMEOUT_SECONDS) -> Any:
+def eventually(check: Callable[[], Any], what: str, timeout: float = TIMEOUT_SECONDS,
+               poll: float = POLL_SECONDS) -> Any:
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
         last = check()
         if last:
             return last
-        time.sleep(POLL_SECONDS)
+        time.sleep(poll)
     pytest.fail(f"after {timeout:.0f} s still waiting for {what}; last seen: {last!r}")
 
 
@@ -214,3 +228,96 @@ def test_two_consumers_with_the_same_task_id_both_run(console):
     console.produce(PRODUCE_A, day)
     for twin in ("smoke-push-twin-1", "smoke-push-twin-2"):
         eventually(lambda twin=twin: console.status(twin, day, "report") == "success", f"{twin}'s task to run")
+
+
+# ── Tasks (ADR #137 §3–§5, ADR #138) ─────────────────────────────────────────
+
+def _running(console: Console, pipeline: str, day: str, name: str, run: str) -> None:
+    """Wait until the task runs, polling every second: its work lasts 20 seconds."""
+    eventually(lambda: console.status(pipeline, day, name, run) == "running", f"{name} to run", poll=1)
+
+
+def test_a_chain_runs_its_tasks_in_order_and_its_run_succeeds(console):
+    day = _fresh_date()
+    run = console.start("smoke-chain", day)
+    eventually(lambda: console.status("smoke-chain", day, "third", run) == "success", "the chain's last task")
+    rows = [console.task("smoke-chain", day, name, run) for name in ("first", "second", "third")]
+    for before, after in zip(rows, rows[1:]):
+        assert before["finished_at"] <= after["running_at"], (before, after)
+    eventually(lambda: console.run_status("smoke-chain", day) == ["success"], "the run to succeed")
+
+
+def test_a_final_failure_decides_each_dependant_by_its_rule_and_fails_the_run(console):
+    """A failed task waits for a decision (ADR #114); once failed for good, all_success is upstream_failed, and
+    all_done and one_failed run (ADR #138)."""
+    day = _fresh_date()
+    run = console.start("smoke-rules", day)
+    eventually(lambda: console.status("smoke-rules", day, "breaks", run) == "waiting_decision", "breaks to fail")
+    stays(lambda: console.status("smoke-rules", day, "needs_it", run) == "waiting", "needs_it waits for the decision",
+          seconds=10)
+    console.act("fail", "breaks", day, run)
+    eventually(lambda: console.status("smoke-rules", day, "needs_it", run) == "upstream_failed", "needs_it decided")
+    for name in ("cleanup", "on_failure"):
+        eventually(lambda name=name: console.status("smoke-rules", day, name, run) == "success", f"{name} to run")
+    eventually(lambda: console.run_status("smoke-rules", day) == ["failed"], "the run to fail")
+
+
+def test_a_task_retries_then_waits_for_a_decision_and_a_skip_lets_its_dependant_run(console):
+    day = _fresh_date()
+    run = console.start("smoke-retry", day)
+    eventually(lambda: console.status("smoke-retry", day, "flaky", run) == "waiting_decision", "flaky to fail twice")
+    flaky = console.task("smoke-retry", day, "flaky", run)
+    assert flaky is not None and flaky.get("retry_attempt") == 1, flaky
+    assert console.status("smoke-retry", day, "after", run) == "waiting"
+    console.act("skip", "flaky", day, run)
+    eventually(lambda: console.status("smoke-retry", day, "after", run) == "success", "after to run")
+    eventually(lambda: console.run_status("smoke-retry", day) == ["success"], "the run to succeed")
+
+
+def test_a_stopped_task_decides_its_dependant_and_a_restart_with_dependants_runs_both(console):
+    """A Stop counts as a failure for the dependant's rule; the Restart with dependants reruns both."""
+    day = _fresh_date()
+    run = console.start("smoke-stop-task", day)
+    _running(console, "smoke-stop-task", day, "long", run)
+    console.act("stop", "long", day, run)
+    eventually(lambda: console.status("smoke-stop-task", day, "long", run) == "stopped", "long to stop")
+    eventually(lambda: console.status("smoke-stop-task", day, "next_one", run) == "upstream_failed", "next_one decided")
+    console.act("restart", "long", day, run, with_dependants=True)
+    eventually(lambda: console.status("smoke-stop-task", day, "next_one", run) == "success", "next_one to run again")
+    long = console.task("smoke-stop-task", day, "long", run)
+    assert long is not None and (long["status"], long.get("restarts")) == ("success", 1), long
+
+
+def test_a_paused_run_starts_no_task_until_it_is_resumed(console):
+    day = _fresh_date()
+    run = console.start("smoke-pause", day)
+    _running(console, "smoke-pause", day, "before_pause", run)
+    console.run_action("pause", run)
+    eventually(lambda: console.status("smoke-pause", day, "before_pause", run) == "success", "the running task to end")
+    stays(lambda: console.status("smoke-pause", day, "after_resume", run) in ("waiting", "waiting_paused"),
+          "after_resume held by the pause")
+    console.run_action("resume", run)
+    eventually(lambda: console.status("smoke-pause", day, "after_resume", run) == "success", "after_resume to run")
+
+
+def test_a_stop_of_the_run_stops_its_tasks_and_ends_it_aborted(console):
+    day = _fresh_date()
+    run = console.start("smoke-stop-run", day)
+    _running(console, "smoke-stop-run", day, "working", run)
+    console.run_action("stop", run)
+    for name in ("working", "never"):
+        eventually(lambda name=name: console.status("smoke-stop-run", day, name, run) == "stopped", f"{name} to stop")
+    eventually(lambda: console.run_status("smoke-stop-run", day) == ["aborted"], "the run to end aborted")
+
+
+def test_a_countdown_holds_its_task_for_its_wait_before(console):
+    """ADR #137 §5: the countdown ends at the sweeper's first check after it, up to 5 minutes late."""
+    day = _fresh_date()
+    run = console.start("smoke-countdown", day)
+    eventually(lambda: console.status("smoke-countdown", day, "delayed", run) == "success", "delayed to run",
+               timeout=TIMEOUT_SECONDS + 180)
+    row = console.task("smoke-countdown", day, "delayed", run)
+    assert row is not None
+    started = datetime.fromisoformat(str(row["started_at"]).replace("Z", "+00:00"))
+    ran = datetime.fromisoformat(str(row["running_at"]).replace("Z", "+00:00"))
+    assert ran - started >= timedelta(seconds=30), row
