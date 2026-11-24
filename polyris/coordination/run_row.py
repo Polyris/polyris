@@ -52,6 +52,7 @@ STEP_FAILURE = "step_failure"    # the mark of a failed direct step (§1)
 REQUESTS = "requests"            # the heavy actions in progress, by kind (§3)
 PAUSES = "pauses"                # the pause intervals, at most ten (§5)
 CHECKS = "checks"                # how many checks of the sweeper moved its due time, from which the next backs off
+CHECK_FAILED = "check_failed"    # when the sweeper's last check failed for good: till its due time, the run waits (§7)
 TTL = "ttl"
 
 #: The sparse index of run rows by the UTC day their execution started (§5), which the run lists read, and what
@@ -65,7 +66,7 @@ INDEX_FIELDS = (PIPELINE, RUN_DATE, STATUS, FINISHED_AT, TRIGGERED_BY, SUMMARY, 
 FIELDS = (STATUS, TOKEN, TOKEN_ORDER, ANSWERED, STOP, STOP_DONE, RUN_VERSION, LEFT_AT, EXECUTION, EXECUTION_ARN, RUN_START,
           PIPELINE,
           RUN_DATE, START_DAY, STARTED_AT, FINISHED_AT, TRIGGERED_BY, SPEC_ID, TASK_COUNT, FORMAT, SUMMARY,
-          STEP_FAILURE, REQUESTS, PAUSES, CHECKS, TTL)
+          STEP_FAILURE, REQUESTS, PAUSES, CHECKS, CHECK_FAILED, TTL)
 
 # The run row stays under SIZE_MAX (§3, D114): a Step Functions token takes up to 2,048 characters, and
 # every other free-text field is capped in UTF-8 bytes, as DynamoDB counts them, by the builders below.

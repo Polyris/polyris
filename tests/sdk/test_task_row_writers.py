@@ -125,6 +125,10 @@ RUN_ROW_WRITERS: Dict[str, Tuple[Tuple[str, ...], Callable[[], Mapping[str, Any]
     "dispatch_writes.close": ((), lambda: dispatch_writes.close(RUN, table=TOKENS, now=NOW)),
     "dispatch_writes.checked": ((), lambda: dispatch_writes.checked(
         RUN.key, table=TOKENS, due_read=format_utc(NOW), version_read=RUN.version, checks=0, now=NOW)),
+    "dispatch_writes.checked, failed": ((), lambda: dispatch_writes.checked(
+        RUN.key, table=TOKENS, due_read=format_utc(NOW), version_read=RUN.version, checks=0, now=NOW, failed=True)),
+    "dispatch_writes.check_failed": ((), lambda: dispatch_writes.check_failed(
+        RUN.key, table=TOKENS, due_read=format_utc(NOW), version_read=RUN.version, now=NOW)),
     "actions.run_raise": (("task_action",), lambda: actions.run_raise(RUN.key, table=TOKENS, now=NOW)),
     "actions.run_request": (("request",), lambda: actions.run_request(
         RUN, {run_row.REQUESTS: {}}, task_id="extract", by="ops", now=NOW, table=TOKENS)),
@@ -323,7 +327,8 @@ CODE_WRITERS = {
     ("coordination/start_run.py", "_write_run_row"): "the run row: start_run.run_row_write",
     ("coordination/start_run.py", "_put"): "task rows and the run's input: start_run.task_items, input_item",
     ("coordination/start_run.py", "_activate"): "the run row: start_run.activation",
-    ("coordination/sweeper.py", "_move"): "the run row's due time: dispatch_writes.checked",
+    ("coordination/sweeper.py", "_move"): "the run row's due time and the mark of a failed check: dispatch_writes.checked, "
+                                          "check_failed",
     ("coordination/sweeper.py", "_put_warning"): "warning rows (records.warning_item)",
     ("coordination/sweeper.py", "_take_lease"): "the sweeper's lease row",
     ("coordination/sweeper.py", "_release_lease"): "the sweeper's lease row",

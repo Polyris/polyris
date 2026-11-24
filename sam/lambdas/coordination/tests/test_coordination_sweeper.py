@@ -258,6 +258,29 @@ def test_a_failed_pass_moves_its_run_on_and_its_warning_replaces_itself(make, ru
     assert _row(tokens, sweep.HEALTH_KEY)["failed_steps"] == []          # one broken run alone is not the engine
 
 
+def test_a_broken_run_waits_for_its_backoff_not_every_sweep(make, run, tokens, specs, clock):
+    """ADR #137 §7: a pass that failed for good leaves its run to its run row's backoff, though rows of it stay due
+    (their checks would meet the same failure). Every sweep checked it first again, and two such runs in a quiet
+    engine turned the System status red (the review of the branch, P-1). A check that passes clears the mark."""
+    run()
+    spec_key = {"pk": _row(tokens, RUN_KEY)[run_row.SPEC_ID], "sk": "extract"}
+    saved = specs.get_item(Key=spec_key)["Item"]
+    specs.delete_item(Key=spec_key)                                          # deleted by hand
+    assert make().run()["passes_failed"] == 1
+
+    failed = []
+    for _ in range(3):                         # the run row is due again at +10 min, then at +30
+        clock.now += timedelta(minutes=5)
+        failed.append(make().run()["passes_failed"])
+    assert failed == [0, 1, 0]
+    assert run_row.CHECK_FAILED in _row(tokens, RUN_KEY)
+
+    specs.put_item(Item=saved)
+    clock.now += timedelta(minutes=15)
+    assert make().run()["passes_failed"] == 0
+    assert run_row.CHECK_FAILED not in _row(tokens, RUN_KEY)
+
+
 def test_a_sweep_whose_passes_mostly_failed_reports_a_failed_step(make, run, tokens, specs, clock, lambda_env):
     for execution in (RUN, OTHER):
         run(execution)

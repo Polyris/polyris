@@ -205,19 +205,37 @@ def engine_stop(run: RunView, *, table: str, cause: str, now: datetime) -> Dict[
 
 
 def checked(run_key: str, *, table: str, due_read: str, version_read: int, checks: int,
-            now: datetime) -> Dict[str, Any]:
+            now: datetime, failed: bool = False) -> Dict[str, Any]:
     """After the sweeper's check of a run: its due time moved on by the backoff (``attention.next_due``, at most
     30 minutes) and ``left_at`` cleared (§3). Conditional on the due time and the ``run_version`` the sweeper read:
     it never postpones a check that a request, a pass or an action set meanwhile, and after a write that raised
-    ``run_version`` the run row stays due for the next sweep. It keeps ``run_version``."""
+    ``run_version`` the run row stays due for the next sweep. It keeps ``run_version``. A check whose pass failed for
+    good marks the run row (``check_failed``), and any other clears the mark (§7)."""
+    mark = ", #failed = :now REMOVE #left" if failed else " REMOVE #left, #failed"
     return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run_key}},
-            "UpdateExpression": "SET #due = :next, #checks = :checks, #ttl = :ttl REMOVE #left",
+            "UpdateExpression": f"SET #due = :next, #checks = :checks, #ttl = :ttl{mark}",
             "ConditionExpression": f"#due = :read_due AND {run_row.VERSION_UNCHANGED}",
             "ExpressionAttributeNames": {"#due": attention.DUE, "#checks": run_row.CHECKS, "#ttl": run_row.TTL,
-                                         "#left": run_row.LEFT_AT, **run_row.VERSION_NAMES},
+                                         "#left": run_row.LEFT_AT, "#failed": run_row.CHECK_FAILED,
+                                         **run_row.VERSION_NAMES},
             "ExpressionAttributeValues": _typed({
                 ":next": format_utc(attention.next_due(now, checks)), ":checks": checks + 1,
-                ":ttl": retention.ttl(now, retention.HISTORY), ":read_due": due_read, ":rv": version_read})}
+                ":ttl": retention.ttl(now, retention.HISTORY), ":read_due": due_read, ":rv": version_read,
+                **({":now": format_utc(now)} if failed else {})})}
+
+
+def check_failed(run_key: str, *, table: str, due_read: str, version_read: int, now: datetime) -> Dict[str, Any]:
+    """After the sweeper's check of a run whose run row is not due yet, when its pass failed for good: the mark
+    alone (§7). Until the run row's due time the sweeper leaves the run, whatever rows of it are due: their checks
+    would meet the same failure. Conditional as ``checked``."""
+    return {"TableName": table, "Key": {run_row.TABLE_KEY: {"S": run_key}},
+            "UpdateExpression": "SET #failed = :now, #ttl = :ttl",
+            "ConditionExpression": f"#due = :read_due AND {run_row.VERSION_UNCHANGED}",
+            "ExpressionAttributeNames": {"#due": attention.DUE, "#failed": run_row.CHECK_FAILED, "#ttl": run_row.TTL,
+                                         **run_row.VERSION_NAMES},
+            "ExpressionAttributeValues": _typed({
+                ":now": format_utc(now), ":ttl": retention.ttl(now, retention.HISTORY), ":read_due": due_read,
+                ":rv": version_read})}
 
 
 def _run_update(run: RunView, *, table: str, now: datetime, expression: str, condition: str,

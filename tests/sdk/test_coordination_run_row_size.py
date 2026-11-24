@@ -56,6 +56,7 @@ def largest_run_row():
         run_row.ANSWERED: order,
         run_row.STOP: run_row.stop_mark(by=who, reason=long_text, at=ISO),
         run_row.STOP_DONE: ISO,
+        run_row.CHECK_FAILED: ISO,
         run_row.RUN_VERSION: 99_999_999,
         run_row.LEFT_AT: ISO,
         run_row.EXECUTION: pipeline_execution,

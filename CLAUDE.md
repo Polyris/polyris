@@ -622,6 +622,8 @@ except (ClientError, BotoCoreError) as e:
 
 **A repeated action is a no-op only while the first one is in progress.** Once the state it left is gone, it acts again or refuses, and its answer says what it did, not what was asked. A Stop of a run whose stop was done, after a Restart ran its task again, answered "stopping" and changed nothing, and a Pause was refused for good (review of TR-6; `test_a_stop_after_a_done_stop_and_a_restart_stops_the_rerun`).
 
+**A backoff holds the whole run it backs off.** A run whose pass failed for good waits for its run row's due time though rows of it are due, since their checks would meet the same failure: the sweeper moved only the run row's due time and checked the run first at every sweep (review of the branch, P-1; `test_a_broken_run_waits_for_its_backoff_not_every_sweep`).
+
 **A step a pass repeats until its request clears records its progress or keeps off the decisions' path.** A Restart's pointer step rewrote the pointers of every waiting row before any decision, on every pass until it cleared, and under a Stop wrote pointers it deleted at once; it writes those of the rows waiting since its request alone, keeps the first request's time, and none under a Stop (review of TR-6; `test_a_restart_writes_the_pointers_of_the_rows_it_put_back_to_wait_and_renews_nothing`).
 
 ---

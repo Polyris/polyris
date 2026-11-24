@@ -317,6 +317,37 @@ def test_the_sweepers_move_backs_off_clears_left_at_and_keeps_the_version(ddb):
     assert "left_at" not in written and written["ttl"] == retention.ttl(NOW, retention.HISTORY)
 
 
+def test_a_check_whose_pass_failed_marks_the_run_row_and_the_next_clears_the_mark(ddb):
+    """§7: the sweeper leaves a run whose pass failed for good to its run row's backoff (the review of the branch,
+    P-1); a later check clears the mark, failed or not."""
+    seed(ddb)
+    due = format_utc(NOW - timedelta(minutes=1))
+    put(ddb, {**get(ddb, run().key), "attention_at": due})
+    assert send(ddb, [{"Update": dispatch_writes.checked(run().key, table=TABLE, due_read=due, version_read=3,
+                                                         checks=0, now=NOW, failed=True)}])
+    marked = get(ddb, run().key)
+    assert (marked[run_row.CHECK_FAILED], marked["attention_at"]) == (format_utc(NOW), format_utc(NOW + timedelta(minutes=10)))
+    later = NOW + timedelta(minutes=10)
+    assert send(ddb, [{"Update": dispatch_writes.checked(run().key, table=TABLE, due_read=marked["attention_at"],
+                                                         version_read=3, checks=1, now=later)}])
+    assert run_row.CHECK_FAILED not in get(ddb, run().key)
+
+
+def test_a_failed_check_of_a_run_row_not_due_yet_marks_it_and_keeps_its_due_time(ddb):
+    seed(ddb)
+    due = format_utc(NOW + timedelta(minutes=25))
+    put(ddb, {**get(ddb, run().key), "attention_at": due, "checks": 2})
+    assert send(ddb, [{"Update": dispatch_writes.check_failed(run().key, table=TABLE, due_read=due, version_read=3,
+                                                              now=NOW)}])
+    written = get(ddb, run().key)
+    assert (written[run_row.CHECK_FAILED], written["attention_at"], written["checks"], written["run_version"]) == (
+        format_utc(NOW), due, 2, 3)
+    assert written["ttl"] == retention.ttl(NOW, retention.HISTORY)
+    # A request, a pass or an action meanwhile keeps the run row as it is, as for the move.
+    assert not send(ddb, [{"Update": dispatch_writes.check_failed(run().key, table=TABLE, due_read=due,
+                                                                  version_read=2, now=NOW)}])
+
+
 @pytest.mark.parametrize("due_read,version_read", [("2026-11-19T11:00:00.000Z", 3), (None, 2)])
 def test_the_sweepers_move_never_postpones_a_check_set_meanwhile_or_after_a_raise(ddb, due_read, version_read):
     """A request, a pass or an action that set the due time, or a write that raised run_version, keeps it (§3)."""

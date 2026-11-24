@@ -51,6 +51,8 @@ from logger import log
 _FAILURE_CHARS = 500
 #: The due entries the sweeper reads: rows with a time of their own and the run rows, and decision deadlines (§6).
 DUE_KINDS = (att.WAITING, att.DECISION)
+#: What `_check` answers for a run whose last pass failed for good and whose run row is not due yet: none is made.
+BACKOFF = "backoff"
 
 
 class Sweeper:
@@ -154,8 +156,10 @@ class Sweeper:
             if run_key in checked:
                 continue
             checked.add(run_key)
-            counts["runs_checked"] += 1
             result, failure = self._check(run_key, key, now, deadline)
+            if result.get("action") == BACKOFF:
+                continue
+            counts["runs_checked"] += 1
             if failure:
                 counts["passes_failed"] += 1
                 first_failure = first_failure or failure
@@ -180,6 +184,8 @@ class Sweeper:
         except (ClientError, BotoCoreError) as exc:
             log.error("sweeper", "the run row could not be read; the run stays due", run=run_key, error=str(exc))
             return {}, f"{type(exc).__name__}: {exc}"
+        if run_item and run_item.get(run_row.CHECK_FAILED) and str(run_item.get(att.DUE) or "") > format_utc(now):
+            return {"action": BACKOFF}, ""      # its last pass failed for good: it waits for its run row's due time
 
         def remaining() -> int:
             return max(0, int((deadline - self.monotonic()) * 1000))
@@ -197,7 +203,7 @@ class Sweeper:
             if result.get("action") == "failed":
                 failure = str(result.get("error", ""))
         if run_item is not None:
-            self._move(run_key, run_item, now)
+            self._move(run_key, run_item, now, failed=result.get("action") == "failed")
             if result.get("lost"):
                 self._lost_hints(run_key, run_item, result["lost"])
         return result, failure
@@ -237,16 +243,24 @@ class Sweeper:
         execution = entry.get(task_row.PIPELINE_EXECUTION)
         return run_row.key(str(execution)) if execution else None
 
-    def _move(self, run_key: str, run_item: Dict[str, Any], now: datetime) -> None:
+    def _move(self, run_key: str, run_item: Dict[str, Any], now: datetime, *, failed: bool) -> None:
         """The run row's due time moved on by the backoff and its `left_at` cleared, when the run row itself was due,
-        on the due time and `run_version` read before the pass (§3)."""
+        on the due time and `run_version` read before the pass (§3). A pass that failed for good marks the run row,
+        due or not, so the sweeper leaves the run to that backoff (§7)."""
         due, version = run_item.get(att.DUE), run_item.get(run_row.RUN_VERSION)
-        if not due or version is None or str(due) > format_utc(now):
+        if not due or version is None:
+            return
+        table = self.dispatcher.tokens_table
+        if str(due) <= format_utc(now):
+            request = dispatch_writes.checked(run_key, table=table, due_read=str(due), version_read=int(version),
+                                              checks=int(run_item.get(run_row.CHECKS, 0)), now=now, failed=failed)
+        elif failed:
+            request = dispatch_writes.check_failed(run_key, table=table, due_read=str(due), version_read=int(version),
+                                                   now=now)
+        else:
             return
         try:
-            self.dispatcher.client.update_item(**dispatch_writes.checked(
-                run_key, table=self.dispatcher.tokens_table, due_read=str(due), version_read=int(version),
-                checks=int(run_item.get(run_row.CHECKS, 0)), now=now))
+            self.dispatcher.client.update_item(**request)
         except ClientError as exc:
             if is_condition_failed(exc):
                 return                  # a pass, a request or an action set its due time, or raised run_version
