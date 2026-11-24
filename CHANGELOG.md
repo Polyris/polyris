@@ -1,5 +1,7 @@
 ## Unreleased
 
+## v1.3.0 - 2026-11-24
+
 Until 2.0, a minor release may change how runs behave, remove console routes, stack outputs and DSL parameters that had no effect, add deploy-time limits, and require upgrade steps. Each such change is listed under "Breaking", and `polyris-up` checks the upgrade's preconditions itself.
 
 ### Upgrading to 1.3.0 (ADR #137)
