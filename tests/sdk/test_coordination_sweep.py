@@ -487,3 +487,23 @@ def test_a_sweeper_run_makes_no_more_calls_than_it_was_given():
     assert [calls.take() for _ in range(3)] == [True, True, False]
     assert calls.left == 0
     assert 0 < sweep.DESCRIBES < 250              # the bucket outside us-east-1, us-west-2 and eu-west-1
+
+
+def test_a_runs_rows_get_calls_the_longest_due_first_up_to_their_share(monkeypatch):
+    """D141: one large run never takes every call of a sweeper run, and a row judged comes due behind those still
+    waiting, so none waits for ever (TR-10: A-1, B-2, R10-1)."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)          # a share of 2 rows a run; 2 calls kept for the runs' checks
+    at = datetime(2026, 11, 24, tzinfo=timezone.utc)
+    due = [(at + timedelta(minutes=minutes), name) for minutes, name in ((30, "a"), (10, "z"), (20, "m"))]
+    calls = sweep.Calls(8)
+    assert sweep.grant(due, calls) == {"z", "m"} and calls.left == 6
+    assert sweep.grant(due, sweep.Calls(3)) == {"z"}    # 2 calls stay for the runs' own executions
+    assert sweep.grant(due, sweep.Calls(2)) == set()
+    assert sweep.grant([], sweep.Calls(8)) == set()
+
+
+def test_a_call_taken_for_a_check_that_is_not_due_goes_back():
+    calls = sweep.Calls(1)
+    assert calls.take() and calls.left == 0
+    calls.give_back()
+    assert calls.left == 1 and not calls.take(keep=1) and calls.take()

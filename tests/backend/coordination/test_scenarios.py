@@ -455,7 +455,7 @@ def test_a_sweep_judges_as_many_executions_as_its_calls_allow_and_the_next_one_t
     """Step Functions answers DescribeExecution from a bucket of 300 calls: 2,000 rows whose first liveness checks
     came at once called it 2,001 times in one sweep (the TR-7 estimate, S5). A sweep makes sweep.DESCRIBES calls;
     the rows past them stay due, and the next sweep judges them."""
-    monkeypatch.setattr(sweep, "DESCRIBES", 2)
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)          # a share of 2 rows a run, 2 calls kept for the runs (D141)
     names = ("a", "b", "c")
     run = world.start_run(world.deploy(pipeline("wide", [(name, {}) for name in names])), DATE)
     for name in names:
@@ -467,6 +467,56 @@ def test_a_sweep_judges_as_many_executions_as_its_calls_allow_and_the_next_one_t
     world.sweep()
     assert [world.status(run, name) for name in names] == ["failed"] * 3
     assert world.pipeline_status(run) == "FAILED"
+
+
+LARGE = [f"t{i:02d}" for i in range(16)]       # 16 long-running rows against a share of 2 a sweep: 2,000 against 50
+
+
+def _sweeps(world, hours: int) -> None:
+    for _ in range(hours * 12):
+        world.clock.advance(minutes=5)
+        world.sweep()
+
+
+@pytest.fixture
+def a_large_run_and_a_later_one(world, monkeypatch):
+    """A run with more long-running rows than its share of a sweeper run's calls, and a run started a minute later
+    whose run_task is gone (TR-10: A-1, B-2, R10-1). One large run took every call: the rows past its first
+    1,200 and every later run were never judged."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)
+    large = world.start_run(world.deploy(pipeline("large", [(name, {}) for name in LARGE])), DATE)
+    world.clock.advance(minutes=1)
+    small = world.start_run(world.deploy(pipeline("small", [("victim", {})])), DATE)
+    world.stop_run_task_externally(small, "victim")
+    yield large, small
+    for name in world.running_tasks(large):
+        world.complete(large, name)
+
+
+def test_a_dead_run_task_of_a_later_run_is_found_while_a_large_run_runs_long(world, a_large_run_and_a_later_one):
+    large, small = a_large_run_and_a_later_one
+    _sweeps(world, 1)
+    assert world.status(small, "victim") == "failed"
+
+
+def test_every_running_row_of_a_large_run_is_judged(world, a_large_run_and_a_later_one):
+    """Its rows get calls the longest due first: none waits for ever behind rows judged before (D141)."""
+    large, _ = a_large_run_and_a_later_one
+    _sweeps(world, 2)
+    assert [name for name in LARGE if "last_check" not in (world.row(large, name) or {})] == []
+
+
+def test_a_large_run_stopped_in_the_aws_console_is_stopped_by_the_engine(world, monkeypatch):
+    """The run's own execution takes its call first in each check of the run (D141): a stop in the AWS console, or
+    by polyris-destroy, is seen at the next sweep, however many rows the run has."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)
+    large = world.start_run(world.deploy(pipeline("large", [(name, {}) for name in LARGE])), DATE)
+    _sweeps(world, 1)
+    world.stop_run_externally(large)
+    world.plant(f"invariant 8: the execution of {large.name} ended while "
+                + ", ".join(large.execution_name(name) for name in LARGE) + " were not final")
+    _sweeps(world, 1)
+    assert {world.status(large, name) for name in LARGE} == {"stopped"}
 
 
 @defect("B-F3")

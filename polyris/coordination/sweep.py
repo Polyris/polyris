@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 #: The ``source`` of the sweeper's passes, as the dispatcher logs it.
 SOURCE = "sweeper"
@@ -33,7 +33,7 @@ CATCH_UP_WINDOW = timedelta(hours=48)
 #: The DescribeExecution calls of one sweeper run. Step Functions answers them from a bucket of 300 calls (250 outside
 #: us-east-1, us-west-2 and eu-west-1) that refills at 15 a second (10): 2,000 rows whose first liveness checks came
 #: at once made 2,001 calls in one sweep, most of them throttled (the TR-7 estimate, S5). The rows past them stay
-#: due, and the next run judges them.
+#: due, and the next run judges them. How they are shared: ``grant`` (D141).
 DESCRIBES = 200
 #: DescribeExecution is eventually consistent: an execution started less than this long ago may not be
 #: visible yet, so "does not exist" means gone only for an older row or run.
@@ -72,12 +72,36 @@ class Calls:
     """The calls of one kind that a sweeper run may still make."""
     left: int
 
-    def take(self) -> bool:
-        """Whether one more call may be made, counted when it may."""
-        if self.left <= 0:
+    def take(self, *, keep: int = 0) -> bool:
+        """Whether one more call may be made with ``keep`` calls still in hand, counted when it may."""
+        if self.left <= keep:
             return False
         self.left -= 1
         return True
+
+    def give_back(self) -> None:
+        """A call taken for a check that turned out not to be due."""
+        self.left += 1
+
+
+def grant(due: Sequence[Tuple[datetime, str]], calls: Calls) -> Set[str]:
+    """The rows of one run whose executions a sweeper run judges, of those whose liveness check has come (D141).
+
+    - The longest due first, never in the order of their names: a row judged comes due again 30 minutes later, behind
+      the rows still waiting, so none waits for ever.
+    - At most a quarter of DESCRIBES for one run's rows: one large run never takes the calls of the others.
+    - A quarter of DESCRIBES stays in hand for the runs' own executions, which each run's pass reads first.
+
+    One large run took every call of every sweep: its own stop in the AWS console went unseen for hours, and the
+    rows of the other runs were never judged (TR-10: A-1, B-2, R10-1).
+    """
+    share = max(1, DESCRIBES // 4)
+    granted: Set[str] = set()
+    for _, name in sorted(due):
+        if len(granted) >= share or not calls.take(keep=DESCRIBES // 4):
+            break
+        granted.add(name)
+    return granted
 
 
 #: A row whose stream pass may still be under way is no lost hint: longer than the stream's batching

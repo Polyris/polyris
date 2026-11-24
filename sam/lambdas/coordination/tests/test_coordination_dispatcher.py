@@ -546,9 +546,10 @@ def test_only_the_sweepers_pass_judges_a_run_task_and_each_check_backs_off(world
     assert world.sfn.described.count(run_task_execution("extract")) == 1     # not before its next check
 
 
-def test_a_check_describes_only_as_many_executions_as_its_sweeper_run_may_and_leaves_the_rest_due(world):
+def test_a_check_reads_the_runs_own_execution_before_its_rows_and_leaves_the_rest_due(world, monkeypatch):
     """Step Functions answers DescribeExecution from a bucket of 300 calls: a sweeper run makes at most
-    sweep.DESCRIBES, shared by every run it checks, and a row past them stays due for its next run (S5)."""
+    sweep.DESCRIBES, shared by every run it checks (S5). The run's own execution takes its call first, then its rows
+    (D141); a row past the calls stays due for the next sweeper run."""
     start(world, CHAIN)
     full(world)
     execution_is(world)
@@ -558,10 +559,15 @@ def test_a_check_describes_only_as_many_executions_as_its_sweeper_run_may_and_le
     assert world.sfn.described == []
     extract = item(world, key("extract"))
     assert extract.get("checks", 0) == 0 and extract["attention_at"] <= format_utc(world.clock.at)   # still due
+    monkeypatch.setattr(sweep, "DESCRIBES", 4)          # a share of one row a run, one call kept for the runs
     one = sweep.Calls(1)
     check(world, describes=one)
-    assert world.sfn.described == [run_task_execution("extract")]      # none left for the run's own check
-    assert one.left == 0 and item(world, key("extract"))["checks"] == 1
+    assert world.sfn.described == [PIPELINE_EXECUTION] and one.left == 0    # the run's execution first
+    assert item(world, key("extract")).get("checks", 0) == 0
+    calls = sweep.Calls(4)
+    check(world, describes=calls)
+    assert world.sfn.described[1:] == [run_task_execution("extract"), PIPELINE_EXECUTION] and calls.left == 2
+    assert item(world, key("extract"))["checks"] == 1
 
 
 def test_a_run_task_that_ended_without_an_outcome_fails_its_row_with_how_it_ended(world):

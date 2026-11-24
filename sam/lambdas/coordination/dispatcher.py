@@ -54,7 +54,8 @@ import failures
 from failures import CoordinationTransient
 from logger import log
 from polyris.constants import TaskSpecKey, TaskStatus, WarningKind
-from polyris.coordination import actions, asset_spec, dispatch, dispatch_writes, pauses, records, run_input, run_row
+from polyris.coordination import actions, asset_spec, deadlines, dispatch, dispatch_writes, pauses, records, run_input
+from polyris.coordination import run_row
 from polyris.coordination import run_name, run_task_input, spec_store, sweep, task_row, task_spec, transitions
 from polyris.coordination.times import format_utc, parse_utc
 from polyris.coordination.asset_conditions import Evaluation
@@ -121,6 +122,8 @@ class _Pass:
     inputs: Optional[run_input.RunInput] = None
     check: bool = False                    # the sweeper's pass: liveness, the engine's stop, lost hints (§7)
     describes: Optional[sweep.Calls] = None    # the DescribeExecution calls its sweeper run may still make (S5)
+    granted: Optional[Set[str]] = None         # the rows whose executions it judges, of those due (D141)
+    engine_call: bool = False                  # a call taken for the run's own execution, before its rows (D141)
     left_read: bool = False                # the run row carried left_at when the pass read it
     lost: List[str] = field(default_factory=list)
     facts: Dict[str, Evaluation] = field(default_factory=dict)    # one evaluation per wait_for a pass
@@ -241,6 +244,15 @@ class Dispatcher:
         state = _Pass(run, {}, {}, names, deadline, source, now, check=check, describes=describes,
                       left_read=run.left_at is not None)
         self._read_rows(state, {name: keys[name] for name in judged})
+        if check and describes is not None:
+            # The run's own execution takes its call first; then its rows, the longest due first, to their share (D141).
+            state.engine_call = dispatch.engine_check_due(run, now=now, finished=False) and describes.take()
+            due: List[Tuple[datetime, str]] = []
+            for name, row in state.rows.items():
+                check_at = deadlines.liveness_check(row.times)
+                if check_at is not None and dispatch.liveness_due(row, run, now=now):
+                    due.append((check_at, name))
+            state.granted = sweep.grant(due, describes)
         if targets is not None:
             # A narrow pass is woken by a fact through the rows' pointers: a row an operator's action finished left
             # its wait without a decision of a pass, so its pointers go here (Rule 40, ADR #137 §7).
@@ -265,8 +277,8 @@ class Dispatcher:
                         self._decide(state, name)
             if targets is None:
                 end = self._run_end(state, keys)
-                stopped = (self._engine_check(state.run, now, finished=end.finished, describes=state.describes)
-                           if check else None)
+                stopped = (self._engine_check(state.run, now, finished=end.finished, describes=state.describes,
+                                              reserved=state.engine_call) if check else None)
                 if stopped is not None:                    # its execution ended before its answer (§4)
                     state.run = stopped
                     self._stop_rows(state, judged)
@@ -465,8 +477,8 @@ class Dispatcher:
             return dispatch.stop(row, now=state.now, cause=_stop_cause(state.run))
         if state.check and dispatch.liveness_due(row, state.run, now=state.now):
             self._within_budget(state)                         # judging an execution takes a call
-            # Past its sweeper run's calls the row stays due: the next run judges it (S5).
-            if state.describes is None or state.describes.take():
+            # A row not granted a call stays due: the next sweeper run judges it (S5, D141).
+            if state.granted is None or name in state.granted:
                 execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
                                            state.run, subject=row.key)
                 if execution is not None:              # an unknown state judges nothing (invariant 10)
@@ -596,17 +608,20 @@ class Dispatcher:
     # ── executions: the sweeper's checks (§1, §4) ────────────────────────
 
     def _engine_check(self, run: dispatch.RunView, now: datetime, *, finished: bool,
-                      describes: Optional[sweep.Calls] = None) -> Optional[dispatch.RunView]:
+                      describes: Optional[sweep.Calls] = None, reserved: bool = False) -> Optional[dispatch.RunView]:
         """The engine's stop of a run whose execution ended before its answer, or that never became active (§4).
 
         Returns the run as the stop mark left it, or None when the run goes on or
         the mark's write was refused: another write raised ``run_version``, or a
         Stop of the run came first; the next check decides again. So does a run
-        whose sweeper run has no DescribeExecution call left (S5).
+        whose sweeper run has no DescribeExecution call left (S5): its pass takes
+        the call first (``reserved``), and gives it back when no check is due (D141).
         """
         if not dispatch.engine_check_due(run, now=now, finished=finished):
+            if describes is not None and reserved:
+                describes.give_back()
             return None
-        if describes is not None and not describes.take():
+        if describes is not None and not (reserved or describes.take()):
             return None
         cause = dispatch.engine_stop_cause(run, now=now, execution=self._describe_run(run), finished=finished)
         if cause is None:
