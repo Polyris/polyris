@@ -9,7 +9,6 @@ and prevent boto3 initialization errors during imports.
 """
 
 import os
-import re
 from typing import Dict
 
 # ============================================
@@ -213,11 +212,3 @@ RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 
 # Step Functions
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
-
-# ============================================
-# Constants
-# ============================================
-# Regex pattern for execution_name format: {task_name}-{YYYY-MM-DD}-{short_id}
-# short_id can be any length (typically 1-20 chars from pipeline_execution)
-# This pattern ensures: prefix-DATE-suffix (date not at start/end alone)
-EXECUTION_NAME_PATTERN = re.compile(r'.+-\d{4}-\d{2}-\d{2}-.{8,}$')

@@ -14,6 +14,9 @@ execution while a newer one sat unexamined — and every task action route
 (retry/skip/fail/mark_success/stop) depends on this function to pick the
 right execution to mutate.
 """
+import pytest
+
+from polyris.coordination import task_row
 from routes.tasks import resolve_task_item
 
 
@@ -34,6 +37,18 @@ class TestResolveTaskItemPagination:
         item, execution_name = resolve_task_item("extract-2024-01-15-abc12345", "2024-01-15")
 
         assert execution_name == "extract-2024-01-15-abc12345"
+        query_mock.assert_not_called()
+
+    @pytest.mark.parametrize("date", ["2026-11-18T05", "2026-W47", "2026-11"])
+    def test_the_key_of_a_row_of_an_hourly_weekly_or_monthly_run_finds_its_row(self, mocker, date):
+        """The console sends a row's key. One of an hourly, weekly or monthly run has no YYYY-MM-DD in it, was
+        searched for as a task's name, and every action on its task answered 404 (the review of the branch, E-1)."""
+        key = task_row.key("extract", date, f"sales-etl-run-{date}-abcd0001")
+        row = {"execution_name": key, "status": "failed"}
+        mocker.patch("routes.tasks.executions_repo.get", side_effect=lambda k, **_: row if k == key else None)
+        query_mock = mocker.patch("routes.tasks.executions_repo.query_by_date_raw", return_value=_page([]))
+
+        assert resolve_task_item(key, date) == (row, key)
         query_mock.assert_not_called()
 
     def test_more_recent_match_on_a_later_page_is_found_not_missed(self, mocker):
@@ -82,8 +97,8 @@ class TestResolveTaskItemPagination:
             return page1 if calls["n"] == 1 else page2
 
         mocker.patch("routes.tasks.executions_repo.query_by_date_raw", side_effect=fake_query)
-        mocker.patch("routes.tasks.executions_repo.get",
-                      return_value={"execution_name": "extract-2024-01-15-onlymatch"})
+        rows = {"extract-2024-01-15-onlymatch": {"execution_name": "extract-2024-01-15-onlymatch"}}
+        mocker.patch("routes.tasks.executions_repo.get", side_effect=lambda key, **_: rows.get(key))
 
         item, execution_name = resolve_task_item("extract", "2024-01-15", "run1")
 

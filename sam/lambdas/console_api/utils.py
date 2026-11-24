@@ -16,10 +16,7 @@ from typing import Dict, Any, List
 
 from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
 
-from config import (
-    s3, lambda_client,
-    EXECUTION_NAME_PATTERN
-)
+from config import s3, lambda_client
 from constants import Limits
 from logger import log
 
@@ -129,24 +126,6 @@ def should_skip_token_row(item: dict) -> bool:
     alone, which misses Backfill records.
     """
     return is_internal_record(item.get('execution_name', '')) or is_backfill_record(item)
-
-
-def is_execution_name(name: str) -> bool:
-    """
-    Check if the given name is a full execution_name.
-    
-    execution_name format: {task_name}-{YYYY-MM-DD}-{short_id}
-    where short_id is 8-20 characters from pipeline_execution.
-    
-    task_name format: just the task name without date suffix
-    
-    Examples:
-        'extract-2024-01-15-abc123xyz' -> True  (valid execution_name)
-        'import-2024-data-special'     -> False (task name with 'data' not date)
-        'load_daily'                   -> False (plain task name)
-        'task-2024-01-15'              -> False (no short_id suffix)
-    """
-    return bool(EXECUTION_NAME_PATTERN.match(name))
 
 
 def retrieve_result(result: Any) -> Any:

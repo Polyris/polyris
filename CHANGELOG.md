@@ -99,6 +99,10 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - The trigger rules `one_failed`, `all_failed`, `none_failed` and `none_failed_min_one_success` (ADR #138). `docs/features/DSL.md#trigger-rules` describes all nine, and `examples/09_trigger_rules` shows them side by side.
 - Every skipped task records its origin in `skip_origin`: `manual`, `run` or `rule`. Only a rule's skip cascades under `all_success`.
 
+### Fixed
+
+- On a task of an hourly, weekly or monthly run, the console's Skip, Fail, Mark Successful, Stop and Restart answered `Task not found`. The routes recognized a row's key by a daily date in it, and searched for any other key as a task's name; they now look the key up first.
+
 ## v1.2.3 - 2026-11-18
 
 ### Breaking — `--all` and pipeline files (ADR #139)

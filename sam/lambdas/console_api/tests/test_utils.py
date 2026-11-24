@@ -7,34 +7,6 @@ from decimal import Decimal
 
 
 
-class TestIsExecutionName:
-    """Tests for is_execution_name() function."""
-    
-    def test_valid_execution_name(self):
-        from console_api.utils import is_execution_name
-        assert is_execution_name('extract-2024-01-15-abc123xy') is True
-    
-    def test_valid_execution_name_long_task(self):
-        from console_api.utils import is_execution_name
-        assert is_execution_name('my-long-task-name-2024-01-15-abc123xy') is True
-    
-    def test_task_name_with_date_in_name(self):
-        from console_api.utils import is_execution_name
-        assert is_execution_name('daily-2024-report-2024-01-15-abc123xy') is True
-    
-    def test_plain_task_name(self):
-        from console_api.utils import is_execution_name
-        assert is_execution_name('extract') is False
-    
-    def test_no_short_id(self):
-        from console_api.utils import is_execution_name
-        assert is_execution_name('extract-2024-01-15') is False
-    
-    def test_short_id_too_short(self):
-        from console_api.utils import is_execution_name
-        assert is_execution_name('extract-2024-01-15-abc') is False
-
-
 class TestSafeInt:
     """Tests for safe_int() function."""
     

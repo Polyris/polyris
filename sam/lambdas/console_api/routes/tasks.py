@@ -36,7 +36,7 @@ from logger import log
 from auth import operator_display
 from utils import (
     should_skip_token_row,
-    is_execution_name, safe_int, safe_param_int,
+    safe_int, safe_param_int,
     resolve_pagerduty, retrieve_result, resolve_max_retries, parse_task_config
 )
 
@@ -67,12 +67,13 @@ def resolve_task_item(
     item = None
     execution_name = task_name
     
-    # Try direct lookup first if it looks like execution_name
-    if is_execution_name(task_name):
+    # A row's key first, whatever the form of its run's date: the key of a row of an hourly, weekly or monthly run
+    # has no YYYY-MM-DD in it, and the console sends a row's key (the review of the branch, E-1). A task's name
+    # finds no row and goes on to the date's index.
+    if task_row.is_task_key(task_name):
         item = executions_repo.get(task_name)
         if item:
             return item, task_name
-        # Fall through to GSI lookup if not found
     
     # GSI lookup with pagination
     filter_expr = Attr('task_name').eq(task_name)

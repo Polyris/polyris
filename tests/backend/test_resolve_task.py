@@ -93,7 +93,7 @@ def test_resolve_gsi_lookup_by_task_name(mocker):
              'started_at': '2026-02-20T12:00:00Z', 'pipeline_execution': 'p2'},
         ],
     }
-    mock_repo.get.return_value = item_new
+    mock_repo.get.side_effect = lambda key, **_: item_new if key == item_new['execution_name'] else None
 
     mocker.patch('routes.tasks.executions_repo', mock_repo)
     from routes.tasks import resolve_task_item
@@ -114,7 +114,7 @@ def test_resolve_gsi_with_pipeline_execution_filter(mocker):
              'started_at': '2026-02-20T10:00:00Z', 'pipeline_execution': 'exec-specific'},
         ],
     }
-    mock_repo.get.return_value = target_item
+    mock_repo.get.side_effect = lambda key, **_: target_item if key == target_item['execution_name'] else None
 
     mocker.patch('routes.tasks.executions_repo', mock_repo)
     from routes.tasks import resolve_task_item
@@ -160,7 +160,7 @@ def test_resolve_gsi_pagination_empty_pages(mocker):
 
     mock_repo = mocker.MagicMock()
     mock_repo.query_by_date_raw.side_effect = mock_query
-    mock_repo.get.return_value = target_item
+    mock_repo.get.side_effect = lambda key, **_: target_item if key == target_item['execution_name'] else None
 
     mocker.patch('routes.tasks.executions_repo', mock_repo)
     from routes.tasks import resolve_task_item
