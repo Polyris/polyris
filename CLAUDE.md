@@ -598,6 +598,8 @@ from dal import executions_repo, pipelines_repo
 
 **A key is looked up, never recognized by its form.** A run's date takes the form of its granularity (`2026-11-18`, `2026-11-18T05`, `2026-W47`, `2026-11`), and so does the key of each of its rows. The task routes recognized a row's key by a daily date in it and searched for any other as a task's name, so every action on a task of an hourly, weekly or monthly run answered 404 (review of the branch, E-1; `test_the_key_of_a_row_of_an_hourly_weekly_or_monthly_run_finds_its_row`).
 
+**A read that fills a page counts what the page shows.** The Tasks tab filtered to a pipeline read until it held 101 runs for a page of 100 task rows: on a pipeline of 2,000 tasks, 202,000 rows, about 50 s by the TR-7 estimate (P-6). It counts the rows a page keeps, and says when it stopped before the index's end (`test_a_run_with_more_rows_than_the_page_wants_is_read_alone`, `test_a_page_that_one_run_fills_still_says_older_runs_exist`).
+
 **A ProjectionExpression on a GSI names only what that index projects.** DynamoDB rejects the whole query otherwise (`… does not project [...]`); moto does not, so unit tests pass. Read the index without a projection, or with its keys and `NonKeyAttributes` only, and fetch the rest with `batch_get_run_meta`. `tests/sdk/test_console_index_projections.py` checks every index read against `sam/template.yaml`; `/api/tasks` failed with a 500 on every filter until the 1.2.0 live smoke.
 
 One deliberate exception: `notify/registry.py` has no `dal/` and one table accessor — `registry_table()` is the accessor. A DAL for a single function would be over-engineering.
@@ -625,6 +627,8 @@ except (ClientError, BotoCoreError) as e:
 **A repeated action is a no-op only while the first one is in progress.** Once the state it left is gone, it acts again or refuses, and its answer says what it did, not what was asked. A Stop of a run whose stop was done, after a Restart ran its task again, answered "stopping" and changed nothing, and a Pause was refused for good (review of TR-6; `test_a_stop_after_a_done_stop_and_a_restart_stops_the_rerun`).
 
 **A backoff holds the whole run it backs off.** A run whose pass failed for good waits for its run row's due time though rows of it are due, since their checks would meet the same failure: the sweeper moved only the run row's due time and checked the run first at every sweep (review of the branch, P-1; `test_a_broken_run_waits_for_its_backoff_not_every_sweep`).
+
+**A periodic job's calls to a rate-limited API have a budget per run.** One sweep judged 2,000 executions that fell due together with 2,001 `DescribeExecution` calls, against a bucket of 300 (the TR-7 estimate, S5). A sweep makes `sweep.DESCRIBES` of them, and the rows past them stay due for the next one (`test_a_sweep_judges_as_many_executions_as_its_calls_allow_and_the_next_one_the_rest`).
 
 **A step a pass repeats until its request clears records its progress or keeps off the decisions' path.** A Restart's pointer step rewrote the pointers of every waiting row before any decision, on every pass until it cleared, and under a Stop wrote pointers it deleted at once; it writes those of the rows waiting since its request alone, keeps the first request's time, and none under a Stop (review of TR-6; `test_a_restart_writes_the_pointers_of_the_rows_it_put_back_to_wait_and_renews_nothing`).
 

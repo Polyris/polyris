@@ -26,6 +26,14 @@ BATCH_PAYLOAD_MAX = 30 * 1024
 #: The most bytes of the date variables run_task adds to the payload of a Lambda or a state machine
 #: (polyris.variables, at the longest date and backfill id); a test renders them against it.
 DATE_VARIABLES_MAX = 1024
+#: Step Functions' limit on the events of one execution's history, a quota AWS does not raise.
+HISTORY_EVENTS_MAX = 25_000
+#: What this platform allows run_task, a tenth below Step Functions' limit: the events per attempt and per upstream
+#: below were counted on the coordination harness (the TR-7 estimate, R-1), not on AWS.
+HISTORY_EVENTS_LIMIT = 22_500
+#: run_task's history events: a fixed part, a part per retry, and seven per upstream whose output an attempt reads
+#: (Read_Upstream_Outputs, again at each retry).
+_HISTORY_FIXED, _HISTORY_PER_RETRY, _HISTORY_PER_UPSTREAM = 52, 46, 7
 #: The task types whose work gets the variables in its payload (Run_Task_Lambda, Run_Task_SFN).
 _TYPES_WITH_VARIABLES = frozenset({"lambda", "sfn"})
 #: The longest values a run gives the fields of run_task's input that the spec does not: a partition key (an
@@ -101,6 +109,11 @@ def spec_errors(version: task_spec.Version) -> List[str]:
     return errors
 
 
+def run_task_history(upstreams: int, retries: int) -> int:
+    """The history events of a task's run_task when every attempt fails and reads every upstream's output."""
+    return _HISTORY_FIXED + _HISTORY_PER_RETRY * retries + _HISTORY_PER_UPSTREAM * upstreams * (retries + 1)
+
+
 def worst_upstreams(dependencies: List[str]) -> Dict[str, Tuple[str, Optional[str]]]:
     """Each dependency at the status and skip origin that take the most bytes in the statuses run_task passes
     on (``run_task_input.upstream_statuses``)."""
@@ -109,7 +122,8 @@ def worst_upstreams(dependencies: List[str]) -> Dict[str, Tuple[str, Optional[st
 
 
 def _start_errors(pipeline: str, task_id: str, text: str) -> List[str]:
-    """D118: run_task's input with the statuses of every upstream against Step Functions' 256 KB (with the date
+    """run_task's history against Step Functions' 25,000 events, with every upstream and every retry (R-1).
+    D118: run_task's input with the statuses of every upstream against Step Functions' 256 KB (with the date
     variables a Lambda's or a state machine's payload adds), an ECS task's overrides with the environment
     run_task adds against ECS's 8,192 characters, and a Batch task's SubmitJob request against Batch's 30 KiB.
     A wide fan-in passes one status per upstream; the run's variables, which the deploy does not know, are left
@@ -119,6 +133,14 @@ def _start_errors(pipeline: str, task_id: str, text: str) -> List[str]:
     upstreams = worst_upstreams(dependencies)
     task_type = spec.fields[TaskSpecKey.TASK_TYPE]
     errors: List[str] = []
+    config = spec.fields.get(TaskSpecKey.TASK_CONFIG) or {}
+    retries = int(config.get(TaskConfigKey.RETRIES.value) or 0) if isinstance(config, Mapping) else 0
+    events = run_task_history(len(dependencies), retries)
+    if events > HISTORY_EVENTS_LIMIT:
+        errors.append(f"Task '{task_id}': its run_task records about {events:,} history events with its "
+                      f"{len(dependencies)} upstreams and {retries} retries, since each attempt reads every upstream's "
+                      f"output, over the limit of {HISTORY_EVENTS_LIMIT:,} (Step Functions allows "
+                      f"{HISTORY_EVENTS_MAX:,} per execution); lower its retries or split the fan-in")
     try:
         size = len(run_task_input.build(
             execution_name=_longest_execution_name(task_id),

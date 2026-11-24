@@ -168,6 +168,24 @@ class TestPaging:
         assert by_date.call_count == 0
         assert body["next"] is None
 
+    def test_a_page_that_one_run_fills_still_says_older_runs_exist(self, mocker, no_scan):
+        """A page holds whole runs, so when one run fills it the read's extra row is a twin of its last one; the read
+        stopped before the index's end, so `next` points at the older runs (the TR-7 estimate, P-6)."""
+        run = [_task_row(name=f"t{i}") for i in range(5)]
+        by_pipeline = mocker.patch("routes.tasks.executions_repo.query_runs_by_pipeline",
+                                   return_value=(run, "2026-07-07"))
+
+        body = _body(get_all_tasks(_event(pipeline="sales", limit=3)))
+
+        assert body["count"] == 5
+        assert body["next"] == "2026-07-08T10:00:00Z"
+        assert by_pipeline.call_args.args[1] == 4          # one row more than the page
+
+    def test_the_end_of_the_index_ends_the_feed(self, mocker, no_scan):
+        mocker.patch("routes.tasks.executions_repo.query_runs_by_pipeline",
+                     return_value=([_task_row(name=f"t{i}") for i in range(5)], None))
+        assert _body(get_all_tasks(_event(pipeline="sales", limit=3)))["next"] is None
+
     def test_cursor_seeds_the_index_read_for_a_pipeline(self, mocker, no_scan):
         by_pipeline = mocker.patch("routes.tasks.executions_repo.query_runs_by_pipeline",
                                    return_value=([], None))

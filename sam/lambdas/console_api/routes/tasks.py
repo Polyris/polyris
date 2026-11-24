@@ -217,6 +217,7 @@ def get_all_tasks(event: Dict) -> Dict:
                 and (not status_filter or item.get('status') == status_filter)
                 and is_older(item, before))
 
+    more = False   # whether the read stopped before the end of its source (page_by_started_at)
     try:
         if date_filter:
             key_cond = Key('date').eq(date_filter)
@@ -235,10 +236,7 @@ def get_all_tasks(event: Dict) -> Dict:
             # same read /api/runs uses, so both halves of History reach equally far
             # back. Replaces a full-table Scan: unbounded cost, and its arbitrary row
             # order made "the newest N" a lottery no cursor could page honestly.
-            items = pipeline_rows_before(
-                pipeline_filter, before, limit,
-                count_fn=lambda rows: sum(1 for r in rows if _keeps(r)),
-            )
+            items, more = pipeline_rows_before(pipeline_filter, before, limit, keep=_keeps)
             # The index read takes no FilterExpression — its whole-date accounting
             # counts returned rows — so status is applied here instead.
             if status_filter:
@@ -260,7 +258,7 @@ def get_all_tasks(event: Dict) -> Dict:
         # so a page is a pageful of real rows.
         rows = [i for i in items if not should_skip_token_row(i) and i.get('task_name')]
 
-        page, next_cursor = page_by_started_at(rows, before, limit)
+        page, next_cursor = page_by_started_at(rows, before, limit, more=more)
 
         # Fields the index read lacks (_TASKS_BACKFILL), from the base table for the
         # current page only. A page holds whole runs (page_by_started_at), so a run of

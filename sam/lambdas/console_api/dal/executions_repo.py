@@ -16,7 +16,7 @@ records carry a ``date`` (ADR #137 §5), so both indexes list them. A census tes
 (``tests/test_date_index_readers.py``) fails for a read of them anywhere else.
 """
 
-from typing import Any, Optional
+from typing import Any, Callable, Dict, Optional
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -207,9 +207,10 @@ class ExecutionsRepo:
         response = self.table.query(**params)
         return _task_rows(response.get('Items', []))
 
-    def query_runs_by_pipeline(self, pipeline_name: str, min_runs: int = 15,
-                               before_date: str = None, projection: str = None,
-                               expr_names: dict = None) -> tuple:
+    def query_runs_by_pipeline(self, pipeline_name: str, min_rows: int, *,
+                               keep: Optional[Callable[[Dict], bool]] = None,
+                               before_date: Optional[str] = None, projection: Optional[str] = None,
+                               expr_names: Optional[dict] = None) -> tuple:
         """Task rows for one pipeline, newest date first, via pipeline-date-index.
 
         The inverse of :meth:`query_by_date`: instead of asking "who ran on day D"
@@ -218,8 +219,11 @@ class ExecutionsRepo:
         the row TTL — there is no window constant to pick.
 
         Reads **whole dates** so an execution's task set is never split across a page;
-        the caller can aggregate safely. Stops once ``min_runs`` distinct executions
-        are covered.
+        the caller can aggregate safely. Stops once the dates it returns hold ``min_rows``
+        rows that ``keep`` accepts (every row without it): rows, not runs, since a page
+        shows rows and holds whole runs anyway. Counting 101 runs, the Tasks tab read
+        202,000 rows on a pipeline of 2,000 tasks with 101 runs behind it, about 50 s by
+        the TR-7 estimate (P-6).
 
         Returns ``(items, next_before_date)``. Pass ``next_before_date`` back as
         ``before_date`` for the next page (inclusive — the cut date is re-read, its
@@ -241,7 +245,7 @@ class ExecutionsRepo:
         _skippable(params)
 
         items: list = []
-        by_date: dict = {}
+        counted: Dict[str, int] = {}   # per date, the rows that count toward min_rows
         last_key = None
         while True:
             if last_key:
@@ -250,20 +254,20 @@ class ExecutionsRepo:
             for item in _task_rows(response.get('Items', [])):
                 items.append(item)
                 date_str = item.get('date', '')
-                pipeline_execution = item.get('pipeline_execution')
-                if date_str and pipeline_execution:
-                    by_date.setdefault(date_str, set()).add(pipeline_execution)
+                if date_str and item.get('pipeline_execution'):
+                    counted[date_str] = counted.get(date_str, 0) + (1 if keep is None or keep(item) else 0)
             last_key = response.get('LastEvaluatedKey')
             if not last_key:
                 return items, None  # nothing older exists
 
             # Only cut on a date boundary, and only once a second date is in the
-            # buffer — otherwise the oldest date may still be half-read.
-            total_runs = sum(len(execs) for execs in by_date.values())
-            if total_runs >= min_runs and len(by_date) > 1:
-                oldest = min(by_date)
-                kept = [i for i in items if i.get('date', '') > oldest]
-                return kept, oldest
+            # buffer — otherwise the oldest date may still be half-read. Its rows
+            # are not returned, so they do not count.
+            if len(counted) > 1:
+                oldest = min(counted)
+                if sum(n for day, n in counted.items() if day != oldest) >= min_rows:
+                    kept = [i for i in items if i.get('date', '') > oldest]
+                    return kept, oldest
 
     def rows_of_pipeline_date(self, pipeline_name: str, date: str) -> list:
         """One pipeline's task rows of one date, every page, from pipeline-date-index; internal and backfill rows

@@ -137,6 +137,7 @@ class Sweeper:
         now = self.clock()
         counts: Dict[str, Any] = {"runs_checked": 0, "passes_failed": 0, "lost_hint_runs": 0, "orphans_stopped": 0,
                                   "budget_reached": False}
+        describes = sweep.Calls(sweep.DESCRIBES)       # shared by every run this sweep checks (S5)
         checked: Set[str] = set()
         orphaned: Set[str] = set()
         first_failure = ""
@@ -156,7 +157,7 @@ class Sweeper:
             if run_key in checked:
                 continue
             checked.add(run_key)
-            result, failure = self._check(run_key, key, now, deadline)
+            result, failure = self._check(run_key, key, now, deadline, describes=describes)
             if result.get("action") == BACKOFF:
                 continue
             counts["runs_checked"] += 1
@@ -168,11 +169,13 @@ class Sweeper:
                 counts["orphans_stopped"] += int(result.get("stopped", 0))
             elif result.get("lost"):
                 counts["lost_hint_runs"] += 1
+        counts["describes"] = sweep.DESCRIBES - describes.left
         if sweep.failed_step(counts["runs_checked"], counts["passes_failed"]):
             counts["failed_step"] = sweep.failed_passes(counts["runs_checked"], counts["passes_failed"], first_failure)
         return counts
 
-    def _check(self, run_key: str, key: str, now: datetime, deadline: float) -> Tuple[Dict[str, Any], str]:
+    def _check(self, run_key: str, key: str, now: datetime, deadline: float, *,
+               describes: sweep.Calls) -> Tuple[Dict[str, Any], str]:
         """The check of one run: its full pass, then the move of its due time, and its lost-hint warning.
 
         Returns the pass's result and, when the pass failed, the cause. The
@@ -193,7 +196,7 @@ class Sweeper:
         failure = ""
         try:
             result = self.dispatcher.full_pass(run_key, source=sweep.SOURCE, remaining_ms=remaining, check=True,
-                                               orphan_keys=[key])
+                                               describes=describes, orphan_keys=[key])
         except CoordinationTransient as exc:
             log.error("sweeper", "a pass failed transiently; the next sweep checks the run again", run=run_key,
                       error=str(exc))

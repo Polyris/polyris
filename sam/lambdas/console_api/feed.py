@@ -129,10 +129,10 @@ def pipeline_rows_before(
     pipeline_name: str,
     before: str,
     want: int,
-    count_fn: Callable[[List[Dict]], int],
-    projection: str = None,
-    expr_names: dict = None,
-) -> List[Dict]:
+    keep: Callable[[Dict], bool],
+    projection: Optional[str] = None,
+    expr_names: Optional[dict] = None,
+) -> Tuple[List[Dict], bool]:
     """Task rows for one pipeline, newest first — one page's worth **plus one**.
 
     Reads ``pipeline-date-index`` (ADR #108), so there is no date window — depth is
@@ -146,32 +146,21 @@ def pipeline_rows_before(
     what we ask for, so only this one has to ask for one more than it needs.
 
     The cursor otherwise only says *where to start*. The rows on its own date that are
-    newer than it were already served, so the first read can come back almost entirely
-    consumed; ``count_fn`` counts what a page would actually get out of the buffer, and
-    we keep reading (whole dates at a time — an execution's task set is never split
-    across a read) until the page can be filled or the index runs out.
-
-    Without that loop a busy cut date would stall paging outright: the repo's cursor is
-    a date, so every call would re-read the same already-served rows, hand back a short
+    newer than it were already served, so the read counts only the rows ``keep`` accepts,
+    those a page would actually get, and reads whole dates (an execution's task set is
+    never split across a read) until they fill the page or the index runs out. Counted
+    on every row, a busy cut date would stall paging outright: the repo's cursor is a
+    date, so every call would re-read the same already-served rows, hand back a short
     page, and never reach the older dates behind them.
+
+    Returns the rows and whether the read stopped before the index's end. A page holds
+    whole runs, so the one extra row is often a twin of its last row, and
+    :func:`page_by_started_at` needs to know that older rows exist (review of TR-6d).
     """
-    rows: List[Dict] = []
-    cursor = before[:10] if before else None
-    while True:
-        chunk, cursor = executions_repo.query_runs_by_pipeline(
-            pipeline_name,
-            min_runs=want + 1,
-            before_date=cursor,
-            projection=projection,
-            expr_names=expr_names,
-        )
-        rows.extend(chunk)
-        # The repo cuts on a date boundary and only ever hands back a *strictly older*
-        # cursor, so this terminates: either we overshoot the page or the index is
-        # exhausted — and exhausted is the only honest way to end up with exactly
-        # `want` rows.
-        if cursor is None or count_fn(rows) > want:
-            return rows
+    rows, cursor = executions_repo.query_runs_by_pipeline(
+        pipeline_name, want + 1, keep=keep, before_date=before[:10] if before else None,
+        projection=projection, expr_names=expr_names)
+    return rows, cursor is not None
 
 
 def run_rows_before(before: str, want: Optional[int], *, days: int, pipeline: str = '',

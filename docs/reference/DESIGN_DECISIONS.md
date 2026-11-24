@@ -8968,6 +8968,12 @@ earlier than its logical `date`: no row older than T can hide on a date newer th
   `started_at`. Deliberately not answered here. `query_all` already logs `Hit max_items
   limit`, and `query_runs_by_date` cuts on the same condition, so whether this is live is
   measurable rather than arguable.
+- **1.3 update.** `query_runs_by_pipeline` counts the rows a page would keep, not runs, and the fill loop is gone:
+  the read goes on over whole dates until the dates it returns hold `want + 1` rows that `keep` accepts, so a
+  busy cut date of rows the cursor already served cannot stall it. Counting 101 runs, a page of a pipeline of
+  2,000 tasks read 202,000 rows, about 50 seconds by the TR-7 estimate. A page then often holds a single run,
+  whose rows are all twins of its last one, so `pipeline_rows_before` says whether the read stopped before the
+  index's end, and `page_by_started_at` keeps its cursor then (`more`).
 
 ### 118. `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories
 

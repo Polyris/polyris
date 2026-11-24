@@ -80,7 +80,9 @@ READ_BATCH = 100
 #: The task names a container keeps across invocations, by spec version: a pass keeps no spec text (D117).
 NAMES_CACHE = 20_000
 #: The bytes of spec texts a container keeps across invocations; a start reads its task's text by hash (D117).
-TEXTS_CACHE_BYTES = 32 * 1024 * 1024
+#: Parsed, a text takes up to about seven times its canonical JSON in memory: 32 MB of text could hold 216 MB
+#: in a 512 MB function (the TR-7 estimate, R-5), so 8 MB of text keeps the cache within a quarter of it.
+TEXTS_CACHE_BYTES = 8 * 1024 * 1024
 ACCESS_DENIED = frozenset({"AccessDeniedException", "AccessDenied"})
 #: The cancellation reason of a transaction that met another one (§7).
 CONFLICT = "TransactionConflict"
@@ -118,6 +120,7 @@ class _Pass:
     left: bool = False
     inputs: Optional[run_input.RunInput] = None
     check: bool = False                    # the sweeper's pass: liveness, the engine's stop, lost hints (§7)
+    describes: Optional[sweep.Calls] = None    # the DescribeExecution calls its sweeper run may still make (S5)
     left_read: bool = False                # the run row carried left_at when the pass read it
     lost: List[str] = field(default_factory=list)
     facts: Dict[str, Evaluation] = field(default_factory=dict)    # one evaluation per wait_for a pass
@@ -148,15 +151,17 @@ class Dispatcher:
     # ── entry points ─────────────────────────────────────────────────────
 
     def full_pass(self, run_key: str, *, source: str, remaining_ms: Callable[[], int], check: bool = False,
-                  orphan_keys: Sequence[str] = ()) -> Dict[str, Any]:
+                  describes: Optional[sweep.Calls] = None, orphan_keys: Sequence[str] = ()) -> Dict[str, Any]:
         """A pass over every row of the run, which also decides the run's end (§4).
 
         ``check`` makes it the sweeper's check of the run: it judges executions and
         reports in ``lost`` the rows whose wait ended on a lost hint (§7).
+        ``describes`` counts the executions its sweeper run may still judge; past them
+        a row or run is left due for the next run (S5).
         ``orphan_keys`` are rows to stop if the run row is missing (invariant 11).
         """
         return self._pass(run_key, None, source=source, remaining_ms=remaining_ms, orphan_keys=set(orphan_keys),
-                          check=check)
+                          check=check, describes=describes)
 
     def narrow_pass(self, run_key: str, task_keys: Sequence[str], *, source: str,
                     remaining_ms: Callable[[], int]) -> Dict[str, Any]:
@@ -198,11 +203,12 @@ class Dispatcher:
     # ── a pass ───────────────────────────────────────────────────────────
 
     def _pass(self, run_key: str, targets: Optional[Set[str]], *, source: str, remaining_ms: Callable[[], int],
-              orphan_keys: Optional[Set[str]] = None, check: bool = False) -> Dict[str, Any]:
+              orphan_keys: Optional[Set[str]] = None, check: bool = False,
+              describes: Optional[sweep.Calls] = None) -> Dict[str, Any]:
         deadline = self.monotonic() + max(0, remaining_ms() - RESERVE_MS) / 1000
         try:
             return self._run_pass(run_key, targets, source=source, deadline=deadline,
-                                  orphan_keys=orphan_keys or set(targets or ()), check=check)
+                                  orphan_keys=orphan_keys or set(targets or ()), check=check, describes=describes)
         except CoordinationTransient:
             raise
         except (ClientError, BotoCoreError) as exc:
@@ -212,7 +218,7 @@ class Dispatcher:
             return self._failed(run_key, source, exc)
 
     def _run_pass(self, run_key: str, targets: Optional[Set[str]], *, source: str, deadline: float,
-                  orphan_keys: Set[str], check: bool) -> Dict[str, Any]:
+                  orphan_keys: Set[str], check: bool, describes: Optional[sweep.Calls]) -> Dict[str, Any]:
         now = self.clock()
         run_item = self._get(run_key)
         if run_item is None:
@@ -223,7 +229,7 @@ class Dispatcher:
             return self.stop_orphans(run_key, sorted(keys), source=source, deadline=deadline)
         run = dispatch.run_view(run_item)
         if check and run.status == run_row.CREATING:
-            run = self._engine_check(run, now, finished=False) or run     # it never became active (§4)
+            run = self._engine_check(run, now, finished=False, describes=describes) or run  # never active (§4)
         if not run.active and not run.stopping:
             return {"run": run_key, "source": source, "action": "creating"}    # nothing starts before (§1)
         names = self._spec_names(run_item)
@@ -232,7 +238,8 @@ class Dispatcher:
             judged = set(names)
         else:
             judged = {name for name, key in keys.items() if key in targets}
-        state = _Pass(run, {}, {}, names, deadline, source, now, check=check, left_read=run.left_at is not None)
+        state = _Pass(run, {}, {}, names, deadline, source, now, check=check, describes=describes,
+                      left_read=run.left_at is not None)
         self._read_rows(state, {name: keys[name] for name in judged})
         if targets is not None:
             # A narrow pass is woken by a fact through the rows' pointers: a row an operator's action finished left
@@ -258,7 +265,8 @@ class Dispatcher:
                         self._decide(state, name)
             if targets is None:
                 end = self._run_end(state, keys)
-                stopped = self._engine_check(state.run, now, finished=end.finished) if check else None
+                stopped = (self._engine_check(state.run, now, finished=end.finished, describes=state.describes)
+                           if check else None)
                 if stopped is not None:                    # its execution ended before its answer (§4)
                     state.run = stopped
                     self._stop_rows(state, judged)
@@ -457,10 +465,12 @@ class Dispatcher:
             return dispatch.stop(row, now=state.now, cause=_stop_cause(state.run))
         if state.check and dispatch.liveness_due(row, state.run, now=state.now):
             self._within_budget(state)                         # judging an execution takes a call
-            execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
-                                       state.run, subject=row.key)
-            if execution is not None:                  # an unknown state judges nothing (invariant 10)
-                return dispatch.liveness(row, state.run, now=state.now, execution=execution)
+            # Past its sweeper run's calls the row stays due: the next run judges it (S5).
+            if state.describes is None or state.describes.take():
+                execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
+                                           state.run, subject=row.key)
+                if execution is not None:              # an unknown state judges nothing (invariant 10)
+                    return dispatch.liveness(row, state.run, now=state.now, execution=execution)
         upstreams = {d: state.rows.get(d) for d in row.dependencies}
         assets = None
         if dispatch.needs_assets(row, upstreams):
@@ -585,14 +595,18 @@ class Dispatcher:
 
     # ── executions: the sweeper's checks (§1, §4) ────────────────────────
 
-    def _engine_check(self, run: dispatch.RunView, now: datetime, *, finished: bool) -> Optional[dispatch.RunView]:
+    def _engine_check(self, run: dispatch.RunView, now: datetime, *, finished: bool,
+                      describes: Optional[sweep.Calls] = None) -> Optional[dispatch.RunView]:
         """The engine's stop of a run whose execution ended before its answer, or that never became active (§4).
 
         Returns the run as the stop mark left it, or None when the run goes on or
         the mark's write was refused: another write raised ``run_version``, or a
-        Stop of the run came first; the next check decides again.
+        Stop of the run came first; the next check decides again. So does a run
+        whose sweeper run has no DescribeExecution call left (S5).
         """
         if not dispatch.engine_check_due(run, now=now, finished=finished):
+            return None
+        if describes is not None and not describes.take():
             return None
         cause = dispatch.engine_stop_cause(run, now=now, execution=self._describe_run(run), finished=finished)
         if cause is None:

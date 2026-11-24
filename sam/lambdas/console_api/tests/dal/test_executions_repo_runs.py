@@ -56,21 +56,21 @@ def test_returns_all_rows_and_no_cursor_when_data_runs_out(mocker):
     table = _table(mocker, [{'Items': [_row('2026-07-14', 'e1'), _row('2026-07-13', 'e2')]}])
     repo = _make_repo_with_table(mocker, table)
 
-    items, cursor = repo.query_runs_by_pipeline('p', min_runs=15)
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=15)
 
     assert len(items) == 2
     assert cursor is None
 
 
-def test_keeps_paging_until_exhausted_when_min_runs_not_reached(mocker):
-    """Fewer runs than asked for → follow LastEvaluatedKey to the end."""
+def test_keeps_paging_until_exhausted_when_min_rows_not_reached(mocker):
+    """Fewer rows than asked for → follow LastEvaluatedKey to the end."""
     table = _table(mocker, [
         {'Items': [_row('2026-07-14', 'e1')], 'LastEvaluatedKey': {'k': 1}},
         {'Items': [_row('2026-07-13', 'e2')]},
     ])
     repo = _make_repo_with_table(mocker, table)
 
-    items, cursor = repo.query_runs_by_pipeline('p', min_runs=15)
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=15)
 
     assert [i['pipeline_execution'] for i in items] == ['e1', 'e2']
     assert cursor is None
@@ -82,7 +82,7 @@ def test_keeps_paging_until_exhausted_when_min_runs_not_reached(mocker):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def test_cuts_on_date_boundary_and_drops_the_partial_oldest_date(mocker):
-    """Once enough runs are buffered, cut at the oldest date and hand it back
+    """Once the newer dates hold enough rows, cut at the oldest date and hand it back
     as the cursor — its rows are withheld because they may be half-read."""
     table = _table(mocker, [
         {'Items': [_row('2026-07-14', 'e1'), _row('2026-07-13', 'e2')],
@@ -90,7 +90,7 @@ def test_cuts_on_date_boundary_and_drops_the_partial_oldest_date(mocker):
     ])
     repo = _make_repo_with_table(mocker, table)
 
-    items, cursor = repo.query_runs_by_pipeline('p', min_runs=2)
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=1)
 
     # 2026-07-13 is the cut date: withheld here, re-read on the next page.
     assert [i['pipeline_execution'] for i in items] == ['e1']
@@ -98,7 +98,7 @@ def test_cuts_on_date_boundary_and_drops_the_partial_oldest_date(mocker):
 
 
 def test_does_not_cut_while_only_one_date_is_buffered(mocker):
-    """A busy single date must be read whole, even past min_runs — otherwise
+    """A busy single date must be read whole, even past min_rows — otherwise
     the cut date would be the only date and the page would be empty."""
     table = _table(mocker, [
         {'Items': [_row('2026-07-14', 'e1'), _row('2026-07-14', 'e2')],
@@ -108,7 +108,7 @@ def test_does_not_cut_while_only_one_date_is_buffered(mocker):
     ])
     repo = _make_repo_with_table(mocker, table)
 
-    items, cursor = repo.query_runs_by_pipeline('p', min_runs=2)
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=2)
 
     # Kept reading through the busy date, then cut once an older date appeared.
     assert [i['pipeline_execution'] for i in items] == ['e1', 'e2', 'e3']
@@ -125,10 +125,43 @@ def test_tasks_of_one_run_are_never_split_across_pages(mocker):
     ])
     repo = _make_repo_with_table(mocker, table)
 
-    items, _ = repo.query_runs_by_pipeline('p', min_runs=1)
+    items, _ = repo.query_runs_by_pipeline('p', min_rows=1)
 
     e1_tasks = [i['task_name'] for i in items if i['pipeline_execution'] == 'e1']
     assert sorted(e1_tasks) == ['extract', 'load']
+
+
+def test_a_run_with_more_rows_than_the_page_wants_is_read_alone(mocker):
+    """The read counts rows, not runs: one run of a big pipeline fills a page by itself, so the read stops at the
+    next date instead of reading 101 runs (the TR-7 estimate, P-6)."""
+    run = [_row('2026-07-14', 'e1', f't{i}') for i in range(150)]
+    table = _table(mocker, [
+        {'Items': run + [_row('2026-07-13', 'e2')], 'LastEvaluatedKey': {'k': 1}},
+        AssertionError('read past the page'),
+    ])
+    repo = _make_repo_with_table(mocker, table)
+
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=101)
+
+    assert items == run
+    assert cursor == '2026-07-13'
+    assert table.query.call_count == 1
+
+
+def test_only_the_rows_keep_accepts_count(mocker):
+    """Rows a page would drop (the cursor already served them, the status filter rejects them) do not fill it: the
+    read goes on to older dates. Without that, a busy cut date would hand back only rows the cursor already served,
+    and paging would stall with the older dates behind them unreachable (ADR #113)."""
+    table = _table(mocker, [
+        {'Items': [_row('2026-07-14', 'e1', 'served'), _row('2026-07-13', 'e2')], 'LastEvaluatedKey': {'k': 1}},
+        {'Items': [_row('2026-07-12', 'e3')], 'LastEvaluatedKey': {'k': 2}},
+    ])
+    repo = _make_repo_with_table(mocker, table)
+
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=1, keep=lambda row: row['task_name'] != 'served')
+
+    assert [i['pipeline_execution'] for i in items] == ['e1', 'e2']
+    assert cursor == '2026-07-12'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,7 +173,7 @@ def test_queries_the_inverted_index_newest_first(mocker):
     table = _table(mocker, [{'Items': []}])
     repo = _make_repo_with_table(mocker, table)
 
-    repo.query_runs_by_pipeline('my-pipeline')
+    repo.query_runs_by_pipeline('my-pipeline', 1)
 
     params = table.query.call_args.kwargs
     assert params['IndexName'] == 'pipeline-date-index'
@@ -153,7 +186,7 @@ def test_cursor_is_inclusive_so_the_cut_date_is_re_read(mocker):
     table = _table(mocker, [{'Items': []}])
     repo = _make_repo_with_table(mocker, table)
 
-    repo.query_runs_by_pipeline('p', before_date='2026-07-13')
+    repo.query_runs_by_pipeline('p', 1, before_date='2026-07-13')
 
     expr = table.query.call_args.kwargs['KeyConditionExpression'].get_expression()
     assert expr['operator'] == 'AND'
@@ -167,7 +200,7 @@ def test_no_cursor_means_no_sort_key_condition(mocker):
     table = _table(mocker, [{'Items': []}])
     repo = _make_repo_with_table(mocker, table)
 
-    repo.query_runs_by_pipeline('p')
+    repo.query_runs_by_pipeline('p', 1)
 
     expr = table.query.call_args.kwargs['KeyConditionExpression'].get_expression()
     assert expr['operator'] == '='                # only the partition key
@@ -181,7 +214,7 @@ def test_projection_and_expression_names_are_forwarded(mocker):
     repo = _make_repo_with_table(mocker, table)
 
     repo.query_runs_by_pipeline(
-        'p', projection='pipeline_execution, #s', expr_names={'#s': 'status'},
+        'p', 1, projection='pipeline_execution, #s', expr_names={'#s': 'status'},
     )
 
     params = table.query.call_args.kwargs
@@ -189,8 +222,8 @@ def test_projection_and_expression_names_are_forwarded(mocker):
     assert params['ExpressionAttributeNames'] == {'#s': 'status'}
 
 
-def test_rows_missing_keys_do_not_count_as_runs(mocker):
-    """Malformed rows must not satisfy min_runs (they'd cut the page early)."""
+def test_rows_missing_keys_do_not_count_toward_min_rows(mocker):
+    """Malformed rows must not satisfy min_rows (they'd cut the page early)."""
     table = _table(mocker, [
         {'Items': [{'task_name': 'orphan'}, _row('2026-07-14', 'e1')],
          'LastEvaluatedKey': {'k': 1}},
@@ -198,7 +231,7 @@ def test_rows_missing_keys_do_not_count_as_runs(mocker):
     ])
     repo = _make_repo_with_table(mocker, table)
 
-    items, cursor = repo.query_runs_by_pipeline('p', min_runs=2)
+    items, cursor = repo.query_runs_by_pipeline('p', min_rows=2)
 
     assert cursor is None
     assert len(items) == 3

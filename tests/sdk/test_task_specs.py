@@ -227,6 +227,20 @@ def test_a_wide_fan_in_against_the_input_of_run_task():
     assert limits.spec_errors(_version([_spec("report", dependencies=deps[:500])])) == []
 
 
+def test_a_wide_fan_in_with_retries_against_the_history_of_run_task():
+    """Each attempt of run_task reads every upstream's output, about 7 history events each, and Step Functions caps an
+    execution at 25,000 events: 887 upstreams with 3 retries pass it (the TR-7 estimate, R-1)."""
+    deps = [f"u{i:03d}" for i in range(800)]
+    retried = {"task_config": {"retries": 3}}
+    [error] = limits.spec_errors(_version([_spec("report", dependencies=deps, **retried)]))
+    assert error == ("Task 'report': its run_task records about 22,590 history events with its 800 upstreams and 3 "
+                     "retries, since each attempt reads every upstream's output, over the limit of 22,500 (Step "
+                     "Functions allows 25,000 per execution); lower its retries or split the fan-in")
+    assert limits.spec_errors(_version([_spec("report", dependencies=deps[:790], **retried)])) == []
+    assert limits.spec_errors(_version([_spec("report", dependencies=deps)])) == []      # one attempt: 5,652 events
+    assert limits.run_task_history(upstreams=887, retries=3) > limits.HISTORY_EVENTS_MAX
+
+
 def test_a_lambdas_or_state_machines_input_leaves_room_for_the_date_variables(monkeypatch):
     """D118: their work's payload carries the date variables beside what the input holds (the review of TR-5)."""
     deps = [f"u{i:03d}" for i in range(50)]

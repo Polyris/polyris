@@ -416,6 +416,7 @@ def my_task():
 | Outlets per task | 98 | A task's success is recorded in one DynamoDB transaction of at most 100 items |
 | A task's spec | 256 KB | A task starts with its spec as its input, which Step Functions caps at 256 KB |
 | A task's spec with its upstreams' statuses | 256 KB | The input also carries each upstream's status, about 50 bytes and its name per upstream, so a wide fan-in counts |
+| A task's upstreams × its attempts | 22,500 history events | Each attempt reads every upstream's output, about 7 events each, and Step Functions caps an execution at 25,000 events: with `retries=3`, about 800 upstreams |
 | An ECS task's container overrides | 8,192 characters | ECS's limit, measured with the environment the platform adds to each container override, the upstreams' statuses included |
 | The specs together | 16 MB | A run's first step reads every spec of the pipeline at once |
 | `task_id` | 128 bytes, and no leading `_` | Operator requests name a task in full; `_` starts the platform's own rows |

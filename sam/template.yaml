@@ -1091,9 +1091,9 @@ Resources:
       Handler: dispatcher.handler
       # A pass keeps RESERVE_MS in hand (dispatcher.RESERVE_MS) and leaves the rest through left_at.
       Timeout: 30
-      # Every task wake runs through this function; CPU scales with memory,
-      # and 256 MB keeps the boto3 cold start short for a negligible GB-s cost.
-      MemorySize: 256
+      # Every task wake runs through this function, and CPU scales with memory: at 512 MB a full pass
+      # over 2,000 rows takes about half the 2.6 s it takes at 256 MB (the TR-7 estimate), for cents a month.
+      MemorySize: 512
       Role: !GetAtt ReconcileRole.Arn
       LoggingConfig:
         LogFormat: Text
@@ -1228,7 +1228,8 @@ Resources:
       # A run works for at most 200 s (sweep.BUDGET) and holds its lease for 270 s,
       # so a run that dies never blocks the next one 5 minutes later.
       Timeout: 240
-      MemorySize: 256
+      # Its checks are full passes of the dispatcher, CPU-bound as the dispatcher's own (512 MB, above).
+      MemorySize: 512
       Role: !GetAtt SweeperRole.Arn
       LoggingConfig:
         LogFormat: Text

@@ -79,7 +79,7 @@ def test_the_census_sees_the_repository_s_reads():
 #: Each reader, with a call that reads the date of ``DATE`` and gives back its rows.
 READS = {
     "query_by_date": lambda repo: repo.query_by_date(DATE),
-    "query_runs_by_pipeline": lambda repo: repo.query_runs_by_pipeline("orders")[0],
+    "query_runs_by_pipeline": lambda repo: repo.query_runs_by_pipeline("orders", 10)[0],
     "query_runs_by_date": lambda repo: repo.query_runs_by_date(DATE, min_rows=10),
     "query_by_date_raw": lambda repo: repo.query_by_date_raw(KeyConditionExpression=Key("date").eq(DATE))["Items"],
     "rows_of_pipeline_date": lambda repo: repo.rows_of_pipeline_date("orders", DATE),

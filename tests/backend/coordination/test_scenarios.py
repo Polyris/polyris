@@ -19,6 +19,8 @@ import itertools
 import pytest
 from dags import asset, chain, pipeline, waits_for
 
+from polyris.coordination import sweep
+
 DATE = "2026-11-12"
 defect = pytest.mark.defect
 needs_binding = pytest.mark.needs_binding
@@ -446,6 +448,24 @@ def test_a_run_task_stopped_outside_polyris_fails_its_task_with_an_explanation(w
     row = world.row(run, "extract")
     assert row["status"] == "failed"
     assert "ended ABORTED (Console: stopped by hand) without recording an outcome" in row["error"]
+    assert world.pipeline_status(run) == "FAILED"
+
+
+def test_a_sweep_judges_as_many_executions_as_its_calls_allow_and_the_next_one_the_rest(world, monkeypatch):
+    """Step Functions answers DescribeExecution from a bucket of 300 calls: 2,000 rows whose first liveness checks
+    came at once called it 2,001 times in one sweep (the TR-7 estimate, S5). A sweep makes sweep.DESCRIBES calls;
+    the rows past them stay due, and the next sweep judges them."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 2)
+    names = ("a", "b", "c")
+    run = world.start_run(world.deploy(pipeline("wide", [(name, {}) for name in names])), DATE)
+    for name in names:
+        world.stop_run_task_externally(run, name)
+    world.clock.advance(minutes=11)
+    world.sweep()
+    assert sorted(world.status(run, name) for name in names) == ["failed", "failed", "running"]
+    world.clock.advance(minutes=5)
+    world.sweep()
+    assert [world.status(run, name) for name in names] == ["failed"] * 3
     assert world.pipeline_status(run) == "FAILED"
 
 

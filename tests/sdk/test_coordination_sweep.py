@@ -479,3 +479,11 @@ def test_without_the_task_names_it_reads_them_in_words(fields, field, text):
     report = _without(_report(**fields), "dispatcher_function", "tasks_table")
     [finding] = sweep.engine_findings(report, STARTED)
     assert finding[field] == text
+
+
+def test_a_sweeper_run_makes_no_more_calls_than_it_was_given():
+    """A sweeper run's DescribeExecution calls stay below Step Functions' bucket of 300 (the TR-7 estimate, S5)."""
+    calls = sweep.Calls(2)
+    assert [calls.take() for _ in range(3)] == [True, True, False]
+    assert calls.left == 0
+    assert 0 < sweep.DESCRIBES < 250              # the bucket outside us-east-1, us-west-2 and eu-west-1

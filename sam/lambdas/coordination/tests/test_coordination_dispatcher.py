@@ -546,6 +546,24 @@ def test_only_the_sweepers_pass_judges_a_run_task_and_each_check_backs_off(world
     assert world.sfn.described.count(run_task_execution("extract")) == 1     # not before its next check
 
 
+def test_a_check_describes_only_as_many_executions_as_its_sweeper_run_may_and_leaves_the_rest_due(world):
+    """Step Functions answers DescribeExecution from a bucket of 300 calls: a sweeper run makes at most
+    sweep.DESCRIBES, shared by every run it checks, and a row past them stays due for its next run (S5)."""
+    start(world, CHAIN)
+    full(world)
+    execution_is(world)
+    world.sfn.executions[run_task_execution("extract")] = "RUNNING"
+    world.clock.at = NOW + timedelta(minutes=11)
+    check(world, describes=sweep.Calls(0))
+    assert world.sfn.described == []
+    extract = item(world, key("extract"))
+    assert extract.get("checks", 0) == 0 and extract["attention_at"] <= format_utc(world.clock.at)   # still due
+    one = sweep.Calls(1)
+    check(world, describes=one)
+    assert world.sfn.described == [run_task_execution("extract")]      # none left for the run's own check
+    assert one.left == 0 and item(world, key("extract"))["checks"] == 1
+
+
 def test_a_run_task_that_ended_without_an_outcome_fails_its_row_with_how_it_ended(world):
     start(world, CHAIN)
     full(world)

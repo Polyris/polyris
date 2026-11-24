@@ -9,6 +9,7 @@ self-check; the Lambda in sam/lambdas/coordination applies them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -29,6 +30,11 @@ PUSH_RETRY_WINDOW = timedelta(hours=24)
 CATCH_UP_EVERY = timedelta(hours=1)
 CATCH_UP_WINDOW = timedelta(hours=48)
 
+#: The DescribeExecution calls of one sweeper run. Step Functions answers them from a bucket of 300 calls (250 outside
+#: us-east-1, us-west-2 and eu-west-1) that refills at 15 a second (10): 2,000 rows whose first liveness checks came
+#: at once made 2,001 calls in one sweep, most of them throttled (the TR-7 estimate, S5). The rows past them stay
+#: due, and the next run judges them.
+DESCRIBES = 200
 #: DescribeExecution is eventually consistent: an execution started less than this long ago may not be
 #: visible yet, so "does not exist" means gone only for an older row or run.
 EXECUTION_VISIBLE_AFTER = timedelta(minutes=2)
@@ -59,6 +65,19 @@ STEPS = {
 }
 #: How many task names a run's lost-hint warning lists (ADR #137 §7).
 LOST_HINT_NAMES = 5
+
+
+@dataclass
+class Calls:
+    """The calls of one kind that a sweeper run may still make."""
+    left: int
+
+    def take(self) -> bool:
+        """Whether one more call may be made, counted when it may."""
+        if self.left <= 0:
+            return False
+        self.left -= 1
+        return True
 
 
 #: A row whose stream pass may still be under way is no lost hint: longer than the stream's batching
