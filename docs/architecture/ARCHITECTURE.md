@@ -64,21 +64,20 @@
 These are the load-bearing decisions the rest of the architecture follows from.
 (Each is expanded in [DESIGN_DECISIONS.md](../reference/DESIGN_DECISIONS.md).)
 
-1. **Nothing to run — Step Functions *is* the runtime.** polyris has no
-   scheduler, no worker pool, and no orchestrator metadata database to operate.
-   A pipeline compiles to a Step Functions state machine; EventBridge Scheduler
-   triggers it; AWS runs it. Between runs the system scales to zero. The only
-   always-on cost is the shared control surface (console API, DynamoDB, the
-   helper state machines) — a typical deployment is ~$31/month, and a marginal
-   pipeline run is fractions of a cent.
+1. **Nothing to run — AWS runs it.** polyris has no scheduler, no worker pool
+   and no orchestrator to operate. A pipeline compiles to a Step Functions state
+   machine whose first state, `Start_Run`, writes the run's tasks as rows;
+   EventBridge Scheduler triggers it. Step Functions runs each task's work
+   (`run_task`), and a dispatcher Lambda, woken by the tasks table's stream,
+   decides from the rows which task starts next. Between runs the system scales
+   to zero ([README § Cost](../../README.md#cost)).
 
-2. **Nothing hidden — SFN-first over event-cleverness.** Execution flows through
-   visible, debuggable Step Functions executions rather than opaque event
-   choreography. Earlier designs that fanned work out through EventBridge as a
-   "black box" were deliberately replaced with Step Functions so that every run
-   has an inspectable history and state. Observability and transparency beat
-   cleverness; EventBridge is used for scheduling and asset-event delivery, not
-   as the execution substrate.
+2. **Nothing hidden — decisions from rows and facts.** A task's state is its
+   row, so the console shows why each task waits. The dispatcher decides a task
+   from its upstreams' rows and the asset facts, read consistently. The streams
+   only wake it: a lost wake-up delays a task, never loses it, because the
+   sweeper checks every run on a schedule. Each task's work is a Step Functions
+   execution with an inspectable history.
 
 3. **Asset-centric, not just task-aware.** Tasks declare the data assets they
    produce (`outlets`). Assets form a graph with lineage and partitions, and
@@ -99,9 +98,10 @@ These are the load-bearing decisions the rest of the architecture follows from.
    drift gates. Hand-maintained copies of the same vocabulary are treated as
    bugs (see DESIGN_DECISIONS #72/#83/#93/#94).
 
-6. **No silent failures.** Alerts are configured per pipeline in the Console UI;
-   on failure the notify Lambda reads that config from DynamoDB and fans out to
-   every enabled channel (an empty config is a clean no-op).
+6. **No silent failures.** A task that fails after its retries waits for an
+   operator's decision, with the cause on its row. A failure of the platform
+   itself is retried until it succeeds, fails the task it concerns with the real
+   cause, or shows in the console's bell or System status (ADR #130 §9).
 
 ---
 
