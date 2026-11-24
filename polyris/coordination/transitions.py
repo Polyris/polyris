@@ -142,7 +142,7 @@ def summary_statuses(status: str) -> FrozenSet[str]:
     """
     return frozenset({status} | {source for t in TASK_TRANSITIONS
                                  if t.target == status and not t.wakes and Writer.DISPATCHER not in t.writers
-                                 for source in t.sources if source is not NO_ROW})
+                                 for source in t.sources if source is not None})     # NO_ROW: no row yet
 
 
 #: A task row's kind in ``attention-index``, by status (§6). A ``waiting`` row has the entry only while the
