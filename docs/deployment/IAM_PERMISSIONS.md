@@ -296,7 +296,7 @@ Eleven IAM roles the stack creates during Install. Every role's `RoleName` start
 
 | Role | Trust principal | Purpose |
 |------|-----------------|---------|
-| `polyris-orchestration-role` | Step Functions | Runs `run_task`, `bulk_backfill` and the pipelines' state machines. Reads/writes to pipeline-tokens DDB, invokes task Lambdas / helper SFNs / CloudWatch logs. Highest-privilege role in the stack — it's the "conductor" |
+| `polyris-orchestration-role` | Step Functions | Runs `run_task`, `bulk_backfill` and the pipelines' state machines. Reads/writes to pipeline-tokens DDB, invokes task Lambdas, starts `run_task` and the tasks' state machines, writes CloudWatch logs. Highest-privilege role in the stack — it's the "conductor" |
 | `polyris-default-task-role` | Cross-account trust (from orchestration-role) | The runtime task role. Assumed by task Lambdas / Glue / ECS / Batch when `run_task` starts a task. Covers Athena + Glue + S3 + task-service `StartJobRun` / `RunTask` |
 | `polyris-console-api-role` | Lambda | Serves the REST API behind the Console UI. Reads DDB tables, starts a pipeline's run, writes operator actions and stops a stopped task's `run_task`; it asks Step Functions nothing about a run, whose status the run row holds (ADR #137 §5) |
 | `polyris-reconcile-role` | Lambda | The dispatcher (ADR #137): passes over a run's rows when the tasks table's stream wakes it, decides each row and starts its `run_task`. Its own grant reads that stream; the rest is the `polyris-reconcile` policy below |

@@ -35,7 +35,7 @@
 │                           ui-bootstrap, …                                 │
 │                                                                           │
 │  Web console (React): reads DynamoDB through the console API; its actions │
-│  write rows (Skip, Fail, Mark successful, Stop, Restart; Stop, Pause and  │
+│  write rows (Skip, Fail, Mark Successful, Stop, Restart; Stop, Pause and  │
 │  Resume of a run)                                                         │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -49,7 +49,7 @@ These are the load-bearing decisions the rest of the architecture follows from.
 
 1. **Nothing to run — AWS runs it.** polyris has no scheduler, no worker pool
    and no orchestrator to operate. A pipeline compiles to a Step Functions state
-   machine whose first state, `Start_Run`, writes the run's tasks as rows;
+   machine whose `Start_Run`, after the run's registration, writes its tasks as rows;
    EventBridge Scheduler triggers it. Step Functions runs each task's work
    (`run_task`), and a dispatcher Lambda, woken by the tasks table's stream,
    decides from the rows which task starts next. Between runs the system scales
@@ -99,7 +99,7 @@ EventBridge schedule (cron or rate)
      │
      ▼
 The pipeline's state machine
-     │  first state: Start_Run (lambda:invoke.waitForTaskToken)
+     │  after the registration: Start_Run (lambda:invoke.waitForTaskToken)
      ▼
 start-run Lambda
      ├─ reads the task specs of the run's spec version ──► pipeline-specs
@@ -167,7 +167,7 @@ asset-fanout Lambda
           └─ for each consumer pipeline (never the producer itself):
                ├─ evaluate its whole schedule for the fact's date, as pull does
                └─ if satisfied → StartExecution under run_name(...):
-                    AND → one run per date, whatever its age; OR → one per event
+                    AND → one run per date while its history is kept; OR → one per event
                     ExecutionAlreadyExists → already started; transient error →
                     push retry row for the sweeper; anything else → warning
 ```
@@ -180,7 +180,7 @@ A fact's partition is the partition of the run that produced it; Mark Successful
 The task's work fails after its retries (run_task)
      ├─ the row ─► waiting_decision, with the cause and the decision's deadline
      ├─ notify Lambda ─► the pipeline's alert channels, if it has any
-     └─ the operator decides in the console: Restart, Skip, Fail, Mark successful
+     └─ the operator decides in the console: Restart, Skip, Fail, Mark Successful
           └─ no decision by the deadline ─► the dispatcher fails the task
 A final failure decides the dependants by their rules (ADR #138); the run ends once
 every task is final, and fails if a task failed.
@@ -285,7 +285,7 @@ One-line inventory — for what each one does see
 | `polyris-run-task-helper` | `run_task`: one attempt of a task's work, its outcome and its facts in one write |
 | `polyris-bulk-backfill` | Starts one pipeline execution per date of a range |
 | `polyris-test-quick`, `-test-success`, `-test-failure` | Demo targets for `@task.sfn` |
-| `start-run` | A run's first state: writes the run row, its input, one row per task and the `asset:` pointers |
+| `start-run` | Starts a run's tasks, after its registration: writes the run row, its input, one row per task and the `asset:` pointers |
 | `reconcile` | The dispatcher: decides each row, starts `run_task`, answers the run |
 | `asset-fanout` | Takes new facts to the runs that wait for them, and starts the pipelines scheduled on them |
 | `sweeper` | Every 5 minutes: a pass over each due run, push retries and catch-up, the engine's self-check |

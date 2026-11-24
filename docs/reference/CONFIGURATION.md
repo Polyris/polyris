@@ -62,7 +62,7 @@ the fields *inside* each stage's dict, plus the module-level `DEFAULT_STAGE`.
 
 | Field | Read by | Purpose |
 |-------|---------|---------|
-| `stack_name` | `polyris-deploy` | The platform stack (`polyris-up` names it `<Namespace>-<Stage>`; for `sam deploy`, the `stack_name` in `sam/samconfig.toml`). `polyris-deploy` calls `describe_stacks(<stack_name>)` to fetch wrapper ARN, orchestration role ARN, DynamoDB table names, and results bucket. Optional when one `polyris-up` platform is in the region. |
+| `stack_name` | `polyris-deploy` | The platform stack (`polyris-up` names it `<Namespace>-<Stage>`; for `sam deploy`, the `stack_name` in `sam/samconfig.toml`). `polyris-deploy` calls `describe_stacks(<stack_name>)` to fetch the start-run function's ARN, the orchestration role ARN, DynamoDB table names, and results bucket. Optional when one `polyris-up` platform is in the region. |
 | `namespace` | `polyris-deploy` | Prefix for the *pipeline* stacks polyris-deploy creates: `{namespace}-{stage}-polyris-{dag_id}` (where `{stage}` is the dict key). Does not need to match `stack_name`. |
 | `region` | `polyris-deploy` | The AWS region of the SAM stack. All SDK calls use this. |
 | `profile` | `polyris-deploy` | Named profile from `~/.aws/credentials`. Optional. |

@@ -76,7 +76,7 @@ It takes about 25 minutes. The pipelines stay on the platform, so the next run o
 make e2e-coordination-clean STACK=<platform stack> PROFILE=<aws profile>
 ```
 
-Run data needs no clean-up: each scenario uses its own date in the 1900s, and the rows expire with the tables' TTL. Run the smoke on a test platform, not on one people use: it adds sixteen pipelines to the console. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
+Run data needs no clean-up: each scenario uses its own date in the 1900s, and the rows expire with the tables' TTL. Run the smoke on a test platform, not on one people use: it adds sixteen pipelines to the console.
 
 A task that fails waits in `waiting_decision` until the decision timeout, and only then becomes `failed`; a scenario that needs a failed task fails it with the console's Fail. The countdown scenario takes up to 5 minutes more than its `wait_before`: the countdown ends at the sweeper's next check.
 

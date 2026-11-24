@@ -137,7 +137,7 @@ Response includes `dag_source` field: `'run'` | `'snapshot'` | `'registry'` | `'
 POST /api/pipeline-run?name={pipeline_name}
 ```
 
-Body (optional): `{"variables": {"custom_var": "value"}}`
+Body (optional): `{"input": {"current_date": "2026-01-15", "custom_var": "value"}}`. `current_date` is the run's date (today when absent); the other keys become the run's variables.
 
 ## Tasks
 

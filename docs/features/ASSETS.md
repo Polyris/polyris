@@ -402,7 +402,7 @@ with DAG(
 **How it works:**
 1. Every fact re-evaluates the schedule from the recorded facts for that fact's date — nothing is counted, so a lost or repeated event changes nothing
 2. The DAG starts once every asset has a fact that serves the date
-3. One run per DAG and date: a later event for the same date starts nothing, whatever the age of the date. To run a date again, after its upstream data was recomputed, press Run for it or backfill it
+3. One run per DAG and date: a later event for the same date starts nothing, as long as the first run's history is kept (a year and 90 days). To run a date again, after its upstream data was recomputed, press Run for it
 
 **Example timeline:**
 ```
@@ -522,7 +522,7 @@ with DAG("consumer", schedule="@hourly") as pipeline:
 
 ### Timeout for cross-pipeline dependencies
 
-When a task waits for assets from another pipeline, you may want a longer timeout than the default 24h:
+A task waits for its `wait_for` assets 7 days from when its own dependencies are met, then fails. `orchestration_timeout` replaces that limit: it caps all of the task's waiting, for its upstreams and its assets, from when the wait began.
 
 ```python
 from datetime import timedelta
@@ -530,14 +530,14 @@ from datetime import timedelta
 @task.sfn(
     arn=...,
     wait_for=[weekly_report],
-    orchestration_timeout=timedelta(days=3),  # Wait up to 3 days for deps
-    execution_timeout=timedelta(hours=2),      # Task itself runs in 2h
+    orchestration_timeout=timedelta(days=10),  # wait up to 10 days, upstreams and assets
+    execution_timeout=timedelta(hours=2),      # each attempt of the work: up to 2 hours
 )
 def depends_on_weekly():
     pass
 ```
 
-If `orchestration_timeout` is not set, it defaults to `execution_timeout` (24h).
+`orchestration_timeout` never falls back to `execution_timeout`. `polyris-deploy` warns when it is shorter than the 7 days of the wait.
 
 ### In the Console
 
@@ -610,7 +610,7 @@ A producer task records one fact per outlet when it succeeds, in the `asset-even
 | `granularity` | `daily` | the asset's declared [granularity](#granularity) |
 | `source_dag`, `source_task` | `acme-daily`, `process_data` | the producer |
 
-Marking a producer task successful in the console records its outlets' facts too, dated by the task's run, not by the day you mark it, with the run's cascade: a task of a `cascade='none'` backfill starts no pipeline this way either. If a fact cannot be recorded, the task still becomes successful, and the bell shows a warning for that asset; tasks waiting on it keep waiting until you restart the task. When a task succeeds on its own but its facts cannot be recorded, the bell shows a `fact` warning that names the assets and the cause, and the run ends `FAILED`, since it did not deliver its assets; the task itself stays successful. Restart it once the cause is fixed.
+Marking a producer task successful in the console records its outlets' facts in the same write, dated by the task's run, not by the day you mark it. When the facts cannot be recorded, nothing is: the console refuses the action and names the cause. A task that succeeds on its own also records its status, its output and its facts in one write. When that write fails, the task waits for your decision (`waiting_decision`) with the cause: restart it once the cause is fixed.
 
 A fact that no reader can place on a partition (for example, one recorded by an older version for a run date such as `latest`) counts for no task, and the bell shows a warning for it.
 

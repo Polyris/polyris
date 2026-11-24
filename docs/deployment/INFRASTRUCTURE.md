@@ -2,7 +2,7 @@
 
 Reference. Every resource the polyris CloudFormation stack creates during install, grouped by purpose. Read this before approving a polyris deployment or when you need to find where a specific piece of runtime state lives (which log group, which DDB table, which state machine).
 
-Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* runs where; the IAM doc says *who* has permission to touch each piece. Runtime behaviour (data flows, dependency wrapper mechanics, trigger rule evaluation) is in [ARCHITECTURE.md](../architecture/ARCHITECTURE.md).
+Companion to [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md) — this doc says *what* runs where; the IAM doc says *who* has permission to touch each piece. Runtime behaviour (data flows, how the dispatcher decides each task, trigger rule evaluation) is in [ARCHITECTURE.md](../architecture/ARCHITECTURE.md).
 
 ## Contents
 
@@ -68,7 +68,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-reconcile` | The tasks table's stream | The dispatcher (ADR #137): passes over a run's rows, decides each waiting row (trigger rule, `wait_for` assets, pause), starts its `run_task`, and answers the run once every row is final |
 | `polyris-asset-fanout` | `asset-events` stream | Wakes the tasks waiting on a new asset fact and starts the pipelines scheduled on that asset |
 | `polyris-sweeper` | EventBridge Scheduler, every 5 minutes | Makes one full pass of the dispatcher over each run that is due, so a lost wake-up hint delays a task instead of losing it (ADR #137 §7). Its passes alone check executions: a task whose `run_task` ended without an outcome fails, and the engine stops a run whose execution ended before its answer or that never became active. Stops the rows of a run whose run row is missing. Retries failed push starts, hourly replays the pushes of recent facts, and reports the engine's health, both streams and their mappings included (ADR #130 §8, ADR #137 §6) |
-| `polyris-start-run` | Each pipeline run, as its first state (`lambda:invoke.waitForTaskToken`) | Reads the run's task specs, writes the run row with the run's task token, the run's input and one row per task, then marks the run active (ADR #137 §1) |
+| `polyris-start-run` | Each pipeline run, after its registration (`lambda:invoke.waitForTaskToken`) | Reads the run's task specs, writes the run row with the run's task token, the run's input and one row per task, then marks the run active (ADR #137 §1) |
 | `polyris-notify` | `run_task` | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Copies the prebuilt Console UI from the artifacts bucket into `ConsoleUiBucket`, deletes files of the previous build, writes `config.js` from the stack's values, invalidates CloudFront. Absent on a from-source `sam deploy` (there `ui/deploy.sh` uploads the UI) |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |

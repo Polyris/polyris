@@ -34,9 +34,9 @@ Common issues and solutions for polyris operations.
    aws scheduler get-schedule --name "${NAMESPACE}-${STAGE}-polyris-your-pipeline-schedule"
    ```
 
-   The `State` field should be `ENABLED`. If it's `DISABLED`, the pipeline was
-   paused — resume via Console (pipeline → **Resume**) or set
-   `is_paused_upon_creation=False` on the DAG and redeploy. See
+   The `State` field should be `ENABLED`. If it's `DISABLED`, the schedule was
+   paused: **Enable** it in the AWS console, or remove
+   `is_paused_upon_creation=True` from the DAG and redeploy. See
    [how-to/schedule-and-redeploy.md](../how-to/schedule-and-redeploy.md#pause-and-resume-a-schedule).
 
 2. Pipeline is registered:
@@ -46,9 +46,9 @@ Common issues and solutions for polyris operations.
      --key '{"pipeline_name": {"S": "your-pipeline"}}'
    ```
 
-**Fix:** Re-deploy pipeline with `polyris-deploy`, or re-enable the schedule via
-Console. `polyris-deploy` re-applies the DAG's declared schedule state on every
-deploy, so a manual console pause reverts the next time you deploy — set
+**Fix:** Re-deploy pipeline with `polyris-deploy`, or enable the schedule in the
+AWS console. `polyris-deploy` re-applies the DAG's declared schedule state on every
+deploy, so a pause made in the AWS console reverts the next time you deploy — set
 `is_paused_upon_creation=True` on the DAG if you want the pause to stick.
 
 polyris uses `AWS::Scheduler::Schedule` (EventBridge Scheduler), not the legacy
@@ -63,7 +63,7 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 **Symptoms:** Pipeline shows running but no tasks are active.
 
 **Check:**
-1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended. The run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
+1. **The bell:** a `coordination` warning that says "the run's token could not be answered" names the cause. The run answers again at each of its checks, every few minutes, until the answer goes through. If the cause stays, stop the run from the console.
 2. Step Functions execution status:
    ```bash
    aws stepfunctions list-executions \
@@ -227,7 +227,7 @@ Check *why* the upstream was skipped:
 
 **Fix:**
 - If subscription missing: re-deploy consumer pipeline
-- If event missing: re-run the producer. A `fact` warning in the bell means the producer succeeded but its fact was not recorded; fix the cause it names, then restart the producer task
+- If event missing: re-run the producer. A producer whose success could not be recorded waits for a decision (`waiting_decision`) with the cause; fix it, then restart the task
 - If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
 
 ---
@@ -389,7 +389,7 @@ aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
 **Use when:** Task is stuck but you verified work is done (checked logs, S3, etc.)
 
 ```bash
-# Via Console UI: Task modal → "Mark Success" button
+# Via Console UI: Task modal → "Mark Successful" button
 
 # Via API:
 curl -X POST ${API_URL}/api/task-success?name={execution_name} \
@@ -409,22 +409,7 @@ curl -X POST ${API_URL}/api/task-success?name={execution_name} \
 curl -X POST ${API_URL}/api/pipeline-run?name={name} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"variables": {"current_date": "2026-01-15"}}'
-```
-
----
-
-### Clear all paused pipelines
-
-```bash
-# List paused
-aws dynamodb scan \
-  --table-name ${NAMESPACE}-${STAGE}-polyris-pipeline-registry \
-  --filter-expression "paused = :true" \
-  --expression-attribute-values '{":true": {"BOOL": true}}'
-
-# Resume via API
-curl -X POST ${API_URL}/api/execution-resume?id={id}
+  -d '{"input": {"current_date": "2026-01-15"}}'
 ```
 
 ---

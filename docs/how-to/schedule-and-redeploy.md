@@ -29,7 +29,7 @@ EventBridge Scheduler fires on the **next matching wall-clock instant after the 
 - `schedule="rate(1 hour)"` deployed at 12:37 UTC → first run at approximately 13:37 UTC (rate expressions fire "every N units *from now*"; the first tick lands one full period after `ENABLED`).
 - `schedule="@daily"` = `cron(0 0 * * ? *)` = midnight UTC.
 
-If you need history for dates before deploy, start the pipeline manually for each date you want to fill in — either from the Console UI's Pipelines page (Actions → Run) or by calling Step Functions `StartExecution` directly with `{"date": "YYYY-MM-DD"}`.
+If you need history for dates before deploy, start the pipeline manually for each date you want to fill in — either from the Console UI's Pipelines page (Actions → Run) or by calling Step Functions `StartExecution` directly with `{"current_date": "YYYY-MM-DD"}`.
 
 ## Pause and resume a schedule
 
@@ -46,7 +46,7 @@ with DAG(
     ...
 ```
 
-**2. In the AWS console, for a one-off pause.** EventBridge → Scheduler → Schedules → `{pipeline}-schedule` → **Disable**. The next `polyris-deploy` enables it again unless the DAG has `is_paused_upon_creation=True`: the DSL is the source of truth. The AWS CLI's `aws scheduler update-schedule` replaces the whole schedule, so it needs every field of it, not only `--state`.
+**2. In the AWS console, for a one-off pause.** EventBridge → Scheduler → Schedules → `{namespace}-{stage}-polyris-{dag_id}-schedule` → **Disable**. The next `polyris-deploy` enables it again unless the DAG has `is_paused_upon_creation=True`: the DSL is the source of truth. The AWS CLI's `aws scheduler update-schedule` replaces the whole schedule, so it needs every field of it, not only `--state`.
 
 Resume: **Enable** in the same place, or remove `is_paused_upon_creation=True` and redeploy.
 

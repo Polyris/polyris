@@ -19,8 +19,9 @@ Update it when something moves. Paths here are checked by
   `polyris-up` upgrades from 1.2 and stops what 1.2 left running, and 1.2's engine is gone.
   Reviews of each part and of the whole branch are done, and their blockers fixed. The live
   run (Principle #15) is under way: a dev stack upgraded from 1.2.1 runs the branch, and the
-  coordination smoke passes on it. Left: the smoke of tasks, the docs pass, the release
-  rehearsal, then the release. Scale and cost are estimated on the harness, not run live.
+  coordination smoke, its task scenarios included, passes on it. Scale and cost are estimated
+  on the harness, not run live: 2,000 tasks hold once four limits were fixed. Left: the
+  release rehearsal, then the release.
 
 ## Decided, not done
 

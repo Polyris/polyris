@@ -62,7 +62,7 @@ The dispatcher (ADR #137 §1, §7). The tasks table's stream wakes it with a run
 
 ### 3. start_run
 
-A run's first state (`lambda:invoke.waitForTaskToken`, ADR #137 §1): reads the run's task specs, writes the run row with the run's token, the run's input, one row per task and the `asset:` pointers, then marks the run active.
+The state that starts a run's tasks, after its registration (`lambda:invoke.waitForTaskToken`, ADR #137 §1): reads the run's task specs, writes the run row with the run's token, the run's input, one row per task and the `asset:` pointers, then marks the run active.
 
 ### 4. asset_fanout
 
@@ -107,7 +107,7 @@ Task state tracking:
 
 **Canonical output store (data passing).** This table also holds each task's
 *output* under a stable, partition-scoped key `output#{pipeline}#{task}#{date}`
-(written by `Save_Canonical_Output` on success; large payloads spill to S3 with
+(written by `Record_Success` on success; large payloads spill to S3 with
 a pointer). Downstream tasks read their upstreams' outputs from these keys
 (`Read_Upstream_Outputs` → `Prepare_Task_Input` in the run_task helper) — this
 is how data flows between tasks, not in-process. The key is independent of the
