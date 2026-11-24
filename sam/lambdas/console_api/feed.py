@@ -25,7 +25,7 @@ import json
 from datetime import datetime, date as date_cls, timezone, timedelta
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from polyris.constants import ExecutionStatus
@@ -176,11 +176,15 @@ def day_keys(date: str) -> List[str]:
 
 def run_weight(item: Mapping[str, Any], status: str = '') -> int:
     """How many of a run's tasks the Tasks tab shows, from its run row's summary (ADR #137 §4): its rows of
-    ``status``, or all of them. Before its first full pass wrote a summary, one: the run is read to find out."""
+    ``status``, counted with those the summary may still give an earlier status (``transitions.summary_statuses``:
+    a running task is ``deps_ready`` in it until the run's next pass), or all of them. Before its first full pass
+    wrote a summary, one: the run is read to find out."""
     counts = run_counts(item)
     if counts is None:
         return 1
-    return counts.get(status, 0) if status else sum(counts.values())
+    if not status:
+        return sum(counts.values())
+    return sum(counts.get(shown, 0) for shown in transitions.summary_statuses(status))
 
 
 def task_runs_before(before: str, limit: int, *, pipeline: str = '', status: str = '') -> Tuple[List[Dict], bool]:
@@ -194,9 +198,12 @@ def task_runs_before(before: str, limit: int, *, pipeline: str = '', status: str
 
 
 def tasks_of_runs(runs: Sequence[Mapping[str, Any]], limit: int, *, more: bool,
-                  keep: Callable[[Mapping[str, Any]], bool]) -> Tuple[List[Dict], Optional[str]]:
+                  keep: Callable[[Mapping[str, Any]], bool], status: str = '') -> Tuple[List[Dict], Optional[str]]:
     """One page of the Tasks tab (D140): the task rows that ``keep`` accepts of whole runs, newest run first, until
-    the page holds ``limit``; only those runs' rows are read (``pipeline-execution-index``).
+    the page holds ``limit``; only those runs' rows are read (``pipeline-execution-index``), with ``status`` as the
+    read's filter. A page also ends at a run once it has read ``Limits.TASKS_READ_BUDGET`` rows, by its runs'
+    summaries, with its cursor though it holds fewer rows: with a rare status, a page of a pipeline of 2,000 tasks
+    read about 100 runs whole (the review of the TR-10 fixes, B-2; D139).
 
     The cursor is the start of the page's last run, never a task's ``started_at``: ``Start_Run`` stamps a run's
     tasks seconds after the run started, so two runs that started close together sort one way by their starts and
@@ -205,14 +212,19 @@ def tasks_of_runs(runs: Sequence[Mapping[str, Any]], limit: int, *, more: bool,
     """
     page: List[Dict] = []
     last: Optional[str] = None
+    read = 0
+    status_filter = Attr('status').eq(status) if status else None
     for run in runs:
         started = str(run.get(run_row.STARTED_AT) or '')
-        if len(page) >= limit and started != last:
+        size = run_weight(run)
+        if started != last and (len(page) >= limit or (last is not None and read + size > Limits.TASKS_READ_BUDGET)):
             return page, last
         execution = str(run[run_row.TABLE_KEY])[len(run_row.KEY_PREFIX):]
-        rows = [row for row in executions_repo.query_by_pipeline_execution(execution) if keep(row)]
+        rows = [row for row in executions_repo.query_by_pipeline_execution(execution, filter_expr=status_filter)
+                if keep(row)]
         page.extend(sorted(rows, key=lambda row: str(row.get('task_name', ''))))
         last = started
+        read += size
     return page, (last if more and last else None)
 
 

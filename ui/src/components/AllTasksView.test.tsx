@@ -126,6 +126,13 @@ describe('AllTasksView', () => {
             expect(screen.getByText('No tasks in the last 90 days')).toBeInTheDocument();
         });
 
+        it('says older tasks are still to be read when an empty page has a next one', () => {
+            setup({ tasks: [], hasNextPage: true });
+            render(<AllTasksView {...defaultProps} />);
+            expect(screen.getByText('No matching tasks in what was read so far')).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /Show older tasks/ })).toBeInTheDocument();
+        });
+
         it('table has aria-label', () => {
             render(<AllTasksView {...defaultProps} />);
             expect(screen.getByRole('table')).toHaveAttribute('aria-label', 'Task executions');

@@ -572,6 +572,21 @@ def test_a_check_reads_the_runs_own_execution_before_its_rows_and_leaves_the_res
     assert item(world, key("extract"))["checks"] == 1
 
 
+def test_a_stopping_run_and_a_failed_pass_leave_their_calls_to_the_other_runs(world, monkeypatch):
+    """A stopping run stops its rows instead of judging them, and a pass that fails or runs out of time judges no
+    more: the calls granted to their rows go back to the sweeper run (the review of the TR-10 fixes, P-1)."""
+    start(world, CHAIN)
+    full(world)
+    execution_is(world)
+    world.sfn.executions[run_task_execution("extract")] = "RUNNING"
+    world.clock.at = NOW + timedelta(minutes=11)
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)
+    update(world, RUN_KEY, stop={"by": "ops", "reason": "wrong date", "at": format_utc(world.clock.at)})
+    calls = sweep.Calls(8)
+    check(world, describes=calls)
+    assert calls.left == 8 and run_task_execution("extract") not in world.sfn.described
+
+
 def test_a_run_task_that_ended_without_an_outcome_fails_its_row_with_how_it_ended(world):
     start(world, CHAIN)
     full(world)

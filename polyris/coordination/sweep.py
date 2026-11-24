@@ -87,8 +87,8 @@ class Calls:
 def grant(due: Sequence[Tuple[datetime, str]], calls: Calls) -> Set[str]:
     """The rows of one run whose executions a sweeper run judges, of those whose liveness check has come (D141).
 
-    - The longest due first, never in the order of their names: a row judged comes due again 30 minutes later, behind
-      the rows still waiting, so none waits for ever.
+    - The longest due first, never in the order of their names: a row judged comes due again later (20, then every
+      30 minutes), behind the rows still waiting, so none waits for ever.
     - At most a quarter of DESCRIBES for one run's rows: one large run never takes the calls of the others.
     - A quarter of DESCRIBES stays in hand for the runs' own executions, which each run's pass reads first.
 

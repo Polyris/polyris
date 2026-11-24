@@ -124,10 +124,11 @@ def resolve_task_item(
     return None, None
 
 
-# The feed reads date-pipeline-index or pipeline-date-index. Each projects only part of
-# a row (sam/template.yaml), and DynamoDB rejects a query whose ProjectionExpression names
-# an attribute the index does not project. So the index reads take no projection, and the
-# fields that either index lacks are read from the base table for the returned page.
+# A date filter reads date-pipeline-index, which projects only part of a row (sam/template.yaml),
+# and DynamoDB rejects a query whose ProjectionExpression names an attribute the index does not
+# project. So that read takes no projection, and the fields the index lacks are read from the
+# base table for the returned page. The runs' tasks come from pipeline-execution-index, which
+# projects every attribute.
 # retry_attempt (ADR #125) counts in-SFN auto-retries within one run_task execution;
 # `attempt` counts the task's runs across Restarts.
 _TASKS_BACKFILL = ('running_at', 'dependencies', 'wait_for', task_row.RUN_TASK_ARN, task_row.READINESS,
@@ -229,7 +230,7 @@ def get_all_tasks(event: Dict) -> Dict:
             backfilled = _backfill(page)
         else:
             runs, more = task_runs_before(before, limit, pipeline=pipeline_filter, status=status_filter)
-            page, next_cursor = tasks_of_runs(runs, limit, more=more, keep=_keeps)
+            page, next_cursor = tasks_of_runs(runs, limit, more=more, keep=_keeps, status=status_filter)
             backfilled = True         # pipeline-execution-index projects every attribute
 
         # The rows as they are: the engine keeps them true, and the console asks Step Functions nothing about a

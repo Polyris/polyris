@@ -168,8 +168,9 @@ A page holds whole runs, so it may return more than `limit` tasks.
 Where a page reads from depends on the filters:
 - no `date` — the runs that started in the last 90 days (`Limits.RUNS_WINDOW_DAYS`), newest
   first, as `/api/runs` reads them, with `pipeline` or without; then the tasks of the runs
-  on the page. With `status`, a run with no task of that status is skipped. Only runs
-  started on 1.3 are listed.
+  on the page. With `status`, a run with no task of that status is skipped, and a page may
+  come back short or empty with a `next`: each page reads at most about 20,000 tasks. Only
+  runs started on 1.3 are listed.
 - `date` — the tasks of that logical date, with no window, runs from before 1.3 included.
   A day (`YYYY-MM-DD`) also finds the runs of hourly, weekly and monthly pipelines whose
   hour, week or month falls on it.

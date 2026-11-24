@@ -132,6 +132,19 @@ RUN_TRANSITIONS: Tuple[RunTransition, ...] = (
 WAKING: FrozenSet[Tuple[Optional[str], str]] = frozenset(
     (source, t.target) for t in TASK_TRANSITIONS if t.wakes for source in t.sources)
 
+def summary_statuses(status: str) -> FrozenSet[str]:
+    """The statuses a run's summary may still give a row that is ``status`` now (§4).
+
+    A pass writes the summary from the rows it reads, after its own writes; a change that another writer makes and
+    that wakes no pass reaches it only at the run's next pass: ``run_task``'s move from ``deps_ready`` to ``running``,
+    up to the row's liveness check. The Tasks tab, which skips a run whose summary has no row of a status, showed no
+    running task (the review of the TR-10 fixes, B-1).
+    """
+    return frozenset({status} | {source for t in TASK_TRANSITIONS
+                                 if t.target == status and not t.wakes and Writer.DISPATCHER not in t.writers
+                                 for source in t.sources if source is not NO_ROW})
+
+
 #: A task row's kind in ``attention-index``, by status (§6). A ``waiting`` row has the entry only while the
 #: due-time function gives it a time of its own: a limit outside a pause, or a countdown (invariant 9).
 ATTENTION: Mapping[str, str] = {

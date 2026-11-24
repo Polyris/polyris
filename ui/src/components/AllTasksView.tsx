@@ -235,6 +235,14 @@ export function AllTasksView({
                         description={formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))}
                         action={<Button variant="secondary" onClick={() => allTasksQuery.refetch()}>Retry</Button>}
                     />
+                ) : total === 0 && hasNextPage ? (
+                    // A page reads a bounded number of tasks: with a rare status it can come back empty while older
+                    // tasks are still to be read (D139).
+                    <EmptyState
+                        icon={Search}
+                        title="No matching tasks in what was read so far"
+                        description="Show older tasks reads further back."
+                    />
                 ) : total === 0 ? (
                     <EmptyState
                         icon={hasActiveFilters || search ? Search : Inbox}

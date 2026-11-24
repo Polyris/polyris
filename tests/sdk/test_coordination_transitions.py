@@ -223,3 +223,14 @@ def test_four_filters_three_for_task_rows_that_carry_a_generation():
     for pattern in patterns[:3]:
         assert pattern["dynamodb"]["NewImage"][ownership.FIELD] == {"N": [{"exists": True}]}
     assert patterns[3]["dynamodb"]["Keys"] == {run_row.TABLE_KEY: {"S": [{"prefix": "_run_"}]}}
+
+
+def test_a_summary_may_still_show_a_running_task_as_deps_ready():
+    """run_task's move to running wakes no pass, so the run's summary shows the row as deps_ready until the run's
+    next pass (the review of the TR-10 fixes, B-1); every other status a summary gives as it is."""
+    from polyris.coordination import transitions as t
+    assert t.summary_statuses("running") == {"running", "deps_ready"}
+    assert t.summary_statuses("failed") == {"failed"} and t.summary_statuses("waiting") == {"waiting"}
+    for transition in t.TASK_TRANSITIONS:
+        if not transition.wakes and t.Writer.DISPATCHER not in transition.writers:
+            assert {s for s in transition.sources if s is not t.NO_ROW} <= t.summary_statuses(transition.target)

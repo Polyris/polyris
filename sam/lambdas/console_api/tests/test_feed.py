@@ -223,5 +223,8 @@ class TestRunWeight:
         item = {run_row.SUMMARY: {'success': 3, 'failed': 1}}
         assert (feed.run_weight(item), feed.run_weight(item, 'failed'), feed.run_weight(item, 'skipped')) == (4, 1, 0)
 
+    def test_running_counts_the_rows_the_summary_may_still_show_deps_ready(self):
+        assert feed.run_weight({run_row.SUMMARY: {'success': 1, 'deps_ready': 2}}, 'running') == 2
+
     def test_a_run_without_a_summary_counts_one_so_that_it_is_read(self):
         assert feed.run_weight({}) == 1 and feed.run_weight({}, 'failed') == 1

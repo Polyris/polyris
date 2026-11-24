@@ -154,12 +154,15 @@ class ExecutionsRepo:
     def query_by_pipeline_execution(self, pipeline_execution: str,
                                      projection: str = None,
                                      expr_names: dict = None,
-                                     limit: int = None) -> list:
-        """Query pipeline-execution-index GSI. Returns all pages."""
+                                     limit: int = None,
+                                     filter_expr=None) -> list:
+        """Query pipeline-execution-index GSI. Returns all pages; ``filter_expr`` keeps the rows it matches."""
         params = {
             'IndexName': 'pipeline-execution-index',
             'KeyConditionExpression': Key('pipeline_execution').eq(pipeline_execution),
         }
+        if filter_expr is not None:
+            params['FilterExpression'] = filter_expr
         if projection:
             params['ProjectionExpression'] = projection
         if expr_names:

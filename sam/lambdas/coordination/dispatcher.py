@@ -123,6 +123,7 @@ class _Pass:
     check: bool = False                    # the sweeper's pass: liveness, the engine's stop, lost hints (§7)
     describes: Optional[sweep.Calls] = None    # the DescribeExecution calls its sweeper run may still make (S5)
     granted: Optional[Set[str]] = None         # the rows whose executions it judges, of those due (D141)
+    granted_used: int = 0                      # of them, the calls made; the rest go back at the pass's end
     engine_call: bool = False                  # a call taken for the run's own execution, before its rows (D141)
     left_read: bool = False                # the run row carried left_at when the pass read it
     lost: List[str] = field(default_factory=list)
@@ -244,8 +245,9 @@ class Dispatcher:
         state = _Pass(run, {}, {}, names, deadline, source, now, check=check, describes=describes,
                       left_read=run.left_at is not None)
         self._read_rows(state, {name: keys[name] for name in judged})
-        if check and describes is not None:
+        if check and describes is not None and not run.stopping:
             # The run's own execution takes its call first; then its rows, the longest due first, to their share (D141).
+            # A stopping run stops its rows instead of judging them.
             state.engine_call = dispatch.engine_check_due(run, now=now, finished=False) and describes.take()
             due: List[Tuple[datetime, str]] = []
             for name, row in state.rows.items():
@@ -285,6 +287,10 @@ class Dispatcher:
                     self._run_end(state, keys)
         except _Left:
             state.left = True
+        finally:
+            if describes is not None and state.granted:
+                for _ in range(len(state.granted) - state.granted_used):
+                    describes.give_back()               # calls granted to rows a stop, a failure or the budget left
         if state.left:
             self._send(dispatch_writes.due_now(state.run, table=self.tokens_table, now=now,
                                                left=bool(state.changed) or state.run.left_at is None), quiet=True)
@@ -479,6 +485,7 @@ class Dispatcher:
             self._within_budget(state)                         # judging an execution takes a call
             # A row not granted a call stays due: the next sweeper run judges it (S5, D141).
             if state.granted is None or name in state.granted:
+                state.granted_used += 1
                 execution = self._describe(_execution_arn(self.run_task_arn, row.key, state.run, row.generation),
                                            state.run, subject=row.key)
                 if execution is not None:              # an unknown state judges nothing (invariant 10)

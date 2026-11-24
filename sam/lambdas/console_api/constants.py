@@ -72,6 +72,9 @@ class Limits:
     RUNS_PAGE_SIZE = 15             # runs per page in the execution history dropdown
     RUNS_FEED_LIMIT = 50            # rows per page of the History runs feed
     TASKS_FEED_LIMIT = 100          # rows per page of the History tasks feed (whole runs: a page may hold more)
+    # The task rows one page of the Tasks tab reads at most, by its runs' summaries: about 5 s at the TR-7
+    # estimate's 0.24-0.29 ms a row, under API Gateway's 30 s. The page then ends at a run, with its cursor.
+    TASKS_READ_BUDGET = 20000
 
     # Time limits
     SLA_DAYS = 14  # the pipelines list's window: ui/src/utils/historyWindow.ts (parity test there)

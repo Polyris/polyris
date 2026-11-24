@@ -62,6 +62,7 @@ class World:
         self.tasks: Dict[str, List[Dict]] = {}
         self.read_tasks_of: List[str] = []
         self.days_read: List[str] = []
+        self.filters: List = []
 
     def run(self, execution, started, *, pipeline="sales", date=None, tasks=("extract", "load"), statuses=None,
             summary=True, stamped=None):
@@ -87,8 +88,9 @@ class World:
                 and (not pipeline or r[run_row.PIPELINE] == pipeline)]
         return sorted(rows, key=lambda r: r[run_row.STARTED_AT], reverse=True)
 
-    def query_by_pipeline_execution(self, execution, **_):
+    def query_by_pipeline_execution(self, execution, filter_expr=None, **_):
         self.read_tasks_of.append(execution)
+        self.filters.append(filter_expr)
         return list(self.tasks.get(execution, []))
 
 
@@ -221,6 +223,30 @@ class TestStatus:
         body = _body(get_all_tasks(_event(pipeline="sales", status="failed")))
 
         assert body["tasks"] == [] and body["next"] is None and world.read_tasks_of == []
+
+    def test_a_running_task_is_listed_though_its_runs_summary_still_says_deps_ready(self, world):
+        """run_task's move to running wakes no pass: the summary shows deps_ready until the run's next pass, and the
+        tab showed no running task (the review of the TR-10 fixes, B-1)."""
+        item = world.run("sales-run-a1", "2026-07-16T08:00:00Z", statuses={"extract": "success", "load": "running"})
+        item[run_row.SUMMARY] = {"success": 1, "deps_ready": 1}
+        assert _names(_body(get_all_tasks(_event(status="running")))) == [("1", "load")]
+
+    def test_the_status_filters_the_read_of_a_runs_tasks(self, world):
+        world.run("sales-run-a1", "2026-07-16T08:00:00Z", statuses={"extract": "failed", "load": "upstream_failed"})
+        get_all_tasks(_event(status="failed"))
+        assert [f.get_expression()["values"][1] for f in world.filters] == ["failed"]
+
+    def test_a_page_ends_at_its_read_budget_with_a_cursor_though_it_is_short(self, world, mocker):
+        """With a rare status, a page of a pipeline of 2,000 tasks read about 100 runs whole (the review of the
+        TR-10 fixes, B-2): a page ends at a run once its runs' summaries reach the budget."""
+        mocker.patch.object(Limits, "TASKS_READ_BUDGET", 3)
+        for hour in ("08", "09", "10"):
+            world.run(f"sales-run-{hour}", f"2026-07-16T{hour}:00:00Z", statuses={"extract": "failed", "load": "success"})
+        first = _body(get_all_tasks(_event(status="failed")))
+        assert _names(first) == [("0", "extract")] and first["next"] == "2026-07-16T10:00:00Z"
+        assert world.read_tasks_of == ["sales-run-10"]
+        second = _body(get_all_tasks(_event(status="failed", before=first["next"])))
+        assert _names(second) == [("9", "extract")] and second["next"] == "2026-07-16T09:00:00Z"
 
     def test_a_run_without_a_summary_yet_is_read_to_find_out(self, world):
         world.run("sales-run-a1", "2026-07-16T08:00:00Z", statuses={"extract": "failed", "load": "waiting"},

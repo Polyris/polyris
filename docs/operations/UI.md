@@ -190,11 +190,11 @@ runs / tasks** loads the next page and appends it.
 Two paginations sit in that footer and they are not the same thing: the `‹ ›` pager
 walks the rows already loaded, ten at a time; **Show older** extends the feed itself.
 
-How far back you can go depends on the filter. **Runs** without a date reach the runs
-started in the last 90 days, with a pipeline chosen or not; only runs started on 1.3 are
-there. **Tasks** with one pipeline reach as far as the rows still exist (bounded by their
-TTL), and without a filter the last 14 days. A date reaches that date in both, runs started
-before the upgrade included.
+How far back you can go depends on the filter. Without a date, **Runs** and **Tasks** reach
+the runs started in the last 90 days, with a pipeline chosen or not; only runs started on 1.3
+are there. A date reaches that date in both, runs started before the upgrade included. With a
+rare status, a page of **Tasks** can come back short or empty while **Show older** still reads
+further: each page reads a bounded number of tasks.
 
 ### Tasks View
 - **Pipeline** — Filter by pipeline name
