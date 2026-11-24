@@ -20,18 +20,17 @@ describe('History windows', () => {
         expect(RECENT_WINDOW_DAYS).toBe(consoleConstant('SLA_DAYS'));
     });
 
-    it('apply to Runs without a date, and to Tasks without a pipeline and a date', () => {
-        expect(isHistoryWindowed('runs', { pipeline: '', date: '' })).toBe(true);
-        expect(isHistoryWindowed('runs', { pipeline: 'sales', date: '' })).toBe(true);
-        expect(isHistoryWindowed('runs', { pipeline: '', date: '2026-11-14' })).toBe(false);
-        expect(isHistoryWindowed('tasks', { pipeline: '', date: '' })).toBe(true);
-        expect(isHistoryWindowed('tasks', { pipeline: 'sales', date: '' })).toBe(false);
-        expect(isHistoryWindowed('tasks', { pipeline: '', date: '2026-11-14' })).toBe(false);
+    it('apply to both tabs without a date, with a pipeline or without: both read run rows (D140)', () => {
+        for (const noun of ['runs', 'tasks'] as const) {
+            expect(isHistoryWindowed(noun, { pipeline: '', date: '' })).toBe(true);
+            expect(isHistoryWindowed(noun, { pipeline: 'sales', date: '' })).toBe(true);
+            expect(isHistoryWindowed(noun, { pipeline: '', date: '2026-11-14' })).toBe(false);
+        }
     });
 
     it('are named in the date filter and the empty state', () => {
         expect(historyDatePlaceholder('runs', true)).toBe(`Last ${RUNS_WINDOW_DAYS} days`);
-        expect(historyDatePlaceholder('tasks', true)).toBe(`Last ${RECENT_WINDOW_DAYS} days`);
+        expect(historyDatePlaceholder('tasks', true)).toBe(`Last ${RUNS_WINDOW_DAYS} days`);
         expect(historyDatePlaceholder('runs', false)).toBe('All dates');
         expect(historyEmptyState('runs', false, true)).toEqual({
             title: `No runs in the last ${RUNS_WINDOW_DAYS} days`, description: 'To see older runs, pick a date.',
@@ -39,7 +38,7 @@ describe('History windows', () => {
         expect(historyEmptyState('runs', true, true).description)
             .toContain(`Without a date, only the last ${RUNS_WINDOW_DAYS} days`);
         expect(historyEmptyState('tasks', true, true).description)
-            .toContain(`Without a pipeline or a date, only the last ${RECENT_WINDOW_DAYS} days`);
+            .toContain(`Without a date, only the last ${RUNS_WINDOW_DAYS} days`);
         expect(historyEmptyState('tasks', true, false).description).toBe('Try adjusting your filters or search');
     });
 });

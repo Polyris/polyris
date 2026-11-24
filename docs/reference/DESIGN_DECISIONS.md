@@ -8968,12 +8968,13 @@ earlier than its logical `date`: no row older than T can hide on a date newer th
   `started_at`. Deliberately not answered here. `query_all` already logs `Hit max_items
   limit`, and `query_runs_by_date` cuts on the same condition, so whether this is live is
   measurable rather than arguable.
-- **1.3 update.** `query_runs_by_pipeline` counts the rows a page would keep, not runs, and the fill loop is gone:
-  the read goes on over whole dates until the dates it returns hold `want + 1` rows that `keep` accepts, so a
-  busy cut date of rows the cursor already served cannot stall it. Counting 101 runs, a page of a pipeline of
-  2,000 tasks read 202,000 rows, about 50 seconds by the TR-7 estimate. A page then often holds a single run,
-  whose rows are all twins of its last one, so `pipeline_rows_before` says whether the read stopped before the
-  index's end, and `page_by_started_at` keeps its cursor then (`more`).
+- **1.3 update (D139, D140).** The Tasks tab no longer reads task rows by date or by pipeline: it reads the run rows
+  the Runs tab reads (`run-start-index`, ADR #137 §5), then the task rows of the runs on its page, and pages on the
+  start of its last run. `query_runs_by_pipeline` and its fill loop are gone. Reading a pipeline's task rows by date,
+  a page of a pipeline of 2,000 tasks read 101 runs, about 202,000 rows; a rare status read its whole history,
+  kept a year and 90 days in 1.3; and the cursor, cut to a day, lost every hourly, weekly and monthly run (TR-7
+  estimate, P-6; TR-10, B-1 and D-1). A date filter still reads one date's task rows, for every run date that
+  holds the day (`feed.day_keys`).
 
 ### 118. `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories
 

@@ -71,17 +71,11 @@ class Limits:
     # Pagination
     RUNS_PAGE_SIZE = 15             # runs per page in the execution history dropdown
     RUNS_FEED_LIMIT = 50            # rows per page of the History runs feed
-    TASKS_FEED_LIMIT = 100          # rows per page of the History tasks feed
-    # Read budgets for the Tasks feed's day. Floors, not caps: the read rounds up to
-    # the next pipeline boundary, because the index is ordered by pipeline_name and
-    # cutting mid-pipeline splits a run's task set (ADR #113). A date that fits one
-    # DynamoDB page comes back whole. The Runs feed reads an explicit date whole.
-    TASKS_MIN_ROWS_PER_DATE = 10000  # tasks feed, one explicit date
-    FEED_MIN_ROWS_PER_DAY = 500      # either feed, per day of the fan-out
+    TASKS_FEED_LIMIT = 100          # rows per page of the History tasks feed (whole runs: a page may hold more)
 
     # Time limits
-    SLA_DAYS = 14  # the Tasks tab's and the pipelines list's window: ui/src/utils/historyWindow.ts (parity test there)
-    # The start days the Runs tab and a pipeline's runs read from run-start-index (ADR #137 §5): as long as
+    SLA_DAYS = 14  # the pipelines list's window: ui/src/utils/historyWindow.ts (parity test there)
+    # The start days the Runs and Tasks tabs and a pipeline's runs read from run-start-index (ADR #137 §5, D140): as long as
     # Step Functions keeps an execution's history. ui/src/utils/historyWindow.ts names it (parity test there).
     RUNS_WINDOW_DAYS = 90
     PARALLEL_DATE_QUERIES = 14      # Worker cap when fanning date queries out one-per-day

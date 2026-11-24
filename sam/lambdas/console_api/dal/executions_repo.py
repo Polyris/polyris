@@ -16,7 +16,7 @@ records carry a ``date`` (ADR #137 §5), so both indexes list them. A census tes
 (``tests/test_date_index_readers.py``) fails for a read of them anywhere else.
 """
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Optional
 
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
@@ -207,68 +207,6 @@ class ExecutionsRepo:
         response = self.table.query(**params)
         return _task_rows(response.get('Items', []))
 
-    def query_runs_by_pipeline(self, pipeline_name: str, min_rows: int, *,
-                               keep: Optional[Callable[[Dict], bool]] = None,
-                               before_date: Optional[str] = None, projection: Optional[str] = None,
-                               expr_names: Optional[dict] = None) -> tuple:
-        """Task rows for one pipeline, newest date first, via pipeline-date-index.
-
-        The inverse of :meth:`query_by_date`: instead of asking "who ran on day D"
-        (which forces callers to loop a window of days), this asks "this pipeline's
-        runs, newest first" in one indexed query. Depth is therefore bounded only by
-        the row TTL — there is no window constant to pick.
-
-        Reads **whole dates** so an execution's task set is never split across a page;
-        the caller can aggregate safely. Stops once the dates it returns hold ``min_rows``
-        rows that ``keep`` accepts (every row without it): rows, not runs, since a page
-        shows rows and holds whole runs anyway. Counting 101 runs, the Tasks tab read
-        202,000 rows on a pipeline of 2,000 tasks with 101 runs behind it, about 50 s by
-        the TR-7 estimate (P-6).
-
-        Returns ``(items, next_before_date)``. Pass ``next_before_date`` back as
-        ``before_date`` for the next page (inclusive — the cut date is re-read, its
-        runs were not returned). ``None`` means nothing older exists.
-        """
-        key = Key('pipeline_name').eq(pipeline_name)
-        if before_date:
-            key = key & Key('date').lte(before_date)
-
-        params = {
-            'IndexName': 'pipeline-date-index',
-            'KeyConditionExpression': key,
-            'ScanIndexForward': False,  # newest date first
-        }
-        if projection:
-            params['ProjectionExpression'] = projection
-        if expr_names:
-            params['ExpressionAttributeNames'] = expr_names
-        _skippable(params)
-
-        items: list = []
-        counted: Dict[str, int] = {}   # per date, the rows that count toward min_rows
-        last_key = None
-        while True:
-            if last_key:
-                params['ExclusiveStartKey'] = last_key
-            response = self.table.query(**params)
-            for item in _task_rows(response.get('Items', [])):
-                items.append(item)
-                date_str = item.get('date', '')
-                if date_str and item.get('pipeline_execution'):
-                    counted[date_str] = counted.get(date_str, 0) + (1 if keep is None or keep(item) else 0)
-            last_key = response.get('LastEvaluatedKey')
-            if not last_key:
-                return items, None  # nothing older exists
-
-            # Only cut on a date boundary, and only once a second date is in the
-            # buffer — otherwise the oldest date may still be half-read. Its rows
-            # are not returned, so they do not count.
-            if len(counted) > 1:
-                oldest = min(counted)
-                if sum(n for day, n in counted.items() if day != oldest) >= min_rows:
-                    kept = [i for i in items if i.get('date', '') > oldest]
-                    return kept, oldest
-
     def rows_of_pipeline_date(self, pipeline_name: str, date: str) -> list:
         """One pipeline's task rows of one date, every page, from pipeline-date-index; internal and backfill rows
         dropped. The index projects only part of a row: what tells the date's runs apart and orders them
@@ -285,10 +223,8 @@ class ExecutionsRepo:
                            key_condition=None) -> list:
         """Task rows for one date, newest-first-by-nothing, via date-pipeline-index.
 
-        The mirror of :meth:`query_runs_by_pipeline`, and the read behind the
-        cross-pipeline feed. That one reads **whole dates**; this one reads **whole
-        pipelines** — and for the same reason: an execution's task set must never be
-        split.
+        The read behind a date filter. It reads **whole pipelines**: an execution's task set
+        must never be split.
 
         Splitting matters more here than "some rows are missing" suggests. ``/api/runs``
         derives a run's status from the task rows it got (ADR #112), so handing back half

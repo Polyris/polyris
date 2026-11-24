@@ -30,9 +30,9 @@ from polyris.coordination.task_spec import SpecError
 from dal.task_events_repo import task_events_repo
 from constants import Limits
 from constants_generated import ManualResolution
-from feed import (dependencies_of, feed_dates, is_older, is_stale, page_by_started_at, pipeline_rows_before,
-                  readiness_of, wait_for_text)
-from response import cors_response, safe_parse_body
+from feed import (day_keys, dependencies_of, is_stale, page_by_started_at, readiness_of, task_runs_before,
+                  tasks_of_runs, wait_for_text)
+from response import cors_response, index_building_response, safe_parse_body
 from logger import log
 from auth import operator_display
 from utils import (
@@ -187,97 +187,50 @@ def _format_task_row(item: Dict, *, stale: bool = False) -> Dict:
 
 
 def get_all_tasks(event: Dict) -> Dict:
-    """Get all task instances across all pipelines.
+    """Get all task instances across all pipelines: the other half of History.
 
-    The other half of the History feed, and it pages exactly like ``/api/runs``: an
-    opaque ``before`` cursor carrying a ``started_at``, ``next`` for the older page
-    (see ``feed.py``). One dialect across both halves is the point — they list the
-    same rows, so they should not disagree about how far back you can look.
+    Without a date it reads what the Runs tab reads, the run rows of the last
+    ``Limits.RUNS_WINDOW_DAYS`` start days, newest first, with a pipeline filter or without,
+    and then the task rows of the runs on its page only (``feed.task_runs_before``,
+    ``feed.tasks_of_runs``, D140). A page holds whole runs, and its cursor is the start of
+    its last run. With a status, a run whose summary has no row of it is not read (D139).
+    Only runs started on 1.3 have run rows.
 
-    Source per filter, mirroring ``/api/runs`` (ADR #108): an explicit date is one
-    indexed query; one pipeline reads ``pipeline-date-index`` and has no window;
-    everything-newest-first shards on ``date`` and fans the window out per day.
+    A date filter reads the task rows of that logical date through ``date-pipeline-index``,
+    with no window and runs from before 1.3 included: a day finds the runs of every
+    granularity whose partition holds it (``feed.day_keys``). Pages with an opaque ``before``
+    cursor and ``next`` (see ``feed.py``).
     """
     params = event.get('queryStringParameters', {}) or {}
-    
-    # Optional filters
-    status_filter = params.get('status')
+
+    status_filter = params.get('status') or ''
     date_filter = params.get('date')
-    pipeline_filter = params.get('pipeline')
+    pipeline_filter = params.get('pipeline') or ''
     before = params.get('before', '')
     limit = safe_param_int(params, 'limit', Limits.TASKS_FEED_LIMIT, 500)
 
-    status_expr = Attr('status').eq(status_filter) if status_filter else None
-
     def _keeps(item: Dict) -> bool:
-        """Would this row survive to the page? Mirrors the filtering below, so the
-        index read knows when it has pulled enough to fill one."""
+        """A task row the page shows: a task's own row, of the status asked for."""
         return (bool(item.get('task_name'))
                 and not should_skip_token_row(item)
-                and (not status_filter or item.get('status') == status_filter)
-                and is_older(item, before))
+                and (not status_filter or item.get('status') == status_filter))
 
-    more = False   # whether the read stopped before the end of its source (page_by_started_at)
     try:
         if date_filter:
-            key_cond = Key('date').eq(date_filter)
-            # Add pipeline filter to key condition if provided
-            if pipeline_filter:
-                key_cond = key_cond & Key('pipeline_name').eq(pipeline_filter)
-
-            items = executions_repo.query_runs_by_date(
-                date_filter,
-                min_rows=Limits.TASKS_MIN_ROWS_PER_DATE,
-                key_condition=key_cond,
-                filter_expr=status_expr,
-            )
-        elif pipeline_filter:
-            # One pipeline, no date: pipeline-date-index, no window (ADR #108) — the
-            # same read /api/runs uses, so both halves of History reach equally far
-            # back. Replaces a full-table Scan: unbounded cost, and its arbitrary row
-            # order made "the newest N" a lottery no cursor could page honestly.
-            items, more = pipeline_rows_before(pipeline_filter, before, limit, keep=_keeps)
-            # The index read takes no FilterExpression — its whole-date accounting
-            # counts returned rows — so status is applied here instead.
-            if status_filter:
-                items = [i for i in items if i.get('status') == status_filter]
-        else:
             items = []
-            for date_str in feed_dates(before):
-                try:
-                    items.extend(executions_repo.query_runs_by_date(
-                        date_str,
-                        min_rows=Limits.FEED_MIN_ROWS_PER_DAY,
-                        filter_expr=status_expr,
-                    ))
-                except Exception as e:
-                    log.error("get_all_tasks", "Error querying date", error=str(e), date_str=date_str)
-
-        # Skip internal/special records (_pause_, _notify_warn_, output#) and Backfill
-        # records, and pipeline-level/partial rows with no task_name — before paging,
-        # so a page is a pageful of real rows.
-        rows = [i for i in items if not should_skip_token_row(i) and i.get('task_name')]
-
-        page, next_cursor = page_by_started_at(rows, before, limit, more=more)
-
-        # Fields the index read lacks (_TASKS_BACKFILL), from the base table for the
-        # current page only. A page holds whole runs (page_by_started_at), so a run of
-        # 2,000 tasks costs 20 BatchGetItem calls, whatever the limit.
-        backfilled = True
-        try:
-            names = [r['execution_name'] for r in page if r.get('execution_name')]
-            if names:
-                meta = executions_repo.batch_get_run_meta(names, _TASKS_BACKFILL)
-                for r in page:
-                    m = meta.get(r.get('execution_name', ''))
-                    if m:
-                        for field in _TASKS_BACKFILL:
-                            if r.get(field) is None:
-                                r[field] = m.get(field)
-        except (ClientError, BotoCoreError) as e:
-            backfilled = False      # without readiness, no row can be told from one of 1.2: none is marked stale
-            log.warn("get_all_tasks", "batch_get_run_meta failed; run-meta fields left null",
-                     error=str(e))
+            for date_key in day_keys(date_filter):
+                key_cond = Key('date').eq(date_key)
+                if pipeline_filter:
+                    key_cond = key_cond & Key('pipeline_name').eq(pipeline_filter)
+                items.extend(executions_repo.query_runs_by_date(
+                    date_key, min_rows=None, key_condition=key_cond,
+                    filter_expr=Attr('status').eq(status_filter) if status_filter else None))
+            page, next_cursor = page_by_started_at([i for i in items if _keeps(i)], before, limit)
+            backfilled = _backfill(page)
+        else:
+            runs, more = task_runs_before(before, limit, pipeline=pipeline_filter, status=status_filter)
+            page, next_cursor = tasks_of_runs(runs, limit, more=more, keep=_keeps)
+            backfilled = True         # pipeline-execution-index projects every attribute
 
         # The rows as they are: the engine keeps them true, and the console asks Step Functions nothing about a
         # run (ADR #137 §5).
@@ -289,14 +242,37 @@ def get_all_tasks(event: Dict) -> Dict:
             # Opaque cursor for the next (older) page; None when nothing older exists.
             'next': next_cursor,
             'filters': {
-                'status': status_filter,
+                'status': status_filter or None,
                 'date': date_filter,
-                'pipeline': pipeline_filter
+                'pipeline': pipeline_filter or None
             }
         })
+    except executions_repo.IndexBuilding:
+        return index_building_response()
     except Exception as e:
         log.error("unknown", "Unexpected error", error=str(e))
         return cors_response(500, {'error': f'Failed to get tasks: {str(e)}'})
+
+
+def _backfill(page: List[Dict]) -> bool:
+    """The fields a date index lacks (_TASKS_BACKFILL), from the base table for the page only; whether it read them.
+
+    A page holds whole runs, so a run of 2,000 tasks costs 20 BatchGetItem calls, whatever the limit. Without
+    readiness, no row can be told from one of 1.2, so a failed read marks none stale."""
+    try:
+        names = [r['execution_name'] for r in page if r.get('execution_name')]
+        if names:
+            meta = executions_repo.batch_get_run_meta(names, _TASKS_BACKFILL)
+            for r in page:
+                m = meta.get(r.get('execution_name', ''))
+                if m:
+                    for field in _TASKS_BACKFILL:
+                        if r.get(field) is None:
+                            r[field] = m.get(field)
+    except (ClientError, BotoCoreError) as e:
+        log.warn("get_all_tasks", "batch_get_run_meta failed; run-meta fields left null", error=str(e))
+        return False
+    return True
 
 
 def get_task_config(task_name: str, event: Dict) -> Dict:

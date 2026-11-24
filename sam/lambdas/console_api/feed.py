@@ -8,26 +8,28 @@ what is older than T"**. ``next`` in the response is the cursor for the older pa
 The run lists of 1.3 (the Runs tab, a pipeline's runs, the pipelines list) read run
 rows from ``run-start-index`` (ADR #137 §5): :func:`run_rows_before` walks the start
 days newest first, and :func:`run_entry` gives each run its status from its summary.
+The Tasks tab reads the same run rows, then the tasks of the runs on its page
+(:func:`task_runs_before`, :func:`tasks_of_runs`, D140).
 
 Why ``started_at`` and not a DynamoDB key: the runs feed merges two sources whose only
 shared ordering attribute is ``started_at`` (executions and Backfills, ADR #95), and it
 is what both feeds already sort by. A key-based cursor would have to encode both
 sources; a timestamp encodes neither and works for both.
 
-**Where** the rows come from stays per-route (ADR #108) — a cross-pipeline feed shards
-on ``date`` and fans the window out one query per day, a pipeline-filtered feed reads
-``pipeline-date-index`` and has no window at all — but every path hands its rows to
-:func:`page_by_started_at`, so there is one paging dialect regardless of the source.
+**Where** the rows come from stays per-route (ADR #108): run rows by start day, or the
+rows of one logical date through ``date-pipeline-index``. Every path pages with a strict
+``<`` on a start time and never ends a page inside a group that shares one.
 """
 
 import json
 from datetime import datetime, date as date_cls, timezone, timedelta
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
 from polyris.constants import ExecutionStatus
+from polyris.partitions import GRANULARITIES, detect_granularity, partitions_covering
 from polyris.coordination import run_end, run_row, task_row, task_spec, transitions
 from dal import executions_repo
 from constants import Limits
@@ -95,8 +97,8 @@ def page_by_started_at(rows: List[Dict], before: str, limit: int, *, more: bool 
     long: every task row a ``Start_Run`` writes carries its one ``started_at``, so a page
     of tasks holds whole runs, whatever ``limit`` says) is what makes a
     plain timestamp sufficient here: it is the same rule the reads below it follow —
-    ``query_runs_by_pipeline`` cuts on whole dates, ``query_runs_by_date`` on whole
-    pipelines, and this on whole instants. A composite cursor would only be buying back
+    ``query_runs_by_date`` cuts on whole pipelines, :func:`tasks_of_runs` on whole runs,
+    and this on whole instants. A composite cursor would only be buying back
     what the boundary already guarantees.
 
     Rows without a ``started_at`` sort last and cannot be a cursor, so a page ending on
@@ -125,69 +127,93 @@ def page_by_started_at(rows: List[Dict], before: str, limit: int, *, more: bool 
     return page, cursor
 
 
-def pipeline_rows_before(
-    pipeline_name: str,
-    before: str,
-    want: int,
-    keep: Callable[[Dict], bool],
-    projection: Optional[str] = None,
-    expr_names: Optional[dict] = None,
-) -> Tuple[List[Dict], bool]:
-    """Task rows for one pipeline, newest first — one page's worth **plus one**.
-
-    Reads ``pipeline-date-index`` (ADR #108), so there is no date window — depth is
-    bounded by the row TTL alone.
-
-    The extra row is not slack: it is how the page learns it is not the last one.
-    :func:`page_by_started_at` infers "there is more" from having more rows than it
-    can fit, so stopping at exactly ``want`` would make a full page indistinguishable
-    from the end of the feed — and the rows behind it unreachable. Every other source
-    reads a whole window or date and gets that for free; only this one is bounded by
-    what we ask for, so only this one has to ask for one more than it needs.
-
-    The cursor otherwise only says *where to start*. The rows on its own date that are
-    newer than it were already served, so the read counts only the rows ``keep`` accepts,
-    those a page would actually get, and reads whole dates (an execution's task set is
-    never split across a read) until they fill the page or the index runs out. Counted
-    on every row, a busy cut date would stall paging outright: the repo's cursor is a
-    date, so every call would re-read the same already-served rows, hand back a short
-    page, and never reach the older dates behind them.
-
-    Returns the rows and whether the read stopped before the index's end. A page holds
-    whole runs, so the one extra row is often a twin of its last row, and
-    :func:`page_by_started_at` needs to know that older rows exist (review of TR-6d).
-    """
-    rows, cursor = executions_repo.query_runs_by_pipeline(
-        pipeline_name, want + 1, keep=keep, before_date=before[:10] if before else None,
-        projection=projection, expr_names=expr_names)
-    return rows, cursor is not None
-
-
 def run_rows_before(before: str, want: Optional[int], *, days: int, pipeline: str = '',
                     run_dates: Optional[Tuple[str, str]] = None,
-                    keep: Optional[Callable[[Mapping[str, Any]], bool]] = None) -> Tuple[List[Dict], bool]:
+                    keep: Optional[Callable[[Mapping[str, Any]], bool]] = None,
+                    weigh: Optional[Callable[[Mapping[str, Any]], int]] = None) -> Tuple[List[Dict], bool]:
     """Run rows older than the cursor, newest first, from the start days of a window of ``days`` days (ADR #137 §5).
 
     The shard key is the day a run started, not its logical date, so the walk stops
     once ``want`` rows are read: no run on an older start day started later. Pass
-    ``want`` one above the page, for the reason :func:`pipeline_rows_before` gives,
+    ``want`` one above the page, so that a full page learns it is not the last one
+    (``page_by_started_at`` infers "there is more" from having more rows than fit),
     and None to read the whole window: a list keyed by logical dates (``run_dates``)
     must, since a run may start before its date or long after it. ``pipeline`` keeps
     one pipeline's runs, and ``keep`` the rows it accepts, which alone count toward
-    ``want``. Raises ``executions_repo.IndexBuilding`` while DynamoDB builds the index.
+    ``want``, each as ``weigh`` says (one without it): the Tasks tab counts a run's
+    tasks. Raises ``executions_repo.IndexBuilding`` while DynamoDB builds the index.
 
     Returns the rows and whether the walk stopped at ``want`` before the window's end: older rows may exist, which
     :func:`page_by_started_at` needs when the twins of its last row were the tail of the read (review of TR-6d).
     """
     rows: List[Dict] = []
+    weight = 0
     for day in feed_dates(before, days):
         read = executions_repo.runs_started(
             day, before=before or None, pipeline=pipeline or None, run_dates=run_dates,
-            want=None if want is None or keep is not None else want - len(rows))
-        rows.extend(item for item in read if keep is None or keep(item))
-        if want is not None and len(rows) >= want:
+            want=None if want is None or keep is not None or weigh is not None else want - len(rows))
+        for item in read:
+            if keep is None or keep(item):
+                rows.append(item)
+                weight += 1 if weigh is None else weigh(item)
+        if want is not None and weight >= want:
             return rows, True
     return rows, False
+
+
+def day_keys(date: str) -> List[str]:
+    """The run dates a date filter of the Tasks tab finds (D140). A run's date takes the form of its granularity,
+    so a day finds the runs of every granularity whose partition holds it: the day, its 24 hours, its ISO week and
+    its month. Any other key finds itself alone. A filter of the day alone missed every hourly, weekly and monthly
+    run (TR-10, D-1)."""
+    try:
+        if detect_granularity(date) != "daily":
+            return [date]
+    except ValueError:
+        return [date]
+    return [key for granularity in GRANULARITIES for key in partitions_covering(date, "daily", granularity)]
+
+
+def run_weight(item: Mapping[str, Any], status: str = '') -> int:
+    """How many of a run's tasks the Tasks tab shows, from its run row's summary (ADR #137 §4): its rows of
+    ``status``, or all of them. Before its first full pass wrote a summary, one: the run is read to find out."""
+    counts = run_counts(item)
+    if counts is None:
+        return 1
+    return counts.get(status, 0) if status else sum(counts.values())
+
+
+def task_runs_before(before: str, limit: int, *, pipeline: str = '', status: str = '') -> Tuple[List[Dict], bool]:
+    """The runs whose tasks fill one page of the Tasks tab, newest first (D140): the run rows of the last
+    ``Limits.RUNS_WINDOW_DAYS`` start days, as the Runs tab reads them, until their tasks fill the page and one row
+    more. With a status, a run whose summary has no row of it is not read at all: the tasks of a whole history were
+    read to find a rare status (TR-10, B-1; D139)."""
+    keep = (lambda item: run_weight(item, status) > 0) if status else None
+    return run_rows_before(before, limit + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline, keep=keep,
+                           weigh=lambda item: run_weight(item, status))
+
+
+def tasks_of_runs(runs: Sequence[Mapping[str, Any]], limit: int, *, more: bool,
+                  keep: Callable[[Mapping[str, Any]], bool]) -> Tuple[List[Dict], Optional[str]]:
+    """One page of the Tasks tab (D140): the task rows that ``keep`` accepts of whole runs, newest run first, until
+    the page holds ``limit``; only those runs' rows are read (``pipeline-execution-index``).
+
+    The cursor is the start of the page's last run, never a task's ``started_at``: ``Start_Run`` stamps a run's
+    tasks seconds after the run started, so two runs that started close together sort one way by their starts and
+    the other by their tasks, and a cursor on the tasks would skip a run. Runs that started at the same instant go
+    on one page, since the cursor is a strict ``<``. ``more`` says the walk of runs stopped before the window's end.
+    """
+    page: List[Dict] = []
+    last: Optional[str] = None
+    for run in runs:
+        started = str(run.get(run_row.STARTED_AT) or '')
+        if len(page) >= limit and started != last:
+            return page, last
+        execution = str(run[run_row.TABLE_KEY])[len(run_row.KEY_PREFIX):]
+        rows = [row for row in executions_repo.query_by_pipeline_execution(execution) if keep(row)]
+        page.extend(sorted(rows, key=lambda row: str(row.get('task_name', ''))))
+        last = started
+    return page, (last if more and last else None)
 
 
 def run_counts(item: Mapping[str, Any]) -> Optional[Dict[str, int]]:

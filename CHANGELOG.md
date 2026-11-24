@@ -47,6 +47,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 
 ### Changed
 
+- The Tasks tab reads what the Runs tab reads, the runs that started in the last 90 days, with a pipeline filter or without, and then the tasks of the runs it shows; it showed 14 days without a pipeline filter. Like the Runs tab it lists only runs started on 1.3; a date filter still finds older ones. Its status filter has no **Pending**, which no task of 1.3 takes.
 - **A run starts with `Start_Run` (ADR #137 §1).** The pipeline's state machine no longer starts one wrapper execution per task. One state, `Start_Run`, writes the run's tasks as rows from the pipeline's task specs and waits until every task has finished. Tasks and the `lambda`, `glue`, `ecs` and `athena` steps are no longer branches of the pipeline's state machine; the console shows them. A `Start_Run` that fails for good starts no task, and writes a `coordination` warning to the bell with the cause.
 - A failed direct step (`dynamodb`, `sns`, `sqs`, `s3`, `http` and the like) no longer cancels the other branches of its run. Its branch writes a `step` warning to the bell and marks the run, and the execution fails once every branch has ended, with the first error and every cause. Before, any failure ended the execution at once as `PipelineFailed`.
 - A trigger rule that the platform does not know fails its task with the cause; before, the task ran as `all_success` (ADR #138).
@@ -105,7 +106,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 ### Fixed
 
 - The bell's pop-up called every warning "Pipeline Failed". It names a warning by its kind, as the bell's list does, and a warning about a run itself names the run's pipeline.
-- The Tasks tab filtered to a pipeline read 101 runs for each page, about 200,000 task rows for a pipeline of 2,000 tasks and longer than the console's 30 seconds. It reads whole dates until the page is full.
+- The Tasks tab missed the tasks of hourly, weekly and monthly pipelines: without a pipeline filter it showed none, and with one it showed the latest run and said that was all. A date filter of a day now finds them too. Filtered to a pipeline it also read 101 runs for each page, about 200,000 task rows for a pipeline of 2,000 tasks, and with a status its whole history.
 - On a task of an hourly, weekly or monthly run, the console's Skip, Fail, Mark Successful, Stop and Restart answered `Task not found`. The routes recognized a row's key by a daily date in it, and searched for any other key as a task's name; they now look the key up first.
 
 ## v1.2.3 - 2026-11-18

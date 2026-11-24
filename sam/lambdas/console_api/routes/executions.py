@@ -81,9 +81,9 @@ def _build_backfill_run_rows(
     are about to drop. ``?status=completed`` with a run of
     recent ``partial`` backfills would then answer "no runs found" while completed ones
     sat right behind them, and an empty page has no last row, so no cursor, so the feed
-    would stop there for good. ``limit + 1`` for the same reason
-    ``feed.pipeline_rows_before`` overshoots: the page learns it is not the last one by
-    having more rows than it can fit.
+    would stop there for good. ``limit + 1`` for the same reason ``feed.run_rows_before``
+    asks one above the page: the page learns it is not the last one by having more rows
+    than it can fit.
 
     Degrades gracefully: on a DDB error the executions are still returned.
     """

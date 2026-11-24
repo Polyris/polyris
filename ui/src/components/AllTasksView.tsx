@@ -180,7 +180,6 @@ export function AllTasksView({
                 {/* Mirrors the common TaskStatus values (generated/enums.ts) — keep in sync. */}
                 <option value="running">Running</option>
                 <option value="waiting">Waiting</option>
-                <option value="pending">Pending</option>
                 <option value="success">Success</option>
                 <option value="failed">Failed</option>
                 <option value="upstream_failed">Upstream failed</option>

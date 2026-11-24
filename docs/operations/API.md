@@ -163,15 +163,16 @@ Paging (same contract as `/api/runs` and `/api/pipeline-executions`): pass the p
 response's `next` back as `before` to get the rows older than it. **`next` is opaque** —
 don't build one; its encoding is not part of the contract. `next: null` means the feed
 is exhausted — it is the only honest end-of-feed signal, since a full page is not one.
-A page never splits the rows that share a `started_at`, and every task of a run started
-by `Start_Run` shares its run's: a page holds whole runs, so it may return more than
-`limit` tasks.
+A page holds whole runs, so it may return more than `limit` tasks.
 
-How far back a page can reach depends on the filters:
-- `pipeline` (no date) — `pipeline-date-index`, no window; bounded by the row TTL.
-- `date` — that one logical date.
-- neither — the last 14 days (`Limits.SLA_DAYS`); `date` is the shard key for a
-  cross-pipeline feed, so it is read one day at a time (ADR #108).
+Where a page reads from depends on the filters:
+- no `date` — the runs that started in the last 90 days (`Limits.RUNS_WINDOW_DAYS`), newest
+  first, as `/api/runs` reads them, with `pipeline` or without; then the tasks of the runs
+  on the page. With `status`, a run with no task of that status is skipped. Only runs
+  started on 1.3 are listed.
+- `date` — the tasks of that logical date, with no window, runs from before 1.3 included.
+  A day (`YYYY-MM-DD`) also finds the runs of hourly, weekly and monthly pipelines whose
+  hour, week or month falls on it.
 
 ### Get Task Config
 
