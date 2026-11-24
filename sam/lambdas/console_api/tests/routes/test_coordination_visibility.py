@@ -92,9 +92,18 @@ def test_a_warning_read_that_fails_leaves_the_rest_of_the_bell(tokens, mocker):
     assert _bell(mocker) == []
 
 
+class _Now(datetime):
+    """The route's clock, held at NOW: a report's age reads in whole minutes, so a slow suite made 30 minutes 31."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
 def _health(mocker, tokens):
     from routes import health
 
+    mocker.patch.object(health, "datetime", _Now)
     for check in ("_check_dynamodb", "_check_stepfunctions", "_check_recent_failures", "_check_circuit_breakers"):
         mocker.patch.object(health, check, return_value={"status": health.HEALTHY})
     resp = health.health_check({})
