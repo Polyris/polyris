@@ -44,8 +44,10 @@ class TaskStatus(str, Enum):
     - ABORTED: Task was aborted (system)
     - UPSTREAM_FAILED: Upstream dependency failed (trigger rule blocked)
     
-    Non-terminal stop state:
-    - STOPPED: Task was stopped via UI (can be restarted)
+    Stop state:
+    - STOPPED: Task was stopped, by an operator or with its run. The engine
+      counts it as final (SETTLED_STATUSES); like any final task, it can be
+      restarted.
     """
     # Active states
     WAITING = "waiting"                    # Initial: waiting for dependencies
@@ -67,12 +69,13 @@ class TaskStatus(str, Enum):
     # Terminal skip state
     SKIPPED = "skipped"                    # Task was skipped
     
-    # Non-terminal stop state (can be restarted)
-    STOPPED = "stopped"                    # Task was stopped via UI
+    # Stop state: final for the engine (SETTLED_STATUSES), outside TERMINAL_STATUSES
+    STOPPED = "stopped"                    # Task was stopped
 
 
-# Status sets for common checks
-# Note: STOPPED is NOT terminal - task can be restarted
+# Status sets for common checks. The public sets keep their members (ADR #137): `stopped` is in
+# neither TERMINAL_STATUSES nor FAILURE_STATUSES, though the engine counts it as final and as a failure
+# (SETTLED_STATUSES, coordination.transitions.FINAL_FAILURES).
 TERMINAL_STATUSES: Set[str] = {
     TaskStatus.SUCCESS.value,
     TaskStatus.SUCCEEDED.value,
@@ -82,12 +85,9 @@ TERMINAL_STATUSES: Set[str] = {
     TaskStatus.UPSTREAM_FAILED.value,
 }
 
-# Terminal statuses plus 'stopped'. A "settled" task is one that will not change on
-# its own — either it reached a terminal state, or it was deliberately stopped via the
-# UI (restartable, non-terminal). Used wherever a stopped task must be preserved rather
-# than treated as orphaned: task-feed row skipping and execution-abort reconciliation
-# (so a deliberately-stopped task is not re-marked 'aborted'). Single source of truth —
-# do not re-list these statuses inline.
+# Terminal statuses plus 'stopped': a task that will not change on its own. The engine's
+# "final" (ADR #137 §4): a run ends when every row is in it, and the trigger rules and the
+# console's run status read it. Single source of truth — do not re-list these statuses inline.
 SETTLED_STATUSES: Set[str] = TERMINAL_STATUSES | {TaskStatus.STOPPED.value}
 
 SUCCESS_STATUSES: Set[str] = {
@@ -114,11 +114,10 @@ WAITING_STATUSES: Set[str] = {
     TaskStatus.WAITING_DECISION.value,
 }
 
-# Statuses the coordination reconciler may act on (ADR #130 §2): the task is
-# still waiting for its dependencies. Deliberately narrower than
-# WAITING_STATUSES — deps_ready and waiting_decision are past the dependency
-# wait and belong to run_task. A wait_before countdown is a waiting row with its
-# end (ADR #137 §1); 1.2's waiting_delay status went with it.
+# The statuses of a row that waits for its dependencies, the only rows whose readiness
+# the dispatcher decides (ADR #137 §1). Deliberately narrower than WAITING_STATUSES:
+# deps_ready and waiting_decision are past the dependency wait. A wait_before countdown
+# is a waiting row with its end; 1.2's waiting_delay status went with it.
 RECONCILABLE_STATUSES: Set[str] = {
     TaskStatus.WAITING.value,
     TaskStatus.WAITING_PAUSED.value,

@@ -36,9 +36,8 @@ FAILED = "failed"
 KINDS = frozenset({WAITING, RETRY, WARN, DECISION, FAILED})
 SHARDS = "0123456789abcdef"
 
-#: A row that starts to wait is first due for a sweeper check after this long.
-FIRST_DUE = timedelta(minutes=10)
-#: Later checks back off up to every 30 minutes (≤ 48 checks per task per day).
+#: A row that starts to wait is first due for a sweeper check after the first of these; later checks back off up
+#: to every 30 minutes (≤ 48 checks per task per day).
 BACKOFF = (timedelta(minutes=10), timedelta(minutes=20), timedelta(minutes=30))
 
 

@@ -615,7 +615,7 @@ class World:
         for run in sorted({str(i["pipeline_execution"]) for i in rows}):
             table.delete_item(Key={run_row.TABLE_KEY: run_row.key(run)})
             table.delete_item(Key={run_row.TABLE_KEY: run_row.input_key(run)})
-        due = format_utc(self.clock.read() + attention.FIRST_DUE)
+        due = format_utc(self.clock.read() + attention.BACKOFF[0])
         for item in rows:
             names = {"#r": task_row.READINESS, "#h": task_row.SPEC_HASH, "#v": task_row.SPEC_ID,
                      "#s": task_row.RUN_START}

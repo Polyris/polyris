@@ -19,7 +19,6 @@ READY = trigger_rules.READY
 #: A rule the engine does not know: the task fails with the cause (ADR #138 §2).
 FAIL = trigger_rules.FAIL
 
-VERDICTS = frozenset({SKIP, UPSTREAM_FAILED, WAIT, READY, FAIL})
 
 
 @dataclass(frozen=True)

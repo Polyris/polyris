@@ -244,7 +244,7 @@ def test_a_start_made_already_counts_as_done_and_its_liveness_counts_from_then(w
     assert len(world.sfn.started) == 1
     assert not {"start_failures", "start_failed_first", "start_failed_last", "error"} & set(extract)
     assert extract["status_since"] == format_utc(NOW)
-    assert extract["attention_at"] == format_utc(NOW + attention.FIRST_DUE)
+    assert extract["attention_at"] == format_utc(NOW + attention.BACKOFF[0])
 
 
 def test_a_start_refused_for_good_fails_the_row(world):

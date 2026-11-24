@@ -54,7 +54,7 @@ def assert_dispatcher_may(source: str, judgment: dispatch.Judgment) -> None:
 def test_a_root_task_is_written_deps_ready_and_started_with_its_first_check_due():
     judgment = dispatch.judge(row(enabled_at=WAITING_SINCE), {}, RUN, now=NOW)
     assert (judgment.transition, judgment.start) == ("ready", True)
-    assert judgment.due == NOW + attention.FIRST_DUE
+    assert judgment.due == NOW + attention.BACKOFF[0]
     assert judgment.fields == {task_row.STATUS_SINCE: format_utc(NOW)}
     assert_dispatcher_may(S.WAITING.value, judgment)
 
@@ -235,7 +235,7 @@ def ready_row(**times: Any) -> dispatch.RowView:
 
 def test_a_start_in_flight_waits_for_its_check():
     judgment = dispatch.judge(ready_row(), {}, RUN, now=NOW)
-    assert (judgment.start, judgment.due) == (False, NOW - timedelta(minutes=2) + attention.FIRST_DUE)
+    assert (judgment.start, judgment.due) == (False, NOW - timedelta(minutes=2) + attention.BACKOFF[0])
 
 
 def test_a_failed_start_is_tried_again_at_its_next_try():
@@ -537,7 +537,7 @@ def test_a_start_that_went_through_after_failures_counts_its_liveness_from_now()
     assert judgment.fields == {task_row.STATUS_SINCE: format_utc(NOW)}
     assert set(judgment.removed) == {task_row.START_FAILED_FIRST, task_row.START_FAILED_LAST, task_row.START_FAILURES,
                                      task_row.ERROR}
-    assert judgment.due == NOW + attention.FIRST_DUE
+    assert judgment.due == NOW + attention.BACKOFF[0]
 
 
 @pytest.mark.parametrize("status", [S.DEPS_READY.value, S.RUNNING.value])

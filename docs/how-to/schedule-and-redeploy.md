@@ -104,7 +104,7 @@ Before you `polyris-deploy` a running pipeline:
 
 ## Destroy a pipeline
 
-`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one: a run keeps its execution open until every task of it is final, a paused run forever, and CloudFormation deletes the state machine only once its executions have ended. The engine stops the tasks of each stopped run at its next check of the run. To let a run finish, wait until it has, then destroy.
+`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one. CloudFormation deletes the state machine only once its executions have ended, and a run keeps its execution open until every task of it is final, a paused run forever. The engine stops the tasks of each stopped run at its next check of the run. To let a run finish, wait until it has, then destroy.
 
 Does not delete:
 

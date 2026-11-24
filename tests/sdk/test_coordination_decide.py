@@ -74,10 +74,6 @@ class TestPause:
         assert d.decide(task("waiting_paused")).verdict == d.READY
 
 
-def test_every_verdict_is_listed():
-    assert {d.SKIP, d.UPSTREAM_FAILED, d.WAIT, d.READY, d.FAIL} == d.VERDICTS
-
-
 @pytest.mark.parametrize("dependencies", [(), ("extract",)])
 def test_an_unknown_rule_fails_its_task_a_root_task_included(dependencies):
     """ADR #138 §2: not evaluated as all_success, whatever the upstreams' statuses."""

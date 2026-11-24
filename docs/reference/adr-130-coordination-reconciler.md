@@ -2,6 +2,8 @@
 
 > **Status:** ACCEPTED (2026-11-12), revision 9 (2026-11-13: one owner per task row, by generation, §2.1; 2026-11-14: the Lambdas import the coordination package from the SDK, §10; 2026-11-14, after an external review: a push is judged as of its fact, §4, §6.1, Rule 55; a zombie's run is told, §3 step 3, ADR #135; invariant 10; 2026-11-14: engine health is a System pill with findings, not a banner, and `/api/health` shows its details only to a verified caller, §9). Implemented on `feat/coordination-reconciler` for v1.2.0.
 >
+> **Superseded in part by ADR #137** (tasks as rows, 1.3.0): its table *ADR #130 after this ADR* lists, for each section, invariant and rule below, whether it stays, changes or is retired.
+>
 > The design went through five review rounds: break, architect, developer, QA, DevOps and reliability reviews. The implementation went through two more rounds of break, architect and reliability reviews. Every finding is resolved below or listed under *Out of scope*.
 >
 > **Maintainer decisions:**

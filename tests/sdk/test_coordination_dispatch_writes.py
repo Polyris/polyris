@@ -78,7 +78,7 @@ def send(ddb, items) -> bool:
 
 def ready() -> dispatch.Judgment:
     return dispatch.Judgment("load", "ready", {task_row.STATUS_SINCE: format_utc(NOW)}, (task_row.REASONS,),
-                             due=NOW + attention.FIRST_DUE, start=True)
+                             due=NOW + attention.BACKOFF[0], start=True)
 
 
 def test_a_decision_writes_the_row_and_records_its_run_task_name(ddb):
@@ -90,7 +90,7 @@ def test_a_decision_writes_the_row_and_records_its_run_task_name(ddb):
     assert (written["status"], written["generation"]) == ("deps_ready", 1) and "reasons" not in written
     assert written["task_run_id"] == run_name.run_task_name(KEY, RUN_START, 1)
     assert (written["attention"], written["attention_at"]) == (attention.attention(attention.WAITING, KEY),
-                                                               format_utc(NOW + attention.FIRST_DUE))
+                                                               format_utc(NOW + attention.BACKOFF[0]))
     assert written["ttl"] == retention.ttl(NOW, retention.HISTORY)
 
 

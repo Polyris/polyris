@@ -421,8 +421,8 @@ A rule reads the final outcomes of its task's direct upstreams: a failed task is
 
 ## Step Functions Helpers
 
-One-line inventory — for the detailed per-helper flow diagrams see
-[BACKEND.md § Step Function Helpers](BACKEND.md#step-function-helpers).
+One-line inventory — for what each state machine does see
+[BACKEND.md § State machines](BACKEND.md#state-machines).
 
 | Component | Purpose |
 |-----------|---------|

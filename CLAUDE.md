@@ -270,17 +270,17 @@ Anti-pattern: write only the new field because "the old one is deprecated" while
 
 Before removing the write of an old field, `grep -rn` for every reader that could fall back to it.
 
-**40–52, 55 (coordination). The coordination code follows the rules in ADR #130, *Rules for the code***
-They concern task rows, wake-ups, facts and the sweeper. The numbers stay because code and tests cite them; read the full rule in the ADR before changing that code.
-- **40.** Delete a wake-up pointer only after the signal it serves was accepted.
-- **41.** Wake-up hints may be lost; wake-up decisions, status writes and fact writes may not.
-- **43.** The receiver of a signal owns the status transition that follows it.
-- **46.** A task token handed over through a write is findable by the sweeper, and a failed write fails the token.
+**40–52, 55 (coordination). The coordination code follows the rules in ADR #130, *Rules for the code*, as ADR #137, *ADR #130 after this ADR*, restates them**
+They concern task rows, wake-ups, facts and the sweeper. The numbers stay because code and tests cite them; read the rule in both ADRs before changing that code.
+- **40.** Delete a row's `asset:{name}` pointers only once the row has left its dependency wait.
+- **41.** Wake-up hints may be lost; wake-up decisions, status writes and fact writes may not. The hints are the two streams, with the sweeper's checks of the run rows behind them; the decisions are the dispatcher's writes and starts, the run's answer, and every write of a fact, which shares a transaction with its status.
+- **43.** Retired by ADR #137: no token signals a task. The dispatcher writes the transition it decides before it starts `run_task`.
+- **46.** The run's token, which `Start_Run` hands over through the run row, is findable by the sweeper: the run row is due at least until its current token is answered, and a failed write fails `Start_Run`.
 - **47.** A task row has one owner at a time, named by its generation; `tests/sdk/test_task_row_writers.py` lists every writer.
-- **49.** A helper template reads an input an older caller may omit through `$exists`.
+- **49.** A platform function that a pipeline's state machine calls reads each format it supports and refuses any other, with the cause (`Start_Run`'s arguments). A key added to `run_task`'s input after a release is read through `$exists` for one release: one stack updates the dispatcher and `run_task`, but not at the same moment.
 - **50.** A time that marks a beginning is written once (`if_not_exists`).
 - **51.** A reader of shared rows skips a row it cannot parse, and says so.
-- **52.** A time budget is checked per item, and a periodic job's steps fail independently.
+- **52.** A time budget is checked per item, and a periodic job's steps fail independently; every pass, narrow or full, has a budget below its function's timeout.
 - **55.** An evaluation as of a time reads only what was recorded by then (`asset_conditions.evaluate(recorded_by=)`).
 
 **42. A second bug of the same class in one mechanism stops the patching — question the model first**
@@ -548,12 +548,12 @@ In `template.yaml`, the coordination functions' `SUBSCRIPTIONS_TABLE` (`Reconcil
 ## Task Status Constants (`polyris/constants.py`)
 
 ```python
-TERMINAL_STATUSES = {SUCCESS, SUCCEEDED, FAILED, SKIPPED, ABORTED, UPSTREAM_FAILED}
-# NOTE: STOPPED is NOT terminal — task can be restarted
+TERMINAL_STATUSES = {SUCCESS, SUCCEEDED, FAILED, SKIPPED, ABORTED, UPSTREAM_FAILED}  # public: keeps its members
+SETTLED_STATUSES = TERMINAL_STATUSES | {STOPPED}  # the engine's "final": a run ends when every row is in it (ADR #137 §4)
 SUCCESS_STATUSES = {SUCCESS, SUCCEEDED, SKIPPED}
-FAILURE_STATUSES = {FAILED, UPSTREAM_FAILED, ABORTED}
+FAILURE_STATUSES = {FAILED, UPSTREAM_FAILED, ABORTED}  # public; the engine's failures add STOPPED (transitions.FINAL_FAILURES)
 WAITING_STATUSES = {WAITING, DEPS_READY, WAITING_PAUSED, WAITING_DECISION}
-RECONCILABLE_STATUSES = {WAITING, WAITING_PAUSED}  # the only rows the reconciler acts on (ADR #130)
+RECONCILABLE_STATUSES = {WAITING, WAITING_PAUSED}  # the rows whose readiness the dispatcher decides (ADR #137 §1)
 ```
 
 After changing `polyris/constants.py`: run `python -m polyris.codegen.sync_enums` (Principle #27). The coordination Lambdas import `polyris.constants` from the SDK itself.

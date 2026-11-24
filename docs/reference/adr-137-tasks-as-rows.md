@@ -1,6 +1,6 @@
 # ADR #137 — Tasks as rows: one dispatcher starts the tasks, one token per run
 
-> **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 11 (2026-11-24: the deletion of a pipeline or of the platform stops their running executions (§4); revision 10, 2026-11-23: what building it settled — the operator actions and the requests a pass carries out (§3, §4), a Restart taken for about nine months with no renewal of the run's rows (§3, §5), a Stop after a done stop, a run's `stale` status, the removal of `fact_version` from facts and of ADR #125's row-level `max_retries`, the public status sets kept as they were, and the upgrade steps of `polyris-up` (*Migration*); revision 9, 2026-11-18: the results of TR-0's probes; revision 8, 2026-11-17: the plan review's decisions). Target release: 1.3.0.
+> **Status:** ACCEPTED (2026-11-17; proposed 2026-11-15), revision 11 (2026-11-24, after a review of the branch: a deletion of a pipeline or of the platform stops their running executions (§4); an action whose stop of `run_task` fails warns (§3); a pass that failed for good marks the run row, and the sweeper waits for its backoff (§3, §7); what a Restart with dependants resets and what its nine months cover (§3); Rule 49 for `run_task`'s input; revision 10, 2026-11-23: what building it settled — the operator actions and the requests a pass carries out (§3, §4), a Restart taken for about nine months with no renewal of the run's rows (§3, §5), a Stop after a done stop, a run's `stale` status, the removal of `fact_version` from facts and of ADR #125's row-level `max_retries`, the public status sets kept as they were, and the upgrade steps of `polyris-up` (*Migration*); revision 9, 2026-11-18: the results of TR-0's probes; revision 8, 2026-11-17: the plan review's decisions). Target release: 1.3.0.
 >
 > **Supersedes:**
 > - ADR #130 in part: *ADR #130 after this ADR* lists each section, invariant and rule.
@@ -512,7 +512,7 @@ Root `CLAUDE.md` keeps the rule numbers, which code and tests cite; the texts ch
 | Rule 43 | Retired: no token signals a task. The dispatcher writes the transition it decides before it starts `run_task` (invariant 3) |
 | Rule 46 | Applies to the run's token, which `Start_Run` hands over through the run row: the run row is due at least until its current token is answered (§3), and a failed write fails `Start_Run`. A new token raises `run_version`, so no pass removes the run row's due time on a read taken before it |
 | Rule 47 | The writers are `Start_Run`, the dispatcher, `run_task` and the console's builder, and the fence has no branch for rows without a generation |
-| Rule 49 | Restated for `Start_Run`'s arguments: a platform function that a pipeline's state machine calls reads each format it supports and refuses any other, with the cause |
+| Rule 49 | Restated for `Start_Run`'s arguments: a platform function that a pipeline's state machine calls reads each format it supports and refuses any other, with the cause. A key added to `run_task`'s input after a release is read through `$exists` for one release: one stack updates the dispatcher and `run_task`, but not at the same moment |
 | Rule 52 | Stays, and applies to every pass, narrow or full: each has a time budget below its function's timeout (§7) |
 | Rules 50, 51 and 55 | Stay |
 
