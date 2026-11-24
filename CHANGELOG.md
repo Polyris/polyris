@@ -107,6 +107,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 - The bell's pop-up called every warning "Pipeline Failed". It names a warning by its kind, as the bell's list does, and a warning about a run itself names the run's pipeline.
 - The Tasks tab missed the tasks of hourly, weekly and monthly pipelines: without a pipeline filter it showed none, and with one it showed the latest run and said that was all. A date filter of a day now finds them too. Filtered to a pipeline it also read 101 runs for each page, about 200,000 task rows for a pipeline of 2,000 tasks, and with a status its whole history.
 - On a task of an hourly, weekly or monthly run, the console's Skip, Fail, Mark Successful, Stop and Restart answered `Task not found`. The routes recognized a row's key by a daily date in it, and searched for any other key as a task's name; they now look the key up first.
+- A pipeline that never ran opened on the date of the pipeline before it, with "No executions for" that date and no run to pick instead: only an edit of the URL left it. It opens on its definition, as it was meant to; the reset of the picked run after a pipeline switch chose the run view again. A definition with no graph to draw, as a pipeline that 1.2 deployed has until its redeploy, says why instead of naming a date.
 
 ## v1.2.3 - 2026-11-18
 

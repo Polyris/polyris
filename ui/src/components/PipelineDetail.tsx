@@ -554,6 +554,15 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                 )}
                             </div>
                         </div>
+                    ) : dagViewSource === 'current' ? (
+                    // The definition shows no run, so it names no date. Its graph is empty
+                    // while a pipeline an older version deployed names no task specs, or
+                    // when they cannot be read.
+                    <EmptyState
+                        icon={<Inbox size={48} className="text-gray-300" />}
+                        title="No structure to show"
+                        text={pipeline.needs_redeploy ? REDEPLOY_HINT : 'The deployed definition could not be read.'}
+                    />
                     ) : (
                     <EmptyState
                         icon={<Inbox size={48} className="text-gray-300" />}

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { useAppStore } from '../stores/useAppStore';
 import { createPipeline, createTask, createDAG, createExecution } from '../test/factories';
 import type { PipelineWithUI, DAG } from '../types';
@@ -112,6 +112,10 @@ vi.mock('./DatePicker', () => ({
 vi.mock('@/components/ui/button', () => ({
     Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string} aria-label={props['aria-label'] as string} data-variant={props.variant} disabled={props.disabled as boolean}>{props.children as React.ReactNode}</button>,
 }));
+// useStoreInit (the never-run tests mount it with the page) reads the route.
+vi.mock('@/hooks/useClientRoute', () => ({
+    useClientRoute: () => ({ pathname: '/pipelines/', push: vi.fn(), replace: vi.fn() }),
+}));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
 vi.mock('../utils/api', async (importOriginal) => ({
     // The real formatApiErrorMessage: the error states show its text.
@@ -126,6 +130,7 @@ vi.mock('../utils/storage', () => ({ getFromStorage: vi.fn(), saveToStorage: vi.
 vi.mock('@/hooks/useAuth', () => ({ AuthProvider: ({ children }: any) => children, useAuth: () => ({ isSignedIn: true, user: { email: 'test@test.com' }, signOut: vi.fn() }), useAuthHeader: () => ({}), AUTH_STATE: { SIGNED_IN: 'signedIn', SIGNED_OUT: 'signedOut' } }));
 
 import { PipelineDetail } from './PipelineDetail';
+import { useStoreInit } from '../stores/useStoreInit';
 
 /** Set store state for PipelineDetail */
 function setStore(overrides: Record<string, unknown> = {}) {
@@ -606,6 +611,51 @@ describe('PipelineDetail', () => {
             render(<PipelineDetail {...defaultProps} />);
 
             expect(screen.queryByText(/No executions for/)).not.toBeInTheDocument();
+        });
+    });
+
+    describe('a pipeline that never ran', () => {
+        // Its page shows its definition (the effect on latestRunDate). Picked in the
+        // sidebar, it also meets useStoreInit's reset of the picked run, an effect of
+        // App's that runs after the page's. That reset chose the run view, and the
+        // page stayed on the date of the pipeline before, a smoke run's 1960-01-06,
+        // with no run to pick instead: only an edit of the URL left it (1.3 live check).
+        const ran = createPipeline({ name: 'smoke-rules', recent_runs: [{ date: '1960-01-06' }] }) as PipelineWithUI;
+        const never = createPipeline({ name: 'direct-steps-demo' }) as PipelineWithUI;
+
+        function Page() {
+            useStoreInit({ pipelines: [ran, never] });
+            return <PipelineDetail {...defaultProps} />;
+        }
+
+        afterEach(() => window.history.replaceState({}, '', '/'));
+
+        it('opens on its definition when picked after a run of another pipeline', () => {
+            window.history.replaceState({}, '', '/pipelines/?pipeline=smoke-rules&date=1960-01-06');
+            mockPipelinesQuery.data = [ran, never];
+            setStore({ pipeline: ran, date: '1960-01-06' });
+            useAppStore.getState().setSelectedExecution({ execution_id: 'smoke-rules-run-1960-01-06-0a1b2c3d', auto_selected: false });
+            render(<Page />);
+
+            act(() => useAppStore.getState().setSelectedPipeline(never));
+
+            expect(useAppStore.getState().dagViewSource).toBe('current');
+            expect(screen.getByText('Current deployed structure')).toBeInTheDocument();
+            expect(screen.queryByText(/1960-01-06/)).not.toBeInTheDocument();
+        });
+
+        it('says what its definition lacks, never the executions of a date', () => {
+            // A pipeline an older version deployed names no task specs until it is
+            // redeployed, so its definition has no graph to draw.
+            mockPipelinesQuery.data = [never];
+            mockDetailQuery.data = { tasks: [], dag: { ...mockDag, nodes: [], edges: [] }, serverOffsetMs: 0, selectedExecution: null };
+            setStore({ pipeline: { ...never, needs_redeploy: true }, date: '1960-01-06', dagViewSource: 'current' });
+
+            render(<PipelineDetail {...defaultProps} />);
+
+            expect(screen.queryByText(/No executions/)).not.toBeInTheDocument();
+            expect(screen.queryByText(/1960-01-06/)).not.toBeInTheDocument();
+            expect(screen.getByText(/run polyris-deploy for this pipeline/)).toBeInTheDocument();
         });
     });
 

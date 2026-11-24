@@ -215,6 +215,10 @@ The pipelines sidebar keeps its rows still while the pointer or the focus is in 
 
 The bell's pop-up called every warning "Pipeline Failed" while its list and the browser notification named it by its kind (1.3 live smoke). `notificationTitle` in `Notifications.tsx` names a notification for the pop-up and the browser notification (a task's failure as "Task Failed": the run goes on); a new surface imports it, never a ternary of its own (`names a warning toast by its kind, not as a failed pipeline`).
 
+## A reset writes only what it resets
+
+React runs a child's effects before its parent's in one commit. `useStoreInit`, called in `App`, forgets the picked run after a pipeline switch; it did so with `setSelectedExecution(null)`, which also chose the run view, and undid the definition view that `PipelineDetail`, a child, had just chosen for a pipeline that never ran. The page stayed on the date of the pipeline before, with no run to pick instead (1.3 live check). The reset calls `clearSelectedExecution`, which writes the run alone. A test of a choice that a later effect may overwrite mounts that effect too, never the component alone (`opens on its definition when picked after a run of another pipeline`).
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

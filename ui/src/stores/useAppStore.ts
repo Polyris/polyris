@@ -52,6 +52,8 @@ interface AppState extends ModalState {
     setDate: (date: string) => void;
     setSelectedPipeline: (pipeline: PipelineWithUI | null) => void;
     setSelectedExecution: (exec: SelectedExecution | null) => void;
+    /** Forget the picked run and leave the view as it is: the reset after a pipeline or date switch. */
+    clearSelectedExecution: () => void;
     setSelectedTaskName: (name: string | null) => void;
     setDagViewSource: (source: 'run' | 'current') => void;
 
@@ -151,6 +153,10 @@ export const useAppStore = create<AppState>((set) => ({
         // executionId back to null.
         dagViewSource: 'run',
     })),
+    // The reset that follows a pipeline or date switch (useStoreInit) picks no run, so it
+    // leaves the view alone: setSelectedExecution(null) chose 'run' and undid the definition
+    // view of a pipeline that never ran, which PipelineDetail's effect, a child's, chose first.
+    clearSelectedExecution: () => set({ selectedExecution: null }),
     setSelectedTaskName: (name) => set({ selectedTaskName: name }),
     setDagViewSource: (source) => set({ dagViewSource: source }),
 
