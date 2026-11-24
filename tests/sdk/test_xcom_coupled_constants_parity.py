@@ -119,8 +119,8 @@ class TestCanonicalRowKeyFormats:
 
 
 class TestManualResolutionMarkerFields:
-    """The four fields console_api writes onto the synthetic marker
-    (``_write_synthetic_output_marker``) are read by both the SDK's
+    """The fields an operator's action writes onto the output marker
+    (``polyris.coordination.actions``, ADR #137 §3) are read by both the SDK's
     ``_raise_manual`` and the frontend's ``detectManualResolution``. Every
     field name must appear on all three surfaces."""
 
@@ -131,8 +131,11 @@ class TestManualResolutionMarkerFields:
         xcom._MANUAL_OPERATOR_FIELD,
         xcom._MANUAL_PIPELINE_EXECUTION_FIELD,
     ])
-    def test_field_appears_in_console_api_writer(self, field, tasks_route_text):
-        assert field in tasks_route_text, (
+    def test_field_appears_in_the_actions_writer(self, field):
+        from polyris.coordination import actions
+        written = {actions.MARKER_RESOLVED, actions.MARKER_RESOLUTION, actions.MARKER_REASON, actions.MARKER_OPERATOR,
+                   actions.MARKER_RUN}
+        assert field in written, (
             f"SDK reads {field!r} but the backend writer doesn't write it — "
             "downstream marker introspection will see the field as missing."
         )

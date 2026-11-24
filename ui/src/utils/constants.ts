@@ -22,11 +22,9 @@ export const STATUS_COLORS = {
     upstream_failed: 'error',
     skipped: 'skipped',
     stopped: 'stopped',
-    waiting_delay: 'warning',
     partial: 'warning',
     aborted: 'aborted',
-    timed_out: 'error',
-    recovered: 'warning',
+    stale: 'muted',     // a run or task row from before 1.3 left unfinished
     // Asset statuses
     updated: 'success',
     ready: 'success',
@@ -65,7 +63,7 @@ export const TERMINAL_STATUSES = new Set<string>(TASK_TERMINAL_STATUSES);
 export const isTerminalStatus = (status: string) => TERMINAL_STATUSES.has(status);
 
 // "Why waiting" reasons for tooltip
-export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | WaitForEntry[]; wait_before?: number; wait_delay_until_ms?: number } | null): string | null => {
+export const getWaitingReason = (task: { status?: string; dependencies?: string[]; wait_for?: string | WaitForEntry[]; wait_before?: number; wait_delay_until_ms?: number; countdown_end?: string | null } | null): string | null => {
     if (!task) return null;
     
     const status = task.status;
@@ -87,6 +85,10 @@ export const getWaitingReason = (task: { status?: string; dependencies?: string[
     
     switch (status) {
         case TASK_STATUS.WAITING:
+            // A 1.3 row counting down its wait_before is ready: its upstreams have finished.
+            if (task.countdown_end) {
+                return 'Counting down its wait_before';
+            }
             if ((task.dependencies?.length ?? 0) > 0 && waitForAssets.length > 0) {
                 return `Waiting for tasks: ${task.dependencies!.join(', ')} and assets: ${waitForAssets.join(', ')}`;
             }
@@ -103,9 +105,6 @@ export const getWaitingReason = (task: { status?: string; dependencies?: string[
                 return 'Dependencies ready, countdown starting...';
             }
             return 'Dependencies ready, starting soon...';
-            
-        case TASK_STATUS.WAITING_DELAY:
-            return 'Countdown in progress';
             
         case TASK_STATUS.WAITING_PAUSED:
             return 'Pipeline is paused';

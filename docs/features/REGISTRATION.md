@@ -34,20 +34,21 @@ SFN StartExecution(register_only=true) — fire-and-forget
     │
     ▼
 Register_Pipeline state (UpdateItem)
-    ├──► sfn_arn, tasks, dag, schedule, description, ...
+    ├──► sfn_arn, schedule, description, spec_id, task_count, ...
     └──► asset_subscriptions (if asset-triggered)
-    │
-    ▼
-Save_DAG_Snapshot state
-    └──► tokens_table (dag_snapshot::{execution_name}, TTL 120 days)
 ```
+
+The registry names the pipeline's spec version (`spec_id`, `task_count`); the
+tasks and the graph live in `pipeline-specs`, and each run's row names the
+version it ran with (ADR #137 §8).
 
 `registered_at` is written **once**, by `polyris-deploy`, and is never
 overwritten by pipeline runs. The Console's "Deployed at X" reflects the last
 actual deploy, not the last run.
 
 **On destroy** (`polyris-destroy`): deletes the CloudFormation stack
-(removes the pipeline StateMachine and EventBridge schedule). DynamoDB entries
+(removes the pipeline StateMachine and EventBridge schedule), stopping the
+pipeline's running runs until the stack is gone. DynamoDB entries
 (`pipeline_registry`, `asset_subscriptions`) are not removed automatically —
 delete the items directly via the AWS Console / CLI if needed.
 
@@ -65,15 +66,11 @@ Register_Pipeline state
     └──► asset_subscriptions (if asset-triggered)
     │
     ▼
-Save_DAG_Snapshot state
-    │
-    └──► tokens_table (dag_snapshot::{execution_name}, TTL 120 days)
-    │
-    ▼
 Check_Register_Only
     │
     ├── true  → Success (exit)
-    └── false → Run_All_Tasks
+    └── false → Run_All_Tasks: Start_Run writes the run's tasks as rows,
+                and each direct step runs as a branch beside it
 ```
 
 This ensures metadata stays current even if DynamoDB items were deleted manually

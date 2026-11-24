@@ -6,8 +6,8 @@ the rows without it. So no unit test saw that /api/tasks asked date-pipeline-ind
 and pipeline-date-index for fields they do not carry: every call failed with a 500
 until the 1.2.0 live smoke found it. This pins the contract against
 sam/template.yaml (Principle #28). Checked: the `projection=` argument of every
-executions_repo index method and of feed.pipeline_rows_before, and the
-ProjectionExpression of every query dict handed to executions_repo.query_by_date_raw.
+executions_repo index method, and the ProjectionExpression of every query dict
+handed to executions_repo.query_by_date_raw.
 A reserved word (`status`, `date`, `error`) in a projection must go through a
 placeholder too: DynamoDB rejects it as well.
 """
@@ -55,17 +55,10 @@ def _functions(path: Path) -> Iterator[Tuple[ast.FunctionDef, str]]:
 
 
 def _reader_indexes() -> Dict[str, str]:
-    """Reader name -> the index it queries: executions_repo methods, read from the DAL,
-    and feed.pipeline_rows_before, through the DAL method it calls."""
+    """Reader name -> the index it queries: executions_repo methods, read from the DAL."""
     readers = {fn.name: m.group(1) for fn, src in _functions(CONSOLE_API / "dal" / "executions_repo.py")
                if (m := _INDEX_NAME_RE.search(src))}
-    for fn, src in _functions(CONSOLE_API / "feed.py"):
-        if fn.name == "pipeline_rows_before":
-            called = re.search(r"executions_repo\.(\w+)\(", src)
-            assert called and called.group(1) in readers, "pipeline_rows_before reads no known index"
-            readers[fn.name] = readers[called.group(1)]
-    assert {"query_runs_by_date", "query_runs_by_pipeline", "query_by_date_raw",
-            "pipeline_rows_before"} <= readers.keys(), readers
+    assert {"query_runs_by_date", "query_by_date_raw"} <= readers.keys(), readers
     return readers
 
 
@@ -161,7 +154,7 @@ def test_the_tasks_feed_back_fills_what_its_indexes_lack():
     indexes = _index_attributes()
     formatted = {"execution_name", "task_name", "pipeline_name", "status", "date", "started_at",
                  "running_at", "finished_at", "dependencies", "pipeline_execution", "wait_for",
-                 "wrapper_execution_arn", "triggered_by", "attempt", "retry_attempt", "task_config"}
+                 "run_task_helper_arn", "triggered_by", "attempt", "retry_attempt", "task_config"}
     for index in ("date-pipeline-index", "pipeline-date-index"):
         missing = formatted - (indexes[index] or formatted) - set(_TASKS_BACKFILL)
         assert not missing, f"{index}: {sorted(missing)} neither projected nor back-filled"

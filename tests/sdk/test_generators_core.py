@@ -28,7 +28,7 @@ from polyris.generators import (
     generate_assets_json,
     generate_all_assets,
     _build_dag_visualization_nodes_edges,
-    _build_pipeline_metadata,
+    _asset_schedule,
 )
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
@@ -44,7 +44,7 @@ def test_a_pipeline_without_an_asset_schedule_registers_an_empty_one():
         def build():
             pass
         build()
-    _, _, asset_schedule = _build_pipeline_metadata(dag)
+    asset_schedule = _asset_schedule(dag)
     assert json.dumps(asset_schedule) == "{}"
 
 
@@ -270,7 +270,7 @@ class TestNoUnsubstitutedTemplateVariables:
         for dag in (_chain_dag(), _scheduled_dag(), _asset_dag(), _asset_triggered_dag()):
             asl_json = generate_step_function_json(
                 dag,
-                wrapper_arn="arn:aws:states:us-east-1:123456789012:stateMachine:wrapper",
+                start_run_function_arn="arn:aws:states:us-east-1:123456789012:stateMachine:wrapper",
                 registry_table="real-registry-table",
                 tokens_table="real-tokens-table",
                 asset_subscriptions_table="real-asset-subscriptions-table",
@@ -314,15 +314,6 @@ class TestPublicGeneration:
         result = generate_dag_json(_chain_dag())
         assert all(n.get("task_type") == "sfn" for n in result["nodes"])
 
-    def test_register_pipeline_dag_snapshot_includes_task_type(self):
-        """Register_Pipeline's stored 'dag' field is what /pipeline-dag's
-        registry fallback returns for 'current structure' (blueprint) mode.
-        Must carry task_type or blueprint nodes render with no type badge."""
-        asl = json.loads(generate_step_function_json(_chain_dag()))
-        attr_values = asl["States"]["Register_Pipeline"]["Arguments"]["ExpressionAttributeValues"]
-        dag = json.loads(attr_values[":dag"]["S"])
-        assert all(n.get("task_type") == "sfn" for n in dag["nodes"])
-
     def test_generate_dag_hash_is_deterministic(self):
         h1 = generate_dag_hash(_chain_dag())
         h2 = generate_dag_hash(_chain_dag())
@@ -356,28 +347,9 @@ class TestPublicGeneration:
 
 class TestDagVisualizationNodesEdgesUnified:
     """generate_dag_json (the public polyris-output/polyris-validate surface)
-    and _build_pipeline_metadata (whose dag_metadata is stored in the pipeline
-    registry and per-execution snapshots — what /pipeline-dag's registry
-    fallback returns for 'current structure' mode) used to build their own,
-    independent (nodes, edges) — and had quietly drifted: generate_dag_json
-    had type/trigger_rule/tracked-steps that _build_pipeline_metadata's
-    version lacked; _build_pipeline_metadata had wait_for (asset pull
-    dependency) that generate_dag_json lacked. Both now call
-    _build_dag_visualization_nodes_edges — one source of truth, full field
-    set for both consumers, not whichever subset each caller happened to
-    accumulate over time."""
-
-    def test_both_callers_produce_identical_nodes_and_edges(self):
-        """The core regression guard: if this ever drifts again, it fails
-        here — not silently, three years from now, as two subtly different
-        graphs depending which endpoint you hit."""
-        dag = _chain_dag()
-        from_public = generate_dag_json(dag)
-        asl = json.loads(generate_step_function_json(dag))
-        attr_values = asl["States"]["Register_Pipeline"]["Arguments"]["ExpressionAttributeValues"]
-        registry_dag = json.loads(attr_values[":dag"]["S"])
-        assert from_public["nodes"] == registry_dag["nodes"]
-        assert from_public["edges"] == registry_dag["edges"]
+    draws through _build_dag_visualization_nodes_edges, with the full field
+    set. Until 1.3 the registry and each run's snapshot stored a second copy
+    of the graph, which had drifted from it once."""
 
     def test_includes_type_marker_and_trigger_rule(self):
         """Both fields used to be generate_dag_json-only — trigger_rule was
@@ -400,8 +372,7 @@ class TestDagVisualizationNodesEdgesUnified:
         assert by_id["b"]["trigger_rule"] == "all_done"
 
     def test_includes_wait_for(self):
-        """wait_for used to be _build_pipeline_metadata-only — absent from
-        generate_dag_json (polyris-output --json) before this unification."""
+        """wait_for is drawn: it was once missing from generate_dag_json (polyris-output --json)."""
         from polyris import DAG, task, Asset
         upstream = Asset("ns/upstream")
         with DAG("d") as dag:
@@ -413,10 +384,7 @@ class TestDagVisualizationNodesEdgesUnified:
         assert nodes[0]["wait_for"][0]["name"] == "ns/upstream"
 
     def test_includes_tracked_steps_glue_ecs_athena(self):
-        """Direct Glue/ECS/Athena steps (not through @task) used to be
-        entirely absent from _build_pipeline_metadata's dag_metadata — a
-        pipeline using a direct step would show an incomplete graph in
-        'current structure' mode, missing that step's node altogether."""
+        """Direct Glue/ECS/Athena steps (not through @task) are nodes: a graph once missed them."""
         from polyris import DAG, task, GlueTask
         with DAG("d") as dag:
             @task.sfn(arn=ARN)

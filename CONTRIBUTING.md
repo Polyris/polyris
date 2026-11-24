@@ -49,7 +49,7 @@ make test
 
 # Or by area:
 make test-sdk           # pytest tests/sdk/
-make test-lambdas       # every Lambda suite: console_api, coordination, query_subscriptions, …
+make test-lambdas       # every Lambda suite: console_api, coordination, bucket_cleanup, …
 make test-sfn-jsonata   # JSONata expression tests (requires Node.js)
 make test-ui            # vitest (requires npm install in ui/)
 ```
@@ -97,9 +97,8 @@ polyris/
 │
 ├── sam/     # AWS Infrastructure
 │   ├── lambdas/          # Lambda function code
-│   │   ├── console_api/  # REST API (28 free endpoints)
-│   │   ├── coordination/ # Reconciler and asset fan-out (ADR #130)
-│   │   ├── query_subscriptions/     # Downstream subscriber lookup
+│   │   ├── console_api/  # REST API (24 free endpoints)
+│   │   ├── coordination/ # Start_Run, the dispatcher, the sweeper and asset fan-out (ADR #137)
 │   │   └── _shared/      # logger.py, copied into each Lambda (make sync-loggers)
 │   ├── sfn_templates/    # Step Functions ASL templates
 │   └── template.yaml    # SAM template
@@ -148,7 +147,7 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 | SDK core (DAG, tasks, DSL) | `tests/sdk/test_smoke.py` | `pytest tests/sdk/` | DAG structure, dependencies, ASL generation, constants |
 | ASL snapshots | `tests/sdk/test_asl_snapshots.py` | `pytest tests/sdk/` | Golden file comparison of generated Step Functions JSON |
 | Template features | `tests/sdk/test_templates.py` | `pytest tests/sdk/` | orchestration_timeout, route table, run_task resilience |
-| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 28 free console_api routes registered and callable |
+| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 24 free console_api routes registered and callable |
 | Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The 5 trigger rules, their aliases and the unknown-rule fallback |
 | SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for all 13 templates |
 | JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, 550 expressions compile |
@@ -168,7 +167,7 @@ cd sam/lambdas/coordination
 PYTHONPATH=. pytest tests/ -v
 
 # One file
-PYTHONPATH=. pytest tests/test_coordination_reconcile.py -v
+PYTHONPATH=. pytest tests/test_coordination_dispatcher.py -v
 ```
 
 ---

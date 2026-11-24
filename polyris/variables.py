@@ -10,11 +10,18 @@ no hand-maintained copy to keep in sync.
 To add a variable: add one entry below, then run ``make generate-variables``. CI's
 ``check-generate-variables`` fails if the template drifts from this registry.
 
-Expressions run inside the JSONata scaffolding emitted by the codegen, where two
-locals are bound from the run's logical date:
+Expressions run inside the JSONata scaffolding emitted by the codegen, where three
+locals are bound from run_task's input (``$states.context.Execution.Input``, whose keys
+are ``run_task_input.Key``):
 
-* ``$cd`` — ``$states.input.current_date`` (the logical run date, ``YYYY-MM-DD``)
-* ``$dt`` — ``$toMillis($cd & 'T00:00:00Z')`` (that date as epoch millis)
+* ``$cd`` — the run's date: ``YYYY-MM-DD``, or the key of an hourly, weekly or monthly
+  partition (``date``)
+* ``$pd`` — the first day of that partition, ``YYYY-MM-DD`` (``partition_date``, which
+  ``run_task_input.partition_fields`` computes); ``$cd`` for a daily run, and for an input an
+  older dispatcher built without it (Principle #49)
+* ``$dt`` — ``$toMillis($pd & 'T00:00:00Z')`` (that day as epoch millis)
+
+A day form reads ``$pd`` or ``$dt``, never ``$cd``: a weekly key is no date.
 """
 from typing import Dict, TypedDict
 
@@ -29,22 +36,22 @@ class VariableSpec(TypedDict):
 # NOTE: order is significant — the generated ``$dateVars`` object preserves it.
 VARIABLES: Dict[str, VariableSpec] = {
     "current_date":          {"expr": "$cd",
-                              "description": "YYYY-MM-DD (logical run date)"},
-    "PARTITION_ARG":         {"expr": "$exists($states.input.PARTITION_ARG) ? $states.input.PARTITION_ARG : $cd",
-                              "description": "Alias for Hive partitioning; defaults to current_date"},
-    "date_iso":              {"expr": "$cd",
-                              "description": "YYYY-MM-DD (same as current_date)"},
-    "date_compact":          {"expr": "$replace($cd, '-', '')",
+                              "description": "The run's date: YYYY-MM-DD, or the key of an hourly, weekly or monthly partition"},
+    "PARTITION_ARG":         {"expr": "$states.context.Execution.Input.partition_arg",
+                              "description": "Alias for Hive partitioning: the run's PARTITION_ARG, or current_date"},
+    "date_iso":              {"expr": "$pd",
+                              "description": "YYYY-MM-DD: the first day of the run's partition (current_date for a daily run)"},
+    "date_compact":          {"expr": "$replace($pd, '-', '')",
                               "description": "YYYYMMDD"},
-    "date_slash":            {"expr": "$substring($cd,0,4) & '/' & $substring($cd,5,2) & '/' & $substring($cd,8,2)",
+    "date_slash":            {"expr": "$substring($pd,0,4) & '/' & $substring($pd,5,2) & '/' & $substring($pd,8,2)",
                               "description": "YYYY/MM/DD"},
-    "date_underscore":       {"expr": "$replace($cd, '-', '_')",
+    "date_underscore":       {"expr": "$replace($pd, '-', '_')",
                               "description": "YYYY_MM_DD"},
-    "year":                  {"expr": "$substring($cd, 0, 4)",
+    "year":                  {"expr": "$substring($pd, 0, 4)",
                               "description": "YYYY"},
-    "month":                 {"expr": "$substring($cd, 5, 2)",
+    "month":                 {"expr": "$substring($pd, 5, 2)",
                               "description": "MM"},
-    "day":                   {"expr": "$substring($cd, 8, 2)",
+    "day":                   {"expr": "$substring($pd, 8, 2)",
                               "description": "DD"},
     "day_of_week":           {"expr": "(['thursday','friday','saturday','sunday','monday','tuesday','wednesday'])[$floor($dt / 86400000) % 7]",
                               "description": "monday, tuesday, ... (lowercase)"},
@@ -62,14 +69,14 @@ VARIABLES: Dict[str, VariableSpec] = {
                               "description": "YYYYMMDD of minus_7_days"},
     "minus_30_days_compact": {"expr": f"$replace($fromMillis($dt - 2592000000, {_DATE_FMT}), '-', '')",
                               "description": "YYYYMMDD of minus_30_days"},
-    "partition_key":         {"expr": "$exists($states.input.partition_key) ? $states.input.partition_key : $cd",
-                              "description": "Explicit partition key; defaults to current_date"},
-    "backfill_id":           {"expr": "$exists($states.input.backfill_id) ? $states.input.backfill_id : ''",
+    "partition_key":         {"expr": "$cd",
+                              "description": "The run's partition key: the same as current_date"},
+    "backfill_id":           {"expr": "$exists($states.context.Execution.Input.backfill_id) ? "
+                                      "$states.context.Execution.Input.backfill_id : ''",
                               "description": "Backfill run id, or empty string"},
-    "is_backfill":           {"expr": "$exists($states.input.is_backfill) ? $states.input.is_backfill : false",
-                              "description": "Whether this run is a backfill"},
-    "ALLOW_UNSUCCESSFUL_SPIDER_RUN": {"expr": "'True'",
-                              "description": "Legacy flag, always 'True'"},
+    "is_backfill":           {"expr": "$exists($states.context.Execution.Input.backfill_id) and "
+                                      "$states.context.Execution.Input.backfill_id != ''",
+                              "description": "true in a run of a backfill, which carries its backfill_id"},
 }
 
 __all__ = ["VARIABLES", "VariableSpec"]

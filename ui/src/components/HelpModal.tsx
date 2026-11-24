@@ -497,11 +497,11 @@ function BackfillDocsTab() {
             </div>
 
             <div className="hm-help-section">
-                <h4>Task variables (available in every child execution)</h4>
+                <h4>Task variables (available to Lambda and state machine tasks)</h4>
                 <div className="hm-api-endpoints mt-2">
                     <div className="hm-api-endpoint">
                         <code className="hm-api-method get">current_date</code>
-                        <span className="hm-api-desc">2025-01-15 (daily anchor)</span>
+                        <span className="hm-api-desc">2025-01-15, or the partition key of an hourly, weekly or monthly run</span>
                     </div>
                     <div className="hm-api-endpoint">
                         <code className="hm-api-method get">partition_key</code>
@@ -672,7 +672,7 @@ function ApiReferenceTab() {
                         example={`curl "${BASE}/api/pipeline-dag?name=acme-daily"`}
                         response={`{"name": "acme-daily", "nodes": [...], "edges": [{"from": "extract_listings", "to": "stage_listings"}]}`}
                     />
-                    <ApiEndpointDetail method="GET" path="/api/pipeline-executions?name=X&date=Y" desc="List SFN executions for date"
+                    <ApiEndpointDetail method="GET" path="/api/pipeline-executions?name=X&date=Y" desc="List a pipeline's runs for a date"
                         example={`curl "${BASE}/api/pipeline-executions?name=acme-daily&date=2026-02-17"`}
                     />
                     <ApiEndpointDetail method="GET" path="/api/pipeline-logs?name=X" desc="Get recent pipeline logs"
@@ -716,9 +716,6 @@ function ApiReferenceTab() {
                     />
                     <ApiEndpointDetail method="GET" path="/api/task-output?name=X&date=Y" desc="Get a task's stored input and output"
                         example={`curl "${BASE}/api/task-output?name=stage_listings&date=2026-02-17"`} />
-                    <ApiEndpointDetail method="PUT" path="/api/task-config?name=X" desc="Update task configuration"
-                        example={`curl -X PUT "${BASE}/api/task-config?name=stage_listings" \\\n  -H "Content-Type: application/json" \\\n  -d '{"retries": 3, "retry_delay": 60}'`}
-                    />
                     <ApiEndpointDetail method="POST" path="/api/task-restart?name=X" desc="Restart a specific task"
                         example={`curl -X POST "${BASE}/api/task-restart?name=stage_listings-2026-02-17-acme-daily"`}
                     />
@@ -733,9 +730,6 @@ function ApiReferenceTab() {
                     />
                     <ApiEndpointDetail method="POST" path="/api/task-stop?name=X" desc="Stop a running task"
                         example={`curl -X POST "${BASE}/api/task-stop?name=stage_listings-2026-02-17-acme-daily"`}
-                    />
-                    <ApiEndpointDetail method="POST" path="/api/task-retry?name=X" desc="Retry a failed task"
-                        example={`curl -X POST "${BASE}/api/task-retry?name=stage_listings-2026-02-17-acme-daily"`}
                     />
                 </div>
             </div>
@@ -757,9 +751,6 @@ function ApiReferenceTab() {
                     />
                     <ApiEndpointDetail method="GET" path="/api/execution-children?id=RUN" desc="Get the run's tasks"
                         example={`curl "${BASE}/api/execution-children?id=acme-daily-run-2026-11-12-abcd1234"`}
-                    />
-                    <ApiEndpointDetail method="GET" path="/api/execution-parent?id=TASK_EXECUTION" desc="Get a task's pipeline execution"
-                        example={`curl "${BASE}/api/execution-parent?id=extract-2026-11-12--2026-11-12-abcd1234"`}
                     />
                 </div>
             </div>

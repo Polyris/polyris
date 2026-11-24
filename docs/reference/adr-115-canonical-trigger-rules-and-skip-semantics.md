@@ -1,5 +1,7 @@
 # ADR #115 — Canonical trigger rules and skip semantics
 
+> **Decisions 1 and 4 superseded by [ADR #138](adr-138-trigger-rules-after-run-end-change.md) (1.3)**: the canonical set of three and the legacy names accepted as aliases. Decisions 2 and 3 stand; decision 5 stands, amended: only a rule's skip cascades, and ADR #138 adds the `run` origin.
+
 > **Status:** All decisions implemented. Decisions 1–3 and 5 (skip-fix, skip-cascade,
 > skip-origin) shipped in steps 1.1/1.2. Decision 4 (canonical vs. alias framing)
 > shipped in step 1.3 — **scope corrected during execution**: delivered as a

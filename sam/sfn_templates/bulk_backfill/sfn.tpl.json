@@ -6,20 +6,22 @@
     "Initialize": {
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
-      "Comment": "Mark backfill record as running and capture pipeline DAG hash at start.",
+      "Comment": "Mark backfill record as running and capture pipeline DAG hash at start. While it runs, the record lives as long as a run's history: a year and 90 days (ADR #137 §5, polyris.coordination.retention.BACKFILL_RUNNING).",
       "Arguments": {
         "TableName": "${tokens_table}",
         "Key": {
           "execution_name": { "S": "{% $states.input.backfill_id %}" }
         },
-        "UpdateExpression": "SET #status = :running, started_at = :now",
+        "UpdateExpression": "SET #status = :running, started_at = :now, #ttl = :ttl",
         "ConditionExpression": "attribute_exists(execution_name)",
         "ExpressionAttributeNames": {
-          "#status": "status"
+          "#status": "status",
+          "#ttl": "ttl"
         },
         "ExpressionAttributeValues": {
           ":running": { "S": "running" },
-          ":now": { "S": "{% $now() %}" }
+          ":now": { "S": "{% $now() %}" },
+          ":ttl": { "N": "{% $string($floor($toMillis($now()) / 1000) + 39312000) %}" }
         }
       },
       "Output": "{% $states.input %}",
@@ -175,7 +177,7 @@
                 "StartChildSFN": {
                   "Type": "Task",
                   "Resource": "arn:aws:states:::states:startExecution.sync:2",
-                  "Comment": "Start child pipeline execution for this item. .sync2 waits for terminal state and returns Output.Status. Pipeline + ARN come from the item, so cross-pipeline upstream runs against its own state machine. The name is polyris.coordination.run_name(pipeline, partition, 'bf', backfill_id:tier): its last 8 characters hash all of them, so the task executions of different pipelines, tiers and backfills never share a name (B-X1).",
+                  "Comment": "Start child pipeline execution for this item. .sync2 waits for terminal state and returns Output.Status, as long as the run lives: no limit of its own (ADR #137 §5). Pipeline + ARN come from the item, so cross-pipeline upstream runs against its own state machine. The name is polyris.coordination.run_name(pipeline, partition, 'bf', backfill_id:tier): its last 8 characters hash all of them, so the task executions of different pipelines, tiers and backfills never share a name (B-X1).",
                   "Arguments": {
                     "StateMachineArn": "{% $states.input.target_pipeline_sfn_arn %}",
                     "Name": "{% ( $p := $states.input.target_pipeline; $d := $states.input.partition_key; $k := 'bf'; $disc := $states.input.backfill_id & ':' & $string($states.input.tier_index); $clean := function($v) { $replace($replace($v, /[^A-Za-z0-9_-]+/, '-'), /^-+|-+$/, '') }; $digest := $substring($hash($join([$p, $d, $k, $disc], '\\u001f'), 'SHA-256'), 0, 8); $tail := '-' & $clean($d) & '-' & $k & '-' & $digest; $replace($substring($clean($p), 0, 80 - $length($tail)), /-+$/, '') & $tail ) %}",
@@ -190,7 +192,6 @@
                       "_suppress_asset_event": "{% $states.input.cascade = 'none' %}"
                     }
                   },
-                  "TimeoutSeconds": 86400,
                   "Retry": [
                     {
                       "ErrorEquals": ["States.TaskFailed"],
@@ -278,18 +279,22 @@
     "UpdateFinalStatus": {
       "Type": "Task",
       "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Comment": "The final status, after which the record lives 90 days (ADR #137 §5, polyris.coordination.retention.BACKFILL_ENDED). Never on a record TTL deleted: no record of the key alone.",
       "Arguments": {
         "TableName": "${tokens_table}",
         "Key": {
           "execution_name": { "S": "{% $states.input.backfill_id %}" }
         },
-        "UpdateExpression": "SET #status = :final_status, finished_at = :now",
+        "UpdateExpression": "SET #status = :final_status, finished_at = :now, #ttl = :ttl",
+        "ConditionExpression": "attribute_exists(execution_name)",
         "ExpressionAttributeNames": {
-          "#status": "status"
+          "#status": "status",
+          "#ttl": "ttl"
         },
         "ExpressionAttributeValues": {
           ":final_status": { "S": "{% $states.input.final_status %}" },
-          ":now": { "S": "{% $now() %}" }
+          ":now": { "S": "{% $now() %}" },
+          ":ttl": { "N": "{% $string($floor($toMillis($now()) / 1000) + 7776000) %}" }
         }
       },
       "End": true

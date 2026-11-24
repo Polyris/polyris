@@ -20,7 +20,8 @@ import pytest
 
 from constants import Limits
 import feed
-from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
+from feed import feed_dates, is_older, page_by_started_at
+from polyris.coordination import run_row
 
 
 TODAY = datetime(2026, 7, 16, 12, 0, 0, tzinfo=timezone.utc)
@@ -203,108 +204,27 @@ class TestPageByStartedAt:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# pipeline_rows_before — the windowless index read (ADR #108)
+# day_keys and run_weight — the Tasks tab's date filter and its walk of runs (D139, D140)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _idx_row(date, execution, started_at):
-    return {'date': date, 'pipeline_execution': execution, 'started_at': started_at}
+class TestDayKeys:
+    def test_a_day_finds_its_hours_its_week_and_its_month(self):
+        keys = feed.day_keys('2026-07-16')
+        assert len(keys) == 27 and len(set(keys)) == 27
+        assert {'2026-07-16', '2026-07-16T00', '2026-07-16T23', '2026-W29', '2026-07'} <= set(keys)
+
+    @pytest.mark.parametrize('key', ['2026-07-16T05', '2026-W29', '2026-07', 'not-a-date'])
+    def test_any_other_key_finds_itself(self, key):
+        assert feed.day_keys(key) == [key]
 
 
-def _count_all(rows):
-    return len(rows)
+class TestRunWeight:
+    def test_the_rows_of_a_status_or_all_rows_by_the_summary(self):
+        item = {run_row.SUMMARY: {'success': 3, 'failed': 1}}
+        assert (feed.run_weight(item), feed.run_weight(item, 'failed'), feed.run_weight(item, 'skipped')) == (4, 1, 0)
 
+    def test_running_counts_the_rows_the_summary_may_still_show_deps_ready(self):
+        assert feed.run_weight({run_row.SUMMARY: {'success': 1, 'deps_ready': 2}}, 'running') == 2
 
-class TestPipelineRowsBefore:
-    def test_one_read_is_enough_when_the_first_chunk_overshoots_the_page(self, mocker):
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline',
-            return_value=([_idx_row('2026-07-16', 'e1', '2026-07-16T10:00:00Z'),
-                           _idx_row('2026-07-16', 'e2', '2026-07-16T09:00:00Z')], '2026-07-15'),
-        )
-        rows = pipeline_rows_before('p', '', 1, count_fn=_count_all)
-        assert len(rows) == 2
-        assert q.call_count == 1
-
-    def test_asks_the_repo_for_one_more_than_the_page(self, mocker):
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline', return_value=([], None))
-        pipeline_rows_before('p', '', 50, count_fn=_count_all)
-        assert q.call_args.kwargs['min_runs'] == 51
-
-    def test_reads_past_the_page_boundary_rather_than_stopping_on_it(self, mocker):
-        """Regression. page_by_started_at infers "there is more" from having more rows
-        than fit, so stopping at exactly `want` makes a full page indistinguishable from
-        the end of the feed — and strands every row behind it. The boundary must be
-        overshot by at least one, or reached only by exhausting the index."""
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline',
-            side_effect=[
-                ([_idx_row('2026-07-16', f'e{i}', f'2026-07-16T1{i}:00:00Z') for i in range(5)],
-                 '2026-07-15'),                                    # exactly `want`, more behind
-                ([_idx_row('2026-07-15', 'e9', '2026-07-15T10:00:00Z')], None),
-            ],
-        )
-        rows = pipeline_rows_before('p', '', 5, count_fn=_count_all)
-        assert len(rows) > 5                 # the extra row is what the pager reads
-        assert q.call_count == 2
-
-    def test_exhaustion_is_the_only_way_to_land_on_exactly_the_page_size(self, mocker):
-        """The mirror of the above: `want` rows and nothing behind them really is the
-        end, and must not cost a second read or invent a next page."""
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline',
-            return_value=([_idx_row('2026-07-16', f'e{i}', f'2026-07-16T1{i}:00:00Z')
-                           for i in range(5)], None),
-        )
-        rows = pipeline_rows_before('p', '', 5, count_fn=_count_all)
-        assert len(rows) == 5
-        assert q.call_count == 1
-
-    def test_cursor_date_seeds_the_index_read(self, mocker):
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline', return_value=([], None))
-        pipeline_rows_before('p', '2026-07-14T08:30:00Z', 5, count_fn=_count_all)
-        assert q.call_args.kwargs['before_date'] == '2026-07-14'
-
-    def test_no_cursor_reads_from_the_newest_date(self, mocker):
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline', return_value=([], None))
-        pipeline_rows_before('p', '', 5, count_fn=_count_all)
-        assert q.call_args.kwargs['before_date'] is None
-
-    def test_keeps_reading_past_a_cut_date_it_already_served(self, mocker):
-        """The stall this loop exists for: the repo's cursor is a *date*, so a busy
-        cut date hands back only rows the cursor already served. Without another read
-        the page would be empty and the older dates behind it unreachable."""
-        before = '2026-07-16T10:00:00Z'
-        served = [_idx_row('2026-07-16', 'e1', '2026-07-16T11:00:00Z')]   # newer than cursor
-        older = [_idx_row('2026-07-15', 'e2', '2026-07-15T09:00:00Z')]
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline',
-            side_effect=[(served, '2026-07-15'), (older, None)],
-        )
-
-        rows = pipeline_rows_before(
-            'p', before, 1, count_fn=lambda rs: sum(1 for r in rs if is_older(r, before)))
-
-        assert q.call_count == 2
-        assert q.call_args_list[1].kwargs['before_date'] == '2026-07-15'
-        assert older[0] in rows
-
-    def test_stops_when_the_index_runs_out_even_if_the_page_is_short(self, mocker):
-        """Exhaustion beats the page size — an honest short last page, not a loop."""
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline',
-            return_value=([_idx_row('2026-07-16', 'e1', '2026-07-16T10:00:00Z')], None),
-        )
-        rows = pipeline_rows_before('p', '', 50, count_fn=_count_all)
-        assert len(rows) == 1
-        assert q.call_count == 1
-
-    def test_forwards_projection_and_expression_names(self, mocker):
-        q = mocker.patch.object(
-            feed.executions_repo, 'query_runs_by_pipeline', return_value=([], None))
-        pipeline_rows_before('p', '', 5, count_fn=_count_all,
-                             projection='started_at, #s', expr_names={'#s': 'status'})
-        assert q.call_args.kwargs['projection'] == 'started_at, #s'
-        assert q.call_args.kwargs['expr_names'] == {'#s': 'status'}
+    def test_a_run_without_a_summary_counts_one_so_that_it_is_read(self):
+        assert feed.run_weight({}) == 1 and feed.run_weight({}, 'failed') == 1

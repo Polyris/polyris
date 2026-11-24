@@ -146,11 +146,13 @@ def test_no_pipeline_name_returns_null(mocker):
     assert body["output"] is None
 
 
-def test_result_read_error_is_swallowed(mocker):
-    _patch(mocker, store={"result": "not-valid-json{"})
-    body = _body(get_task_output("extract", _event()))
-    assert body["output"] is None
-    assert body["truncated"] is False
+def test_a_result_that_is_no_json_is_the_string_an_older_run_task_stored(mocker):
+    """1.2 stored a string result as it was ("ok"); 1.3 stores it as JSON ("\"ok\""). Both show as the string."""
+    for stored, shown in (("not-valid-json{", "not-valid-json{"), ("ok", "ok"), (json.dumps("ok"), "ok")):
+        _patch(mocker, store={"result": stored})
+        body = _body(get_task_output("extract", _event()))
+        assert body["output"] == shown
+        assert body["truncated"] is False
 
 
 # ── Split records: prefer input# record, fall back to legacy field (§3.2) ────
@@ -268,8 +270,8 @@ def test_run_id_fields_all_null_when_rows_absent(mocker):
 
 def test_output_row_run_id_returned_from_store(mocker):
     """output_row_run_id must be the `run_id` field on the output# row
-    (stamped by Init_Output_Row / Save_Canonical_Output_Preserve via
-    $states.context.Execution.Id = run_task_helper ARN)."""
+    (stamped by run_task's Record_Success, or by xcom.push, with the run_task
+    execution's ARN, $states.context.Execution.Id)."""
     _patch(mocker, store={"result": json.dumps({"rows": 1}), "run_id": _ARN})
     body = _body(get_task_output("extract", _event()))
     assert body["output_row_run_id"] == _ARN
@@ -289,7 +291,7 @@ def test_input_row_run_id_returned_from_input_store(mocker):
 
 def test_expected_run_id_returned_from_per_run_row(mocker):
     """expected_run_id must be the run_task_helper_arn on the per-run task
-    row (set by Send_Ready_Signal_Sfn on Init_Output_Row). It's the source
+    row (written by run_task when it starts the work). It's the source
     of truth the UI matches row_run_ids against."""
     _patch(mocker, store=None, run_task_helper_arn=_ARN)
     body = _body(get_task_output("extract", _event()))

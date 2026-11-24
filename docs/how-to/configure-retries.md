@@ -6,24 +6,24 @@ For the parameter reference (types + defaults) see [DSL.md#common-parameters](..
 
 ## What polyris retries mean
 
-A task that fails *fully* (task code returned an error, or the AWS service reported failure after all its own internal retries) enters polyris's retry loop. Each retry attempt reuses the same task record — the task re-executes, and the wrapper waits according to your policy between attempts. The `retry_attempt` counter tracks how many automatic retries have occurred within the current wrapper execution; `attempt` tracks only manual Restart generations (ADR #125).
+A task that fails *fully* (task code returned an error, or the AWS service reported failure after all its own internal retries) enters polyris's retry loop. Each retry attempt reuses the same task record — the task re-executes, and its `run_task` execution waits according to your policy between attempts. Three counters: `retry_attempt` counts the automatic retries of the current `run_task` execution, `attempt` the task's runs, and `restarts` the operator's Restarts, which the console shows as ↻.
 
 Two layers of retry that are easy to confuse — polyris takes care of both, and only the first one is your knob:
 
 | Layer | What it retries | Configurable? |
 |-------|-----------------|----------------|
 | **Polyris user retries** (this doc) | The whole task, after it *fully* failed | Yes — `retries` / `retry_delay` / `retry_exponential_backoff` / `retry_jitter` / `max_retry_delay` |
-| **AWS SDK service retries** | Transient AWS API errors during a single task execution (throttling, `Lambda.ServiceException`, DynamoDB throttles) | No — hard-coded (`MaxAttempts=3`, `IntervalSeconds=2`, `BackoffRate=2`), applied by the wrapper to every AWS call |
+| **Service retries in `run_task`** | A Lambda invocation that the Lambda service refused or throttled (twice, from 3 s), and a nested state machine's start over its account's limit of executions (twice, from 5 s). Any other error of the work is a failed attempt | No — fixed in `run_task` |
 
-When AWS says "the task itself failed" (Lambda returned a handler exception, Glue job exited non-zero, Athena query got `FAILED`) — that's a full task failure and polyris user retries kick in. Throttling and transient AWS errors are absorbed by the SDK layer before your `retries` count is even consulted.
+When AWS says "the task itself failed" (Lambda returned a handler exception, Glue job exited non-zero, Athena query got `FAILED`) — that's a full task failure and polyris user retries kick in. Only the service errors of the table's second row are retried before your `retries` count is consulted.
 
 ## Retries pause the task, they don't erase the failure
 
 After the last retry fails, polyris does **not** propagate failure automatically (ADR #114). The task lands in `waiting_decision` and blocks pending a human choice in the Console:
 
-- **Restart** — try the whole retry sequence again (fresh `attempt=1`)
+- **Restart** — try the whole retry sequence again: the retries count from the first again, and the task's ↻ goes up by one
 - **Skip** — mark the task `skipped`; downstream rules honor it
-- **Mark success** — mark the task `success` with a synthetic marker; downstream continues
+- **Mark Successful** — mark the task `success` with a synthetic marker; downstream continues
 - **Fail** — mark the task `failed`; downstream `all_success` chains propagate `upstream_failed`
 
 This matters when you pick a retry count: **retries buy the task a chance to self-heal before waking someone up.** Higher retries reduce night-time pages but delay the human decision when the failure is genuinely stuck.
@@ -143,15 +143,15 @@ with DAG(
 - Console → Task Detail → **Details** tab → **Attempt** stat tile shows two chips when retries have occurred:
   - ↻ N — number of manual Restarts (bumps only when an operator clicks Restart)
   - ⭮ N/M — current in-SFN retry index / max retries configured
-  - Neither chip appears when the task is on its first attempt with no auto-retries.
+  - Neither chip appears when the task was never restarted and has had no auto-retry.
 - Console → **Tasks** view → **Status** column shows the same chips inline for at-a-glance visibility across all tasks.
-- The **Status** cell also shows a countdown timer while the wrapper is sleeping between retries — the same timer used for `wait_before` delays.
+- The **Status** cell also shows a countdown timer while `run_task` waits between retries — the same timer used for `wait_before` delays.
 - CloudWatch log group `/aws/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt` state entries).
 
 ## Related
 
 - [DSL.md#common-parameters](../features/DSL.md#common-parameters-apply-to-every-task-type) — parameter reference (types, defaults)
-- ADR #107 — the wrapper retry loop design (why in-place, why the wait formula)
+- ADR #107 — the retry loop's design (why in-place, why the wait formula), which `run_task` keeps
 - ADR #114 — intervention-first failure model (why retries exhaust into a human decision, not automatic propagation)
 - ADR #125 — retry visibility contract (`retry_attempt` field, `TASK_RETRY_STARTED` event, two-chip UI)
 - [LOCAL_TESTING.md](../tools/LOCAL_TESTING.md) — `run(dag, mock=True)` for testing retry logic locally

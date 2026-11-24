@@ -34,7 +34,7 @@ When the user uses a term that conflicts with existing language in `GLOSSARY.md`
 
 ### Sharpen fuzzy language
 
-When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'execution': do you mean `pipeline_execution` (the run of a whole pipeline) or `wrapper_execution_arn` (one task's SFN execution)?"
+When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'execution': do you mean `pipeline_execution` (the run of a whole pipeline) or `run_task_arn` (one task's `run_task` execution)?"
 
 ### Discuss concrete scenarios
 

@@ -456,7 +456,6 @@
 .gc-gantt-bar.stopped { background: var(--stopped); }
 .gc-gantt-bar.aborted { background: var(--aborted); }
 .gc-gantt-bar.deps_ready { background: var(--accent); opacity: 0.7; }
-.gc-gantt-bar.waiting_delay { background: #eab308; }
 .gc-gantt-bar.gc-wait { 
     background: #fbbf24; 
     opacity: 0.6;

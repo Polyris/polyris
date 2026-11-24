@@ -195,10 +195,12 @@ export function useStoreInit({ pipelines }: UseStoreInitOptions) {
             if (pending?.execution_id) {
                 store.setSelectedExecution({ ...pending, auto_selected: true });
             } else if (prevName !== currName || dateChanged) {
-                store.setSelectedExecution(null);
+                // Forget the run, keep the view: setSelectedPipeline chose it, and this
+                // effect runs after PipelineDetail's, which shows a never-run pipeline's definition.
+                store.clearSelectedExecution();
             }
         }
-    // Omits: store.setSelectedTaskName, store.setSelectedExecution (stable Zustand setters)
+    // Omits: store.setSelectedTaskName, store.setSelectedExecution, store.clearSelectedExecution (stable Zustand setters)
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [store.selectedPipeline?.name, store.date]);
 

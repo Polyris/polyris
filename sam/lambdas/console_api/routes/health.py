@@ -274,13 +274,14 @@ def _check_recent_failures() -> Dict:
         one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         
+        # The items, not a count: a count would include backfill records, which carry a date (ADR #137 §5).
         response = executions_repo.query_by_date_raw(
             KeyConditionExpression=Key('date').eq(today),
             FilterExpression=Attr('status').eq('failed') & Attr('finished_at').gte(one_hour_ago),
-            Select='COUNT'
+            ProjectionExpression='execution_name, pipeline_name',
         )
-        
-        failure_count = response.get('Count', 0)
+
+        failure_count = len(response.get('Items', []))
         
         if failure_count > 10:
             return {

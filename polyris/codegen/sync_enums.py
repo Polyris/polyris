@@ -149,7 +149,7 @@ def _render_python_body() -> str:
                 src.BackfillStatus, src.BackfillCascade,
                 src.BackfillUpstream,
                 src.BackfillGranularity, src.StalenessStatus,
-                src.AssetOperator):
+                src.AssetOperator, src.SkipOrigin):
         members = [(n, getattr(cls, n))
                    for n in vars(cls) if not n.startswith("_")]
         parts.append(_enum_class_py(cls.__name__,
@@ -168,22 +168,19 @@ def _render_python_body() -> str:
                          sorted(src.BACKFILL_ERROR_CODES)))
     parts.append("\n")
 
-    # normalize_execution_status function — verbatim source
-    parts.append(_normalize_helper_py())
-
-    # derive_execution_status + reconcile_execution_status — verbatim SDK source
-    # (ADR #112). Rendered via inspect so the canonical logic lives in exactly one
-    # place (polyris.constants) and the generated copies cannot drift.
+    # derive_execution_status — verbatim SDK source (ADR #112). Rendered via
+    # inspect so the canonical logic lives in exactly one place
+    # (polyris.constants) and the generated copies cannot drift.
     parts.append(_derive_helper_py())
 
     return "".join(parts)
 
 
 def _derive_helper_py() -> str:
-    """Render the execution-status derivation + reconciliation helpers (ADR #112).
+    """Render the execution-status derivation helper (ADR #112).
 
-    The status groupings are emitted from the canonical set values; the two
-    functions are emitted verbatim from ``polyris.constants`` via ``inspect`` so
+    The status groupings are emitted from the canonical set values; the
+    function is emitted verbatim from ``polyris.constants`` via ``inspect`` so
     there is a single source of truth for the logic.
     """
     set_lines = "".join(
@@ -195,40 +192,6 @@ def _derive_helper_py() -> str:
         + set_lines
         + "\n"
         + inspect.getsource(src.derive_execution_status)
-        + "\n"
-        + inspect.getsource(src.reconcile_execution_status)
-    )
-
-
-def _normalize_helper_py() -> str:
-    """Generate the normalize_execution_status helper as text.
-
-    Kept verbatim across copies to avoid drift; the dict mirrors
-    the canonical's UPPERCASE map.
-    """
-    upper_map = src._EXECUTION_STATUS_UPPERCASE_MAP
-    map_items = "".join(f"    {k!r}: {v!r},\n" for k, v in upper_map.items())
-    return (
-        "_EXECUTION_STATUS_UPPERCASE_MAP = {\n"
-        f"{map_items}"
-        "}\n\n"
-        "def normalize_execution_status(status, log_warn=None):\n"
-        '    """Normalize a pipeline-execution status to canonical lowercase.\n'
-        "\n"
-        "    Generated mirror of polyris.constants.normalize_execution_status.\n"
-        '    See ADR #71 for full reasoning. Idempotent on canonical inputs.\n'
-        '    """\n'
-        "    if status is None:\n"
-        "        return None\n"
-        "    if status in EXECUTION_STATUS_CANONICAL:\n"
-        "        return status\n"
-        "    mapped = _EXECUTION_STATUS_UPPERCASE_MAP.get(status)\n"
-        "    if mapped is not None:\n"
-        "        return mapped\n"
-        "    if log_warn is not None:\n"
-        '        log_warn("Unexpected execution status; cannot normalize",\n'
-        "                 status=status)\n"
-        "    return status\n"
     )
 
 
@@ -314,7 +277,8 @@ def _render_ts_body() -> str:
     for cls in (src.PipelineStatus, src.ExecutionStatus,
                 src.BackfillStatus, src.BackfillCascade,
                 src.BackfillUpstream,
-                src.BackfillGranularity, src.StalenessStatus):
+                src.BackfillGranularity, src.StalenessStatus,
+                src.SkipOrigin):
         values = [getattr(cls, n) for n in vars(cls) if not n.startswith("_")]
         parts.append(_ts_union(
             cls.__name__,

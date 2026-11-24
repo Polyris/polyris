@@ -9,7 +9,6 @@ import yaml
 
 from polyris.coordination import attention as att
 from polyris.coordination.records import (
-    FACT_VERSION,
     PARTITION_INDEX,
     PARTITION_INDEX_PROJECTION,
     asset_fact_item,
@@ -109,10 +108,10 @@ class TestAttention:
 
 class TestWarningItem:
     def test_shape(self):
-        item = warning_item(kind="zombie", execution_name="load-2026-11-12-x", task_name="load",
+        item = warning_item(kind="coordination", execution_name="load-2026-11-12-x", task_name="load",
                             pipeline_name="p", pipeline_execution="p-run-2026-11-12-x",
                             task_date="2026-10-01", error="wrapper stopped", now=NOW)
-        assert item["execution_name"] == "_notify_warn_zombie_load-2026-11-12-x"
+        assert item["execution_name"] == "_notify_warn_coordination_load-2026-11-12-x"
         assert item["attention"] == att.attention(att.WARN, "load-2026-11-12-x")
         assert item["attention_at"] == item["finished_at"] == "2026-11-12T06:00:00.123Z"
         assert item["task_date"] == "2026-10-01"
@@ -143,7 +142,7 @@ class TestAssetFactItem:
         item = fact_item()
         assert item["partition_key"] == item["execution_date"] == "2026-W46"
         assert item["partition_date"] == "2026-11-09"     # Monday of ISO week 46
-        assert item["fact_version"] == FACT_VERSION
+        assert "fact_version" not in item         # 1.2's readers of it are replaced in the same deploy (Principle #39)
         assert item["event_time"] == "2026-11-12T06:00:00.123Z"
 
     @pytest.mark.parametrize("overrides", [
@@ -165,24 +164,16 @@ class TestFactFromItem:
         item = {k: v for k, v in fact_item().items() if k != "execution_date"}
         assert fact_from_item(item).partition_date == date(2026, 11, 9)
 
-    def test_legacy_rows_use_execution_date_and_the_declared_granularity(self):
-        legacy = {"asset_name": "ns/a", "event_time": "2026-11-12T06:00:00.123456+00:00", "execution_date": "2026-11-12"}
-        fact = fact_from_item(legacy, declared_granularity="monthly")
-        assert (fact.partition_date, fact.granularity) == (date(2026, 11, 12), "monthly")
-
     @pytest.mark.parametrize("key,granularity,partition", [
         ("2026-11-12", "daily", date(2026, 11, 12)),
         ("2026-11-12T06", "hourly", date(2026, 11, 12)),
         ("2026-W46", "weekly", date(2026, 11, 9)),
         ("2026-11", "monthly", date(2026, 11, 1)),
     ])
-    def test_without_a_declared_granularity_the_key_format_decides(self, key, granularity, partition):
+    def test_a_row_without_partition_fields_takes_them_from_its_key(self, key, granularity, partition):
         legacy = {"asset_name": "ns/a", "event_time": "2026-11-12T06:00:00Z", "execution_date": key}
         fact = fact_from_item(legacy)
         assert (fact.granularity, fact.partition_date) == (granularity, partition)
-
-    def test_the_stored_granularity_wins_over_the_declared_one(self):
-        assert fact_from_item(fact_item(), declared_granularity="daily").granularity == "weekly"
 
     @pytest.mark.parametrize("stored", ["20261109", "2026-11-9", "2026-11-09T00"])
     def test_a_partition_date_outside_yyyy_mm_dd_raises(self, stored):

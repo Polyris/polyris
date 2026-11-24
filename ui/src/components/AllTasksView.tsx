@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { TableSkeleton } from './Skeletons';
-import { formatDuration, formatApiErrorMessage, formatTriggerSource } from '../utils';
+import { formatDuration, formatApiErrorMessage, formatTriggerSource, shownTaskStatus } from '../utils';
 import { Search, Inbox, AlertTriangle, RefreshCw, Repeat2 } from '../utils/icons';
 import { EmptyState } from './EmptyState';
 import { WorkspaceFilterChips, type WorkspaceFilterChip } from './WorkspaceMetrics';
@@ -180,7 +180,6 @@ export function AllTasksView({
                 {/* Mirrors the common TaskStatus values (generated/enums.ts) — keep in sync. */}
                 <option value="running">Running</option>
                 <option value="waiting">Waiting</option>
-                <option value="pending">Pending</option>
                 <option value="success">Success</option>
                 <option value="failed">Failed</option>
                 <option value="upstream_failed">Upstream failed</option>
@@ -192,7 +191,7 @@ export function AllTasksView({
             <DatePicker
                 value={filter.date}
                 onChange={d => onFilterChange({ ...filter, date: d })}
-                placeholder={historyDatePlaceholder(isHistoryWindowed(filter))}
+                placeholder={historyDatePlaceholder('tasks', isHistoryWindowed('tasks', filter))}
                 ariaLabel="Filter by date"
             />
 
@@ -236,11 +235,19 @@ export function AllTasksView({
                         description={formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))}
                         action={<Button variant="secondary" onClick={() => allTasksQuery.refetch()}>Retry</Button>}
                     />
+                ) : total === 0 && hasNextPage ? (
+                    // A page reads a bounded number of tasks: with a rare status it can come back empty while older
+                    // tasks are still to be read (D139).
+                    <EmptyState
+                        icon={Search}
+                        title="No matching tasks in what was read so far"
+                        description="Show older tasks reads further back."
+                    />
                 ) : total === 0 ? (
                     <EmptyState
                         icon={hasActiveFilters || search ? Search : Inbox}
-                        title={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed(filter)).title}
-                        description={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed(filter)).description}
+                        title={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed('tasks', filter)).title}
+                        description={historyEmptyState('tasks', !!(hasActiveFilters || search), isHistoryWindowed('tasks', filter)).description}
                     />
                 ) : (
                     <table className="table-full" aria-label="Task executions">
@@ -270,20 +277,20 @@ export function AllTasksView({
                                         </span>
                                     </td>
                                     <td className="p-md">
-                                        <span className={`task-status-badge ${task.status}`}>
-                                            {task.status}
+                                        <span className={`task-status-badge ${shownTaskStatus(task)}`}>
+                                            {shownTaskStatus(task)}
                                         </span>
                                         {/* ADR #125 — compact two-chip retry indicator.
                                             Restart (↻ N) comes from manual UI action;
                                             Retry (⭮ N/M) is the in-SFN auto-retry index.
                                             Each chip appears only when its counter > 0. */}
-                                        {task.attempt != null && task.attempt > 1 && (
+                                        {task.restarts != null && task.restarts > 0 && (
                                             <span
                                                 className="atv-attempt-badge"
-                                                title={`Manual restarts: ${task.attempt - 1}`}
-                                                aria-label={`Manual restart ${task.attempt - 1}`}
+                                                title={`Manual restarts: ${task.restarts}`}
+                                                aria-label={`Manual restart ${task.restarts}`}
                                             >
-                                                <Repeat2 size={10} aria-hidden={true} /> {task.attempt - 1}
+                                                <Repeat2 size={10} aria-hidden={true} /> {task.restarts}
                                             </span>
                                         )}
                                         {task.retry_attempt != null && task.retry_attempt > 0 && (

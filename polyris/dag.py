@@ -2,9 +2,9 @@
 DAG class for SFN-DSL.
 """
 
-from typing import List, Optional, Dict, Any, Callable, TYPE_CHECKING, Tuple
+from typing import List, Optional, Dict, Any, TYPE_CHECKING, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from .constants import SCHEDULE_PRESETS
 from .context import get_current_dag, push_dag_context, pop_dag_context
@@ -25,7 +25,6 @@ class DAG:
             dag_id="my-etl",
             schedule="@daily",
             start_date=datetime(2025, 1, 1),
-            catchup=False,
             default_args={"retries": 0},
             group="orders",
             tags=["production"],
@@ -50,44 +49,21 @@ class DAG:
     #   - AssetAny: schedule=[asset_a | asset_b] (OR - any triggers)
     schedule: Any = None
     schedule_interval: Optional[str] = None  # Legacy alias for schedule
-    timetable: Any = None  # Custom timetable
     trigger_assets: Optional[List[Any]] = None  # Alternative to schedule for asset triggers
     trigger_mode: str = "all"  # "all" (AND) or "any" (OR) for trigger_assets
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
-    catchup: bool = True
     
-    # Default args for tasks
+    # Default args for tasks: a default time limit for every task is execution_timeout here
     default_args: Dict[str, Any] = field(default_factory=dict)
-    default_timeout: Optional[int] = None  # Default timeout for all tasks (seconds)
-    
-    # Params
-    params: Dict[str, Any] = field(default_factory=dict)
     
     # Metadata
     tags: List[str] = field(default_factory=list)
     group: str = ""  # Pipeline group for sidebar grouping (e.g. "acme", "shopmart")
     owner: str = "polyris"
     
-    # Rendering
-    template_searchpath: Optional[List[str]] = None
-    template_undefined: Any = None
-    render_template_as_native_obj: bool = False
-    
     # Behavior
-    max_active_tasks: int = 16
-    max_active_runs: int = 16
-    dagrun_timeout: Optional[timedelta] = None
-    
-    # SLA
-    sla_miss_callback: Optional[Callable] = None
-    
-    # Access control
-    access_control: Optional[Dict] = None
     is_paused_upon_creation: Optional[bool] = None
-    
-    # Documentation
-    doc_md: str = ""
     
     # Pipeline variables - computed at start, available to all tasks
     variables: Dict[str, str] = field(default_factory=dict)
@@ -198,7 +174,7 @@ class DAG:
             self._current_task_group.add_task(task)
     
     def add_step(self, step: 'Step'):
-        """Add a non-task step (Wait, Pass, Choice) to the DAG."""
+        """Add a non-task step (Wait, Pass, Succeed, a service call) to the DAG."""
         if step not in self.steps:
             self.steps.append(step)
             step._dag = self

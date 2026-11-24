@@ -4,6 +4,7 @@ Console API Response Helpers
 Response formatting utilities for API Gateway:
 - cors_response: JSON response with CORS headers
 - error_response: Standardized error response format
+- index_building_response: a run list's answer while run-start-index is being built
 - html_response: HTML response for Slack button callbacks
 """
 
@@ -84,6 +85,16 @@ def error_response(
         body['request_id'] = request_id
     
     return cors_response(status_code, body)
+
+
+#: What a run list answers while DynamoDB builds run-start-index, which an upgrade added (ADR #137 §5): transient.
+INDEX_BUILDING_MESSAGE = ('The index of runs is still being built after the upgrade (about 8 minutes on a large '
+                          'table). Runs show here once it is ready; try again in a few minutes.')
+
+
+def index_building_response() -> Dict:
+    """503 with ``INDEX_BUILDING_MESSAGE``: the same read succeeds once the index is built."""
+    return cors_response(503, {'error': INDEX_BUILDING_MESSAGE, 'code': 'INDEX_BUILDING'})
 
 
 def safe_parse_body(event: Dict) -> tuple:

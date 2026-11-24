@@ -216,12 +216,14 @@ def collect_task_states(
 
 # Critical templates that MUST have Catch on every Task state
 CRITICAL_TEMPLATES = [
-    "dependency_wrapper",
     "helpers/run_task",
-    "helpers/failure_handler",
-    "helpers/registration",
-    "helpers/notify_dependents",
 ]
+
+
+def test_every_critical_template_exists():
+    """A name here that no template has would skip its checks without a word (the review of TR-8, A-8)."""
+    names = {name for name, _ in TEMPLATE_PARAMS}
+    assert set(CRITICAL_TEMPLATES) <= names, sorted(set(CRITICAL_TEMPLATES) - names)
 
 
 @pytest.mark.parametrize("name,path", TEMPLATE_PARAMS, ids=[t[0] for t in TEMPLATE_PARAMS])

@@ -6,12 +6,14 @@ through these, so the bell, the index and the evaluator see one shape.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from ..partitions import GRANULARITIES, detect_granularity
 from . import attention as att
+from . import retention
 from .asset_conditions import Fact
 from .partition import partition_date
 from .statuses import FAILED, WARNING_KINDS
@@ -29,9 +31,24 @@ DAG_SNAPSHOT_PREFIX = "dag_snapshot::"
 RETRY_TTL = timedelta(days=7)
 
 CASCADES = frozenset({"auto", "none", "all"})
-#: Facts written by ADR #130 writers. Older facts have no version.
-FACT_VERSION = 2
 
+#: The events of a task's timeline (``task-events``) that a pass writes after its decision (ADR #137 §1), named as
+#: the console's ``EventType`` names them, by the transition that writes each (``transitions.py``).
+DEPS_READY = "DEPS_READY"
+DEPS_SKIPPED = "DEPS_SKIPPED"
+DEPS_BLOCKED = "DEPS_BLOCKED"
+DECISION_EVENTS = {"ready": DEPS_READY, "skip_by_rule": DEPS_SKIPPED, "block": DEPS_BLOCKED}
+#: The sort-key suffix of a decision's event: before run_task's TASK_STARTED (``#10``), as 1.2's wrapper wrote it.
+DECISION_EVENT_ORDER = "#05"
+TASK_FINISHED = "TASK_FINISHED"
+#: The dispatcher's moves that fail a task whose failure run_task never recorded: each ends the task's timeline
+#: with TASK_FINISHED failed, as run_task's Emit_Task_Finished_Failed does when it asks for a decision.
+#: fail_undecided follows run_task's own event.
+FAILURE_EVENTS = frozenset({"fail_wait", "fail_start", "fail_dead"})
+#: After run_task's TASK_STARTED (#10) in a timeline's order, as run_task's TASK_FINISHED is.
+FINISHED_EVENT_ORDER = "#20"
+#: The characters of a cause the timeline keeps, as 1.2 did; the row keeps more, the execution all of it.
+ERROR_SUMMARY_MAX = 500
 #: The GSI on ``asset-events`` that asset conditions read (template.yaml).
 #: Its items carry exactly what :func:`fact_from_item` needs.
 PARTITION_INDEX = "asset-partition-index"
@@ -112,15 +129,64 @@ def push_retry_item(
 def cascade_of(run_input: Mapping[str, Any]) -> str:
     """The cascade of the facts a run records, from the flags its backfill started it with (ADR #57).
 
-    run_task's Emit_Asset_Events computes the same in JSONata, and the console
-    uses this for Mark Successful; a parity test compares them. A suppressed
-    run wins over one that cascades to all.
+    Start_Run keeps it in the run's input, from which the dispatcher passes it
+    to run_task, which writes it on each fact; the console uses this for Mark
+    Successful. A suppressed run wins over one that cascades to all.
     """
     if run_input.get("_suppress_asset_event") is True:
         return "none"
     if run_input.get("cascade_all") is True:
         return "all"
     return "auto"
+
+
+def decision_event(*, transition: str, task_run_id: str, execution_name: str, task_name: str,
+                   pipeline_execution: str, partition_key: str, backfill_id: str, now: datetime,
+                   dependencies: Optional[List[str]] = None, reasons: Optional[List[str]] = None) -> Dict[str, Any]:
+    """The timeline event of a pass's decision, with the fields 1.2's wrapper wrote: ``dependencies`` on a ready
+    row, the ``reason`` of a skip or a block. ``task_run_id`` is the row's run_task name, so each generation has
+    a timeline of its own (invariant 4). It lives as long as a timeline does (``retention.TIMELINE``)."""
+    event_type = DECISION_EVENTS[transition]
+    item: Dict[str, Any] = {
+        "task_run_id": task_run_id, "event_time": format_utc(now) + DECISION_EVENT_ORDER, "event_type": event_type,
+        "execution_name": execution_name, "parent_execution_id": pipeline_execution, "backfill_id": backfill_id,
+        "partition_key": partition_key, "task_name": task_name, "ttl": retention.ttl(now, retention.TIMELINE)}
+    if event_type == DEPS_READY:
+        item["dependencies"] = json.dumps(list(dependencies or []))
+    else:
+        item["reason"] = "; ".join(reasons or []) or ("Upstream task failed" if event_type == DEPS_BLOCKED
+                                                      else "Trigger rule condition did not occur")
+    return item
+
+
+MANUAL_DECISION = "MANUAL_DECISION"
+#: After run_task's TASK_FINISHED (#20), as the console's decision events have always sorted.
+MANUAL_DECISION_ORDER = "#30"
+
+
+def manual_decision_event(*, task_run_id: str, execution_name: str, task_name: str, pipeline_execution: str,
+                          decision: str, reason: str, operator: str, now: datetime) -> Dict[str, Any]:
+    """An operator's action in the task's timeline (``actions.task_action``): the decision, its reason and who
+    took it, under the row's run_task name, for the timeline's 90 days."""
+    return {"task_run_id": task_run_id, "event_time": format_utc(now) + MANUAL_DECISION_ORDER,
+            "event_type": MANUAL_DECISION, "execution_name": execution_name, "parent_execution_id": pipeline_execution,
+            "task_name": task_name, "decision": decision, "reason": reason or f"Manual {decision} via UI",
+            "operator": operator, "ttl": retention.ttl(now, retention.TIMELINE)}
+
+
+def error_summary(cause: str) -> str:
+    """A cause as a timeline event keeps it; run_task's Emit_Task_Finished_Failed cuts it the same way."""
+    return cause if len(cause) <= ERROR_SUMMARY_MAX else cause[:ERROR_SUMMARY_MAX] + "..."
+
+
+def failure_event(*, task_run_id: str, execution_name: str, task_name: str, pipeline_execution: str,
+                  partition_key: str, backfill_id: str, now: datetime, cause: str) -> Dict[str, Any]:
+    """The end of the timeline of a task the dispatcher failed (FAILURE_EVENTS): TASK_FINISHED failed with its
+    cause, the fields run_task writes. Under the row's run_task name, as the decision events (invariant 4)."""
+    return {"task_run_id": task_run_id, "event_time": format_utc(now) + FINISHED_EVENT_ORDER,
+            "event_type": TASK_FINISHED, "execution_name": execution_name, "parent_execution_id": pipeline_execution,
+            "backfill_id": backfill_id, "partition_key": partition_key, "task_name": task_name, "status": FAILED,
+            "error_summary": error_summary(cause), "ttl": retention.ttl(now, retention.TIMELINE)}
 
 
 def asset_fact_item(
@@ -160,7 +226,6 @@ def asset_fact_item(
         "source_dag": source_dag,
         "source_task": source_task,
         "uri": uri,
-        "fact_version": FACT_VERSION,
         "ttl": int((now + timedelta(days=ttl_days)).timestamp()),
     }
 
@@ -175,19 +240,17 @@ def _iso_date(text: str) -> date:
     return date.fromisoformat(text)
 
 
-def fact_from_item(item: Mapping[str, Any], *, declared_granularity: Optional[str] = None) -> Fact:
+def fact_from_item(item: Mapping[str, Any]) -> Fact:
     """Read an ``asset-events`` row, old or new, as a :class:`Fact`.
 
-    Rows written before ADR #130 have no ``partition_date`` and no
-    ``granularity``. Their date comes from ``execution_date``. Their
-    granularity is the outlet's ``declared_granularity`` when the caller found
-    it in the producer's registry entry, and otherwise the granularity whose
-    format the key uses.
+    Rows written before ADR #130 that 1.2 could not adopt have no
+    ``partition_date`` and no ``granularity``: their date comes from
+    ``execution_date``, and their granularity from the format of the key.
     """
     key = str(item.get("partition_key") or item.get("execution_date") or "")
     raw_date = item.get("partition_date")
     pd = _iso_date(str(raw_date)) if raw_date else partition_date(key)
-    granularity = str(item.get("granularity") or declared_granularity or detect_granularity(key))
+    granularity = str(item.get("granularity") or detect_granularity(key))
     if granularity not in GRANULARITIES:
         raise ValueError(
             f"asset fact {item.get('asset_name')!r} has granularity {granularity!r}; "

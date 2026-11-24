@@ -154,14 +154,18 @@ class TestTaskInstanceWiring:
 # Task computed properties
 # ============================================================ #
 class TestTaskProperties:
-    def test_timeout_from_execution_timeout(self):
+    def test_execution_timeout_seconds(self):
         a = _sfn_task(execution_timeout=timedelta(minutes=5))
-        assert a.timeout == 300
+        assert a.execution_timeout_seconds == 300
 
-    def test_orchestration_timeout_defaults_to_timeout(self):
+    def test_no_execution_timeout_is_no_limit(self):
+        """D49: the work has no limit by default (ADR #137 §5)."""
+        assert _sfn_task().execution_timeout_seconds is None
+
+    def test_orchestration_timeout_does_not_fall_back_to_execution_timeout(self):
+        """D49: an unset orchestration_timeout is no cap of its own (ADR #137 §5)."""
         a = _sfn_task(execution_timeout=timedelta(minutes=5))
-        # No explicit orchestration_timeout → falls back to timeout.
-        assert a.orchestration_timeout_seconds == 300
+        assert a.orchestration_timeout_seconds is None
 
     def test_orchestration_timeout_explicit(self):
         a = _sfn_task(orchestration_timeout=timedelta(minutes=10))

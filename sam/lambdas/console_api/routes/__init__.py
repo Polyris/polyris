@@ -21,19 +21,17 @@ Each route module exports handler functions that:
 
 # Route modules - Phase 2 complete
 from .executions import (
-    get_all_runs, get_execution_children, get_execution_parent,
-    stop_execution, pause_execution, resume_execution, extend_pause
+    get_all_runs, get_execution_children,
+    stop_execution, pause_execution, resume_execution
 )
 from .tasks import (
     get_all_tasks, get_task_config, get_task_events,
-    retry_task, skip_task, fail_task, mark_success, stop_task, restart_task
+    skip_task, fail_task, mark_success, stop_task, restart_task
 )
 from .pipelines_list import (
     list_pipelines, get_pipeline_status, get_pipeline_executions
 )
-from .pipelines_actions import (
-    run_pipeline, register_pipeline
-)
+from .pipelines_actions import run_pipeline
 from .pipelines_info import get_pipeline_dag
 from .health import health_check, health_check_live, get_metrics
 
@@ -41,16 +39,13 @@ __all__ = [
     # executions
     'get_all_runs',
     'get_execution_children',
-    'get_execution_parent',
     'stop_execution',
     'pause_execution',
     'resume_execution',
-    'extend_pause',
     # tasks
     'get_all_tasks',
     'get_task_config',
     'get_task_events',
-    'retry_task',
     'skip_task',
     'fail_task',
     'mark_success',
@@ -61,7 +56,6 @@ __all__ = [
     'get_pipeline_status',
     'get_pipeline_executions',
     'run_pipeline',
-    'register_pipeline',
     'get_pipeline_dag',
     # health
     'health_check',

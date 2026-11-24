@@ -122,6 +122,10 @@ green result.
 - **PreToolUse (Bash)** — runs `scripts/guard-destructive.sh` before every shell
   command.
 
+Each hook names its script through `$CLAUDE_PROJECT_DIR`, so it runs whatever
+directory the shell stands in: a relative path failed with exit 127 from `ui/`
+or a Lambda's folder, and the guard did not run (`tests/sdk/test_agentic_hooks.py`).
+
 ### `scripts/guard-destructive.sh`
 
 Blocks `rm -rf` outside cache and scratch paths, `git reset --hard`,

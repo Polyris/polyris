@@ -4,7 +4,6 @@ from polyris.codegen.check_sfn_templates import (
     check_templates,
     _task_status_values,
     _load_canonical_status_values,
-    HELPER_OPERATION_STATUSES,
 )
 
 
@@ -27,18 +26,6 @@ class TestCanonicalLoad:
         # Each family must have at least one value
         for name, values in families.items():
             assert len(values) > 0, f"{name} has no values"
-
-
-class TestHelperOperationAllowlist:
-    def test_restarted_in_allowlist(self):
-        """restart_task helper's Output.status = 'restarted' must be allowed."""
-        assert 'restarted' in HELPER_OPERATION_STATUSES
-
-    def test_allowlist_documented(self):
-        """Every operation-status value should be a small, distinct set."""
-        # The allowlist is exclusionary — keep it tight
-        assert len(HELPER_OPERATION_STATUSES) < 10, \
-            "HELPER_OPERATION_STATUSES is growing; reconsider canonical merge"
 
 
 class TestCheckTemplates:
@@ -119,27 +106,6 @@ class TestCheckTemplates:
       "Choices": [
         {"Condition": "$task.status = \\"success\\"", "Next": "Done"}
       ]
-    }
-  }
-}
-""")
-        from polyris.codegen import check_sfn_templates
-        monkeypatch.setattr(check_sfn_templates, 'TEMPLATES_DIR', tmp_path)
-        result = check_templates()
-        assert result == 0
-
-    def test_allows_helper_operation_status(self, tmp_path, monkeypatch):
-        """The 'restarted' operation status is allowed via allowlist."""
-        fake_template = tmp_path / "fake" / "sfn.tpl.json"
-        fake_template.parent.mkdir()
-        fake_template.write_text("""
-{
-  "States": {
-    "Pass1": {
-      "Type": "Pass",
-      "Output": {
-        "status": "restarted"
-      }
     }
   }
 }

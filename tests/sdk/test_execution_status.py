@@ -1,10 +1,8 @@
-"""Canonical execution-status derivation + reconciliation (ADR #112)."""
+"""Canonical execution-status derivation (ADR #112, as ADR #137 §4 amends it)."""
 import pytest
 
 from polyris.constants import (
     derive_execution_status,
-    reconcile_execution_status,
-    normalize_execution_status,
     ExecutionStatus,
     EXECUTION_STATUS_CANONICAL,
 )
@@ -22,18 +20,23 @@ class TestDeriveExecutionStatus:
         (["success"], ExecutionStatus.SUCCESS),
         (["success", "succeeded", "skipped"], ExecutionStatus.SUCCESS),
         (["success", "skipped"], ExecutionStatus.SUCCESS),
-        # Failure outranks everything.
+        # Once every task is final, a failure outranks everything.
         (["failed"], ExecutionStatus.FAILED),
         (["success", "failed"], ExecutionStatus.FAILED),
         (["failed", "aborted"], ExecutionStatus.FAILED),
-        (["running", "failed"], ExecutionStatus.FAILED),
         # Interruption without a genuine failure → aborted.
         (["aborted"], ExecutionStatus.ABORTED),
         (["stopped"], ExecutionStatus.ABORTED),
         (["upstream_failed"], ExecutionStatus.ABORTED),
         (["success", "aborted"], ExecutionStatus.ABORTED),
         (["success", "stopped", "upstream_failed"], ExecutionStatus.ABORTED),
-        (["running", "aborted"], ExecutionStatus.ABORTED),
+        # A failed or stopped task does not end its run while another is not final (ADR #137 §4, D68).
+        (["running", "failed"], ExecutionStatus.RUNNING),
+        (["waiting", "failed", "success"], ExecutionStatus.RUNNING),
+        (["running", "aborted"], ExecutionStatus.RUNNING),
+        (["deps_ready", "stopped"], ExecutionStatus.RUNNING),
+        (["waiting_decision", "success"], ExecutionStatus.RUNNING),
+        (["waiting_paused", "upstream_failed"], ExecutionStatus.RUNNING),
     ])
     def test_derivation(self, task_statuses, expected):
         assert derive_execution_status(task_statuses) == expected
@@ -51,42 +54,11 @@ class TestDeriveExecutionStatus:
             assert derive_execution_status(combo) not in ("stopped", "succeeded")
 
 
-class TestReconcileExecutionStatus:
-    def test_terminal_base_is_untouched(self):
-        assert reconcile_execution_status("failed", "running", False) == "failed"
-        assert reconcile_execution_status("aborted", "success", True) == "aborted"
-        assert reconcile_execution_status("success", "failed", True) == "success"
-
-    def test_running_without_sfn_stays_running(self):
-        assert reconcile_execution_status("running", None, False) == "running"
-        assert reconcile_execution_status("running", "running", False) == "running"
-
-    def test_running_adopts_terminal_sfn(self):
-        assert reconcile_execution_status("running", "aborted", False) == "aborted"
-        assert reconcile_execution_status("running", "success", False) == "success"
-        assert reconcile_execution_status("running", "timed_out", False) == "timed_out"
-
-    def test_recovered_when_sfn_failed_but_all_tasks_resolved(self):
-        assert reconcile_execution_status("running", "failed", True) == "recovered"
-        assert reconcile_execution_status("running", "timed_out", True) == "recovered"
-
-    def test_failed_with_unresolved_tasks_stays_failed(self):
-        assert reconcile_execution_status("running", "failed", False) == "failed"
-
-
-class TestNormalizeSupersedesAdr71:
-    def test_sfn_succeeded_maps_to_success(self):
-        assert normalize_execution_status("SUCCEEDED") == ExecutionStatus.SUCCESS
-        assert normalize_execution_status("success") == ExecutionStatus.SUCCESS
-        assert normalize_execution_status("succeeded") == ExecutionStatus.SUCCESS
-
-    def test_stopped_maps_to_aborted(self):
-        assert normalize_execution_status("STOPPED") == ExecutionStatus.ABORTED
-
+class TestCanonicalSet:
     def test_canonical_set_contract(self):
         assert "success" in EXECUTION_STATUS_CANONICAL
         assert "succeeded" not in EXECUTION_STATUS_CANONICAL
         assert "stopped" not in EXECUTION_STATUS_CANONICAL
         assert EXECUTION_STATUS_CANONICAL == {
-            "running", "success", "failed", "timed_out", "aborted", "recovered",
+            "running", "success", "failed", "aborted", "stale",
         }

@@ -122,13 +122,9 @@ def dag(
     schedule_interval: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    catchup: bool = True,
     default_args: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
     tags: Optional[List[str]] = None,
     owner: str = "polyris",
-    max_active_tasks: int = 16,
-    max_active_runs: int = 16,
     **kwargs
 ):
     """
@@ -160,13 +156,9 @@ def dag(
                 schedule_interval=schedule_interval,
                 start_date=start_date,
                 end_date=end_date,
-                catchup=catchup,
                 default_args=default_args or {},
-                params=params or {},
                 tags=tags or [],
                 owner=owner,
-                max_active_tasks=max_active_tasks,
-                max_active_runs=max_active_runs,
                 **kwargs,
             )
             

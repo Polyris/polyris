@@ -7,7 +7,7 @@
  * `formatDateTime` makes the date explicit while staying readable.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { formatDateTime } from './formatters';
+import { formatDateTime, shownTaskStatus } from './formatters';
 
 // "Now" is fixed so "Today"/"Yesterday" branches are deterministic.
 const NOW = new Date('2026-05-08T14:00:00Z');
@@ -346,5 +346,33 @@ describe('formatAgo', () => {
     it('measures from the current time by default', () => {
         // The file's fake clock stands at 2026-05-08T14:00:00Z.
         expect(formatAgo('2026-05-08T13:15:00Z')).toBe('45 min ago');
+    });
+});
+
+// formatDecisionDeadline — when an open decision request fails on its own (ADR #137 §6).
+import { formatDecisionDeadline } from './formatters';
+
+describe('formatDecisionDeadline', () => {
+    const now = Date.parse('2026-11-22T12:00:00Z');
+    it.each([
+        ['2026-11-22T12:45:00Z', 'fails in 45 min'],
+        ['2026-11-22T16:00:00Z', 'fails in 4 h'],
+        ['2026-11-26T12:00:00Z', 'fails in 4 days'],
+        ['2026-11-22T11:59:00Z', 'deadline passed'],
+    ])('%s → %s', (deadline, expected) => {
+        expect(formatDecisionDeadline(deadline, now)).toBe(expected);
+    });
+
+    it('names no deadline while the run is paused', () => {
+        expect(formatDecisionDeadline(null, now)).toBe('no deadline while paused');
+        expect(formatDecisionDeadline('not a time', now)).toBe('no deadline while paused');
+    });
+});
+
+describe('shownTaskStatus (ADR #137, Migration; the review of TR-6d)', () => {
+    it('shows a row of a run from before 1.3 left unfinished as stale, any other row by its status', () => {
+        expect(shownTaskStatus({ status: 'running', stale: true })).toBe('stale');
+        expect(shownTaskStatus({ status: 'running' })).toBe('running');
+        expect(shownTaskStatus({ status: null })).toBe('waiting');
     });
 });

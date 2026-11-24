@@ -2,7 +2,8 @@
 # without tying it to any past or future execution
 
 **Status: DECIDED AND IMPLEMENTED.** Option A (explicit toggle) shipped — see
-"Resolution" at the end of this document.
+"Resolution" at the end of this document. **Historical analysis @ v1.2.** In 1.3 the
+deployed structure comes from the pipeline's spec version (ADR #137 §8).
 
 **Question.** After `polyris-deploy` changes a pipeline's task structure or types, the
 pipeline detail view still shows the graph tied to the last real run — which reflects the

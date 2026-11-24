@@ -45,7 +45,7 @@ The pool and client ids are the platform stack's `CognitoUserPoolId` and `Cognit
 | `test_pipelines.py` | Pipeline CRUD | Write tests marked `@pytest.mark.write` |
 | `test_routes.py` | Tasks, runs, notifications, error handling | None (read-only) |
 | `test_retries.py` | `retry_attempt` on task rows and retry events (ADR #125) | None (read-only) |
-| `test_coordination_smoke.py` | Task coordination end to end: `wait_for`, Mark Successful, restart, asset-scheduled runs | Starts runs of the smoke pipelines (`write`, `smoke`) |
+| `test_coordination_smoke.py` | Coordination end to end. Assets: `wait_for`, Mark Successful, restart, asset-scheduled runs. Tasks: a chain, a final failure and its rules, retries and a decision, Stop and Restart with dependants, Pause and Resume, a Stop of the run, a countdown | Starts runs of the smoke pipelines (`write`, `smoke`) |
 
 ## Markers
 
@@ -70,15 +70,15 @@ make e2e-coordination STACK=<platform stack> PROFILE=<aws profile>
 
 `tests/e2e/run_coordination_smoke.py` reads the console URL, the Cognito pool and the platform's test state machines from the stack's outputs. It deploys the pipelines of `coordination_smoke/dag.py` with `polyris-deploy`, named after the platform, so they run the platform's `-test-quick`, `-test-success` and `-test-failure` state machines. It signs in as a temporary console user, runs the test and deletes the user again. Your AWS credentials need `cloudformation:DescribeStacks`, what `polyris-deploy` needs ([IAM_PERMISSIONS.md](../../docs/deployment/IAM_PERMISSIONS.md)), and `cognito-idp:AdminCreateUser`, `AdminSetUserPassword`, `AdminInitiateAuth` and `AdminDeleteUser`. `ARGS` go to pytest: `ARGS='-k marking'` reruns one scenario.
 
-It takes about 15 minutes. The pipelines stay on the platform, so the next run only updates them; they have no schedule and cost nothing between runs. Remove them before `polyris-down`, which refuses a platform that still has pipelines:
+It takes about 25 minutes. The pipelines stay on the platform, so the next run only updates them; they have no schedule and cost nothing between runs. Remove them before `polyris-down`, which refuses a platform that still has pipelines:
 
 ```bash
 make e2e-coordination-clean STACK=<platform stack> PROFILE=<aws profile>
 ```
 
-Run data needs no clean-up: each scenario uses its own date in the 1900s, and the rows expire with the tables' TTL. Run the smoke on a test platform, not on one people use: it adds nine pipelines to the console. Each scenario uses its own run date in the 1900s, so the facts of earlier runs never decide a new one.
+Run data needs no clean-up: each scenario uses its own date in the 1900s, and the rows expire with the tables' TTL. Run the smoke on a test platform, not on one people use: it adds sixteen pipelines to the console.
 
-A task that fails waits in `waiting_decision` until the decision timeout, and only then becomes `failed`; a scenario that needs a failed task accepts either status.
+A task that fails waits in `waiting_decision` until the decision timeout, and only then becomes `failed`; a scenario that needs a failed task fails it with the console's Fail. The countdown scenario takes up to 5 minutes more than its `wait_before`: the countdown ends at the sweeper's next check.
 
 ## CI Integration
 

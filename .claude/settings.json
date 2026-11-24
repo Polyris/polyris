@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/verify-changed.sh --hook",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/verify-changed.sh\" --hook",
             "timeout": 600
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/guard-destructive.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard-destructive.sh\"",
             "timeout": 10
           }
         ]

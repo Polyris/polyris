@@ -99,6 +99,17 @@ describe('useAppStore', () => {
             act(() => result.current.setSelectedExecution(null));
             expect(result.current.selectedExecution).toBeNull();
         });
+
+        it('a reset forgets the run and keeps the definition view a page chose', () => {
+            const { result } = renderHook(() => useAppStore());
+            act(() => {
+                result.current.setSelectedExecution({ execution_id: 'e1', auto_selected: false });
+                result.current.setDagViewSource('current');
+            });
+            act(() => result.current.clearSelectedExecution());
+            expect(result.current.selectedExecution).toBeNull();
+            expect(result.current.dagViewSource).toBe('current');
+        });
     });
 
     describe('theme', () => {

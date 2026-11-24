@@ -34,9 +34,9 @@ Common issues and solutions for polyris operations.
    aws scheduler get-schedule --name "${NAMESPACE}-${STAGE}-polyris-your-pipeline-schedule"
    ```
 
-   The `State` field should be `ENABLED`. If it's `DISABLED`, the pipeline was
-   paused — resume via Console (pipeline → **Resume**) or set
-   `is_paused_upon_creation=False` on the DAG and redeploy. See
+   The `State` field should be `ENABLED`. If it's `DISABLED`, the schedule was
+   paused: **Enable** it in the AWS console, or remove
+   `is_paused_upon_creation=True` from the DAG and redeploy. See
    [how-to/schedule-and-redeploy.md](../how-to/schedule-and-redeploy.md#pause-and-resume-a-schedule).
 
 2. Pipeline is registered:
@@ -46,9 +46,9 @@ Common issues and solutions for polyris operations.
      --key '{"pipeline_name": {"S": "your-pipeline"}}'
    ```
 
-**Fix:** Re-deploy pipeline with `polyris-deploy`, or re-enable the schedule via
-Console. `polyris-deploy` re-applies the DAG's declared schedule state on every
-deploy, so a manual console pause reverts the next time you deploy — set
+**Fix:** Re-deploy pipeline with `polyris-deploy`, or enable the schedule in the
+AWS console. `polyris-deploy` re-applies the DAG's declared schedule state on every
+deploy, so a pause made in the AWS console reverts the next time you deploy — set
 `is_paused_upon_creation=True` on the DAG if you want the pause to stick.
 
 polyris uses `AWS::Scheduler::Schedule` (EventBridge Scheduler), not the legacy
@@ -63,7 +63,7 @@ delete via console; polyris-deploy creates only Scheduler resources now.
 **Symptoms:** Pipeline shows running but no tasks are active.
 
 **Check:**
-1. **The bell:** a `coordination` warning that says the run "stays RUNNING" means polyris could not tell the run how one of its tasks ended. The run waits until you stop it, or until it times out waiting for that task (the task's `execution_timeout`, 24 hours by default). The warning names the task and the cause.
+1. **The bell:** a `coordination` warning that says "the run's token could not be answered" names the cause. The run answers again at each of its checks, every few minutes, until the answer goes through. If the cause stays, stop the run from the console.
 2. Step Functions execution status:
    ```bash
    aws stepfunctions list-executions \
@@ -106,19 +106,6 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
 
 ---
 
-### Task stuck in "waiting_delay"
-
-**Symptoms:** Task shows countdown but never proceeds.
-
-**Check:**
-1. `wait_delay_until_ms` timestamp — when should it end?
-2. Server time sync — any clock skew?
-3. Wrapper SFN execution — is Wait state active?
-
-**Fix:** Usually resolves itself. If not, restart the task.
-
----
-
 ### Task fails immediately
 
 **Symptoms:** Task goes to "failed" within seconds.
@@ -129,10 +116,10 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
    aws stepfunctions describe-state-machine --state-machine-arn "your-task-arn"
    ```
 
-2. **IAM permissions** — wrapper role can invoke task:
+2. **IAM permissions** — the orchestration role, which runs `run_task`, can start the task:
    ```bash
    aws iam simulate-principal-policy \
-     --policy-source-arn "wrapper-role-arn" \
+     --policy-source-arn "arn:aws:iam::<account>:role/<Namespace>-<Stage>-polyris-orchestration-role" \
      --action-names "states:StartExecution" \
      --resource-arns "task-arn"
    ```
@@ -178,10 +165,10 @@ running, and its upstream dependency is itself `skipped` — not failed.
 **This is expected behavior (ADR #115).** A skipped upstream now cascades through
 `all_success`, instead of silently counting as "OK to continue."
 Check *why* the upstream was skipped:
-1. If a human explicitly skipped it (task action) — a **manual** skip does **not**
-   cascade, so if you're seeing this, the skip likely came from a trigger_rule
-   resolving `skipped` further upstream in the same chain (a **rule**-triggered skip
-   does cascade).
+1. If an operator skipped it (task action), or the run did (`skip_tasks`), the skip
+   does **not** cascade. So if you're seeing this, the skip likely came from a
+   trigger_rule resolving `skipped` further upstream in the same chain: a skip with
+   `skip_origin = rule` does cascade.
 2. If you want this task to proceed regardless of an upstream skip, change its
    `trigger_rule` to `all_done`.
 
@@ -240,7 +227,7 @@ Check *why* the upstream was skipped:
 
 **Fix:**
 - If subscription missing: re-deploy consumer pipeline
-- If event missing: re-run the producer. A `fact` warning in the bell means the producer succeeded but its fact was not recorded; fix the cause it names, then restart the producer task
+- If event missing: re-run the producer. A producer whose success could not be recorded waits for a decision (`waiting_decision`) with the cause; fix it, then restart the task
 - If the schedule names several assets: an AND schedule starts once every asset has a fact for the same date (weekly and monthly assets: for that week or month, or the one before). Materialise the missing asset; the run starts with its fact.
 
 ---
@@ -256,13 +243,17 @@ While a problem shows, tasks may start late. The panel tells you what to do; the
 | Problem | What still works, and what else to know |
 |---------|-----------------------------------------|
 | No check has run yet | Normal for the first 5 minutes after an install or upgrade. Tasks still start from their signals |
-| The periodic re-check is not running | Tasks still start from their signals. Only a task that missed its signal waits until its timeout. A sweeper that fails on every run shows its error in its logs |
+| The periodic re-check is not running | Tasks still start from the streams. A task whose wake-up was lost waits, and no limit, countdown or decision timeout ends, until the check runs again. A sweeper that fails on every run shows its error in its logs |
 | Asset event delivery is off, or is not set up | The sweeper still starts waiting tasks at their checks, up to 40 minutes late, and its hourly catch-up starts asset-scheduled pipelines. A mapping that a deploy is creating or updating counts only once it stays so for 15 minutes. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
 | Asset event delivery is failing | asset-fanout fails on every batch, for example after a broken deploy or a changed role. Records wait in the stream for 24 hours, and the sweeper still wakes waiting tasks at their checks |
 | Asset events are not recorded for delivery | The stream of the asset-events table was turned off outside polyris. Turning it on again makes a new stream, so asset-fanout needs a new trigger on it, and the old trigger goes |
 | Asset event delivery, or asset event recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
 | Waiting tasks are behind their checks | The sweeper runs but cannot keep up, or fails on some rows: its logs name them |
-| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step |
+| Task delivery is off, is not set up, or is failing | Finished tasks start their dependants, and runs end, only at their run's periodic check, up to 30 minutes late. A record that keeps failing holds back the runs of its shard until it leaves the stream after 24 hours; the dispatcher's logs (the `reconcile` function) name its cause. Deploying the same version again does not restore a mapping deleted outside polyris: recreate it as the panel says |
+| Task changes are not recorded for delivery | The stream of the tasks table was turned off outside polyris. The periodic check still decides every task, up to 30 minutes late. Turning the stream on again makes a new stream, so the dispatcher needs a new trigger on it, and the old trigger goes |
+| Task delivery, or task change recording, could not be checked | The sweeper could not read the mapping or the stream; a missing permission or throttling is the usual cause. Delivery itself may be fine |
+| Runs missed their wake-ups | The last check found runs whose tasks waited for it although they could have gone on earlier. The bell names each run once. Many runs at every check point to a stream record that keeps failing: read the dispatcher's logs |
+| The periodic re-check could not finish … | One step failed and the others still ran. The problem clears once a run finishes the step. For checking the runs that are due, it means that most passes over runs failed: the bell names each run, and the sweeper's logs the cause |
 | The console cannot reach DynamoDB, or Step Functions | `/api/health` answers 503. The console cannot show or change what it needs that service for |
 | The coordination status cannot be read | The console cannot read the sweeper's report, so it cannot tell whether waiting tasks are re-checked |
 
@@ -275,7 +266,7 @@ A grey **System · status unknown** means the console could not read `/api/healt
 ### "SAM stack '…' is missing required outputs" error
 
 **Symptoms:** `polyris-deploy` fails with the SAM stack missing outputs
-(`DependencyWrapperArn`, `OrchestrationRoleArn`, …). Historically this
+(`StartRunFunctionArn`, `OrchestrationRoleArn`, …). Historically this
 error was "SSM parameter not found"; polyris-deploy no longer reads SSM,
 it reads the SAM stack's CloudFormation Outputs directly.
 
@@ -288,9 +279,10 @@ it reads the SAM stack's CloudFormation Outputs directly.
      --query "Stacks[0].Outputs[*].OutputKey" \
      --output table
    ```
-   You should see `DependencyWrapperArn`, `OrchestrationRoleArn`,
-   `PipelineRegistryTable`, `PipelineTokensTable`,
-   `AssetSubscriptionsTable`, `ResultsBucket`.
+   You should see `StartRunFunctionArn`, `OrchestrationRoleArn`,
+   `PipelineRegistryTable`, `PipelineTokensTable`, `PipelineSpecsTable`,
+   `AssetSubscriptionsTable`, `ResultsBucket`. A platform older than your
+   polyris lacks some of them: upgrade it with `polyris-up`.
 
 2. The stack you're pointing at is the SAM stack, not a pipeline stack.
    `config.py`'s `stack_name` must match `sam/samconfig.toml`'s
@@ -397,7 +389,7 @@ aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
 **Use when:** Task is stuck but you verified work is done (checked logs, S3, etc.)
 
 ```bash
-# Via Console UI: Task modal → "Mark Success" button
+# Via Console UI: Task modal → "Mark Successful" button
 
 # Via API:
 curl -X POST ${API_URL}/api/task-success?name={execution_name} \
@@ -417,22 +409,7 @@ curl -X POST ${API_URL}/api/task-success?name={execution_name} \
 curl -X POST ${API_URL}/api/pipeline-run?name={name} \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"variables": {"current_date": "2026-01-15"}}'
-```
-
----
-
-### Clear all paused pipelines
-
-```bash
-# List paused
-aws dynamodb scan \
-  --table-name ${NAMESPACE}-${STAGE}-polyris-pipeline-registry \
-  --filter-expression "paused = :true" \
-  --expression-attribute-values '{":true": {"BOOL": true}}'
-
-# Resume via API
-curl -X POST ${API_URL}/api/execution-resume?id={id}
+  -d '{"input": {"current_date": "2026-01-15"}}'
 ```
 
 ---

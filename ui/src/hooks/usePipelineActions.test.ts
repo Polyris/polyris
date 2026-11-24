@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAppStore } from '@/stores/useAppStore';
 import React from 'react';
 import { renderHook, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -69,6 +70,7 @@ describe('usePipelineActions', () => {
     vi.clearAllMocks();
     mockGetUpstream.mockReturnValue([]);
     mockGetDownstream.mockReturnValue([]);
+    useAppStore.getState().setExecutionPaused(false);    // the store owns it, and outlives a test
   });
 
   describe('initial state', () => {
@@ -302,9 +304,11 @@ describe('usePipelineActions', () => {
       expect(defaultProps.setSelectedExecution).not.toHaveBeenCalled();
     });
 
-    it('should stop all incomplete tasks when stopping pipeline', async () => {
+    it('stops the run with one Stop of the run, and no Stop of each task (review of TR-6)', async () => {
+      // The engine stops the run's rows, dependants first (ADR #137 §4); stopping each task from the browser first
+      // let the engine decide their dependants in between, and start one that should have stopped.
       mockApiPost.mockResolvedValue({ success: true });
-      
+
       const props = {
         ...defaultProps,
         tasks: [
@@ -313,21 +317,35 @@ describe('usePipelineActions', () => {
           { task_name: 't3', status: 'pending', execution_name: 'exec-t3' },
         ] as Array<{ task_name: string; status: string; execution_name: string }>,
       };
-      
+
       const { result } = renderHook(() => usePipelineActions(props), { wrapper: createWrapper() });
-      
+
       act(() => {
         result.current.handleStop();
       });
-      
+
       await act(async () => {
         await result.current.executeModalAction();
       });
-      
-      // Should stop running and pending, not success
-      expect(mockApiPost).toHaveBeenCalledWith('/task-stop?name=exec-t1', {});
-      expect(mockApiPost).toHaveBeenCalledWith('/task-stop?name=exec-t3', {});
-      expect(mockApiPost).not.toHaveBeenCalledWith('/task-stop?name=exec-t2', {});
+
+      const calls = mockApiPost.mock.calls.map(c => c[0] as string);
+      expect(calls.filter(url => url.startsWith('/execution-stop?'))).toHaveLength(1);
+      expect(calls.some(url => url.startsWith('/task-stop'))).toBe(false);
+    });
+
+    it('says there is no run to stop instead of closing the dialog as if it had (TR-8, P-5)', async () => {
+      const props = { ...defaultProps, executions: [] as typeof defaultProps.executions, selectedExecution: null };
+      const { result } = renderHook(() => usePipelineActions(props), { wrapper: createWrapper() });
+
+      act(() => {
+        result.current.handleStop();
+      });
+      await act(async () => {
+        await result.current.executeModalAction();
+      });
+
+      expect(mockApiPost).not.toHaveBeenCalled();
+      expect(defaultProps.showToast).toHaveBeenCalledWith('No active execution to stop', 'warning');
     });
 
     it('should execute skip task action', async () => {
@@ -345,6 +363,26 @@ describe('usePipelineActions', () => {
       
       expect(mockApiPost).toHaveBeenCalledWith('/task-skip?name=exec-task-1', { date: '2024-01-15' });
       expect(defaultProps.showToast).toHaveBeenCalledWith('Task skipped', 'success');
+    });
+
+    it('should restart with its dependants when the box is ticked', async () => {
+      mockApiPost.mockResolvedValue({ success: true });
+
+      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
+
+      act(() => {
+        result.current.handleTaskAction('restart');
+      });
+      expect(result.current.withDependants).toBe(false);          // each Restart dialog starts unticked
+      act(() => {
+        result.current.setWithDependants(true);
+      });
+      await act(async () => {
+        await result.current.executeModalAction();
+      });
+
+      expect(mockApiPost).toHaveBeenCalledWith('/task-restart?name=exec-task-1',
+        { date: '2024-01-15', with_dependants: true });
     });
 
     it('should handle invalid JSON params', async () => {
@@ -417,6 +455,21 @@ describe('usePipelineActions', () => {
       expect(result.current.executionPaused).toBe(false);
     });
 
+    it('resumes a run the page shows as paused from its run row, before any click of this hook (review of TR-6)', async () => {
+      // One owner of the paused state: the page sets the store from the run row; the hook's own flag sent Pause.
+      mockApiPost.mockResolvedValue({ success: true });
+      useAppStore.getState().setExecutionPaused(true);
+      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
+
+      await act(async () => {
+        await result.current.handlePauseResume();
+      });
+
+      expect(mockApiPost).toHaveBeenCalledWith('/execution-resume?id=exec-123', {});
+      expect(mockApiPost).not.toHaveBeenCalledWith('/execution-pause?id=exec-123', {});
+      expect(useAppStore.getState().executionPaused).toBe(false);
+    });
+
     it('should show warning when no active execution', async () => {
       const props = { ...defaultProps, executions: [] as typeof defaultProps.executions };
       const { result } = renderHook(() => usePipelineActions(props), { wrapper: createWrapper() });
@@ -480,21 +533,6 @@ describe('usePipelineActions', () => {
       });
       
       // Should not throw
-    });
-  });
-
-  describe('handleExtendPause', () => {
-    it('should extend pause for current execution', async () => {
-      mockApiPost.mockResolvedValue({ success: true });
-      
-      const { result } = renderHook(() => usePipelineActions(defaultProps), { wrapper: createWrapper() });
-      
-      await act(async () => {
-        await result.current.handleExtendPause();
-      });
-      
-      expect(mockApiPost).toHaveBeenCalledWith('/execution-extend?id=exec-123', {});
-      expect(defaultProps.showToast).toHaveBeenCalledWith('Pause extended by 12 hours', 'success');
     });
   });
 

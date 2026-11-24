@@ -63,6 +63,8 @@ Same call in every task type. Auto-resolves `_s3_ref` claim-check pointers. Fall
 
 `$exists($parse($safe)) ? $parse($safe) : {'_raw': $safe}` — one `$parse()` call handles every valid JSON shape; `_raw` fallback stays for actually-corrupted DDB rows only.
 
+**Update (1.3.0, ADR #137 §1):** the `_raw` fallback is gone. A result is stored as JSON: a string that starts like JSON is JSON text, stored as it is, and any other string is stored as a JSON string (`"ok"`); a stored text that cannot be JSON (a string result an older version stored as it was) reaches the task as that string, and `xcom.pull()` returns it so. `run_task` parses only a text that starts like JSON, and one that does not parse reaches the task without an output, for `xcom` to read from the table.
+
 ### 5. Console UI renders markers explicitly
 
 Every upstream + output state uses the same card grammar — 4px left color stripe + neutral fill, status carried by icon + badge. No full-bleed warn/error/muted banners (they made a fan-in of mixed statuses read as a colour siren). Variants:

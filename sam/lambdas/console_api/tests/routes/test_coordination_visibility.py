@@ -40,7 +40,7 @@ def tokens(mocker):
         yield resource.Table(name)
 
 
-def _warning(tokens, *, kind="zombie", task="load", task_date="2026-10-13", minutes_ago=10):
+def _warning(tokens, *, kind="coordination", task="load", task_date="2026-10-13", minutes_ago=10):
     tokens.put_item(Item=warning_item(
         kind=kind, execution_name=f"{task}-{task_date}-run", task_name=task, pipeline_name="orders",
         pipeline_execution="orders-run", task_date=task_date, error=f"{kind} happened",
@@ -61,16 +61,16 @@ def test_a_warning_about_an_old_partition_reaches_the_bell(tokens, mocker):
 
     [shown] = _bell(mocker)
 
-    assert (shown["type"], shown["kind"], shown["date"]) == ("warning", "zombie", "2026-10-13")
-    assert shown["task_name"] == "load" and shown["error"] == "zombie happened"
-    assert shown["id"] == "_notify_warn_zombie_load-2026-10-13-run"
+    assert (shown["type"], shown["kind"], shown["date"]) == ("warning", "coordination", "2026-10-13")
+    assert shown["task_name"] == "load" and shown["error"] == "coordination happened"
+    assert shown["id"] == "_notify_warn_coordination_load-2026-10-13-run"
 
 
 def test_two_kinds_of_warning_about_one_task_are_both_shown(tokens, mocker):
-    _warning(tokens, kind="notify")
+    _warning(tokens, kind="push")
     _warning(tokens, kind="sweeper", minutes_ago=5)
 
-    assert sorted(n["kind"] for n in _bell(mocker)) == ["notify", "sweeper"]
+    assert sorted(n["kind"] for n in _bell(mocker)) == ["push", "sweeper"]
 
 
 def test_warnings_outside_the_window_and_over_the_limit_are_left_out(tokens, mocker):
@@ -92,9 +92,18 @@ def test_a_warning_read_that_fails_leaves_the_rest_of_the_bell(tokens, mocker):
     assert _bell(mocker) == []
 
 
+class _Now(datetime):
+    """The route's clock, held at NOW: a report's age reads in whole minutes, so a slow suite made 30 minutes 31."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
 def _health(mocker, tokens):
     from routes import health
 
+    mocker.patch.object(health, "datetime", _Now)
     for check in ("_check_dynamodb", "_check_stepfunctions", "_check_recent_failures", "_check_circuit_breakers"):
         mocker.patch.object(health, check, return_value={"status": health.HEALTHY})
     resp = health.health_check({})
@@ -103,7 +112,7 @@ def _health(mocker, tokens):
 
 def test_a_fresh_engine_report_is_healthy(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
-                          "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": "",
+                          "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "stream": "ENABLED", "oldest_overdue": "",
                           "push_retry_backlog": 3})
 
     status, body = _health(mocker, tokens)
@@ -116,7 +125,7 @@ def test_a_fresh_engine_report_is_healthy(tokens, mocker):
 
 def test_a_stale_report_degrades_the_api_and_names_the_finding(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=30)),
-                          "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""})
+                          "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "stream": "ENABLED", "oldest_overdue": ""})
 
     status, body = _health(mocker, tokens)
 
@@ -131,7 +140,7 @@ def test_a_stale_report_degrades_the_api_and_names_the_finding(tokens, mocker):
 
 def test_a_failed_sweeper_step_degrades_the_api_and_is_shown(tokens, mocker):
     tokens.put_item(Item={"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
-                          "fanout_mapping": "Enabled", "fanout_result": "OK", "stream": "ENABLED",
+                          "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "fanout_result": "OK", "stream": "ENABLED",
                           "oldest_overdue": "", "failed_steps": ["catch_up: ClientError: throttled"]})
 
     _, body = _health(mocker, tokens)
@@ -177,7 +186,7 @@ def test_a_report_that_cannot_be_judged_is_unhealthy_and_the_api_still_answers(t
     """Each of these failed all of /api/health with a 500, so the console could not show what is wrong
     (external review, round 2)."""
     report = {"execution_name": sweep.HEALTH_KEY, "checked_at": format_utc(NOW - timedelta(minutes=2)),
-              "fanout_mapping": "Enabled", "stream": "ENABLED", "oldest_overdue": ""}
+              "fanout_mapping": "Enabled", "dispatch_mapping": "Enabled", "tasks_stream": "ENABLED", "stream": "ENABLED", "oldest_overdue": ""}
     tokens.put_item(Item={**report, field: value})
 
     status, body = _health(mocker, tokens)

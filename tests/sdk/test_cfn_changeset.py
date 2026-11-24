@@ -183,6 +183,71 @@ def test_execute_failure_raises():
         C.execute_change_set(cfn, stack_name="s", change_set={"ChangeSetName": "cs", "ChangeSetType": "UPDATE"})
 
 
+class _Updating(FakeCfn):
+    """A stack whose status moves on with each describe_stacks, as a running update's does."""
+
+    def __init__(self, *statuses: str):
+        super().__init__(statuses[0])
+        self._statuses = list(statuses)
+
+    def describe_stacks(self, StackName):
+        self.status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
+        return super().describe_stacks(StackName)
+
+
+UPDATE = {"ChangeSetName": "cs", "ChangeSetType": "UPDATE"}
+
+
+def test_execute_calls_the_hook_once_the_update_has_succeeded_and_its_cleanup_begins():
+    """polyris-up stops there what would hold the cleanup's deletions up (ADR #137, *Migration*)."""
+    cfn = _Updating("UPDATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", C.CLEANUP_STATUS)
+    slept: list = []
+
+    C.execute_change_set(cfn, stack_name="s", change_set=UPDATE, on_cleanup=lambda: cfn.calls.append(("hook",)),
+                         sleep=slept.append)
+
+    assert [call[0] for call in cfn.calls] == ["execute_change_set", "hook", "wait"], "before the stack settles"
+    assert slept == [C.STACK_WAIT_DELAY_S] * 2
+
+
+@pytest.mark.parametrize("status", ["UPDATE_ROLLBACK_IN_PROGRESS", "UPDATE_FAILED", "UPDATE_COMPLETE"])
+def test_execute_never_calls_the_hook_for_an_update_that_failed_or_whose_cleanup_is_over(status):
+    cfn = _Updating("UPDATE_IN_PROGRESS", status)
+
+    C.execute_change_set(cfn, stack_name="s", change_set=UPDATE, on_cleanup=lambda: cfn.calls.append(("hook",)),
+                         sleep=lambda _s: None)
+
+    assert [call[0] for call in cfn.calls] == ["execute_change_set", "wait"]
+
+
+def test_execute_never_calls_the_hook_for_a_create():
+    cfn = FakeCfn(C.CLEANUP_STATUS)
+
+    C.execute_change_set(cfn, stack_name="s", change_set={"ChangeSetName": "cs", "ChangeSetType": "CREATE"},
+                         on_cleanup=lambda: cfn.calls.append(("hook",)))
+
+    assert [call[0] for call in cfn.calls] == ["execute_change_set", "wait"]
+
+
+def test_execute_gives_the_hook_up_when_the_update_stays_in_progress(monkeypatch):
+    monkeypatch.setattr(C, "STACK_WAIT_MAX_ATTEMPTS", 3)
+    cfn = _Updating("UPDATE_IN_PROGRESS")
+    slept: list = []
+
+    C.execute_change_set(cfn, stack_name="s", change_set=UPDATE, on_cleanup=lambda: cfn.calls.append(("hook",)),
+                         sleep=slept.append)
+
+    assert len(slept) == 3 and [call[0] for call in cfn.calls] == ["execute_change_set", "wait"]
+
+
+def test_an_error_of_the_hook_reaches_the_caller():
+    def hook():
+        raise RuntimeError("could not stop them")
+
+    with pytest.raises(RuntimeError, match="could not stop them"):
+        C.execute_change_set(_Updating(C.CLEANUP_STATUS), stack_name="s", change_set=UPDATE, on_cleanup=hook)
+
+
 # ── start_event_watcher ──────────────────────────────────────────────────────
 
 
@@ -275,3 +340,68 @@ def test_change_set_changes_are_read_across_pages():
 
     cs = _create(_Paged())
     assert cs["Changes"] == [{"n": 1}, {"n": 2}, {"n": 3}] and "NextToken" not in cs
+
+
+class _Deleting(FakeCfn):
+    """A stack CloudFormation deletes: after the delete, each describe_stacks gives the next status, then none."""
+
+    def __init__(self, statuses: List[str], reason: str = ""):
+        super().__init__(status="CREATE_COMPLETE")
+        self.after_delete = list(statuses)
+        self.reason = reason
+
+    def delete_stack(self, StackName):
+        self.calls.append(("delete_stack", StackName))
+
+    def describe_stacks(self, StackName):
+        if any(name == "delete_stack" for name, _ in self.calls):
+            self.status = self.after_delete.pop(0) if self.after_delete else None
+        if self.status is None:
+            raise ClientError({"Error": {"Code": "ValidationError",
+                                         "Message": f"Stack with id {StackName} does not exist"}}, "DescribeStacks")
+        return {"Stacks": [{"StackName": StackName, "StackStatus": self.status, "StackStatusReason": self.reason}]}
+
+
+def _delete(cfn: FakeCfn, hook=lambda: None) -> None:
+    C.delete_stack(cfn, stack_name="acme-dev-polyris-sales-etl", while_deleting=hook, sleep=lambda _: None)
+
+
+def test_delete_stack_ends_what_holds_it_up_before_the_delete_and_on_every_poll_until_the_stack_is_gone():
+    cfn = _Deleting(["DELETE_IN_PROGRESS", "DELETE_IN_PROGRESS"])
+    hooks: List[bool] = []
+
+    _delete(cfn, lambda: hooks.append(any(name == "delete_stack" for name, _ in cfn.calls)))
+
+    assert hooks == [False, True, True, True]      # before the delete, then on each of the three polls
+    assert cfn.call("delete_stack") == "acme-dev-polyris-sales-etl"
+
+
+def test_delete_stack_returns_once_the_stack_reads_deleted():
+    cfn = _Deleting(["DELETE_COMPLETE"])
+    _delete(cfn)
+    assert cfn.status == "DELETE_COMPLETE"
+
+
+def test_a_hook_that_fails_before_the_delete_leaves_the_stack_alone():
+    cfn = _Deleting([])
+
+    def denied() -> None:
+        raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "states:ListExecutions"}},
+                          "ListExecutions")
+
+    with pytest.raises(ClientError):
+        _delete(cfn, denied)
+    assert not any(name == "delete_stack" for name, _ in cfn.calls)
+
+
+def test_a_deletion_that_fails_raises_with_its_reason():
+    cfn = _Deleting(["DELETE_FAILED"], reason="The following resource(s) failed to delete: [PipelineStateMachine].")
+    with pytest.raises(C.ChangeSetError, match=r"failed to delete: \[PipelineStateMachine\]"):
+        _delete(cfn)
+
+
+def test_a_deletion_that_never_ends_raises(monkeypatch):
+    monkeypatch.setattr(C, "STACK_WAIT_MAX_ATTEMPTS", 3)
+    cfn = _Deleting(["DELETE_IN_PROGRESS"] * 5)
+    with pytest.raises(C.ChangeSetError, match="still being deleted"):
+        _delete(cfn)

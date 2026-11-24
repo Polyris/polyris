@@ -16,9 +16,9 @@ composite end-to-end run).
 | [`04_task_types`](04_task_types/dag.py) | Six AWS task types: `sfn`, `lambda_`, `glue`, `athena`, `ecs`, `batch` + `default_args` + cross-account `role` (`emr` is supported too but omitted here — it needs a live cluster) |
 | [`05_chain_cross_downstream`](05_chain_cross_downstream/dag.py) | Fan-out / fan-in, trigger rules, `chain()` / `cross_downstream()` |
 | [`06_direct_steps`](06_direct_steps/dag.py) | Direct service steps (`Wait`, `Pass`, `SNS`, `SQS`, `S3`), `wait_before`, `rate(...)`, `variables` |
-| [`07_dag_and_task_settings`](07_dag_and_task_settings/dag.py) | Retries + backoff, timeouts, `skip_on_backfill`, `catchup`, concurrency limits |
+| [`07_dag_and_task_settings`](07_dag_and_task_settings/dag.py) | Retries + backoff, timeouts, `skip_on_backfill`, an active window |
 | [`08_composite_example`](08_composite_example/dag.py) | A plausible daily analytics pipeline combining several services end to end — not a single feature, the full picture |
-| [`09_trigger_rules`](09_trigger_rules/dag.py) | All five supported `trigger_rule` conditions side by side (ADR #117) |
+| [`09_trigger_rules`](09_trigger_rules/dag.py) | All nine `trigger_rule` conditions side by side (ADR #138) |
 | [`10_no_schedule`](10_no_schedule/dag.py) | An on-demand pipeline with **`schedule=None`** (manual trigger only) |
 | [`11_assets_outlets_inlets`](11_assets_outlets_inlets/dag.py) | Declaring asset `outlets`/`inlets` on tasks *(experimental)* |
 | [`12_assets_schedule_trigger`](12_assets_schedule_trigger/dag.py) | `schedule=[asset]` — a pipeline triggered by another pipeline's asset (push model) *(experimental)* |
@@ -38,7 +38,7 @@ polyris-validate                 # is the DAG valid?
 polyris-validate -v              # verbose: tasks, dependencies, ASL preview
 polyris-output --graph           # the DAG as an ASCII graph
 polyris-output --mermaid         # a Mermaid diagram you can paste anywhere
-polyris-output --json            # the full Step Functions definition (ASL)
+polyris-output --json            # the Step Functions definition and its task specs
 ```
 
 Each `@task.sfn` invokes an existing Step Functions state machine, so the ARNs

@@ -9,8 +9,8 @@ The Console shows a notification for every event that needs your attention:
 | Trigger | Notification kind |
 |---------|-------------------|
 | Task fails and retries are exhausted (or `retries=0`) | Decision required — the task is in `waiting_decision`, blocking downstream |
-| Task's dependency window expires (`wait_for=[asset.within(...)]` timed out) | Decision required |
-| polyris could not coordinate a task: it can no longer be woken and was aborted, its wake-up came late, an asset-scheduled run could not start, its dependent tasks were not notified, or a registration step failed | Warning, named by its kind |
+| Task's wait for its dependencies or assets reaches its limit (`orchestration_timeout`, or 7 days for `wait_for`) | Failure — the task is `failed` with the reason |
+| polyris could not coordinate a task: its run's wake-ups were lost and the sweeper woke it late, an asset-scheduled run could not start, a direct step failed, or the engine could not carry out a write, a request or a stop | Warning, named by its kind |
 | A manual action found real output and kept it instead of writing its marker | Warning |
 
 Successful runs do not generate notifications — the Console shows their status in the pipeline list.
@@ -23,7 +23,7 @@ Successful runs do not generate notifications — the Console shows their status
 
 Notifications auto-refresh every 30s (or 3s when there's an active run in view). No manual reload needed.
 
-A warning shows by the time it was written, so a warning about a run for an old date still appears. Warnings expire after 8 days. A task failure shows while its run's date is within the window you ask for; a failed run for an older date shows in that run, not in the bell.
+Every notification shows by when it happened, whatever the date of its run: a task failure by when the task failed, within the last 48 hours, and a warning by when it was written; warnings expire after 8 days. A task that waits for your decision shows until you decide, with when it fails unless you do; while its run is paused, the pause holds that deadline. Reading or clearing a notification covers that one event: a later failure or decision request of the same run shows as new.
 
 ## When coordination itself is unhealthy
 
@@ -35,12 +35,13 @@ Click the notification → opens Task Detail modal. The task's **Actions** tab h
 
 | Action | When to use |
 |--------|-------------|
-| **Restart** | Retry the whole task with a fresh `attempt=1`. Use when the failure was transient (dependency was down, quota reset) |
-| **Mark success** | Manually mark the task successful with a synthetic marker. Use when you verified the work is actually done (checked S3, checked the target table) and just want downstream to continue |
-| **Skip** | Mark the task `skipped`. Use when the task is not needed for this run (bad input data, partition already handled elsewhere) — downstream `all_success` sees it as a skip cascade |
-| **Fail** | Mark the task `failed`. Use when the failure is real and the run should stop cleanly. Downstream `all_success` chains propagate `upstream_failed` |
+| **Restart** | Run the task again from its wait: it waits for its dependencies and assets again, and its attempt count goes on. Tick *Also rerun the dependants its failure or stop decided* to rerun them too. Use when the failure was transient (dependency was down, quota reset) |
+| **Mark Successful** | Mark the task `success` and record the facts of its outlets: its dependants start if they still wait. Once a rule has decided them after a final failure, Restart each of them, with its dependants, to run them. Use when you verified the work is actually done (checked S3, checked the target table) |
+| **Skip** | Mark the task `skipped`. Its dependants run as after a success: `all_success` counts a skip by an operator as done ([ADR #138](../reference/adr-138-trigger-rules-after-run-end-change.md)). Use when the task is not needed for this run (bad input data, partition already handled elsewhere) |
+| **Fail** | Mark the task `failed`. Dependants that need its success end `upstream_failed`, and the rest of the run goes on until every task is final. Use when the failure is real |
+| **Stop** | Stop an unfinished task and its work: it ends `stopped`, which its dependants' rules count as a failure. Use when a running task does the wrong thing |
 
-All four actions record the operator identity + timestamp + free-text reason on the task's synthetic-output marker (see [DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics](DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics) for what downstream tasks see).
+Skip, Fail, Mark Successful and Stop record the operator identity, timestamp and free-text reason on the task's synthetic-output marker, unless the task's real output is already there; Restart writes none (see [DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics](DATA_PASSING.md#xcommanuallyresolvederror--reading-the-marker-for-diagnostics) for what downstream tasks see).
 
 ## Reading notifications programmatically
 

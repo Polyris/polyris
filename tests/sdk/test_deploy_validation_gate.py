@@ -174,7 +174,7 @@ def test_generate_cfn_template_rejects_unsubstituted_table_name():
             stage="dev",
             region="us-east-1",
             role_arn="arn:aws:iam::123456789012:role/x",
-            wrapper_arn="arn:aws:states:us-east-1:123456789012:stateMachine:wrapper",
+            start_run_function_arn="arn:aws:states:us-east-1:123456789012:stateMachine:wrapper",
             registry_table="real-registry",
             tokens_table="real-tokens",
             asset_subscriptions_table="",  # simulates a missing SSM parameter
@@ -198,8 +198,8 @@ def test_namespace_stage_length_guardrail(mocker):
         return_value=(True, [], []),
     )
     cfg = mocker.patch("polyris.deploy.polyris_config")
-    # namespace(24) + stage(9) = 33 > 30
-    cfg.stage = "stagingxy"
+    # namespace(24) + stage(10) = 34 > 33
+    cfg.stage = "stagingxyz"
     cfg.for_stage.return_value = _stage_cfg(
         mocker,
         namespace="this-is-a-long-namespace",

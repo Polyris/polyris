@@ -11,7 +11,8 @@ import pytest
 
 from polyris import DAG, Asset, Task
 from polyris.coordination.records import warning_item
-from polyris.generators import generate_step_function_json
+from polyris.generators import BRANCH_ERROR, generate_step_function_json
+from polyris.steps import DynamoDBTask
 from sfn_jsonata import NOW, evaluate, plain
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:user-load"
@@ -32,22 +33,31 @@ def _states(states: Dict[str, Any]) -> Iterator[Any]:
 def states() -> Dict[str, Any]:
     dag = DAG("orders", schedule=[Asset("lake/prices")])
     dag.add_task(Task(task_id="load", arn=ARN))
-    definition = json.loads(generate_step_function_json(dag, wrapper_arn="arn:wrapper", tokens_table="tokens"))
+    dag.add_step(DynamoDBTask(step_id="audit", operation="put_item", table_name="audit", item={"pk": {"S": "orders"}}))
+    definition = json.loads(generate_step_function_json(dag, start_run_function_arn="arn:start-run",
+                                                        tokens_table="tokens"))
     return dict(_states(definition["States"]))
 
 
-@pytest.mark.parametrize("state,subject,task_name,error_input", [
-    ("Warn_Registration_Failed", f"{RUN}-register_pipeline", "Register_Pipeline",
+def _branch_error(branch):
+    """What a branch's Catch records: the error, and the run's date read from the state's input (the input of the
+    states after it is this record, not the run's input)."""
+    return {BRANCH_ERROR: {"branch": branch, "error": "DynamoDB.AccessDeniedException", "cause": "not allowed",
+                           "date": "2026-10-13"}}
+
+
+@pytest.mark.parametrize("state,kind,subject,task_name,error_input", [
+    ("Warn_Registration_Failed", "coordination", f"{RUN}-register_pipeline", "Register_Pipeline",
      {"_registration_error": {"Error": "DynamoDB.AccessDeniedException"}}),
-    ("Warn_Snapshot_Failed", f"{RUN}-save_dag_snapshot", "Save_DAG_Snapshot",
-     {"_snapshot_error": {"Error": "DynamoDB.AccessDeniedException"}}),
-    ("Warn_WriteSubscription_Failed", f"{RUN}-write_subscription-lake/prices", "WriteSubscription",
+    ("Warn_WriteSubscription_Failed", "coordination", f"{RUN}-write_subscription-lake/prices", "WriteSubscription",
      {"_asset_name": "lake/prices", "_subscription_error": {"Error": "DynamoDB.AccessDeniedException"}}),
+    ("Warn_Start_Run_Failed", "coordination", f"{RUN}-start_run", "Start_Run", _branch_error("Start_Run")),
+    ("Warn_Step_1_Failed", "step", f"{RUN}-step-audit", "audit", _branch_error("audit")),
 ])
-def test_a_generated_warning_has_the_shape_of_warning_item(states, state, subject, task_name, error_input):
+def test_a_generated_warning_has_the_shape_of_warning_item(states, state, kind, subject, task_name, error_input):
     written = plain(evaluate(states[state]["Arguments"]["Item"], input={"current_date": "2026-10-13", **error_input},
                              context={"Execution": {"Name": RUN}}))
-    expected = warning_item(kind="coordination", execution_name=subject, task_name=task_name, pipeline_name="orders",
+    expected = warning_item(kind=kind, execution_name=subject, task_name=task_name, pipeline_name="orders",
                             pipeline_execution=RUN, task_date="2026-10-13", error=written["error"], now=NOW)
     assert written == expected
     assert "AccessDeniedException" in written["error"]

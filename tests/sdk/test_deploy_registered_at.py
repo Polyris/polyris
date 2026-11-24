@@ -14,19 +14,32 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from polyris import DAG, deploy, task
+from polyris.coordination import task_spec
 from polyris.deploy import deploy_pipeline
 from polyris.generators import generate_step_function_json
 
 _ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:acme-dev-polyris-my-pipeline"
 _SAM_OUTPUTS = [
-    {"OutputKey": "DependencyWrapperArn", "OutputValue": _ARN},
+    {"OutputKey": "StartRunFunctionArn", "OutputValue": _ARN},
     {"OutputKey": "OrchestrationRoleArn", "OutputValue": "arn:aws:iam::000000000000:role/exec"},
     {"OutputKey": "PipelineRegistryTable", "OutputValue": "my-registry"},
     {"OutputKey": "PipelineTokensTable", "OutputValue": "tokens"},
     {"OutputKey": "AssetSubscriptionsTable", "OutputValue": "asset-subs"},
+    {"OutputKey": "PipelineSpecsTable", "OutputValue": "acme-dev-polyris-pipeline-specs"},
     {"OutputKey": "ResultsBucket", "OutputValue": "results-bucket"},
 ]
 _PIPELINE_OUTPUTS = [{"OutputKey": "StateMachineArn", "OutputValue": _ARN}]
+
+
+#: The platform's DynamoDB, on moto (conftest.platform_dynamodb): deploy writes and reads back the specs.
+_PLATFORM: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _platform_tables(platform_dynamodb):
+    _PLATFORM["dynamodb"] = platform_dynamodb
+    yield
+    _PLATFORM.clear()
 
 
 def _make_deploy_mocks(mocker):
@@ -60,7 +73,7 @@ def _make_deploy_mocks(mocker):
     }
 
     def _client(name, **_kw):
-        return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler}.get(
+        return {"sts": sts, "cloudformation": cfn, "scheduler": scheduler, **_PLATFORM}.get(
             name, mocker.MagicMock())
 
     session.client.side_effect = _client
@@ -123,8 +136,8 @@ def test_register_pipeline_omits_registered_at():
 
 def test_register_pipeline_still_writes_other_metadata():
     """The row keeps getting refreshed on every run for everything that IS
-    runtime-owned — sfn_arn, tasks, dag, schedule, asset_schedule, etc. If this
-    regresses to only writing a subset, the UI's pipeline detail goes stale."""
+    runtime-owned — sfn_arn, schedule, asset_schedule, the spec version, etc. If
+    this regresses to only writing a subset, the UI's pipeline detail goes stale."""
     from polyris import DAG, task
 
     with DAG("p", schedule="rate(1 day)", group="g") as dag:
@@ -138,40 +151,10 @@ def test_register_pipeline_still_writes_other_metadata():
     attr_values = args["ExpressionAttributeValues"]
 
     for field in (
-        ":sfn_arn", ":description", ":pipeline_group", ":tasks",
-        ":dag", ":schedule", ":asset_schedule", ":last_execution",
+        ":sfn_arn", ":description", ":pipeline_group", ":spec_id",
+        ":task_count", ":schedule", ":asset_schedule", ":last_execution",
     ):
         assert field in attr_values, f"missing {field}"
-
-
-# ---------------------------------------------------------------------------
-# Orphaned helper SFN must also not clobber registered_at
-# ---------------------------------------------------------------------------
-
-def test_orphaned_register_pipeline_sfn_uses_updateitem():
-    """The helper SFN uses putItem, which replaces the entire row — not just the
-    fields listed in Item. Keeping registered_at absent from a putItem does NOT
-    protect the field; it DELETES it. The file must use updateItem so wiring it
-    up in the future does not silently undo the deploy-stamp contract."""
-    import json as _json
-    from pathlib import Path
-
-    sfn_path = (
-        Path(__file__).parent.parent.parent
-        / "sam" / "sfn_templates" / "helpers" / "register_pipeline" / "sfn.tpl.json"
-    )
-    content = sfn_path.read_text()
-    # .tpl.json files contain ${var} substitutions — strip them before parsing.
-    import re
-    cleaned = re.sub(r'"?\$\{[^}]+\}"?', '"__placeholder__"', content)
-    template = _json.loads(cleaned)
-
-    register_state = template["States"]["RegisterPipeline"]
-    assert register_state["Resource"] == "arn:aws:states:::dynamodb:updateItem", (
-        "RegisterPipeline must use updateItem, not putItem — putItem replaces "
-        "the entire row and would delete registered_at"
-    )
-    assert "registered_at" not in _json.dumps(register_state)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +163,8 @@ def test_orphaned_register_pipeline_sfn_uses_updateitem():
 
 def test_stamp_registered_at_writes_updateitem_on_registry(mocker):
     """The authoritative deploy-time write: UpdateItem on the registry table
-    keyed by pipeline_name, with a SET for registered_at only."""
+    keyed by pipeline_name, with a SET for the deploy-owned fields only:
+    registered_at and the format the pipeline was deployed with (ADR #137)."""
     session = mocker.MagicMock()
     ddb = session.client.return_value
 
@@ -192,7 +176,9 @@ def test_stamp_registered_at_writes_updateitem_on_registry(mocker):
 
     assert kwargs["TableName"] == "my-registry"
     assert kwargs["Key"] == {"pipeline_name": {"S": "my-pipeline"}}
-    assert kwargs["UpdateExpression"] == "SET registered_at = :now"
+    assert kwargs["UpdateExpression"] == "SET registered_at = :now, #format = :format"
+    assert kwargs["ExpressionAttributeNames"] == {"#format": task_spec.REGISTRY_FORMAT_FIELD}
+    assert kwargs["ExpressionAttributeValues"][":format"] == {"N": str(task_spec.FORMAT_VERSION)}
     # ISO-8601 UTC — parseable; narrows to "actual timestamp, not a placeholder".
     stamp = kwargs["ExpressionAttributeValues"][":now"]["S"]
     parsed = datetime.fromisoformat(stamp)

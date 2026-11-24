@@ -3,7 +3,7 @@
 > **Historical delivery record.** Snapshot of what shipped for Phase 1.3
 > (scope-corrected during execution). Kept because ADR #115 cites the
 > scope-correction rationale from this report. For the current trigger-rule
-> contract see [DSL.md](../features/DSL.md#trigger-rules) and ADR #117.
+> contract see [DSL.md](../features/DSL.md#trigger-rules) and ADR #138.
 
 Per CLAUDE.md Principle #23. Covers Phase 1.3 only. Delivered per ADR #115
 decision 4.

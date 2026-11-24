@@ -19,7 +19,7 @@ export const createTask = (overrides = {}) => ({
     pipeline_execution_short: 'abc123',
     task_type: 'lambda',
     task_arn: 'arn:aws:lambda:us-east-1:123456:function:extract',
-    wrapper_execution_arn: 'arn:aws:states:us-east-1:123456:execution:wrapper:wrap001',
+    run_task_arn: 'arn:aws:states:us-east-1:123456:execution:acme-dev-polyris-run-task-helper:run001',
     dependencies: ['init_config'],
     started_at: '2024-01-15T08:00:00Z',
     running_at: '2024-01-15T08:00:05Z',
@@ -107,7 +107,6 @@ export const createPipelines = (count = 5) => {
 // ─── Task Events ─────────────────────────────────────────────────────────────
 
 export const createTaskEvents = () => [
-    { event_time: '2024-01-15T08:00:00Z', event_type: 'WRAPPER_STARTED', attempt: 1 },
     { event_time: '2024-01-15T08:00:02Z', event_type: 'DEPS_READY', dependencies: 'init_config' },
     { event_time: '2024-01-15T08:00:05Z', event_type: 'TASK_STARTED', task_type: 'lambda', task_arn: 'arn:aws:lambda:us-east-1:123456:function:extract' },
     { event_time: '2024-01-15T08:05:30Z', event_type: 'TASK_FINISHED', status: 'success' },

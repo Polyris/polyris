@@ -25,6 +25,8 @@ parameter name kept in the config. See `docs/features/alerts.md`.
 
 ### 2. SFN-Based Dependency Notification (not polling, not EventBridge)
 
+> **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §1, §7 (1.3.0).** Dependencies are no longer resolved through `notify_dependents` and task tokens: the dispatcher decides each task row from its upstreams' rows, woken by the tasks table's stream.
+
 **Decision:** Use Step Function helper (`notify_dependents`) + `waitForTaskToken` for dependency resolution.
 
 **Rationale:**
@@ -41,6 +43,8 @@ parameter name kept in the config. See `docs/features/alerts.md`.
 ---
 
 ### 3. Separate Helpers (not monolithic wrapper)
+
+> **Superseded by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The helpers the wrapper was split into go with the wrapper: `run_task` runs one attempt of a task's work, and the dispatcher decides the rest.
 
 **Decision:** Split wrapper into multiple small Step Functions.
 
@@ -351,6 +355,8 @@ return {"output_path": "s3://bucket/output/2026-01-01/", "row_count": 50000}
 
 ### 18. Standard vs Express Step Functions
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The Express helpers and the wrapper go; `run_task`, `bulk_backfill` and the test state machines stay Standard.
+
 **Decision:** Use Standard for long-running/debuggable workflows, Express only for fire-and-forget helpers.
 
 | Express (cheap, no history) | Standard (visible, debuggable) |
@@ -373,6 +379,8 @@ return {"output_path": "s3://bucket/output/2026-01-01/", "row_count": 50000}
 
 ### 19. Zero-Cost Waiting (waitForTaskToken + .sync)
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** A waiting task costs nothing because it is a row, not because it waits on a token.
+
 **Decision:** Use Step Functions callback patterns for all waiting instead of polling.
 
 **Rationale:**
@@ -393,6 +401,8 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 ---
 
 ### 20. Transparency: Step Functions over EventBridge for Orchestration
+
+> **Superseded in part by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** A waiting task leaves Step Functions, and the console shows why it waits.
 
 **Decision:** Migrate all orchestration logic from EventBridge+Lambda to Step Functions for visibility.
 
@@ -419,7 +429,7 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 
 | Source | Variables | Why |
 |---|---|---|
-| JSONata (always) | date_compact, date_slash, year, month, day, day_of_week, previous_date, next_date, minus_7/14/30_days, ALLOW_UNSUCCESSFUL_SPIDER_RUN | Derivable from current_date with simple arithmetic |
+| JSONata (always) | date_compact, date_slash, year, month, day, day_of_week, previous_date, next_date, minus_7/14/30_days (ALLOW_UNSUCCESSFUL_SPIDER_RUN until 1.3.0) | Derivable from current_date with simple arithmetic |
 | Python (backfill only) | minus_1_month, minus_3_months, day_of_year, week_of_year, is_backfill, is_reprocess | Calendar math or special formats JSONata can't compute |
 
 **Merge order:** `$merge([$dateVars, $vars])` — backfill/custom variables always override computed values.
@@ -431,6 +441,8 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 ---
 
 ### 22. Data Flow: SFN Executes → DynamoDB Stores → UI Reads
+
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §4, §5 (1.3.0).** Its one exception goes: no console route asks Step Functions about a run, neither to reconcile a running one nor to mark the tasks of an ended one. The engine keeps the run row true, and a run's status comes from its run row's summary.
 
 **Decision:** All UI reads come from DynamoDB. Step Functions API is used only for control actions and reconciliation of running executions.
 
@@ -461,6 +473,8 @@ This is polyris's key architectural advantage — the longer tasks run, the more
 - `get_all_runs` (All Runs view)
 
 ### 23. DAG Snapshot Per Execution (not per deploy)
+
+**Superseded by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** A run's graph comes from the spec version its run row names, which never changes; new runs write no snapshot. The console reads the snapshots of runs started before 1.3 until 1.4. Lookup: the run's spec version (a 1.2 run's snapshot) → the registry's version → inferred.
 
 **Decision:** Each execution writes its own DAG snapshot to `tokens_table` with key `dag_snapshot::{execution_name}`. TTL: 120 days (AWS SFN history is 90 days + 30-day buffer).
 
@@ -837,6 +851,8 @@ This pattern is already applied throughout `console_api/routes/`.
 ---
 
 ### 39. Asset Enrichment: Schema Declaration + asset_registry Removal
+
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §8 (1.3.0).** Asset data comes from the specs of each pipeline's `spec_id`, not from the registry's `tasks`.
 
 **Decision:** Add `owner`, `schema`, `glue_table`, `glue_catalog` to Asset DSL. Remove `asset_registry` DynamoDB table entirely. All asset data derived from `pipeline_registry.tasks` at query time.
 
@@ -2211,6 +2227,8 @@ Hover a cell with re-runs:
 
 ### 51. Backfill Unification — one concept, one endpoint, one bulk-run SFN (v0.78.0)
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** A backfill record carries a `date`, and lives while its backfill runs and 90 days after, instead of 30 days from its creation.
+
 > **Deferral notes (v0.78.0 implementation):**
 >
 > One design element is not shipped in v0.78 and is marked as deferred:
@@ -3235,6 +3253,8 @@ constant in `polyris/partitions.py` — a single source location.
   SFN
 
 ### 54. Bulk-Backfill SFN — Standard, Map-based, fire-and-wait architecture (v0.78.0)
+
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** `bulk_backfill` waits for each run as long as the run lives, not 24 hours.
 
 #### Context
 
@@ -8806,6 +8826,8 @@ is derived purely from task records; no run-level status record is introduced.
 
 ### 108. A pipeline's runs are read through an inverted GSI; the cross-pipeline feed keeps its per-date fan-out
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** The Runs tab, without a filter or with a pipeline filter, reads run rows from `run-start-index`: the start days of the last 90 days, newest first, until its page is full, each run's status from its run row's summary. A date filter still reads the task rows of its date. The Tasks tab keeps the reads below.
+
 **Context.** Runs are derived, not stored: task rows are grouped by `pipeline_execution`
 and the run status comes from `derive_execution_status()` (ADR #112). The only index into
 them was `date-pipeline-index` (**HASH `date`**, RANGE `pipeline_name`), which answers
@@ -8946,6 +8968,13 @@ earlier than its logical `date`: no row older than T can hide on a date newer th
   `started_at`. Deliberately not answered here. `query_all` already logs `Hit max_items
   limit`, and `query_runs_by_date` cuts on the same condition, so whether this is live is
   measurable rather than arguable.
+- **1.3 update.** The Tasks tab no longer reads task rows by date or by pipeline: it reads the run rows
+  the Runs tab reads (`run-start-index`, ADR #137 §5), then the task rows of the runs on its page, and pages on the
+  start of its last run. `query_runs_by_pipeline` and its fill loop are gone. Reading a pipeline's task rows by date,
+  a page of a pipeline of 2,000 tasks read 101 runs, about 202,000 rows; a rare status read its whole history,
+  kept a year and 90 days in 1.3; and the cursor, cut to a day, lost every hourly, weekly and monthly run (TR-7
+  estimate, P-6; TR-10, B-1 and D-1). A date filter still reads one date's task rows, for every run date that
+  holds the day (`feed.day_keys`).
 
 ### 118. `polyris-deploy --all` / `--only` — bulk deploy and destroy across directories
 
@@ -9356,6 +9385,8 @@ Never `$now()`. The expressions test values, not presence, so a `null` is no dat
 
 ## ADR #135 — A run is told how its task ended by whoever ends it
 
+> **Superseded in part by [ADR #137](adr-137-tasks-as-rows.md) §4 (1.3.0).** Decision 1 and its table go: the dispatcher answers a run once every row is final, and no template answers one. Decisions 2–4 carry over to that one place, and a `stopped` row now counts as finished.
+
 **Context.** A pipeline run waits for each of its tasks on a token, the row's `orchestration_token`. Two places answered it when a task failed: `run_task` on its own failure paths, and the failure handler on every other path. Between them stood a flag, `helper_failed`, which the wrapper set when `run_task` failed and which told the failure handler that `run_task` had answered already. The flag was a guess about another state machine's paths, and in the 1.2.0 rehearsal it was wrong twice (Principle #42). When the flag was missing, the JSONata read it as set (F16: a dependency wait that timed out). When it was set, `run_task` had failed before answering (a pause token that could not be saved). Other paths had no answer, or swallowed a failed one:
 - the reconciler closing a task whose wrapper was stopped in the AWS console (Z1, found by the harness invariant below and confirmed live);
 - the wrapper's skip answer;
@@ -9401,6 +9432,8 @@ Each time the console showed the task ended while its run stayed `RUNNING` until
 - Rule in root `CLAUDE.md` (SFN Templates — Common Pitfalls).
 
 ## ADR #136 — The pipelines list says what its statuses rest on, and groups only what a DAG names
+
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §5 (1.3.0).** Decisions 3 and 5 are superseded: the list reads the run rows of the last 14 start days from `run-start-index`, each run's status and `waiting_on` from its run row's summary, and asks Step Functions nothing about a run; the engine keeps the run row true. `stats_incomplete` now means a start day that could not be read, and `index_building` says that DynamoDB is still building the index after an upgrade. A running latest run carries the count of its failed tasks (`failed_tasks`), and such a pipeline is pinned under **Needs attention** too. The API is otherwise unchanged.
 
 **Context.** The console's pipelines sidebar was redesigned in 1.2.1: one line per pipeline, the latest run's status, the last 10 runs, and a **Needs attention** section on top. Four things in the old list stood in the way.
 - `/api/pipelines` computed `today_stats` and `progress` for one day, chosen by its `date` parameter. The new sidebar reads neither: it shows runs, not a day's task counts.

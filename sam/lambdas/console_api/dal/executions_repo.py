@@ -7,18 +7,64 @@ pipelines, health, notifications, backfill.
 
 Table schema:
     PK: execution_name (str)
-    GSIs: pipeline-execution-index (pipeline_execution), date-pipeline-index (date, pipeline_name)
+    GSIs: pipeline-execution-index (pipeline_execution), date-pipeline-index (date, pipeline_name),
+    pipeline-date-index (pipeline_name, date), run-start-index (start_day, started_at: run rows only)
+
+Every read of the two date indexes goes through this repository, and drops the
+internal rows and the backfill records with ``should_skip_token_row``: backfill
+records carry a ``date`` (ADR #137 §5), so both indexes list them. A census test
+(``tests/test_date_index_readers.py``) fails for a read of them anywhere else.
 """
 
-from boto3.dynamodb.conditions import Key
+from typing import Any, Optional
 
-from polyris.coordination import attention as att
-from config import dynamodb, TABLE_NAME
-from utils import scan_all, query_all
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
+
+from polyris.constants import BACKFILLING_INDEX_MESSAGE
+from polyris.coordination import attention as att, run_row
+from config import dynamodb, dynamodb_client, TABLE_NAME
+from utils import query_all, should_skip_token_row
+
+#: The two indexes keyed by a task's date, whose every read skips internal and backfill rows.
+DATE_INDEXES = ('date-pipeline-index', 'pipeline-date-index')
+#: What ``should_skip_token_row`` reads, which a projection that names other fields must name too.
+_SKIP_FIELDS = ('execution_name', 'pipeline_name')
+
+
+class IndexBuilding(Exception):
+    """A read of an index DynamoDB is still building: an upgrade added it, and the same read succeeds once it is
+    built (ADR #137 §5; about 8 minutes on a table of 1.2's size). Transient: the console says so."""
+
+
+def _building(exc: ClientError) -> bool:
+    error = exc.response.get('Error', {})
+    return error.get('Code') == 'ValidationException' and BACKFILLING_INDEX_MESSAGE in str(error.get('Message', ''))
+
+
+def _skippable(params: dict) -> dict:
+    """``params`` with the fields ``should_skip_token_row`` reads added to its projection, when it has one."""
+    projection = params.get('ProjectionExpression')
+    if not projection:
+        return params
+    names = params.get('ExpressionAttributeNames') or {}
+    named = {names.get(path.strip(), path.strip()) for path in projection.split(',')}
+    missing = [f for f in _SKIP_FIELDS if f not in named]
+    if missing:
+        params['ProjectionExpression'] = ', '.join([projection, *missing])
+    return params
+
+
+def _task_rows(items: list) -> list:
+    """The task rows of a date index's read: no internal row and no backfill record."""
+    return [item for item in items if not should_skip_token_row(item)]
 
 
 class ExecutionsRepo:
     """Repository for pipeline-executions (tokens) table."""
+
+    #: Raised by a read of an index DynamoDB is still building (``runs_started``); a route catches it here.
+    IndexBuilding = IndexBuilding
 
     def __init__(self):
         self._table_name = TABLE_NAME
@@ -31,11 +77,11 @@ class ExecutionsRepo:
     # ── Single-item operations ────────────────────────────────────────────
 
     #: Run fields no task index projects (sam/template.yaml).
-    RUN_META_FIELDS = ('triggered_by', 'attempt', 'retry_attempt', 'task_config')
+    RUN_META_FIELDS = ('triggered_by', 'attempt', 'restarts', 'retry_attempt', 'task_config')
 
     def batch_get_run_meta(self, execution_names: list[str],
                            fields: tuple[str, ...] = RUN_META_FIELDS) -> dict[str, dict]:
-        """Fetch `fields` (by default triggered_by, attempt, retry_attempt, task_config)
+        """Fetch `fields` (by default triggered_by, attempt, restarts, retry_attempt, task_config)
         from the base table for a batch of execution_names. Used after GSI reads whose
         NonKeyAttributes don't include them. Returns {execution_name: {field: value, …}}.
 
@@ -87,7 +133,7 @@ class ExecutionsRepo:
                expr_values: dict = None, expr_names: dict = None,
                condition_expr: str = None) -> dict:
         """Generic update_item with optional condition expression.
-        
+
         Returns the boto3 response dict.
         Raises ClientError on ConditionalCheckFailedException etc.
         """
@@ -108,12 +154,15 @@ class ExecutionsRepo:
     def query_by_pipeline_execution(self, pipeline_execution: str,
                                      projection: str = None,
                                      expr_names: dict = None,
-                                     limit: int = None) -> list:
-        """Query pipeline-execution-index GSI. Returns all pages."""
+                                     limit: int = None,
+                                     filter_expr=None) -> list:
+        """Query pipeline-execution-index GSI. Returns all pages; ``filter_expr`` keeps the rows it matches."""
         params = {
             'IndexName': 'pipeline-execution-index',
             'KeyConditionExpression': Key('pipeline_execution').eq(pipeline_execution),
         }
+        if filter_expr is not None:
+            params['FilterExpression'] = filter_expr
         if projection:
             params['ProjectionExpression'] = projection
         if expr_names:
@@ -137,10 +186,9 @@ class ExecutionsRepo:
 
     def query_by_date(self, date: str, max_items: int = None,
                       filter_expr=None, projection: str = None,
-                      expr_names: dict = None, key_condition=None,
-                      select: str = None) -> list:
-        """Query date-pipeline-index GSI with optional filters.
-        
+                      expr_names: dict = None, key_condition=None) -> list:
+        """Task rows of date-pipeline-index with optional filters; internal and backfill rows dropped.
+
         Uses query_all helper for automatic pagination.
         """
         params = {
@@ -153,82 +201,33 @@ class ExecutionsRepo:
             params['ProjectionExpression'] = projection
         if expr_names:
             params['ExpressionAttributeNames'] = expr_names
-        if select:
-            params['Select'] = select
+        _skippable(params)
 
         if max_items:
-            return query_all(self.table, max_items=max_items, **params)
-        
+            return _task_rows(query_all(self.table, max_items=max_items, **params))
+
         # Single-page query
         response = self.table.query(**params)
-        return response.get('Items', [])
+        return _task_rows(response.get('Items', []))
 
-    def query_runs_by_pipeline(self, pipeline_name: str, min_runs: int = 15,
-                               before_date: str = None, projection: str = None,
-                               expr_names: dict = None) -> tuple:
-        """Task rows for one pipeline, newest date first, via pipeline-date-index.
-
-        The inverse of :meth:`query_by_date`: instead of asking "who ran on day D"
-        (which forces callers to loop a window of days), this asks "this pipeline's
-        runs, newest first" in one indexed query. Depth is therefore bounded only by
-        the row TTL — there is no window constant to pick.
-
-        Reads **whole dates** so an execution's task set is never split across a page;
-        the caller can aggregate safely. Stops once ``min_runs`` distinct executions
-        are covered.
-
-        Returns ``(items, next_before_date)``. Pass ``next_before_date`` back as
-        ``before_date`` for the next page (inclusive — the cut date is re-read, its
-        runs were not returned). ``None`` means nothing older exists.
-        """
-        key = Key('pipeline_name').eq(pipeline_name)
-        if before_date:
-            key = key & Key('date').lte(before_date)
-
-        params = {
+    def rows_of_pipeline_date(self, pipeline_name: str, date: str) -> list:
+        """One pipeline's task rows of one date, every page, from pipeline-date-index; internal and backfill rows
+        dropped. The index projects only part of a row: what tells the date's runs apart and orders them
+        (``pipeline_execution``, ``started_at``, ``status``). A query of one pipeline's date, where a scan of the
+        whole table stood (ADR #137 §5)."""
+        params: dict = {
             'IndexName': 'pipeline-date-index',
-            'KeyConditionExpression': key,
-            'ScanIndexForward': False,  # newest date first
+            'KeyConditionExpression': Key('pipeline_name').eq(pipeline_name) & Key('date').eq(date),
         }
-        if projection:
-            params['ProjectionExpression'] = projection
-        if expr_names:
-            params['ExpressionAttributeNames'] = expr_names
+        return _task_rows(query_all(self.table, **params))
 
-        items: list = []
-        by_date: dict = {}
-        last_key = None
-        while True:
-            if last_key:
-                params['ExclusiveStartKey'] = last_key
-            response = self.table.query(**params)
-            for item in response.get('Items', []):
-                items.append(item)
-                date_str = item.get('date', '')
-                pipeline_execution = item.get('pipeline_execution')
-                if date_str and pipeline_execution:
-                    by_date.setdefault(date_str, set()).add(pipeline_execution)
-            last_key = response.get('LastEvaluatedKey')
-            if not last_key:
-                return items, None  # nothing older exists
-
-            # Only cut on a date boundary, and only once a second date is in the
-            # buffer — otherwise the oldest date may still be half-read.
-            total_runs = sum(len(execs) for execs in by_date.values())
-            if total_runs >= min_runs and len(by_date) > 1:
-                oldest = min(by_date)
-                kept = [i for i in items if i.get('date', '') > oldest]
-                return kept, oldest
-
-    def query_runs_by_date(self, date: str, min_rows: int, projection: str = None,
+    def query_runs_by_date(self, date: str, min_rows: Optional[int], projection: str = None,
                            expr_names: dict = None, filter_expr=None,
                            key_condition=None) -> list:
         """Task rows for one date, newest-first-by-nothing, via date-pipeline-index.
 
-        The mirror of :meth:`query_runs_by_pipeline`, and the read behind the
-        cross-pipeline feed. That one reads **whole dates**; this one reads **whole
-        pipelines** — and for the same reason: an execution's task set must never be
-        split.
+        The read behind a date filter. It reads **whole pipelines**: an execution's task set
+        must never be split.
 
         Splitting matters more here than "some rows are missing" suggests. ``/api/runs``
         derives a run's status from the task rows it got (ADR #112), so handing back half
@@ -237,7 +236,7 @@ class ExecutionsRepo:
         ``pipeline_name``, so a row-count cut lands mid-pipeline and does exactly that.
 
         Stops once ``min_rows`` rows are covered and drops the pipeline it stopped inside
-        (it may be half-read). Keeps reading while only one pipeline is buffered, so a
+        (it may be half-read); ``None`` reads the whole date. Keeps reading while only one pipeline is buffered, so a
         single busy pipeline is never the one dropped — otherwise its day would vanish
         whole. When the date fits in one DynamoDB page there is nothing to cut and the
         whole day comes back, ``min_rows`` or not.
@@ -252,6 +251,7 @@ class ExecutionsRepo:
             params['ExpressionAttributeNames'] = expr_names
         if filter_expr:
             params['FilterExpression'] = filter_expr
+        _skippable(params)
 
         rows: list = []
         last_key = None
@@ -259,7 +259,7 @@ class ExecutionsRepo:
             if last_key:
                 params['ExclusiveStartKey'] = last_key
             response = self.table.query(**params)
-            rows.extend(response.get('Items', []))
+            rows.extend(_task_rows(response.get('Items', [])))
             last_key = response.get('LastEvaluatedKey')
             if not last_key:
                 return rows          # whole date read — nothing is half-anything
@@ -267,17 +267,26 @@ class ExecutionsRepo:
             # Only cut on a pipeline boundary, and only once a second pipeline is in
             # the buffer — otherwise the cut pipeline is the only one and the day
             # comes back empty.
-            if len(rows) >= min_rows and len({r.get('pipeline_name') for r in rows}) > 1:
+            if min_rows is not None and len(rows) >= min_rows and len({r.get('pipeline_name') for r in rows}) > 1:
                 partial = rows[-1].get('pipeline_name')     # index order: the last one
                 return [r for r in rows if r.get('pipeline_name') != partial]
 
     def query_by_date_raw(self, **query_params) -> dict:
-        """Raw query on date-pipeline-index, returns full boto3 response.
-        
-        For cases needing LastEvaluatedKey, Count, etc.
+        """One page of date-pipeline-index, as boto3 returns it, for a caller that pages itself.
+
+        ``Items`` hold task rows only: internal and backfill rows are dropped,
+        while ``Count`` and ``ScannedCount`` stay DynamoDB's. A ``Select='COUNT'``
+        would count those rows too, so it is refused.
         """
+        if query_params.get('Select') == 'COUNT':
+            raise ValueError("a count of date-pipeline-index would include internal and backfill rows; "
+                             "read the items and count the task rows")
         query_params.setdefault('IndexName', 'date-pipeline-index')
-        return self.table.query(**query_params)
+        if query_params['IndexName'] not in DATE_INDEXES:
+            raise ValueError(f"query_by_date_raw reads the date indexes only, not {query_params['IndexName']}")
+        response = self.table.query(**_skippable(query_params))
+        response['Items'] = _task_rows(response.get('Items', []))
+        return response
 
     def recent_warnings(self, since: str, limit: int) -> list:
         """Warning rows (`records.warning_item`) written since `since` (UTC, `…Z`), newest first.
@@ -286,30 +295,76 @@ class ExecutionsRepo:
         16 `warn#` shards, so a warning about a task of any partition date
         reaches the bell (defect B-N1). The index projects what the bell shows.
         """
+        return self.attention_entries(att.WARN, since=since)[:limit]
+
+    def attention_entries(self, kind: str, *, since: str | None = None) -> list:
+        """Every entry of ``kind`` in the attention index, across its 16 shards, newest first by ``attention_at``,
+        and only those at or after ``since`` (UTC, ``…Z``) when it is given.
+
+        The bell reads the ``failed`` entries of its window, by when each task failed, and every ``decision``
+        entry, by its deadline, whatever the date of the run (ADR #137 §6, D92); the warnings by when each was
+        written. The index projects what the bell shows (``attention.PROJECTION``).
+        """
         rows: list = []
-        for partition in att.partitions(att.WARN):
-            response = self.table.query(
-                IndexName=att.INDEX,
-                KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).gte(since),
-                ScanIndexForward=False,
-                Limit=limit,
-            )
-            rows.extend(response.get('Items', []))
+        for partition in att.partitions(kind):
+            key: Any = Key(att.KEY).eq(partition)
+            if since:
+                key = key & Key(att.DUE).gte(since)
+            rows.extend(query_all(self.table, IndexName=att.INDEX, KeyConditionExpression=key,
+                                  ScanIndexForward=False))
         rows.sort(key=lambda r: str(r.get(att.DUE, '')), reverse=True)
-        return rows[:limit]
+        return rows
 
-    # ── Scan operations ───────────────────────────────────────────────────
+    # ── GSI: run-start-index ──────────────────────────────────────────────
 
-    def scan(self, max_items: int = None, **kwargs) -> list:
-        """Scan with optional pagination via scan_all helper."""
-        if max_items:
-            return scan_all(self.table, max_items=max_items, **kwargs)
-        response = self.table.scan(**kwargs)
-        return response.get('Items', [])
+    def runs_started(self, start_day: str, *, before: str | None = None, pipeline: str | None = None,
+                     run_dates: tuple[str, str] | None = None, want: int | None = None) -> list:
+        """Run rows whose execution started on ``start_day`` (UTC), newest first, from run-start-index (ADR #137 §5).
 
-    def scan_raw(self, **kwargs) -> dict:
-        """Raw scan, returns full boto3 response."""
-        return self.table.scan(**kwargs)
+        ``before`` keeps the runs that started before it (a ``started_at``: the feeds' cursor), ``pipeline`` one
+        pipeline's, and ``run_dates`` those whose logical date lies between its two dates, inclusive. ``want``
+        stops the read at the end of the page that brings that many rows; the page's other rows come back too,
+        so no run that started at the same instant as the last one wanted is cut off (``feed.page_by_started_at``
+        keeps such twins together). The index holds run rows only and projects what the run lists show
+        (``run_row.INDEX_FIELDS``). Raises ``IndexBuilding`` while DynamoDB builds the index.
+        """
+        key: Any = Key(run_row.START_DAY).eq(start_day)
+        if before:
+            key = key & Key(run_row.STARTED_AT).lt(before)
+        params: dict = {'IndexName': run_row.START_INDEX, 'KeyConditionExpression': key, 'ScanIndexForward': False}
+        condition: Any = None
+        if pipeline:
+            condition = Attr(run_row.PIPELINE).eq(pipeline)
+        if run_dates:
+            dates = Attr(run_row.RUN_DATE).between(*run_dates)
+            condition = dates if condition is None else condition & dates
+        if condition is not None:
+            params['FilterExpression'] = condition
+        rows: list = []
+        while True:
+            try:
+                response = self.table.query(**params)
+            except ClientError as exc:
+                if _building(exc):
+                    raise IndexBuilding(str(exc)) from exc
+                raise
+            rows.extend(response.get('Items', []))
+            last_key = response.get('LastEvaluatedKey')
+            if not last_key or (want is not None and len(rows) >= want):
+                return rows
+            params['ExclusiveStartKey'] = last_key
+
+    # ── The one scan ──────────────────────────────────────────────────────
+
+    def discover_pipeline_names(self, limit: int = 1000) -> list:
+        """The pipeline names on one page of the table: the pipelines list's fallback when the registry is empty
+        (ADR #136 §2). The console's only scan of the tasks table, and one page of at most ``limit`` items,
+        whatever the table's size: every other read is a query of an index or a get by key (ADR #137 §5;
+        ``tests/test_no_table_scans.py``)."""
+        response = self.table.scan(ProjectionExpression='execution_name, pipeline_name', Limit=limit)
+        return sorted({str(item['pipeline_name']) for item in response.get('Items', [])
+                       if item.get('pipeline_name') and item['pipeline_name'] != 'unknown'
+                       and not should_skip_token_row(item)})
 
     # ── Health check ──────────────────────────────────────────────────────
 
@@ -320,12 +375,17 @@ class ExecutionsRepo:
             ConsistentRead=True
         )
 
-    # ── Conditional check exception ───────────────────────────────────────
+    def transact_write(self, items: list) -> None:
+        """One transaction of the items a coordination builder made: low-level, typed, each naming its table
+        (an operator's action, ADR #137 §3), sent through the low-level client: the resource's own client would
+        serialize them again. Raises ClientError; a refused condition cancels it as a whole
+        (``transaction_canceled_exception``)."""
+        dynamodb_client.transact_write_items(TransactItems=items)
 
     @property
-    def conditional_check_exception(self):
-        """Access the ConditionalCheckFailedException for try/except."""
-        return dynamodb.meta.client.exceptions.ConditionalCheckFailedException
+    def transaction_canceled_exception(self):
+        """The TransactionCanceledException a refused condition raises, for try/except."""
+        return dynamodb_client.exceptions.TransactionCanceledException
 
 
 # Singleton instance

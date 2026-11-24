@@ -1,31 +1,67 @@
 """
-Unit tests for dal.backfills_repo.BackfillsRepo.
+dal.backfills_repo.BackfillsRepo against the tokens table of sam/template.yaml, in moto.
 
-Covers single-item ops (get/put/delete/update_status/increment_counter),
-query ops (list_recent/list_active/query_child_executions), and the
-sentinel/record_type defaults applied at put time.
-
-Pattern follows test_assets_repo.py — mock the .table property to short-
-circuit the dynamodb.Table(...) lookup. No moto, no AWS calls.
+Covers single-item ops (get/put/put_if_new/update_status/increment_counter),
+the search (list_recent/list_active/list_active_for_pipeline/list_retries_of)
+on ``pipeline-date-index`` with the records read in full by BatchGetItem
+(ADR #137 §5), child executions on ``backfill-id-index``, and the lifetimes:
+the history's while a backfill runs, 90 days once its status is final.
 """
+import importlib.util
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+import boto3
 import pytest
+from botocore.exceptions import ClientError
+from moto import mock_aws
+
+from polyris.coordination import retention
+
+_KIT_PATH = Path(__file__).resolve().parents[3] / "coordination" / "tests" / "coordination_testkit.py"
+_spec = importlib.util.spec_from_file_location("coordination_testkit", _KIT_PATH)
+assert _spec and _spec.loader
+kit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(kit)
+
+SENTINEL = '_polyris_bulk_backfill'
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
+@pytest.fixture
+def tokens(mocker):
+    import config
 
-def _make_repo_with_table(mocker, table_mock):
-    """Build a BackfillsRepo whose .table property returns our mock."""
+    logical, name = kit.TABLES["TOKENS_TABLE"]
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        kit.create_tables(resource, {logical: name})
+        mocker.patch.object(config, "_dynamodb", resource)
+        yield resource.Table(name)
+
+
+@pytest.fixture
+def repo(tokens):
     from dal.backfills_repo import BackfillsRepo
+
     repo = BackfillsRepo()
-    mocker.patch.object(
-        BackfillsRepo, 'table',
-        new_callable=mocker.PropertyMock,
-        return_value=table_mock,
-    )
+    repo._table_name = tokens.name
     return repo
+
+
+def _record(repo, backfill_id, started_at=None, **fields):
+    item = {'execution_name': backfill_id, 'backfill_id': backfill_id, 'status': 'running', **fields}
+    if started_at:
+        item['started_at'] = started_at
+    repo.put(item)
+
+
+def _ids(items):
+    return [i['execution_name'] for i in items]
+
+
+def _about(ttl, lifetime):
+    expected = retention.ttl(datetime.now(timezone.utc), lifetime)
+    return abs(int(ttl) - expected) <= 60
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -33,366 +69,251 @@ def _make_repo_with_table(mocker, table_mock):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestGet:
-    def test_returns_backfill_record(self, mocker):
-        table = mocker.MagicMock()
-        table.get_item.return_value = {
-            'Item': {
-                'execution_name': 'bf-abc123',
-                'record_type': 'backfill',
-                'pipeline_name': '_polyris_bulk_backfill',
-                'status': 'running',
-            }
-        }
-        repo = _make_repo_with_table(mocker, table)
+    def test_returns_backfill_record(self, repo):
+        _record(repo, 'bf-abc123')
         result = repo.get('bf-abc123')
         assert result is not None
         assert result['execution_name'] == 'bf-abc123'
 
-    def test_returns_none_if_missing(self, mocker):
-        table = mocker.MagicMock()
-        table.get_item.return_value = {}  # no Item key
-        repo = _make_repo_with_table(mocker, table)
+    def test_returns_none_if_missing(self, repo):
         assert repo.get('bf-nonexistent') is None
 
-    def test_returns_none_if_not_backfill_record(self, mocker):
-        """Defensive: if execution_name happens to match but record_type is
-        not 'backfill', treat as None to avoid leaking unrelated rows."""
-        table = mocker.MagicMock()
-        table.get_item.return_value = {
-            'Item': {
-                'execution_name': 'bf-collides',
-                'record_type': 'execution',  # not a Backfill
-            }
-        }
-        repo = _make_repo_with_table(mocker, table)
+    def test_returns_none_if_not_backfill_record(self, repo, tokens):
+        """Defensive: a row at the key that is no Backfill is not returned."""
+        tokens.put_item(Item={'execution_name': 'bf-collides', 'record_type': 'execution'})
         assert repo.get('bf-collides') is None
 
-    def test_consistent_read_flag_passed(self, mocker):
-        table = mocker.MagicMock()
-        table.get_item.return_value = {
-            'Item': {'execution_name': 'bf-abc', 'record_type': 'backfill'}
-        }
-        repo = _make_repo_with_table(mocker, table)
-        repo.get('bf-abc', consistent=True)
-        kwargs = table.get_item.call_args.kwargs
-        assert kwargs.get('ConsistentRead') is True
+    def test_a_consistent_read_returns_the_record(self, repo):
+        _record(repo, 'bf-abc')
+        assert repo.get('bf-abc', consistent=True)['record_type'] == 'backfill'
 
 
 class TestPut:
-    def test_basic_put(self, mocker):
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        repo.put({
-            'execution_name': 'bf-abc',
-            'record_type': 'backfill',
-            'pipeline_name': '_polyris_bulk_backfill',
-            'status': 'pending',
-        })
-        table.put_item.assert_called_once()
-
-    def test_put_sets_default_sentinel(self, mocker):
-        """If caller forgets to set pipeline_name, the sentinel is applied."""
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
+    def test_put_sets_the_sentinel_and_the_kind(self, repo, tokens):
         repo.put({'execution_name': 'bf-abc', 'status': 'pending'})
-        item = table.put_item.call_args.kwargs['Item']
-        assert item['pipeline_name'] == '_polyris_bulk_backfill'
+        item = tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']
+        assert item['pipeline_name'] == SENTINEL
         assert item['record_type'] == 'backfill'
 
-    def test_put_sets_default_ttl(self, mocker):
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        repo.put({'execution_name': 'bf-abc'})
-        item = table.put_item.call_args.kwargs['Item']
-        assert 'ttl' in item
-        assert isinstance(item['ttl'], int)
-        assert item['ttl'] > 0
+    def test_put_dates_the_record_by_the_day_it_started(self, repo, tokens):
+        repo.put({'execution_name': 'bf-abc', 'started_at': '2026-11-03T23:59:00+00:00'})
+        assert tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']['date'] == '2026-11-03'
 
-    def test_put_preserves_caller_provided_fields(self, mocker):
-        """Defaults don't override caller-supplied values."""
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        custom_ttl = 999999
-        repo.put({
-            'execution_name': 'bf-abc',
-            'pipeline_name': '_polyris_bulk_backfill',
-            'record_type': 'backfill',
-            'ttl': custom_ttl,
-            'status': 'running',
-        })
-        item = table.put_item.call_args.kwargs['Item']
-        assert item['ttl'] == custom_ttl
+    def test_a_record_without_a_start_is_dated_today(self, repo, tokens):
+        repo.put({'execution_name': 'bf-abc'})
+        today = datetime.now(timezone.utc).date().isoformat()
+        assert tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']['date'] == today
+
+    def test_a_running_backfill_lives_as_long_as_a_run_s_history(self, repo, tokens):
+        repo.put({'execution_name': 'bf-abc'})
+        assert _about(tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']['ttl'], retention.BACKFILL_RUNNING)
+
+    def test_put_preserves_caller_provided_fields(self, repo, tokens):
+        repo.put({'execution_name': 'bf-abc', 'ttl': 999999, 'date': '2026-01-01', 'status': 'running'})
+        item = tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']
+        assert (item['ttl'], item['date']) == (999999, '2026-01-01')
 
 
 class TestPutIfNew:
-    """Conditional put — handles bf-id collisions safely. Required because
-    bf-{8 hex} has ~10% collision probability at 30k records."""
+    """Conditional put — handles bf-id collisions safely."""
 
-    def test_returns_true_on_success(self, mocker):
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.put_if_new({'execution_name': 'bf-abc'})
-        assert result is True
-        call = table.put_item.call_args
-        assert call.kwargs['ConditionExpression'] == 'attribute_not_exists(execution_name)'
+    def test_returns_true_on_success(self, repo, tokens):
+        assert repo.put_if_new({'execution_name': 'bf-abc'}) is True
+        assert tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']['record_type'] == 'backfill'
 
-    def test_returns_false_on_collision(self, mocker):
-        """ConditionalCheckFailedException → False, not exception."""
-        from botocore.exceptions import ClientError
-        table = mocker.MagicMock()
-        table.put_item.side_effect = ClientError(
-            {'Error': {'Code': 'ConditionalCheckFailedException'}}, 'PutItem',
-        )
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.put_if_new({'execution_name': 'bf-abc'})
-        assert result is False
+    def test_returns_false_on_collision_and_keeps_the_first(self, repo, tokens):
+        assert repo.put_if_new({'execution_name': 'bf-abc', 'status': 'completed'}) is True
+        assert repo.put_if_new({'execution_name': 'bf-abc', 'status': 'pending'}) is False
+        assert tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']['status'] == 'completed'
 
-    def test_raises_on_other_client_error(self, mocker):
-        """Non-conditional errors (throttling, IAM, table-missing) must propagate
-        so the caller can surface 5xx, not silently retry forever."""
-        from botocore.exceptions import ClientError
-        table = mocker.MagicMock()
-        table.put_item.side_effect = ClientError(
-            {'Error': {'Code': 'ProvisionedThroughputExceededException'}},
-            'PutItem',
-        )
-        repo = _make_repo_with_table(mocker, table)
+    def test_raises_on_other_client_error(self, repo):
+        """A missing table, throttling or IAM must reach the caller, which answers 5xx."""
+        repo._table_name = 'no-such-table'
         with pytest.raises(ClientError):
             repo.put_if_new({'execution_name': 'bf-abc'})
 
-    def test_applies_same_defaults_as_put(self, mocker):
-        """put_if_new must apply sentinel, record_type, ttl just like put."""
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        repo.put_if_new({'execution_name': 'bf-abc'})
-        item = table.put_item.call_args.kwargs['Item']
-        assert item['pipeline_name'] == '_polyris_bulk_backfill'
-        assert item['record_type'] == 'backfill'
-        assert 'ttl' in item
+    def test_applies_same_defaults_as_put(self, repo, tokens):
+        repo.put_if_new({'execution_name': 'bf-abc', 'started_at': '2026-11-03T10:00:00+00:00'})
+        item = tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']
+        assert (item['pipeline_name'], item['record_type'], item['date']) == (SENTINEL, 'backfill', '2026-11-03')
+        assert _about(item['ttl'], retention.BACKFILL_RUNNING)
 
 
 class TestUpdateStatus:
-    def test_basic_status_update(self, mocker):
-        table = mocker.MagicMock()
-        table.update_item.return_value = {'Attributes': {'status': 'completed'}}
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.update_status('bf-abc', 'completed')
-        assert result['status'] == 'completed'
-        kwargs = table.update_item.call_args.kwargs
-        assert kwargs['Key'] == {'execution_name': 'bf-abc'}
-        assert ':s' in kwargs['ExpressionAttributeValues']
-        assert kwargs['ExpressionAttributeValues'][':s'] == 'completed'
+    def test_a_status_that_goes_on_keeps_the_running_lifetime(self, repo):
+        _record(repo, 'bf-abc', status='pending')
+        result = repo.update_status('bf-abc', 'running')
+        assert result['status'] == 'running'
+        assert _about(result['ttl'], retention.BACKFILL_RUNNING)
 
-    def test_status_update_with_condition(self, mocker):
-        """Cancel flow uses condition to atomically check status."""
-        table = mocker.MagicMock()
-        table.update_item.return_value = {'Attributes': {}}
-        repo = _make_repo_with_table(mocker, table)
-        repo.update_status('bf-abc', 'canceled',
-                           condition_status_in=['pending', 'running'])
-        kwargs = table.update_item.call_args.kwargs
-        assert 'ConditionExpression' in kwargs
-        assert 'IN' in kwargs['ConditionExpression']
-        # Both expected values present in attr values
-        values = kwargs['ExpressionAttributeValues']
-        assert 'pending' in values.values()
-        assert 'running' in values.values()
+    @pytest.mark.parametrize('final', ['completed', 'failed', 'partial', 'canceled'])
+    def test_a_final_status_leaves_the_record_90_days(self, repo, final):
+        _record(repo, 'bf-abc')
+        result = repo.update_status('bf-abc', final)
+        assert result['status'] == final
+        assert _about(result['ttl'], retention.BACKFILL_ENDED)
+
+    def test_the_condition_refuses_a_status_it_does_not_list(self, repo, tokens):
+        """The cancel flow (ADR #54) cancels only a pending or running Backfill."""
+        _record(repo, 'bf-abc', status='completed')
+        with pytest.raises(ClientError) as raised:
+            repo.update_status('bf-abc', 'canceled', condition_status_in=['pending', 'running'])
+        assert raised.value.response['Error']['Code'] == 'ConditionalCheckFailedException'
+        assert tokens.get_item(Key={'execution_name': 'bf-abc'})['Item']['status'] == 'completed'
+
+    def test_the_condition_accepts_a_status_it_lists(self, repo):
+        _record(repo, 'bf-abc', status='pending')
+        assert repo.update_status('bf-abc', 'canceled', condition_status_in=['pending', 'running'])['status'] == \
+            'canceled'
 
 
 class TestIncrementCounter:
-    def test_increment_completed(self, mocker):
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        repo.increment_counter('bf-abc', 'completed_partitions')
-        kwargs = table.update_item.call_args.kwargs
-        assert 'ADD completed_partitions' in kwargs['UpdateExpression']
-        assert kwargs['ExpressionAttributeValues'][':inc'] == 1
+    @pytest.mark.parametrize('counter', ['completed_partitions', 'failed_partitions', 'skipped_partitions'])
+    def test_counters_add_up(self, repo, tokens, counter):
+        _record(repo, 'bf-abc')
+        repo.increment_counter('bf-abc', counter)
+        repo.increment_counter('bf-abc', counter, by=2)
+        assert tokens.get_item(Key={'execution_name': 'bf-abc'})['Item'][counter] == 3
 
-    def test_increment_failed(self, mocker):
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        repo.increment_counter('bf-abc', 'failed_partitions', by=2)
-        kwargs = table.update_item.call_args.kwargs
-        assert 'ADD failed_partitions' in kwargs['UpdateExpression']
-        assert kwargs['ExpressionAttributeValues'][':inc'] == 2
-
-    def test_increment_skipped(self, mocker):
-        table = mocker.MagicMock()
-        repo = _make_repo_with_table(mocker, table)
-        repo.increment_counter('bf-abc', 'skipped_partitions')
-        kwargs = table.update_item.call_args.kwargs
-        assert 'ADD skipped_partitions' in kwargs['UpdateExpression']
-
-    def test_invalid_counter_name_rejected(self, mocker):
-        repo = _make_repo_with_table(mocker, mocker.MagicMock())
+    def test_invalid_counter_name_rejected(self, repo):
         with pytest.raises(ValueError, match="Invalid counter name"):
             repo.increment_counter('bf-abc', 'arbitrary_field')
 
-    def test_invalid_injection_attempt_rejected(self, mocker):
+    def test_invalid_injection_attempt_rejected(self, repo):
         """Defense against UpdateExpression injection via counter_name."""
-        repo = _make_repo_with_table(mocker, mocker.MagicMock())
         with pytest.raises(ValueError):
             repo.increment_counter('bf-abc', 'completed_partitions, status = :evil')
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Query ops
+# The search: pipeline-date-index, then BatchGetItem
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestListRecent:
-    def test_returns_only_backfill_records(self, mocker):
-        """Sentinel filter ensures non-Backfill rows are not returned."""
-        table = mocker.MagicMock()
-        # scan returns a mix; FilterExpression filters server-side, but
-        # the mock can just return what we want as already-filtered.
-        table.scan.return_value = {
-            'Items': [
-                {'execution_name': 'bf-x', 'started_at': '2024-01-15T10:00:00Z'},
-                {'execution_name': 'bf-y', 'started_at': '2024-01-16T10:00:00Z'},
-            ]
-        }
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.list_recent(limit=10)
-        # Sorted desc by started_at
-        assert [r['execution_name'] for r in result] == ['bf-y', 'bf-x']
+    def test_returns_only_backfill_records_newest_first(self, repo, tokens):
+        _record(repo, 'bf-x', '2026-01-15T10:00:00+00:00')
+        _record(repo, 'bf-y', '2026-01-16T10:00:00+00:00')
+        tokens.put_item(Item={'execution_name': 'load-2026-01-16-abc', 'pipeline_name': 'orders',
+                              'date': '2026-01-16', 'status': 'failed'})
+        assert _ids(repo.list_recent(limit=10)) == ['bf-y', 'bf-x']
 
-    def test_respects_limit(self, mocker):
-        table = mocker.MagicMock()
-        table.scan.return_value = {
-            'Items': [
-                {'execution_name': f'bf-{i}', 'started_at': f'2024-01-{i:02d}T00:00:00Z'}
-                for i in range(1, 6)
-            ]
-        }
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.list_recent(limit=3)
-        assert len(result) == 3
+    def test_reads_every_field_of_a_record(self, repo):
+        """The index projects few fields; the search reads the records themselves."""
+        _record(repo, 'bf-x', '2026-01-15T10:00:00+00:00', target_pipeline='orders', total_partitions=7)
+        [item] = repo.list_recent(limit=10)
+        assert (item['target_pipeline'], item['total_partitions']) == ('orders', 7)
 
-    def test_missing_started_at_sorts_last(self, mocker):
-        table = mocker.MagicMock()
-        table.scan.return_value = {
-            'Items': [
-                {'execution_name': 'bf-a', 'started_at': '2024-01-15T10:00:00Z'},
-                {'execution_name': 'bf-b'},  # missing started_at
-            ]
-        }
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.list_recent(limit=10)
-        assert result[0]['execution_name'] == 'bf-a'
-        assert result[1]['execution_name'] == 'bf-b'
+    def test_respects_limit(self, repo):
+        for i in range(1, 6):
+            _record(repo, f'bf-{i}', f'2026-01-{i:02d}T00:00:00+00:00')
+        assert _ids(repo.list_recent(limit=3)) == ['bf-5', 'bf-4', 'bf-3']
+
+    def test_a_limit_keeps_every_record_of_the_newest_days(self, repo):
+        """It stops on a day boundary: records of one day are never half read."""
+        _record(repo, 'bf-a', '2026-01-02T08:00:00+00:00')
+        _record(repo, 'bf-b', '2026-01-02T09:00:00+00:00')
+        _record(repo, 'bf-c', '2026-01-01T09:00:00+00:00')
+        assert _ids(repo.list_recent(limit=1)) == ['bf-b']
+        assert _ids(repo.list_recent(limit=2)) == ['bf-b', 'bf-a']
+
+    def test_missing_started_at_sorts_last(self, repo):
+        _record(repo, 'bf-a', '2026-01-15T10:00:00+00:00')
+        _record(repo, 'bf-b', date='2026-01-15')
+        assert _ids(repo.list_recent(limit=10)) == ['bf-a', 'bf-b']
+
+    def test_a_record_written_before_1_3_has_no_date_and_is_not_found(self, repo, tokens):
+        tokens.put_item(Item={'execution_name': 'bf-old', 'pipeline_name': SENTINEL, 'record_type': 'backfill',
+                              'status': 'completed'})
+        assert repo.list_recent(limit=None) == []
+
+    def test_more_records_than_one_batch_get_takes(self, repo):
+        from dal.backfills_repo import BATCH_GET
+
+        count = BATCH_GET + 20
+        for i in range(count):
+            _record(repo, f'bf-{i:04d}', f'2026-01-{1 + i % 28:02d}T{i % 24:02d}:00:00+00:00')
+        assert len(repo.list_recent(limit=None)) == count
 
 
 class TestListRecentCursor:
     """`before` — the History feed's started_at cursor (console_api/feed.py, ADR #95)."""
 
-    def _table(self, mocker, count=5):
-        table = mocker.MagicMock()
-        table.scan.return_value = {
-            'Items': [
-                {'execution_name': f'bf-{i}', 'started_at': f'2024-01-{i:02d}T00:00:00Z'}
-                for i in range(1, count + 1)
-            ]
-        }
-        return table
+    @pytest.fixture
+    def five(self, repo):
+        for i in range(1, 6):
+            _record(repo, f'bf-{i}', f'2026-01-{i:02d}T00:00:00+00:00')
+        return repo
 
-    def test_returns_only_backfills_older_than_the_cursor(self, mocker):
-        repo = _make_repo_with_table(mocker, self._table(mocker))
-        result = repo.list_recent(limit=10, before='2024-01-03T00:00:00Z')
-        assert [r['execution_name'] for r in result] == ['bf-2', 'bf-1']
+    def test_returns_only_backfills_older_than_the_cursor(self, five):
+        assert _ids(five.list_recent(limit=10, before='2026-01-03T00:00:00+00:00')) == ['bf-2', 'bf-1']
 
-    def test_the_cursor_row_itself_is_not_re_served(self, mocker):
+    def test_the_cursor_row_itself_is_not_re_served(self, five):
         """Strict `<`: the last row of the previous page must not come back."""
-        repo = _make_repo_with_table(mocker, self._table(mocker))
-        result = repo.list_recent(limit=10, before='2024-01-03T00:00:00Z')
-        assert 'bf-3' not in [r['execution_name'] for r in result]
+        assert 'bf-3' not in _ids(five.list_recent(limit=10, before='2026-01-03T00:00:00+00:00'))
 
-    def test_cursor_is_applied_before_the_limit(self, mocker):
-        """The regression this exists to prevent: with the cursor applied *after*
-        the slice, the newest `limit` rows are all that survive to be filtered — so
-        every page but the first comes back empty and Backfills vanish from the feed
-        the moment you page."""
-        repo = _make_repo_with_table(mocker, self._table(mocker))
-        result = repo.list_recent(limit=2, before='2024-01-03T00:00:00Z')
-        assert [r['execution_name'] for r in result] == ['bf-2', 'bf-1']
+    def test_cursor_is_applied_before_the_limit(self, five):
+        """With the cursor applied *after* the slice, every page but the first comes back empty."""
+        assert _ids(five.list_recent(limit=2, before='2026-01-03T00:00:00+00:00')) == ['bf-2', 'bf-1']
 
-    def test_no_cursor_is_unchanged_behaviour(self, mocker):
-        repo = _make_repo_with_table(mocker, self._table(mocker))
-        assert len(repo.list_recent(limit=10)) == 5
+    def test_records_of_the_cursor_s_day_that_it_drops_do_not_fill_the_page(self, repo):
+        """The cursor's own day may hold records newer than the cursor: they count toward no limit."""
+        _record(repo, 'bf-late', '2026-01-03T12:00:00+00:00')
+        _record(repo, 'bf-later', '2026-01-03T13:00:00+00:00')
+        _record(repo, 'bf-old', '2026-01-02T00:00:00+00:00')
+        assert _ids(repo.list_recent(limit=2, before='2026-01-03T11:00:00+00:00')) == ['bf-old']
 
-    def test_missing_started_at_counts_as_oldest(self, mocker):
-        """It sorts last, so the cursor must keep it rather than drop it — which is
-        also why this filter stays in memory instead of becoming a FilterExpression."""
-        table = mocker.MagicMock()
-        table.scan.return_value = {'Items': [
-            {'execution_name': 'bf-a', 'started_at': '2024-01-15T10:00:00Z'},
-            {'execution_name': 'bf-b'},
-        ]}
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.list_recent(limit=10, before='2024-01-15T10:00:00Z')
-        assert [r['execution_name'] for r in result] == ['bf-b']
+    def test_no_cursor_is_unchanged_behaviour(self, five):
+        assert len(five.list_recent(limit=10)) == 5
+
+    def test_missing_started_at_counts_as_oldest(self, repo):
+        """It sorts last, so the cursor keeps it rather than drops it."""
+        _record(repo, 'bf-a', '2026-01-15T10:00:00+00:00')
+        _record(repo, 'bf-b', date='2026-01-15')
+        assert _ids(repo.list_recent(limit=10, before='2026-01-15T10:00:00+00:00')) == ['bf-b']
 
 
 class TestListActive:
-    def test_filters_to_pending_and_running(self, mocker):
-        table = mocker.MagicMock()
-        # FilterExpression handles server-side; mock returns pre-filtered
-        table.scan.return_value = {
-            'Items': [
-                {'execution_name': 'bf-x', 'status': 'running'},
-                {'execution_name': 'bf-y', 'status': 'pending'},
-            ]
-        }
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.list_active()
-        statuses = {r['status'] for r in result}
-        assert statuses == {'pending', 'running'}
+    def test_filters_to_pending_and_running(self, repo):
+        _record(repo, 'bf-x', '2026-01-15T10:00:00+00:00', status='running')
+        _record(repo, 'bf-y', '2026-01-15T11:00:00+00:00', status='pending')
+        _record(repo, 'bf-z', '2026-01-15T12:00:00+00:00', status='completed')
+        assert sorted(_ids(repo.list_active())) == ['bf-x', 'bf-y']
+
+    def test_for_one_pipeline(self, repo):
+        _record(repo, 'bf-x', '2026-01-15T10:00:00+00:00', target_pipeline='orders')
+        _record(repo, 'bf-y', '2026-01-15T11:00:00+00:00', target_pipeline='billing')
+        _record(repo, 'bf-z', '2026-01-15T12:00:00+00:00', target_pipeline='orders', status='failed')
+        assert _ids(repo.list_active_for_pipeline('orders')) == ['bf-x']
 
 
 class TestQueryChildExecutions:
-    def test_uses_backfill_id_index(self, mocker):
-        table = mocker.MagicMock()
-        table.query.return_value = {
-            'Items': [
-                {'execution_name': 'task-2024-01-15-abc', 'backfill_id': 'bf-x'},
-                {'execution_name': 'task-2024-01-16-abc', 'backfill_id': 'bf-x'},
-            ]
-        }
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.query_child_executions('bf-x')
-        assert len(result) == 2
-        kwargs = table.query.call_args.kwargs
-        assert kwargs['IndexName'] == 'backfill-id-index'
+    def test_uses_backfill_id_index(self, repo, tokens):
+        for name in ('task-2026-01-15-abc', 'task-2026-01-16-abc'):
+            tokens.put_item(Item={'execution_name': name, 'backfill_id': 'bf-x'})
+        tokens.put_item(Item={'execution_name': 'task-2026-01-16-def', 'backfill_id': 'bf-other'})
+        assert sorted(_ids(repo.query_child_executions('bf-x'))) == ['task-2026-01-15-abc', 'task-2026-01-16-abc']
 
-    def test_returns_empty_for_unknown_backfill(self, mocker):
-        table = mocker.MagicMock()
-        table.query.return_value = {'Items': []}
-        repo = _make_repo_with_table(mocker, table)
+    def test_returns_empty_for_unknown_backfill(self, repo):
         assert repo.query_child_executions('bf-nonexistent') == []
 
 
 class TestListRetriesOf:
     """v0.78.11, ADR #68 — retry chain helper."""
 
-    def test_filters_by_parent_backfill_id(self, mocker):
-        table = mocker.MagicMock()
-        table.scan.return_value = {
-            'Items': [
-                {'execution_name': 'bf-retry1', 'parent_backfill_id': 'bf-parent',
-                 'started_at': '2024-01-15T10:00:00Z'},
-                {'execution_name': 'bf-retry2', 'parent_backfill_id': 'bf-parent',
-                 'started_at': '2024-01-15T11:00:00Z'},
-            ]
-        }
-        repo = _make_repo_with_table(mocker, table)
-        result = repo.list_retries_of('bf-parent')
-        assert len(result) == 2
-        # Sorted by started_at asc (chronological retry order)
-        assert result[0]['execution_name'] == 'bf-retry1'
-        assert result[1]['execution_name'] == 'bf-retry2'
+    def test_filters_by_parent_backfill_id_in_start_order(self, repo):
+        _record(repo, 'bf-retry2', '2026-01-15T11:00:00+00:00', parent_backfill_id='bf-parent')
+        _record(repo, 'bf-retry1', '2026-01-15T10:00:00+00:00', parent_backfill_id='bf-parent')
+        _record(repo, 'bf-other', '2026-01-15T12:00:00+00:00', parent_backfill_id='bf-else')
+        assert _ids(repo.list_retries_of('bf-parent')) == ['bf-retry1', 'bf-retry2']
 
-    def test_returns_empty_when_no_retries(self, mocker):
-        table = mocker.MagicMock()
-        table.scan.return_value = {'Items': []}
-        repo = _make_repo_with_table(mocker, table)
+    def test_returns_empty_when_no_retries(self, repo):
+        _record(repo, 'bf-x', '2026-01-15T10:00:00+00:00')
         assert repo.list_retries_of('bf-orphan') == []
 
+
+def test_records_of_many_days_are_all_found(repo):
+    """Every day is read, the newest first, however far back."""
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    for i in range(0, 400, 40):
+        _record(repo, f'bf-{i:03d}', (start + timedelta(days=i)).isoformat())
+    assert _ids(repo.list_recent(limit=None)) == [f'bf-{i:03d}' for i in range(360, -1, -40)]

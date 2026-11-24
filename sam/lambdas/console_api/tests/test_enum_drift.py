@@ -100,30 +100,3 @@ class TestEnumDrift:
             f"Generated enum files out of sync with polyris/constants.py: "
             f"{drifted}. Run: python -m polyris.codegen.sync_enums"
         )
-
-    def test_normalize_execution_status_in_sync(self):
-        # The backend's hand-written normalize_execution_status (kept for
-        # backward compat with code that imports from `constants`) must
-        # match canonical behavior.
-        cases = [
-            ('RUNNING', 'running'),
-            ('SUCCEEDED', 'success'),   # SFN uppercase → canonical 'success' (ADR #112)
-            ('FAILED', 'failed'),
-            ('TIMED_OUT', 'timed_out'),
-            ('ABORTED', 'aborted'),
-            ('STOPPED', 'aborted'),     # SFN never emits STOPPED; defensive → aborted
-            ('SUCCESS', 'success'),
-            ('success', 'success'),     # idempotent
-            ('succeeded', 'success'),   # legacy alias
-            ('running', 'running'),     # idempotent
-            (None, None),
-        ]
-        for input_val, expected in cases:
-            backend_result = backend.normalize_execution_status(input_val)
-            canonical_result = canonical.normalize_execution_status(input_val)
-            assert backend_result == expected
-            assert canonical_result == expected
-            assert backend_result == canonical_result, (
-                f"normalize_execution_status drift on {input_val!r}: "
-                f"backend={backend_result}, canonical={canonical_result}"
-            )

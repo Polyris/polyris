@@ -1,5 +1,7 @@
 # ADR #107 — In-place retry loop in the `run_task` wrapper (per-task `retries` / `retry_delay`)
 
+> **Amended by [ADR #137](adr-137-tasks-as-rows.md) §1 (1.3.0).** The work states no longer retry `States.Timeout` on their own, so a timeout is one failed attempt of the task's retry loop.
+
 > **Status:** ACCEPTED — implemented (option B). This **does** change the
 > wrapper SFN flow (adds a retry stage at the failure chokepoint), which is why
 > it is its own ADR. Builds on the parameter-parity contract (ADR #106).

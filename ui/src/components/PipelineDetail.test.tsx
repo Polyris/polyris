@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { useAppStore } from '../stores/useAppStore';
 import { createPipeline, createTask, createDAG, createExecution } from '../test/factories';
 import type { PipelineWithUI, DAG } from '../types';
@@ -15,12 +15,15 @@ const mockDag = createDAG();
 const mockExecList = [createExecution()];
 
 const mockDetailQuery: {
-    data: { tasks: typeof mockTasks; dag: typeof mockDag; serverOffsetMs: number; selectedExecution: null; statusError?: string | null } | undefined;
+    data: { tasks: typeof mockTasks; dag: typeof mockDag; serverOffsetMs: number; selectedExecution: null; statusError?: string | null; run?: { paused: boolean; stopping: boolean } | null } | undefined;
     isLoading: boolean; isError: boolean; error: Error | null; refetch: ReturnType<typeof vi.fn>;
 } = { data: { tasks: mockTasks, dag: mockDag, serverOffsetMs: 0, selectedExecution: null }, isLoading: false, isError: false, error: null, refetch: vi.fn() };
-const mockRunsQuery: { data: unknown; fetchNextPage: () => void; hasNextPage: boolean; isFetchingNextPage: boolean; isLoading: boolean } = {
+const mockRunsQuery: {
+    data: unknown; fetchNextPage: () => void; hasNextPage: boolean; isFetchingNextPage: boolean; isLoading: boolean;
+    isError: boolean; error: Error | null; refetch: ReturnType<typeof vi.fn>;
+} = {
     data: { pages: [] }, fetchNextPage: vi.fn(), hasNextPage: false,
-    isFetchingNextPage: false, isLoading: false,
+    isFetchingNextPage: false, isLoading: false, isError: false, error: null, refetch: vi.fn(),
 };
 const mockExecQuery = { data: mockExecList };
 const mockPipelinesQuery = { data: [createPipeline({ recent_runs: [{ date: '2024-01-15' }] })] };
@@ -40,7 +43,7 @@ const mockActions = {
     triggerParams: '{}', setTriggerParams: vi.fn(),
     actionPending: false, pendingAction: null as string | null,
     handleRun: vi.fn(), handleStop: vi.fn(), handlePauseResume: vi.fn(),
-    handleExtendPause: vi.fn(), handleRefresh: vi.fn(), handleTaskAction: vi.fn(), handleRunAction: vi.fn(),
+    handleRefresh: vi.fn(), handleTaskAction: vi.fn(), handleRunAction: vi.fn(),
     executeModalAction: vi.fn(), closeModal: vi.fn(),
 };
 vi.mock('../hooks', async () => {
@@ -107,7 +110,11 @@ vi.mock('./DatePicker', () => ({
     ),
 }));
 vi.mock('@/components/ui/button', () => ({
-    Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string} aria-label={props['aria-label'] as string} data-variant={props.variant}>{props.children as React.ReactNode}</button>,
+    Button: (props: Record<string, unknown>) => <button onClick={props.onClick as () => void} title={props.title as string} aria-label={props['aria-label'] as string} data-variant={props.variant} disabled={props.disabled as boolean}>{props.children as React.ReactNode}</button>,
+}));
+// useStoreInit (the never-run tests mount it with the page) reads the route.
+vi.mock('@/hooks/useClientRoute', () => ({
+    useClientRoute: () => ({ pathname: '/pipelines/', push: vi.fn(), replace: vi.fn() }),
 }));
 vi.mock('../lib/config', () => ({ default: { API_URL: '/api', POLLING_INTERVAL: 5000, AUTH_ENABLED: false } }));
 vi.mock('../utils/api', async (importOriginal) => ({
@@ -123,6 +130,7 @@ vi.mock('../utils/storage', () => ({ getFromStorage: vi.fn(), saveToStorage: vi.
 vi.mock('@/hooks/useAuth', () => ({ AuthProvider: ({ children }: any) => children, useAuth: () => ({ isSignedIn: true, user: { email: 'test@test.com' }, signOut: vi.fn() }), useAuthHeader: () => ({}), AUTH_STATE: { SIGNED_IN: 'signedIn', SIGNED_OUT: 'signedOut' } }));
 
 import { PipelineDetail } from './PipelineDetail';
+import { useStoreInit } from '../stores/useStoreInit';
 
 /** Set store state for PipelineDetail */
 function setStore(overrides: Record<string, unknown> = {}) {
@@ -285,11 +293,28 @@ describe('PipelineDetail', () => {
         });
 
         it('shows Resume and Stop while paused', () => {
-            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'waiting_paused' })] };
-            useAppStore.getState().setExecutionPaused(true);
+            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'waiting_paused' })],
+                                     run: { paused: true, stopping: false } };
             render(<PipelineDetail {...defaultProps} />);
             expect(screen.getAllByRole('button', { name: /resume/i }).length).toBeGreaterThan(0);
             expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+        });
+
+        it('shows Resume for a run its run row says is paused before any task row waits paused (review of TR-6d)', () => {
+            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'running' })],
+                                     run: { paused: true, stopping: false } };
+            render(<PipelineDetail {...defaultProps} />);
+            expect(screen.getAllByRole('button', { name: /resume/i }).length).toBeGreaterThan(0);
+            expect(screen.getByText(/no task starts until the Resume/)).toBeInTheDocument();
+        });
+
+        it('says a Stop of the run is in progress and offers no run action meanwhile (review of TR-6d)', () => {
+            mockDetailQuery.data = { ...mockDetailQuery.data, tasks: [createTask({ task_name: 'transform', status: 'running' })],
+                                     run: { paused: false, stopping: true } };
+            render(<PipelineDetail {...defaultProps} />);
+            expect(screen.getByRole('status')).toHaveTextContent('Stopping the run');
+            expect(screen.getByRole('button', { name: /stop/i })).toBeDisabled();
+            expect(screen.getByRole('button', { name: /pause/i })).toBeDisabled();
         });
 
         it('shows a loading label while an action is pending', () => {
@@ -319,6 +344,30 @@ describe('PipelineDetail', () => {
         afterEach(() => {
             mockPipelinesQuery.data = [createPipeline({ recent_runs: [{ date: '2024-01-15' }] })];
             mockRunsQuery.data = { pages: [] };   // don't leak runs between tests
+            mockRunsQuery.isError = false;
+            mockRunsQuery.error = null;
+        });
+
+        it('names a failed direct step of a run, which has no row of its own (review of TR-6d)', () => {
+            mockRunsQuery.data = { pages: [{ executions: [createExecution({
+                status: 'failed', failed_tasks: 0, failed_step: { step: 'notify', error: 'AccessDenied' },
+            })] }] };
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByRole('button', { name: /History/i }));
+            expect(screen.getByTitle('step notify failed: AccessDenied')).toHaveTextContent('step notify failed');
+        });
+
+        it('says the runs could not load, never "no runs", and offers a retry (review of TR-6d)', () => {
+            // While DynamoDB builds the run index after an upgrade, /api/pipeline-executions answers 503.
+            mockRunsQuery.data = undefined;
+            mockRunsQuery.isError = true;
+            mockRunsQuery.error = new Error('The run index is being built');
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByRole('button', { name: /History/i }));
+            expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load runs");
+            expect(screen.queryByText(/No runs in the last/)).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+            expect(mockRunsQuery.refetch).toHaveBeenCalled();
         });
 
         // The dropdown lists every run it can still see rather than only the
@@ -375,12 +424,22 @@ describe('PipelineDetail', () => {
             expect(screen.getByText('No runs on this date')).toBeInTheDocument();
         });
 
-        it('says "No runs yet" when there are none (not "none on this date")', () => {
+        it('names its window when there are none (not "none on this date")', () => {
             render(<PipelineDetail {...defaultProps} />);
             fireEvent.click(screen.getByRole('button', { name: /History/i }));
-            // The list spans every date, so an empty list means no runs at all —
-            // never the old "no executions for {date}" dead end.
-            expect(screen.getByText('No runs yet')).toBeInTheDocument();
+            // The list spans every date of the window (ADR #137 §5) — never the old
+            // "no executions for {date}" dead end.
+            expect(screen.getByText('No runs in the last 90 days')).toBeInTheDocument();
+        });
+
+        it('says how many tasks failed beside a run that is still running (ADR #137 §4)', () => {
+            mockRunsQuery.data = { pages: [{ executions: [
+                { execution_id: 'run-1', execution_short: 'run-1', date: '2024-01-15', status: 'running',
+                  failed_tasks: 2, started_at: '2024-01-15T10:00:00Z' },
+            ], next: null }] };
+            render(<PipelineDetail {...defaultProps} />);
+            fireEvent.click(screen.getByRole('button', { name: /History/i }));
+            expect(screen.getByText('running, 2 failed')).toBeInTheDocument();
         });
     });
 
@@ -552,6 +611,51 @@ describe('PipelineDetail', () => {
             render(<PipelineDetail {...defaultProps} />);
 
             expect(screen.queryByText(/No executions for/)).not.toBeInTheDocument();
+        });
+    });
+
+    describe('a pipeline that never ran', () => {
+        // Its page shows its definition (the effect on latestRunDate). Picked in the
+        // sidebar, it also meets useStoreInit's reset of the picked run, an effect of
+        // App's that runs after the page's. That reset chose the run view, and the
+        // page stayed on the date of the pipeline before, a smoke run's 1960-01-06,
+        // with no run to pick instead: only an edit of the URL left it (1.3 live check).
+        const ran = createPipeline({ name: 'smoke-rules', recent_runs: [{ date: '1960-01-06' }] }) as PipelineWithUI;
+        const never = createPipeline({ name: 'direct-steps-demo' }) as PipelineWithUI;
+
+        function Page() {
+            useStoreInit({ pipelines: [ran, never] });
+            return <PipelineDetail {...defaultProps} />;
+        }
+
+        afterEach(() => window.history.replaceState({}, '', '/'));
+
+        it('opens on its definition when picked after a run of another pipeline', () => {
+            window.history.replaceState({}, '', '/pipelines/?pipeline=smoke-rules&date=1960-01-06');
+            mockPipelinesQuery.data = [ran, never];
+            setStore({ pipeline: ran, date: '1960-01-06' });
+            useAppStore.getState().setSelectedExecution({ execution_id: 'smoke-rules-run-1960-01-06-0a1b2c3d', auto_selected: false });
+            render(<Page />);
+
+            act(() => useAppStore.getState().setSelectedPipeline(never));
+
+            expect(useAppStore.getState().dagViewSource).toBe('current');
+            expect(screen.getByText('Current deployed structure')).toBeInTheDocument();
+            expect(screen.queryByText(/1960-01-06/)).not.toBeInTheDocument();
+        });
+
+        it('says what its definition lacks, never the executions of a date', () => {
+            // A pipeline an older version deployed names no task specs until it is
+            // redeployed, so its definition has no graph to draw.
+            mockPipelinesQuery.data = [never];
+            mockDetailQuery.data = { tasks: [], dag: { ...mockDag, nodes: [], edges: [] }, serverOffsetMs: 0, selectedExecution: null };
+            setStore({ pipeline: { ...never, needs_redeploy: true }, date: '1960-01-06', dagViewSource: 'current' });
+
+            render(<PipelineDetail {...defaultProps} />);
+
+            expect(screen.queryByText(/No executions/)).not.toBeInTheDocument();
+            expect(screen.queryByText(/1960-01-06/)).not.toBeInTheDocument();
+            expect(screen.getByText(/run polyris-deploy for this pipeline/)).toBeInTheDocument();
         });
     });
 

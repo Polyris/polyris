@@ -545,8 +545,8 @@ describe('TaskDetailModal', () => {
         });
 
         it('suppresses Output for cascade-skipped task (settled but no run_task_helper_arn)', () => {
-            // Auto_Skip_Register / notify_dependents' Update_Status_Skip never
-            // set run_task_helper_arn on the per-run task row — so `expectedRunId`
+            // A task that settled without run_task starting its work (a rule's
+            // skip) has no run_task_helper_arn on its task row — so `expectedRunId`
             // is null. If the canonical row already carries content from a
             // prior same-date run, the gate must still catch it via the null-
             // expected sub-case (SEV3 must-fix from architect audit).
@@ -695,7 +695,7 @@ describe('TaskDetailModal', () => {
             render(<TaskDetailModal {...defaultProps} taskEvents={events} />);
             fireEvent.click(screen.getByText('History'));
             expect(screen.getByText(/Real events from task execution/)).toBeInTheDocument();
-            expect(screen.getByText(/4 events/)).toBeTruthy();
+            expect(screen.getByText(/3 events/)).toBeTruthy();
         });
 
         it('shows derived status for tasks without events', () => {
@@ -937,10 +937,10 @@ describe('TaskDetailModal', () => {
 
 
     describe('AWS Console links', () => {
-        it('shows only the Wrapper link for non-SFN tasks (no states task execution)', () => {
+        it('shows only the run_task link for non-SFN tasks (no states task execution)', () => {
             // default factory task is a lambda with no task_execution_arn
             render(<TaskDetailModal {...defaultProps} />);
-            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /run_task/i })).toBeInTheDocument();
             expect(screen.queryByRole('link', { name: /^Task$/i })).not.toBeInTheDocument();
         });
 
@@ -951,25 +951,25 @@ describe('TaskDetailModal', () => {
             });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByRole('link', { name: /^Task$/i })).toBeInTheDocument();
-            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /run_task/i })).toBeInTheDocument();
         });
 
-        it('shows pending placeholder for running task without wrapper ARN', () => {
-            const task = createRunningTask({ wrapper_execution_arn: null });
+        it('shows pending placeholder for running task without a run_task ARN', () => {
+            const task = createRunningTask({ run_task_arn: null });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByText(/awaiting start/i)).toBeInTheDocument();
-            expect(screen.queryByRole('link', { name: /Wrapper/i })).not.toBeInTheDocument();
+            expect(screen.queryByRole('link', { name: /run_task/i })).not.toBeInTheDocument();
         });
 
-        it('shows active Wrapper link for running task that already has an ARN', () => {
+        it('shows active run_task link for running task that already has an ARN', () => {
             const task = createRunningTask();
             render(<TaskDetailModal {...defaultProps} task={task} />);
-            expect(screen.getByRole('link', { name: /Wrapper/i })).toBeInTheDocument();
+            expect(screen.getByRole('link', { name: /run_task/i })).toBeInTheDocument();
             expect(screen.queryByText(/awaiting start/i)).not.toBeInTheDocument();
         });
 
         it('hides the AWS Console section entirely for non-running tasks without ARNs', () => {
-            const task = createTask({ status: 'waiting', wrapper_execution_arn: null, task_execution_arn: null });
+            const task = createTask({ status: 'waiting', run_task_arn: null, task_execution_arn: null });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.queryByText('AWS Console')).not.toBeInTheDocument();
         });
@@ -1037,15 +1037,15 @@ describe('TaskDetailModal', () => {
     // ─── Retry chips (ADR #125) ──────────────────────────────────────────
 
     describe('retry chips (ADR #125)', () => {
-        it('shows no chips when attempt=1 and retry_attempt=0', () => {
-            const task = createTask({ attempt: 1, retry_attempt: 0 });
+        it('shows no chips when restarts=0 and retry_attempt=0', () => {
+            const task = createTask({ attempt: 2, restarts: 0, retry_attempt: 0 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.queryByTitle('Manual restarts')).not.toBeInTheDocument();
             expect(screen.queryByTitle(/^Auto-retries:/)).not.toBeInTheDocument();
         });
 
-        it('shows manual restart chip (Repeat2) when attempt > 1', () => {
-            const task = createTask({ attempt: 2, retry_attempt: 0 });
+        it('shows manual restart chip (Repeat2) when restarts > 0', () => {
+            const task = createTask({ attempt: 1, restarts: 1, retry_attempt: 0 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByTitle('Manual restarts')).toBeInTheDocument();
             expect(screen.queryByTitle(/^Auto-retries:/)).not.toBeInTheDocument();
@@ -1058,18 +1058,38 @@ describe('TaskDetailModal', () => {
             expect(screen.getByTitle(/^Auto-retries:/)).toBeInTheDocument();
         });
 
-        it('shows both chips when attempt > 1 and retry_attempt > 0', () => {
-            const task = createTask({ attempt: 2, retry_attempt: 2 });
+        it('shows both chips when restarts > 0 and retry_attempt > 0', () => {
+            const task = createTask({ attempt: 2, restarts: 1, retry_attempt: 2 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByTitle('Manual restarts')).toBeInTheDocument();
             expect(screen.getByTitle(/^Auto-retries:/)).toBeInTheDocument();
         });
 
         it('chips container aria-label names both counters for screen readers', () => {
-            const task = createTask({ attempt: 2, retry_attempt: 3 });
+            const task = createTask({ attempt: 2, restarts: 1, retry_attempt: 3 });
             render(<TaskDetailModal {...defaultProps} task={task} />);
             expect(screen.getByLabelText('Manual restart 1, Auto-retry 3')).toBeInTheDocument();
         });
     });
 
+});
+
+describe('TaskDetailModal — why a task waits (ADR #137 §1)', () => {
+    it('shows the reasons, since when, its deadline and the verdict of its upstreams', () => {
+        const task = createTask({
+            task_name: 'load', status: 'waiting', reasons: ['waits for extract'],
+            reasons_at: '2026-11-22T06:00:00.000Z', deadline: '2026-11-22T18:00:00.000Z',
+            dependency_verdict: { verdict: 'wait', reason: 'all_success waits for 1 upstream' },
+        });
+        render(<TaskDetailModal {...createTaskDetailModalProps()} task={task} />);
+        expect(screen.getByText('Why it waits')).toBeInTheDocument();
+        expect(screen.getByText('waits for extract')).toBeInTheDocument();
+        expect(screen.getByText(/Upstreams: all_success waits for 1 upstream/)).toBeInTheDocument();
+        expect(screen.getByText(/Since .* deadline /)).toBeInTheDocument();
+    });
+
+    it('shows nothing of it for a task that does not wait', () => {
+        render(<TaskDetailModal {...createTaskDetailModalProps()} task={createTask({ status: 'success' })} />);
+        expect(screen.queryByText('Why it waits')).toBeNull();
+    });
 });

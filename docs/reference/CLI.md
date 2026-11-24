@@ -34,7 +34,7 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | Option | Description |
 |--------|-------------|
 | `--namespace` | Resource prefix for a new install. Bucket names are global, so it must be unique to you |
-| `--stage` | Stage of a new install (default: `dev`). Namespace + Stage ≤ 30 characters |
+| `--stage` | Stage of a new install (default: `dev`). Namespace + Stage ≤ 33 characters |
 | `--admin-email` | First console admin; Cognito emails a temporary password |
 | `--param KEY=VALUE` | Set a template parameter (repeatable). Unset parameters keep their current value. `Namespace`, `Stage`, `ArtifactsBucket`, `UiArtifactsPrefix` are refused |
 | `--stack` | Platform stack name (default: the one stack tagged as a Polyris platform, or `<namespace>-<stage>` when those flags are given). Naming a platform stack created with `sam deploy` switches it to `polyris-up` (asks to confirm); a stack that isn't a Polyris platform is refused |
@@ -42,10 +42,13 @@ polyris-up --namespace acme --stage prod     # a second stage next to an existin
 | `--archive` | Deploy a local release archive (from `scripts/build_platform_release.py`) instead of downloading one |
 | `--yes` | Don't ask for confirmation |
 | `--accept-data-loss` | Allow a change that replaces or removes a DynamoDB table, S3 bucket, the Cognito user pool or the admin user. `--yes` never does |
-| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses |
+| `--allow-downgrade` | Allow installing an older release than the stack runs (a rollback). Without it `polyris-up` refuses. A pre-release such as `1.3.0rc1` counts as older than `1.3.0`. No flag rolls a platform that runs 1.3 back below 1.3: a pipeline deployed for 1.3 would not run on 1.2 |
 | `--disable-rollback` | If the update fails, keep what it already changed (`UPDATE_FAILED`) instead of rolling back. Fix the cause and run the same command again; if the release has nothing more to change, retry the failed update from the CloudFormation console. A first install always rolls back. Use it when the release notes ask for it |
+| `--accept-stopped-runs` | Upgrade a 1.2 platform to 1.3 although a run may be in flight (one is, or the check found none of the engine's state machines), or although 1.2 finished adopting older rows and facts less than 48 hours ago. `polyris-up` stops what 1.2 left running and prints the runs to start again. It never covers a platform older than 1.2.0 |
 
 The release archive is cached in `~/.cache/polyris/<version>/`; artifacts go to the bucket `polyris-artifacts-<account>-<region>`. A change that would replace or remove a DynamoDB table, S3 bucket, the Cognito user pool or the admin user is listed and needs confirmation (or `--accept-data-loss`).
+
+Before it upgrades a platform below 1.3, `polyris-up` checks it, and refuses one that is older than 1.2.0, whose 1.2 has not finished adopting older rows and facts for 48 hours, or that has a run in flight. Each refusal says what to do. The upgrade stops the executions that 1.2 left running and prints the runs it stopped; a later `polyris-up` does so again only while a state machine of 1.2 is left, or the stack still cleans up after an interrupted upgrade. On a platform that runs 1.3, every `polyris-up` waits until DynamoDB has built `run-start-index`, which the console's run lists read, and lists the pipelines that still need a redeploy, with the command for each. The steps of that upgrade: [manage-the-platform.md](../how-to/manage-the-platform.md#upgrade-from-12-to-13).
 
 ---
 
@@ -64,7 +67,7 @@ polyris-down --delete-data      # also delete task results
 | `--stack`, `--profile`, `--region` | As for `polyris-up` |
 | `--yes` | Don't ask for confirmation |
 
-It refuses a stack that isn't a Polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. The artifacts bucket is deleted when no other platform stack is left in the region.
+It refuses a stack that isn't a Polyris platform and a stack that is mid-update. Unless you pass `--yes`, it also refuses while pipelines are still deployed on the platform: every pipeline in its registry whose state machine still exists, plus stacks named `<namespace>-<stage>-polyris-*`. Remove those first with `polyris-destroy`. Before it empties the buckets, and until the stack is gone, it stops the running executions of the platform's state machines and prints how many of each. The artifacts bucket is deleted when no other platform stack is left in the region.
 
 ---
 
@@ -182,7 +185,7 @@ polyris-validate --json
 Generate pipeline artifacts. Run from pipeline directory.
 
 ```bash
-# Generate Step Functions ASL JSON
+# The Step Functions definition and the task specs it names
 polyris-output --json
 
 # Generate Mermaid diagram
@@ -203,7 +206,7 @@ polyris-output --json --select my-dag-id
 
 | Option | Description |
 |--------|-------------|
-| `--json` | Generate Step Functions ASL JSON |
+| `--json` | The Step Functions definition (`definition`) and the task specs polyris-deploy writes to `pipeline-specs` (`specs`: `spec_id`, `task_count`, `format_version` and each task's spec) |
 | `--mermaid` | Generate Mermaid diagram |
 | `--graph` | Show DAG as ASCII graph |
 | `--assets` | Generate asset registry JSON |
@@ -267,7 +270,7 @@ polyris-deploy --only dir1 dir2 --select my-dag-id
 | `--profile` | AWS profile (default: from `config.py` or AWS default) |
 | `--file` | Pipeline file (default: `dag.py`). Not used with `--all`/`--only` |
 | `--dry-run` | Preview CloudFormation changes without deploying |
-| `--destroy` | Remove pipeline stack and clean up DynamoDB |
+| `--destroy` | Remove the pipeline's stack, stopping its running runs until the stack is gone |
 | `--select` | Select DAG by ID (for multi-DAG files); combinable with `--all`/`--only` to filter within each directory |
 | `--all` | Bulk: every folder directly in the current directory, but hidden ones (`.venv`) and caches. Mutually exclusive with `--only` |
 | `--only DIR [DIR ...]` | Bulk: only the listed subdirectories. Mutually exclusive with `--all` |

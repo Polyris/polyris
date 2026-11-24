@@ -6,18 +6,37 @@
  * - DAGGraphFlow.jsx (graph node badges)
  * 
  * Handles three scenarios:
- * 1. waiting_delay with deadline (wait_delay_until_ms) - count down from deadline
- * 2. waiting_delay with start time only - compute remaining from elapsed
- * 3. deps_ready - show full wait_before (countdown not started yet, isPending=true)
+ * 1. a waiting row with its wait_before countdown end (countdown_end, through waitUntilMs) -
+ *    count down to it (ADR #137 §1)
+ * 2. a running row in run_task's retry wait (wait_delay_until_ms) - count down to the retry
+ * 3. deps_ready - show full wait_before (isPending=true)
  */
 
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
 
 /**
+ * When a task's wait ends, in ms: the end of run_task's retry wait (wait_delay_until_ms, on a
+ * running row), or the end of a waiting row's wait_before countdown (countdown_end, ADR #137 §1):
+ * the row stays waiting while it counts down.
+ */
+export function waitUntilMs(
+    task: { wait_delay_until_ms?: number | null; countdown_end?: string | null } | null | undefined,
+): number | undefined {
+    if (task?.wait_delay_until_ms) return task.wait_delay_until_ms;
+    const end = task?.countdown_end ? Date.parse(task.countdown_end) : NaN;
+    return Number.isFinite(end) ? end : undefined;
+}
+
+/** Whether a task counts down its wait_before now: a waiting row with a countdown end. */
+export function isCountingDownWait(status: string, untilMs: number | null | undefined): boolean {
+    return status === 'waiting' && !!untilMs && untilMs > 0;
+}
+
+/**
  * Compute countdown state for a task's wait_before delay.
  * 
  * @param {Object} params
- * @param {string} params.status - Task status (waiting_delay, deps_ready, running, etc.)
+ * @param {string} params.status - Task status (waiting, deps_ready, running, etc.)
  * @param {number} params.waitBefore - Total wait duration in seconds
  * @param {number} params.waitDelayUntilMs - Deadline timestamp in ms (when wait ends)
  * @param {number} params.waitDelayStartedMs - Start timestamp in ms (when wait began)
@@ -75,7 +94,7 @@ export function computeWaitCountdown({
         return result;
     }
 
-    const isWaitingDelay = status === 'waiting_delay';
+    const isWaitingDelay = isCountingDownWait(status, waitDelayUntilMs);
     const isDepsReady = status === 'deps_ready';
     const isTerminal = TASK_SETTLED_STATUSES.includes(status) || status === 'running';
 

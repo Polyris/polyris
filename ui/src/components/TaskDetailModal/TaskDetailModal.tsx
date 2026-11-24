@@ -2,8 +2,8 @@ import React, { useState, useMemo } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { TASK_SETTLED_STATUSES } from '@/generated/enums';
-import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount } from '../../utils';
-import { formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
+import { formatDate, formatEventTime, buildAwsConsoleUrl, getUpstreamCount, getDownstreamCount, waitUntilMs, shownTaskStatus } from '../../utils';
+import { formatDateTime, formatFreshnessWindow, formatFreshnessWindowLong, formatWaitForEntry, isWaitForGroup } from '../../utils/formatters';
 import { logger } from '../../utils/logger';
 import { useKeyboardShortcuts } from '../../hooks';
 import { useTaskOutput } from '../../hooks/useTaskOutput';
@@ -111,8 +111,8 @@ export function TaskDetailModal({
                     </div>
                     <div>
                         <div className="td-task-title">{task.task_name}</div>
-                        <span className={`task-status-badge ${task.status || 'waiting'}`} aria-label={`Task status: ${task.status || 'waiting'}`}>
-                            {task.status || 'waiting'}
+                        <span className={`task-status-badge ${shownTaskStatus(task)}`} aria-label={`Task status: ${shownTaskStatus(task)}`}>
+                            {shownTaskStatus(task)}
                         </span>
                     </div>
                 </div>
@@ -281,6 +281,29 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                 </div>
             )}
 
+            {/* Why it waits (ADR #137 §1): the dispatcher's reasons, since when, its deadline and the rule's verdict */}
+            {(task.reasons?.length || task.deadline || task.dependency_verdict) ? (
+                <div className="detail-section td-why-waits">
+                    <div className="detail-label">Why it waits</div>
+                    {task.reasons && task.reasons.length > 0 && (
+                        <ul className="td-why-waits-reasons">
+                            {task.reasons.map(reason => <li key={reason}>{reason}</li>)}
+                        </ul>
+                    )}
+                    {task.dependency_verdict && (
+                        <p className="text-sm text-secondary"><span>Upstreams: {task.dependency_verdict.reason}</span></p>
+                    )}
+                    <p className="text-sm text-secondary">
+                        <span>
+                            {task.reasons_at ? `Since ${formatDateTime(task.reasons_at)}` : ''}
+                            {task.reasons_at && (task.deadline || task.countdown_end) ? ' · ' : ''}
+                            {task.countdown_end ? `starts ${formatDateTime(task.countdown_end)}` : ''}
+                            {task.deadline ? `deadline ${formatDateTime(task.deadline)}` : ''}
+                        </span>
+                    </p>
+                </div>
+            ) : null}
+
             {/* Failure — shown at top so it is visible without scrolling */}
             {task.error && (
                 <div className="detail-section td-error-section">
@@ -326,14 +349,14 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         Restart (↻) apart from an automatic in-SFN retry (⭮). Each
                         appears only when its counter is > 0; aria-label spells both out
                         for screen readers. */}
-                    {((task.attempt != null && task.attempt > 1) ||
+                    {((task.restarts != null && task.restarts > 0) ||
                       (task.retry_attempt != null && task.retry_attempt > 0)) && (
                         <div className="td-duration-stat">
                             <div
                                 className="td-duration-value text-secondary td-attempt-chips"
                                 aria-label={[
-                                    task.attempt != null && task.attempt > 1
-                                        ? `Manual restart ${task.attempt - 1}`
+                                    task.restarts != null && task.restarts > 0
+                                        ? `Manual restart ${task.restarts}`
                                         : null,
                                     task.retry_attempt != null && task.retry_attempt > 0
                                         ? `Auto-retry ${task.retry_attempt}` +
@@ -341,13 +364,13 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         : null,
                                 ].filter(Boolean).join(', ')}
                             >
-                                {task.attempt != null && task.attempt > 1 && (
+                                {task.restarts != null && task.restarts > 0 && (
                                     <span
                                         className="td-attempt-chip"
                                         title="Manual restarts"
-                                        aria-label={`Manual restart ${task.attempt - 1}`}
+                                        aria-label={`Manual restart ${task.restarts}`}
                                     >
-                                        <Repeat2 size={12} aria-hidden={true} /> {task.attempt - 1}
+                                        <Repeat2 size={12} aria-hidden={true} /> {task.restarts}
                                     </span>
                                 )}
                                 {task.retry_attempt != null && task.retry_attempt > 0 && (
@@ -449,7 +472,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         {/* Wait Before - with live countdown */}
                         <CountdownTimer 
                             waitBefore={Number(task.wait_before || dag?.nodes?.find(n => n.id === task.task_name)?.wait_before || 0)}
-                            waitDelayUntilMs={task.wait_delay_until_ms ?? null}
+                            waitDelayUntilMs={waitUntilMs(task) ?? null}
                             waitDelayStartedMs={task.wait_delay_started_ms ?? null}
                             status={task.status}
                             serverOffsetMs={serverOffsetMs}
@@ -522,7 +545,7 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                         
                         {/* AWS Console Links — shown when ARNs are present, or while
                             running so the user knows where to look once the ARN lands. */}
-                        {(task.task_execution_arn || task.wrapper_execution_arn || task.status === 'running') && (
+                        {(task.task_execution_arn || task.run_task_arn || task.status === 'running') && (
                             <div className="detail-section">
                                 <div className="detail-label">AWS Console</div>
                                 <div className="flex flex-col gap-xs mt-sm">
@@ -530,9 +553,9 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                         URL, so the direct "Task" link is correct only when the
                                         task's execution ARN is itself a Step Functions execution
                                         (SFN tasks). Other task types (ECS / Glue / Athena / …)
-                                        have no states ARN, so they get only the Wrapper link —
+                                        have no states ARN, so they get only the run_task link —
                                         AWS's own console surfaces the real resource link on the
-                                        wrapper execution page. */}
+                                        run_task execution page (ADR #137 §1). */}
                                     {task.task_execution_arn?.includes(':states:') && (
                                         <a
                                             href={buildAwsConsoleUrl(task.task_execution_arn)}
@@ -544,31 +567,20 @@ function DetailsTab({ task, tasks, dag, childPipeline, serverOffsetMs, onTaskSel
                                             <ExternalLink size={10} className="opacity-50" />
                                         </a>
                                     )}
-                                    {task.wrapper_execution_arn ? (
+                                    {task.run_task_arn ? (
                                         <a
-                                            href={buildAwsConsoleUrl(task.wrapper_execution_arn)}
+                                            href={buildAwsConsoleUrl(task.run_task_arn)}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="td-link-primary"
                                         >
-                                            <RotateCcw size={12} /> Wrapper
+                                            <RotateCcw size={12} /> run_task
                                             <ExternalLink size={10} className="opacity-50" />
                                         </a>
                                     ) : task.status === 'running' && (
-                                        <span className="td-link-muted td-link-pending" title="Execution ARN will appear once the wrapper starts">
-                                            <RotateCcw size={12} /> Wrapper — awaiting start
+                                        <span className="td-link-muted td-link-pending" title="The execution's ARN appears once its run_task starts">
+                                            <RotateCcw size={12} /> run_task — awaiting start
                                         </span>
-                                    )}
-                                    {task.pagerduty_enabled && task.wrapper_arn && (
-                                        <a
-                                            href={`https://app.pagerduty.com/incidents?search=${encodeURIComponent(task.wrapper_arn)}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="td-link-muted"
-                                        >
-                                            <AlertTriangle size={12} /> PagerDuty
-                                            <ExternalLink size={10} className="opacity-50" />
-                                        </a>
                                     )}
                                 </div>
                             </div>
@@ -600,7 +612,6 @@ interface TimelineTabProps {
 }
 
 const EVENT_LABELS: Record<string, string> = {
-    WRAPPER_STARTED: 'Wrapper',
     DEPS_READY: 'Deps ready',
     DEPS_SKIPPED: 'Deps skipped',
     DEPS_BLOCKED: 'Deps blocked',
@@ -628,7 +639,6 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                     {EVENT_LABELS[evt.event_type] ?? evt.event_type.replaceAll('_', ' ')}
                                 </span>
                                 <span className="td-event-text">
-                                    {evt.event_type === 'WRAPPER_STARTED' && `Task wrapper started (attempt ${evt.attempt || 1})`}
                                     {evt.event_type === 'DEPS_READY' && `Dependencies satisfied${evt.dependencies ? `: ${evt.dependencies}` : ''}`}
                                     {evt.event_type === 'DEPS_SKIPPED' && `Trigger condition not met: ${evt.reason || 'task skipped'}`}
                                     {evt.event_type === 'DEPS_BLOCKED' && `Blocked: ${evt.reason || 'upstream failed'}`}
@@ -644,7 +654,7 @@ function TimelineTab({ task, taskEvents, taskEventsLoading }: TimelineTabProps) 
                                         <>Task failed{evt.retry_attempt && evt.retry_attempt > 0 ? ` after retry ${evt.retry_attempt}` : ''}{evt.error_summary ? `: ${evt.error_summary}` : ''}</>
                                     )}
                                     {evt.event_type === 'MANUAL_DECISION' && <><User size={12} className="inline mr-1" />{evt.decision?.toUpperCase() || 'Action'}: {evt.reason || 'via UI'}</>}
-                                    {!['WRAPPER_STARTED', 'DEPS_READY', 'DEPS_SKIPPED', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
+                                    {!['DEPS_READY', 'DEPS_SKIPPED', 'DEPS_BLOCKED', 'TASK_STARTED', 'TASK_RETRY_STARTED', 'TASK_FINISHED', 'MANUAL_DECISION'].includes(evt.event_type) && evt.event_type}
                                 </span>
                             </div>
                         ))}
@@ -673,7 +683,6 @@ function DerivedTimeline({ task }: { task: Task }) {
     const statusEvents: Record<string, { badge: string; badgeClass: string; text: string; useTime?: string }> = {
         'waiting': { badge: 'Waiting', badgeClass: 'td-event-waiting', text: 'Waiting for upstream dependencies' },
         'deps_ready': { badge: 'Ready', badgeClass: 'td-event-ready', text: 'Dependencies satisfied, queued for execution' },
-        'waiting_delay': { badge: 'Delayed', badgeClass: 'td-event-waiting', text: 'Waiting for delay timer' },
         'running': { badge: 'Running', badgeClass: 'td-event-running', text: 'Task is currently executing' },
         'success': { badge: 'Success', badgeClass: 'td-event-success', text: 'Task completed successfully', useTime: task.finished_at },
         'succeeded': { badge: 'Success', badgeClass: 'td-event-success', text: 'Task completed successfully', useTime: task.finished_at },
@@ -727,13 +736,13 @@ interface OutputTabProps {
      * the date-scoped canonical-row read on settled state (see the CLAUDE.md
      * rule about date-scoped canonical DDB rows). */
     taskStatus: string;
-    /** run_id stamped on the canonical output# row by the wrapper. */
+    /** run_id stamped on the canonical output# row by the run_task execution that wrote it. */
     outputRowRunId: string | null;
     /** run_id stamped on the input# row by Save_Input_Record. */
     inputRowRunId: string | null;
-    /** The run_task_helper ARN this run's wrapper invoked. Row-run-ids that
-     * don't match belong to a prior same-date run and should suppress the
-     * canonical-row read. */
+    /** The task row's run_task_helper_arn, which run_task writes when it starts
+     * the work. Row-run-ids that don't match belong to a prior same-date run
+     * and should suppress the canonical-row read. */
     expectedRunId: string | null;
 }
 

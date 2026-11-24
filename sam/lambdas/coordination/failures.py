@@ -11,6 +11,7 @@
 from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
 from botocore.exceptions import ConnectionError as BotoConnectionError
 
+from polyris.constants import BACKFILLING_INDEX_MESSAGE
 from polyris.coordination.wake import DEAD_TOKEN_CODES
 
 TRANSIENT_CODES = frozenset({
@@ -28,11 +29,6 @@ TRANSIENT_CODES = frozenset({
     "RequestTimeoutException",
 })
 CONDITION_FAILED = "ConditionalCheckFailedException"
-
-#: DynamoDB answers a read of a global secondary index that is still being built with a
-#: ValidationException carrying this message. An upgrade that adds an index (1.2.0 adds two)
-#: reaches the Lambdas before the index is built, and the same read succeeds once it is.
-BACKFILLING_INDEX_MESSAGE = "Cannot read from backfilling global secondary index"
 
 #: The network failures botocore's standard retry mode retries: every connection error (endpoint, connect
 #: timeout, SSL, proxy) and every HTTP client error (closed connection, read timeout, broken response stream).

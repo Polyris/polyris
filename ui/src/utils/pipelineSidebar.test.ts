@@ -25,12 +25,12 @@ describe('buildSidebarLines', () => {
         expect(show(build([p('acme-daily'), p('acme-weekly')]))).toEqual(['acme-daily', 'acme-weekly']);
     });
 
-    it('pins failed and timed-out pipelines on top, A–Z; they stay in the full list too', () => {
-        expect(FAILURE_STATUSES).toEqual(['failed', 'timed_out']);
-        const lines = build([p('b-timeout', { status: 'timed_out' }), p('c-ok'), p('a-fail', { status: 'failed' })]);
+    it('pins failed pipelines on top, A–Z; they stay in the full list too', () => {
+        expect(FAILURE_STATUSES).toEqual(['failed']);
+        const lines = build([p('b-fail', { status: 'failed' }), p('c-ok'), p('a-fail', { status: 'failed' })]);
         expect(show(lines)).toEqual([
-            '§attention 2', 'a-fail', 'b-timeout',
-            '§all 3', 'a-fail', 'b-timeout', 'c-ok',
+            '§attention 2', 'a-fail', 'b-fail',
+            '§all 3', 'a-fail', 'b-fail', 'c-ok',
         ]);
     });
 
@@ -42,7 +42,16 @@ describe('buildSidebarLines', () => {
         expect(show(lines)).toEqual(['§attention 1', 'a-decide', '§all 2', 'a-decide', 'b-paused']);
     });
 
-    it.each(['running', 'aborted', 'recovered', 'success', 'idle', 'unknown-status', 'constructor', undefined])('does not pin a pipeline whose last run is %s', status => {
+    it('pins a running run with a failed task: it ends only once every task has (ADR #137 §4)', () => {
+        const lines = build([
+            p('a-failing', { status: 'running', failed_tasks: 1 }),
+            p('b-running', { status: 'running', failed_tasks: 0 }),
+        ]);
+        expect(show(lines)).toEqual(['§attention 1', 'a-failing', '§all 2', 'a-failing', 'b-running']);
+        expect(needsAttention({ status: 'success', failed_tasks: 1 })).toBe(false);   // a finished run says its status
+    });
+
+    it.each(['running', 'aborted', 'success', 'idle', 'unknown-status', 'constructor', undefined])('does not pin a pipeline whose last run is %s', status => {
         expect(show(build([p('one', { status })]))).toEqual(['one']);
         expect(needsAttention({ status })).toBe(false);
     });
@@ -77,7 +86,7 @@ describe('buildSidebarLines', () => {
     it('a folded group lists no rows', () => {
         const lines = build([
             p('a', { group: 'orders', status: 'failed' }),
-            p('b', { group: 'orders', status: 'timed_out' }),
+            p('b', { group: 'orders', status: 'failed' }),
             p('c', { group: 'orders', status: 'running' }),
         ], '', ['orders']);
         expect(show(lines)).toEqual(['§attention 2', 'a', 'b', '§all 3', '▸orders 3 folded']);

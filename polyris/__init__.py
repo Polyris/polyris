@@ -44,7 +44,7 @@ Deploy Options:
     # Then: polyris-deploy
 """
 
-__version__ = "1.2.3"
+__version__ = "1.3.0rc1"
 
 # Core classes
 from .config import config
@@ -76,12 +76,7 @@ from .steps import (
     Step,
     Wait,
     Pass,
-    Choice,
-    Condition,
     HttpTask,
-    Map,
-    Sensor,
-    ShortCircuit,
     LambdaTask,
     Succeed,
     DynamoDBTask,
@@ -107,7 +102,6 @@ from .constants import (
     FAILURE_STATUSES,
     ACTIVE_STATUSES,
     WAITING_STATUSES,
-    COUNTDOWN_STATUSES,
     STOPPABLE_STATUSES,
 )
 
@@ -174,12 +168,7 @@ __all__ = [
     'Step',
     'Wait',
     'Pass',
-    'Choice',
-    'Condition',
     'HttpTask',
-    'Map',
-    'Sensor',
-    'ShortCircuit',
     'LambdaTask',
     'Succeed',
     'DynamoDBTask',
@@ -228,6 +217,5 @@ __all__ = [
     'FAILURE_STATUSES',
     'ACTIVE_STATUSES',
     'WAITING_STATUSES',
-    'COUNTDOWN_STATUSES',
     'STOPPABLE_STATUSES',
 ]

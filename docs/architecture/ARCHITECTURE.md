@@ -5,11 +5,10 @@
 - [High-Level Overview](#high-level-overview) — diagram
 - [Design Principles](#design-principles)
 - [Data Flow: "What Calls What"](#data-flow-what-calls-what)
-- [Failure Handling Flow](#failure-handling-flow)
 - [DynamoDB Tables](#dynamodb-tables)
 - [Trigger Rules](#trigger-rules)
 - [Task Statuses](#task-statuses)
-- [Step Functions Helpers](#step-functions-helpers)
+- [State Machines and Lambdas](#state-machines-and-lambdas)
 - [Cost Model](#cost-model)
 - [Task Status Lifecycle](#task-status-lifecycle)
 - [UI Architecture (React Console)](#ui-architecture-react-console)
@@ -18,44 +17,17 @@
 
 ## High-Level Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              polyris System                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────────┐ │
-│  │ polyris-deploy│──▶│  Pipeline   │───▶│         AWS Resources           │ │
-│  │  (deploy)   │    │    SFN      │    │  • Step Function                │ │
-│  └─────────────┘    └─────────────┘    │  • EventBridge Rule             │ │
-│        │                   │           │  • CloudWatch Logs              │ │
-│        ▼                   ▼           └─────────────────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                    Shared Infrastructure (SAM/CloudFormation)         │   │
-│  │   ┌───────────────┐    ┌───────────────┐    ┌──────────────────┐   │   │
-│  │   │  dependency   │    │  EventBridge  │    │    DynamoDB      │   │   │
-│  │   │   wrapper     │    │    Rules      │    │    (8 tables)    │   │   │
-│  │   └───────────────┘    └───────────────┘    └──────────────────┘   │   │
-│  │          │                     │                                   │   │
-│  │   ┌───────────────┐    ┌───────────────┐                          │   │
-│  │   │   Helpers     │    │    Lambdas    │                          │   │
-│  │   │ • run_task    │    │ • console_api │                          │   │
-│  │   │ • failure     │    │ • evaluate_dep│                          │   │
-│  │   │ • registration│    │ • query_subs  │                          │   │
-│  │   │ • notify_deps │    │ • check_asset │                          │   │
-│  │   │ • notify_asset│    │ • notify_a_sub│                          │   │
-│  │   │ • slack       │    │ • ui_bootstrap│                          │   │
-│  │   │ • pagerduty   │    └───────────────┘                          │   │
-│  │   │ • +5 more     │                                               │   │
-│  │   └───────────────┘                                               │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-│  ┌──────────────────────────────────────────────────────────────────────┐│
-│  │                        Web Console (React)                           ││
-│  │   • Pipeline list & status         • Task detail modal + logs       ││
-│  │   • DAG / Gantt / Calendar         • Execution history browser      ││
-│  │   • Auto-refresh (polling)         • Task actions (skip/restart)    ││
-│  └──────────────────────────────────────────────────────────────────────┘│
-└──────────────────────────────────────────────────────────────────────────┘
-```
+![The polyris engine and the path of a run: Start_Run writes the run's rows, the tasks table's stream wakes the dispatcher, which starts run_task; run_task records its success, and once every row is final the dispatcher answers the run's token.](engine.svg)
+
+1. A schedule, Run in the console, or an asset's fact starts the pipeline's state machine.
+2. After the run's registration, its `Start_Run` state invokes the platform's start-run Lambda with a task token. The Lambda writes the run row, the run's input and one row per task, `waiting`, and returns within seconds. The state waits for its token, and a waiting state costs nothing.
+3. The tasks table's stream wakes the dispatcher.
+4. The dispatcher passes over the run's rows, writes `deps_ready` in a transaction and starts `run_task`.
+5. `run_task` marks the task `running` and runs the work in your resources.
+6. Its success is one transaction: the status, `output#` and the facts of the task's assets. The row's change wakes the dispatcher again, which starts the next tasks.
+7. Once every row is final, the dispatcher answers the run's token, and the pipeline's execution ends.
+
+The sweeper checks what is due every 5 minutes, so a lost wake-up delays a task instead of losing it. `asset-fanout` makes a narrow pass over the tasks that wait for a new fact, and starts the pipelines scheduled on it. `polyris-deploy` writes a pipeline's task specs to `pipeline-specs` and deploys its stack: its state machine, its schedule and its log group. `polyris-up` installs and upgrades the platform. [State Machines and Lambdas](#state-machines-and-lambdas) and [DynamoDB Tables](#dynamodb-tables) list every piece.
 
 ---
 
@@ -64,21 +36,20 @@
 These are the load-bearing decisions the rest of the architecture follows from.
 (Each is expanded in [DESIGN_DECISIONS.md](../reference/DESIGN_DECISIONS.md).)
 
-1. **Nothing to run — Step Functions *is* the runtime.** polyris has no
-   scheduler, no worker pool, and no orchestrator metadata database to operate.
-   A pipeline compiles to a Step Functions state machine; EventBridge Scheduler
-   triggers it; AWS runs it. Between runs the system scales to zero. The only
-   always-on cost is the shared control surface (console API, DynamoDB, the
-   helper state machines) — a typical deployment is ~$31/month, and a marginal
-   pipeline run is fractions of a cent.
+1. **Nothing to run — AWS runs it.** polyris has no scheduler, no worker pool
+   and no orchestrator to operate. A pipeline compiles to a Step Functions state
+   machine whose `Start_Run`, after the run's registration, writes its tasks as rows;
+   EventBridge Scheduler triggers it. Step Functions runs each task's work
+   (`run_task`), and a dispatcher Lambda, woken by the tasks table's stream,
+   decides from the rows which task starts next. Between runs the system scales
+   to zero ([README § Cost](../../README.md#cost)).
 
-2. **Nothing hidden — SFN-first over event-cleverness.** Execution flows through
-   visible, debuggable Step Functions executions rather than opaque event
-   choreography. Earlier designs that fanned work out through EventBridge as a
-   "black box" were deliberately replaced with Step Functions so that every run
-   has an inspectable history and state. Observability and transparency beat
-   cleverness; EventBridge is used for scheduling and asset-event delivery, not
-   as the execution substrate.
+2. **Nothing hidden — decisions from rows and facts.** A task's state is its
+   row, so the console shows why each task waits. The dispatcher decides a task
+   from its upstreams' rows and the asset facts, read consistently. The streams
+   only wake it: a lost wake-up delays a task, never loses it, because the
+   sweeper checks every run on a schedule. Each task's work is a Step Functions
+   execution with an inspectable history.
 
 3. **Asset-centric, not just task-aware.** Tasks declare the data assets they
    produce (`outlets`). Assets form a graph with lineage and partitions, and
@@ -99,221 +70,126 @@ These are the load-bearing decisions the rest of the architecture follows from.
    drift gates. Hand-maintained copies of the same vocabulary are treated as
    bugs (see DESIGN_DECISIONS #72/#83/#93/#94).
 
-6. **No silent failures.** Alerts are configured per pipeline in the Console UI;
-   on failure the notify Lambda reads that config from DynamoDB and fans out to
-   every enabled channel (an empty config is a clean no-op).
+6. **No silent failures.** A task that fails after its retries waits for an
+   operator's decision, with the cause on its row. A failure of the platform
+   itself is retried until it succeeds, fails the task it concerns with the real
+   cause, or shows in the console's bell or System status (ADR #130 §9).
 
 ---
 
 ## Data Flow: "What Calls What"
 
-Use this section to debug "why didn't my task start?" — trace the chain step by step.
+Use this section to debug "why didn't my task start?" — trace the chain step by step. [ADR #137](../reference/adr-137-tasks-as-rows.md) is the full design.
 
-### Flow 1: Happy Path (Scheduled Pipeline Run)
+### Flow 1: A scheduled run
 
 ```
-EventBridge Schedule Rule (cron)
+EventBridge schedule (cron or rate)
      │
      ▼
-Orchestrator SFN (pipeline-level)
-     │  launches all tasks in parallel via Map
-     │  passes: date, pipeline_execution, orchestration_token
+The pipeline's state machine
+     │  after the registration: Start_Run (lambda:invoke.waitForTaskToken)
      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Dependency Wrapper SFN (one per task)                          │
-│                                                                 │
-│  1. Emit_Wrapper_Started ──────► task_events [putItem]          │
-│  2. Wait_For_Dependencies ─────► Registration Helper SFN        │
-│     │                              │                            │
-│     │    ┌─────────────────────────┘                            │
-│     │    │  a. Save_Task_Record ───► pipeline_tokens [putItem]  │
-│     │    │  b. root task: signal ──► SendTaskSuccess (token)    │
-│     │    │  c. otherwise: subscriptions ► dependency_subscriptions │
-│     │    │     then reconcile Lambda (decides, signals if ready) │
-│     │    └─────────────────────────────────────────────────     │
-│     │                                                           │
-│  3. Claim_Deps_Ready ─────────► pipeline_tokens [updateItem]    │
-│     (the wrapper writes the status that follows the signal)     │
-│  4. Run_Task Helper SFN ──────► (see Flow 2)                    │
-│  5. Handle_Failure (if error) ► failure_handler SFN             │
-└─────────────────────────────────────────────────────────────────┘
+start-run Lambda
+     ├─ reads the task specs of the run's spec version ──► pipeline-specs
+     ├─ writes the run row _run_{execution} with the run's token, the run's input,
+     │  one row per task (waiting) and the asset: pointers of wait_for tasks
+     └─ marks the run active
+     │
+     ▼  the tasks table's stream
+reconcile Lambda — the dispatcher: one pass over the run's rows
+     ├─ decides each waiting row from its upstreams' rows and the asset facts,
+     │  read consistently, by its trigger rule (ADR #138)
+     ├─ ready ──────► writes deps_ready, then starts run_task under a derived name
+     ├─ blocked ────► upstream_failed, or skipped (skip_origin = rule)
+     └─ every row final ─► answers the run's token: the pipeline execution ends
 ```
 
-Every registration failure is caught: a lost row or a non-transient error fails the task with its cause (`CoordinationError`); a transient one leaves the saved row due for the next check.
+Direct steps (`dynamodb`, `sns`, `sqs`, `s3`, `http` and the like) stay branches of the pipeline's state machine, beside `Start_Run`.
 
-### Flow 2: Task Execution (run_task Helper)
-
-```
-Run_Task Helper SFN
-     │
-     ├─ Check_Pause ─────────────► pipeline_tokens _pause_{run} [getItem]
-     │    └─ if paused ──────────► pause_waiter SFN (waitForTaskToken): saves the
-     │                             token with a paused# entry; resume, or the
-     │                             sweeper once the run is no longer paused, releases it
-     │
-     ├─ Update_Status_Running ───► pipeline_tokens [updateItem]
-     ├─ Emit_Task_Started ───────► task_events [putItem]
-     │
-     ├─ Read_Upstream_Outputs ───► pipeline_tokens [getItem] (data passing)
-     │
-     ├─ Execute task (one of):
-     │    ├─ Run_Task_SFN ────► target Step Function (.sync:2)
-     │    ├─ Run_Task_Lambda ─► target Lambda
-     │    ├─ Run_Task_Glue ───► Glue Job (.sync)
-     │    ├─ Run_Task_ECS ────► ECS Task (.sync)
-     │    ├─ Run_Task_Athena ─► Athena Query (.sync)
-     │    ├─ Run_Task_EMR ────► EMR Step (.sync)
-     │    └─ Run_Task_Batch ──► AWS Batch (.sync)
-     │
-     ├─ ON SUCCESS:
-     │    ├─ Save_Success ───────────► pipeline_tokens [updateItem]
-     │    ├─ Emit_Task_Finished ─────► task_events [putItem]
-     │    ├─ Notify_Dependents ──────► notify_dependents SFN (see Flow 3)
-     │    ├─ Emit_Asset_Events ──────► asset_events [putItem] (if outlets; see Flow 4)
-     │    └─ Send_Pipeline_Success ──► orchestrator token (if last task)
-     │
-     └─ ON FAILURE:
-          ├─ Save_Error_Waiting ─────► pipeline_tokens (status=waiting_decision)
-          ├─ Interactive_Notify ─────► notify Lambda: interactive channel with buttons (Skip/Restart/Fail)
-          ├─ Send_Immediate_Alert ───► notify Lambda: immediate alert channel
-          ├─ Wait_For_Decision ──────► 5h wait for human response
-          ├─ Save_Failed ────────────► pipeline_tokens [updateItem]
-          ├─ Notify_Dependents_Failed ► notify_dependents SFN
-          └─ Send_Pipeline_Failure ──► orchestrator token
-```
-
-### Flow 3: Dependency Notification Chain
-
-This is the core of "how does task B know that task A finished?" (ADR #130).
+### Flow 2: A task's work (run_task)
 
 ```
-Task A completes (success or failed)
-     │
-     ▼
-notify_dependents SFN
-     │
-     ├─ Query_Subscriptions ─────► query_subscriptions Lambda
-     │    └─ consistent read ────► dependency_subscriptions table
-     │       key: {task A}-{pipeline_execution_short}
-     │       returns: subscribers — each a waiting task's execution_name
-     │
-     ├─ Has_Subscribers? ── no ──► Done (no one waiting)
-     │
-     └─ yes ► Reconcile_Subscribers (Map, concurrency=10)
-              │
-              for each subscriber: reconcile Lambda
-              │    reads (consistent): the task row, its dependency rows,
-              │      its wait_for assets, the pause flag
-              │    applies the trigger rule (5 rules — ADR #117)
-              │
-              ├─ ready ──────────► SendTaskSuccess({signal: 'deps_ready'})
-              │    └─ wrapper writes deps_ready, then runs the task
-              │
-              ├─ skip ───────────► SendTaskSuccess({signal: 'deps_skip'})
-              │    └─ wrapper writes 'skipped' (skip_origin='rule'), then
-              │       notifies its own dependants; the run stays 'success' (ADR #115)
-              │
-              ├─ upstream_failed ► SendTaskSuccess({signal: 'deps_blocked'})
-              │    └─ wrapper writes 'upstream_failed', then the failure path
-              │
-              ├─ paused ─────────► status waiting_paused (resume re-checks it from facts)
-              │
-              └─ wait ───────────► nothing (still waiting for other conditions)
+run_task — one execution per attempt of a task's work
+     ├─ Claim ─────────────────► the row: deps_ready → running, under its generation
+     ├─ Read_Upstream_Outputs ─► output# of its upstreams (data passing)
+     ├─ Save_Input_Record ─────► input#: what the console shows as the task's input
+     ├─ the work (one of): Lambda, Step Functions (.sync:2), Glue, ECS,
+     │    Batch, Athena, EMR (.sync), with the task's retries in place
+     ├─ success ─► Record_Success: one transaction of the status, output#
+     │             and a fact per outlet (asset-events)
+     └─ failure after its retries ─► waiting_decision, with the cause and the
+                                     decision's deadline; the notify Lambda alerts
 ```
 
-A failed reconcile call never fails `notify_dependents`. Every waiting task is also re-checked by the sweeper at its due time: every 5 minutes it takes the due rows, and a task that still waits is due again in 10, 20, then every 30 minutes. A lost hint therefore delays a task and never loses it. When the wrapper's status write finds the task already moved by someone else (an operator's skip or success), the wrapper ends without running the task.
+### Flow 3: How task B learns that task A finished
+
+```
+run_task writes A's final status (or an operator's action does)
+     │
+     ▼  the tasks table's stream, filtered to the changes that wake
+reconcile Lambda — a pass over A's run
+     └─ decides B from A's row and B's other upstreams (consistent reads)
+
+sweeper — every 5 minutes, a full pass over each due run
+     └─ so a lost wake-up only delays a task: a run is checked again
+        10, 20, then every 30 minutes while it has rows to watch
+```
+
+An operator's action and a run's request (a Restart's pointers, a reset of dependants, a Stop of the run) are writes too, and wake the dispatcher the same way.
 
 ### Flow 4: Asset-Based Cross-Pipeline Triggers
 
 ```
-Producer task completes with outlets: [{name: "inventory"}]
+Producer task succeeds with outlets: [{name: "inventory"}]
      │
      ▼
-run_task Record_Asset_Event ──► asset_events [putItem, never overwrites]
+run_task's success transaction ──► asset-events [Put, never overwrites]
      │    one fact per outlet: partition_key (the run's date), partition_date,
      │    granularity, event_time
-     │
-     ├─ PULL model (wait_for) ── asset_events stream (INSERT) ──► AssetFanout Lambda
-     │    ├─ Query dependency_subscriptions "asset:inventory" (consistent)
-     │    └─ For each waiting task: reconcile Lambda (in-process)
-     │         reads: asset_events — does a fact satisfy the run's date?
-     │         if yes → signal the task's wrapper
-     │
-     └─ PUSH model (schedule=[asset]) ── the same AssetFanout call
-          ├─ Query asset_subscriptions "inventory" (consistent)
-          └─ For each consumer pipeline (never the producer itself):
+     ▼  the asset-events stream (INSERT)
+asset-fanout Lambda
+     ├─ PULL (wait_for): the asset:inventory pointers, read consistently
+     │    └─ one narrow pass of the dispatcher over each run with a waiting
+     │       task, which decides from the facts of the run's partition
+     └─ PUSH (schedule=[asset]): asset-subscriptions "inventory"
+          └─ for each consumer pipeline (never the producer itself):
                ├─ evaluate its whole schedule for the fact's date, as pull does
                └─ if satisfied → StartExecution under run_name(...):
-                    AND → one run per date; OR → one per event
+                    AND → one run per date while its history is kept; OR → one per event
                     ExecutionAlreadyExists → already started; transient error →
                     push retry row for the sweeper; anything else → warning
 ```
 
 A fact's partition is the partition of the run that produced it; Mark Successful records it for the marked run's date. A task is woken only when a fact serves its own run's date (hourly and daily: that date; weekly and monthly: its period or the one before).
 
-### Flow 5: Failure → Alerting
+### Flow 5: Failure → decision → alert
 
-Two-line alerting architecture:
-
-**Line 1 — run_task helper (immediate, while task is actionable):**
 ```
-Task error caught by run_task
-     │
-     ├─ Save_Error_Waiting ──────► pipeline_tokens (status=waiting_decision)
-     ├─ Get_Decision_Timeout ────► read global decision-wait timeout (registry __global_settings__)
-     ├─ Interactive_Notify ─────► notify Lambda — interactive channel with action buttons (Skip/Restart/Mark Success/Fail)
-     ├─ Send_Immediate_Alert ───► notify Lambda — non-interactive channel (fires immediately)
-     └─ Wait_For_Decision ───────► decision-timeout window for human response
-          └─ timeout ────────────► Save_Failed → wrapper catches → failure_handler
+The task's work fails after its retries (run_task)
+     ├─ the row ─► waiting_decision, with the cause and the decision's deadline
+     ├─ notify Lambda ─► the pipeline's alert channels, if it has any
+     └─ the operator decides in the console: Restart, Skip, Fail, Mark Successful
+          └─ no decision by the deadline ─► the dispatcher fails the task
+A final failure decides the dependants by their rules (ADR #138); the run ends once
+every task is final, and fails if a task failed.
 ```
 
-Both the interactive post and the immediate alert are `lambda:invoke` calls
-to the single notify Lambda — there are no separate alerter state machines.
-The Lambda reads the pipeline's alert_config from the registry and posts to
-whichever channels are enabled.
-
-**Line 2 — failure_handler (after task is terminal):**
-```
-Wrapper catches failure
-     │
-     ▼
-failure_handler SFN
-     │
-     ├─ Truncate_Error ──────────► (prevent DynamoDB 400KB limit)
-     ├─ Update_Status_Failed ────► pipeline_tokens [updateItem]
-     ├─ Emit_Failure_Event ──────► task_events [putItem]
-     │
-     ├─ Notify_Dependents ───────► notify_dependents SFN
-     │    (so downstream tasks get blocked/triggered per trigger_rule)
-     │
-     ├─ Check_Is_Upstream_Failed ► upstream_failed? skip alert (root cause already alerted)
-     │
-     ├─ Check_Alert_Enabled ─ yes ► notify Lambda (restart-only message, no action buttons)
-     │    └─ on notify failure ──► pipeline_tokens [updateItem]
-     │                              (record notification_failed=true)
-     │
-     └─ Send_Task_Failure ───────► orchestrator token (callback)
-```
-
-**Key design decisions:**
-- The immediate-alert channel fires in line 1 so on-call can act during the decision-wait window (global timeout, default 5h)
-- upstream_failed tasks don't alert — root cause task already sent notifications
-- Line 2 sends a restart-only message (no Skip/Fail buttons on a terminal task)
-- Immediate-alert channel is not re-fired in line 2 — already triggered in line 1
+A failure of the platform itself is retried until it succeeds, fails the task it concerns with the real cause, or shows in the console's bell or System status (ADR #130 §9).
 
 ### Flow 6: Pipeline Registration on Deploy
 
 **Primary path (polyris-deploy lifecycle):**
 ```
 polyris-deploy
+     │  writes each task's spec to pipeline-specs, reads it back and checks it
      │  CloudFormation creates/updates the pipeline StateMachine
      ▼
 dynamodb.update_item (direct boto3 call from deploy.py)
-     └─ pipeline_registry ──── SET registered_at = <now>
+     └─ pipeline_registry ──── SET registered_at, format_version
      ▼
 sfn.start_execution(register_only=true)  ← fire-and-forget
-     ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, tasks, dag, ...]
-     ├─ Save_DAG_Snapshot ──────► tokens_table [putItem]
+     ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, spec_id, task_count, ...]
      └─ RegisterAssetSubscriptions (if asset triggers)
           └─ Map ──────────────► asset_subscriptions [putItem]
 ```
@@ -323,56 +199,24 @@ sfn.start_execution(register_only=true)  ← fire-and-forget
 polyris-destroy
      │
      ▼
-CloudFormation delete_stack
-     └─ StateMachine deleted (running executions aborted)
+CloudFormation delete_stack ◄── until the stack is gone: stop the pipeline's running runs
+     └─ StateMachine deleted once none of its runs is left
 ```
 
 ### Quick Debug Reference
 
 | Symptom | Where to look | Table / Service |
 |---------|--------------|-----------------|
-| Task stuck in `waiting` | reconcile logs for the task's `execution_name`: `verdict` and `reasons` | `dependency_subscriptions` — pointers; `asset_events` — a fact for the run's date? |
-| Task never becomes `deps_ready` | reconcile logs; the upstream's notify_dependents execution | `pipeline_tokens` — dependency statuses; the task's `attention_at` (next sweeper check) |
-| Task `deps_ready` but not running | run_task helper execution: held in its pause wait? | `pipeline_tokens` — `_pause_{run}` and the row's `pause_token` |
+| Task stuck in `waiting` | The task in the console: why it waits, and since when. reconcile logs for its run | `pipeline_tokens` — the row's `reasons` and `attention_at` (its next check); `asset_events` — a fact for the run's date? |
+| Task never becomes `deps_ready` | reconcile logs for the run; its timeline's decisions | `pipeline_tokens` — the upstreams' rows of the same run |
+| Task `deps_ready` but not running | run_task's execution named by the row's `task_run_id` | `pipeline_tokens` — `start_failed_first`, `start_failures`; the bell |
 | The **System** pill in the console header is amber | "no connection" or "API error": its panel, and the console API's logs for `/api/pipelines`. Else its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
 | `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
 | Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
-| No alert delivered on failure | run_task + failure_handler execution | Check per-pipeline alert config in registry; `notification_failed` field in token |
+| No alert delivered on failure | run_task's execution: its notify call | The pipeline's alert config in the registry; the row's `notification_failed` |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
-| Wrong DAG in UI for old execution | Check `dag_source` in API response | `pipeline_tokens` — `dag_snapshot::{execution}` exists? |
-| Wrong trigger_rule result | reconcile Lambda logs | `verdict`, `reasons` and `deps` in the line for the task's `execution_name` |
-
----
-
-## Failure Handling Flow
-
-```
-Task Failure
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 run_task helper (Line 1)                     │
-│                                                             │
-│   1. Save_Error_Waiting (DDB: status=waiting_decision)      │
-│   2. Interactive_Notify → notify Lambda: interactive channel (buttons)  │
-│   3. Send_Immediate_Alert → notify Lambda: immediate channel │
-│   4. Wait_For_Decision (5h timeout)                         │
-│   5. Save_Failed → Notify_Dependents → Send_Pipeline_Failure│
-└──────────────────────────┬──────────────────────────────────┘
-                           │ wrapper catches failure
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 failure_handler SFN (Line 2)                 │
-│                                                             │
-│   1. Truncate_Error (prevent DynamoDB limits)               │
-│   2. Update_Status_Failed (DynamoDB)                        │
-│   3. Emit_Failure_Event (task_events)                       │
-│   4. Notify_Dependents (trigger_rules evaluation)           │
-│   5. Check_Is_Upstream_Failed → skip alerts if cascade      │
-│   6. Check_Alert_Enabled → send restart-only message (no buttons) │
-│   7. Send_Task_Failure (callback to pipeline)               │
-└─────────────────────────────────────────────────────────────┘
-```
+| Wrong DAG in UI for old execution | Check `dag_source` in API response | `run`: the run row's `spec_id` in `pipeline-specs`; `snapshot` (a run started before 1.3): `dag_snapshot::{execution}` in `pipeline_tokens` |
+| Wrong trigger_rule result | The task's timeline: the dispatcher's decision and its reasons | reconcile logs for the run |
 
 ---
 
@@ -383,9 +227,10 @@ Quick reference — for full attribute definitions and access patterns see
 
 | Table | Purpose | PK | SK |
 |-------|---------|----|----|
-| pipeline_tokens | Task state | execution_name | - |
+| pipeline_tokens | Task rows and run rows (`_run_{execution}`) | execution_name | - |
 | dependency_subscriptions | Per-run pointers to waiting tasks | dependency_key | subscriber |
 | pipeline_registry | Pipeline metadata | pipeline_name | - |
+| pipeline_specs | Task specs, by version and by text hash | pk | sk |
 | asset_events | Asset history | asset_name | event_time |
 | asset_subscriptions | Pipelines scheduled on an asset | asset_name | pipeline_name |
 | task_events | Task history | task_run_id | event_time |
@@ -394,29 +239,9 @@ Quick reference — for full attribute definitions and access patterns see
 
 ## Trigger Rules
 
-Canonical: `all_success` (default), `one_success`, `all_done`. The other 8 are accepted
-accepted rule names — see `docs/features/DSL.md#trigger-rules` for which behave
-distinctly vs. collapse onto a canonical one under the intervention-first failure
-model (ADR #114), and `docs/reference/adr-115-canonical-trigger-rules-and-skip-semantics.md`
-for the full rationale.
+Nine rules (ADR #138); `docs/features/DSL.md#trigger-rules` describes each one with an example, and `polyris/coordination/trigger_rules.py` is the one implementation, checked against the ADR's truth table (`tests/fixtures/trigger_rules_truth_table.json`).
 
-| Rule | When triggers |
-|------|---------------|
-| `all_success` | All deps = success, or skipped with `skip_origin != 'rule'` (default) — a rule-originated skip does *not* count as ok (ADR #115) |
-| `all_done` | All deps finished (any status) |
-| `all_skipped` | All deps = skipped |
-| `one_success` | At least one dep = success (immediate!) |
-| `none_skipped` | No deps skipped |
-
-5 rules total (ADR #117 — 6 names are rejected outright; the other 6 either duplicated one
-of these in every state reachable under the intervention-first model, ADR #114, or
-could never fire at all — see `docs/features/DSL.md#trigger-rules`).
-
-A blocked rule (all deps terminal, condition not satisfied) resolves one of
-two ways via the reconciler's verdict (ADR #115, ADR #130). `upstream_failed`
-fires when a success/no-failure-requiring rule is blocked by a genuine
-failure. `skip` fires when the condition never occurred — the task resolves
-`skipped`, the run stays `success`, no error.
+A rule reads the final outcomes of its task's direct upstreams: a failed task is final only after the decision on it (ADR #114), and `stopped` is a final failure. It runs its task as soon as its condition holds, and decides the rest only once every upstream is final. A rule that needs success or no failure (`all_success`, `one_success`, `none_failed`, `none_failed_min_one_success`) ends a task that a final failure blocks `upstream_failed`; any other unmet rule ends it `skipped`, with `skip_origin = rule`. Only `all_success` reads a skip's origin: a rule's skip cascades, an operator's or a run's passes. A name the engine does not know fails its task.
 
 ---
 
@@ -424,45 +249,37 @@ failure. `skip` fires when the condition never occurred — the task resolves
 
 | Status | Description |
 |--------|-------------|
-| `waiting` | Waiting for dependencies |
-| `deps_ready` *(signal, not persisted)* | `notify_dependents`/`registration`'s callback payload when deps satisfy the rule — the wrapper resumes and the task actually runs; not a status you'll see stored |
-| `deps_blocked` *(signal, not persisted)* | Callback payload when a genuine failure blocks a success-requiring rule — resolves to the persisted `upstream_failed` |
-| `deps_skip` *(signal, not persisted)* | Callback payload when a rule's condition legitimately never occurred (ADR #115) — resolves to the persisted `skipped` |
-| `waiting_delay` | wait_before countdown |
-| `waiting_paused` | Pipeline paused, task waiting for resume |
-| `waiting_decision` | Waiting for manual decision (interactive notification) |
-| `pending` | Pending redrive (SFN) |
-| `running` | Executing |
-| `success` | Completed successfully |
-| `failed` | Failed |
-| `skipped` | Skipped — manually (task action, `skip_origin='manual'`), by the pre-execution `skip_tasks` list (`skip_reason='auto_skipped'`), or by a trigger_rule condition that never occurred (`skip_origin='rule'`) |
-| `stopped` | Manually stopped (can restart) |
-| `aborted` | Force stopped (terminal) |
-| `upstream_failed` | Blocked due to upstream failure |
+| `waiting` | Waiting for its upstreams, its assets or its countdown (`wait_before`) |
+| `waiting_paused` | Ready, but its run is paused: it starts after the Resume |
+| `deps_ready` | Ready: the dispatcher starts its `run_task` |
+| `running` | Its `run_task` runs the work |
+| `waiting_decision` | Failed after its retries: waits for an operator's decision until its deadline |
+| `success` | Completed successfully, or marked successful by an operator |
+| `failed` | Failed for good: an operator's Fail, the decision's deadline, a limit, or a start refused |
+| `skipped` | Skipped — by an operator (`skip_origin = manual`), by the run's `skip_tasks` (`run`), or by a trigger rule (`rule`) |
+| `upstream_failed` | Blocked: a final failure of an upstream means its rule can never hold |
+| `stopped` | Stopped by an operator or with its run |
+
+Rows of runs started before 1.3 may also show `aborted` and `pending`, and `stale` for one that no engine finishes.
 
 ---
 
-## Step Functions Helpers
+## State Machines and Lambdas
 
-One-line inventory — for the detailed per-helper flow diagrams see
-[BACKEND.md § Step Function Helpers](BACKEND.md#step-function-helpers).
+One-line inventory — for what each one does see
+[BACKEND.md § State machines](BACKEND.md#state-machines).
 
 | Component | Purpose |
 |-----------|---------|
-| `polyris-dependency-wrapper` | Main wrapper — handles deps, execution, failures |
-| `polyris-registration-helper` | Register task + subscriptions, check initial deps |
-| `polyris-run-task-helper` | Execute task (SFN/Lambda/Glue/ECS/Athena/EMR/Batch) |
-| `polyris-failure-handler` | Update DB, emit events, notify dependents, send follow-up alerts via notify Lambda |
-| `polyris-pause-waiter` | Save pause token, wait for resume callback |
-| `polyris-notify-dependents` _(EXPRESS)_ | Query subscribers, evaluate trigger rules, send tokens |
-| `polyris-restart-task-helper` _(EXPRESS)_ | Restart failed task |
-| `polyris-restart-wrapper` _(EXPRESS)_ | Restart wrapper execution |
-
-> Alert delivery and interactive callbacks are **not** separate state
-> machines. They are `lambda:invoke` calls from run_task / failure_handler /
-> dependency_wrapper to the single notify Lambda. Earlier per-channel
-> Express SFNs (and the EventBridge Connection that backed them) were
-> removed in favor of the consolidated Lambda approach.
+| `polyris-dep-run-task-helper` | `run_task`: one attempt of a task's work, its outcome and its facts in one write |
+| `polyris-bulk-backfill` | Starts one pipeline execution per date of a range |
+| `polyris-test-quick`, `-test-success`, `-test-failure` | Demo targets for `@task.sfn` |
+| `start-run` | Starts a run's tasks, after its registration: writes the run row, its input, one row per task and the `asset:` pointers |
+| `reconcile` | The dispatcher: decides each row, starts `run_task`, answers the run |
+| `asset-fanout` | Takes new facts to the runs that wait for them, and starts the pipelines scheduled on them |
+| `sweeper` | Every 5 minutes: a pass over each due run, push retries and catch-up, the engine's self-check |
+| `console-api` | The console's REST API |
+| `notify` | Delivers alerts: `run_task` and the console invoke it |
 
 ---
 
@@ -479,43 +296,34 @@ No always-on control plane, so idle cost is near zero.
 ## Task Status Lifecycle
 
 ```
-                    ┌─────────────────────────────────────────────────┐
-                    │                    WAITING                       │
-                    │  (initial - waiting for dependencies)            │
-                    └─────────────────────────────────────────────────┘
-                                          │
-                          ┌───────────────┼───────────────┐
-                          ▼               ▼               ▼
-                    ┌───────────┐  ┌─────────────┐  ┌───────────────┐
-                    │ DEPS_READY│  │WAITING_PAUSED│  │DEPS_BLOCKED   │
-                    │           │  │(pipe paused) │  │→upstream_failed│
-                    └───────────┘  └─────────────┘  └───────────────┘
-                          │
-                          ▼
-                    ┌───────────────────┐
-                    │  WAITING_DELAY    │
-                    │ (countdown timer) │
-                    └───────────────────┘
-                          │
-                          ▼
-                    ┌───────────────────┐
-                    │      RUNNING      │
-                    │ (task executing)  │
-                    └───────────────────┘
-                          │
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-          ┌─────────┐ ┌─────────┐ ┌───────────────────────┐
-          │ SUCCESS │ │ FAILED  │ │ WAITING_DECISION      │
-          └─────────┘ └─────────┘ │ (interactive notify)  │
-                                  └───────────────────────┘
+                      ┌──────────────────────────────────────────┐
+                      │                 WAITING                   │
+                      │ (its upstreams, its assets, its countdown) │
+                      └──────────────────────────────────────────┘
+                           │               │                 │
+                           ▼               ▼                 ▼
+                    ┌────────────┐ ┌──────────────┐ ┌─────────────────────────┐
+                    │ DEPS_READY │ │WAITING_PAUSED│ │ UPSTREAM_FAILED, SKIPPED│
+                    │            │ │ (run paused) │ │ (decided by its rule)   │
+                    └────────────┘ └──────────────┘ └─────────────────────────┘
+                           │
+                           ▼
+                    ┌────────────┐
+                    │  RUNNING   │
+                    │ (run_task) │
+                    └────────────┘
+                           │
+                  ┌────────┴──────────┐
+                  ▼                   ▼
+             ┌─────────┐      ┌──────────────────┐      ┌────────┐
+             │ SUCCESS │      │ WAITING_DECISION │ ───► │ FAILED │
+             └─────────┘      │ (after retries)  │      └────────┘
+                              └──────────────────┘
 ```
 
-A task of a paused run waits as `waiting_paused` at one of two points: before its dependency signal, where the reconciler parks it, or at the start of run_task, where it holds a pause token. Resume releases both; the sweeper releases a pause token resume missed (ADR #130).
+A task of a paused run that becomes ready waits as `waiting_paused`: the dispatcher holds it, and starts it after the Resume. Tasks that already run go on. A pause lasts until it is lifted (ADR #137 §5).
 
-**Terminal statuses:** success, failed, skipped, aborted, upstream_failed
-
-**Non-terminal:** stopped (can be restarted), pending (SFN redrive)
+**Final for the engine** (`SETTLED_STATUSES`): success, failed, skipped, upstream_failed and stopped. Any final task can be restarted; a Restart puts it back to `waiting`.
 
 ---
 
@@ -544,13 +352,13 @@ The web console follows a clear data separation pattern:
   API Gateway → Lambda (console_api) → DynamoDB
 ```
 
-**Key pattern (ADR #22):** All UI reads come from DynamoDB. Step Functions API is used only for write/control operations (start, stop, send task token) and reconciliation of running executions.
+**Key pattern (ADR #22):** All UI reads come from DynamoDB. The console asks Step Functions nothing about a run (ADR #137 §4): it starts a run, and stops the `run_task` of a task an operator acts on.
 
 **Store subscriptions:** All components use `useShallow` selectors from Zustand to subscribe to only the fields they need, preventing cascade re-renders when unrelated state changes.
 
 **Bundle optimization:** `TaskDetailModal` is lazy-loaded via `React.lazy()` — it's only fetched when first opened (~50KB deferred from initial load).
 
-**Testing:** 536+ tests across 35 files using Vitest + Testing Library. ReactFlow components are tested via mock renderers that output DOM-testable `<div>` elements.
+**Testing:** Vitest + Testing Library. ReactFlow components are tested via mock renderers that output DOM-testable `<div>` elements.
 
 See [UI Operations Guide](../operations/UI.md) for component details, accessibility, and testing patterns.
 
@@ -562,28 +370,21 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 
 ### Task stuck in "waiting"
 
-1. Check the **Dependencies** tab in the task modal — are the upstreams complete?
-2. Search the reconcile Lambda's logs for the task's `execution_name`: each line gives the `verdict` and the `reasons` it is still waiting. The sweeper re-checks a waiting task 10, 20, then every 30 minutes; if the console's System status says the periodic re-check is not running, that check is not happening.
-3. Check `dependency_subscriptions`: one row per dependency, key `{upstream}-{pipeline_execution_short}`, subscriber = the task's `execution_name`.
-4. Check the upstream's **notify_dependents** execution — did it run?
-
-### Task stuck in "waiting_delay"
-
-1. Check `wait_delay_until_ms` - when should countdown end?
-2. Check server time sync - is there clock skew?
-3. Check wrapper SFN execution - is Wait state active?
+1. Open the task in the console: it shows why it waits (its reasons) and since when.
+2. Search the reconcile Lambda's logs for its run: each decision gives its reasons. The sweeper checks a run with waiting rows 10, 20, then every 30 minutes; if the console's System status says the periodic re-check is not running, that check is not happening.
+3. For `wait_for`: `dependency_subscriptions` holds one `asset:{name}` pointer per asset, with the task's `execution_name`; `asset_events` must hold a fact for the run's partition.
 
 ### Pipeline doesn't start
 
-1. Check **EventBridge rule** - is schedule correct?
-2. Check **orchestrator SFN** - any failed executions?
-3. Check **pipeline registry** - is pipeline registered?
+1. Check the pipeline's **EventBridge schedule** (`…-schedule`) — is it enabled, and is the expression right?
+2. Check the pipeline's **state machine** — a run that fails at once can be a pipeline deployed for 1.2: the console marks it "redeploy needed".
+3. Check the **pipeline registry** — is the pipeline registered?
 
 ### Task fails immediately
 
-1. Check **task_arn** - is it correct?
-2. Check **IAM roles** - does wrapper have permission to invoke?
-3. Check **task SFN/Lambda** logs - what's the error?
+1. Check the task's **ARN or name** — is it right?
+2. Check **IAM** — may the orchestration role, which runs `run_task`, start it? See [TROUBLESHOOTING.md](../operations/TROUBLESHOOTING.md).
+3. Check the task's own **logs** — what is the error?
 
 ---
 
@@ -591,10 +392,13 @@ See [UI Operations Guide](../operations/UI.md) for component details, accessibil
 
 | Term | Definition |
 |------|------------|
-| **Orchestrator** | Main pipeline SFN that launches all tasks in parallel |
-| **Wrapper** | SFN that handles dependency waiting + task execution |
-| **Helper** | Utility SFN (notify_dependents, failure_handler, etc.) |
-| **Token** | waitForTaskToken callback identifier |
-| **Subscription** | Record linking dependent task to upstream task |
+| **Run** | One execution of a pipeline: a run row and one task row per task |
+| **Run row** | `_run_{execution}`: the run's token, its stop mark, its pauses and its requests |
+| **Task row** | A task's state in a run, keyed `{task}-{date}-{short}` |
+| **Dispatcher** | The reconcile Lambda: decides rows from rows and facts, starts `run_task`, answers the run |
+| **run_task** | The state machine that runs one attempt of a task's work |
+| **Sweeper** | Every 5 minutes, checks each due run: a lost wake-up only delays a task |
+| **Token** | The run's `waitForTaskToken`, which the dispatcher answers once every row is final |
+| **Pointer** | An `asset:{name}` row of `dependency_subscriptions`: a waiting task's link to an asset |
 | **Trigger Rule** | Condition for when task should run based on upstream statuses |
 | **Asset** | Data artifact produced by tasks (for data-driven orchestration) |

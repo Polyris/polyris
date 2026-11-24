@@ -12,7 +12,7 @@ import pytest
 from polyris import DAG, task
 from polyris.task import Task
 from polyris.task_group import TaskGroup
-from polyris.steps import Wait, Pass, Choice, Map, Sensor, ShortCircuit, Succeed
+from polyris.steps import Wait, Pass, Succeed
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
 
@@ -78,13 +78,10 @@ class TestStepOperatorEdges:
 class TestStepRegistrationInsideDag:
     def test_steps_register_with_active_dag(self):
         with DAG("reg", schedule=None) as dag:
-            Choice(default=Pass())
-            Map(items_path="$.x")
-            Sensor(sensor_type="s3")
-            ShortCircuit()
+            Pass(step_id="prepare")
             Succeed()
         step_ids = {s.step_id for s in dag.steps}
-        assert {"Choice", "Map", "Sensor_s3", "ShortCircuit", "Succeed"} <= step_ids
+        assert {"prepare", "Succeed"} <= step_ids
 
 
 # ============================================================ #

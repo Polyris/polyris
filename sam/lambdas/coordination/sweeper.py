@@ -1,70 +1,82 @@
-"""The sweeper: the periodic re-check from facts behind every wake-up hint (ADR #130 §8).
+"""The sweeper: the periodic check behind every wake-up hint (ADR #130 §8, ADR #137 §6, §7).
 
 An EventBridge schedule runs it every 5 minutes. One run at a time holds a
-lease; a run that cannot take it exits. Within its budget it takes the
-waiting rows whose due time has come, earliest first, and asks the
-reconciler about each, in-process:
-    * a task that is still waiting is due again later (10 → 20 → 30 minutes,
-      then every 30), so nothing starves and the work per task is bounded;
-    * a task the sweeper wakes although it could run before its due time had
-      its hint lost on the primary path: that is written as a warning;
-    * past its liveness deadline, the reconciler also checks the task's wrapper
-      and aborts a task nothing can wake any more (ADR #130 §3).
+lease; a run that cannot take it exits. Within its budget it:
+    * takes the due entries of the ``waiting`` and ``decision`` kinds of the
+      attention index, run rows included, earliest first, and makes one full
+      pass of the dispatcher over each of their runs, in its own process. The
+      pass judges every row of the run from the row itself; the sweeper's
+      passes alone also judge the executions of the started rows and of the
+      run, and the engine stops a run whose execution ended before its answer
+      or that never became active (§4). The rows of a run whose run row is
+      missing, such as those a 1.2 run left in flight, are stopped
+      (invariant 11);
+    * after each check moves the run row's due time on by the backoff (at most
+      30 minutes) and clears its ``left_at``, a failed pass included, so one
+      broken run holds neither the budget nor the System status; the
+      dispatcher warns about the failed pass, and a sweep whose passes mostly
+      failed reports a failed step;
+    * writes one ``sweeper`` warning per run whose check found lost hints;
+    * retries the push starts that failed transiently, and once an hour
+      replays the push branch for the facts of the last 48 hours, so a lost
+      stream record cannot lose a push start either;
+    * writes its self-check into ``_engine_health``, which the console's
+      System status reads (``sweep.engine_findings``).
 A hint lost by any primary path therefore delays a task; it never loses it
-(Principle #41). The same run releases the tasks held in their pause wait
-whose run is no longer paused, which a resume can miss; retries the push
-starts that failed transiently; and once an hour replays the push branch for
-the facts of the last 48 hours, so a lost stream record cannot lose a push
-start either.
+(Principle #41).
 """
 
 import heapq
-import json
 import os
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 
+from polyris.constants import WarningKind
 from polyris.coordination import attention as att
-from polyris.coordination import sweep
-from polyris.coordination.partition import partition_date
-from polyris.coordination.records import FACT_VERSION, fact_from_item, warning_item
-from polyris.coordination.statuses import RECONCILABLE, WAITING_PAUSED
+from polyris.coordination import dispatch_writes, run_row, sweep, task_row
+from polyris.coordination.records import warning_item
 from polyris.coordination.times import format_utc, parse_utc
 import env
+import dispatcher as dispatching
 from asset_fanout import AssetFanout
 from failures import CoordinationTransient, error_code, is_condition_failed, is_transient
 from logger import log
-from reconcile import Reconciler, _reconciler
-from signals import DEAD
-from stores import Registry
 
 #: A failed step's error is cut to this length in `_engine_health`; its log line keeps all of it.
 _FAILURE_CHARS = 500
+#: The due entries the sweeper reads: rows with a time of their own and the run rows, and decision deadlines (§6).
+DUE_KINDS = (att.WAITING, att.DECISION)
+#: What `_check` answers for a run whose last pass failed for good and whose run row is not due yet: none is made.
+BACKOFF = "backoff"
 
 
 class Sweeper:
-    def __init__(self, reconciler: Reconciler, *, owner: Optional[str] = None,
+    def __init__(self, dispatcher: dispatching.Dispatcher, *, owner: Optional[str] = None,
                  monotonic: Callable[[], float] = time.monotonic,
                  subscriptions_table: str = env.SUBSCRIPTIONS_TABLE,
                  consumers_table: str = env.ASSET_SUBSCRIPTIONS_TABLE,
-                 lambda_client: Any = None, fanout_function: str = env.ASSET_FANOUT_FUNCTION):
-        self.reconciler = reconciler
+                 lambda_client: Any = None, fanout_function: str = env.ASSET_FANOUT_FUNCTION,
+                 dispatcher_function: str = env.DISPATCHER_FUNCTION):
+        self.dispatcher = dispatcher
+        self.clock = dispatcher.clock
         self.lambda_client = lambda_client
         self.fanout_function = fanout_function
-        self.tasks = reconciler.tasks
+        self.dispatcher_function = dispatcher_function
         self.owner = owner or uuid.uuid4().hex
         self.monotonic = monotonic
-        self.fanout = AssetFanout(reconciler, subscriptions_table=subscriptions_table, consumers_table=consumers_table)
-        self.consumers = reconciler.resource.Table(consumers_table)
-        self.facts = reconciler.resource.Table(reconciler.asset_events_table)
+        resource = dispatcher.resource
+        self.tasks = resource.Table(dispatcher.tokens_table)
+        self.fanout = AssetFanout(dispatcher, subscriptions_table=subscriptions_table, consumers_table=consumers_table)
+        self.consumers = resource.Table(consumers_table)
+        self.facts = resource.Table(dispatcher.asset_events_table)
 
     def run(self) -> Dict[str, Any]:
-        now = self.reconciler.clock()
+        now = self.clock()
         if not self._take_lease(now):
             log.info("sweeper", "another run holds the lease")
             return {"skipped": "lease held"}
@@ -74,12 +86,17 @@ class Sweeper:
         try:
             for step in sweep.STEPS:
                 try:
-                    result.update(getattr(self, step)(deadline=deadline))
+                    counts = getattr(self, step)(deadline=deadline)
                 except Exception as exc:  # noqa: BLE001 — Principle #38: the failure reaches the console's findings
                     # One failing step must not skip the others or the self-check; the next run tries it again.
                     failed.append(f"{step}: {type(exc).__name__}: {exc}"[:_FAILURE_CHARS])
                     log.error("sweeper", "a step failed; the next run tries it again", step=step, error=str(exc))
-            result.update(self.self_check(failed_steps=failed))
+                    continue
+                failure = counts.pop("failed_step", None)
+                if failure:
+                    failed.append(f"{step}: {failure}"[:_FAILURE_CHARS])
+                result.update(counts)
+            result.update(self.self_check(failed_steps=failed, lost_hint_runs=int(result.get("lost_hint_runs", 0))))
         finally:
             self._release_lease()
         log.info("sweeper", "done", **result)
@@ -89,7 +106,7 @@ class Sweeper:
 
     def _take_lease(self, now: datetime) -> bool:
         try:
-            self.tasks.table.put_item(
+            self.tasks.put_item(
                 Item={"execution_name": sweep.LEASE_KEY, "owner": self.owner,
                       "expires_at": format_utc(now + sweep.LEASE)},
                 # A resend of our own put, whose answer was lost, must not fail its own condition.
@@ -105,47 +122,107 @@ class Sweeper:
 
     def _release_lease(self) -> None:
         try:
-            self.tasks.table.delete_item(Key={"execution_name": sweep.LEASE_KEY},
-                                         ConditionExpression="#o = :me",
-                                         ExpressionAttributeNames={"#o": "owner"},
-                                         ExpressionAttributeValues={":me": self.owner})
+            self.tasks.delete_item(Key={"execution_name": sweep.LEASE_KEY},
+                                   ConditionExpression="#o = :me",
+                                   ExpressionAttributeNames={"#o": "owner"},
+                                   ExpressionAttributeValues={":me": self.owner})
         except (ClientError, BotoCoreError) as exc:
             # The lease expires on its own; the next run takes it then.
             log.warn("sweeper", "could not release the lease", error=str(exc))
 
-    # ── due rows ────────────────────────────────────────────────────────
+    # ── the runs that are due (ADR #137 §7) ─────────────────────────────
 
-    def due_rows(self, *, deadline: float) -> Dict[str, Any]:
-        """Re-check every waiting row that is due, earliest first, until `deadline` (monotonic)."""
-        now = self.reconciler.clock()
-        counts: Dict[str, Any] = {"checked": 0, "woken": 0, "missed": 0, "transient": 0, "budget_reached": False}
-        for row in self._due(now):
-            if self.monotonic() >= deadline:
+    def due_runs(self, *, deadline: float) -> Dict[str, Any]:
+        """One full pass over the run of each due entry, earliest first, until `deadline` (monotonic)."""
+        now = self.clock()
+        counts: Dict[str, Any] = {"runs_checked": 0, "passes_failed": 0, "lost_hint_runs": 0, "orphans_stopped": 0,
+                                  "budget_reached": False}
+        describes = sweep.Calls(sweep.DESCRIBES)       # shared by every run this sweep checks (S5)
+        checked: Set[str] = set()
+        orphaned: Set[str] = set()
+        first_failure = ""
+        for entry in self._due(now):
+            if self.monotonic() >= deadline - dispatching.RESERVE_MS / 1000:
                 counts["budget_reached"] = True     # the rest stay due: the next run starts with them
                 break
-            counts["checked"] += 1
-            name = str(row["execution_name"])
-            try:
-                result = self.reconciler.reconcile(name, source=sweep.SOURCE)
-            except CoordinationTransient as exc:
-                counts["transient"] += 1
-                log.error("sweeper", "reconcile failed transiently; due again next run", execution_name=name,
-                          error=str(exc))
+            key = str(entry[run_row.TABLE_KEY])
+            run_key = self._run_of(entry)
+            if run_key is None:
+                # Nothing writes such an entry; it stays due, and the self-check's oldest overdue row shows it.
+                log.error("sweeper", "a due entry names no run", execution_name=key)
                 continue
-            if result["action"] == "signalled":
-                counts["woken"] += 1
-                if self._missed(row, result):
-                    counts["missed"] += 1
-            else:
-                # Still waiting, or an outcome that changed nothing (a warning, a consumed token): the next check
-                # backs off, so the row is not re-warned every run and does not hold the "behind" finding. For a
-                # row that left the index meanwhile, the conditional write is a no-op.
-                self._due_again(row, now)
+            if run_key in orphaned:
+                counts["orphans_stopped"] += self._stop_orphan(run_key, key)
+                continue
+            if run_key in checked:
+                continue
+            checked.add(run_key)
+            result, failure = self._check(run_key, key, now, deadline, describes=describes)
+            if result.get("action") == BACKOFF:
+                continue
+            counts["runs_checked"] += 1
+            if failure:
+                counts["passes_failed"] += 1
+                first_failure = first_failure or failure
+            elif result.get("action") == "orphans":
+                orphaned.add(run_key)
+                counts["orphans_stopped"] += int(result.get("stopped", 0))
+            elif result.get("lost"):
+                counts["lost_hint_runs"] += 1
+        counts["describes"] = sweep.DESCRIBES - describes.left
+        if sweep.failed_step(counts["runs_checked"], counts["passes_failed"]):
+            counts["failed_step"] = sweep.failed_passes(counts["runs_checked"], counts["passes_failed"], first_failure)
         return counts
 
-    def _due(self, now: datetime, kind: str = att.WAITING) -> Iterator[Dict[str, Any]]:
-        """Due rows of one attention kind, every shard merged into one stream ordered by due time."""
-        shards = [self._shard(partition, now) for partition in att.partitions(kind)]
+    def _check(self, run_key: str, key: str, now: datetime, deadline: float, *,
+               describes: sweep.Calls) -> Tuple[Dict[str, Any], str]:
+        """The check of one run: its full pass, then the move of its due time, and its lost-hint warning.
+
+        Returns the pass's result and, when the pass failed, the cause. The
+        dispatcher warns about a pass that failed for good; a transient failure
+        is the next sweep's to retry.
+        """
+        try:
+            run_item = self.tasks.get_item(Key={run_row.TABLE_KEY: run_key}, ConsistentRead=True).get("Item")
+        except (ClientError, BotoCoreError) as exc:
+            log.error("sweeper", "the run row could not be read; the run stays due", run=run_key, error=str(exc))
+            return {}, f"{type(exc).__name__}: {exc}"
+        if run_item and run_item.get(run_row.CHECK_FAILED) and str(run_item.get(att.DUE) or "") > format_utc(now):
+            return {"action": BACKOFF}, ""      # its last pass failed for good: it waits for its run row's due time
+
+        def remaining() -> int:
+            return max(0, int((deadline - self.monotonic()) * 1000))
+
+        failure = ""
+        try:
+            result = self.dispatcher.full_pass(run_key, source=sweep.SOURCE, remaining_ms=remaining, check=True,
+                                               describes=describes, orphan_keys=[key])
+        except CoordinationTransient as exc:
+            log.error("sweeper", "a pass failed transiently; the next sweep checks the run again", run=run_key,
+                      error=str(exc))
+            # Retried at the run's next check, and counted toward the sweep's failed step (Principle #38).
+            result, failure = {}, f"CoordinationTransient: {exc}"
+        else:
+            if result.get("action") == "failed":
+                failure = str(result.get("error", ""))
+        if run_item is not None:
+            self._move(run_key, run_item, now, failed=result.get("action") == "failed")
+            if result.get("lost"):
+                self._lost_hints(run_key, run_item, result["lost"])
+        return result, failure
+
+    def _stop_orphan(self, run_key: str, key: str) -> int:
+        """A further row of a run whose run row is missing, stopped; one that fails stays due for the next sweep."""
+        try:
+            return int(self.dispatcher.stop_orphans(run_key, [key], source=sweep.SOURCE)["stopped"])
+        except (CoordinationTransient, ClientError, BotoCoreError) as exc:
+            log.error("sweeper", "a row whose run row is missing could not be stopped; it stays due",
+                      execution_name=key, error=str(exc))
+            return 0
+
+    def _due(self, now: datetime, kinds: Sequence[str] = DUE_KINDS) -> Iterator[Dict[str, Any]]:
+        """The due entries of every shard of `kinds`, merged into one stream ordered by due time."""
+        shards = [self._shard(partition, now) for kind in kinds for partition in att.partitions(kind)]
         return heapq.merge(*shards, key=lambda row: str(row[att.DUE]))
 
     def _shard(self, partition: str, now: datetime) -> Iterator[Dict[str, Any]]:
@@ -154,112 +231,73 @@ class Sweeper:
             "KeyConditionExpression": Key(att.KEY).eq(partition) & Key(att.DUE).lte(format_utc(now)),
         }
         while True:
-            response = self.tasks.table.query(**kwargs)
+            response = self.tasks.query(**kwargs)
             yield from response.get("Items", [])
             if "LastEvaluatedKey" not in response:
                 return
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
-    def _due_again(self, row: Dict[str, Any], now: datetime) -> None:
-        attempts = int(row.get("attempts", 0))
-        name = str(row["execution_name"])
-        try:
-            self.tasks.mark_due(name, str(row.get("started_at")), att.next_due(now, attempts), attempts + 1)
-        except (ClientError, BotoCoreError) as exc:
-            # The row stays due; the next run checks it again.
-            log.error("sweeper", "could not set the next check", execution_name=name, error=str(exc))
+    @staticmethod
+    def _run_of(entry: Dict[str, Any]) -> Optional[str]:
+        """The run row's key of a due entry: the run row itself, or the run of a task row."""
+        key = str(entry[run_row.TABLE_KEY])
+        if run_row.is_run_row(key):
+            return key
+        execution = entry.get(task_row.PIPELINE_EXECUTION)
+        return run_row.key(str(execution)) if execution else None
 
-    def _missed(self, row: Dict[str, Any], result: Dict[str, Any]) -> bool:
-        """Write a `sweeper` warning when the woken task could run before its due time."""
-        enabled_at = parse_utc(result["enabled_at"]) if result.get("enabled_at") else None
-        due = parse_utc(str(row[att.DUE]))
-        if enabled_at is None or not sweep.primary_path_missed(enabled_at, due):
-            return False
+    def _move(self, run_key: str, run_item: Dict[str, Any], now: datetime, *, failed: bool) -> None:
+        """The run row's due time moved on by the backoff and its `left_at` cleared, when the run row itself was due,
+        on the due time and `run_version` read before the pass (§3). A pass that failed for good marks the run row,
+        due or not, so the sweeper leaves the run to that backoff (§7)."""
+        due, version = run_item.get(att.DUE), run_item.get(run_row.RUN_VERSION)
+        if not due or version is None:
+            return
+        table = self.dispatcher.tokens_table
+        if str(due) <= format_utc(now):
+            request = dispatch_writes.checked(run_key, table=table, due_read=str(due), version_read=int(version),
+                                              checks=int(run_item.get(run_row.CHECKS, 0)), now=now, failed=failed)
+        elif failed:
+            request = dispatch_writes.check_failed(run_key, table=table, due_read=str(due), version_read=int(version),
+                                                   now=now)
+        else:
+            return
         try:
-            full = self.tasks.get(str(row["execution_name"])) or row  # the index does not project `date`
-        except (ClientError, BotoCoreError) as exc:
-            # The warning goes without the task's date; the rest of the due rows still get their check.
-            log.error("sweeper", "could not read the woken row", execution_name=str(row["execution_name"]),
-                      error=str(exc))
-            full = row
-        self._sweeper_warning(full, f"The sweeper woke this task at its check due {format_utc(due)}, but it could "
-                                    f"run from {format_utc(enabled_at)}: the wake-up hint was lost on the way.")
-        return True
+            self.dispatcher.client.update_item(**request)
+        except ClientError as exc:
+            if is_condition_failed(exc):
+                return                  # a pass, a request or an action set its due time, or raised run_version
+            log.error("sweeper", "could not move the run row's due time; the next sweep checks it again",
+                      run=run_key, error=str(exc))
+        except BotoCoreError as exc:
+            log.error("sweeper", "could not move the run row's due time; the next sweep checks it again",
+                      run=run_key, error=str(exc))
 
-    def _sweeper_warning(self, row: Dict[str, Any], error: str) -> None:
+    def _lost_hints(self, run_key: str, run_item: Dict[str, Any], tasks: Sequence[str]) -> None:
+        """One `sweeper` warning for the run, keyed by the run: a later check that finds more replaces it (§7)."""
         self._put_warning(warning_item(
-            kind="sweeper", execution_name=str(row["execution_name"]),
-            task_name=str(row.get("task_name", "")), pipeline_name=str(row.get("pipeline_name", "")),
-            pipeline_execution=str(row.get("pipeline_execution", "")), task_date=str(row.get("date", "")),
-            error=error, now=self.reconciler.clock(),
-        ))
+            kind=WarningKind.SWEEPER, execution_name=f"{run_key}-lost-hints", task_name="",
+            pipeline_name=str(run_item.get(run_row.PIPELINE, "")),
+            pipeline_execution=run_key[len(run_row.KEY_PREFIX):], task_date=str(run_item.get(run_row.RUN_DATE, "")),
+            error=sweep.lost_hints_warning(tasks), now=self.clock()))
 
     def _put_warning(self, item: Dict[str, Any]) -> None:
         try:
-            self.tasks.put(item)
+            self.tasks.put_item(Item=item)
         except (ClientError, BotoCoreError) as exc:
             log.error("sweeper", "could not write the warning row", warning=item["execution_name"], error=str(exc))
-
-    # ── paused rows ─────────────────────────────────────────────────────
-
-    def paused_rows(self, *, deadline: float) -> Dict[str, Any]:
-        """Release the tasks held in their pause wait whose run is no longer paused (ADR #130 §8 step 2).
-
-        Resume releases them itself. It misses a pause token written while it
-        ran (it reads the run's rows through an index) and one whose release
-        failed; without this step such a task waits for its 12-hour pause
-        heartbeat. A task of a run that is still paused is due again later.
-        """
-        now = self.reconciler.clock()
-        counts: Dict[str, Any] = {"pause_checked": 0, "pause_released": 0}
-        paused: Dict[str, bool] = {}
-        for row in self._due(now, att.PAUSED):
-            if self.monotonic() >= deadline:
-                break                               # the rest stay due: the next run starts with them
-            counts["pause_checked"] += 1
-            try:
-                if self._release_if_resumed(row, now, paused):
-                    counts["pause_released"] += 1
-            except (ClientError, BotoCoreError, CoordinationTransient) as exc:
-                # The row stays due; the next run checks it again.
-                log.error("sweeper", "could not check a paused task", execution_name=str(row["execution_name"]),
-                          error=str(exc))
-        return counts
-
-    def _release_if_resumed(self, listed: Dict[str, Any], now: datetime, paused: Dict[str, bool]) -> bool:
-        name, partition = str(listed["execution_name"]), str(listed[att.KEY])
-        # The index only finds candidates; the row itself is read from the table (ADR #130 §3).
-        row = self.tasks.get(name)
-        token = str(row.get("pause_token", "")) if row else ""
-        if row is None or not token or row.get("status") != WAITING_PAUSED:
-            self.tasks.drop_pause_check(name, partition)       # it moved on; run_task normally drops the entry
-            return False
-        run = str(row.get("pipeline_execution", ""))
-        if run not in paused:
-            paused[run] = self.tasks.paused(run)
-        if paused[run]:
-            attempts = int(row.get("attempts", 0))
-            self.tasks.mark_pause_due(name, token, att.next_due(now, attempts), attempts + 1)
-            return False
-        if self.reconciler.signals.succeed(token, {"resumed": True}) == DEAD:
-            self.tasks.drop_pause_check(name, partition, token)  # nothing can release it any more
-            return False
-        self._sweeper_warning(row, "The run is no longer paused, but this task was still held in its pause wait: "
-                                   "the resume did not reach it. The sweeper released it.")
-        return True
-
 
     # ── push retries ────────────────────────────────────────────────────
 
     def push_retries(self, *, deadline: float) -> Dict[str, Any]:
         """Start again the push runs whose start failed transiently (ADR #130 §7, §8)."""
-        now = self.reconciler.clock()
+        now = self.clock()
         counts = {"push_retried": 0, "push_started": 0, "push_given_up": 0}
-        for listed in self._due(now, att.RETRY):
+        for listed in self._due(now, (att.RETRY,)):
             if self.monotonic() >= deadline:
                 break
             # The index only finds candidates; the row itself is read from the table (ADR #130 §3).
-            row = self.tasks.get(str(listed["execution_name"]))
+            row = self._get(str(listed["execution_name"]))
             if row is None:
                 continue                # done meanwhile
             counts["push_retried"] += 1
@@ -280,7 +318,7 @@ class Sweeper:
                 counts["push_given_up"] += 1
                 continue
             try:
-                self.reconciler.signals.client.start_execution(stateMachineArn=sfn_arn, name=name, input=run_input)
+                self.dispatcher.sfn.start_execution(stateMachineArn=sfn_arn, name=name, input=run_input)
             except (ClientError, BotoCoreError) as exc:
                 if error_code(exc) != "ExecutionAlreadyExists":
                     if is_transient(exc):
@@ -294,10 +332,14 @@ class Sweeper:
             self._drop(row)
         return counts
 
+    def _get(self, key: str) -> Optional[Dict[str, Any]]:
+        item: Optional[Dict[str, Any]] = self.tasks.get_item(Key={"execution_name": key}, ConsistentRead=True).get("Item")
+        return item
+
     def _retry_again(self, row: Dict[str, Any], now: datetime, attempts: int, error: str) -> None:
         attempts += 1
         try:
-            self.tasks.table.update_item(
+            self.tasks.update_item(
                 Key={"execution_name": row["execution_name"]},
                 UpdateExpression="SET #due = :due, attempts = :n, #e = :e",
                 ConditionExpression="attribute_exists(execution_name)",
@@ -311,7 +353,7 @@ class Sweeper:
 
     def _drop(self, row: Dict[str, Any]) -> None:
         try:
-            self.tasks.table.delete_item(Key={"execution_name": row["execution_name"]})
+            self.tasks.delete_item(Key={"execution_name": row["execution_name"]})
         except (ClientError, BotoCoreError) as exc:
             # A leftover row is retried again: its start is idempotent (deterministic name).
             log.error("sweeper", "could not delete the push retry row", execution_name=row["execution_name"],
@@ -322,16 +364,16 @@ class Sweeper:
         name = str(row["execution_name"])
         log.error("sweeper", "a push retry row cannot be read; dropped", execution_name=name, error=str(exc))
         self._put_warning(warning_item(
-            kind="push", execution_name=f"push:{name}", task_name="", pipeline_name=str(row.get("consumer", "")),
-            pipeline_execution="", task_date="", now=self.reconciler.clock(),
+            kind=WarningKind.PUSH, execution_name=f"push:{name}", task_name="",
+            pipeline_name=str(row.get("consumer", "")), pipeline_execution="", task_date="", now=self.clock(),
             error=f"A failed push start ({name}) cannot be retried, because its retry row cannot be read: "
                   f"{type(exc).__name__}: {exc}. Start the pipeline from the console if it should run."))
         self._drop(row)
 
     def _push_warning(self, row: Dict[str, Any], error: str) -> None:
-        self._put_warning(warning_item(kind="push", execution_name=f"push:{row['run_name']}", task_name="",
+        self._put_warning(warning_item(kind=WarningKind.PUSH, execution_name=f"push:{row['run_name']}", task_name="",
                                        pipeline_name=str(row.get("consumer", "")), pipeline_execution="",
-                                       task_date="", error=error, now=self.reconciler.clock()))
+                                       task_date="", error=error, now=self.clock()))
 
     # ── catch-up ────────────────────────────────────────────────────────
 
@@ -339,12 +381,12 @@ class Sweeper:
         """Hourly: replay AssetFanout's push branch for the facts of the last 48 hours (ADR #130 §8).
 
         Runs start under deterministic names, so a run that already started
-        is only an ExecutionAlreadyExists. Only facts the new writers wrote
-        are replayed: the old code's own push path handled the others. A run
-        that reaches its deadline keeps a cursor, and the next run goes on.
+        is only an ExecutionAlreadyExists. Only facts the ADR #130 writers wrote
+        are replayed. A run that reaches its deadline keeps a cursor, and the
+        next run goes on.
         """
-        now = self.reconciler.clock()
-        health = self.tasks.get(sweep.HEALTH_KEY) or {}
+        now = self.clock()
+        health = self._get(sweep.HEALTH_KEY) or {}
         cursor = str(health.get("catchup_cursor", ""))            # the last asset finished
         within = health.get("catchup_within") or {}                # how far the next asset got
         last = parse_utc(str(health["catchup_at"])) if health.get("catchup_at") else None
@@ -366,9 +408,8 @@ class Sweeper:
                 if self.monotonic() >= deadline:
                     self._save_catch_up(cursor=cursor, within={"asset": asset, "after": after} if after else None)
                     return {"catch_up": "partial", "facts_replayed": replayed}
-                if fact.get("fact_version") == FACT_VERSION:
-                    self.fanout.push(fact)
-                    replayed += 1
+                self.fanout.push(fact)
+                replayed += 1
                 after = event_time
             cursor = asset
         self._save_catch_up(done_at=now)
@@ -406,177 +447,43 @@ class Sweeper:
         else:
             update, values = "SET catchup_cursor = :c REMOVE catchup_within", {":c": cursor}
         try:
-            self.tasks.table.update_item(Key={"execution_name": sweep.HEALTH_KEY}, UpdateExpression=update,
-                                         ExpressionAttributeValues=values)
+            self.tasks.update_item(Key={"execution_name": sweep.HEALTH_KEY}, UpdateExpression=update,
+                                   ExpressionAttributeValues=values)
         except (ClientError, BotoCoreError) as exc:
             # The next run starts the catch-up over: replaying is idempotent.
             log.error("sweeper", "could not save the catch-up progress", error=str(exc))
 
-
-    # ── adoption ────────────────────────────────────────────────────────
-
-    def adopt(self, *, deadline: float) -> Dict[str, Any]:
-        """Bring rows an older platform version wrote into the new model (ADR #130 §8 step 5).
-
-        Two resumable scans, kept in `_engine_health` with the adoption
-        generation they serve: waiting task rows get an attention entry, due
-        now, so the sweeper reconciles them from their facts; facts get their
-        partition fields (a MODIFY, which the INSERT-only stream ignores). Each
-        scan repeats for an hour after it first finishes: the old definitions
-        may still write rows and facts while the stack update runs.
-        """
-        now = self.reconciler.clock()
-        health = self.tasks.get(sweep.HEALTH_KEY) or {}
-        if int(health.get("adoption_generation", 0)) != sweep.ADOPTION_GENERATION:
-            health = {}
-        state = {k: str(health.get(k, "")) for k in
-                 ("adopt_tasks_cursor", "adopt_tasks_until", "adopt_facts_cursor", "adopt_facts_until")}
-        counts = {"tasks_adopted": 0, "facts_adopted": 0}
-        if all(not state[f"adopt_{n}_cursor"] and state[f"adopt_{n}_until"]
-               and now >= parse_utc(state[f"adopt_{n}_until"]) for n in ("tasks", "facts")):
-            return counts                       # both scans are past their hour: nothing to read or save
-        self._adopt_scan(state, "tasks", now, lambda cursor: self._scan(
-            self.tasks.table, ("execution_name",), self._task_filter(), cursor, self._adopt_task, counts,
-            "tasks_adopted", deadline))
-        if self.monotonic() < deadline:
-            registry = Registry(self.reconciler.resource, self.reconciler.pipelines_table)
-            self._adopt_scan(state, "facts", now, lambda cursor: self._scan(
-                self.facts, ("asset_name", "event_time"), {"FilterExpression": "attribute_not_exists(partition_date)"},
-                cursor, lambda item: self._adopt_fact(item, registry), counts, "facts_adopted", deadline))
-        self._save_health({"adoption_generation": sweep.ADOPTION_GENERATION, **state})
-        return counts
-
-    @staticmethod
-    def _adopt_scan(state: Dict[str, str], name: str, now: datetime,
-                    scan: Callable[[str], Tuple[str, bool]]) -> None:
-        """Go on from the scan's cursor, or start it over while its hour of repeats lasts."""
-        cursor, until = state[f"adopt_{name}_cursor"], state[f"adopt_{name}_until"]
-        if not cursor and until and now >= parse_utc(until):
-            return
-        cursor, finished = scan(cursor)
-        state[f"adopt_{name}_cursor"] = cursor
-        if finished and not until:
-            state[f"adopt_{name}_until"] = format_utc(now + sweep.ADOPTION_REPEAT)
-
-    @staticmethod
-    def _task_filter() -> Dict[str, Any]:
-        statuses = sorted(RECONCILABLE)
-        return {
-            "FilterExpression": f"#s IN ({', '.join(f':s{i}' for i in range(len(statuses)))}) "
-                                "AND attribute_not_exists(#att)",
-            "ExpressionAttributeNames": {"#s": "status", "#att": att.KEY},
-            "ExpressionAttributeValues": {f":s{i}": s for i, s in enumerate(statuses)},
-        }
-
-    def _scan(self, table: Any, keys: Tuple[str, ...], query: Dict[str, Any], cursor: str,
-              adopt: Callable[[Dict[str, Any]], bool], counts: Dict[str, int], counter: str,
-              deadline: float) -> Tuple[str, bool]:
-        """Scan from `cursor` until done or out of budget; returns (cursor, finished).
-
-        The budget is checked before each row (Principle #52): a page of old rows must not run
-        the function past its timeout. The cursor is the key of the last row handled, which
-        DynamoDB takes as the ExclusiveStartKey of the next run.
-        """
-        kwargs: Dict[str, Any] = dict(query)
-        if cursor:
-            kwargs["ExclusiveStartKey"] = json.loads(cursor)
-        last: Optional[Dict[str, Any]] = kwargs.get("ExclusiveStartKey")
-        while True:
-            response = table.scan(**kwargs)
-            for item in response.get("Items", []):
-                if self.monotonic() >= deadline:
-                    return (json.dumps(last, default=str) if last else ""), False
-                counts[counter] += adopt(item)
-                last = {key: item[key] for key in keys}
-            if "LastEvaluatedKey" not in response:
-                return "", True
-            last = kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
-            if self.monotonic() >= deadline:
-                return json.dumps(last, default=str), False
-
-    def _adopt_task(self, item: Dict[str, Any]) -> bool:
-        """Give a row the attention entry the new code would have written; due now.
-
-        A row held in run_task's pause wait goes to ``paused#``, which the
-        sweeper releases once its run is no longer paused; any other to
-        ``waiting#``, which it reconciles (ADR #130 invariant 5).
-        """
-        name = str(item["execution_name"])
-        if item.get("pause_token"):
-            kind, values = att.PAUSED, {":paused": WAITING_PAUSED}
-            condition = "#s = :paused AND attribute_exists(pause_token)"
-        else:
-            statuses = sorted(RECONCILABLE)
-            kind, values = att.WAITING, {f":s{i}": s for i, s in enumerate(statuses)}
-            condition = (f"#s IN ({', '.join(f':s{i}' for i in range(len(statuses)))}) "
-                         "AND attribute_not_exists(pause_token)")
-        try:
-            self.tasks.table.update_item(
-                Key={"execution_name": name},
-                UpdateExpression="SET #att = :att, #due = :due",
-                ConditionExpression=condition + " AND attribute_not_exists(#att)",
-                ExpressionAttributeNames={"#s": "status", "#att": att.KEY, "#due": att.DUE},
-                ExpressionAttributeValues={":att": att.attention(kind, name),
-                                           ":due": format_utc(self.reconciler.clock()), **values},
-            )
-        except ClientError as exc:
-            if is_condition_failed(exc):
-                return False                    # it moved on meanwhile
-            raise
-        return True
-
-    def _adopt_fact(self, item: Dict[str, Any], registry: Registry) -> bool:
-        key = str(item.get("execution_date") or "")
-        try:
-            declared = registry.declared_granularity(str(item.get("source_dag", "")), str(item["asset_name"]))
-            fact = fact_from_item(item, declared_granularity=declared)
-            start = partition_date(key)
-        except ValueError as exc:
-            # A row nobody could read is not adopted; asset conditions skip it the same way (Principle #51).
-            log.error("sweeper", "an old fact cannot be adopted", asset_name=item.get("asset_name"),
-                      event_time=item.get("event_time"), error=str(exc))
-            asset, event_time = str(item["asset_name"]), str(item["event_time"])
-            self._put_warning(warning_item(
-                kind="coordination", execution_name=f"adopt:{asset}:{event_time}",
-                task_name=str(item.get("source_task", "")), pipeline_name=str(item.get("source_dag", "")),
-                pipeline_execution="", task_date="", now=self.reconciler.clock(),
-                error=f"The fact of {asset} recorded at {event_time} by an older version cannot be read: {exc}. "
-                      f"Tasks waiting on {asset} do not see it; record the fact again for its partition."))
-            return False
-        try:
-            self.facts.update_item(
-                Key={"asset_name": item["asset_name"], "event_time": item["event_time"]},
-                UpdateExpression="SET partition_key = :k, partition_date = :d, granularity = :g",
-                ConditionExpression="attribute_not_exists(partition_date)",
-                ExpressionAttributeValues={":k": key, ":d": start.isoformat(), ":g": fact.granularity},
-            )
-        except ClientError as exc:
-            if is_condition_failed(exc):
-                return False
-            raise
-        return True
-
     # ── self-check ──────────────────────────────────────────────────────
 
-    def self_check(self, failed_steps: Sequence[str] = ()) -> Dict[str, Any]:
-        """Write what the console's health check reads into `_engine_health` (ADR #130 §9)."""
-        now = self.reconciler.clock()
+    def self_check(self, failed_steps: Sequence[str] = (), lost_hint_runs: int = 0) -> Dict[str, Any]:
+        """Write what the console's health check reads into `_engine_health` (ADR #130 §9, ADR #137 §6)."""
+        now = self.clock()
         failed = list(failed_steps)
-        mapping = self._mapping()
+        fanout = self._mapping(self.fanout_function)
+        tasks = self._mapping(self.dispatcher_function)
         report = {
             "checked_at": format_utc(now),
-            "fanout_mapping": mapping["state"],
-            "fanout_result": mapping["result"],
+            "fanout_mapping": fanout["state"],
+            "fanout_result": fanout["result"],
             # What the console names in its details, and when the mapping last changed state: the
             # time it was disabled, kept by AWS, so "since" needs no state of our own.
-            "fanout_mapping_uuid": mapping["uuid"],
-            "fanout_mapping_changed_at": mapping["changed_at"],
+            "fanout_mapping_uuid": fanout["uuid"],
+            "fanout_mapping_changed_at": fanout["changed_at"],
             "fanout_function": self.fanout_function,
+            "dispatch_mapping": tasks["state"],
+            "dispatch_result": tasks["result"],
+            "dispatch_mapping_uuid": tasks["uuid"],
+            "dispatch_mapping_changed_at": tasks["changed_at"],
+            "dispatcher_function": self.dispatcher_function,
             "sweeper_function": os.environ.get("AWS_LAMBDA_FUNCTION_NAME", ""),
-            "events_table": self.reconciler.asset_events_table,
+            "events_table": self.dispatcher.asset_events_table,
+            "tasks_table": self.dispatcher.tokens_table,
             # The region the console's commands pass as --region; the Lambda runtime sets it.
             "region": os.environ.get("AWS_REGION", ""),
-            "stream": self._stream_state(),
+            "stream": self._stream_state(self.dispatcher.asset_events_table),
+            "tasks_stream": self._stream_state(self.dispatcher.tokens_table),
+            # A shard held by a record that keeps failing shows here, where LastProcessingResult may not (§6).
+            "lost_hint_runs": lost_hint_runs,
             "oldest_overdue": self._reading("the oldest overdue task", lambda: self._oldest_due(now), "", failed),
             "push_retry_backlog": self._reading("the push retry backlog", self._backlog, 0, failed),
             "failed_steps": failed,
@@ -598,36 +505,35 @@ class Sweeper:
             log.error("sweeper", "a self-check reading failed", reading=name, error=str(exc))
             return neutral
 
-    def _mapping(self) -> Dict[str, str]:
-        """The stream mapping: its State, LastProcessingResult, UUID, and when it last changed
+    def _mapping(self, function: str) -> Dict[str, str]:
+        """A function's stream mapping: its State, LastProcessingResult, UUID, and when it last changed
         (LastModified, which AWS moves when the mapping is disabled or enabled)."""
         client = self.lambda_client or env.lambda_()
         found = {"state": sweep.MAPPING_MISSING, "result": "", "uuid": "", "changed_at": ""}
         try:
-            mappings = client.list_event_source_mappings(FunctionName=self.fanout_function)["EventSourceMappings"]
+            mappings = client.list_event_source_mappings(FunctionName=function)["EventSourceMappings"]
         except (ClientError, BotoCoreError) as exc:
             return {**found, "state": sweep.unknown_state(error_code(exc) or type(exc).__name__)}
         if not mappings:
             return found
         mapping = mappings[0]
         changed = mapping.get("LastModified")
-        return {"state": str(mapping.get("State") or sweep.unknown_state("no State")), "result": str(mapping.get("LastProcessingResult", "")),
-                "uuid": str(mapping.get("UUID", "")),
+        return {"state": str(mapping.get("State") or sweep.unknown_state("no State")),
+                "result": str(mapping.get("LastProcessingResult", "")), "uuid": str(mapping.get("UUID", "")),
                 "changed_at": format_utc(changed) if isinstance(changed, datetime) else ""}
 
-    def _stream_state(self) -> str:
+    def _stream_state(self, table: str) -> str:
         try:
-            table = self.reconciler.resource.meta.client.describe_table(
-                TableName=self.reconciler.asset_events_table)["Table"]
+            described = self.dispatcher.client.describe_table(TableName=table)["Table"]
         except (ClientError, BotoCoreError) as exc:
             return sweep.unknown_state(error_code(exc) or type(exc).__name__)
-        return sweep.STREAM_ENABLED if table.get("StreamSpecification", {}).get("StreamEnabled") else "DISABLED"
+        return sweep.STREAM_ENABLED if described.get("StreamSpecification", {}).get("StreamEnabled") else "DISABLED"
 
     def _oldest_due(self, now: datetime) -> str:
-        """The earliest due time among the waiting and paused rows still due after this run."""
+        """The earliest due time among the entries the sweeper checks, run rows included, still due after this run."""
         oldest = ""
-        for partition in att.partitions(att.WAITING) + att.partitions(att.PAUSED):
-            items = self.tasks.table.query(
+        for partition in (p for kind in DUE_KINDS for p in att.partitions(kind)):
+            items = self.tasks.query(
                 IndexName=att.INDEX, Limit=1,
                 KeyConditionExpression=Key(att.KEY).eq(partition) & Key(att.DUE).lte(format_utc(now)),
             ).get("Items", [])
@@ -641,7 +547,7 @@ class Sweeper:
             kwargs: Dict[str, Any] = {"IndexName": att.INDEX, "Select": "COUNT",
                                       "KeyConditionExpression": Key(att.KEY).eq(partition)}
             while True:
-                response = self.tasks.table.query(**kwargs)
+                response = self.tasks.query(**kwargs)
                 total += int(response.get("Count", 0))
                 if "LastEvaluatedKey" not in response:
                     break
@@ -652,7 +558,7 @@ class Sweeper:
         names = {f"#f{i}": k for i, k in enumerate(fields)}
         values = {f":v{i}": v for i, v in enumerate(fields.values())}
         try:
-            self.tasks.table.update_item(
+            self.tasks.update_item(
                 Key={"execution_name": sweep.HEALTH_KEY},
                 UpdateExpression="SET " + ", ".join(f"#f{i} = :v{i}" for i in range(len(fields))),
                 ExpressionAttributeNames=names, ExpressionAttributeValues=values,
@@ -667,5 +573,5 @@ _SWEEPER: Optional[Sweeper] = None
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     owner = getattr(context, "aws_request_id", None) or uuid.uuid4().hex
-    sweeper = _SWEEPER or Sweeper(_reconciler(), owner=owner)
+    sweeper = _SWEEPER or Sweeper(dispatching._dispatcher(), owner=owner)
     return sweeper.run()

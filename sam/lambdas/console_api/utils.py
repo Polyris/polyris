@@ -16,11 +16,7 @@ from typing import Dict, Any, List
 
 from polyris.coordination.records import DAG_SNAPSHOT_PREFIX
 
-from config import (
-    sfn, s3, lambda_client,
-    EXECUTION_NAME_PATTERN
-)
-from dal.task_events_repo import task_events_repo
+from config import s3, lambda_client
 from constants import Limits
 from logger import log
 
@@ -72,7 +68,8 @@ def is_internal_record(execution_name: str) -> bool:
     """Check if a pipeline-tokens record is internal/special (not a real task execution).
 
     Internal records use _ prefix:
-    - _pause_{pipeline_execution} — pause state
+    - _run_{pipeline_execution} — the run row (its pauses, stop mark and requests); _run_{…}#input — its input
+    - _pause_{pipeline_execution} — a 1.2 run's pause; 1.3 writes none
     - _notify_warn_{kind}_{execution_name} — infrastructure warning (visible in Notifications bell)
 
     Canonical output store records (``output#pipeline#task#date``, written by the
@@ -131,24 +128,6 @@ def should_skip_token_row(item: dict) -> bool:
     return is_internal_record(item.get('execution_name', '')) or is_backfill_record(item)
 
 
-def is_execution_name(name: str) -> bool:
-    """
-    Check if the given name is a full execution_name.
-    
-    execution_name format: {task_name}-{YYYY-MM-DD}-{short_id}
-    where short_id is 8-20 characters from pipeline_execution.
-    
-    task_name format: just the task name without date suffix
-    
-    Examples:
-        'extract-2024-01-15-abc123xyz' -> True  (valid execution_name)
-        'import-2024-data-special'     -> False (task name with 'data' not date)
-        'load_daily'                   -> False (plain task name)
-        'task-2024-01-15'              -> False (no short_id suffix)
-    """
-    return bool(EXECUTION_NAME_PATTERN.match(name))
-
-
 def retrieve_result(result: Any) -> Any:
     """
     Retrieve result from S3 if it's a Claim Check reference.
@@ -172,121 +151,6 @@ def retrieve_result(result: Any) -> Any:
         log.error("retrieve_result", "Error retrieving result from S3", error=str(e))
         # Return the reference with error info
         return {**result, '_retrieval_error': str(e)}
-
-
-def record_manual_decision(execution_name: str, decision: str, reason: str = '', item: Dict = None) -> None:
-    """
-    Record MANUAL_DECISION event in task_events table for timeline/debugging.
-    
-    If the task had an error (from failed execution), also records a TASK_FINISHED
-    event so the error is preserved in history even after skip/mark_success.
-    
-    Uses deterministic sort keys (execution_name+decision hash) so retries
-    overwrite the same item instead of creating duplicates.
-    
-    Args:
-        execution_name: Task execution name
-        decision: Action taken (skip, fail, stop, restart)
-        reason: Optional reason for the decision
-        item: Task item from DynamoDB (for task_run_id, parent_execution_id, error)
-    """
-    import hashlib
-    
-    try:
-        # Extract IDs from item if available
-        task_run_id = item.get('task_run_id', execution_name) if item else execution_name
-        parent_execution_id = item.get('parent_execution_id', item.get('pipeline_execution', '')) if item else ''
-        task_name = item.get('task_name', execution_name.split('-')[0]) if item else execution_name.split('-')[0]
-        
-        # TTL = 30 days
-        ttl = int((datetime.now(timezone.utc).timestamp())) + (30 * 24 * 60 * 60)
-        
-        # Deterministic suffix from execution_name + decision (retry-safe)
-        det_suffix = hashlib.md5(f"{execution_name}-{decision}".encode()).hexdigest()[:6]
-        
-        # If task had an error, emit TASK_FINISHED (failed) event first
-        # This preserves the error in timeline even when task is skipped/marked success
-        error_str = item.get('error', '') if item else ''
-        if error_str:
-            error_event_time = f"{datetime.now(timezone.utc).isoformat()}#25#{det_suffix}"
-            
-            # Truncate error for summary
-            error_summary = error_str[:500] + '...' if len(error_str) > 500 else error_str
-            
-            task_events_repo.put({
-                'task_run_id': task_run_id,
-                'event_time': error_event_time,
-                'event_type': 'TASK_FINISHED',
-                'execution_name': execution_name,
-                'parent_execution_id': parent_execution_id,
-                'task_name': task_name,
-                'status': 'failed',
-                'error_summary': error_summary,
-                'ttl': ttl
-            })
-        
-        # Record MANUAL_DECISION event
-        event_time = f"{datetime.now(timezone.utc).isoformat()}#30#{det_suffix}"
-        
-        task_events_repo.put({
-            'task_run_id': task_run_id,
-            'event_time': event_time,
-            'event_type': 'MANUAL_DECISION',
-            'execution_name': execution_name,
-            'parent_execution_id': parent_execution_id,
-            'task_name': task_name,
-            'decision': decision,
-            'reason': reason or f'Manual {decision} via UI',
-            'ttl': ttl
-        })
-    except Exception as e:
-        log.error("utils", "Error recording MANUAL_DECISION", error=str(e))
-        # Don't fail the action if event recording fails
-
-
-def compute_pipeline_execution_short(pipeline_execution: str) -> str:
-    """
-    Compute pipeline_execution_short from full pipeline_execution.
-    
-    Mirrors the JSONata logic in dependency_wrapper:
-    - Take last 20 characters
-    - Remove '.' and ':' characters (Step Functions ARN compatibility)
-    
-    Args:
-        pipeline_execution: Full pipeline execution ID
-    
-    Returns:
-        Sanitized short ID (max 20 chars), or empty string if no input
-    """
-    if not pipeline_execution:
-        return ''
-    
-    # Take last 20 chars
-    short = pipeline_execution[-20:] if len(pipeline_execution) > 20 else pipeline_execution
-    
-    # Remove . and : (same as wrapper JSONata: $replace($replace(..., '.', ''), ':', ''))
-    short = short.replace('.', '').replace(':', '')
-    
-    return short
-
-
-def ensure_pipeline_execution_short(pipeline_execution: str, existing_short: str = '') -> str:
-    """
-    Ensure pipeline_execution_short has a valid value.
-    
-    Uses existing value if present, otherwise computes from pipeline_execution.
-    This is critical for notify_dependents to work correctly.
-    
-    Args:
-        pipeline_execution: Full pipeline execution ID
-        existing_short: Existing short value (if any)
-    
-    Returns:
-        Valid pipeline_execution_short (max 20 chars), or empty string if no input
-    """
-    if existing_short:
-        return existing_short
-    return compute_pipeline_execution_short(pipeline_execution)
 
 
 def parse_wait_before(value) -> int:
@@ -432,38 +296,6 @@ def query_all(table, max_items: int = None, **query_kwargs) -> List[Dict]:
     return items[:max_items]
 
 
-def stop_task_executions(item: Dict, error: str, cause: str) -> None:
-    """
-    Stop all Step Functions executions related to a task.
-    Stops both wrapper and run_task_helper to prevent orphaned executions.
-    
-    Args:
-        item: Task item from DynamoDB containing execution ARNs
-        error: Error message for the stop operation
-        cause: Cause description for the stop operation
-    """
-    wrapper_arn = item.get('wrapper_execution_arn')
-    run_task_helper_arn = item.get('run_task_helper_arn')
-    
-    # Stop wrapper execution
-    if wrapper_arn:
-        try:
-            sfn.stop_execution(executionArn=wrapper_arn, error=error, cause=cause)
-        except sfn.exceptions.ExecutionDoesNotExist:
-            pass  # Already finished
-        except Exception as e:
-            log.error("stop_task_executions", "Failed to stop wrapper", error=str(e))
-    
-    # Stop run_task_helper execution (prevents orphaned helper that could overwrite status)
-    if run_task_helper_arn:
-        try:
-            sfn.stop_execution(executionArn=run_task_helper_arn, error=error, cause=cause)
-        except sfn.exceptions.ExecutionDoesNotExist:
-            pass  # Already finished
-        except Exception as e:
-            log.error("stop_task_executions", "Failed to stop run_task_helper", error=str(e))
-
-
 # ============================================
 # Input Validation Helpers
 # ============================================
@@ -492,72 +324,6 @@ def validate_date(date_str: str) -> tuple:
         return False, "Invalid date"
 
 
-def validate_execution_name(name: str) -> tuple:
-    """
-    Validate execution_name format.
-    
-    Args:
-        name: Execution name to validate
-    
-    Returns:
-        (is_valid: bool, error_message: str or None)
-    """
-    if not name:
-        return False, "Execution name is required"
-    
-    if len(name) > Limits.EXECUTION_NAME_MAX_LENGTH:
-        return False, f"Execution name too long (max {Limits.EXECUTION_NAME_MAX_LENGTH} chars)"
-    
-    # Check for invalid characters
-    if not re.match(r'^[\w\-]+$', name):
-        return False, "Execution name contains invalid characters"
-    
-    return True, None
-
-
-def validate_pipeline_name(name: str) -> tuple:
-    """
-    Validate pipeline_name format.
-    
-    Args:
-        name: Pipeline name to validate
-    
-    Returns:
-        (is_valid: bool, error_message: str or None)
-    """
-    if not name:
-        return False, "Pipeline name is required"
-    
-    if len(name) > 64:
-        return False, "Pipeline name too long (max 64 chars)"
-    
-    if not re.match(r'^[\w\-]+$', name):
-        return False, "Pipeline name contains invalid characters"
-    
-    return True, None
-
-
-def validate_required_fields(data: Dict, required: List[str]) -> tuple:
-    """
-    Validate that required fields are present in data.
-    
-    Args:
-        data: Dictionary to validate
-        required: List of required field names
-    
-    Returns:
-        (is_valid: bool, missing_fields: List[str])
-    """
-    if not data:
-        return False, required
-    
-    missing = [field for field in required if not data.get(field)]
-    return len(missing) == 0, missing
-
-
-# Schema column defaults — kept in sync with `polyris.schema._COLUMN_DEFAULTS`.
-# Backend works with the serialized dict form (omit-on-default), so any key
-# present here that holds a non-default value counts as a "rich" constraint.
 _SCHEMA_COLUMN_DEFAULTS = {
     'description': '',
     'nullable':       True,
@@ -611,15 +377,6 @@ def parse_task_config(raw) -> Dict:
 
 
 def resolve_max_retries(item: Dict):
-    """Return the task's current max_retries, preferring the EE-editable
-    top-level field over the registration-written task_config blob.
-
-    EE update_task_config writes 'max_retries' directly on the DDB row;
-    the registration SFN embeds 'retries' inside the 'task_config' JSON
-    string.  The top-level field is always more recent when present.
-    Returns None if neither source is set.
-    """
-    top = item.get('max_retries')
-    if top is not None:
-        return safe_int(top)
+    """The max_retries of a row of a run from before 1.3: ``retries`` in the ``task_config`` its registration wrote
+    on the row. A 1.3 row's comes from its run's spec (ADR #137 §8). None when unset."""
     return parse_task_config(item.get('task_config')).get('retries')

@@ -20,6 +20,7 @@ from dal.task_events_repo import task_events_repo
 from dal.circuit_breakers_repo import circuit_breakers_repo
 from dal.backfills_repo import backfills_repo
 from dal.api_tokens_repo import api_tokens_repo
+from dal.specs_repo import specs_repo
 
 __all__ = [
     'executions_repo',
@@ -29,4 +30,5 @@ __all__ = [
     'circuit_breakers_repo',
     'backfills_repo',
     'api_tokens_repo',
+    'specs_repo',
 ]

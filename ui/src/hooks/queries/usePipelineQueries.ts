@@ -12,13 +12,19 @@ interface PipelineDetailData {
     /** /pipeline-status answered an error: `tasks` is empty because it could not be read,
      *  not because the date has no run (ui/CLAUDE.md, "A failed load is never shown as an empty list"). */
     statusError: string | null;
+    /** What the run row says of the run (ADR #137 §3, §5): a pause holds it, a Stop of it is in progress.
+     *  null for a run from before 1.3, or when the page shows no run. */
+    run: { paused: boolean; stopping: boolean } | null;
 }
+
+/** What a partial /api/pipelines answer says about its statuses: the run index is still being
+ *  built after an upgrade (`index_building`, ADR #137 §5), or a start day could not be read. */
+export type PipelinesStatsNote = 'index_building' | 'incomplete' | null;
 
 /** /api/pipelines?stats=true, as one cache entry shared by the hooks below. */
 interface PipelinesAnswer {
     pipelines: PipelineWithUI[];
-    /** A read the statuses rest on failed or was cut short: they can be out of date. */
-    statsIncomplete: boolean;
+    statsNote: PipelinesStatsNote;
 }
 
 async function fetchPipelines(): Promise<PipelinesAnswer> {
@@ -27,7 +33,9 @@ async function fetchPipelines(): Promise<PipelinesAnswer> {
         // The status lets the System status tell an API that answered from one it cannot reach.
         throw new ApiError(data.error, typeof data.status === 'number' ? data.status : undefined);
     }
-    return { pipelines: data.pipelines || [], statsIncomplete: data.stats_incomplete === true };
+    const statsNote: PipelinesStatsNote = data.index_building === true ? 'index_building'
+        : data.stats_incomplete === true ? 'incomplete' : null;
+    return { pipelines: data.pipelines || [], statsNote };
 }
 
 /**
@@ -44,18 +52,19 @@ export function usePipelinesQuery(options: { refetchInterval?: number | false } 
 }
 
 /**
- * usePipelinesStatsIncomplete - True when the last /api/pipelines answer said a read its
- * statuses rest on failed or was cut short (`stats_incomplete`). Same cache entry as
- * usePipelinesQuery; it does not fetch on its own schedule.
+ * usePipelinesStatsNote - Why the last /api/pipelines answer's statuses may be out of date:
+ * the run index is still being built (`index_building`), or a read they rest on failed
+ * (`stats_incomplete`); null when they are whole. Same cache entry as usePipelinesQuery;
+ * it does not fetch on its own schedule.
  */
-export function usePipelinesStatsIncomplete(): boolean {
-    const { data } = useQuery<PipelinesAnswer, Error, boolean>({
+export function usePipelinesStatsNote(): PipelinesStatsNote {
+    const { data } = useQuery<PipelinesAnswer, Error, PipelinesStatsNote>({
         queryKey: queryKeys.pipelines,
         queryFn: fetchPipelines,
-        select: answer => answer.statsIncomplete,
+        select: answer => answer.statsNote,
         staleTime: 10 * 1000,
     });
-    return data ?? false;
+    return data ?? null;
 }
 
 /**
@@ -103,7 +112,7 @@ export function usePipelineDetailQuery(pipelineName: string, date: string, execu
                 const fullId = statusData.selected_execution;
                 // Prefer the backend-computed short (same value the history list shows). If a
                 // task-less execution doesn't carry it, fall back to the same rule as the
-                // backend's compute_pipeline_execution_short (last 20 chars, strip '.'/':')
+                // backend's task_row.short (last 20 chars, strip '.'/':')
                 // so we never render a naive prefix like "hello-wo".
                 const shortId = tasks[0]?.pipeline_execution_short
                     || fullId.slice(-20).replace(/[.:]/g, '');
@@ -120,6 +129,7 @@ export function usePipelineDetailQuery(pipelineName: string, date: string, execu
                 serverOffsetMs,
                 selectedExecution,
                 statusError: statusData.error ? String(statusData.error) : null,
+                run: statusData.error ? null : (statusData.run ?? null),
             };
         },
         enabled: !!pipelineName,
@@ -153,13 +163,11 @@ export function usePipelineExecutionsQuery(pipelineName: string, date: string) {
 
 
 /**
- * usePipelineRunsQuery - Every run of a pipeline, newest first, no date window.
+ * usePipelineRunsQuery - A pipeline's runs of the last RUNS_WINDOW_DAYS days, newest first.
  *
- * Backed by pipeline-date-index: omitting `date` makes the API return runs
- * newest-first with an opaque `next` cursor, rather than only the runs that
- * happen to fall inside a hardcoded day window. How far back you can see is
- * therefore governed by the row TTL alone — raising the TTL deepens history
- * with no code change here.
+ * Omitting `date` makes the API read the pipeline's run rows from run-start-index
+ * (ADR #137 §5) and answer newest first with an opaque `next` cursor; only runs
+ * started on 1.3 have run rows.
  *
  * Paginates with useInfiniteQuery: `fetchNextPage()` loads the next (older)
  * page; `hasNextPage` is false once nothing older exists.

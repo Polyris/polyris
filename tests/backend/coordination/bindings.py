@@ -16,6 +16,7 @@ from types import ModuleType
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from boundary import as_component
 from platform_stack import Stack
 
 LAMBDAS = Path(__file__).resolve().parents[3] / "sam" / "lambdas"
@@ -107,66 +108,92 @@ class Bindings:
         import dal
         import main
         import routes.executions as executions
-        import task_actions
+        import routes.tasks as tasks
 
         tables = self.stack.tables
         self._set(config, "_sfn", self.stack.runtime)
         self._set(config, "_dynamodb", self.resource)
+        self._set(config, "_dynamodb_client", self.stack.ddb)        # transactions and the specs' reads
         self._set(config, "_lambda", _LambdaClient(self.stack))
         for repo, logical in ((dal.executions_repo, "PipelineTokensTable"), (dal.backfills_repo, "PipelineTokensTable"),
                               (dal.pipelines_repo, "PipelineRegistryTable"), (dal.asset_events_repo, "AssetEventsTable"),
-                              (dal.task_events_repo, "TaskEventsTable")):
+                              (dal.task_events_repo, "TaskEventsTable"), (dal.specs_repo, "PipelineSpecsTable")):
             self._set(repo, "_table_name", tables[logical])
-        self._set(executions, "RECONCILE_FUNCTION_ARN", self.stack.function_arn("ReconcileFunction"))
+        self._set(dal.specs_repo, "_versions", type(dal.specs_repo._versions)())   # no spec of another stack
         self._set(executions, "datetime", _clocked_datetime(self.clock))     # pause and resume times
-        self._set(task_actions, "NOTIFY_DEPENDENTS_HELPER_ARN", self.stack.machine_arn("NotifyDependentsSfn"))
-        self._setenv("RESTART_HELPER_ARN", self.stack.machine_arn("RestartTaskHelperSfn"))
+        self._set(tasks, "datetime", _clocked_datetime(self.clock))          # an action's times and due time
         return main
 
-    def reconcile(self) -> Callable[[Any, Any], Any]:
-        import reconcile
+    def start_run(self) -> Callable[[Any, Any], Any]:
+        """Start_Run over the stack's tables, on the stack's clock (ADR #137 §1)."""
+        import env
+        import start_run
 
         tables = self.stack.tables
-        self._set(reconcile, "_RECONCILER", reconcile.Reconciler(
-            self.resource, self.stack.runtime,
-            tokens_table=tables["PipelineTokensTable"],
-            subscriptions_table=tables["DependencySubscriptionsTable"],
-            asset_events_table=tables["AssetEventsTable"],
-            pipelines_table=tables["PipelineRegistryTable"],
-            clock=self.clock,
-        ))
-        self.stack.bind_lambda("ReconcileFunction", reconcile.handler)
-        return reconcile.handler
+        self._set(env, "_dynamodb", self.resource)
+        self._set(env, "_dynamodb_client", self.stack.ddb)
+        self._set(env, "TOKENS_TABLE", tables["PipelineTokensTable"])
+        self._set(env, "SUBSCRIPTIONS_TABLE", tables["DependencySubscriptionsTable"])
+        self._set(env, "SPECS_TABLE", tables["PipelineSpecsTable"])
+        self._set(start_run, "datetime", _clocked_datetime(self.clock))
+        handler = as_component("lambda:start-run", start_run.handler)
+        self.stack.bind_lambda("StartRunFunction", handler)
+        return handler
+
+    def run_task(self, notifications: List[Dict[str, Any]]) -> str:
+        """The stack's run_task state machine, as the template defines it (ADR #137 §1); returns its ARN.
+
+        The notify function it calls is outside the engine: each call is recorded in `notifications` and
+        answered as the free build answers an action it has no notifier for.
+        """
+        def notify(event: Dict[str, Any], _: Any) -> Dict[str, Any]:
+            notifications.append(event)
+            return {"action": event.get("action"), "delivered": False, "reason": "unknown_action"}
+
+        self.stack.bind_lambda("NotifyFunction", as_component("lambda:notify", notify))
+        return self.stack.machine_arn("RunTaskHelperSfn")
+
+    def dispatcher(self, run_task_arn: str) -> Callable[[Any, Any], Any]:
+        """The dispatcher over the stack's tables, on the stack's clock, under reconcile's function as the
+        template binds it (ADR #137 §7); returns the handler the tasks stream's adapter feeds."""
+        import dispatcher as module
+
+        tables = self.stack.tables
+        self._set(module, "_DISPATCHER", module.Dispatcher(
+            self.stack.ddb, self.stack.runtime, resource=self.resource,
+            tokens_table=tables["PipelineTokensTable"], subscriptions_table=tables["DependencySubscriptionsTable"],
+            specs_table=tables["PipelineSpecsTable"], asset_events_table=tables["AssetEventsTable"],
+            pipelines_table=tables["PipelineRegistryTable"], task_events_table=tables["TaskEventsTable"],
+            run_task_arn=run_task_arn, clock=self.clock,
+            sleep=lambda _: None))
+        handler = as_component("lambda:reconcile", module.handler)
+        self.stack.bind_lambda("ReconcileFunction", handler)
+        return handler
 
     def asset_fanout(self) -> Any:
-        """AssetFanout over the bound reconciler; the stream adapter in world.py feeds it."""
+        """AssetFanout over the bound dispatcher; the stream adapter in world.py feeds it."""
         import asset_fanout
-        import reconcile
 
-        fanout = asset_fanout.AssetFanout(reconcile._RECONCILER,
+        import dispatcher
+
+        fanout = asset_fanout.AssetFanout(dispatcher._DISPATCHER,
                                           subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
                                           consumers_table=self.stack.tables["AssetSubscriptionsTable"])
         self._set(asset_fanout, "_FANOUT", fanout)
         return asset_fanout.handler
 
     def sweeper(self) -> Callable[[Any, Any], Any]:
-        """The sweeper over the bound reconciler; World.sweep runs one scheduled invocation."""
-        import reconcile
+        """The sweeper over the bound dispatcher; World.sweep runs one scheduled invocation."""
         import sweeper
 
+        import dispatcher
+
         self._set(sweeper, "_SWEEPER", sweeper.Sweeper(
-            reconcile._RECONCILER, owner="harness",
+            dispatcher._DISPATCHER, owner="harness",
             subscriptions_table=self.stack.tables["DependencySubscriptionsTable"],
             consumers_table=self.stack.tables["AssetSubscriptionsTable"],
             lambda_client=_LambdaClient(self.stack),
-            fanout_function=self.stack.functions["AssetFanoutFunction"]))
+            fanout_function=self.stack.functions["AssetFanoutFunction"],
+            dispatcher_function=self.stack.functions["ReconcileFunction"]))
         return sweeper.handler
 
-    def query_subscriptions(self) -> Callable[[Any, Any], Any]:
-        module = _load("query_subscriptions_handler", LAMBDAS / "query_subscriptions" / "index.py")
-        import qs_dal
-
-        self._set(qs_dal, "_dynamodb", self.resource)
-        self._set(qs_dal.subscriptions_repo, "_explicit_table_name", self.stack.tables["DependencySubscriptionsTable"])
-        self.stack.bind_lambda("QuerySubscriptionsFunction", module.handler)
-        return module.handler

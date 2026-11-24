@@ -120,8 +120,41 @@ def test_initialize_marks_running(template):
     """Initialize must flip the backfill record status to running."""
     init = template["States"]["Initialize"]
     args = init["Arguments"]
-    assert args["UpdateExpression"] == "SET #status = :running, started_at = :now"
+    assert args["UpdateExpression"] == "SET #status = :running, started_at = :now, #ttl = :ttl"
     assert args["ExpressionAttributeValues"][":running"]["S"] == "running"
+
+
+@pytest.mark.parametrize("state, lifetime", [("Initialize", "BACKFILL_RUNNING"), ("UpdateFinalStatus", "BACKFILL_ENDED")])
+def test_the_record_lives_while_the_backfill_runs_and_90_days_after(state, lifetime):
+    """ADR #137 §5: the history's lifetime while it runs, 90 days once its final status is written; both
+    writes need the record, so neither makes one of the key alone. Parity with polyris.coordination.retention."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from sfn_jsonata import NOW, evaluate, load_template
+
+    from polyris.coordination import retention
+
+    args = load_template("bulk_backfill/sfn.tpl.json")["States"][state]["Arguments"]
+    ttl = evaluate(args["ExpressionAttributeValues"][":ttl"]["N"], input={})
+    assert int(ttl) == retention.ttl(NOW, getattr(retention, lifetime))
+    assert args["ExpressionAttributeNames"]["#ttl"] == "ttl" and "#ttl = :ttl" in args["UpdateExpression"]
+    assert args["ConditionExpression"] == "attribute_exists(execution_name)"
+
+
+def test_a_backfill_waits_for_each_run_as_long_as_the_run_lives(template):
+    """No limit per run (ADR #137 §5): a run lives up to a year, and its own limits and the engine end it."""
+    def limits(states):
+        for name, state in states.items():
+            if "TimeoutSeconds" in state or "TimeoutSecondsPath" in state or "HeartbeatSeconds" in state:
+                yield name
+            for nested in ("ItemProcessor", "Iterator"):
+                if nested in state:
+                    yield from limits(state[nested]["States"])
+            for branch in state.get("Branches", []):
+                yield from limits(branch["States"])
+
+    assert list(limits(template["States"])) == []
 
 
 def test_finalize_aggregates_status(template):

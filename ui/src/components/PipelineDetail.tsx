@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, lazy, Suspense } from 'react';
 import { Button } from '@/components/ui/button';
 import { DatePicker } from './DatePicker';
+import { REDEPLOY_HINT } from '../utils/pipelineSidebar';
 import { RefreshButton } from './RefreshButton';
 import { 
     DAGGraph, 
@@ -8,7 +9,8 @@ import {
     GanttSkeleton,
     ErrorBoundary,
 } from './index';
-import { POLLING, toDateString, formatRelativeTime, formatTriggerSource, formatApiErrorMessage } from '../utils';
+import { POLLING, toDateString, formatRelativeTime, formatRunStatus, formatTriggerSource, formatApiErrorMessage, isCountingDownWait, waitUntilMs } from '../utils';
+import { RUNS_WINDOW_DAYS } from '../utils/historyWindow';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useToast, useKeyboardShortcuts, SHORTCUTS } from '../hooks';
@@ -33,7 +35,6 @@ import {
     Square, 
     Rocket, 
     ActionIcons,
-    Clock,
     BookOpen,
     Inbox,
     ArrowLeft,
@@ -146,7 +147,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- derive countdown flag from the latest tasks
         setHasActiveCountdown(tasks.some(
-            t => ['deps_ready', 'waiting_delay'].includes(t.status) && Number(t.wait_before || 0) > 0
+            t => (t.status === 'deps_ready' || isCountingDownWait(t.status, waitUntilMs(t))) && Number(t.wait_before || 0) > 0
         ));
     }, [tasks]);
 
@@ -158,12 +159,15 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     // Omits: selectedExecution, setSelectedExecution (only auto-select when no execution is chosen)
     }, [detailData?.selectedExecution]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ========== Pause detection ==========
+    // ========== Pause and Stop, from the run row ==========
+    // The run row holds the pause and the Stop mark (ADR #137 §3, §5). Rows become waiting_paused only once a pass
+    // reaches them, so a guess from the rows showed Pause for a run already paused (the review of TR-6d, P-15).
+    // Synced when the answer changes, so an action's own update holds until the refetch confirms it.
+    const runPaused = !!detailData?.run?.paused;
+    const runStopping = !!detailData?.run?.stopping;
     useEffect(() => {
-        const hasPausedTasks = filteredTasks.some(t => t.status === 'waiting_paused');
-        if (hasPausedTasks && !executionPaused) setExecutionPaused(true);
-        else if (!hasPausedTasks && executionPaused) setExecutionPaused(false);
-    }, [filteredTasks, executionPaused, setExecutionPaused]);
+        setExecutionPaused(runPaused);
+    }, [runPaused, setExecutionPaused]);
 
     // ========== Actions ==========
     const toast = useToast();
@@ -215,7 +219,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
     const [showHistory, setShowHistory] = useState(false);
 
     const stats = useMemo(() => ({
-        active: filteredTasks.filter(t => t.status === 'running' || t.status === 'deps_ready' || t.status === 'waiting_delay').length,
+        active: filteredTasks.filter(t => t.status === 'running' || t.status === 'deps_ready').length,
         failed: filteredTasks.filter(t => t.status === 'failed' || t.status === 'upstream_failed').length,
         wait: filteredTasks.filter(t => t.status === 'waiting').length,
         stopped: filteredTasks.filter(t => t.status === 'stopped' || t.status === 'aborted').length,
@@ -279,6 +283,11 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                         {pipeline.registered_at && (
                                             <span title={pipeline.registered_at}>
                                                 {' · '}Deployed {formatRelativeTime(pipeline.registered_at)}
+                                            </span>
+                                        )}
+                                        {pipeline.needs_redeploy && (
+                                            <span className="pd-redeploy" title={REDEPLOY_HINT}>
+                                                {' · '}Redeploy needed
                                             </span>
                                         )}
                                       </>
@@ -386,7 +395,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                             variant="default"
                                             className="bg-green-600 hover:bg-green-700"
                                             onClick={actions.handlePauseResume}
-                                            disabled={!!actions.pendingAction}
+                                            disabled={!!actions.pendingAction || runStopping}
                                             title="Resume pipeline execution"
                                         >
                                             {actions.pendingAction === 'resume'
@@ -394,7 +403,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                                 : <><Play size={14} /> Resume</>}
                                         </Button>
                                         <span className="pd-action-sep" aria-hidden="true" />
-                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction}>
+                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction || runStopping}>
                                             {actions.pendingAction === 'stop'
                                                 ? <><Loader2 size={14} className="animate-spin" /> Stopping…</>
                                                 : <><Square size={14} /> Stop</>}
@@ -405,7 +414,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                         <Button
                                             variant="outline"
                                             onClick={actions.handlePauseResume}
-                                            disabled={!!actions.pendingAction}
+                                            disabled={!!actions.pendingAction || runStopping}
                                             title="Pause pipeline (running tasks will complete)"
                                         >
                                             {actions.pendingAction === 'pause'
@@ -413,7 +422,7 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                                 : <><Pause size={14} /> Pause</>}
                                         </Button>
                                         <span className="pd-action-sep" aria-hidden="true" />
-                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction}>
+                                        <Button variant="destructive" onClick={actions.handleStop} disabled={!!actions.pendingAction || runStopping}>
                                             {actions.pendingAction === 'stop'
                                                 ? <><Loader2 size={14} className="animate-spin" /> Stopping…</>
                                                 : <><Square size={14} /> Stop</>}
@@ -450,16 +459,23 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                 )}
             </div>
 
+            {/* A Stop of the run in progress: the engine stops its tasks, dependants first (ADR #137 §3) */}
+            {runStopping && pipeline && (
+                <div className="pd-pause-banner" role="status">
+                    <span className="pd-pause-banner-icon"><Square size={18} /></span>
+                    <span className="pd-pause-banner-text">
+                        Stopping the run – the engine stops its tasks, dependants first
+                    </span>
+                </div>
+            )}
+
             {/* Paused Execution Banner */}
-            {executionPaused && pipeline && actions && (
+            {executionPaused && !runStopping && pipeline && actions && (
                 <div className="pd-pause-banner">
                     <span className="pd-pause-banner-icon"><Pause size={18} /></span>
                     <span className="pd-pause-banner-text">
-                        Pipeline paused – {stats.paused} task{stats.paused !== 1 ? 's' : ''} waiting (12h timeout)
+                        Pipeline paused – {stats.paused > 0 ? `${stats.paused} task${stats.paused !== 1 ? 's' : ''} waiting` : 'no task starts'} until the Resume
                     </span>
-                    <Button size="sm" variant="secondary" onClick={actions.handleExtendPause} title="Extend pause by 12 hours">
-                        <Clock size={14} /> +12h
-                    </Button>
                     <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={actions.handlePauseResume}>
                         <Play size={14} /> Resume
                     </Button>
@@ -538,6 +554,15 @@ export function PipelineDetail({ navigateToExecution }: PipelineDetailProps) {
                                 )}
                             </div>
                         </div>
+                    ) : dagViewSource === 'current' ? (
+                    // The definition shows no run, so it names no date. Its graph is empty
+                    // while a pipeline an older version deployed names no task specs, or
+                    // when they cannot be read.
+                    <EmptyState
+                        icon={<Inbox size={48} className="text-gray-300" />}
+                        title="No structure to show"
+                        text={pipeline.needs_redeploy ? REDEPLOY_HINT : 'The deployed definition could not be read.'}
+                    />
                     ) : (
                     <EmptyState
                         icon={<Inbox size={48} className="text-gray-300" />}
@@ -644,11 +669,15 @@ function ExecutionDropdown({
     // date with no runs.
     const [filterDate, setFilterDate] = React.useState('');
 
-    // Every run, newest first — no date window. Fetched even while the drawer is
-    // shut: the button shows the count, so gating this on `showHistory` would
-    // render "0" until you opened it.
-    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
+    // The pipeline's runs of the last RUNS_WINDOW_DAYS days, newest first (ADR #137 §5).
+    // Fetched even while the drawer is shut: the button shows the count, so gating this
+    // on `showHistory` would render "0" until you opened it.
+    const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, isError, error, refetch } =
         usePipelineRunsQuery(pipelineName);
+    // A failed load is never "no runs" (ui/CLAUDE.md): a 503 while the run index builds says so.
+    const loadError = isError && !data
+        ? formatApiErrorMessage(error instanceof Error ? error.message : String(error ?? ''))
+        : null;
 
     const allRuns = React.useMemo(
         () => (data?.pages ?? []).flatMap((p: { executions: Execution[] }) => p.executions),
@@ -704,9 +733,15 @@ function ExecutionDropdown({
 
                     <div className="pd-exec-dropdown-list">
                         {isLoading && <div className="pd-exec-dropdown-empty">Loading…</div>}
-                        {!isLoading && runs.length === 0 && (
+                        {!isLoading && loadError && (
+                            <div className="pd-exec-dropdown-empty" role="alert">
+                                <span>Couldn&apos;t load runs: {loadError}</span>
+                                <Button variant="ghost" size="sm" onClick={() => refetch()}>Retry</Button>
+                            </div>
+                        )}
+                        {!isLoading && !loadError && runs.length === 0 && (
                             <div className="pd-exec-dropdown-empty">
-                                {filterDate ? 'No runs on this date' : 'No runs yet'}
+                                {filterDate ? 'No runs on this date' : `No runs in the last ${RUNS_WINDOW_DAYS} days`}
                             </div>
                         )}
                             {runs.map((ex: Execution, i: number) => {
@@ -728,8 +763,12 @@ function ExecutionDropdown({
                                             <span className="pd-dropdown-item-title">
                                                 {ex.execution_short || (ex.execution_id ? ex.execution_id.substring(0, 8) : ex.date)}...
                                             </span>
-                                            <span className={`pd-exec-status-mini ${statusClass}`}>
-                                                {ex.status || 'unknown'}
+                                            <span
+                                                className={`pd-exec-status-mini ${statusClass}`}
+                                                title={ex.failed_step ? `step ${ex.failed_step.step} failed: ${ex.failed_step.error}` : undefined}
+                                            >
+                                                {ex.status ? formatRunStatus(ex.status, ex.failed_tasks) : 'unknown'}
+                                                {ex.failed_step ? `, step ${ex.failed_step.step} failed` : ''}
                                             </span>
                                         </div>
                                         <div className="pd-dropdown-item-meta">
@@ -746,8 +785,8 @@ function ExecutionDropdown({
                             })}
                         </div>
 
-                    {/* History goes back as far as the rows still exist (row TTL);
-                        there is no window to widen — just keep loading. */}
+                    {/* History goes back RUNS_WINDOW_DAYS days by the day each run started;
+                        a date on the page reaches further. */}
                     {hasNextPage && !filterDate && (
                         <div className="pd-exec-dropdown-more">
                             <Button

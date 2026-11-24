@@ -22,8 +22,8 @@ from stages import BOUND_STAGES, STAGES  # noqa: E402 — needs the paths above
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "needs_binding(stage): the scenario's code path arrives with `stage` (ADR #130)")
-    config.addinivalue_line("markers", "defect(id): the ADR #130 defect this scenario pins (defects.py)")
+    config.addinivalue_line("markers", "needs_binding(stage): the scenario's code path arrives with `stage` (stages.py)")
+    config.addinivalue_line("markers", "defect(id): the defect, or the class of bug, this scenario pins (defects.py)")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -33,7 +33,7 @@ def pytest_collection_modifyitems(config, items):
             if stage not in STAGES:
                 raise pytest.UsageError(f"{item.nodeid}: unknown stage {stage!r}; expected one of {STAGES}")
             if stage not in BOUND_STAGES:
-                item.add_marker(pytest.mark.skip(reason=f"needs the {stage} stage of ADR #130"))
+                item.add_marker(pytest.mark.skip(reason=f"needs the {stage} stage (stages.py)"))
 
 
 @pytest.fixture
@@ -47,7 +47,10 @@ def world():
         built = World(boto3.client("dynamodb", region_name="us-east-1"))
         try:
             yield built
+            if "rows-core" in BOUND_STAGES:
+                built.run_to_the_end()       # liveness at the end of every scenario (ADR #137, Tests)
             built.settle()                   # once more, so the end state is checked too
-            assert built.invariants.violations == [], "ADR #130 invariants broken (invariants.py)"
+            unplanted = [v for v in built.violations if v not in built.planted]
+            assert unplanted == [], "ADR #137 invariants broken (row_invariants.py)"
         finally:
             built.close()

@@ -7,16 +7,17 @@ interface TaskOutputState {
     truncated: boolean;
     loading: boolean;
     loaded: boolean;
-    /** `run_id` stamped on the canonical `output#*` row (from the wrapper's
-     * Init_Output_Row / Save_Canonical_Output). Compared against
+    /** `run_id` stamped on the canonical `output#*` row by the run_task
+     * execution that wrote it (`Record_Success`, or `xcom.push`). Compared against
      * `expectedRunId` by OutputCard so cross-run stale rows are gated. */
     outputRowRunId: string | null;
     /** `run_id` stamped on the `input#*` row (from Save_Input_Record).
      * InputSection compares to detect stale-input-from-prior-run. */
     inputRowRunId: string | null;
-    /** The run_task_helper ARN this run's wrapper invoked. Set by the
-     * dependency_wrapper on the per-run task row. Compared to row-run-ids;
-     * mismatch means the row content belongs to another same-date run. */
+    /** The run_task execution that ran this task in this run: the task row's
+     * `run_task_helper_arn`, which run_task writes when it starts the work.
+     * Compared to the rows' run ids; a mismatch means the row content belongs
+     * to another same-date run. */
     expectedRunId: string | null;
 }
 

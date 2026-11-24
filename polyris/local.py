@@ -19,11 +19,13 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Callable, cast
+from typing import Dict, Any, Optional, List, Callable, Tuple, cast
 from dataclasses import dataclass, field
 
 from contextlib import ExitStack
 
+from .constants import SkipOrigin
+from .coordination import trigger_rules
 from .dag import DAG
 from .loader import PipelineLoadError, load_pipeline, open_pipeline
 from .task import Task
@@ -68,7 +70,9 @@ class ExecutionResult:
         success = sum(1 for t in self.task_results if t.status == 'success')
         failed = sum(1 for t in self.task_results if t.status == 'failed')
         skipped = sum(1 for t in self.task_results if t.status == 'skipped')
-        return f"✅ {success} succeeded, ❌ {failed} failed, ⏭️ {skipped} skipped"
+        blocked = sum(1 for t in self.task_results if t.status == 'upstream_failed')
+        return (f"✅ {success} succeeded, ❌ {failed} failed, ⏭️ {skipped} skipped"
+                + (f", ⛔ {blocked} upstream_failed" if blocked else ""))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -292,15 +296,17 @@ def _run_mock(
         print(f"▶️  {c('Running:', BOLD)} {c(task.task_id, CYAN)}")
 
         # Check trigger rule
-        should_run, reason = _evaluate_trigger_rule(task, task_results)
+        verdict, reason = _evaluate_trigger_rule(task, task_results)
 
-        if not should_run:
-            print(f"   {c('⏭️  Skipped:', YELLOW)} {reason}")
+        if verdict != trigger_rules.READY:
+            not_run = _NOT_RUN[verdict]
+            print(f"   {c(f'⏭️  {not_run}:', RED if not_run == 'failed' else YELLOW)} {reason}")
             result = TaskResult(
                 task_id=task.task_id,
-                status='skipped',
+                status=not_run,
                 start_time=task_start,
                 end_time=datetime.now(timezone.utc),
+                error=reason if not_run == 'failed' else None,
             )
             task_results.append(result)
             if on_task_complete:
@@ -482,71 +488,26 @@ def _run_localstack(  # pragma: no cover — requires LocalStack running at loca
         )
 
 
-def _evaluate_trigger_rule(task: Task, previous_results: List[TaskResult]) -> tuple:
-    """Evaluate if task should run based on trigger rule.
+def _evaluate_trigger_rule(task: Task, previous_results: List[TaskResult]) -> Tuple[str, str]:
+    """The verdict of ``task``'s trigger rule over its upstreams' results, and why.
 
-    Mirrors the rules the reconciler applies for the real deployed
-    pipeline (polyris/coordination/trigger_rules.py,
-    docs/features/DSL.md#trigger-rules), adapted to this mock
-    runner's synchronous execution model: `run()` processes tasks in
-    topological order, so every dependency of `task` has already produced a
-    terminal TaskResult (success/failed/skipped) by the time this function is
-    called — there is no 'pending'/'wait' case here, unlike the
-    reconciler, which also sees upstreams that have not finished. This mock also has no skip_origin concept (no
-    manual-vs-rule distinction — see ADR #115): every skip here comes from a
-    trigger_rule not being satisfied, so `all_success` correctly treats ANY
-    skipped upstream as blocking (no cascade nuance needed).
+    The engine's own function decides (``trigger_rules.evaluate``, ADR #138
+    §6), so a mock run records ``skipped`` or ``upstream_failed`` where a
+    deployed run does. ``run()`` takes tasks in topological order, so every
+    upstream task already has a final result; every skip here comes from a
+    rule, since this runner has no operator and no ``skip_tasks``. An upstream
+    with no result, a step this runner does not execute, counts as pending.
     """
+    results = {r.task_id: r for r in previous_results}
+    statuses = [results[d.node_id].status if d.node_id in results else "pending" for d in task.dependencies]
+    origins = [SkipOrigin.RULE if status == "skipped" else None for status in statuses]
+    evaluation = trigger_rules.evaluate(task.trigger_rule, statuses, origins)
+    return evaluation.verdict, evaluation.reason
 
-    # Get upstream task results
-    upstream_ids = {t.node_id for t in task.dependencies}
-    upstream_results = [r for r in previous_results if r.task_id in upstream_ids]
 
-    if not upstream_ids:
-        return True, "no upstream dependencies"
-
-    success_count = sum(1 for r in upstream_results if r.status == 'success')
-    skipped_count = sum(1 for r in upstream_results if r.status == 'skipped')
-    done_count = len(upstream_results)  # always == total in this synchronous model
-    total = len(upstream_ids)
-
-    rule = task.trigger_rule
-
-    if rule == 'all_success':
-        if success_count == total:
-            return True, "all_success"
-        return False, f"not all succeeded ({success_count}/{total})"
-
-    elif rule == 'all_done':
-        if done_count == total:
-            return True, "all_done"
-        return False, f"not all done ({done_count}/{total})"
-
-    elif rule == 'all_skipped':
-        if done_count == total and skipped_count == total:
-            return True, "all_skipped"
-        return False, (f"not all done ({done_count}/{total})" if done_count < total
-                        else f"not all skipped ({skipped_count}/{total})")
-
-    elif rule == 'one_success':
-        if success_count >= 1:
-            return True, "one_success"
-        return False, "no success yet"
-
-    elif rule == 'none_skipped':
-        if skipped_count == 0:
-            return True, "none_skipped"
-        return False, f"{skipped_count} skipped"
-
-    # Unknown rule name (including any of ADR #117's 6 removed names): default
-    # to all_success's semantics, matching the reconciler's fallback for
-    # consistency (ADR #115) rather than silently letting an unrecognized
-    # rule always run. validate_asl_from_dag catches removed/unknown rules
-    # earlier with a specific message — this is a defensive fallback, not
-    # the primary way a user finds out a rule name isn't supported.
-    if success_count == total:
-        return True, "unknown_rule_defaulted_to_all_success"
-    return False, f"unknown trigger_rule {rule!r}; defaulted to all_success, not all succeeded ({success_count}/{total})"
+#: What a mock run records for a task its rule does not run; a pending upstream cannot finish here.
+_NOT_RUN = {trigger_rules.SKIP: "skipped", trigger_rules.UPSTREAM_FAILED: "upstream_failed",
+            trigger_rules.FAIL: "failed", trigger_rules.WAIT: "skipped"}
 
 
 def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:

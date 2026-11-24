@@ -51,3 +51,16 @@ def test_the_children_are_the_run_s_tasks_in_start_order(tokens):
     body = json.loads(executions.get_execution_children(RUN, {})["body"])
 
     assert [c["task_name"] for c in body["children"]] == ["extract", "load"]
+
+
+def test_the_tasks_of_a_run_that_share_its_start_come_in_the_same_order_every_read(tokens):
+    """Review of TR-6d, P-5: Start_Run stamps every row of a run with one started_at; the name orders them."""
+    from routes import executions
+
+    for name in ("transform", "extract", "load"):
+        tokens.put_item(Item={"execution_name": f"{name}-2026-11-12-{RUN[-20:]}", "task_name": name,
+                              "status": "waiting", "started_at": "2026-11-12T06:00:00.000Z", "pipeline_execution": RUN})
+
+    body = json.loads(executions.get_execution_children(RUN, {})["body"])
+
+    assert [c["task_name"] for c in body["children"]] == ["extract", "load", "transform"]

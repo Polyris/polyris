@@ -10,12 +10,19 @@
    ``polyris-artifacts-<account>-<region>``;
 5. deploy through a CloudFormation change set and print the console URL.
 
+On an existing platform it also makes the move from 1.2 to 1.3 (ADR #137,
+*Migration and upgrade*): it checks a platform below 1.3 before step 4, while
+nothing has changed, stops what 1.2 left running once the update has
+succeeded, waits for the index the console's run lists read, and lists the
+pipelines to redeploy. Those steps are in ``polyris/upgrade.py``.
+
 It runs from any directory and writes nothing there. The pure logic lives in
 ``polyris/platform.py``; this module is the AWS and terminal side.
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -24,18 +31,22 @@ import sys
 import tempfile
 import urllib.request
 import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound, WaiterError
 
-from . import __version__
+from . import __version__, upgrade
 from ._ansi import BOLD, BOLD_GREEN, CYAN, RED, YELLOW, colorize_parser
 from ._ansi import c as _c
+from .coordination import task_spec
 from .platform import (
     CAPABILITIES,
     OUTPUT_CONSOLE_URL,
+    OUTPUT_REGISTRY_TABLE,
     OUTPUT_TEST_SFN_ARN,
     PARAM_ADMIN_EMAIL,
     PARAM_ARTIFACTS_BUCKET,
@@ -51,9 +62,12 @@ from .platform import (
     artifacts_bucket_name,
     default_stack_name,
     is_downgrade,
+    leaves_tasks_as_rows,
     is_platform_shaped,
     is_platform_stack,
+    outputs_of,
     parameters_of,
+    platform_prefix,
     platform_tags,
     replaced_data_resources,
     parse_param_overrides,
@@ -62,6 +76,7 @@ from .platform import (
     release_asset_url,
     resolve_parameters,
     rewrite_template,
+    runs_tasks_as_rows,
     select_platform_stack,
     ui_prefix,
     validate_namespace_stage,
@@ -69,14 +84,17 @@ from .platform import (
 )
 from .platform import MANIFEST_NAME
 from .cfn_changeset import (
+    CLEANUP_STATUS,
     ChangeSetError,
     all_stacks,
     create_change_set,
+    delete_stack,
     describe_stack,
     execute_change_set,
     start_event_watcher,
     wait_for_stack,
 )
+from .executions import STATE_MACHINE, stop_running
 
 
 class UpError(Exception):
@@ -546,7 +564,11 @@ def run_up(args: argparse.Namespace) -> None:
     if existing:
         deployed = version_from_description(existing.get("Description"))
         print(f"   stack:    {_c(stack_name or '', CYAN)} (update, {deployed or 'unknown version'} → {installing})")
-        if existing.get("StackStatus", "").endswith("_IN_PROGRESS"):
+        # A stack whose last update succeeded and still deletes what it dropped is an upgrade to 1.3 that
+        # was interrupted: its cleanup waits for what 1.2 left running (ADR #137, *Migration*).
+        cleaning_up = (existing.get("StackStatus") == CLEANUP_STATUS
+                       and runs_tasks_as_rows(deployed, outputs_of(existing)))
+        if existing.get("StackStatus", "").endswith("_IN_PROGRESS") and not cleaning_up:
             raise UpError(f"Stack {stack_name} is busy ({existing['StackStatus']}). Try again when it finishes.")
         if not is_platform_shaped(existing):
             raise UpError(f"Stack {stack_name} is not a Polyris platform stack — refusing to change it.",
@@ -555,6 +577,8 @@ def run_up(args: argparse.Namespace) -> None:
             print(_c(f"   {stack_name} was not created by polyris-up; it will be adopted (tagged and "
                      "switched to release artifacts).", YELLOW))
             _confirm_yes("Continue?")
+        if cleaning_up:
+            existing = _finish_cleanup(session, cfn, str(existing["StackName"]), region=region, account=account)
         values: Dict[str, str] = {}
     else:
         if args.stack or args.namespace_from_flags:
@@ -600,11 +624,22 @@ def run_up(args: argparse.Namespace) -> None:
             f"{stack_name} runs v{deployed}; this would roll it back to v{manifest.version}.",
             "Install the newer polyris (re-run install.sh) — or pass --allow-downgrade if the rollback is intended.",
         )
+    template = json.loads((root / manifest.template).read_text())
+    # A release that runs tasks as rows deletes 1.2's engine, and nothing adopts a 1.2 run (ADR #137).
+    rows_engine = runs_tasks_as_rows(manifest.version, template.get("Outputs") or {})
+    if existing and leaves_tasks_as_rows(deployed, outputs_of(existing), manifest.version, template.get("Outputs") or {}):
+        raise UpError(f"{stack_name} runs v{deployed or 'unknown'}, which runs tasks as rows; v{manifest.version} would "
+                      "put 1.2's engine back, and no pipeline deployed for 1.3 would run on it.",
+                      "No flag allows this. Install polyris 1.3 or newer (re-run install.sh). A failed update "
+                      "rolls itself back.")
+    upgrading = bool(existing) and rows_engine and not runs_tasks_as_rows(deployed, outputs_of(existing or {}))
+    if upgrading:
+        _check_before_upgrade(session, existing or {}, region=region, account=account, deployed=deployed,
+                              override=args.accept_stopped_runs)
     bucket = artifacts_bucket_name(account, region)
     ensure_artifacts_bucket(s3, bucket, region=region, owner=account)
     function_keys, sfn_keys, prefix = upload_artifacts(s3, bucket, root, manifest, owner=account)
 
-    template = json.loads((root / manifest.template).read_text())
     template = rewrite_template(template, bucket=bucket, function_keys=function_keys,
                                 state_machine_keys=sfn_keys, version=manifest.version)
     template_url = _upload_template(s3, bucket=bucket, region=region, version=manifest.version,
@@ -622,6 +657,11 @@ def run_up(args: argparse.Namespace) -> None:
 
     _header("CloudFormation")
     assert stack_name  # set on both branches above
+    # The update from 1.2 deletes 1.2's state machines: their executions are stopped as its cleanup begins (ADR #137,
+    # *Migration*). Any other update, 1.3 to 1.3 among them, stops nothing then.
+    stop_leftovers = (functools.partial(_stop_leftovers, session, cfn, stack_name, region=region, account=account)
+                      if upgrading else None)
+    after_update = existing is not None and rows_engine
     try:
         change_set = create_change_set(cfn, stack_name=stack_name, capabilities=CAPABILITIES,
                                        template_url=template_url, parameters=parameters,
@@ -638,6 +678,9 @@ def run_up(args: argparse.Namespace) -> None:
                           "then run polyris-up again.")
         print(_c(f"\n✅ {stack_name} is already up to date (v{manifest.version}).", BOLD_GREEN))
         _print_outputs(existing or {})
+        if after_update:
+            _after_update(session, cfn, stack_name, region=region, account=account,
+                          flags=next_step_flags(args, stack_name), upgrading=upgrading)
         return
     _summarize_change_set(change_set)
     risky = replaced_data_resources(change_set)
@@ -654,7 +697,9 @@ def run_up(args: argparse.Namespace) -> None:
     keep_on_failure = bool(args.disable_rollback) and existing is not None
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=keep_on_failure)
+        # The cleanup that deletes 1.2's state machines waits for their executions: stop them as it begins.
+        execute_change_set(cfn, stack_name=stack_name, change_set=change_set, disable_rollback=keep_on_failure,
+                           on_cleanup=stop_leftovers)
     except ChangeSetError as e:
         if keep_on_failure:
             raise UpError(str(e), "Nothing was rolled back (--disable-rollback): fix the cause, then run the "
@@ -669,9 +714,153 @@ def run_up(args: argparse.Namespace) -> None:
     if PARAM_ADMIN_EMAIL in values and values[PARAM_ADMIN_EMAIL] and existing is None:
         print(f"   Login:    {values[PARAM_ADMIN_EMAIL]} — Cognito has emailed a temporary password.")
     flags = next_step_flags(args, stack_name)
+    if after_update and _after_update(session, cfn, stack_name, region=region, account=account, flags=flags,
+                                      upgrading=upgrading):
+        return                  # what comes next is the redeploy of those pipelines, not a first one
     print("\n   Next — a first pipeline that runs right away:")
     print(f"     {_c(f'polyris-init hello-world --hello{flags}', CYAN)}")
     print(f"     {_c(f'cd hello-world && polyris-deploy{flags}', CYAN)}   then press Run in the console")
+
+
+def _target(session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str) -> upgrade.Target:
+    return upgrade.Target.of(stack, partition=session.get_partition_for_region(region), region=region,
+                             account=account)
+
+
+def _check_before_upgrade(
+    session: boto3.Session, stack: Dict[str, Any], *, region: str, account: str, deployed: Optional[str],
+    override: bool,
+) -> None:
+    """Check a platform below 1.3 before it is upgraded, while nothing has changed (ADR #137, *Migration*)."""
+    print("   checking the platform before its upgrade to 1.3")
+    dynamodb = session.client("dynamodb")
+    registry = outputs_of(stack).get(OUTPUT_REGISTRY_TABLE, "")
+    try:
+        upgrade.check(sfn=session.client("stepfunctions"), dynamodb=dynamodb,
+                      target=_target(session, stack, region=region, account=account), deployed=deployed,
+                      override=override, now=datetime.now(timezone.utc))
+        if registry:
+            # After the update, the stop of 1.2's executions reads the registry: a role that may not read
+            # it is refused now, while nothing has changed.
+            with upgrade.permission("dynamodb:Scan", registry):
+                _registry_rows(dynamodb, registry)
+    except upgrade.Refused as e:
+        raise UpError(str(e), *e.todo)
+    if override:
+        print(_c(f"   {upgrade.OVERRIDE_FLAG}: 1.2's adoption and the runs in flight were not checked.", YELLOW))
+
+
+def _stop_leftovers(
+    session: boto3.Session, cfn, stack_name: str, *, region: str, account: str,
+    pipelines: Optional[Sequence["DeployedPipeline"]] = None,
+) -> None:
+    """Stop what 1.2 left running on a platform that runs 1.3, and print the runs to start again.
+
+    polyris-up calls it as the cleanup of the update from 1.2 begins, so that
+    the deletion of 1.2's state machines does not wait for their executions;
+    at the end of that run; and at the end of a later run while 1.2's state
+    machines are still there, or at its start while the stack still cleans up,
+    so that an interrupted upgrade is finished (ADR #137, *Migration and
+    upgrade*). ``pipelines`` are the platform's, when the caller has read them
+    already.
+    """
+    try:
+        stack = describe_stack(cfn, stack_name) or {}
+        target = _target(session, stack, region=region, account=account)
+        sfn = session.client("stepfunctions")
+        since = upgrade.rows_engine_since(session.client("dynamodb"), target)
+        machines: List[str] = []
+        if since:
+            if pipelines is None:
+                pipelines = deployed_pipelines(session, cfn, stack, stack_name)
+            machines = _pipeline_machines(sfn, pipelines, target)
+        stopped = upgrade.stop_leftovers(sfn, target=target, pipelines=machines, started_before=since)
+    except (ClientError, BotoCoreError) as e:
+        raise UpError(
+            f"{stack_name} is updated, but polyris-up could not stop what 1.2 left running: {e}",
+            "While an execution of 1.2 runs, CloudFormation's cleanup of 1.2's state machines waits for it.",
+            "Fix the cause (docs/deployment/IAM_PERMISSIONS.md lists the permissions), then run polyris-up "
+            "again: it stops them and goes on.")
+    if not (stopped.runs or stopped.engine):
+        return
+    print(_c(f"   Stopped what 1.2 left running: {len(stopped.runs)} run(s), and {stopped.engine} execution(s) "
+             "of the engine's state machines.", YELLOW))
+    for run in stopped.runs:
+        print(f"     {run.machine}  {run.name}  (started {run.started.astimezone(timezone.utc):%Y-%m-%d %H:%M} UTC)")
+    if stopped.runs:
+        print("   Nothing adopts a 1.2 run: start these again once their pipelines are redeployed.")
+
+
+def _after_update(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str, flags: str,
+                  upgrading: bool) -> bool:
+    """What polyris-up does on a platform that runs 1.3, once its stack has settled (ADR #137, *Migration and
+    upgrade*). True when it listed pipelines to redeploy.
+
+    After the update from 1.2, or while 1.2's state machines are still there,
+    it stops what 1.2 left running once more: the listings at the cleanup may
+    not have shown everything, and an upgrade interrupted after its update is
+    finished here. A platform that finished its upgrade is asked nothing more
+    (``upgrade.left_by_1_2``). It waits for the index that the console's run
+    lists read, and lists the pipelines that still need a redeploy.
+    """
+    stack = describe_stack(cfn, stack_name) or {}
+    target = _target(session, stack, region=region, account=account)
+    try:
+        pipelines = deployed_pipelines(session, cfn, stack, stack_name)
+        left = upgrading or upgrade.left_by_1_2(session.client("stepfunctions"), target)
+    except (ClientError, BotoCoreError) as e:
+        raise UpError(f"{stack_name} is updated, but polyris-up could not read its pipelines and state machines: {e}",
+                      "Fix the cause (docs/deployment/IAM_PERMISSIONS.md lists the permissions), then run "
+                      "polyris-up again.")
+    if left:
+        _stop_leftovers(session, cfn, stack_name, region=region, account=account, pipelines=pipelines)
+    upgrade.wait_for_index(session.client("dynamodb"), target)
+    return _list_redeploys(pipelines, flags)
+
+
+def _list_redeploys(pipelines: Sequence["DeployedPipeline"], flags: str) -> bool:
+    """Print the pipelines that still need a redeploy, with the command for each; False when none does.
+
+    polyris-deploy writes the pipeline format it deployed with to the registry.
+    A pipeline deployed before 1.3 names none, and its runs fail at once: the
+    wrapper they start is gone.
+    """
+    stale = [pipeline.name for pipeline in pipelines if task_spec.needs_redeploy(pipeline.format_version)]
+    if not stale:
+        return False
+    print(_c(f"\n   {len(stale)} pipeline(s) were deployed with an older pipeline format. Their runs fail at once "
+             "until you redeploy them:", YELLOW))
+    for name in stale:
+        print(f"     {_c(f'polyris-deploy --select {name}{flags}', CYAN)}")
+    print(f"   Run each in its pipeline's folder, with the --stage you deploy it with. "
+          f"{_c('polyris-deploy --all', CYAN)} in the folder above them redeploys every pipeline.")
+    return True
+
+
+def _pipeline_machines(sfn, pipelines: Sequence["DeployedPipeline"], target: upgrade.Target) -> List[str]:
+    """The ARNs of the pipelines' state machines: the registry names them, and ListStateMachines
+    finds by its name the one the registry does not name."""
+    arns = [pipeline.sfn_arn for pipeline in pipelines if pipeline.sfn_arn]
+    unnamed = {target.name_prefix + pipeline.name for pipeline in pipelines if not pipeline.sfn_arn}
+    if unnamed:
+        for page in sfn.get_paginator("list_state_machines").paginate():
+            arns.extend(m["stateMachineArn"] for m in page.get("stateMachines", []) if m.get("name") in unnamed)
+    return arns
+
+
+def _finish_cleanup(session: boto3.Session, cfn, stack_name: str, *, region: str, account: str) -> Dict[str, Any]:
+    """Finish an update whose cleanup still runs: stop what holds it up, wait for the stack, return it."""
+    print(f"   {stack_name} is still cleaning up after its last update: stopping what 1.2 left running, "
+          "then waiting for it")
+    _stop_leftovers(session, cfn, stack_name, region=region, account=account)
+    stop_narration = start_event_watcher(cfn, stack_name)
+    try:
+        wait_for_stack(cfn, stack_name=stack_name, waiter="stack_update_complete")
+    except WaiterError as e:
+        raise UpError(f"Stack {stack_name} did not finish its cleanup: {e}")
+    finally:
+        stop_narration()
+    return describe_stack(cfn, stack_name) or {}
 
 
 def next_step_flags(args: argparse.Namespace, stack_name: str) -> str:
@@ -695,8 +884,32 @@ def _print_outputs(stack: Dict[str, Any]) -> None:
 # ── polyris-down ─────────────────────────────────────────────────────────────
 
 
-def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) -> List[str]:
-    """Pipelines still deployed on this platform.
+@dataclass(frozen=True)
+class DeployedPipeline:
+    """A pipeline still deployed on a platform."""
+
+    name: str
+    #: Its state machine as the registry names it; empty for one that never registered, or has not finished.
+    sfn_arn: str = ""
+    #: The pipeline format it was deployed with, as the registry holds it; None for one deployed before 1.3.
+    format_version: Optional[str] = None
+
+
+def _registry_rows(dynamodb, table: str) -> List[Dict[str, Any]]:
+    """Every row of the pipeline registry; none when the table is gone."""
+    try:
+        pages = dynamodb.get_paginator("scan").paginate(
+            TableName=table, ProjectionExpression="pipeline_name, sfn_arn, #format",
+            ExpressionAttributeNames={"#format": task_spec.REGISTRY_FORMAT_FIELD})
+        return [item for page in pages for item in page.get("Items", [])]
+    except ClientError as e:
+        if "ResourceNotFoundException" in str(e):
+            return []
+        raise
+
+
+def deployed_pipelines(session, cfn, stack: Dict[str, Any], stack_name: str) -> List[DeployedPipeline]:
+    """Pipelines still deployed on this platform, by name.
 
     The platform's pipeline registry is the source of truth (ADR #39): every
     pipeline polyris-deploy registered there, whose state machine still exists,
@@ -705,41 +918,41 @@ def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) 
     registered. A row whose state machine can't be checked counts as live.
     """
     params = parameters_of(stack)
-    prefix = f"{params.get(PARAM_NAMESPACE, '')}-{params.get(PARAM_STAGE, '')}-polyris-"
-    # Pipeline names (dag ids), so a pipeline found both ways is listed once.
-    found = {s["StackName"][len(prefix):] for s in all_stacks(cfn)
+    prefix = platform_prefix(params.get(PARAM_NAMESPACE, ""), params.get(PARAM_STAGE, ""))
+    # By pipeline name (dag id), so a pipeline found both ways is listed once.
+    found = {s["StackName"][len(prefix):]: DeployedPipeline(s["StackName"][len(prefix):]) for s in all_stacks(cfn)
              if s["StackName"].startswith(prefix) and s["StackName"] != stack_name}
-    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs") or []}
-    table = outputs.get("PipelineRegistryTable")
-    if not table:
-        return sorted(found)
-    sfn = session.client("stepfunctions")
-    try:
-        pages = session.client("dynamodb").get_paginator("scan").paginate(
-            TableName=table, ProjectionExpression="pipeline_name, sfn_arn")
-        rows = [item for page in pages for item in page.get("Items", [])]
-    except ClientError as e:
-        if "ResourceNotFoundException" in str(e):
-            return sorted(found)
-        raise
-    for row in rows:
-        name = row.get("pipeline_name", {}).get("S", "")
-        arn = row.get("sfn_arn", {}).get("S", "")
-        if not name or name.startswith("_"):
-            continue
-        if arn:
-            try:
-                if sfn.describe_state_machine(stateMachineArn=arn).get("status") == "DELETING":
-                    continue
-            except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "StateMachineDoesNotExist":
-                    continue  # destroyed pipeline: its registry row outlives it
-        # No ARN yet (registration still running or failed) or an unknown
-        # state: count it as live — a false "still deployed" is recoverable
-        # with --yes, deleting the platform under a live pipeline is not.
-        found.add(name)
-    return sorted(found)
+    table = outputs_of(stack).get(OUTPUT_REGISTRY_TABLE)
+    if table:
+        sfn = session.client("stepfunctions")
+        for row in _registry_rows(session.client("dynamodb"), table):
+            name = row.get("pipeline_name", {}).get("S", "")
+            arn = row.get("sfn_arn", {}).get("S", "")
+            if not name or name.startswith("_"):
+                continue
+            if arn:
+                try:
+                    if sfn.describe_state_machine(stateMachineArn=arn).get("status") == "DELETING":
+                        continue
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") == "StateMachineDoesNotExist":
+                        continue  # destroyed pipeline: its registry row outlives it
+            # No ARN yet (registration still running or failed) or an unknown
+            # state: count it as live — a false "still deployed" is recoverable
+            # with --yes, deleting the platform under a live pipeline is not.
+            found[name] = DeployedPipeline(name, arn, row.get(task_spec.REGISTRY_FORMAT_FIELD, {}).get("N"))
+    return sorted(found.values(), key=lambda pipeline: pipeline.name)
 
+
+def pipelines_on_platform(session, cfn, stack: Dict[str, Any], stack_name: str) -> List[str]:
+    """The names of the pipelines still deployed on this platform (``deployed_pipelines``)."""
+    return [pipeline.name for pipeline in deployed_pipelines(session, cfn, stack, stack_name)]
+
+
+
+#: What the history of an execution that polyris-down stopped says.
+DOWN_STOP_ERROR = "Polyris.Down"
+DOWN_STOP_CAUSE = "polyris-down stopped this execution to delete the platform."
 
 
 def run_down(args: argparse.Namespace) -> None:
@@ -760,7 +973,7 @@ def run_down(args: argparse.Namespace) -> None:
         raise UpError(f"Stack {stack_name} is busy ({stack['StackStatus']}). Try again when it finishes.")
 
     resources = cfn.get_paginator("list_stack_resources").paginate(StackName=stack_name)
-    tables, buckets = [], {}
+    tables, buckets, machines = [], {}, []
     for page in resources:
         for r in page["StackResourceSummaries"]:
             physical = r.get("PhysicalResourceId")  # absent when the resource never got created
@@ -770,6 +983,8 @@ def run_down(args: argparse.Namespace) -> None:
                 tables.append(physical)
             elif r["ResourceType"] == "AWS::S3::Bucket":
                 buckets[r["LogicalResourceId"]] = physical
+            elif r["ResourceType"] == STATE_MACHINE:
+                machines.append((physical, None))
 
     pipelines = pipelines_on_platform(session, cfn, stack, stack_name)
     if pipelines and not args.yes:
@@ -793,16 +1008,26 @@ def run_down(args: argparse.Namespace) -> None:
     if not args.yes:
         _confirm_typed(stack_name, "Deleting the platform")
 
+    # A state machine that CloudFormation deletes waits for its running executions: stop them until the
+    # stack is gone, and once before the buckets are emptied, since a running task can still write to them.
+    sfn = session.client("stepfunctions")
+    seen: Set[str] = set()
+
+    def stop_executions() -> None:
+        stopped = stop_running(sfn, machines, error=DOWN_STOP_ERROR, cause=DOWN_STOP_CAUSE, seen=seen)
+        for machine in sorted({m for m, _ in stopped}):
+            count = sum(1 for m, _ in stopped if m == machine)
+            print(f"   Stopped {count} running execution(s) of {machine.rsplit(':', 1)[-1]}")
+
+    stop_executions()
     for logical, bucket in buckets.items():
         if logical != "ResultsBucket" or args.delete_data:
             empty_bucket(s3, bucket, owner=account)
     stop_narration = start_event_watcher(cfn, stack_name)
     try:
-        cfn.delete_stack(StackName=stack_name)
-        try:
-            wait_for_stack(cfn, stack_name=stack_name, waiter="stack_delete_complete")
-        except WaiterError as e:
-            raise UpError(f"Stack {stack_name} was not deleted: {e}")
+        delete_stack(cfn, stack_name=stack_name, while_deleting=stop_executions)
+    except ChangeSetError as e:
+        raise UpError(str(e))
     finally:
         stop_narration()
     print(_c(f"\n✅ {stack_name} deleted.", BOLD_GREEN))
@@ -870,6 +1095,10 @@ def build_up_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-rollback", action="store_true",
                         help="If the update fails, keep what it already changed instead of rolling back "
                              "(for an upgrade whose release notes ask for it; a first install always rolls back)")
+    parser.add_argument("--accept-stopped-runs", action="store_true",   # upgrade.OVERRIDE_FLAG, which the refusals name
+                        help="Upgrade a 1.2 platform to 1.3 although a run may be in flight, or 1.2 finished adopting "
+                             "older rows less than 48 hours ago. polyris-up stops what 1.2 left running "
+                             "(a platform older than 1.2 is never upgraded)")
     colorize_parser(parser)
     return parser
 

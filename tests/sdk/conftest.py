@@ -44,3 +44,37 @@ def _hermetic_environment(monkeypatch, tmp_path_factory):
     empty = tmp_path_factory.getbasetemp() / "no-aws-config"
     monkeypatch.setenv("AWS_CONFIG_FILE", str(empty / "config"))
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(empty / "credentials"))
+
+
+#: The pipeline-specs table that the deploy tests' fake platform stacks name (``PipelineSpecsTable``).
+SPECS_TABLE = "acme-dev-polyris-pipeline-specs"
+#: The registry tables those fake platform stacks name.
+REGISTRY_TABLES = ("registry", "my-registry")
+
+
+@pytest.fixture
+def platform_dynamodb(monkeypatch):
+    """A DynamoDB client on moto with the platform's pipeline-specs and registry tables.
+
+    polyris-deploy writes the task specs and reads them back before any change set
+    (ADR #137 §8); deploy tests hand this client to ``session.client("dynamodb")`` so
+    that step runs for real, as the platform's table answers.
+    """
+    from moto import mock_aws
+    import boto3
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName=SPECS_TABLE, BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"},
+                                  {"AttributeName": "sk", "AttributeType": "S"}])
+        for name in REGISTRY_TABLES:
+            client.create_table(
+                TableName=name, BillingMode="PAY_PER_REQUEST",
+                KeySchema=[{"AttributeName": "pipeline_name", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "pipeline_name", "AttributeType": "S"}])
+        yield client

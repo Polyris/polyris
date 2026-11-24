@@ -195,9 +195,29 @@ A hook that turns an API answer into a status returns a tagged state, and its de
 
 A list fed by a query renders its error state (what failed, and a retry) when the query failed and holds no data. React Query's `data = []` default makes a failed first load look like "nothing here": the pipelines sidebar told users to deploy their first pipeline whenever `/api/pipelines` failed. Check `isError` before the empty state, and render it with `EmptyState` and `formatApiErrorMessage` as `AllTasksView` does; `PipelinesSidebar.test.tsx` pins it.
 
+## State the UI keeps by an id needs an id per event
+
+The bell keeps "read" and "cleared" by a notification's `id`. The API gave every notification of a run one id, and in 1.3 a run goes on after a failure: a later decision request of a run whose failure was read or cleared showed nothing, and its task failed at its deadline. An id that the UI keeps state by names the event (`/api/notifications`: its kind, the task row and when its entry falls due), never its container (review of TR-6d; `test_each_notification_names_its_event_so_a_later_request_of_the_same_run_is_new`).
+
+## A time is named by what happens at it
+
+The task detail showed the end of a `wait_before` countdown, when the task starts, as its "deadline", because both came from the row's due time. The API returns each time under its own name (`countdown_end`, `deadline`), and the UI labels it by what happens then. A release that removes a status (1.3's `waiting_delay`) moves every UI branch on it to the new shape: the graph's countdown waited for that status and showed nothing for 1.3 rows (`utils/countdown.test.ts`).
+
+## A state is read where it lives, never guessed from what it causes
+
+The pipeline page guessed a run's pause from task rows that had become `waiting_paused`. The pause lives on the run row, and rows change only once a pass reaches them: a paused run showed Pause instead of Resume, and a Stop in progress showed nothing after a reload. The API returns what the run row holds (`/api/pipeline-status` `run: {paused, stopping}`), and the UI reads it (review of TR-6d; `PipelineDetail.test.tsx`).
+
 ## A hold on the UI is released by every way its reason can end
 
 The pipelines sidebar keeps its rows still while the pointer or the focus is in the list. A blur releases the focus hold, but a focused row that unmounts fires no blur: when every listed pipeline was gone, the list stayed held, empty, while new pipelines arrived. Release the hold on that path too (`a held list that lost every row lets go`), and list each way the reason for a hold can end before you add one.
+
+## A notification is named by what it is, on every surface
+
+The bell's pop-up called every warning "Pipeline Failed" while its list and the browser notification named it by its kind (1.3 live smoke). `notificationTitle` in `Notifications.tsx` names a notification for the pop-up and the browser notification (a task's failure as "Task Failed": the run goes on); a new surface imports it, never a ternary of its own (`names a warning toast by its kind, not as a failed pipeline`).
+
+## A reset writes only what it resets
+
+React runs a child's effects before its parent's in one commit. `useStoreInit`, called in `App`, forgets the picked run after a pipeline switch; it did so with `setSelectedExecution(null)`, which also chose the run view, and undid the definition view that `PipelineDetail`, a child, had just chosen for a pipeline that never ran. The page stayed on the date of the pipeline before, with no run to pick instead (1.3 live check). The reset calls `clearSelectedExecution`, which writes the run alone. A test of a choice that a later effect may overwrite mounts that effect too, never the component alone (`opens on its definition when picked after a run of another pipeline`).
 
 ## Dead computed values are bugs waiting to happen
 

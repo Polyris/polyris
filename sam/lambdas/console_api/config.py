@@ -9,13 +9,13 @@ and prevent boto3 initialization errors during imports.
 """
 
 import os
-import re
 from typing import Dict
 
 # ============================================
 # AWS Clients (lazy initialization)
 # ============================================
 _dynamodb = None
+_dynamodb_client = None
 _sfn = None
 _lambda = None
 _logs = None
@@ -33,12 +33,22 @@ def _get_dynamodb():
     return _dynamodb
 
 
+def _get_dynamodb_client():
+    """Lazy init a low-level DynamoDB client, for code that sends typed attributes
+    (``polyris.coordination.spec_store``). A resource's ``meta.client`` would
+    serialize them a second time."""
+    global _dynamodb_client
+    if _dynamodb_client is None:
+        import boto3
+        _dynamodb_client = boto3.client('dynamodb')
+    return _dynamodb_client
+
+
 #: Step Functions calls fail fast, well inside API Gateway's 29 s (Principle #53): botocore's
 #: standard retry mode with two attempts, a 2 s connect and a 4 s read timeout, so one
-#: call gives up within 12 s. Every console call is a control-plane call (describe,
-#: start, stop, send_task_*); none waits for an execution. The defaults (a 60 s read,
-#: legacy retries) let one slow call outlast the request. /api/pipelines may start a
-#: last check just before its deadline (RECONCILE_DEADLINE_SECONDS).
+#: call gives up within 12 s. Every console call is a control-plane call (list, start, stop);
+#: none waits for an execution, and none asks about a run (ADR #137 §5). The defaults (a 60 s
+#: read, legacy retries) let one slow call outlast the request.
 SFN_CLIENT_CONFIG = {'retries': {'mode': 'standard', 'total_max_attempts': 2},
                      'connect_timeout': 2, 'read_timeout': 4}
 
@@ -137,6 +147,11 @@ class _LazyDynamoDB:
         return _get_dynamodb().Table(table_name)
 
 
+class _LazyDynamoDBClient:
+    def __getattr__(self, name):
+        return getattr(_get_dynamodb_client(), name)
+
+
 class _LazySFN:
     def __getattr__(self, name):
         return getattr(_get_sfn(), name)
@@ -169,6 +184,7 @@ class _LazyGlue:
 
 # Export lazy proxies (same interface as before)
 dynamodb = _LazyDynamoDB()
+dynamodb_client = _LazyDynamoDBClient()
 sfn = _LazySFN()
 lambda_client = _LazyLambda()
 logs = _LazyLogs()
@@ -187,21 +203,12 @@ ASSET_EVENT_TTL_DAYS = int(os.environ.get('ASSET_EVENT_TTL_DAYS', '365'))
 TASK_EVENTS_TABLE = os.environ.get('TASK_EVENTS_TABLE', 'task-events')
 # Personal Access Token store (ADR #65). Dedicated table, not pipeline-tokens.
 API_TOKENS_TABLE = os.environ.get('API_TOKENS_TABLE', 'api-tokens')
+# Task specs (ADR #137 §8): polyris-deploy writes them; the console reads them (dal.specs_repo).
+SPECS_TABLE = os.environ.get('SPECS_TABLE', 'pipeline-specs')
 # Optional: only set when circuit-breaker monitoring is enabled in this deployment.
 # Empty string means feature disabled (health check returns HEALTHY/not-configured).
 CIRCUIT_BREAKER_TABLE = os.environ.get('CIRCUIT_BREAKER_TABLE', '')
 RESULTS_BUCKET = os.environ.get('RESULTS_BUCKET', '')
 
-# SFN Helpers
-# The coordination reconciler; resume asks it to check a run's waiting tasks (ADR #130 §6.5).
-RECONCILE_FUNCTION_ARN = os.environ.get('RECONCILE_FUNCTION_ARN', '')
-NOTIFY_DEPENDENTS_HELPER_ARN = os.environ.get('NOTIFY_DEPENDENTS_HELPER_ARN', '')
+# Step Functions
 BULK_BACKFILL_ARN = os.environ.get('BULK_BACKFILL_ARN', '')
-
-# ============================================
-# Constants
-# ============================================
-# Regex pattern for execution_name format: {task_name}-{YYYY-MM-DD}-{short_id}
-# short_id can be any length (typically 1-20 chars from pipeline_execution)
-# This pattern ensures: prefix-DATE-suffix (date not at start/end alone)
-EXECUTION_NAME_PATTERN = re.compile(r'.+-\d{4}-\d{2}-\d{2}-.{8,}$')

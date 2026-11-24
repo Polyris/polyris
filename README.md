@@ -38,7 +38,7 @@ here is how the operations differ:
 | | polyris | Airflow / Dagster / Prefect |
 |---|---|---|
 | **When a task fails** | The run waits for your decision — retry, mark success, skip, fail — then continues in the same execution. Upstream tasks that already succeeded don't re-run. | Retry policy; then you clear the task and re-run it from the UI or CLI. |
-| **Debugging a run** | Step Functions execution history in the AWS Console — graph, inputs, and error at each state. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
+| **Debugging a run** | The polyris console shows each task's status, why it waits and its timeline; each task's work is a Step Functions execution with its history in the AWS Console. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
 | **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
 | **Assets & lineage** | First-class: `outlets=` / `wait_for=` / asset-triggered schedules — same model as Dagster. | Native in Dagster; add-on or missing in Airflow / Prefect. |
 
@@ -71,7 +71,7 @@ cd my-pipeline
 
 polyris-validate              # Validate structure
 polyris-validate -v           # Verbose: tasks, deps, ASL preview
-polyris-output --json         # Full Step Functions JSON
+polyris-output --json         # The definition and its task specs
 polyris-output --mermaid      # Mermaid diagram source
 polyris-output --graph        # ASCII graph
 ```
@@ -131,7 +131,7 @@ hello-world through assets and lineage.
 ├── sam/                          # Shared AWS infrastructure
 │   ├── template.yaml             # SAM template — all AWS resources
 │   ├── lambdas/                  # 8 Lambda functions
-│   └── sfn_templates/            # 13 SFN definitions (10 orchestration + 3 test)
+│   └── sfn_templates/            # 5 SFN definitions (2 orchestration + 3 test)
 │
 ├── polyris/                      # Python DSL library
 │   ├── dag.py                    # DAG class
@@ -157,7 +157,7 @@ no fleet to keep alive:
 | DynamoDB | Per read/write unit | ~$0.001 per run |
 | CloudWatch Logs | GB ingested | $0.50 – $2 / month total |
 
-**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$5–10/month
+**Small deployment (10 pipelines, daily, ~10 tasks each) — ~$2–4/month
 for orchestration.** Your task workloads (Glue jobs, Lambda functions, ECS
 containers, Athena queries) bill separately against your existing AWS
 spend; polyris does not add a percentage on top.
@@ -169,7 +169,7 @@ environment alone starts at ~$350/month for the environment fee before
 workers or metadata storage — polyris runs the same orchestration workload
 for roughly two orders of magnitude less.
 
-*Numbers are approximate AWS list prices as of late 2025 — check AWS
+*Numbers are estimates at AWS list prices in us-east-1 as of November 2026 — check AWS
 pricing pages for current figures.*
 
 ---

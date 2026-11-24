@@ -52,10 +52,12 @@ For each pipeline:
 
 State is managed by CloudFormation — create, update, and delete handled automatically.
 
+Before it creates the change set, `polyris-deploy` writes each task's spec to the platform's `pipeline-specs` table, reads the version back and checks it (its count, each text's hash, its fingerprint). A spec it cannot write or confirm stops the deploy before the stack changes; `--dry-run` writes nothing and prints the version it would write. After the stack deploys, it records the deploy time and the pipeline's format in the registry. A pipeline beyond a limit of [DSL.md § Pipeline limits](../features/DSL.md#pipeline-limits) is refused before anything reaches AWS.
+
 ## Prerequisites
 
 1. The platform installed: `polyris-up` ([QUICKSTART.md](../getting-started/QUICKSTART.md)). `polyris-deploy` reads its CloudFormation outputs.
-2. AWS credentials for the same account and region (standard credential chain, or `--profile` / `--region`).
+2. AWS credentials for the same account and region (standard credential chain, or `--profile` / `--region`), with the deploy permissions of [IAM_PERMISSIONS.md](IAM_PERMISSIONS.md#deploy--per-pipeline-polyris-deploy), `pipeline-specs` included.
 
 Which platform stack: `--stack` > `stack_name` in `config.py` > the one stack tagged by `polyris-up` in the region. Several tagged stacks and no name is an error that asks for `--stack`. Which region: `--region` > `POLYRIS_REGION` / `AWS_REGION` > `config.py` > your AWS profile's region.
 

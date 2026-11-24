@@ -145,7 +145,6 @@ export function StatusIcon({ status, size = 16, className = '' }: { status: stri
         
         // Waiting states
         waiting: <Clock size={size} className={`${baseClass} text-gray-400`} />,
-        waiting_delay: <Clock size={size} className={`${baseClass} text-amber-500`} />,
         waiting_decision: <HelpCircle size={size} className={`${baseClass} text-amber-500`} />,
         waiting_paused: <Pause size={size} className={`${baseClass} text-amber-500`} />,
         
@@ -157,10 +156,6 @@ export function StatusIcon({ status, size = 16, className = '' }: { status: stri
         stopped: <StopCircle size={size} className={`${baseClass} text-amber-500`} />,
         skipped: <SkipForward size={size} className={`${baseClass} text-slate-500`} />,
         aborted: <Ban size={size} className={`${baseClass} text-orange-500`} />,
-
-        // Execution-level terminal states (ADR #112)
-        timed_out: <Clock size={size} className={`${baseClass} text-red-500`} />,
-        recovered: <CheckCircle2 size={size} className={`${baseClass} text-amber-500`} />,
         
         // Asset states
         updated: <CheckCircle2 size={size} className={`${baseClass} text-green-500`} />,

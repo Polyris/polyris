@@ -11,7 +11,7 @@ The previous hand-maintained copies were an unguarded SSoT duplicate (the
 drift check only validates constants_generated); their dead console-only
 extras (TriggerRule.DEFAULT/EARLY_TRIGGER/WAIT_ALL, PipelineStatus.PAUSED/
 ABORTED) were removed in the same pass. Only console-specific constants
-(EventType, Limits, BackfillLimits, SFN_STATUS_MAP, validators) remain
+(EventType, Limits, BackfillLimits, validators) remain
 defined here. Regenerate the imported names via `make generate-enums`.
 """
 from constants_generated import (
@@ -32,22 +32,19 @@ from constants_generated import (
     BACKFILL_TERMINAL_STATUSES,
     BACKFILL_ACTIVE_STATUSES,
     EXECUTION_STATUS_CANONICAL,
-    _EXECUTION_STATUS_UPPERCASE_MAP,
-    normalize_execution_status,
     derive_execution_status,
-    reconcile_execution_status,
 )
 
 
 class EventType:
     """Event types for task_events table.
 
-    `TASK_STARTED` fires once per wrapper on the first dispatch. `TASK_RETRY_STARTED`
-    (ADR #125) fires on each in-SFN retry re-dispatch inside the same wrapper. Count
-    "task starts" from `TASK_STARTED` only; sum both for total dispatches.
+    `TASK_STARTED` fires once per run_task execution, on its first dispatch.
+    `TASK_RETRY_STARTED` (ADR #125) fires on each in-SFN retry re-dispatch inside the
+    same execution. Count "task starts" from `TASK_STARTED` only; sum both for total
+    dispatches.
     """
     TASK_REGISTERED = 'TASK_REGISTERED'
-    WRAPPER_STARTED = 'WRAPPER_STARTED'
     DEPS_READY = 'DEPS_READY'
     DEPS_SKIPPED = 'DEPS_SKIPPED'
     DEPS_BLOCKED = 'DEPS_BLOCKED'
@@ -62,57 +59,33 @@ class EventType:
     RETRY_SCHEDULED = 'RETRY_SCHEDULED'  # reserved — no SFN state emits this yet
 
 
-# SFN status to internal status mapping
-SFN_STATUS_MAP = {
-    'RUNNING': TaskStatus.RUNNING,
-    'SUCCEEDED': TaskStatus.SUCCESS,
-    'FAILED': TaskStatus.FAILED,
-    'TIMED_OUT': TaskStatus.FAILED,
-    'ABORTED': TaskStatus.ABORTED,
-    'PENDING_REDRIVE': TaskStatus.PENDING,
-}
-
 
 # Limits and defaults
 class Limits:
     """System limits and defaults."""
-    # Size limits
-    MAX_RESULT_SIZE_BYTES = 200000  # 200KB before truncation
-    MAX_ERROR_SIZE_BYTES = 50000   # 50KB before truncation
-    
     # Query/Scan limits
     MAX_SCAN_ITEMS = 50000          # Default max for scan_all()
     MAX_FETCH_ITEMS = 10000         # Max items for get_all_tasks
-    MAX_NOTIFICATIONS_SCAN = 5000   # Max items for notifications
     MAX_LOGS_ITEMS = 1000           # Max items for get_pipeline_logs
-    MAX_RESTART_ITEMS = 5000        # Max items for restart_pipeline
-    MAX_PIPELINES_TO_QUERY = 30
-    MAX_STATS_ITEMS = 10000
     
     # Pagination
     RUNS_PAGE_SIZE = 15             # runs per page in the execution history dropdown
     RUNS_FEED_LIMIT = 50            # rows per page of the History runs feed
-    TASKS_FEED_LIMIT = 100          # rows per page of the History tasks feed
-    # Read budgets for a History feed's day. Floors, not caps: the read rounds up to
-    # the next pipeline boundary, because the index is ordered by pipeline_name and
-    # cutting mid-pipeline splits a run's task set — which /runs then derives a wrong
-    # status from (ADR #113). A date that fits one DynamoDB page comes back whole.
-    RUNS_MIN_ROWS_PER_DATE = 2000    # runs feed, one explicit date
-    TASKS_MIN_ROWS_PER_DATE = 10000  # tasks feed, one explicit date
-    FEED_MIN_ROWS_PER_DAY = 500      # either feed, per day of the fan-out
+    TASKS_FEED_LIMIT = 100          # rows per page of the History tasks feed (whole runs: a page may hold more)
+    # The task rows one page of the Tasks tab reads at most, by its runs' summaries: about 5 s at the TR-7
+    # estimate's 0.24-0.29 ms a row, under API Gateway's 30 s. The page then ends at a run, with its cursor.
+    TASKS_READ_BUDGET = 20000
 
     # Time limits
-    SLA_DAYS = 14  # the History window the UI names: ui/src/utils/historyWindow.ts (parity test there)
+    SLA_DAYS = 14  # the pipelines list's window: ui/src/utils/historyWindow.ts (parity test there)
+    # The start days the Runs and Tasks tabs and a pipeline's runs read from run-start-index (ADR #137 §5, D140): as long as
+    # Step Functions keeps an execution's history. ui/src/utils/historyWindow.ts names it (parity test there).
+    RUNS_WINDOW_DAYS = 90
     PARALLEL_DATE_QUERIES = 14      # Worker cap when fanning date queries out one-per-day
-    TTL_DAYS = 30
     MAX_NOTIFICATION_HOURS = 168    # Max 7 days for notifications
     
     # String limits
     EXECUTION_NAME_MAX_LENGTH = 80
-    
-    # Pagination
-    DEFAULT_PAGE_SIZE = 50
-    MAX_PAGE_SIZE = 100
 
 
 class BackfillLimits:

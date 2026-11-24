@@ -121,20 +121,20 @@ describe('Notifications', () => {
 
         it('names a coordination warning by its kind, with its error on hover', () => {
             mockQueryData.current = [createNotification({
-                id: 'w1', type: 'warning', kind: 'zombie', pipeline_name: 'orders', task_name: 'load',
+                id: 'w1', type: 'warning', kind: 'push', pipeline_name: 'orders', task_name: 'load',
                 time_ago: '2m ago', error: 'the wrapper execution is ABORTED',
             })];
             render(<Notifications onNavigate={onNavigate} />);
 
             fireEvent.click(screen.getByTitle('1 notifications'));
-            const subtitle = screen.getByText('Task can no longer be woken • load • 2m ago');
+            const subtitle = screen.getByText('Asset-scheduled run not started • load • 2m ago');
             expect(subtitle).toHaveAttribute('title', 'the wrapper execution is ABORTED');
             expect(screen.getByLabelText('View orders warning')).toBeInTheDocument();
         });
 
         it('opens a warning on the partition date of its task', () => {
             mockQueryData.current = [createNotification({
-                id: 'w3', type: 'warning', kind: 'zombie', pipeline_name: 'orders',
+                id: 'w3', type: 'warning', kind: 'push', pipeline_name: 'orders',
                 pipeline_execution: 'orders-run-2026-10-13-ab', date: '2026-10-13',
             })];
             render(<Notifications onNavigate={onNavigate} />);
@@ -261,7 +261,17 @@ describe('Notifications', () => {
         it('renders toasts when notifications present and dropdown closed', () => {
             mockQueryData.current = [createNotification({ id: 'n1', pipeline_name: 'acme-daily' })];
             render(<Notifications onNavigate={onNavigate} />);
-            expect(screen.getByText('Pipeline Failed')).toBeInTheDocument();
+            expect(screen.getByText('Task Failed')).toBeInTheDocument();
+        });
+
+        it('names a warning toast by its kind, not as a failed pipeline', () => {
+            mockQueryData.current = [createNotification({
+                id: 'w4', type: 'warning', kind: 'coordination', pipeline_name: '', task_name: '', time_ago: 'just now',
+            })];
+            render(<Notifications onNavigate={onNavigate} />);
+            expect(screen.getByText('Coordination problem')).toBeInTheDocument();
+            expect(screen.getByText('Task coordination • just now')).toBeInTheDocument();
+            expect(screen.queryByText('Task Failed')).not.toBeInTheDocument();
         });
 
         it('limits toasts to 3', () => {
@@ -269,7 +279,7 @@ describe('Notifications', () => {
                 createNotification({ id: `n${i}`, pipeline_name: `pipeline-${i}` })
             );
             render(<Notifications onNavigate={onNavigate} />);
-            const toasts = screen.getAllByText('Pipeline Failed');
+            const toasts = screen.getAllByText('Task Failed');
             expect(toasts.length).toBe(3);
         });
     });
@@ -283,6 +293,18 @@ describe('Notifications', () => {
             fireEvent.click(screen.getByTitle('1 notifications'));
             expect(screen.getByText('pipeline-x')).toBeInTheDocument();
             expect(screen.getByText(/awaiting decision/i)).toBeInTheDocument();
+        });
+
+        it('says when an open request fails on its own, and that a pause holds the deadline (ADR #137 §6)', () => {
+            const inTwoHours = new Date(Date.now() + 2 * 60 * 60 * 1000 + 30_000).toISOString();
+            mockQueryData.current = [
+                createNotification({ id: 'd1', type: 'decision_required', task_name: 'approve', deadline: inTwoHours }),
+                createNotification({ id: 'd2', type: 'decision_required', task_name: 'review', deadline: null }),
+            ];
+            render(<Notifications onNavigate={onNavigate} />);
+            fireEvent.click(screen.getByTitle('2 notifications'));
+            expect(screen.getByText('approve • awaiting decision • fails in 2 h')).toBeInTheDocument();
+            expect(screen.getByText('review • awaiting decision • no deadline while paused')).toBeInTheDocument();
         });
     });
 

@@ -272,6 +272,23 @@ export const formatAgo = (iso: string | null | undefined, now: number = Date.now
     return `${Math.floor(hours / 24)} days ago`;
 };
 
+/**
+ * formatDecisionDeadline — when an open decision request fails on its own: the task fails
+ * at its deadline unless someone decides (ADR #137 §6). The bell gets no deadline while the
+ * run is paused, since a pause holds it.
+ */
+export const formatDecisionDeadline = (deadline: string | null | undefined, now: number = Date.now()): string => {
+    if (!deadline) return 'no deadline while paused';
+    const at = Date.parse(deadline);
+    if (Number.isNaN(at)) return 'no deadline while paused';
+    const minutes = Math.ceil((at - now) / 60000);
+    if (minutes <= 0) return 'deadline passed';
+    if (minutes < 120) return `fails in ${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `fails in ${hours} h`;
+    return `fails in ${Math.floor(hours / 24)} days`;
+};
+
 const TRIGGER_SOURCE_LABELS: Record<string, string> = {
     console_run: 'Manual',
     schedule: 'Scheduled',
@@ -284,6 +301,15 @@ export const formatTriggerSource = (value: string | null | undefined): string | 
     if (!value || value === 'unknown') return null;
     return TRIGGER_SOURCE_LABELS[value] ?? value;
 };
+
+/** A task's status as the console shows it: `stale` for a row of a run from before 1.3 left unfinished. */
+export const shownTaskStatus = (task: { status?: string | null; stale?: boolean }): string =>
+    task.stale ? 'stale' : (task.status || 'waiting');
+
+/** A run's status as the run lists show it: a run that is still running says how many of its
+ *  tasks failed (`failed_tasks`, ADR #137 §4), since it ends only once every task has. */
+export const formatRunStatus = (status: string, failedTasks?: number | null): string =>
+    status === 'running' && failedTasks ? `running, ${failedTasks} failed` : status;
 
 // Human-readable schedule label for a pipeline. Single source of truth for
 // schedule display — used by the sidebar, command palette, and anywhere else

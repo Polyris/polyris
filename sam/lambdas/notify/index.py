@@ -1,10 +1,14 @@
 """
 Notify Lambda (ADR #103).
 
-Delivers failure alerts to a pipeline's enabled channels. Two input shapes:
+Delivers failure alerts to a pipeline's enabled channels. Three input shapes:
 
-1. **Batch** (preferred, used by failure_handler since the Stage-1 consolidation):
-   the SFN invokes this Lambda once with just the pipeline + failure, and the
+0. **Action** (``action`` set): what ``run_task`` and the console ask for — an
+   interactive Slack post, a live PagerDuty alert, or the resolve of one
+   (``actions.py``).
+
+1. **Batch** (preferred for a delivery to every channel): the caller invokes
+   this Lambda once with just the pipeline + failure, and the
    Lambda reads alert_config from DynamoDB itself and loops the enabled channels
    with per-channel isolation. This keeps the config-read and the fan-out loop in
    one place (Python) instead of spread across SFN states.

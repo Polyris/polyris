@@ -10,13 +10,17 @@ from polyris.xcom import (
     ENV_RUN_ID,
     ENV_TABLE,
     ENV_TASK_NAME,
+    ENV_UPSTREAM_STATUSES,
     PullError,
     XComError,
     XComManuallyResolvedError,
     XComMissingError,
     XComTruncatedError,
     XComUpstreamFailedError,
+    _FAILED_FINALLY,
     _PUSH_MARKER_FIELD,
+    _READABLE_SKIPS,
+    _SUCCESS,
     _is_manual_marker,
     _resolve,
     _resolve_s3_pointer,
@@ -103,10 +107,15 @@ def test_pull_item_without_result_raises():
         pull("t", pipeline="p", date="d", table="t", ddb_client=FakeDDB({"status": {"S": "success"}}))
 
 
-def test_pull_unreadable_json_raises():
-    ddb = FakeDDB(_item("not-valid-json{"))
-    with pytest.raises(PullError, match="not readable JSON"):
-        pull("t", pipeline="p", date="d", table="t", ddb_client=ddb)
+@pytest.mark.parametrize("stored", ["ok", "", "[INFO] done", "not-valid-json{"])
+def test_pull_returns_a_string_result_a_1_2_run_task_stored_as_it_was(stored):
+    """1.2 stored a string result unquoted ("ok"); the string is the output (the review of TR-5)."""
+    assert pull("t", pipeline="p", date="d", table="t", ddb_client=FakeDDB(_item(stored))) == stored
+
+
+def test_pull_a_result_that_is_no_string_raises():
+    with pytest.raises(PullError, match="not a string"):
+        pull("t", pipeline="p", date="d", table="t", ddb_client=FakeDDB({"result": {"N": "1"}}))
 
 
 def test_pull_truncated_output_raises():
@@ -246,12 +255,13 @@ def test_get_raises_manually_resolved_on_marker_in_event_inject():
     assert "manually resolved" in str(exc.value)
 
 
-def test_get_manual_marker_error_precedes_status_check():
-    """A manually-skipped upstream carries status='skip' AND a marker.
-    Marker check runs first so caller gets the more informative error."""
+def test_get_a_manual_skip_raises_the_markers_error():
+    """An operator's skip is ``skipped`` with ``skip_origin: manual``, and run_task passes the output# it left,
+    the marker: the caller gets the more informative error, which names the operator."""
     event = {
         "upstream": {
-            "transform": {"status": "skip", "output": _manual_marker(resolution="skip")}
+            "transform": {"status": "skipped", "skip_origin": "manual",
+                          "output": _manual_marker(resolution="skip")}
         }
     }
     with pytest.raises(XComManuallyResolvedError) as exc:
@@ -329,26 +339,16 @@ def test_get_organic_dict_output_that_happens_to_have_stray_field_is_not_a_marke
     assert get(event, "t") == weird
 
 
-def test_get_all_done_manual_skip_needs_both_opt_outs_to_read_marker():
-    """The realistic ``trigger_rule='all_done'`` + manually-skipped upstream
-    case. The caller must opt out of BOTH ``raise_on_failure`` (because the
-    task's status is 'skip' — the action_name) AND ``raise_on_manual``
-    (because the marker check runs first and would still fire). Pinning the
-    combination here so a future ordering change is caught."""
+def test_get_a_manual_skip_reads_as_its_marker_once_manual_is_opted_out():
+    """A manually-skipped upstream reaches the task with its status, its skip origin and the marker the
+    Console wrote (ADR #137 §1). An operator's skip is no failure: only raise_on_manual guards it."""
     marker = _manual_marker(resolution="skip", operator="alice", reason="no data today")
-    event = {"upstream": {"t": {"status": "skip", "output": marker}}}
-    # Default: raises XComManuallyResolvedError (marker check runs before status check).
+    event = {"upstream": {"t": {"status": "skipped", "skip_origin": "manual", "output": marker}}}
     with pytest.raises(XComManuallyResolvedError):
         get(event, "t")
-    # Opt out of manual only: still raises status error.
-    with pytest.raises(XComUpstreamFailedError):
-        get(event, "t", raise_on_manual=False)
-    # Opt out of failure only: manual check still fires.
     with pytest.raises(XComManuallyResolvedError):
         get(event, "t", raise_on_failure=False)
-    # Both opt-outs: caller receives the marker dict verbatim for introspection.
-    result = get(event, "t", raise_on_failure=False, raise_on_manual=False)
-    assert result == marker
+    assert get(event, "t", raise_on_manual=False) == marker
 
 
 def test_pull_error_is_alias_for_xcom_missing_error():
@@ -455,10 +455,14 @@ def test_get_failed_status_raises():
         get(event, "broken")
 
 
-def test_get_failed_no_raise_returns_output():
-    """all_done trigger opt-in: reader wants failed upstream's output too."""
-    event = _event_with_upstream(broken={"output": {"partial": True}, "status": "failed"})
-    assert get(event, "broken", raise_on_failure=False) == {"partial": True}
+def test_get_failed_no_raise_returns_none():
+    """all_done trigger opt-in: a failed upstream has no output in this run, never an older run's of the
+    same date (ADR #137 §1), so the reader gets None."""
+    event = _event_with_upstream(broken={"status": "failed", "skip_origin": None})
+    assert get(event, "broken", raise_on_failure=False) is None
+    with pytest.raises(XComUpstreamFailedError) as raised:
+        get(event, "broken")
+    assert raised.value.status == "failed"                       # its status stays readable
 
 
 def test_get_success_with_empty_dict_returns_empty_dict():
@@ -603,6 +607,30 @@ def test_push_writes_updateitem_to_output_key(monkeypatch):
     assert call["Key"]["execution_name"]["S"] == "output#sales#my-task#2026-07-07"
 
 
+def test_push_renews_the_outputs_lifetime_a_year_from_this_write(monkeypatch):
+    """ADR #137 §5: every write of a date's output renews its TTL; a push of a task that never succeeded left a
+    row that lived for ever (the review of TR-5)."""
+    from datetime import timezone
+    from polyris.coordination import retention
+    from polyris.xcom import _OUTPUT_TTL_SECONDS
+    assert _OUTPUT_TTL_SECONDS == retention.OUTPUT.total_seconds()          # xcom.py imports nothing of polyris
+    _set_push_env(monkeypatch)
+    ddb = FakePushDDB()
+    before = int(datetime.now(timezone.utc).timestamp())
+    push({"rows": 100}, ddb_client=ddb)
+    call = ddb.calls[0]
+    assert "#ttl = :ttl" in call["UpdateExpression"] and call["ExpressionAttributeNames"]["#ttl"] == "ttl"
+    ttl = int(call["ExpressionAttributeValues"][":ttl"]["N"])
+    assert before + _OUTPUT_TTL_SECONDS <= ttl <= before + _OUTPUT_TTL_SECONDS + 5
+
+
+def test_pull_reads_the_output_consistently():
+    """It runs just after the upstream's success wrote the row (ADR #137 §1)."""
+    ddb = FakeDDB(_item('{"rows": 1}'))
+    pull("t", pipeline="p", date="d", table="t", ddb_client=ddb)
+    assert ddb.calls[0]["ConsistentRead"] is True
+
+
 def test_push_sets_pushed_by_task_marker(monkeypatch):
     _set_push_env(monkeypatch)
     ddb = FakePushDDB()
@@ -741,3 +769,124 @@ def test_push_explicit_kwargs_bypass_env(monkeypatch):
     push({"v": 1}, pipeline="p", task="t", date="d", table="tbl",
          run_id="test-run", ddb_client=ddb)
     assert ddb.calls[0]["Key"]["execution_name"]["S"] == "output#p#t#d"
+
+
+# ── 1.3: what a task reads of its upstreams (ADR #137 §1, §9; ADR #138 §2) ──
+
+def test_the_statuses_xcom_reads_are_the_platforms():
+    """xcom.py is copied alone into a Lambda's package (polyris-build-lambda), so it spells the values out;
+    they are polyris.constants' (Principle #28)."""
+    from polyris.constants import FAILURE_STATUSES, SkipOrigin, TaskStatus
+    assert _FAILED_FINALLY == FAILURE_STATUSES | {TaskStatus.STOPPED.value}
+    assert _READABLE_SKIPS == {SkipOrigin.MANUAL, SkipOrigin.RUN}
+    assert _SUCCESS == TaskStatus.SUCCESS.value
+
+
+@pytest.mark.parametrize("status", ["waiting", "deps_ready", "running", "waiting_decision", "unknown", None])
+def test_get_an_upstream_with_no_output_in_this_run_yet_is_never_read_from_the_table(status):
+    """A one_success task starts while its other upstreams still wait or run, and their date's output# may hold
+    an older run's output (the review of TR-5): xcom refuses it, naming the status."""
+    ddb = FakeDDB(_item('{"stale": true}'))
+    event = _event_with_upstream(slow={"status": status, "skip_origin": None})
+    with pytest.raises(XComMissingError, match=f"has not succeeded in this run \\(status: {status}\\)"):
+        get(event, "slow", ddb_client=ddb)
+    assert get(event, "slow", raise_on_missing=False, ddb_client=ddb) is None
+    with pytest.raises(XComMissingError):
+        pull("slow", event, ddb_client=ddb)
+    assert ddb.calls == []
+
+
+def test_pull_in_a_lambda_takes_the_upstreams_status_from_its_event():
+    """xcom.pull("x", event): the event carries the statuses a Lambda has, as get() reads them."""
+    ddb = FakeDDB(_item('{"stale": true}'))
+    with pytest.raises(XComUpstreamFailedError):
+        pull("broken", _event_with_upstream(broken={"status": "failed", "skip_origin": None}), ddb_client=ddb)
+    with pytest.raises(XComMissingError, match="its trigger rule skipped it"):
+        pull("gated", _event_with_upstream(gated={"status": "skipped", "skip_origin": "rule"}), ddb_client=ddb)
+    assert ddb.calls == []
+    assert pull("done", _event_with_upstream(done={"status": "success", "skip_origin": None}),
+                ddb_client=ddb) == {"stale": True}
+
+
+@pytest.mark.parametrize("form", ["separate", "joined"])
+def test_a_glue_job_reads_what_run_task_gives_it_from_its_arguments(monkeypatch, form):
+    """Glue passes run_task's values as job arguments, which reach the script on its command line only; the
+    statuses guard the read there too (the review of TR-5)."""
+    import sys
+    from polyris.coordination.run_task_input import upstream_statuses_env
+    values = {ENV_PIPELINE: "p", ENV_DATE: "2026-07-07", ENV_TABLE: "tbl",
+              ENV_UPSTREAM_STATUSES: upstream_statuses_env({"extract": ("failed", None), "load": ("success", None)})}
+    args = ([a for name, value in values.items() for a in (f"--{name}", value)] if form == "separate"
+            else [f"--{name}={value}" for name, value in values.items()])
+    monkeypatch.setattr(sys, "argv", ["glue_script.py", "--JOB_NAME", "j"] + args)
+    ddb = FakeDDB(_item('{"rows": 3}'))
+    with pytest.raises(XComUpstreamFailedError):
+        get(None, "extract", ddb_client=ddb)
+    assert get(None, "load", ddb_client=ddb) == {"rows": 3}
+    assert ddb.calls[0]["TableName"] == "tbl"
+    assert ddb.calls[0]["Key"] == {"execution_name": {"S": "output#p#load#2026-07-07"}}
+
+
+def test_the_environment_wins_over_an_argument(monkeypatch):
+    import sys
+    from polyris.xcom import _platform_value
+    monkeypatch.setattr(sys, "argv", ["script.py", f"--{ENV_TABLE}", "from-args", f"--{ENV_DATE}"])
+    monkeypatch.setenv(ENV_TABLE, "from-env")
+    assert _platform_value(ENV_TABLE) == "from-env"
+    assert _platform_value(ENV_DATE) is None              # a flag without its value
+    assert _platform_value(ENV_PIPELINE) is None
+
+
+def test_get_a_skip_by_a_trigger_rule_has_no_output():
+    event = _event_with_upstream(gated={"status": "skipped", "skip_origin": "rule"})
+    with pytest.raises(XComMissingError, match="its trigger rule skipped it in this run"):
+        get(event, "gated")
+    assert get(event, "gated", raise_on_missing=False) is None
+
+
+def test_get_a_run_skip_returns_the_output_an_earlier_run_of_the_date_wrote():
+    """An incremental backfill skips tasks already done; their dependants read the output kept in output#."""
+    event = _event_with_upstream(done={"status": "skipped", "skip_origin": "run", "output": {"rows": 3}})
+    assert get(event, "done") == {"rows": 3}
+
+
+def test_get_an_output_run_task_did_not_inline_is_read_from_the_table():
+    """Past its share of the state's budget, run_task passes the status alone; the table has the output."""
+    ddb = FakeDDB(_item('{"rows": 3}'))
+    event = _event_with_upstream(big={"status": "success", "skip_origin": None})
+    assert get(event, "big", ddb_client=ddb) == {"rows": 3}
+    assert ddb.calls[0]["Key"] == {"execution_name": {"S": "output#p#big#2026-07-07"}}
+
+
+def _service_task(monkeypatch, statuses):
+    monkeypatch.setenv(ENV_PIPELINE, "p")
+    monkeypatch.setenv(ENV_DATE, "2026-07-07")
+    monkeypatch.setenv(ENV_TABLE, "tbl")
+    monkeypatch.setenv(ENV_UPSTREAM_STATUSES, statuses)
+
+
+def test_a_service_task_never_reads_the_output_of_an_upstream_that_failed(monkeypatch):
+    """A Glue, ECS or Batch task gets its upstreams' statuses in POLYRIS_UPSTREAM_STATUSES, as run_task builds
+    them (run_task_input.upstream_statuses_env): the table may hold an older run's output of the date."""
+    from polyris.coordination.run_task_input import upstream_statuses_env
+    _service_task(monkeypatch, upstream_statuses_env({"extract": ("failed", None), "audit": ("skipped", "rule"),
+                                                      "load": ("success", None)}))
+    ddb = FakeDDB(_item('{"stale": true}'))
+    with pytest.raises(XComUpstreamFailedError):
+        get(None, "extract", ddb_client=ddb)
+    with pytest.raises(XComUpstreamFailedError):
+        pull("extract", ddb_client=ddb)
+    assert get(None, "extract", raise_on_failure=False, ddb_client=ddb) is None
+    with pytest.raises(XComMissingError):
+        pull("audit", ddb_client=ddb)
+    assert get(None, "audit", raise_on_missing=False, ddb_client=ddb) is None
+    assert ddb.calls == []                                   # nothing read for either
+    assert get(None, "load", ddb_client=ddb) == {"stale": True}
+    assert get(None, "other_pipelines_task", ddb_client=ddb) == {"stale": True}   # not a direct upstream
+
+
+@pytest.mark.parametrize("value", ["not json", "[1, 2]"])
+def test_statuses_the_task_cannot_read_fail_loudly(monkeypatch, value):
+    _service_task(monkeypatch, value)
+    with pytest.raises(XComError, match=ENV_UPSTREAM_STATUSES):
+        get(None, "extract", ddb_client=FakeDDB(_item("{}")))

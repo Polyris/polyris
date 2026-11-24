@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "spec_id": "single#b1d38fc57a8a8bfd59ed76570d0538b1eeff6318b08b418f4ea1a4f9bdb4ca7b",
+  "specs": {
+    "process": {
+      "cross_account_role": "same",
+      "dependencies": [],
+      "task_arn": "arn:aws:states:us-east-1:123456789012:stateMachine:process",
+      "task_config": {},
+      "task_id": "process",
+      "task_type": "sfn",
+      "trigger_rule": "all_success"
+    }
+  }
+}

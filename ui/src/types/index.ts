@@ -43,6 +43,22 @@ export {
 export interface Task {
   task_name: string;
   status: TaskStatus;
+  /** Why a waiting task waits (ADR #137 §1): the reasons the dispatcher recorded, and since when. */
+  reasons?: string[];
+  reasons_at?: string | null;
+  /** The deadline of its wait or of its decision; none while a pause holds it. */
+  deadline?: string | null;
+  /** When a ready task's wait_before countdown ends, and the task starts (a 1.3 row that is `waiting`). */
+  countdown_end?: string | null;
+  /** A row of a run from before 1.3 left unfinished: nothing will finish it (ADR #137, Migration). */
+  stale?: boolean;
+  /** What its trigger rule makes of its upstreams as the page shows them. */
+  dependency_verdict?: {
+    verdict: string;
+    reason: string;
+    /** Each upstream's status and what every rule counts it as (the server's trigger_rules.counts_as). */
+    upstreams?: { name: string; status: string; counts_as: string }[];
+  };
   pipeline_name: string;
   execution_name: string;
   pipeline_execution_short?: string;
@@ -63,18 +79,20 @@ export interface Task {
   max_retries?: number;
   tags?: string[] | Record<string, string>;
   lambda_arn?: string;
-  wrapper_arn?: string;
-  wrapper_execution_arn?: string;
+  /** The task's latest run_task execution (ADR #137 §1), which the modal links to. */
+  run_task_arn?: string;
   task_arn?: string;
   task_execution_arn?: string;
   task_type?: string;
   is_decision_task?: boolean;
-  pagerduty_enabled?: boolean;
   slack_notification_failed?: boolean;
   notification_failed?: boolean;
+  /** How many times run_task started the task's work, across Restarts. */
   attempt?: number;
-  /** ADR #125 — in-SFN auto-retry index within the current wrapper. 0 for first dispatch;
-   * bumps on every automatic retry. Distinct from `attempt` which bumps only on manual Restart. */
+  /** How many times an operator restarted the task (↻). */
+  restarts?: number;
+  /** ADR #125 — in-SFN auto-retry index within the task's current run_task. 0 for its first
+   * try; bumps on every automatic retry. Distinct from `restarts`, an operator's Restarts. */
   retry_attempt?: number;
   triggered_by?: string;
   [key: string]: unknown;
@@ -139,6 +157,10 @@ export interface Execution {
   partition_key?: string;
   /** How this execution was triggered: 'console_run' | 'schedule' | 'asset' | 'backfill' | 'unknown'. */
   triggered_by?: string;
+  /** How many of the run's tasks failed: shown while the run is still running (ADR #137 §4). */
+  failed_tasks?: number;
+  /** A failed direct step (`wait`, `sns`, `s3` and the like): it has no row, and fails the run (ADR #137 §1). */
+  failed_step?: { step: string; error: string } | null;
   [key: string]: unknown;
 }
 
@@ -246,6 +268,8 @@ export interface Notification {
   error?: string;
   /** The partition date of the task a warning is about. */
   date?: string;
+  /** When an open decision request fails on its own; null while its run is paused (ADR #137 §6). */
+  deadline?: string | null;
   /** ADR #68 — backfill terminal notifications. Populated when type='backfill'. */
   backfill_status?: 'completed' | 'failed' | 'partial' | 'canceled';
   backfill_id?: string;
@@ -377,16 +401,21 @@ export interface PipelineRowProps {
 }
 
 export interface RunSparklineProps {
-  runs: Array<{ status: string; date?: string }>;
+  runs: Array<{ status: string; date?: string; failed_tasks?: number }>;
 }
 
 export interface PipelineWithUI extends Pipeline {
   status?: string;
   group?: string;
-  recent_runs?: Array<{ status: string; date?: string }>;
+  recent_runs?: Array<{ status: string; date?: string; failed_tasks?: number }>;
   arn?: string;
   /** The latest run is running but waits for an operator: a decision or a resume. */
   waiting_on?: Extract<TaskStatus, 'waiting_decision' | 'waiting_paused'> | null;
+  /** How many tasks of the latest run failed; a run is running until every task has finished (ADR #137 §4). */
+  failed_tasks?: number;
+  /** Deployed with an older format than the platform reads, or before 1.3: its runs fail until
+   *  polyris-deploy runs again (the registry's format_version, ADR #137). */
+  needs_redeploy?: boolean;
 }
 
 export interface PipelineDetailProps {
@@ -404,7 +433,6 @@ export interface PipelineDetailProps {
   onBackfill: () => void;
   onPauseResume: () => void;
   onStop: () => void;
-  onExtendPause: () => void;
   onTaskSelect: (task: Task) => void;
   selectedTask: Task | null;
   error: string | null;
@@ -926,7 +954,6 @@ export interface PipelineActions {
   handleRun: () => void;
   handleStop: () => void;
   handlePauseResume: () => void;
-  handleExtendPause: () => void;
   handleTaskAction: (action: string, task?: Task | null) => void;
   handleRunAction: (actionType: string, task: Task) => void;
   /** Which action is in flight, for button loading labels. */

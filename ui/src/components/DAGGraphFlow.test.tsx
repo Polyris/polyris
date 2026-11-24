@@ -131,7 +131,7 @@ vi.mock('../utils', () => ({
     formatDuration: (ms: number) => `${Math.round(ms / 1000)}s`,
 }));
 vi.mock('../utils/constants', () => ({
-    TASK_STATUS: { WAITING_DELAY: 'waiting_delay', DEPS_READY: 'deps_ready', STOPPED: 'stopped' },
+    TASK_STATUS: { DEPS_READY: 'deps_ready', STOPPED: 'stopped' },
     isTerminalStatus: (s: string) => ['success', 'succeeded', 'failed', 'skipped'].includes(s),
     getWaitingReason: () => null,
     MS: { TICK_INTERVAL: 1000 },

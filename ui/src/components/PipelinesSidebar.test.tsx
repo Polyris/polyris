@@ -12,10 +12,10 @@ vi.mock('./Skeletons', () => ({ PipelineListSkeleton: () => <div data-testid="sk
 
 const refetch = vi.fn();
 const mockQuery = { data: [] as PipelineWithUI[], isLoading: false, isError: false, error: null as Error | null, refetch };
-const mockStats = { incomplete: false };
+const mockStats = { note: null as 'index_building' | 'incomplete' | null };
 vi.mock('@/hooks/queries', () => ({
     usePipelinesQuery: () => mockQuery,
-    usePipelinesStatsIncomplete: () => mockStats.incomplete,
+    usePipelinesStatsNote: () => mockStats.note,
 }));
 
 const pipelines = (...list: Array<Partial<PipelineWithUI> & { name: string }>) =>
@@ -33,7 +33,7 @@ describe('PipelinesSidebar', () => {
         mockQuery.isLoading = false;
         mockQuery.isError = false;
         mockQuery.error = null;
-        mockStats.incomplete = false;
+        mockStats.note = null;
         const store = useAppStore.getState();
         store.setSelectedPipeline(null);
         store.setPipelineSearch('');
@@ -90,6 +90,15 @@ describe('PipelinesSidebar', () => {
             mockQuery.data = pipelines({ name: 'one', schedule });
             const { container } = render(<PipelinesSidebar />);
             expect(container.querySelector('.sb-row__schedule')).toHaveTextContent(shown);
+        });
+
+        it('marks a pipeline that needs a redeploy, and only that one', () => {
+            mockQuery.data = pipelines({ name: 'old', needs_redeploy: true }, { name: 'new', needs_redeploy: false });
+            const { container } = render(<PipelinesSidebar />);
+            const marks = container.querySelectorAll('.sb-row__redeploy');
+            expect(marks).toHaveLength(1);
+            expect(screen.getByRole('button', { name: /^old, redeploy needed, last run/ })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /^new, last run/ })).toBeInTheDocument();
         });
 
         it('the sparkline has ten slots, newest run rightmost', () => {
@@ -538,10 +547,25 @@ describe('PipelinesSidebar', () => {
             expect(rowNames().length).toBeGreaterThan(0);
         });
 
-                it('says when some runs could not be read', () => {
-            mockStats.incomplete = true;
+        it('says when some runs could not be read', () => {
+            mockStats.note = 'incomplete';
             render(<PipelinesSidebar />);
-            expect(screen.getByRole('status')).toHaveTextContent('Some runs could not be read or confirmed');
+            expect(screen.getByRole('status')).toHaveTextContent('Some runs could not be read, so a status may be out of date');
+        });
+
+        it('says when the index of runs is still being built after the upgrade (ADR #137 §5)', () => {
+            mockStats.note = 'index_building';
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('status')).toHaveTextContent('The index of runs is still being built after the upgrade');
+            expect(rowNames().length).toBeGreaterThan(0);
+        });
+
+        it('says how many tasks of a running run failed, and pins the pipeline under "Needs attention"', () => {
+            mockQuery.data = pipelines({ name: 'orders', status: 'running', failed_tasks: 2,
+                                         recent_runs: [{ status: 'running', date: '2026-11-22', failed_tasks: 2 }] });
+            render(<PipelinesSidebar />);
+            expect(screen.getByRole('heading', { name: /Needs attention/ })).toHaveTextContent('1');
+            expect(list().querySelector('.sb-row')).toHaveAccessibleName(/last run: running, 2 failed/);
         });
 
         it('offers no retry while the console has no API URL', () => {

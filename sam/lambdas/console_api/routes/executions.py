@@ -1,31 +1,28 @@
 """Execution routes for Console API.
 
 Handles pipeline execution control operations:
-- get_all_runs: List all pipeline executions
-- stop_execution: Stop a running execution
-- pause_execution: Pause execution (running tasks complete, new tasks wait)
-- resume_execution: Resume paused execution
-- extend_pause: Extend pause timeout by 12 hours
-- get_execution_pause_status: Check if execution is paused
+- get_all_runs: The Runs tab: run rows newest first, with the backfills
+- stop_execution: Stop a run: its stop mark, which the dispatcher carries out (ADR #137 §4)
+- pause_execution: Pause a run: tasks that run go on, none starts (ADR #137 §5)
+- resume_execution: Resume a paused run
 - get_execution_children: Get child tasks of an execution
-- get_execution_parent: Get parent execution info
 """
 import json
+import random
+import time
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
-from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError, BotoCoreError
 
-from config import RECONCILE_FUNCTION_ARN, lambda_client, sfn
-from polyris.coordination import ownership
-from polyris.coordination.wake import DEAD_TOKEN_CODES
-from dal import executions_repo, pipelines_repo, backfills_repo
-from .pipelines_list import reconcile_sfn_status, _fill_triggered_by
-from constants import Limits, TASK_SETTLED_STATUSES, derive_execution_status
-from feed import feed_dates, is_older, page_by_started_at, pipeline_rows_before
-from response import cors_response
+from polyris.coordination import actions, run_end, run_row
+from routes.tasks import ACTION_BACKOFF_SECONDS
+from dal import executions_repo, backfills_repo
+from constants import Limits
+from feed import duration_ms, is_stale, page_by_started_at, run_entry, run_rows_before, runs_of_date
+from response import cors_response, index_building_response, safe_parse_body
 from logger import log
+from auth import operator_display
 from utils import safe_param_int, should_skip_token_row
 
 
@@ -65,9 +62,9 @@ def _build_backfill_run_rows(
 ) -> List[Dict]:
     """Build unified-feed rows for Backfills (``kind='backfill'``) — ADR #95.
 
-    Backfills live in pipeline-tokens under a sentinel ``pipeline_name`` and are
-    excluded from the execution rows in ``get_all_runs`` by
-    ``should_skip_token_row``; they are merged into ``/api/runs`` here as
+    Backfills live in pipeline-tokens under a sentinel ``pipeline_name``; no run
+    list reads them (they are no run rows, and ``should_skip_token_row`` drops them
+    from a date's task rows), so they are merged into ``/api/runs`` here as
     first-class rows. Status stays in the 6-state Backfill vocabulary (ADR #56)
     — no normalization to execution statuses; the ``kind`` field lets the UI
     interpret it. Children are not embedded: a backfill row expands on demand
@@ -79,14 +76,14 @@ def _build_backfill_run_rows(
     Backfills would quietly vanish from the feed as soon as you paged.
 
     **Filters run before the page is cut, and the repo is asked for no limit at all.**
-    ``list_recent`` scans the sentinel unconditionally — its ``limit`` buys no capacity,
-    it only truncates an already-materialised list — so slicing first just spends the
-    page on records the filters are about to drop. ``?status=completed`` with a run of
+    ``list_recent`` with a ``limit`` stops once it has that many records, before any
+    filter here has run, so slicing first just spends the page on records the filters
+    are about to drop. ``?status=completed`` with a run of
     recent ``partial`` backfills would then answer "no runs found" while completed ones
     sat right behind them, and an empty page has no last row, so no cursor, so the feed
-    would stop there for good. ``limit + 1`` for the same reason
-    ``feed.pipeline_rows_before`` overshoots: the page learns it is not the last one by
-    having more rows than it can fit.
+    would stop there for good. ``limit + 1`` for the same reason ``feed.run_rows_before``
+    asks one above the page: the page learns it is not the last one by having more rows
+    than it can fit.
 
     Degrades gracefully: on a DDB error the executions are still returned.
     """
@@ -103,16 +100,6 @@ def _build_backfill_run_rows(
     for bf in matching[:limit + 1]:
         started_at = bf.get('started_at', '') or ''
         finished_at = bf.get('finished_at', '') or ''
-        duration_ms = None
-        if started_at and finished_at:
-            try:
-                start_dt = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
-                end_dt = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
-                duration_ms = int((end_dt - start_dt).total_seconds() * 1000)
-            except (ValueError, TypeError) as e:
-                log.warn("get_all_runs", "Bad timestamp on backfill; duration_ms left None",
-                         backfill_id=bf.get('backfill_id'), error=str(e))
-
         rows.append({
             'kind': 'backfill',
             'id': bf.get('backfill_id'),
@@ -129,26 +116,24 @@ def _build_backfill_run_rows(
             'downstream': bf.get('cascade'),
             'granularity': bf.get('granularity'),
             'date': None,
-            'duration_ms': duration_ms,
+            'duration_ms': duration_ms(started_at, finished_at),
         })
     return rows
 
 
-_RUNS_PROJECTION = ('pipeline_execution, pipeline_execution_short, pipeline_name, '
-                    '#d, #s, started_at, finished_at, execution_name')
-_RUNS_EXPR_NAMES = {'#d': 'date', '#s': 'status'}
-
-
 def get_all_runs(event: Dict) -> Dict:
-    """Get all pipeline runs across pipelines from DynamoDB.
-    
-    DATA SOURCE: DynamoDB (see DESIGN_DECISIONS.md #22).
-    Uses date-pipeline-index GSI for efficient queries by logical date.
+    """The Runs tab: every pipeline's runs, newest first, with the backfills (ADR #95).
 
-    Pages with an opaque ``before`` cursor and answers with ``next`` (see ``feed.py``),
-    so the row count is what the feed actually holds rather than whatever survived a
-    silent slice. Backfills page through the same cursor — they carry ``started_at``
-    too, which is what makes one cursor enough for the merged feed (ADR #95).
+    Without a date it reads run rows from run-start-index (ADR #137 §5): the start days
+    of the last ``Limits.RUNS_WINDOW_DAYS`` days, newest first, stopping once the page is
+    full, with a pipeline filter or without. Only runs started on 1.3 have run rows. A
+    date filter finds its runs through the task rows of that date, with no window, runs
+    from before 1.3 included (``feed.runs_of_date``). Each run's status comes from its
+    run row's summary; the console asks Step Functions nothing about a run (§4).
+
+    Pages with an opaque ``before`` cursor and answers with ``next`` (see ``feed.py``).
+    Backfills page through the same cursor: they carry ``started_at`` too, which is
+    what makes one cursor enough for the merged feed (ADR #95).
     """
     params = event.get('queryStringParameters', {}) or {}
     limit = safe_param_int(params, 'limit', Limits.RUNS_FEED_LIMIT, 200)
@@ -156,167 +141,32 @@ def get_all_runs(event: Dict) -> Dict:
     date_filter = params.get('date', '')
     pipeline_filter = params.get('pipeline', '')
     status_filter = params.get('status', '')
-    
+
+    def keeps(run: Dict) -> bool:
+        return not status_filter or run['status'] == status_filter
+
     try:
-        all_items = []
-        
-        if date_filter:
-            # Single date: one GSI query. Already bounded, so the cursor only pages
-            # what came back — no narrowing to do on the read itself.
-            key_cond = Key('date').eq(date_filter)
-            if pipeline_filter:
-                key_cond = key_cond & Key('pipeline_name').eq(pipeline_filter)
-            all_items = executions_repo.query_runs_by_date(
-                date_filter,
-                min_rows=Limits.RUNS_MIN_ROWS_PER_DATE,
-                key_condition=key_cond,
-                projection=_RUNS_PROJECTION,
-                expr_names=_RUNS_EXPR_NAMES,
-            )
-        elif pipeline_filter:
-            # One pipeline, no date: ask pipeline-date-index directly (ADR #108).
-            # No day-loop and no window — how far back you can see is bounded by
-            # the row TTL, not by SLA_DAYS. The cross-pipeline branch below cannot
-            # do this: with no pipeline to hash on, `date` is the only shard key.
-            all_items = pipeline_rows_before(
-                pipeline_filter, before, limit,
-                # A run is older than the cursor iff any of its rows is: the run's
-                # started_at is the earliest of them.
-                count_fn=lambda rows: len({
-                    r.get('pipeline_execution') for r in rows
-                    if r.get('pipeline_execution')
-                    and not should_skip_token_row(r)
-                    and is_older(r, before)
-                }),
-                projection=_RUNS_PROJECTION,
-                expr_names=_RUNS_EXPR_NAMES,
-            )
+        more = False                    # whether the walk of run rows stopped before the window's end
+        if status_filter and status_filter not in run_end.SHOWN_STATUSES:
+            runs = []                   # a backfill's status (ADR #95): no run has it, so no run row is read
+        elif date_filter:
+            runs = [r for r in runs_of_date(date_filter, pipeline_filter) if keeps(r)]
         else:
-            # Default: the SLA window, walked back from the cursor's date. This feed
-            # is a cross-pipeline time series, so `date` is the natural shard key and
-            # a per-date fan-out is the correct access pattern here (unlike the
-            # per-pipeline path, which uses pipeline-date-index and needs no window
-            # at all).
-            for date_str in feed_dates(before):
-                try:
-                    day_items = executions_repo.query_runs_by_date(
-                        date_str,
-                        min_rows=Limits.FEED_MIN_ROWS_PER_DAY,
-                        projection=_RUNS_PROJECTION,
-                        expr_names=_RUNS_EXPR_NAMES,
-                    )
-                    all_items.extend(day_items)
-                except Exception as e:
-                    log.error("get_all_runs", "Error querying date", error=str(e), date_str=date_str)
-        
-        # Group by pipeline_execution and aggregate task statuses.
-        exec_map = {}
-        for item in all_items:
-            # Skip internal/special records (_pause_, _notify_warn_, etc.)
-            if should_skip_token_row(item):
-                continue
-            pe = item.get('pipeline_execution')
-            p_name = item.get('pipeline_name', '')
-            if not pe or pe == 'unknown' or not p_name or p_name == 'unknown':
-                continue
-            
-            if pe not in exec_map:
-                exec_map[pe] = {
-                    'pipeline_name': p_name,
-                    'pipeline_execution': pe,
-                    'pipeline_execution_short': item.get('pipeline_execution_short', pe[:20] if pe else ''),
-                    'date': item.get('date'),
-                    'started_at': item.get('started_at', ''),
-                    'finished_at': item.get('finished_at', ''),
-                    'statuses': set(),
-                    '_sample_exec_name': item.get('execution_name', ''),
-                }
-            
-            entry = exec_map[pe]
-            entry['statuses'].add(item.get('status', 'waiting'))
-            
-            started = item.get('started_at', '')
-            if started and (not entry['started_at'] or started < entry['started_at']):
-                entry['started_at'] = started
-            finished = item.get('finished_at', '')
-            if finished and (not entry['finished_at'] or finished > entry['finished_at']):
-                entry['finished_at'] = finished
-        
-        all_runs = []
-        for pe, data in exec_map.items():
-            # Canonical derivation (ADR #112) — one source shared with all surfaces.
-            status = derive_execution_status(data['statuses'])
+            # The status is derived from each run row, so it filters here, and the walk counts only what it keeps.
+            runs, more = run_rows_before(before, limit + 1, days=Limits.RUNS_WINDOW_DAYS, pipeline=pipeline_filter,
+                                         keep=lambda item: keeps(run_entry(item)))
+            runs = [run_entry(item) for item in runs]
+        all_runs = [{'kind': 'execution', **run} for run in runs]
 
-            # Calculate duration
-            duration_ms = None
-            if data['started_at'] and data['finished_at']:
-                try:
-                    start_dt = datetime.fromisoformat(data['started_at'].replace('Z', '+00:00'))
-                    end_dt = datetime.fromisoformat(data['finished_at'].replace('Z', '+00:00'))
-                    duration_ms = int((end_dt - start_dt).total_seconds() * 1000)
-                except (ValueError, TypeError) as e:
-                    log.warn("get_all_runs", "Bad timestamp on run; duration_ms left None",
-                             pipeline_execution=pe,
-                             started_at=data.get('started_at'),
-                             finished_at=data.get('finished_at'),
-                             error=str(e))
-
-            all_runs.append({
-                'kind': 'execution',
-                'pipeline_name': data['pipeline_name'],
-                'pipeline_execution': pe,
-                'pipeline_execution_short': data['pipeline_execution_short'],
-                'status': status,
-                'started_at': data['started_at'] or None,
-                'finished_at': data['finished_at'] or None,
-                'date': data['date'],
-                'duration_ms': duration_ms,
-                '_sample_exec_name': data.get('_sample_exec_name', ''),
-            })
-
-        # Fetch triggered_by from base table (GSI INCLUDE doesn't project it).
-        # Pops _sample_exec_name from each run as a side effect.
-        _fill_triggered_by(all_runs, id_field='pipeline_execution')
-
-        # Drop what earlier pages already served before reconciling: a run newer than
-        # the cursor cannot appear on this page, and reconciling it would spend an SFN
-        # describe on a row nobody will see. The paging contract is still enforced
-        # below, in page_by_started_at — this is only about not paying for it twice.
-        all_runs = [r for r in all_runs if is_older(r, before)]
-
-        # Reconcile 'running' executions against SFN (ADR #112, decision b) so /runs and
-        # the execution dropdown agree on stuck-running / timed_out / recovered. ARNs are
-        # resolved once per pipeline; only running rows incur an SFN call. Runs BEFORE the
-        # status filter so a reconciled status filters correctly.
-        arn_cache = {}
-        for r in all_runs:
-            if r['status'] != 'running':
-                continue
-            pname = r['pipeline_name']
-            if pname not in arn_cache:
-                try:
-                    item = pipelines_repo.get(pname)
-                    arn_cache[pname] = item.get('sfn_arn', '') if item else ''
-                except (ClientError, BotoCoreError):
-                    arn_cache[pname] = ''
-            new_status = reconcile_sfn_status(r['pipeline_execution'], arn_cache[pname])
-            if new_status is not None:
-                r['status'] = new_status
-
-        if status_filter:
-            all_runs = [r for r in all_runs if r['status'] == status_filter]
-
-        
-        # Merge Backfills as first-class 'backfill' rows (ADR #95). Backfills
-        # are excluded from the execution rows above by should_skip_token_row,
-        # so there is no double-count — they enter only here.
+        # Merge Backfills as first-class 'backfill' rows (ADR #95). Backfill records are no run rows and no task
+        # rows, so there is no double-count: they enter only here.
         all_runs.extend(
             _build_backfill_run_rows(limit, status_filter, pipeline_filter, date_filter, before)
         )
 
         # One page, newest first, plus the cursor for the older one. Both kinds sort
         # and page on the same started_at, so the merge needs no second cursor.
-        page, next_cursor = page_by_started_at(all_runs, before, limit)
+        page, next_cursor = page_by_started_at(all_runs, before, limit, more=more)
 
         return cors_response(200, {
             'runs': page,
@@ -329,6 +179,8 @@ def get_all_runs(event: Dict) -> Dict:
                 'date': date_filter
             }
         })
+    except executions_repo.IndexBuilding:
+        return index_building_response()
     except Exception as e:
         log.error("get_all_runs", "Error", error=str(e))
         return cors_response(500, {'error': f'Failed to get runs: {str(e)}'})
@@ -355,12 +207,15 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
                 'status': item.get('status'),
                 'date': item.get('date'),
                 'started_at': item.get('started_at'),
-                'finished_at': item.get('finished_at')
+                'finished_at': item.get('finished_at'),
+                **({'stale': True} if is_stale(item) else {}),
             })
         
-        # Sort by started_at; a row without one sorts first instead of failing the sort,
-        # which the catch below turned into an empty list for every run.
-        children.sort(key=lambda x: x.get('started_at') or '')
+        # Sort by started_at, then the task's name: every row of a 1.3 run carries its run's one
+        # started_at (Start_Run), so the name keeps the order the same from one read to the next.
+        # A row without one sorts first instead of failing the sort, which the catch below
+        # turned into an empty list for every run.
+        children.sort(key=lambda x: (x.get('started_at') or '', x.get('task_name') or ''))
         
         return cors_response(200, {
             'pipeline_execution': execution_name,
@@ -374,407 +229,75 @@ def get_execution_children(execution_name: str, event: Dict) -> Dict:
         return cors_response(500, {'error': f'Failed to read the run\'s tasks: {e}'})
 
 
-def get_execution_parent(execution_name: str, event: Dict) -> Dict:
-    """
-    Get parent execution info for a given execution.
-    """
-    try:
-        # Get the execution record
-        item = executions_repo.get(execution_name)
-        
-        if not item:
-            return cors_response(404, {'error': 'Execution not found'})
-        
-        pipeline_execution = item.get('pipeline_execution', 'none')
-        pipeline_name = item.get('pipeline_name', 'none')
-        parent_task = item.get('task_name', 'none')
-        
-        # If no parent, return empty
-        if pipeline_execution == 'none' or not pipeline_execution:
-            return cors_response(200, {
-                'execution_name': execution_name,
-                'has_parent': False,
-                'parent': None
-            })
-        
-        # Get parent execution details
-        parent_item = executions_repo.get(pipeline_execution)
-        
-        parent_info = None
-        if parent_item:
-            parent_info = {
-                'execution_name': pipeline_execution,
-                'pipeline': pipeline_name,
-                'task': parent_task,
-                'status': parent_item.get('status'),
-                'date': parent_item.get('date')
-            }
-        else:
-            # Parent record might be expired/deleted, just return what we know
-            parent_info = {
-                'execution_name': pipeline_execution,
-                'pipeline': pipeline_name,
-                'task': parent_task,
-                'status': 'unknown',
-                'date': ''
-            }
-        
-        return cors_response(200, {
-            'execution_name': execution_name,
-            'has_parent': True,
-            'parent': parent_info
-        })
-    
-    except Exception as e:
-        log.error("executions", "Error getting parent", error=str(e), execution_name=execution_name)
-        return cors_response(500, {'error': str(e)})
-
-
-
-def _sfn_stop(arn: str, context: str = '') -> None:
-    """Stop a single SFN execution, ignoring not-found / already-stopped errors."""
-    if not arn or not arn.startswith('arn:aws:states:'):
-        return
-    try:
-        sfn.stop_execution(executionArn=arn, error='StoppedViaUI', cause='Pipeline stopped via UI')
-    except Exception as e:
-        log.error("_sfn_stop", "Unexpected error", error=str(e))
-        err = str(e)
-        # Ignore expected errors: already stopped, not found, wrong type
-        if any(s in err for s in ('ExecutionDoesNotExist', 'InvalidArn', 'ABORTED', 'SUCCEEDED', 'FAILED')):
-            return
-        log.warn("_sfn_stop", "Could not stop execution", arn=arn[:80], context=context, error=err[:100])
+#: A run action whose write a change of the run row refused is built again from a new read, this many times in all.
+RUN_ACTION_ATTEMPTS = 3
 
 
 def stop_execution(pipeline_execution: str, event: Dict) -> Dict:
-    """Stop a pipeline execution — stops full hierarchy:
-    acme-daily SFN → dependency_wrapper(s) → run_task(s) → DynamoDB.
+    """Stop a run (ADR #137 §4): its stop mark, with who asked and why (``reason`` in the body).
 
-    Accepts pipeline_execution (run ID) from query params.
-    pipeline_name is resolved from DynamoDB task items.
-    All stop calls are idempotent — safe to call multiple times.
+    The dispatcher carries the stop out: it stops the run's unfinished rows, dependants first, then the run's
+    execution and any run_task still running, and answers the run. Safe to repeat: a second Stop changes nothing.
     """
-    if not pipeline_execution:
-        return cors_response(400, {'error': 'pipeline_execution is required'})
-
-    try:
-        # Query all task items for this pipeline run
-        # Include wrapper_execution_arn + task_execution_arn + pipeline_name
-        items = executions_repo.query_by_pipeline_execution(
-            pipeline_execution,
-            projection='execution_name, #s, task_execution_arn, wrapper_execution_arn, pipeline_name',
-            expr_names={'#s': 'status'},
-        )
-
-        # 1. Stop acme-daily SFN execution
-        # Reconstruct from pipeline registry: sfn_arn + pipeline_execution name
-        pipeline_name = next(
-            (i.get('pipeline_name') for i in items if i.get('pipeline_name') and i.get('pipeline_name') != 'unknown'),
-            None,
-        )
-        if pipeline_name:
-            # The registry row's sfn_arn, which the pipeline's own registration writes.
-            sfn_arn = (pipelines_repo.get(pipeline_name) or {}).get('sfn_arn')
-            if sfn_arn:
-                pipeline_exec_arn = sfn_arn.replace(':stateMachine:', ':execution:') + ':' + pipeline_execution
-                _sfn_stop(pipeline_exec_arn, context='pipeline')
-
-        # 2. Stop all dependency_wrapper executions (deduplicated)
-        wrapper_arns = {
-            i['wrapper_execution_arn']
-            for i in items
-            if i.get('wrapper_execution_arn') and i['wrapper_execution_arn'].startswith('arn:')
-        }
-        for arn in wrapper_arns:
-            _sfn_stop(arn, context='wrapper')
-
-        # 3. Stop run_task executions + update DynamoDB
-        _mark_pending_tasks_stopped(pipeline_execution, items=items)
-
-        return cors_response(
-            200,
-            {
-                'message': 'Execution stopped',
-                'pipeline_execution': pipeline_execution,
-                'wrappers_stopped': len(wrapper_arns),
-            },
-        )
-    except Exception as e:
-        log.error("stop_execution", "Error stopping execution", error=str(e))
-        return cors_response(500, {'error': f'Failed to stop execution: {str(e)}'})
-
-
-def _mark_pending_tasks_stopped(pipeline_execution: str, items: list = None) -> int:
-    """Mark all non-terminal tasks as 'stopped' in DynamoDB and stop active run_task executions.
-
-    Args:
-        pipeline_execution: Run ID to query if items not provided
-        items: Pre-fetched task items (avoids duplicate DynamoDB query when called from stop_execution)
-    """
-    stopped_at = datetime.now(timezone.utc).isoformat()
-    updated_count = 0
-
-    # Use pre-fetched items or query DynamoDB
-    if items is None:
-        items = executions_repo.query_by_pipeline_execution(
-            pipeline_execution, projection='execution_name, #s, task_execution_arn', expr_names={'#s': 'status'}
-        )
-
-    for item in items:
-        status = item.get('status', '')
-        execution_name = item.get('execution_name', '')
-
-        # Skip tasks already settled — terminal or deliberately stopped — plus
-        # internal (_pause_) and Backfill records.
-        if status in TASK_SETTLED_STATUSES or should_skip_token_row(item):
-            continue
-
-        # Stop active run_task SFN execution if present
-        task_execution_arn = item.get('task_execution_arn', '')
-        _sfn_stop(task_execution_arn, context='run_task')
-
-        # Update to stopped. Stopping ends the wrapper's ownership, so the same write
-        # raises the generation (ADR #130 §2.1).
-        try:
-            executions_repo.update(
-                execution_name,
-                f'SET #s = :status, finished_at = :finished, {ownership.RAISE}',
-                expr_values={
-                    **ownership.RAISE_VALUES,
-                    ':status': 'stopped',
-                    ':finished': stopped_at,
-                    ':s1': 'success',
-                    ':s2': 'failed',
-                    ':s3': 'skipped',
-                    ':s4': 'stopped',
-                    ':s5': 'aborted',
-                    ':s6': 'upstream_failed',
-                },
-                expr_names={'#s': 'status'},
-                condition_expr='attribute_exists(execution_name) AND NOT #s IN (:s1, :s2, :s3, :s4, :s5, :s6)',
-            )
-            updated_count += 1
-        except executions_repo.conditional_check_exception:
-            # Task already in terminal state, skip
-            pass
-        except Exception as e:
-            log.error("executions", "Error updating task to stopped", error=str(e), execution_name=execution_name)
-
-    log.info(
-        "executions", "Marked tasks as stopped", updated_count=updated_count, pipeline_execution=pipeline_execution
-    )
-    return updated_count
+    body, err = safe_parse_body(event)
+    if err:
+        return err
+    operator, reason = operator_display(event), str(body.get('reason') or 'Stopped via UI')
+    return _run_action('stop', pipeline_execution, lambda run, now: actions.stop_run(
+        run, by=operator, reason=reason, now=now, table=executions_repo.table.name),
+        {'message': 'Stopping the run: its tasks stop, dependants first', 'stopping': True})
 
 
 def pause_execution(pipeline_execution: str, event: Dict) -> Dict:
-    """
-    Pause a pipeline execution. Running tasks will complete, but no new tasks will start.
-    Tasks that would start will be marked as 'waiting_paused'.
-    """
-    try:
-        # Create/update pause record
-        pause_key = f"_pause_{pipeline_execution}"
-        executions_repo.put(
-            {
-                'execution_name': pause_key,
-                'paused': True,
-                'paused_at': datetime.now(timezone.utc).isoformat(),
-                'pipeline_execution': pipeline_execution,
-            }
-        )
-
-        return cors_response(
-            200, {'message': 'Pipeline execution paused', 'pipeline_execution': pipeline_execution, 'paused': True}
-        )
-
-    except Exception as e:
-        log.error("pause_execution", "Error pausing execution", error=str(e))
-        return cors_response(500, {'error': f'Failed to pause execution: {str(e)}'})
-
-
-def get_paused_tasks_with_token(pipeline_execution: str) -> List[Dict]:
-    """The run's waiting_paused rows that hold a token, of either kind (ADR #130 §2):
-
-    1. pause_token: run_task holds the task at its start, in its pause wait.
-    2. wait_token only: the task waits for its dependencies, and the reconciler
-       parked it because its run is paused; its dependency wait is still open.
-    """
-    all_items = executions_repo.query_by_pipeline_execution(pipeline_execution)
-
-    # Filter to paused tasks with EITHER pause_token OR wait_token
-    return [
-        item
-        for item in all_items
-        if item.get('status') == 'waiting_paused' and (item.get('pause_token') or item.get('wait_token'))
-    ]
-
-
-def _held_by_pause(pipeline_execution: str) -> List[Dict]:
-    """Rows run_task holds in its pause wait: status waiting_paused with a pause_token."""
-    return [
-        item
-        for item in executions_repo.query_by_pipeline_execution(pipeline_execution)
-        if item.get('status') == 'waiting_paused' and item.get('pause_token')
-    ]
-
-
-def _reconcile_run(pipeline_execution: str) -> Dict:
-    """Have the reconciler check every waiting row of the run from its facts (ADR #130 §6.5).
-
-    Returns how many rows it handled and how many it left due for the sweeper.
-    A failure here only delays the run's waiting tasks: they keep their place
-    in the attention index, and the sweeper checks them at their due time.
-    """
-    if not RECONCILE_FUNCTION_ARN:
-        log.error("resume_execution", "RECONCILE_FUNCTION_ARN is not set; the sweeper checks the run's waiting tasks",
-                  pipeline_execution=pipeline_execution)
-        return {'error': 'RECONCILE_FUNCTION_ARN is not set'}
-    try:
-        response = lambda_client.invoke(
-            FunctionName=RECONCILE_FUNCTION_ARN,
-            InvocationType='RequestResponse',
-            Payload=json.dumps({'pipeline_execution': pipeline_execution, 'source': 'resume'}),
-        )
-        body = json.loads(response['Payload'].read() or b'{}')
-    except (ClientError, BotoCoreError, ValueError) as e:
-        log.error("resume_execution", "The reconcile call failed; the sweeper checks the run's waiting tasks",
-                  pipeline_execution=pipeline_execution, error=str(e))
-        return {'error': str(e)}
-    if response.get('FunctionError'):
-        error = str(body.get('errorMessage') or response['FunctionError'])
-        log.error("resume_execution", "The reconciler failed; the sweeper checks the run's waiting tasks",
-                  pipeline_execution=pipeline_execution, error=error)
-        return {'error': error}
-    return {'handled': int(body.get('handled', 0)), 'deferred': int(body.get('deferred', 0))}
+    """Pause a run (ADR #137 §5): tasks that run go on, none starts until the Resume; a pause has no time limit."""
+    return _run_action('pause', pipeline_execution, lambda run, now: actions.pause_run(
+        run, now=now, table=executions_repo.table.name), {'message': 'Pipeline execution paused', 'paused': True})
 
 
 def resume_execution(pipeline_execution: str, event: Dict) -> Dict:
-    """Resume a paused run (ADR #130 §6.5).
-
-    1. Clear the pause flag first, so no task parks or enters the pause wait any more.
-    2. Release the tasks run_task holds in its pause wait. run_task writes
-       `running` and drops the pause_token itself (Principle #43).
-    3. Have the reconciler check the run's waiting rows from their facts: it
-       signals the ready ones and leaves the others waiting. Nothing is
-       signalled without that check (B-P1, B-P2).
-    """
-    pause_key = f"_pause_{pipeline_execution}"
-
-    try:
-        executions_repo.update(
-            pause_key,
-            'SET paused = :p, resumed_at = :r',
-            expr_values={':p': False, ':r': datetime.now(timezone.utc).isoformat()},
-        )
-
-        released, failed = [], []
-        for item in _held_by_pause(pipeline_execution):
-            task_name = item.get('task_name', '')
-            try:
-                sfn.send_task_success(taskToken=item['pause_token'], output=json.dumps({'resumed': True}))
-                released.append(task_name)
-            except (ClientError, BotoCoreError) as e:
-                code = e.response.get('Error', {}).get('Code', '') if isinstance(e, ClientError) else ''
-                if code in DEAD_TOKEN_CODES:
-                    # Its wait already ended: the sweeper released it, or its pause heartbeat ran out.
-                    released.append(task_name)
-                    continue
-                log.error("resume_execution", "Could not release a paused task", task_name=task_name,
-                          pipeline_execution=pipeline_execution, error=str(e))
-                failed.append(f"{task_name} ({code or str(e)[:50]})")
-
-        response_data = {
-            'message': 'Pipeline execution resumed',
-            'pipeline_execution': pipeline_execution,
-            'paused': False,
-            'resumed_tasks': released,
-            'reconcile': _reconcile_run(pipeline_execution),
-        }
-        if failed:
-            response_data['failed_tasks'] = failed
-        return cors_response(200, response_data)
-
-    except Exception as e:
-        log.error("resume_execution", "Error resuming execution", error=str(e), pipeline_execution=pipeline_execution)
-        return cors_response(500, {'error': f'Failed to resume execution: {str(e)}'})
+    """Resume a paused run (ADR #137 §5): the dispatcher decides the rows the pause held, from the run row's change."""
+    return _run_action('resume', pipeline_execution, lambda run, now: actions.resume_run(
+        run, now=now, table=executions_repo.table.name), {'message': 'Pipeline execution resumed', 'paused': False})
 
 
-def extend_pause(pipeline_execution: str, event: Dict) -> Dict:
-    """
-    Extend pause timeout by 12 hours. Sends heartbeat to all paused tasks.
+def _run_action(action: str, pipeline_execution: str, build: Callable[[Dict, datetime], Optional[Dict]],
+                answer: Dict) -> Dict:
+    """Read the run row, build the action's write from it and send it, built again from a new read while a change
+    of the run row refuses it. A write the builder finds needless (a second Stop, a Pause of a paused run) is no
+    error: the run already is as asked."""
+    if not pipeline_execution:
+        return cors_response(400, {'error': 'pipeline_execution is required'})
+    for _ in range(RUN_ACTION_ATTEMPTS):
+        run = executions_repo.get(run_row.key(pipeline_execution), consistent=True)
+        if run is None:
+            return cors_response(409, {'error': f'{pipeline_execution}: no run row; a run from before 1.3 takes no '
+                                                f'{action}, and so does no run at all',
+                                       'pipeline_execution': pipeline_execution})
+        try:
+            update = build(run, datetime.now(timezone.utc))
+        except actions.ActionRefused as exc:
+            return cors_response(409, {'error': str(exc), 'pipeline_execution': pipeline_execution})
+        if update is None:
+            break
+        try:
+            executions_repo.transact_write([{'Update': update}])
+            break
+        except executions_repo.transaction_canceled_exception:
+            log.info(action, "The run row changed under the action: built again from a new read",
+                     pipeline_execution=pipeline_execution)
+            time.sleep(random.uniform(*ACTION_BACKOFF_SECONDS))
+    else:
+        return cors_response(409, {'error': f'{pipeline_execution} kept changing under the {action}; try again',
+                                   'pipeline_execution': pipeline_execution})
+    log.info(action, "Done", pipeline_execution=pipeline_execution)
+    return cors_response(200, {**answer, 'pipeline_execution': pipeline_execution})
 
-    Only a task held in run_task's pause wait (it has a pause_token) takes a
-    heartbeat. A task the reconciler parked while it waits for its dependencies
-    has only its wait_token: Wait_For_Dependencies has a fixed timeout and no
-    heartbeat, so it is reported as skipped.
-    """
-    try:
-        paused_tasks = get_paused_tasks_with_token(pipeline_execution)
-        extended_tasks = []
-        skipped_wait_token = []
-
-        for item in paused_tasks:
-            task_name = item.get('task_name', '')
-            pause_token = item.get('pause_token')
-
-            # Skip tasks that only have wait_token (no heartbeat possible)
-            if not pause_token:
-                skipped_wait_token.append(task_name)
-                continue
-
-            try:
-                sfn.send_task_heartbeat(taskToken=pause_token)
-                extended_tasks.append(task_name)
-            except sfn.exceptions.TaskTimedOut:
-                log.warn("extend_pause", "Pause token timed out", task_name=task_name)
-            except sfn.exceptions.InvalidToken:
-                log.warn("extend_pause", "Invalid pause token", task_name=task_name)
-            except Exception as e:
-                log.error("extend_pause", "Failed to extend pause", error=str(e), task_name=task_name)
-
-        response_data = {
-            'message': 'Pause extended by 12 hours',
-            'pipeline_execution': pipeline_execution,
-            'extended_tasks': extended_tasks,
-        }
-
-        if skipped_wait_token:
-            response_data['skipped_wait_token_tasks'] = skipped_wait_token
-            response_data['warning'] = 'Tasks with wait_token have fixed 24h timeout and cannot be extended'
-
-        return cors_response(200, response_data)
-
-    except Exception as e:
-        log.error("extend_pause", "Error extending pause", error=str(e))
-        return cors_response(500, {'error': f'Failed to extend pause: {str(e)}'})
-
-
-def get_execution_pause_status(pipeline_execution: str) -> bool:
-    """Check if a pipeline execution is paused."""
-    pause_key = f"_pause_{pipeline_execution}"
-
-    try:
-        item = executions_repo.get(pause_key, consistent=True)
-        return (item or {}).get('paused', False)
-    except Exception as e:
-        # "Not paused" on read failure is the safe default — false negatives here
-        # just mean a paused execution gets one extra poll, never an unintended
-        # resume. Log so a real DDB outage doesn't silently disable pause UX.
-        log.warn(
-            "get_execution_pause_status",
-            "Pause status read failed; defaulting to not paused",
-            pipeline_execution=pipeline_execution,
-            error=str(e),
-        )
-        return False
 
 def register(router) -> None:
     """Register the free execution read routes. See ADR #97."""
     router.add('GET', '/api/runs', get_all_runs)
     router.add('GET', '/api/execution-children', get_execution_children, 'id')
-    router.add('GET', '/api/execution-parent', get_execution_parent, 'id')
     # Execution control — free (ADR #110): intervene on a live run.
     router.add('POST', '/api/execution-stop', stop_execution, 'pipeline_execution')
     router.add('POST', '/api/execution-pause', pause_execution, 'id')
     router.add('POST', '/api/execution-resume', resume_execution, 'id')
-    router.add('POST', '/api/execution-extend', extend_pause, 'id')

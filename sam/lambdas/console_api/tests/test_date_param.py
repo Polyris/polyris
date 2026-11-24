@@ -90,33 +90,34 @@ def _rows(today):
 
 class TestEmptyDateBehavesAsAbsent:
     """Reported symptom: clear the date on History, open the pipeline — bare graph,
-    no banner, while the run sits right there. The route read '' as a literal date."""
+    no banner, while the run sits right there. The route read '' as a literal date.
+
+    The routes find a date's latest run through the pipeline's task rows of that date
+    (``rows_of_pipeline_date``, ADR #137 §5); the date they ask for is the one checked."""
 
     def _today(self):
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
+    def _read(self, mocker, module, rows):
+        mocker.patch.object(module.executions_repo, 'query_by_pipeline_execution', return_value=rows)
+        mocker.patch.object(module.executions_repo, 'get', return_value=None)       # the run row: none, a 1.2 run
+        return mocker.patch.object(module.executions_repo, 'rows_of_pipeline_date', return_value=rows)
+
     def test_pipeline_status_falls_back_to_today(self, mocker):
         from routes import pipelines_list
         today = self._today()
-        scan = mocker.patch.object(pipelines_list.executions_repo, 'scan',
-                                   return_value=_rows(today))
-        mocker.patch.object(pipelines_list.pipelines_repo, 'get', return_value=None)
+        read = self._read(mocker, pipelines_list, _rows(today))
 
         pipelines_list.get_pipeline_status('p', _status_event(date=''))
 
-        expr = scan.call_args.kwargs['FilterExpression'].get_expression()
-        dates = [v.get_expression()['values'][1] for v in expr['values']
-                 if hasattr(v, 'get_expression') and v.get_expression()['operator'] == '=']
-        assert today in dates, f'empty ?date= must query today, queried {dates}'
-        assert '' not in dates
+        assert read.call_args.args == ('p', today), 'empty ?date= must read today'
 
     def test_empty_and_absent_give_the_same_answer(self, mocker):
         import json
         from routes import pipelines_list
         today = self._today()
-        mocker.patch.object(pipelines_list.executions_repo, 'scan', return_value=_rows(today))
-        mocker.patch.object(pipelines_list.pipelines_repo, 'get', return_value=None)
+        self._read(mocker, pipelines_list, _rows(today))
 
         empty = json.loads(pipelines_list.get_pipeline_status('p', _status_event(date=''))['body'])
         absent = json.loads(pipelines_list.get_pipeline_status('p', _status_event())['body'])
@@ -126,25 +127,17 @@ class TestEmptyDateBehavesAsAbsent:
     def test_pipeline_dag_falls_back_to_today(self, mocker):
         from routes import pipelines_info
         today = self._today()
-        scan = mocker.patch.object(pipelines_info.executions_repo, 'scan',
-                                   return_value=_rows(today))
+        read = self._read(mocker, pipelines_info, _rows(today))
         mocker.patch.object(pipelines_info.pipelines_repo, 'get', return_value=None)
 
         pipelines_info.get_pipeline_dag('p', {'queryStringParameters': {'name': 'p', 'date': ''}})
 
-        expr = scan.call_args.kwargs['FilterExpression'].get_expression()
-        dates = [v.get_expression()['values'][1] for v in expr['values']
-                 if hasattr(v, 'get_expression') and v.get_expression()['operator'] == '=']
-        assert today in dates and '' not in dates
+        assert read.call_args.args == ('p', today)
 
     def test_an_explicit_date_still_wins(self, mocker):
         from routes import pipelines_list
-        scan = mocker.patch.object(pipelines_list.executions_repo, 'scan', return_value=[])
-        mocker.patch.object(pipelines_list.pipelines_repo, 'get', return_value=None)
+        read = self._read(mocker, pipelines_list, [])
 
         pipelines_list.get_pipeline_status('p', _status_event(date='2024-01-15'))
 
-        expr = scan.call_args.kwargs['FilterExpression'].get_expression()
-        dates = [v.get_expression()['values'][1] for v in expr['values']
-                 if hasattr(v, 'get_expression') and v.get_expression()['operator'] == '=']
-        assert '2024-01-15' in dates
+        assert read.call_args.args == ('p', '2024-01-15')

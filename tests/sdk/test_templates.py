@@ -25,12 +25,12 @@ sys.path.insert(0, os.path.join(REPO_ROOT, 'sam', 'lambdas', 'console_api'))
 # ============================================================
 
 def test_orchestration_timeout_default():
-    """orchestration_timeout defaults to execution_timeout."""
+    """orchestration_timeout no longer falls back to execution_timeout (D49, ADR #137 §5)."""
     from polyris.task import Task
     t = Task(task_id='test', execution_timeout=timedelta(hours=2))
     assert t.orchestration_timeout is None
-    assert t.orchestration_timeout_seconds == 7200  # Same as execution_timeout
-    assert t.timeout == 7200
+    assert t.orchestration_timeout_seconds is None
+    assert t.execution_timeout_seconds == 7200
 
 
 def test_orchestration_timeout_explicit():
@@ -42,7 +42,7 @@ def test_orchestration_timeout_explicit():
         orchestration_timeout=timedelta(days=3)
     )
     assert t.orchestration_timeout_seconds == 259200  # 3 days
-    assert t.timeout == 7200  # execution_timeout unchanged
+    assert t.execution_timeout_seconds == 7200  # execution_timeout unchanged
 
 
 def test_orchestration_timeout_via_default_args():
@@ -191,82 +191,6 @@ def test_default_args_applies_trigger_rule_wait_before_skip_on_backfill():
     assert t2.skip_on_backfill is False
 
 
-def test_orchestration_timeout_in_generated_sfn():
-    """Generator passes orchestration_timeout to wrapper input."""
-    from polyris import DAG, task
-    from polyris.generators import generate_step_function_json
-
-    with DAG('test-gen', schedule=None) as dag:
-        @task.sfn(
-            arn='arn:aws:states:us-east-1:123:stateMachine:test',
-            orchestration_timeout=timedelta(days=3)
-        )
-        def t1():
-            pass
-        t1()
-
-    sfn_json = generate_step_function_json(dag)
-    sfn = json.loads(sfn_json)
-
-    # Find the wrapper task input
-    found = False
-    for name, state in sfn['States'].items():
-        if state.get('Type') == 'Parallel':
-            for branch in state.get('Branches', []):
-                for sn, ss in branch.get('States', {}).items():
-                    inp = ss.get('Arguments', {}).get('Input', {})
-                    if 'orchestration_timeout' in inp:
-                        assert inp['orchestration_timeout'] == 259200
-                        found = True
-
-    assert found, "orchestration_timeout not found in generated SFN"
-
-
-def test_orchestration_timeout_default_in_generated_sfn():
-    """Default orchestration_timeout = execution_timeout in generated SFN."""
-    from polyris import DAG, task
-    from polyris.generators import generate_step_function_json
-
-    with DAG('test-gen-default', schedule=None) as dag:
-        @task.sfn(arn='arn:aws:states:us-east-1:123:stateMachine:test')
-        def t1():
-            pass
-        t1()
-
-    sfn_json = generate_step_function_json(dag)
-    sfn = json.loads(sfn_json)
-
-    found = False
-    for name, state in sfn['States'].items():
-        if state.get('Type') == 'Parallel':
-            for branch in state.get('Branches', []):
-                for sn, ss in branch.get('States', {}).items():
-                    inp = ss.get('Arguments', {}).get('Input', {})
-                    if 'orchestration_timeout' in inp:
-                        assert inp['orchestration_timeout'] == 86400  # 24h default
-                        found = True
-
-    assert found, "orchestration_timeout not found in generated SFN"
-
-
-# ============================================================
-# Wrapper template tests
-# ============================================================
-
-def test_wrapper_timeout_is_dynamic():
-    """Wait_For_Dependencies uses dynamic TimeoutSeconds via JSONata expression."""
-    template_path = os.path.join(
-        REPO_ROOT, 'sam',
-        'sfn_templates', 'dependency_wrapper', 'sfn.tpl.json'
-    )
-    data = load_template(template_path)
-
-    state = data['States']['Wait_For_Dependencies']
-    assert 'Timeout' not in state, "Timeout is not supported in JSONata ASL, use TimeoutSeconds"
-    assert 'TimeoutSeconds' in state, "Dynamic TimeoutSeconds should be present"
-    assert 'orchestration_timeout' in state['TimeoutSeconds'], "Should read from input"
-
-
 # ============================================================
 # Backfill staggered start tests
 # ============================================================
@@ -302,25 +226,19 @@ def test_route_table_completeness():
     # build that 404s these is the regression this guard exists to catch.
     free_intervention = [
         ('POST', '/api/task-skip'), ('POST', '/api/task-fail'), ('POST', '/api/task-success'),
-        ('POST', '/api/task-stop'), ('POST', '/api/task-restart'), ('POST', '/api/task-retry'),
+        ('POST', '/api/task-stop'), ('POST', '/api/task-restart'),
         ('POST', '/api/execution-stop'), ('POST', '/api/execution-pause'),
-        ('POST', '/api/execution-resume'), ('POST', '/api/execution-extend'),
+        ('POST', '/api/execution-resume'),
     ]
     for method, path in free_intervention:
         assert (method, path) in ROUTES, f"Missing free intervention route: {method} {path}"
 
     # Config mutation stays Team — must be ABSENT from the OSS-stripped build.
     # (In the full build ee adds it; this assert only holds when ee is stripped.)
-    try:
-        import ee  # noqa: F401
-        ee_present = True
-    except ImportError:
-        ee_present = False
-    if not ee_present:
-        assert ('PUT', '/api/task-config') not in ROUTES, "task-config PUT must be Team-only"
+    assert ('PUT', '/api/task-config') not in ROUTES, "no build has the task-config PUT: run_task reads the spec"
 
     # Loose free-floor sanity check; the full build adds Team routes on top.
-    assert len(ROUTES) >= 26
+    assert len(ROUTES) >= 24
 
     # Critical *free* routes must always exist (present in both tiers).
     critical = [
@@ -329,7 +247,6 @@ def test_route_table_completeness():
         ('GET', '/api/runs'),
         ('GET', '/api/health'),
         ('POST', '/api/pipeline-run'),
-        ('POST', '/api/pipeline-register'),
     ]
     for method, path in critical:
         assert (method, path) in ROUTES, f"Missing free route: {method} {path}"
@@ -394,19 +311,6 @@ def test_run_task_all_task_states_have_catch():
 
     missing_catch = [name for name, state in task_states.items() if 'Catch' not in state]
     assert not missing_catch, f"Task states without Catch: {missing_catch}"
-
-
-def test_run_task_callback_states_have_retry():
-    """Send_Pipeline_Success/Failure have Retry."""
-    template_path = os.path.join(
-        REPO_ROOT, 'sam', 'sfn_templates', 'helpers', 'run_task', 'sfn.tpl.json'
-    )
-    data = load_template(template_path)
-
-    for name in ['Send_Pipeline_Success', 'Send_Pipeline_Failure']:
-        assert name in data['States'], f"Missing state: {name}"
-        state = data['States'][name]
-        assert 'Retry' in state, f"{name} missing Retry"
 
 
 # ============================================================
@@ -500,10 +404,6 @@ if __name__ == '__main__':
         test_orchestration_timeout_override_default_args,
         test_falsy_overrides_of_default_args_are_respected,
         test_default_args_applies_trigger_rule_wait_before_skip_on_backfill,
-        test_orchestration_timeout_in_generated_sfn,
-        test_orchestration_timeout_default_in_generated_sfn,
-        # wrapper template
-        test_wrapper_timeout_is_dynamic,
         # backfill staggered start
         test_backfill_orchestrator_template_removed,
         # route table
@@ -511,7 +411,6 @@ if __name__ == '__main__':
         test_route_table_handlers_callable,
         # run_task resilience
         test_run_task_all_task_states_have_catch,
-        test_run_task_callback_states_have_retry,
         # default task policy — Athena/Glue parity
         test_default_task_policy_grants_glue_catalog_access_for_athena_etl,
         # api.js

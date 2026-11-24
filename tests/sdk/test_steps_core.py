@@ -1,11 +1,9 @@
-"""Step-class tests — operators, Choice/Condition, control-flow steps.
+"""Step-class tests — operators and step identity.
 
 Covers the remaining pure-logic in ``polyris.steps`` (CLAUDE.md #13):
 
   - The base ``Step`` ``>>`` / ``<<`` operators across Step / Task /
     TaskInstance / TaskGroup / list targets (dependency wiring).
-  - ``Choice`` construction and the ``Condition`` JSONata builders.
-  - ``Map`` / ``Sensor`` / ``ShortCircuit`` construction and step-id defaults.
 """
 from __future__ import annotations
 
@@ -14,11 +12,6 @@ from polyris.task_group import TaskGroup
 from polyris.steps import (
     Wait,
     Pass,
-    Choice,
-    Condition,
-    Map,
-    Sensor,
-    ShortCircuit,
 )
 
 ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:test"
@@ -87,70 +80,6 @@ class TestStepOperators:
         w1, w2, target = Wait(seconds=5), Wait(seconds=10), Pass()
         [w1, w2] >> target
         assert w1 in target.dependencies and w2 in target.dependencies
-
-
-# ============================================================ #
-# Choice + Condition
-# ============================================================ #
-class TestChoiceAndCondition:
-    def test_choice_default_step_id(self):
-        c = Choice(choices=[(Condition.number_greater_than("$.n", 5), Pass())], default=Pass())
-        assert c.step_id == "Choice"
-        assert c.step_type == "choice"
-
-    def test_choice_explicit_step_id(self):
-        c = Choice(step_id="route", default=Pass())
-        assert c.step_id == "route"
-
-    def test_condition_string_equals(self):
-        assert Condition.string_equals("$.day", "weekend") == '{% $.day = "weekend" %}'
-
-    def test_condition_string_matches(self):
-        assert Condition.string_matches("$.name", "ab.*") == "{% $match($.name, /ab.*/) %}"
-
-    def test_condition_number_equals(self):
-        assert Condition.number_equals("$.n", 5) == "{% $.n = 5 %}"
-
-    def test_condition_number_greater_than(self):
-        assert Condition.number_greater_than("$.n", 10) == "{% $.n > 10 %}"
-
-    def test_condition_number_less_than(self):
-        assert Condition.number_less_than("$.n", 3) == "{% $.n < 3 %}"
-
-    def test_condition_boolean_equals(self):
-        assert Condition.boolean_equals("$.flag", True) == "{% $.flag = true %}"
-        assert Condition.boolean_equals("$.flag", False) == "{% $.flag = false %}"
-
-    def test_condition_is_present(self):
-        assert Condition.is_present("$.x") == "{% $exists($.x) %}"
-
-    def test_condition_is_null(self):
-        assert Condition.is_null("$.x") == "{% $.x = null %}"
-
-    def test_condition_jsonata(self):
-        assert Condition.jsonata("$.a + $.b") == "{% $.a + $.b %}"
-
-
-# ============================================================ #
-# Map / Sensor / ShortCircuit
-# ============================================================ #
-class TestControlFlowSteps:
-    def test_map_defaults(self):
-        m = Map(items_path="$.rows")
-        assert m.step_id == "Map"
-        assert m.step_type == "map"
-        assert m.items_path == "$.rows"
-
-    def test_sensor_step_id_includes_type(self):
-        s = Sensor(sensor_type="s3", bucket="b", key="k")
-        assert s.step_id == "Sensor_s3"
-        assert s.step_type == "sensor"
-
-    def test_short_circuit_defaults(self):
-        sc = ShortCircuit(condition="{% $count($.records) > 0 %}")
-        assert sc.step_id == "ShortCircuit"
-        assert sc.step_type == "short_circuit"
-        assert sc.skip_downstream is True
 
 
 # ============================================================ #

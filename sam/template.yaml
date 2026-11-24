@@ -208,6 +208,10 @@ Resources:
           AttributeType: S
         - AttributeName: attention_at
           AttributeType: S
+        - AttributeName: start_day
+          AttributeType: S
+        - AttributeName: started_at
+          AttributeType: S
       GlobalSecondaryIndexes:
         - IndexName: pipeline-execution-index
           KeySchema:
@@ -300,6 +304,28 @@ Resources:
               - finished_at
               - started_at
               - attempts
+        # ADR #137 §5: sparse. Only run rows carry `start_day`, the UTC day their execution
+        # started; the run lists walk the start days newest first. It projects what they show
+        # (run_row.INDEX_FIELDS): a run's status comes from its summary and its step mark.
+        - IndexName: run-start-index
+          KeySchema:
+            - AttributeName: start_day
+              KeyType: HASH
+            - AttributeName: started_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - pipeline_name
+              - run_date
+              - status
+              - finished_at
+              - triggered_by
+              - summary
+              - step_failure
+      # ADR #137 §7: a change of a row that the transition table marks wakes the dispatcher.
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -369,6 +395,34 @@ Resources:
         - Key: polyris:component
           Value: platform
 
+  # Task specs (ADR #137 §8). Texts under {pipeline}#text keyed by their sha256; versions under
+  # spec_id = {pipeline}#{fingerprint} keyed by task_id, each naming its task's text. Items never
+  # change and are never deleted. No TTL, no deletion protection (it would fail polyris-down and
+  # the rollback of a failed first install), no Retain (a table left behind blocks the next
+  # polyris-up) and no PITR (the specs are derived; a redeploy writes them again).
+  PipelineSpecsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Namespace}-${Stage}-polyris-pipeline-specs"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
   AssetEventsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -398,8 +452,8 @@ Resources:
           Projection:
             ProjectionType: ALL
         # ADR #130 §4, §7: asset conditions read facts by partition, newest
-        # first. Sparse: facts written before ADR #130 get `partition_date`
-        # during sweeper adoption.
+        # first. Sparse: facts written before ADR #130 got `partition_date`
+        # from the 1.2 sweeper's adoption, before an upgrade to 1.3.
         - IndexName: asset-partition-index
           KeySchema:
             - AttributeName: asset_name
@@ -754,15 +808,11 @@ Resources:
             Effect: Allow
             Action:
               - states:StartExecution
-              - states:StartSyncExecution
               - states:DescribeExecution
               - states:StopExecution
               - states:ListExecutions
               - states:RedriveExecution
               - states:InvokeHTTPEndpoint
-              - states:SendTaskSuccess
-              - states:SendTaskFailure
-              - states:SendTaskHeartbeat
               - states:DescribeStateMachine
               - states:ListStateMachines
             Resource: "*"
@@ -786,8 +836,6 @@ Resources:
             Resource:
               - !GetAtt PipelineTokensTable.Arn
               - !Sub "${PipelineTokensTable.Arn}/index/*"
-              - !GetAtt DependencySubscriptionsTable.Arn
-              - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
               - !GetAtt PipelineRegistryTable.Arn
               - !Sub "${PipelineRegistryTable.Arn}/index/*"
               - !GetAtt AssetEventsTable.Arn
@@ -891,19 +939,6 @@ Resources:
   # CloudWatch Log Groups — Step Functions
   # ---------------------------------------------------------------------------
 
-  DependencyWrapperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-dependency-wrapper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
   RunTaskHelperLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -917,84 +952,6 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  RegistrationHelperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-registration-helper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  FailureHandlerLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-failure-handler"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  NotifyDependentsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-notify-dependents"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-
-  PauseWaiterLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-pause-waiter"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  RestartWrapperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-wrapper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
-  RestartTaskHelperLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/states/${Namespace}-${Stage}-polyris-restart-task-helper"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
 
   BulkBackfillLogGroup:
     Type: AWS::Logs::LogGroup
@@ -1039,19 +996,6 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  QuerySubscriptionsLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-query-subscriptions"
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
   ConsoleApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1069,6 +1013,19 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-reconcile"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  StartRunLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Namespace}-${Stage}-polyris-start-run"
       RetentionInDays: !Ref LogRetentionDays
       Tags:
         - Key: polyris:namespace
@@ -1124,34 +1081,19 @@ Resources:
         Variables:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
 
-  QuerySubscriptionsFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${Namespace}-${Stage}-polyris-query-subscriptions"
-      CodeUri: lambdas/query_subscriptions/
-      Handler: index.handler
-      Timeout: 30
-      MemorySize: 128
-      Role: !GetAtt QuerySubscriptionsRole.Arn
-      LoggingConfig:
-        LogFormat: Text
-        LogGroup: !Ref QuerySubscriptionsLogGroup
-      Environment:
-        Variables:
-          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
-
   ReconcileFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${Namespace}-${Stage}-polyris-reconcile"
       CodeUri: lambdas/coordination/
-      Handler: reconcile.handler
-      # Resume handles one run's rows for at most 10 s (RESUME_BUDGET_SECONDS),
-      # then leaves the rest due for the sweeper.
+      # The dispatcher (ADR #137 §1, §7), under reconcile's names: a rename would replace the
+      # function, its role and its managed policy, whose fixed name would collide (Principle #33).
+      Handler: dispatcher.handler
+      # A pass keeps RESERVE_MS in hand (dispatcher.RESERVE_MS) and leaves the rest through left_at.
       Timeout: 30
-      # Every task wake runs through this function; CPU scales with memory,
-      # and 256 MB keeps the boto3 cold start short for a negligible GB-s cost.
-      MemorySize: 256
+      # Every task wake runs through this function, and CPU scales with memory: at 512 MB a full pass
+      # over 2,000 rows takes about half the 2.6 s it takes at 256 MB (the TR-7 estimate), for cents a month.
+      MemorySize: 512
       Role: !GetAtt ReconcileRole.Arn
       LoggingConfig:
         LogFormat: Text
@@ -1162,6 +1104,32 @@ Resources:
           SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
+          SPECS_TABLE: !Ref PipelineSpecsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
+          # By name, not !Ref: run_task's definition names this function, and a !Ref would close a cycle.
+          RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
+
+  # ADR #137 §1: a pipeline invokes it with lambda:invoke.waitForTaskToken; it writes the run row, the run's
+  # input and every task row, then marks the run active. The dispatcher answers the token.
+  StartRunFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Namespace}-${Stage}-polyris-start-run"
+      CodeUri: lambdas/coordination/
+      Handler: start_run.handler
+      # The largest pipeline's rows, one conditional put each (start_run.TIMEOUT; a test pins it).
+      # A timeout fails the attempt, and the next one finds the rows already written.
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt StartRunRole.Arn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref StartRunLogGroup
+      Environment:
+        Variables:
+          TOKENS_TABLE: !Ref PipelineTokensTable
+          SUBSCRIPTIONS_TABLE: !Ref DependencySubscriptionsTable
+          SPECS_TABLE: !Ref PipelineSpecsTable
 
   # ADR #130 §6.1: wakes the tasks waiting on each new asset fact.
   AssetFanoutFunction:
@@ -1185,6 +1153,10 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
+          # Its narrow passes run the dispatcher in this process (ADR #137 §7).
+          SPECS_TABLE: !Ref PipelineSpecsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
+          RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
 
   # ADR #130 §6.1. Retries until the record is handled (records live for the
   # stream's 24 h); a record AssetFanout cannot handle becomes a warning in
@@ -1212,8 +1184,41 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # ADR #130 §8: every 5 minutes, re-checks the waiting tasks that are due, so a
-  # lost wake-up hint delays a task and never loses it.
+  # ADR #137 §7. The filters come from the transition table (transitions.filter_patterns, a test
+  # pins them); the dispatcher drops what they let through and the table does not mark. Retries
+  # until the record is handled; a record the dispatcher cannot handle ends in a row or a warning,
+  # so there is no on-failure destination. TRIM_HORIZON: a mapping at LATEST missed the records of
+  # its first two minutes in TR-0.
+  TasksDispatchMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt PipelineTokensTable.StreamArn
+      FunctionName: !Ref ReconcileFunction
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 1
+      ParallelizationFactor: 2
+      MaximumRetryAttempts: -1
+      MaximumRecordAgeInSeconds: -1
+      BisectBatchOnFunctionError: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"dynamodb": {"NewImage": {"generation": {"N": [{"exists": true}]}, "status": {"S": ["aborted", "failed", "skipped", "stopped", "succeeded", "success", "upstream_failed", "waiting_decision"]}}, "OldImage": {"status": {"S": [{"anything-but": ["aborted", "failed", "skipped", "stopped", "succeeded", "success", "upstream_failed"]}]}}}}'
+          - Pattern: '{"dynamodb": {"NewImage": {"generation": {"N": [{"exists": true}]}, "status": {"S": ["waiting"]}}, "OldImage": {"status": {"S": ["aborted", "failed", "skipped", "stopped", "succeeded", "success", "upstream_failed", "waiting_decision"]}}}}'
+          - Pattern: '{"dynamodb": {"NewImage": {"generation": {"N": [{"exists": true}]}, "status": {"S": ["skipped", "success"]}}, "OldImage": {"status": {"S": ["aborted", "failed", "stopped", "upstream_failed"]}}}}'
+          - Pattern: '{"eventName": ["INSERT", "MODIFY"], "dynamodb": {"Keys": {"execution_name": {"S": [{"prefix": "_run_"}]}}}}'
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  # ADR #130 §8, ADR #137 §7: every 5 minutes, one full pass of the dispatcher over each run that is
+  # due, so a lost wake-up hint delays a task and never loses it.
   SweeperFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1223,7 +1228,8 @@ Resources:
       # A run works for at most 200 s (sweep.BUDGET) and holds its lease for 270 s,
       # so a run that dies never blocks the next one 5 minutes later.
       Timeout: 240
-      MemorySize: 256
+      # Its checks are full passes of the dispatcher, CPU-bound as the dispatcher's own (512 MB, above).
+      MemorySize: 512
       Role: !GetAtt SweeperRole.Arn
       LoggingConfig:
         LogFormat: Text
@@ -1236,6 +1242,12 @@ Resources:
           PIPELINES_TABLE: !Ref PipelineRegistryTable
           ASSET_SUBSCRIPTIONS_TABLE: !Ref AssetSubscriptionsTable
           ASSET_FANOUT_FUNCTION: !Ref AssetFanoutFunction
+          # Its passes run the dispatcher in this process (ADR #137 §7); the self-check reads the
+          # dispatcher's stream mapping (§6).
+          SPECS_TABLE: !Ref PipelineSpecsTable
+          TASK_EVENTS_TABLE: !Ref TaskEventsTable
+          RUN_TASK_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
+          DISPATCHER_FUNCTION: !Ref ReconcileFunction
 
   # No Scheduler retry: a missed run is covered by the next one, 5 minutes later. Lambda may
   # retry a failed asynchronous invoke on its own; the lease and idempotent steps make that harmless.
@@ -1276,6 +1288,7 @@ Resources:
           ASSET_EVENTS_TABLE: !Ref AssetEventsTable
           TASK_EVENTS_TABLE: !Ref TaskEventsTable
           API_TOKENS_TABLE: !Ref ApiTokensTable
+          SPECS_TABLE: !Ref PipelineSpecsTable
           # ADR #65/#66: auth enforcement follows EnableCognitoAuth — true when
           # Cognito is enabled, false otherwise. Public paths: /api/health*,
           # /api/metrics, /api/action/*.
@@ -1298,10 +1311,7 @@ Resources:
           POLYRIS_TIER: !Ref PolyrisTier
           RESULTS_BUCKET: !Ref ResultsBucket
           ASSET_EVENT_TTL_DAYS: "365"
-          RESTART_HELPER_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-restart-task-helper"
-          NOTIFY_DEPENDENTS_HELPER_ARN: !Ref NotifyDependentsSfn
           NOTIFY_FUNCTION_ARN: !GetAtt NotifyFunction.Arn
-          RECONCILE_FUNCTION_ARN: !GetAtt ReconcileFunction.Arn
           BULK_BACKFILL_ARN: !Ref BulkBackfillSfn
       Events:
         ApiProxy:
@@ -1366,38 +1376,6 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  QuerySubscriptionsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${Namespace}-${Stage}-polyris-query-subscriptions-role"
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: QuerySubscriptionsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:Query
-                Resource:
-                  - !GetAtt DependencySubscriptionsTable.Arn
-                  - !Sub "${DependencySubscriptionsTable.Arn}/index/*"
-      Tags:
-        - Key: polyris:namespace
-          Value: !Ref Namespace
-        - Key: polyris:stage
-          Value: !Ref Stage
-        - Key: polyris:component
-          Value: platform
-
   CoordinationReconcilePolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -1405,26 +1383,35 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          # Task row, dependency rows and pause flag (consistent reads);
-          # park / close / attention updates; warning rows.
+          # Run rows, task rows and the run's input (consistent reads); decisions (an update and
+          # the run row's ConditionCheck in one transaction), attention updates; warning rows.
           - Effect: Allow
             Action:
               - dynamodb:GetItem
               - dynamodb:BatchGetItem
               - dynamodb:UpdateItem
               - dynamodb:PutItem
+              - dynamodb:ConditionCheckItem
             Resource:
               - !GetAtt PipelineTokensTable.Arn
-          # Resume: candidate rows of one run.
+          # The rows of a run whose run row is missing, which a pass stops (invariant 11).
           - Effect: Allow
             Action:
               - dynamodb:Query
             Resource:
               - !Sub "${PipelineTokensTable.Arn}/index/pipeline-execution-index"
-          # Pointers are deleted once the signal was accepted.
+          # A decision's event in the task's timeline (ADR #137 §1).
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+            Resource:
+              - !GetAtt TaskEventsTable.Arn
+          # Pointers are deleted once the row has left the wait (Rule 40), and written again for a row that
+          # waits again after a Restart or a reset (ADR #137 §3).
           - Effect: Allow
             Action:
               - dynamodb:DeleteItem
+              - dynamodb:PutItem
             Resource:
               - !GetAtt DependencySubscriptionsTable.Arn
           # Asset facts: the partition index plus recent writes (base table).
@@ -1434,24 +1421,33 @@ Resources:
             Resource:
               - !GetAtt AssetEventsTable.Arn
               - !Sub "${AssetEventsTable.Arn}/index/asset-partition-index"
-          # Declared granularity of facts written before ADR #130.
+          # A run's spec version (ADR #137 §8, D117): a pass queries its task names, a start gets one text.
           - Effect: Allow
             Action:
+              - dynamodb:Query
               - dynamodb:GetItem
             Resource:
-              - !GetAtt PipelineRegistryTable.Arn
+              - !GetAtt PipelineSpecsTable.Arn
+          # A ready row's run_task, under its derived name (invariant 4); by name, as !Ref would close a cycle.
+          - Effect: Allow
+            Action:
+              - states:StartExecution
+            Resource:
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"
           # Task tokens have no resource-level permissions.
           - Effect: Allow
             Action:
               - states:SendTaskSuccess
               - states:SendTaskFailure
             Resource: "*"
-          # Dead-token check on the task's wrapper execution.
+          # A stop of a run ends a stopped row's run_task and the run's own execution (ADR #137 §4). A pipeline
+          # takes the namespace and stage of its own config.py, not always the platform's (D137): every polyris
+          # state machine is named {namespace}-{stage}-polyris-*, and the code stops only what its rows record.
           - Effect: Allow
             Action:
-              - states:DescribeExecution
+              - states:StopExecution
             Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-dependency-wrapper:*"
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*-polyris-*:*"
 
   ReconcileRole:
     Type: AWS::IAM::Role
@@ -1467,6 +1463,20 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - !Ref CoordinationReconcilePolicy
+      Policies:
+        # The dispatcher reads the tasks table's stream (ADR #137 §7).
+        - PolicyName: DispatcherStreamPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource:
+                  - !GetAtt PipelineTokensTable.StreamArn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -1475,8 +1485,53 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # AssetFanout runs the reconciler in-process; beyond its policy it reads
-  # the asset-events stream and the asset:{name} subscriptions.
+  # Start_Run writes a run's rows and the asset pointers of its tasks, and reads the run's specs.
+  StartRunRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Namespace}-${Stage}-polyris-start-run-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartRunPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt PipelineTokensTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt DependencySubscriptionsTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                Resource:
+                  - !GetAtt PipelineSpecsTable.Arn
+      Tags:
+        - Key: polyris:namespace
+          Value: !Ref Namespace
+        - Key: polyris:stage
+          Value: !Ref Stage
+        - Key: polyris:component
+          Value: platform
+
+  # AssetFanout runs the dispatcher's narrow passes in-process; beyond its policy it
+  # reads the asset-events stream and the asset:{name} subscriptions.
   AssetFanoutRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1512,6 +1567,12 @@ Resources:
                 Resource:
                   - !GetAtt DependencySubscriptionsTable.Arn
                   - !GetAtt AssetSubscriptionsTable.Arn
+              # A push consumer's registry entry: its schedule and the cutover of its subscription (ADR #130 §6.1).
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
               # A subscription its pipeline no longer has (asset dropped from the schedule,
               # pipeline destroyed) is deleted, so it starts nothing (ADR #130 §6.1).
               - Effect: Allow
@@ -1519,7 +1580,8 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt AssetSubscriptionsTable.Arn
-              # Push: start a consumer pipeline (deterministic name, so never twice).
+              # Push: start a consumer pipeline (deterministic name, so never twice). Any state machine: a pipeline
+              # may take a namespace and stage of its own (config.py), and only the registry names the one to start.
               - Effect: Allow
                 Action:
                   - states:StartExecution
@@ -1533,8 +1595,8 @@ Resources:
         - Key: polyris:component
           Value: platform
 
-  # The sweeper runs the reconciler in-process; beyond its policy it reads the
-  # due rows from the attention index and keeps its lease row.
+  # The sweeper runs the dispatcher in-process; beyond its policy it reads the due
+  # entries from the attention index, keeps its lease row, judges executions and checks the streams.
   SweeperRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1554,12 +1616,19 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Waiting rows that are due (ADR #130 §7).
+              # The entries that are due (ADR #137 §6).
               - Effect: Allow
                 Action:
                   - dynamodb:Query
                 Resource:
                   - !Sub "${PipelineTokensTable.Arn}/index/attention-index"
+              # Its passes alone judge executions (ADR #137 §1, §4): a started row's run_task, and the
+              # run's own execution, of a pipeline whose namespace and stage may differ from the platform's (D137).
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*-polyris-*:*"
               # Releasing the lease row and dropping push retry rows; writes the policy allows.
               - Effect: Allow
                 Action:
@@ -1575,26 +1644,26 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !GetAtt AssetSubscriptionsTable.Arn
-              # Push retries and the catch-up start consumer pipelines (deterministic names).
+              # A push consumer's registry entry, read by the retries and the catch-up (ADR #130 §6.1).
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PipelineRegistryTable.Arn
+              # Push retries and the catch-up start consumer pipelines (deterministic names), of any namespace.
               - Effect: Allow
                 Action:
                   - states:StartExecution
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-              # Adoption: scans for rows an older version wrote; old facts get their partition fields.
+              # Self-check: are the streams of the asset-events and tasks tables on (ADR #130 §9, ADR #137 §6)?
               - Effect: Allow
                 Action:
-                  - dynamodb:Scan
-                Resource:
-                  - !GetAtt PipelineTokensTable.Arn
-                  - !GetAtt AssetEventsTable.Arn
-              - Effect: Allow
-                Action:
-                  - dynamodb:UpdateItem
                   - dynamodb:DescribeTable
                 Resource:
                   - !GetAtt AssetEventsTable.Arn
-              # Self-check: is the asset-events stream mapping enabled (ADR #130 §9)?
+                  - !GetAtt PipelineTokensTable.Arn
+              # Self-check: are the stream mappings to AssetFanout and to the dispatcher enabled?
               # ListEventSourceMappings does not support resource-level permissions.
               - Effect: Allow
                 Action:
@@ -1677,18 +1746,21 @@ Resources:
                   - !Sub "${TaskEventsTable.Arn}/index/*"
                   - !GetAtt ApiTokensTable.Arn
                   - !Sub "${ApiTokensTable.Arn}/index/*"
+              # Task specs: read only (ADR #137 §8); polyris-deploy writes them.
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                Resource: !GetAtt PipelineSpecsTable.Arn
               - Effect: Allow
                 Action:
                   - states:StartExecution
                   - states:StopExecution
                   - states:DescribeExecution
-                  - states:ListExecutions
                   # /api/health (Step Functions check) and the pipeline-ARN
                   # fallback in pipelines_list / pipelines_actions.
                   - states:ListStateMachines
-                  - states:SendTaskSuccess
-                  - states:SendTaskFailure
-                  - states:SendTaskHeartbeat
                 Resource: "*"
               - Effect: Allow
                 Action:
@@ -1718,14 +1790,12 @@ Resources:
                 Action:
                   - glue:GetTable
                 Resource: "*"
-              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C), and the
-              # reconciler, which resume asks to check a run's waiting tasks (ADR #130 §6.5).
+              # Invoke the notify Lambda to send a test alert (ADR #103 follow-up C).
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt NotifyFunction.Arn
-                  - !GetAtt ReconcileFunction.Arn
       Tags:
         - Key: polyris:namespace
           Value: !Ref Namespace
@@ -1957,53 +2027,6 @@ Resources:
 
 
 
-  PauseWaiterSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-pause-waiter"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt PauseWaiterLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-      DefinitionUri: sfn_templates/helpers/pause_waiter/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RestartWrapperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-restart-wrapper"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RestartWrapperLogGroup.Arn
-      DefinitionUri: sfn_templates/helpers/restart_wrapper/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-
-  QuerySubscriptionsPermissionFromSfn:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt QuerySubscriptionsFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: states.amazonaws.com
-      SourceArn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*"
-
   ConsoleApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -2012,117 +2035,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ConsoleApi}/*"
 
-  NotifyDependentsSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-notify-dependents"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt NotifyDependentsLogGroup.Arn
-      DefinitionSubstitutions:
-        query_subscriptions_lambda: !GetAtt QuerySubscriptionsFunction.Arn
-        reconcile_function_arn: !GetAtt ReconcileFunction.Arn
-      DefinitionUri: sfn_templates/helpers/notify_dependents/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RegistrationHelperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-registration-helper"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
-      DefinitionSubstitutions:
-        subscriptions_table: !Ref DependencySubscriptionsTable
-        tokens_table: !Ref PipelineTokensTable
-        reconcile_function_arn: !GetAtt ReconcileFunction.Arn
-      DefinitionUri: sfn_templates/helpers/registration/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RegisterPipelineSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-register-pipeline"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RegistrationHelperLogGroup.Arn
-      DefinitionSubstitutions:
-        registry_table: !Ref PipelineRegistryTable
-        asset_subscriptions_table: !Ref AssetSubscriptionsTable
-      DefinitionUri: sfn_templates/helpers/register_pipeline/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  RestartTaskHelperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-restart-task-helper"
-      Type: EXPRESS
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnExpressLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt RestartTaskHelperLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        task_events_table: !Ref TaskEventsTable
-        wrapper_arn: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dependency-wrapper"
-      DefinitionUri: sfn_templates/helpers/restart_task/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-  FailureHandlerSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-failure-handler"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt FailureHandlerLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        task_events_table: !Ref TaskEventsTable
-        pipeline_registry_table: !Ref PipelineRegistryTable
-        notify_function_arn: !GetAtt NotifyFunction.Arn
-        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
-        default_slack_mentions: !Ref DefaultSlackMentions
-      DefinitionUri: sfn_templates/helpers/failure_handler/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
   RunTaskHelperSfn:
     Type: AWS::Serverless::StateMachine
     # A fact recorded by the new definition must find the mapping that wakes
@@ -2144,48 +2056,16 @@ Resources:
         tokens_table: !Ref PipelineTokensTable
         pipeline_registry_table: !Ref PipelineRegistryTable
         task_events_table: !Ref TaskEventsTable
-        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
         asset_events_table: !Ref AssetEventsTable
         notify_function_arn: !GetAtt NotifyFunction.Arn
         console_api_endpoint: !Sub "https://${ConsoleApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
-        pause_waiter_arn: !Ref PauseWaiterSfn
         asset_event_ttl_days: "365"
-        pause_heartbeat_seconds: "43200"
         same_account_role_arn: !Sub "arn:aws:iam::${AWS::AccountId}:role/${Namespace}-${Stage}-polyris-default-task-role"
-        aws_region: !Ref AWS::Region
       DefinitionUri: sfn_templates/helpers/run_task/sfn.tpl.json
       Tags:
         polyris:namespace: !Ref Namespace
         polyris:stage: !Ref Stage
         polyris:component: platform
-  DependencyWrapperSfn:
-    Type: AWS::Serverless::StateMachine
-    DependsOn: OrchestrationRolePolicy
-    Properties:
-      Name: !Sub "${Namespace}-${Stage}-polyris-dependency-wrapper"
-      Type: STANDARD
-      Role: !GetAtt OrchestrationRole.Arn
-      Logging:
-        Level: !Ref SfnLogLevel
-        IncludeExecutionData: true
-        Destinations:
-          - CloudWatchLogsLogGroup:
-              LogGroupArn: !GetAtt DependencyWrapperLogGroup.Arn
-      DefinitionSubstitutions:
-        tokens_table: !Ref PipelineTokensTable
-        task_events_table: !Ref TaskEventsTable
-        registration_helper_arn: !Ref RegistrationHelperSfn
-        run_task_helper_arn: !Ref RunTaskHelperSfn
-        failure_handler_arn: !Ref FailureHandlerSfn
-        notify_dependents_helper_arn: !Ref NotifyDependentsSfn
-        notify_function_arn: !GetAtt NotifyFunction.Arn
-        default_orchestration_timeout_seconds: "86400"
-      DefinitionUri: sfn_templates/dependency_wrapper/sfn.tpl.json
-      Tags:
-        polyris:namespace: !Ref Namespace
-        polyris:stage: !Ref Stage
-        polyris:component: platform
-
   BulkBackfillSfn:
     Type: AWS::Serverless::StateMachine
     DependsOn: OrchestrationRolePolicy
@@ -2653,12 +2533,6 @@ Outputs:
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-console-api-url"
 
-  DependencyWrapperArn:
-    Description: ARN of the dependency wrapper Step Function
-    Value: !Ref DependencyWrapperSfn
-    Export:
-      Name: !Sub "${Namespace}-${Stage}-polyris-wrapper-arn"
-
   OrchestrationRoleArn:
     Description: ARN of the orchestration IAM role
     Value: !GetAtt OrchestrationRole.Arn
@@ -2670,6 +2544,18 @@ Outputs:
     Value: !Ref PipelineRegistryTable
     Export:
       Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-registry-table"
+
+  StartRunFunctionArn:
+    Description: The Lambda that a pipeline's run invokes first; it writes the run's rows (ADR #137 §1)
+    Value: !GetAtt StartRunFunction.Arn
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-start-run-function-arn"
+
+  PipelineSpecsTable:
+    Description: DynamoDB table of the pipelines' task specs, which polyris-deploy writes
+    Value: !Ref PipelineSpecsTable
+    Export:
+      Name: !Sub "${Namespace}-${Stage}-polyris-pipeline-specs-table"
 
   PipelineTokensTable:
     Description: DynamoDB pipeline tokens table name

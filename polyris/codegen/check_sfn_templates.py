@@ -78,22 +78,6 @@ ALLOWLIST = {
 }
 
 
-# Operation-status values that helpers return as output payloads — distinct
-# from task-status values that get written to the pipeline-tokens DDB
-# table. These are semantically different namespaces; mixing them would
-# pollute TaskStatus with values that have no meaning for task execution.
-#
-# Add new entries here when a helper SFN returns a new operation status.
-# Each entry must be justified — these bypass canonical enforcement.
-HELPER_OPERATION_STATUSES = {
-    # restart_task helper returns this as its Output.status to indicate
-    # the task was restarted (vs. failed-to-restart). Not a TaskStatus.
-    'restarted',
-    # failure_handler returns this as its Output.status when the task row
-    # belongs to a newer generation (ADR #130 §2.1): it wrote nothing, and
-    # the wrapper routes it to its Superseded end. Not a TaskStatus.
-    'superseded',
-}
 
 
 def _extract_quoted_strings(text: str) -> List[Tuple[str, int]]:
@@ -185,7 +169,7 @@ def check_templates() -> int:
         for m in write_pattern.finditer(text):
             val = m.group(1)
             line_no = text[:m.start()].count('\n') + 1
-            if val not in canonical and val not in HELPER_OPERATION_STATUSES:
+            if val not in canonical:
                 drift_findings.setdefault(val, []).append((tpl, line_no))
 
         # DDB ExpressionAttributeValues pattern, scoped to `:status` AV only.
@@ -201,7 +185,6 @@ def check_templates() -> int:
             val = m.group(1)
             line_no = text[:m.start()].count('\n') + 1
             if (val not in canonical
-                    and val not in HELPER_OPERATION_STATUSES
                     and val not in ALLOWLIST):
                 drift_findings.setdefault(val, []).append((tpl, line_no))
 

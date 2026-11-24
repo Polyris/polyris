@@ -9,14 +9,12 @@ end-to-end design rationale, see
 
 ## Requires
 
-`polyris >= 1.0.0` in your task deployment bundles (Lambda zip, Glue
-`--additional-python-modules`, ECS container install, etc.). The `xcom.get()`
-/ `xcom.push()` API and the typed `XCom*Error` hierarchy ship in that version.
-
-Older SDK versions keep working with the legacy
-`event["upstream"][X]["output"]` / `xcom.pull()` patterns — they just don't get
-the new typed errors, transparent truncation fallback, or the manual-resolution
-guard. See [Migration from 0.99](#migration-from-099).
+`polyris >= 1.3.0` in your task deployment bundles: a Lambda's package
+(`polyris-build-lambda`), a Glue job's wheel (`--extra-py-files`), an ECS or
+Batch image. Rebuild them when you upgrade to 1.3. An older copy of `xcom`
+returns `None` for an upstream whose output the task's input could not hold (a
+fan-in over about 1,500 upstreams), raises for an upstream the run skipped, and
+can read an older run's output of the same date after an upstream failed.
 
 ## Contents
 
@@ -73,20 +71,56 @@ That's the whole mental model. The rest of this page is the specification.
 
 ```python
 xcom.get(event, task_name, *,
-         raise_on_missing=True,     # dep with no output → XComMissingError
-         raise_on_failure=True,     # upstream status != success → XComUpstreamFailedError
+         raise_on_missing=True,     # dep with no output in this run → XComMissingError
+         raise_on_failure=True,     # upstream failed finally → XComUpstreamFailedError
          raise_on_manual=True,      # upstream manually resolved via UI → XComManuallyResolvedError
          ddb_client=None,           # injected for tests
          s3_client=None)            # injected for tests
 ```
 
+**What a task reads of its upstreams.** A task reads an upstream's output only
+when that upstream succeeded in this run, or an operator or the run skipped it.
+A skip by the run (`skip_tasks`) keeps the output an earlier run of the same date
+wrote. Any other upstream reaches the task as its status alone, so a task that
+runs after a failure never reads an older run's output of the same date:
+
+- After a final failure (`failed`, `upstream_failed`, `stopped`), `get()` raises
+  `XComUpstreamFailedError`, or returns `None` with `raise_on_failure=False`.
+- After a skip by a trigger rule, `get()` raises `XComMissingError`, or returns
+  `None` with `raise_on_missing=False`.
+- Beside an upstream that has not succeeded yet in this run (it still waits or
+  runs when a `one_success` or `one_failed` task starts), `get()` raises
+  `XComMissingError` naming the status, or returns `None` with
+  `raise_on_missing=False`.
+
+A task's result is stored as JSON and reaches its dependants as the value the
+task returned: a string as that string (stored with its quotes, `"ok"`). A
+string of JSON text (`json.dumps(...)`) reaches them parsed, as in 1.2. A
+string result that an older version stored as it was reaches them as that
+string.
+
+An upstream that succeeded always has its output, because the output is written
+together with the success. If it is missing anyway, the task fails with that
+cause before its work starts, and waits for an operator's decision.
+
+A Lambda or `@task.sfn` task gets each upstream in `event["upstream"][name]`:
+its `status`, its `skip_origin`, and its `output` when the task reads it. An ECS
+or Batch task gets the statuses in the environment variable
+`POLYRIS_UPSTREAM_STATUSES`, beside `POLYRIS_TASK_NAME`. A Glue job gets them as
+the job argument `--POLYRIS_UPSTREAM_STATUSES`; `xcom` reads it, and every other
+`--POLYRIS_*` argument, from the job's command line, so the script copies none
+of them into the environment. An EMR step gets neither: after an upstream failed, `xcom`
+in an EMR step can return an older run's output of the same date.
+
 **Lookup order:**
 
 1. If `event.upstream[task_name]` exists (Lambda / SFN pre-fetched inject) → use it.
    Auto-resolves `{"_s3_ref": "s3://..."}` pointers. On a `{"_truncated": true}`
-   marker, falls back to DDB automatically (25 KB inject cap vs 350 KB DDB row).
+   marker, or an entry without `output`, falls back to DDB automatically (see
+   [Size limits](#size-limits)).
 2. Otherwise → reads DDB directly via `pull()`. Works with `event=None` for
-   Glue / ECS / Batch / EMR.
+   Glue / ECS / Batch / EMR. A Glue, ECS or Batch task checks the upstream's
+   status in `POLYRIS_UPSTREAM_STATUSES` first.
 
 **Optional upstream** with `trigger_rule="all_done"`:
 
@@ -100,7 +134,7 @@ def handler(event, context):
 
 ### Lambda / `@task.sfn` — return your value
 
-The wrapper captures the Lambda return value or the child SFN's `Output`. No
+`run_task` captures the Lambda return value or the child SFN's `Output`. No
 SDK call needed. This is the idiomatic path.
 
 ```python
@@ -113,7 +147,7 @@ def handler(event, context):
 
 ### Glue / ECS / Batch — call `xcom.push()`
 
-Service tasks run in their own containers / jobs — the wrapper only sees the
+Service tasks run in their own containers / jobs — `run_task` only sees the
 AWS API response (`{JobRunId}`, `{TaskArn}`, `{JobId}`), not the work output.
 `xcom.push()` writes the real value directly to DDB.
 
@@ -130,8 +164,8 @@ def main():
     })
 ```
 
-The push writes to the same DDB key the wrapper writes on success
-(`output#{pipeline}#{task}#{date}`). The wrapper detects a `_pushed_by_task`
+The push writes to the same DDB key `run_task` writes on success
+(`output#{pipeline}#{task}#{date}`). `run_task` detects a `_pushed_by_task`
 marker with a matching `pushed_run_id` and skips overwriting the pushed value
 with the AWS API response.
 
@@ -172,8 +206,12 @@ upstream-failure guard, and inject → DDB fallback on top of the same reader.
 **Behaviour differences from `get()`:**
 
 - No `raise_on_missing` / `raise_on_failure` — missing rows raise
-  `XComMissingError` (aliased as `PullError`) unconditionally; the row's status
-  is not consulted.
+  `XComMissingError` (aliased as `PullError`) unconditionally. The upstream's
+  status is checked as `get()` checks it: from the event in a Lambda
+  (`xcom.pull(name, event)`), from `POLYRIS_UPSTREAM_STATUSES` in Glue, ECS or
+  Batch. An upstream that failed finally raises `XComUpstreamFailedError`, and
+  any other upstream without an output in this run `XComMissingError`; use
+  `get()` to receive `None` instead.
 - Truncated rows raise `XComMissingError` (via `PullError`), not
   `XComTruncatedError`. `get()` upgrades the error type when it detects the
   truncation marker.
@@ -186,8 +224,8 @@ Every reader error inherits `XComError`, which inherits `RuntimeError`.
 
 | Error | Raised when | Suppress with |
 |-------|-------------|---------------|
-| `XComMissingError` | no output stored (dep didn't run, was skipped, or returned nothing) | `raise_on_missing=False` — returns `None` |
-| `XComUpstreamFailedError` | upstream status is `skipped`, `failed`, `aborted`, etc. (`get()` only) | `raise_on_failure=False` — returns whatever output was recorded |
+| `XComMissingError` | no output stored (dep didn't run, a trigger rule skipped it, or it returned nothing) | `raise_on_missing=False` — returns `None` |
+| `XComUpstreamFailedError` | upstream failed finally in this run: `failed`, `upstream_failed` or `stopped`; its `status` attribute says which | `raise_on_failure=False` — returns `None` |
 | `XComTruncatedError` | both the event inject and the DDB row came back truncated (`get()` only) | not suppressible — see [Claim Check pattern](#large-outputs--claim-check-pattern) |
 | `XComManuallyResolvedError` | upstream carries a Console-written manual-resolution marker | `raise_on_manual=False` — returns the marker dict as-is |
 | `PullError` | back-compat alias for `XComMissingError` — existing `except PullError:` code continues to work | same as `XComMissingError` |
@@ -195,30 +233,21 @@ Every reader error inherits `XComError`, which inherits `RuntimeError`.
 **Ordering when multiple opt-outs interact.** In `xcom.get()` the checks fire
 in this exact order for a dep that exists in `event.upstream`:
 
-1. **Missing check** — status `"unknown"` → `XComMissingError` (subject to
-   `raise_on_missing`).
+1. **Failure check** — a final failure → `XComUpstreamFailedError` (subject to
+   `raise_on_failure`); a skip by a trigger rule → `XComMissingError` (subject
+   to `raise_on_missing`). Neither has an output in this run.
 2. **Manual-resolution check** — `_is_manual_marker(output)` →
-   `XComManuallyResolvedError` (subject to `raise_on_manual`). This runs
-   *before* the status check because a human's Mark success / Skip / Fail /
-   Stop is more informative than the status the action produced.
-3. **Failure check** — `status != "success"` → `XComUpstreamFailedError`
-   (subject to `raise_on_failure`).
-4. **Truncation** → transparent DDB fallback → `XComTruncatedError` if the DDB
+   `XComManuallyResolvedError` (subject to `raise_on_manual`). A Mark Successful
+   or a Skip by an operator leaves the marker as the upstream's output.
+3. **Truncation** → transparent DDB fallback → `XComTruncatedError` if the DDB
    row is also truncated.
 
-**Concrete matrix — the four `raise_on_manual` × `raise_on_failure` combinations
-on a task the operator manually failed** (status = `failed`, output = marker):
+**Concrete matrix — an upstream the operator resolved:**
 
-| `raise_on_manual` | `raise_on_failure` | Result |
-|-------------------|-------------------|--------|
-| `True` (default) | `True` (default) | `XComManuallyResolvedError` — manual check wins |
-| `True` (default) | `False` | `XComManuallyResolvedError` — manual check wins |
-| `False` | `True` (default) | `XComUpstreamFailedError` — marker skipped, status check fires |
-| `False` | `False` | returns the marker dict (`{"_manually_resolved": True, "_resolution": "fail", …}`) |
-
-Silencing `raise_on_manual` alone still surfaces the failed status via
-`XComUpstreamFailedError` — you have to silence both to receive the marker
-verbatim.
+| Operator's action | Default | `raise_on_manual=False` | `raise_on_failure=False` |
+|-------------------|---------|-------------------------|--------------------------|
+| Mark Successful, Skip | `XComManuallyResolvedError` | returns the marker dict (`{"_manually_resolved": True, "_resolution": "skip", …}`) | `XComManuallyResolvedError` |
+| Fail, Stop | `XComUpstreamFailedError` | `XComUpstreamFailedError` | returns `None` |
 
 ## `XComManuallyResolvedError` — reading the marker for diagnostics
 
@@ -287,22 +316,22 @@ to a Lambda front).
 
 ## Lambda write pattern
 
-`xcom.push()` from a Lambda handler races with the wrapper's `Save_Success`
-write. If the push completes before the handler returns, it's fine; if it
+`xcom.push()` from a Lambda handler races with `run_task`'s success write
+(`Record_Success`). If the push completes before the handler returns, it's fine; if it
 happens asynchronously after return, ordering is undefined and downstream may
 see the wrong value.
 
-- Prefer `return value` from Lambda — the wrapper captures it deterministically.
+- Prefer `return value` from Lambda — `run_task` captures it deterministically.
 - `xcom.push()` from a Lambda emits a `UserWarning` explaining this.
 - If you call both `xcom.push({A})` and `return {B}`, the pushed value wins
-  (the wrapper detects the marker and doesn't overwrite `result`). Pick one;
+  (`run_task` detects the marker and doesn't overwrite `result`). Pick one;
   don't mix.
 
 ## Size limits
 
 | Constraint | Limit | Fix at the limit |
 |-----------|-------|------------------|
-| Runtime inject per dep | 25 KB | Use `xcom.get()` — auto-falls-back to DDB (~350 KB). |
+| Runtime inject per dep | 25 KB, and all of a task's upstreams share about 200 KB with its input | Use `xcom.get()` — auto-falls-back to DDB (~350 KB). |
 | DDB `result` field | 350 KB | Use [Claim Check pattern](#large-outputs--claim-check-pattern). |
 | Console preview (`task_input`) | ~380 KB | New in 1.0.0 — separate `input#` DDB record. |
 | DDB item hard limit (AWS) | 400 KB | AWS constraint. |
@@ -435,7 +464,7 @@ MyGlueTaskRole:
 ```
 
 The write policy scopes `dynamodb:UpdateItem` to keys with `output#*` prefix
-— user tasks can't touch internal wrapper records (`_pause_*`,
+— user tasks can't touch the platform's own records (`_run_*`,
 `_notify_warn_*`, `input#*`).
 
 **Cross-account tasks** (task role in a different AWS account than the polyris
@@ -464,32 +493,24 @@ Two records per task-per-day, both in the `pipeline-tokens` DDB table:
 |-------|------|---------|
 | `execution_name` | S (PK) | `output#{pipeline}#{task}#{date}` |
 | `task_name` | S | task_id |
-| `pipeline_name` | S | pipeline identifier |
-| `status` | S | `success` / `failed` / etc. |
-| `result` | S (JSON) | task output (Lambda return, SFN Output, or `xcom.push()` value) |
-| `updated_at` | S (ISO) | last update |
-| `finished_at` | S (ISO) | completion timestamp |
-| `ttl` | N | expiry (120 days) |
-| `run_id` | S | most recent wrapper ARN that touched this row |
-| `attempt` | N | current retry attempt |
-| `task_execution_arn` | S | AWS resource ARN of the task execution |
-| `_pushed_by_task` | BOOL | present only when `xcom.push()` ran this run |
-| `pushed_at` | S (ISO) | when `xcom.push()` was called |
-| `pushed_run_id` | S | wrapper ARN that owned the push (stale-marker rejection) |
-| `push_count` | N (ADD) | number of push calls this run (debug) |
+| `status` | S | `success`, written with the output |
+| `result` | S (JSON) | the task's output: a Lambda's return, a state machine's output, another service's response, or the `xcom.push()` value; a string that is not JSON text is stored as a JSON string (`"ok"`) |
+| `updated_at` | S (ISO) | last write |
+| `run_id` | S | the `run_task` execution of the latest success |
+| `ttl` | N | a year from the latest write; every write renews it |
+| `_pushed_by_task` | BOOL | present when `xcom.push()` wrote `result` |
+| `pushed_at` | S (ISO) | when `xcom.push()` ran |
+| `pushed_run_id` | S | the `run_task` execution whose task pushed |
+| `push_count` | N (ADD) | number of push calls (debug) |
 | `_manually_resolved` | BOOL | present when the Console wrote a manual-resolution marker (see below) |
 | `_resolution` | S | `mark_success` \| `skip` \| `fail` \| `stop` |
 | `_reason` | S | operator's free-text reason |
 | `_operator` | S | operator email (or `"unknown"` if auth disabled / legacy) |
 | `_pipeline_execution` | S | source pipeline_execution the marker was written from |
 
-Init_Output_Row `REMOVE`s `push_count` at the start of every run so the counter
-resets per-run. Other per-run markers (`_pushed_by_task`, `pushed_at`,
-`pushed_run_id`) are overwritten by `Save_Canonical_Output_Preserve` /
-`Check_Task_Pushed`; the `run_id` stamp lets same-date runs distinguish their
-own writes from a prior run's leftovers.
+`run_task` writes `result` in the same transaction as the task's success. A success whose task pushed keeps the pushed value; one that did not push removes the push fields. `pushed_run_id` keeps a push of an earlier run of the date from counting as this run's.
 
-### `input#{pipeline}#{task}#{date}` — Console preview row (new in 1.0.0)
+### `input#{pipeline}#{task}#{date}` — Console preview row
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -497,10 +518,10 @@ own writes from a prior run's leftovers.
 | `task_name` | S | task_id |
 | `pipeline_name` | S | pipeline identifier |
 | `task_date` | S | task run date (**not** `date` — see GSI note) |
-| `task_input` | S (JSON) | full `{upstream, variables}` snapshot up to ~380 KB |
-| `run_id` | S | wrapper ARN that wrote this input snapshot |
-| `updated_at` | S (ISO) | last update |
-| `ttl` | N | expiry (120 days) |
+| `task_input` | S (JSON) | the `{upstream, variables}` the task's work was given |
+| `run_id` | S | the `run_task` execution that wrote it |
+| `updated_at` | S (ISO) | last write |
+| `ttl` | N | 90 days from the latest write |
 
 **Note on `task_date`:** deliberately mismatched from the `date-pipeline-index`
 GSI's key attribute (`date`) so `input#` rows don't populate that GSI.
@@ -513,7 +534,7 @@ Data flows are keyed on the logical run date, not wall-clock time. Both
 to re-run — as long as your task's return value doesn't include `now()` or
 similar wall-clock inputs.
 
-Same-date re-runs overwrite; different dates never collide. TTL is 120 days.
+Same-date re-runs overwrite; different dates never collide. A date's output lives a year from its latest write, its input 90 days.
 
 ## Migration from 0.99
 
@@ -521,7 +542,7 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
 
 1. **Reader API.** Existing readers keep working — nothing to change on day
    one:
-   - `event["upstream"][X]["output"]` — still populated by the wrapper.
+   - `event["upstream"][X]["output"]` — still populated by `run_task`.
    - `xcom.pull(X, event)` — same signature, same return shape.
    - `except PullError` — still catches missing rows (`PullError` is now an
      alias for `XComMissingError`).
@@ -545,6 +566,5 @@ If you're upgrading a pipeline from 0.99 or earlier, three changes matter:
 Deploy order: install the new SDK in your task bundles first
 (`polyris @ git+https://github.com/Polyris/polyris@<VERSION>` — see the
 [install section above](#installing-polyris-sdk-in-glue--ecs--batch--emr)),
-then redeploy the pipeline so the wrapper picks up the new `input#` record
-contract. The wrapper is backward-compatible with pre-1.0.0 task bundles
-(they just don't call `xcom.push()`).
+then redeploy the pipeline. Polyris 1.3 needs every bundle rebuilt with its
+own SDK (see *Breaking* in the [CHANGELOG](../../CHANGELOG.md)).

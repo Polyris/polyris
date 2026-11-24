@@ -112,8 +112,25 @@ describe('AllRunsView', () => {
         it('shows empty state when no runs', () => {
             setup({ runs: [] });
             render(<AllRunsView {...defaultProps} />);
-            expect(screen.getByText('No runs in the last 14 days')).toBeInTheDocument();
-            expect(screen.getByText('Last 14 days')).toBeInTheDocument();   // the empty date filter says so too
+            expect(screen.getByText('No runs in the last 90 days')).toBeInTheDocument();
+            expect(screen.getByText('Last 90 days')).toBeInTheDocument();   // the empty date filter says so too
+        });
+
+        it('says how many tasks failed beside a run that is still running (ADR #137 §4)', () => {
+            setup({ runs: [
+                { ...mockRuns[2], failed_tasks: 2 },
+                { ...mockRuns[1], failed_tasks: 1 },        // a finished run says its status alone
+            ] });
+            render(<AllRunsView {...defaultProps} />);
+            expect(screen.getByText('running, 2 failed')).toBeInTheDocument();
+            expect(screen.getByText('failed')).toBeInTheDocument();
+        });
+
+        it('names a failed direct step and its error (ADR #137 §1)', () => {
+            setup({ runs: [{ ...mockRuns[1], failed_step: { step: 'notify', error: 'SNS.NotFound' } }] });
+            render(<AllRunsView {...defaultProps} />);
+            const status = screen.getByText('failed, step notify failed');
+            expect(status).toHaveAttribute('title', 'step notify failed: SNS.NotFound');
         });
 
         it('table has aria-label', () => {
@@ -249,11 +266,11 @@ describe('AllRunsView', () => {
     });
 
     describe('inline date picker', () => {
-        it('says "All dates" once a pipeline is chosen: that read has no window', () => {
+        it('keeps the window of 90 days with a pipeline chosen: only a date has none (ADR #137 §5)', () => {
             useAppStore.getState().setRunFilter({ status: '', pipeline: 'sales', date: '' });
             render(<AllRunsView {...defaultProps} />);
-            expect(screen.getByText('All dates')).toBeInTheDocument();
-            expect(screen.queryByText('Last 14 days')).not.toBeInTheDocument();
+            expect(screen.getByText('Last 90 days')).toBeInTheDocument();
+            expect(screen.queryByText('All dates')).not.toBeInTheDocument();
         });
 
         it('renders an inline date picker showing the current date (mirrors All Tasks)', () => {

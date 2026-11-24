@@ -35,8 +35,9 @@ def _task_rows(statuses, pe='p-2024-01-15-abc', pipeline='test-pipeline', date='
 def _runs_status(mocker, rows, date='2024-01-15'):
     from routes import executions
     mocker.patch.object(executions.executions_repo, 'query_runs_by_date', return_value=list(rows))
+    # Runs from before 1.3: no run row, so the status is derived from the task rows (ADR #137 §4).
+    mocker.patch.object(executions.executions_repo, 'batch_get_run_meta', return_value={})
     mocker.patch.object(executions.backfills_repo, 'list_recent', return_value=[])
-    mocker.patch.object(executions.pipelines_repo, 'get', return_value=None)  # no ARN → no reconcile
     resp = executions.get_all_runs({'queryStringParameters': {'date': date}})
     body = json.loads(resp['body'])
     execs = [r for r in body['runs'] if r['kind'] == 'execution']
@@ -67,8 +68,11 @@ CASES = [
     (['success', 'stopped'], 'aborted'),            # the reported bug: a stopped run
     (['success', 'aborted', 'stopped'], 'aborted'),
     (['failed', 'aborted'], 'failed'),              # a genuine failure outranks the stop
-    (['running'], 'running'),
-    (['running', 'success'], 'running'),
+    # A run from before 1.3 (these have no run row) with a row left unfinished: 1.3 finishes none, so it is stale
+    # (ADR #137, Migration; the review of TR-6d).
+    (['running'], 'stale'),
+    (['running', 'success'], 'stale'),
+    (['waiting_decision', 'failed'], 'stale'),
 ]
 
 
@@ -100,6 +104,7 @@ class TestPipelineStatusReportsTheRealPipeline:
         from routes import pipelines_list
         mocker.patch.object(pipelines_list.executions_repo,
                             'query_by_pipeline_execution', return_value=rows)
+        mocker.patch.object(pipelines_list.executions_repo, 'get', return_value=None)   # no run row: a 1.2 run
         mocker.patch.object(pipelines_list.pipelines_repo, 'get', return_value=None)
         resp = pipelines_list.get_pipeline_status(
             asked_for, {'queryStringParameters': {'name': asked_for,

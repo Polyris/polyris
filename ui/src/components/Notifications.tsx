@@ -7,7 +7,7 @@ import { MS } from '@/utils/constants';
 import { formatApiErrorMessage } from '@/utils/api';
 import { Button } from '@/components/ui/button';
 import { logger } from '@/utils/logger';
-import { asStringArray } from '@/utils/formatters';
+import { asStringArray, formatDecisionDeadline } from '@/utils/formatters';
 import type { Notification as NotificationType } from '@/types';
 
 /**
@@ -20,6 +20,16 @@ import type { Notification as NotificationType } from '@/types';
  * 
  * Data fetching via React Query (useNotificationsQuery) — polls every 30s
  */
+/** What a notification is, as a toast and a browser notification name it: a warning by its kind, never as a
+ *  failure (a warning about a run's own execution showed as "Pipeline Failed", 1.3 live smoke), and a task's failure
+ *  as a task's: in 1.3 the run goes on beside it. */
+export function notificationTitle(n: NotificationType): string {
+    if (n.type === 'backfill') return `Backfill ${n.backfill_status}`;
+    if (n.type === 'decision_required') return 'Needs Decision';
+    if (n.type === 'warning') return warningKindLabel(n.kind);
+    return 'Task Failed';
+}
+
 function getInitialShownNotifs(): Set<string> {
     try {
         const saved = localStorage.getItem('polyris-shown-browser-notifs');
@@ -191,8 +201,7 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
         unseenNotifs.forEach((n: NotificationType) => {
             try {
                 new Notification(
-                    n.type === 'decision_required' ? 'Needs Decision'
-                        : n.type === 'warning' ? warningKindLabel(n.kind) : 'Pipeline Failed',
+                    notificationTitle(n),
                     {
                         body: [n.pipeline_name, n.task_name].filter(Boolean).join(' • '),
                         icon: '/favicon.ico',
@@ -353,7 +362,7 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                                                     : notification.type === 'backfill'
                                                     ? `${notification.completed_partitions}/${notification.total_partitions} partitions • ${notification.time_ago}`
                                                     : notification.type === 'decision_required'
-                                                    ? `${notification.task_name} • awaiting decision • ${notification.time_ago}`
+                                                    ? `${notification.task_name} • awaiting decision • ${formatDecisionDeadline(notification.deadline)}`
                                                     : `${notification.task_name} • ${notification.time_ago}`}
                                             </div>
                                         </div>
@@ -416,16 +425,14 @@ function NotificationsInner({ onNavigate, onNavigateBackfill, userKey }: Notific
                             </span>
                             <div className="ntf-notification-content">
                                 <div className="ntf-notification-title">
-                                    {notification.type === 'backfill'
-                                        ? `Backfill ${notification.backfill_status}`
-                                        : notification.type === 'decision_required'
-                                        ? 'Needs Decision'
-                                        : 'Pipeline Failed'}
+                                    {notificationTitle(notification)}
                                 </div>
                                 <div className="ntf-notification-subtitle">
                                     {notification.type === 'backfill'
                                         ? `${notification.target_pipeline} • ${notification.completed_partitions}/${notification.total_partitions} • ${notification.time_ago}`
-                                        : `${notification.pipeline_name} • ${notification.time_ago}`}
+                                        : notification.type === 'decision_required'
+                                        ? `${notification.pipeline_name} • ${formatDecisionDeadline(notification.deadline)}`
+                                        : `${notification.pipeline_name || 'Task coordination'} • ${notification.time_ago}`}
                                 </div>
                                 <div className="ntf-notification-actions">
                                     <button 

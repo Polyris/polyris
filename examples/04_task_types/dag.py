@@ -28,7 +28,6 @@ with DAG(
     schedule="cron(0 3 * * ? *)",           # 03:00 UTC daily
     description="One task per AWS service — a tour of the task types.",
     tags=["example", "reference", "multi-service"],
-    doc_md="Reference pipeline exercising every polyris task type.",
     default_args={
         "execution_timeout": timedelta(hours=1),
         "orchestration_timeout": timedelta(hours=6),

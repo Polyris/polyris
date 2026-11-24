@@ -90,7 +90,6 @@ test-lambdas:
 	fi
 	@echo "  Running coordination tests (moto, tables from sam/template.yaml)..."
 	cd sam/lambdas/coordination && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest tests/ -v
-	cd sam/lambdas/query_subscriptions && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest test_query_subscriptions.py -v
 	cd sam/lambdas/bucket_cleanup && PYTHONPATH=.:$(CURDIR) $(HERMETIC_AWS) python3 -m pytest test_bucket_cleanup.py -v
 
 # SFN JSONata expression tests (requires Node.js)
@@ -220,7 +219,7 @@ check-backfill-parity:
 # Sync logger.py from _shared/ to each Lambda (v0.79.4, ADR #76)
 sync-loggers:
 	@echo "🔄 Syncing Lambda loggers..."
-	@for lambda in query_subscriptions console_api coordination; do \
+	@for lambda in console_api coordination; do \
 		if ! diff -q sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py > /dev/null 2>&1; then \
 			echo "❌ $$lambda/logger.py out of sync!"; \
 			echo "   Run: cp sam/lambdas/_shared/logger.py sam/lambdas/$$lambda/logger.py"; \

@@ -29,28 +29,26 @@ EventBridge Scheduler fires on the **next matching wall-clock instant after the 
 - `schedule="rate(1 hour)"` deployed at 12:37 UTC → first run at approximately 13:37 UTC (rate expressions fire "every N units *from now*"; the first tick lands one full period after `ENABLED`).
 - `schedule="@daily"` = `cron(0 0 * * ? *)` = midnight UTC.
 
-If you need history for dates before deploy, start the pipeline manually for each date you want to fill in — either from the Console UI's Pipelines page (Actions → Run) or by calling Step Functions `StartExecution` directly with `{"date": "YYYY-MM-DD"}`.
+If you need history for dates before deploy, start the pipeline manually for each date you want to fill in — either from the Console UI's Pipelines page (Actions → Run) or by calling Step Functions `StartExecution` directly with `{"current_date": "YYYY-MM-DD"}`.
 
 ## Pause and resume a schedule
 
-Three ways to pause, in order of what to reach for:
+Two ways to pause, in order of what to reach for. Either way, runs in flight keep going and no *new* run starts. The polyris console's **Pause** pauses a run, not its schedule.
 
-**1. Console UI — the day-to-day path.** Pipelines page → open pipeline → **Pause**. Sets the schedule `DISABLED` in EventBridge Scheduler and marks the pipeline paused in `pipeline-registry` DDB. In-flight runs keep going; no *new* runs are triggered.
-
-**2. Change the DAG and redeploy.** Add `is_paused_upon_creation=True` to `DAG(...)` and `polyris-deploy`. The schedule deploys `DISABLED`. Also fixes a schedule you manually paused via the AWS console: `polyris-deploy` re-applies the DAG's declared state on every deploy, so a manual console override reverts the next time you deploy.
+**1. Change the DAG and redeploy.** Add `is_paused_upon_creation=True` to `DAG(...)` and `polyris-deploy`. The schedule deploys `DISABLED`. `polyris-deploy` re-applies the DAG's declared state on every deploy, so a pause made in the AWS console reverts the next time you deploy.
 
 ```python
 with DAG(
     "orders-etl",
     schedule="@daily",
-    is_paused_upon_creation=True,   # deploy paused; enable later via Console
+    is_paused_upon_creation=True,   # deploy with the schedule off
 ) as dag:
     ...
 ```
 
-**3. Directly via AWS CLI.** `aws scheduler update-schedule --name {pipeline}-schedule --state DISABLED`. Fast for a one-off manual pause, but `polyris-deploy` will re-`ENABLED` it if the DAG doesn't have `is_paused_upon_creation=True` — the DSL is the source of truth.
+**2. In the AWS console, for a one-off pause.** EventBridge → Scheduler → Schedules → `{namespace}-{stage}-polyris-{dag_id}-schedule` → **Disable**. The next `polyris-deploy` enables it again unless the DAG has `is_paused_upon_creation=True`: the DSL is the source of truth. The AWS CLI's `aws scheduler update-schedule` replaces the whole schedule, so it needs every field of it, not only `--state`.
 
-Resume: Console → **Resume**, or `--state ENABLED` in the CLI, or remove `is_paused_upon_creation=True` and redeploy.
+Resume: **Enable** in the same place, or remove `is_paused_upon_creation=True` and redeploy.
 
 ## Change the schedule
 
@@ -78,19 +76,19 @@ Practical consequence: a change to task retry policy, trigger rule, or DAG topol
 
 If you changed `schedule="cron(0 8 * * ? *)"` to `schedule="cron(0 6 * * ? *)"`, the current in-flight run (triggered at 08:00) is unaffected. The scheduler fires next at 06:00 tomorrow, not 08:00.
 
-### Registration re-fires. DAG snapshot in the registry updates.
+### A run keeps the version it started with.
 
-`polyris-deploy` writes the updated DAG snapshot to `pipeline-registry` DDB after the CFN deploy completes. The Console UI reflects the new topology within seconds. In-flight runs continue to render against their *own* snapshot (captured at run start), so their DAG view in the Console keeps showing the old shape until they finish.
+`polyris-deploy` writes the pipeline's task specs as a new version in `pipeline-specs` before the CFN deploy, and each run reads the version it started with. The Console shows the new graph for the runs that start after the deploy; a run in flight keeps its own graph.
 
-### Task-config changes: read at task START, not at wrapper start.
+### Task settings change from the next run.
 
-The dependency wrapper for a task that's currently in `waiting` state reads its `task_config` (retries, retry_delay, timeouts, trigger_rule) from the DAG snapshot captured when the pipeline execution started. So even for tasks that haven't fired yet in the current run, a redeploy that changes those parameters does not affect them. They pick up the new values on the *next* pipeline execution.
+A task's retries, retry delay, time limits and trigger rule come from its run's version. A redeploy that changes them does not touch a run in flight, the tasks that have not started yet in it included: they take the new values on the *next* run.
 
 ### What redeploy CANNOT recover
 
-- **A run that's currently paused for a manual decision** (task in `waiting_decision`). Redeploying doesn't unstick it. Act via Console (Skip / Restart / Fail / Mark Success) or `aws stepfunctions send-task-success/failure` with the stored task token.
+- **A task that waits for a decision** (`waiting_decision`). Redeploying doesn't unstick it. Act from the console: Skip, Restart, Fail or Mark Successful.
 - **A change to `dag_id`.** That's a *new* pipeline as far as polyris is concerned — the old CFN stack (`{namespace}-{stage}-polyris-{old_dag_id}`) stays put unless you run `polyris-destroy` first. Rename with care.
-- **A change to a task's `task_id`.** The task disappears from the DAG in the next run's snapshot. In-flight runs finish with the old task_id; the task-events / pipeline-tokens rows for the old id stay in DDB (subject to TTL, ~120 days).
+- **A change to a task's `task_id`.** The task disappears from the next run: a run takes its tasks from the version it started with. In-flight runs finish with the old `task_id`; their `pipeline-tokens` rows stay a year and 90 days, and their `task-events` rows 90 days.
 
 ## Safe redeploy checklist
 
@@ -104,16 +102,14 @@ Before you `polyris-deploy` a running pipeline:
 
 ## Destroy a pipeline
 
-`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group).
+`polyris-destroy` deletes the pipeline's CFN stack (state machine + schedule + scheduler role + log group). While CloudFormation deletes it, `polyris-destroy` stops the pipeline's running runs and prints each one. CloudFormation deletes the state machine only once its executions have ended, and a run keeps its execution open until every task of it is final, a paused run forever. The engine stops the tasks of each stopped run at its next check of the run; until then the run goes on, and a task that finishes records its success and starts its dependants. To stop new work at once, Stop the run in the console first. To let a run finish, wait until it has, then destroy. Once the stack is gone, `polyris-destroy` removes the pipeline from the console: its row in the pipeline registry and its subscriptions to the assets of its schedule.
 
 Does not delete:
 
-- `pipeline-tokens` rows (task execution history) — subject to TTL, ~120 days
-- `task-events` rows — subject to TTL, ~120 days
-- `asset-events` rows produced by this pipeline's tasks — kept indefinitely by default
-- `pipeline_registry` row — the pipeline entry (including the "Deployed at" timestamp) stays in DynamoDB. Re-deploy or manually delete the item via the AWS Console / CLI if you want the UI to stop showing it.
-
-In-flight executions abort when the state machine is deleted (CFN calls `DeleteStateMachine`, which stops all running executions). If you need them to finish, stop the schedule first (`is_paused_upon_creation=True` + deploy), wait for in-flight to drain via the Console, then `polyris-destroy`.
+- `pipeline-tokens` rows (the runs' tasks) — kept a year and 90 days from their last write
+- `task-events` rows (the tasks' timelines) — kept 90 days
+- `asset-events` rows produced by this pipeline's tasks — kept 365 days
+- `pipeline-specs` rows (the task specs of each deployed version) — the console draws the graph of an old run from them
 
 ## Related
 

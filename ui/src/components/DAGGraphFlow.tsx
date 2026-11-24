@@ -14,7 +14,7 @@ import ReactFlow, {
     Panel
 } from 'reactflow';
 import dagre from 'dagre';
-import { formatCountdown, formatWaitBadge, formatDuration, isInRetryWait } from '../utils';
+import { formatCountdown, formatWaitBadge, formatDuration, isInRetryWait, isCountingDownWait, waitUntilMs } from '../utils';
 import { TASK_SUCCESS_STATUSES, TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { taskTypeBadge } from '../utils/taskTypeBadge';
 import { mergeNodePositions } from '../utils/reactFlowHelpers';
@@ -51,13 +51,13 @@ const STATUS_COLORS: Record<string, { bg: string; border: string }> = {
     failed: { bg: 'var(--error-light)', border: 'var(--error)' },
     upstream_failed: { bg: 'var(--error-light)', border: 'var(--error)' },
     waiting: { bg: 'var(--bg-tertiary)', border: 'var(--border)' },
-    waiting_delay: { bg: 'var(--warning-light)', border: 'var(--warning)' },
     waiting_decision: { bg: 'var(--decision-light)', border: 'var(--decision)' },
     waiting_paused: { bg: '#fef3c7', border: '#f59e0b' },
     deps_ready: { bg: 'var(--accent-light)', border: 'var(--accent)' },
     skipped: { bg: 'var(--skipped-light)', border: 'var(--skipped)' },
     stopped: { bg: 'var(--stopped-light)', border: 'var(--stopped)' },
     aborted: { bg: 'var(--aborted-light)', border: 'var(--aborted)' },
+    stale: { bg: 'var(--skipped-light)', border: 'var(--skipped)' },
 };
 
 // Countdown Badge - has its own local tick so only this re-renders every second
@@ -71,28 +71,29 @@ const CountdownBadge = React.memo(({ task, serverOffsetMs }: CountdownBadgeProps
     const isTerminal = isTerminalStatus(status) || status === TASK_STATUS.STOPPED;
     
     // Tick when actively counting down: initial wait_before delay OR in-SFN retry wait
-    const isActivelyCountingDown = status === TASK_STATUS.WAITING_DELAY
-        || (status === TASK_STATUS.RUNNING && !!task?.wait_delay_until_ms);
+    const untilMs = waitUntilMs(task);
+    const isActivelyCountingDown = isCountingDownWait(status, untilMs)
+        || (status === TASK_STATUS.RUNNING && !!untilMs);
 
     // Compute now first so isRetryWaiting can guard the early-return below
     const nowMs = tick + (serverOffsetMs || 0);
-    const isRetryWaiting = isInRetryWait(status, task?.wait_delay_until_ms, nowMs);
+    const isRetryWaiting = isInRetryWait(status, untilMs, nowMs);
 
     // Only run interval when actually counting down
     useEffect(() => {
         if (!isActivelyCountingDown || isTerminal) return;
         // Tick for retry wait even when task has no wait_before configured
-        if (!waitBefore && !task?.wait_delay_until_ms) return;
+        if (!waitBefore && !untilMs) return;
         const interval = setInterval(() => setTick(Date.now()), MS.TICK_INTERVAL);
         return () => clearInterval(interval);
-    }, [isActivelyCountingDown, waitBefore, task?.wait_delay_until_ms, isTerminal]);
+    }, [isActivelyCountingDown, waitBefore, untilMs, isTerminal]);
 
     // Show badge for retry wait even when task has no wait_before configured
     if (isTerminal || ((!waitBefore || waitBefore <= 0) && !isRetryWaiting)) return null;
     const badge = formatWaitBadge({
         status,
         waitBefore,
-        waitDelayUntilMs: task?.wait_delay_until_ms,
+        waitDelayUntilMs: untilMs,
         waitDelayStartedMs: task?.wait_delay_started_ms,
         nowMs,
         formatFn: formatCountdown
@@ -154,7 +155,7 @@ CountdownBadge.displayName = 'CountdownBadge';
 // badge, notification warning) is invisible from that test file. Tests for
 // TaskNode internals live in DAGTaskNode.test.tsx and exercise this export.
 export const TaskNode = ({ data, selected }: { data: DAGTaskNodeData; selected: boolean }) => {
-    const status = data.status || 'waiting';
+    const status = data.task?.stale ? 'stale' : (data.status || 'waiting');
     const isBlueprint = status === 'blueprint';
     const colors = STATUS_COLORS[status] || STATUS_COLORS.waiting;
     const waitingReason = getWaitingReason(data.task);
@@ -368,7 +369,7 @@ export function DAGGraphFlow({
             const task = tasks?.find(t => t.task_name === node.id);
             const status = isBlueprint ? 'blueprint' : (task?.status || 'waiting');
             
-            // Calculate duration - use running_at (actual task start) not started_at (wrapper start)
+            // Calculate duration - use running_at (actual task start) not started_at (when Start_Run wrote the row)
             let duration = '';
             if (task?.running_at && task?.finished_at) {
                 const ms = new Date(task.finished_at).getTime() - new Date(task.running_at).getTime();
@@ -509,7 +510,6 @@ export function DAGGraphFlow({
             running: '#3b82f6',
             failed: '#ef4444',
             waiting: '#94a3b8',
-            waiting_delay: '#eab308',
             waiting_paused: '#f59e0b',
             waiting_decision: '#f97316',
             deps_ready: '#6366f1',
@@ -525,7 +525,7 @@ export function DAGGraphFlow({
         const total = dag?.nodes?.length || 0;
         const success = tasks?.filter(t => t.status === 'success' || t.status === 'succeeded').length || 0;
         const skipped = tasks?.filter(t => t.status === 'skipped').length || 0;
-        const running = tasks?.filter(t => t.status === 'running' || t.status === 'deps_ready' || t.status === 'waiting_delay').length || 0;
+        const running = tasks?.filter(t => t.status === 'running' || t.status === 'deps_ready').length || 0;
         const failed = tasks?.filter(t => TASK_SETTLED_STATUSES.includes(t.status) && !TASK_SUCCESS_STATUSES.includes(t.status)).length || 0;
         return { total, success, skipped, running, failed };
     }, [dag, tasks]);

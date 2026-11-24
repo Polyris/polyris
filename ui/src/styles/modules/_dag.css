@@ -130,7 +130,6 @@
 .dag-node:hover { filter: brightness(0.95); }
 .dag-node rect { rx: 8; ry: 8; stroke-width: 2; }
 .dag-node.waiting rect { fill: #f8fafc; stroke: #94a3b8; }
-.dag-node.waiting_delay rect { fill: #fef3c7; stroke: #f59e0b; stroke-width: 2; }
 .dag-node.running rect { fill: #eff6ff; stroke: #3b82f6; }
 .dag-node.success rect, .dag-node.succeeded rect { fill: #f0fdf4; stroke: #22c55e; }
 .dag-node.failed rect { fill: #fef2f2; stroke: #ef4444; }
@@ -184,7 +183,6 @@
 .task-icon-failed { background: var(--error-light); color: var(--error); }
 .task-icon-upstream_failed { background: var(--error-light); color: var(--error); }
 .task-icon-waiting, .task-icon-pending { background: var(--waiting-light); color: var(--waiting); }
-.task-icon-waiting_delay { background: #fef3c7; color: #d97706; }
 .task-icon-deps_ready { background: var(--accent-light); color: var(--accent); }
 .task-icon-stopped { background: var(--stopped-light); color: var(--stopped); }
 .task-icon-aborted { background: var(--aborted-light); color: var(--aborted); }
@@ -200,14 +198,12 @@
 .task-status-badge.running { background: var(--running-light); color: var(--running); }
 .task-status-badge.failed { background: var(--error-light); color: var(--error); }
 .task-status-badge.waiting, .task-status-badge.pending { background: var(--waiting-light); color: var(--waiting); }
-.task-status-badge.waiting_delay { background: #fef3c7; color: #d97706; }
 .task-status-badge.deps_ready { background: var(--accent-light); color: var(--accent); }
 .task-status-badge.stopped { background: var(--stopped-light); color: var(--stopped); }
 .task-status-badge.aborted { background: var(--aborted-light); color: var(--aborted); }
+.task-status-badge.stale { background: var(--skipped-light); color: var(--skipped); }
 .task-status-badge.skipped { background: var(--skipped-light); color: var(--skipped); }
 .task-status-badge.upstream_failed { background: var(--error-light); color: var(--error); }
-.task-status-badge.timed_out { background: var(--error-light); color: var(--error); }
-.task-status-badge.recovered { background: var(--warning-light); color: var(--warning); }
 .task-status-badge.waiting_paused { background: #fef3c7; color: #d97706; }
 .task-status-badge.waiting_decision, .task-status-badge.decision { 
     background: var(--decision-light); color: var(--decision); 
@@ -227,6 +223,7 @@
 .pd-exec-status-mini.upstream_failed { background: var(--error-light); color: var(--error); }
 .pd-exec-status-mini.running { background: var(--running-light); color: var(--running); }
 .pd-exec-status-mini.aborted { background: var(--aborted-light); color: var(--aborted); }
+.pd-exec-status-mini.stale { background: var(--skipped-light); color: var(--skipped); }
 .pd-exec-status-mini.stopped { background: var(--stopped-light); color: var(--stopped); }
 .pd-exec-status-mini.skipped { background: var(--skipped-light); color: var(--skipped); }
 .pd-exec-status-mini.pending, .pd-exec-status-mini.waiting { background: var(--waiting-light); color: var(--waiting); }

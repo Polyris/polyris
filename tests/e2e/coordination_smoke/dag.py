@@ -94,3 +94,91 @@ with DAG("smoke-push-twin-2", schedule=[A], description="Pushed by smoke/a; same
     def report():  # noqa: F811 — the same task id in another pipeline is the point (B-X1)
         """The pushed run's work."""
     report()
+
+
+# ── Tasks (ADR #137 §3, §4, §5; ADR #138) ─────────────────────────────────────
+
+with DAG("smoke-chain", schedule=None, description="Three tasks in a row") as chain:
+    @task.sfn(arn=QUICK)
+    def first():
+        """Starts the chain."""
+
+    @task.sfn(arn=QUICK)
+    def second():
+        """Starts once first succeeded."""
+
+    @task.sfn(arn=QUICK)
+    def third():
+        """Starts once second succeeded."""
+    first() >> second() >> third()
+
+with DAG("smoke-rules", schedule=None, description="A final failure decides each dependant by its rule") as rules:
+    @task.sfn(arn=FAILS)
+    def breaks():
+        """Fails after 20 seconds and waits for a decision; the test fails it for good."""
+
+    @task.sfn(arn=QUICK)
+    def other():
+        """Succeeds: the other upstream of needs_it."""
+
+    @task.sfn(arn=QUICK)
+    def needs_it():
+        """all_success over breaks and other: upstream_failed once breaks fails for good."""
+
+    @task.sfn(arn=QUICK, trigger_rule="all_done")
+    def cleanup():
+        """all_done: runs once breaks is final, whatever its outcome."""
+
+    @task.sfn(arn=QUICK, trigger_rule="one_failed")
+    def on_failure():
+        """one_failed: runs once breaks failed for good."""
+    broken = breaks()
+    [broken, other()] >> needs_it()
+    broken >> cleanup()
+    broken >> on_failure()
+
+with DAG("smoke-retry", schedule=None, description="Retries, then waits for a decision; a Skip lets its dependant run") as retry:
+    @task.sfn(arn=FAILS, retries=1, retry_delay=timedelta(seconds=5))
+    def flaky():
+        """Fails, fails again on its retry, then waits for a decision."""
+
+    @task.sfn(arn=QUICK)
+    def after():
+        """all_success: an operator's Skip of flaky counts as done (ADR #138)."""
+    flaky() >> after()
+
+with DAG("smoke-stop-task", schedule=None, description="Stop of a running task, then Restart with dependants") as stop_task:
+    @task.sfn(arn=SLOW)
+    def long():
+        """Runs 20 seconds: the test stops it while it runs."""
+
+    @task.sfn(arn=QUICK)
+    def next_one():
+        """upstream_failed after the stop; the Restart with dependants runs it again."""
+    long() >> next_one()
+
+with DAG("smoke-pause", schedule=None, description="A paused run starts no task until resumed") as pause:
+    @task.sfn(arn=SLOW)
+    def before_pause():
+        """Runs 20 seconds; the test pauses the run meanwhile."""
+
+    @task.sfn(arn=QUICK)
+    def after_resume():
+        """Starts only once the run is resumed."""
+    before_pause() >> after_resume()
+
+with DAG("smoke-stop-run", schedule=None, description="A Stop of the run stops its tasks") as stop_run:
+    @task.sfn(arn=SLOW)
+    def working():
+        """Runs 20 seconds; the test stops the run meanwhile."""
+
+    @task.sfn(arn=QUICK)
+    def never():
+        """Waits for working; the stop of the run stops it."""
+    working() >> never()
+
+with DAG("smoke-countdown", schedule=None, description="wait_before: the task starts after its countdown") as countdown:
+    @task.sfn(arn=QUICK, wait_before=timedelta(seconds=30))
+    def delayed():
+        """Counts down 30 seconds; the sweeper's check ends the countdown, up to 5 minutes late."""
+    delayed()

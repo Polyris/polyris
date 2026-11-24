@@ -5,7 +5,8 @@
 > investigation. All findings shipped in code + tests. For current
 > task-action behaviour see [DATA_PASSING.md](../features/DATA_PASSING.md)
 > and the ADRs referenced below. Kept because `DESIGN_DECISIONS.md` cites
-> this analysis; do not read as current reference.
+> this analysis; do not read as current reference. Behaviour changed in
+> ADR #137 (tasks as rows, 1.3.0): an action writes the task's row.
 
 **Question(s), as asked across this thread.** What happens, status-wise, when you
 Stop then Restart a `waiting_decision` task? Is everything tracked in the event

@@ -2,9 +2,9 @@
 
 Bridges the pure SDK resolver (``polyris.upstream_resolver``) to the live
 console-api world: it builds the cross-pipeline ``AssetGraph`` from the
-pipeline registry and supplies an ``exists`` callable backed by the same
-completeness gate the backfill pre-flight uses
-(``_scan_completed_partitions``).
+pipelines' task specs (``specs_repo.deployed_tasks``, ADR #137 §8) and supplies an
+``exists`` callable backed by the same completeness gate the backfill
+pre-flight uses (``_scan_completed_partitions``).
 
 Scope (ADR #88 Phase 2): integration + plan computation. This module
 *resolves and previews* the plan. Executing cross-pipeline upstream tiers is
@@ -18,7 +18,6 @@ only cross-pipeline edges need resolving.
 """
 from __future__ import annotations
 
-import json
 from typing import Callable, Dict, List, Optional, Tuple
 
 from polyris.upstream_resolver import (
@@ -27,17 +26,6 @@ from polyris.upstream_resolver import (
     PlanItem,
     ResolvedPlan,
 )
-
-
-def _parse_tasks(pipeline: dict) -> list:
-    """Parse a pipeline registry record's ``tasks`` field (JSON string or
-    list). Returns [] on malformed input — never raises."""
-    tasks_str = pipeline.get('tasks', '[]')
-    try:
-        tasks = json.loads(tasks_str) if isinstance(tasks_str, str) else tasks_str
-    except (json.JSONDecodeError, TypeError):
-        return []
-    return tasks if isinstance(tasks, list) else []
 
 
 def _asset_name(obj) -> Optional[str]:
@@ -49,8 +37,11 @@ def _asset_name(obj) -> Optional[str]:
     return None
 
 
-def build_asset_graph(pipelines: List[dict]) -> AssetGraph:
+def build_asset_graph(pipelines: List[dict], tasks_of: Callable[[dict], List[dict]]) -> AssetGraph:
     """Build the cross-pipeline asset dependency graph from registry records.
+
+    ``tasks_of`` gives a registry record's tasks; the console passes
+    ``specs_repo.deployed_tasks``, which reads them from the task specs.
 
     Nodes are assets that some pipeline *produces* (declares as an outlet),
     carrying that pipeline's name, the outlet granularity, and the pipeline's
@@ -58,8 +49,8 @@ def build_asset_graph(pipelines: List[dict]) -> AssetGraph:
     inlet, but only when the upstream asset is produced by a *different*
     pipeline (same-pipeline deps are handled by the DAG — ADR #88).
 
-    Reuses the same outlet/inlet parsing shape as the asset graph builder and
-    ``_find_producers_for_asset`` — no new registry schema.
+    Reuses the same outlet/inlet shape as the asset graph builder and
+    ``_find_producers_for_asset``: a spec's outlets and inlets.
     """
     graph = AssetGraph()
 
@@ -69,7 +60,7 @@ def build_asset_graph(pipelines: List[dict]) -> AssetGraph:
     for pipeline in pipelines:
         pname = pipeline.get('pipeline_name', '')
         dag_hash = pipeline.get('dag_hash')
-        for task in _parse_tasks(pipeline):
+        for task in tasks_of(pipeline):
             outs: List[str] = []
             for outlet in task.get('outlets', []):
                 name = _asset_name(outlet)
@@ -228,7 +219,7 @@ def count_executable(tiers: List[List[dict]]) -> int:
 # ── Same-pipeline lineage frontier (ADR #92) ────────────────────────────────
 
 def _task_dag(tasks: List[dict]) -> Dict[str, dict]:
-    """Index registry tasks by id, exposing dependencies + skip_on_backfill."""
+    """Index tasks (their spec fields) by id, exposing dependencies + skip_on_backfill."""
     out: Dict[str, dict] = {}
     for t in tasks:
         tid = t.get('task_id')

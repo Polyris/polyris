@@ -175,11 +175,15 @@ class TestSelectDag:
 
 class TestMainDispatch:
 
-    def test_json_emits_parseable_asl(self, in_dir, monkeypatch, capsys):
+    def test_json_emits_the_definition_and_the_specs_it_names(self, in_dir, monkeypatch, capsys):
+        """D81: the definition names the spec version; the specs come beside it (ADR #137 §8)."""
         _write(in_dir, SINGLE_DAG)
         _run(monkeypatch, "--json")
-        asl = json.loads(capsys.readouterr().out)
+        payload = json.loads(capsys.readouterr().out)
+        asl, specs = payload["definition"], payload["specs"]
         assert "States" in asl and "StartAt" in asl
+        assert specs["spec_id"] in json.dumps(asl)
+        assert specs["task_count"] == len(specs["tasks"]) and "extract" in specs["tasks"]
 
     def test_mermaid_emits_a_graph_block(self, in_dir, monkeypatch, capsys):
         _write(in_dir, SINGLE_DAG)
@@ -203,7 +207,7 @@ class TestMainDispatch:
     def test_file_flag_reads_a_non_default_filename(self, in_dir, monkeypatch, capsys):
         _write(in_dir, SINGLE_DAG, name="my_pipeline.py")
         _run(monkeypatch, "--json", "--file", "my_pipeline.py")
-        assert json.loads(capsys.readouterr().out)["StartAt"]
+        assert json.loads(capsys.readouterr().out)["definition"]["StartAt"]
 
     def test_select_flag_reaches_main(self, in_dir, monkeypatch, capsys):
         _write(in_dir, MULTI_DAG)

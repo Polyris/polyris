@@ -1,12 +1,11 @@
 """Coordination wake-up paths log failures at ERROR, never WARN (CLAUDE.md, Error Visibility).
 
 A swallowed WARN on a wake-up path hid the historical `wait_for`
-subscription-table mismatch for months. The reconciler and the asset fan-out
-are wake-up paths (ADR #130): a failure there delays a task until the
-sweeper's next check, and it must show as an error. Two WARN lines are not a
-failed wake-up: pointer cleanup after an accepted signal (a leftover pointer
-is a harmless no-op, Principle #40) and the note that the time budget ran out
-before the remaining records are redelivered.
+subscription-table mismatch for months. The dispatcher and the asset fan-out
+are wake-up paths (ADR #137 §7): a failure there delays a task until its
+run's next check, and it must show as an error. One WARN line is not a failed
+wake-up: the note that the time budget ran out before the remaining records
+are redelivered.
 """
 
 import ast
@@ -16,11 +15,10 @@ from typing import List, Optional, Tuple
 import pytest
 
 COORDINATION = Path(__file__).parent.parent.parent / "sam" / "lambdas" / "coordination"
-WAKE_UP_MODULES = ("reconcile.py", "asset_fanout.py")
+WAKE_UP_MODULES = ("dispatcher.py", "asset_fanout.py")
 
 #: (module, function) allowed to log at WARN, with the reason.
 WARN_ALLOWED = {
-    ("reconcile.py", "_delete_pointers"): "cleanup after an accepted signal; a leftover pointer is a no-op",
     ("asset_fanout.py", "handle"): "the time budget ran out; the records are redelivered, nothing failed",
 }
 

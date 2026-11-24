@@ -3,6 +3,9 @@ E2E Tests — Tasks, Executions, Notifications endpoints.
 
 Read-only queries. Tests that mutate state are marked @pytest.mark.write.
 """
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 
 # =============================================================================
@@ -116,20 +119,54 @@ class TestListRuns:
     def test_garbage_cursor_does_not_500(self, api):
         assert api.get("/api/runs?before=not-a-timestamp")["status"] == 200
 
+    def test_each_run_says_its_status_and_its_failed_tasks(self, api):
+        """ADR #137 §4: a run's status comes from its run row's summary; no console route asks Step Functions,
+        so `timed_out` and `recovered` no longer come back."""
+        for run in _runs(api):
+            assert run["status"] in RUN_STATUSES, run
+            assert isinstance(run["failed_tasks"], int) and run["failed_tasks"] >= 0, run
+            if run["status"] == "running":
+                assert run["finished_at"] is None and run["duration_ms"] is None, run
+
+    def test_without_a_date_the_runs_started_within_the_window(self, api):
+        """ADR #137 §5: run-start-index, 90 days by the day each run started, with a pipeline filter or without."""
+        oldest = (datetime.now(timezone.utc) - timedelta(days=RUNS_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
+        runs = _runs(api)
+        assert all(r["started_at"] >= oldest for r in runs), runs
+        if runs:
+            pipeline = runs[0]["pipeline_name"]
+            narrowed = _runs(api, f"pipeline={pipeline}")
+            assert narrowed and all(r["pipeline_name"] == pipeline for r in narrowed)
+
+    def test_a_date_filter_answers_the_runs_of_that_date(self, api):
+        runs = _runs(api)
+        if not runs:
+            pytest.skip("No runs in the window")
+        date = runs[0]["date"]
+        dated = _runs(api, f"date={date}")
+        assert dated and all(r["date"] == date for r in dated)
+
+
+#: The statuses a run's summary gives (ADR #112, ADR #137 §4).
+RUN_STATUSES = {"running", "success", "failed", "aborted"}
+#: console_api Limits.RUNS_WINDOW_DAYS.
+RUNS_WINDOW_DAYS = 90
+
+
+def _runs(api, query: str = "") -> list:
+    """The executions of the first page of /api/runs; a stack whose run index is still being built skips."""
+    resp = api.get("/api/runs" + (f"?{query}" if query else ""))
+    if resp["status"] == 503 and resp["body"].get("code") == "INDEX_BUILDING":
+        pytest.skip("run-start-index is still being built")
+    assert resp["status"] == 200, resp
+    return [r for r in resp["body"]["runs"] if r.get("kind") == "execution"]
+
 
 class TestExecutionChildren:
     """GET /api/execution-children"""
 
     def test_requires_params(self, api):
         resp = api.get("/api/execution-children")
-        assert resp["status"] in (400, 422)
-
-
-class TestExecutionParent:
-    """GET /api/execution-parent"""
-
-    def test_requires_params(self, api):
-        resp = api.get("/api/execution-parent")
         assert resp["status"] in (400, 422)
 
 
@@ -149,6 +186,17 @@ class TestNotifications:
         body = resp["body"]
         notifs = body if isinstance(body, list) else body.get("notifications", [])
         assert isinstance(notifs, list)
+
+    def test_one_per_run_and_the_decision_requests_first_with_their_deadline(self, api):
+        """ADR #137 §6, D92: the attention index's failed and decision entries, whatever the run's date."""
+        notifs = api.get("/api/notifications", params={"limit": "50", "hours": "48"})["body"]["notifications"]
+        runs = [n["id"] for n in notifs if n["type"] in ("failure", "decision_required")]
+        assert len(runs) == len(set(runs)), notifs
+        kinds = [n["type"] == "decision_required" for n in notifs]
+        assert kinds == sorted(kinds, reverse=True), "decision requests come first"
+        for n in notifs:
+            if n["type"] == "decision_required":
+                assert "deadline" in n and (n["deadline"] is None or isinstance(n["deadline"], str)), n
 
 
 # =============================================================================

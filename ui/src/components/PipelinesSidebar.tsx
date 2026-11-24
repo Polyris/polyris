@@ -5,16 +5,16 @@ import { EmptyState } from './EmptyState';
 import {
     StatusIcon, Search, Inbox, ChevronDown, ChevronRight, Circle, X, AlertTriangle,
 } from '../utils/icons';
-import { formatSchedule } from '../utils/formatters';
+import { formatRunStatus, formatSchedule } from '../utils/formatters';
 import { connectionProblem } from '../utils/api';
 import { logger } from '../utils/logger';
-import { HISTORY_WINDOW_DAYS } from '../utils/historyWindow';
-import { buildSidebarLines, groupKey, isFailure, needsAttention, UNGROUPED } from '../utils/pipelineSidebar';
+import { RECENT_WINDOW_DAYS } from '../utils/historyWindow';
+import { buildSidebarLines, groupKey, isFailure, needsAttention, REDEPLOY_HINT, UNGROUPED } from '../utils/pipelineSidebar';
 import type { SidebarLine, SidebarSection } from '../utils/pipelineSidebar';
 import config from '../lib/config';
 import { useAppStore } from '../stores/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
-import { usePipelinesQuery, usePipelinesStatsIncomplete } from '@/hooks/queries';
+import { usePipelinesQuery, usePipelinesStatsNote } from '@/hooks/queries';
 import { useIsMobileWidth, useKeyboardShortcuts, usePersistedState, transforms, SHORTCUTS } from '@/hooks';
 import type { PipelineRowProps, PipelineWithUI, RunSparklineProps } from '@/types';
 
@@ -56,7 +56,7 @@ function rowPipelineName(key: string): string | null {
 
 /** "7 success, 2 failed" for the runs a sparkline draws (screen readers and the hover title). */
 function describeRuns(runs: ReadonlyArray<{ status: string }>): string {
-    if (runs.length === 0) return `no runs in the last ${HISTORY_WINDOW_DAYS} days`;
+    if (runs.length === 0) return `no runs in the last ${RECENT_WINDOW_DAYS} days`;
     const counts = new Map<string, number>();
     runs.forEach(r => counts.set(r.status, (counts.get(r.status) ?? 0) + 1));
     return `last ${runs.length} run${runs.length === 1 ? '' : 's'}: ${[...counts].map(([s, n]) => `${n} ${s}`).join(', ')}`;
@@ -77,7 +77,7 @@ function describeRuns(runs: ReadonlyArray<{ status: string }>): string {
  * folded group's count still update in place; the rows follow once both have
  * left, or once a pipeline is opened from the keyboard. A failed refetch keeps the last
  * list and says, above it, from when its statuses are (the System status says why); a
- * partial one (`stats_incomplete`) is said there too.
+ * partial one (`stats_incomplete`, or `index_building` while the run index is built) is said there too.
  */
 export function PipelinesSidebar() {
     const {
@@ -90,7 +90,7 @@ export function PipelinesSidebar() {
         sidebarOpen: s.sidebarOpen, setSidebarOpen: s.setSidebarOpen,
     })));
     const { data: fetched = [], isLoading: loading, isError, error, refetch, dataUpdatedAt } = usePipelinesQuery();
-    const statsIncomplete = usePipelinesStatsIncomplete();
+    const statsNote = usePipelinesStatsNote();
     const [held, setHeld] = useState<PipelineWithUI[] | null>(null);
     const holders = useRef({ pointer: false, focus: false });
     const latest = useMemo(() => new Map(fetched.map(p => [p.name, p])), [fetched]);
@@ -421,13 +421,15 @@ export function PipelinesSidebar() {
                 </div>
             )}
 
-            {!loading && pipelines.length > 0 && (isError || statsIncomplete) && (
+            {!loading && pipelines.length > 0 && (isError || statsNote) && (
                 <div className="sb-note" role="status">
                     <AlertTriangle size={14} className="sb-note__icon" aria-hidden="true" />
                     <span>
                         {isError
                             ? `Couldn't refresh the list. Statuses as of ${new Date(dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}.`
-                            : 'Some runs could not be read or confirmed, so a status may be out of date.'}
+                            : statsNote === 'index_building'
+                                ? 'The index of runs is still being built after the upgrade; statuses show once it is ready.'
+                                : 'Some runs could not be read, so a status may be out of date.'}
                     </span>
                 </div>
             )}
@@ -455,26 +457,28 @@ export function PipelinesSidebar() {
 }
 
 /**
- * PipelineRow - one pipeline: latest-run status, name, last runs, schedule.
+ * PipelineRow - one pipeline: latest-run status, name, a redeploy mark, last runs, schedule.
  */
 function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFocus, onSelect }: PipelineRowProps) {
     // `status` is the latest run within the window /api/pipelines reads; 'idle' means none there.
     const status = p.status || 'idle';
     const waitingOn = status === 'running' && p.waiting_on ? p.waiting_on : null;
-    const lastRun = status === 'idle' ? `no run in the last ${HISTORY_WINDOW_DAYS} days`
-        : waitingOn ? `${status}, ${WAITING_ON_LABELS[waitingOn]}`
-        : status;
+    const shown = formatRunStatus(status, p.failed_tasks);
+    const lastRun = status === 'idle' ? `no run in the last ${RECENT_WINDOW_DAYS} days`
+        : waitingOn ? `${shown}, ${WAITING_ON_LABELS[waitingOn]}`
+        : shown;
     const schedule = formatSchedule(p.schedule, p.asset_schedule);
     const fullSchedule = formatSchedule(p.schedule, p.asset_schedule, { full: true });
     const runs = (p.recent_runs ?? []).slice(0, SPARK_SLOTS);
+    const redeploy = p.needs_redeploy ? ', redeploy needed' : '';
     return (
         <button
             ref={buttonRef}
             type="button"
             className={`sb-row${indented ? ' sb-row--indented' : ''}${current ? ' sb-row--selected' : ''}`}
             aria-current={current ? 'page' : undefined}
-            aria-label={`${p.name}, last run: ${lastRun}, ${describeRuns(runs)}, schedule: ${fullSchedule}`}
-            title={`${p.name}\nSchedule: ${fullSchedule}`}
+            aria-label={`${p.name}${redeploy}, last run: ${lastRun}, ${describeRuns(runs)}, schedule: ${fullSchedule}`}
+            title={`${p.name}${p.needs_redeploy ? `\n${REDEPLOY_HINT}` : ''}\nSchedule: ${fullSchedule}`}
             tabIndex={tabIndex}
             onFocus={onFocus}
             onClick={onSelect}
@@ -485,6 +489,7 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
                     : <StatusIcon status={waitingOn ?? status} size={14} />}
             </span>
             <span className="sb-row__name">{p.name}</span>
+            {p.needs_redeploy && <span className="sb-row__redeploy" aria-hidden="true">redeploy</span>}
             <RunSparkline runs={runs} />
             <span className="sb-row__schedule">{schedule}</span>
         </button>
@@ -492,7 +497,7 @@ function PipelineRow({ pipeline: p, current, indented, tabIndex, buttonRef, onFo
 }
 
 /**
- * RunSparkline - the last runs within HISTORY_WINDOW_DAYS as bars, oldest on the
+ * RunSparkline - the last runs within RECENT_WINDOW_DAYS as bars, oldest on the
  * left. Empty slots pad the left side as a faint track, so the newest run is always
  * the rightmost bar. Colour tells the status; the row's accessible name and the
  * hover title spell the runs out.
@@ -509,7 +514,7 @@ function RunSparkline({ runs }: RunSparklineProps) {
                 <span
                     key={i}
                     className={`sb-spark__bar sb-spark__bar--${run.status}`}
-                    title={`${run.date ?? ''}: ${run.status}`}
+                    title={`${run.date ?? ''}: ${formatRunStatus(run.status, run.failed_tasks)}`}
                 />
             ))}
         </span>

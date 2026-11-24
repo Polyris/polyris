@@ -1,10 +1,10 @@
 import { logger } from '@/utils/logger';
-import { TASK_SETTLED_STATUSES } from '@/generated/enums';
 import { toDateString } from '@/utils/formatters';
 import { useState, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, getUpstreamTasks, getDownstreamTasks, getApiErrorMessage } from '@/utils';
 import { queryKeys } from '@/lib/queryClient';
+import { useAppStore } from '@/stores/useAppStore';
 import { 
     Rocket, 
     StopCircle, 
@@ -22,14 +22,14 @@ import type { PipelineActionsParams } from '@/types';
 
 export interface TaskDecisionContext {
     error: TaskError | string | null;
-    attempt: number;
+    restarts: number;
     retryAttempt: number;
     maxRetries: number;
     directDownstream: Array<{ name: string; status: string; hasWaitFor: boolean }>;
 }
 
 /**
- * Resolve "the execution these pipeline-level actions (pause/resume/extend/stop)
+ * Resolve "the execution these pipeline-level actions (pause/resume/stop)
  * should target": the user's explicit selection if it still exists in the list,
  * otherwise whichever execution is currently running.
  *
@@ -85,10 +85,15 @@ export function usePipelineActions({
         taskContext: null
     });
     const [triggerParams, setTriggerParams] = useState('{}');
-    const [executionPaused, setExecutionPaused] = useState(false);
+    // One owner of the paused state: the store, which the page sets from the run row (ADR #137 §5). A flag of
+    // the hook's own sent Pause for a run the page showed as paused (the review of TR-6).
+    const executionPaused = useAppStore(s => s.executionPaused);
+    const setExecutionPaused = useAppStore(s => s.setExecutionPaused);
     const [actionPending, setActionPending] = useState(false);
     // Which action is in flight, for button loading labels: 'run' | 'pause' | 'resume' | 'stop'.
     const [pendingAction, setPendingAction] = useState<string | null>(null);
+    /** Restart with dependants: also rerun the dependants its failure or stop decided (ADR #137 §3). */
+    const [withDependants, setWithDependants] = useState(false);
     
     // ========== Invalidation Helpers ==========
     // eslint-disable-next-line react-hooks/preserve-manual-memoization -- manual useCallback kept intentionally
@@ -181,24 +186,7 @@ export function usePipelineActions({
         } finally {
             setPendingAction(null);
         }
-    }, [selectedPipeline, executions, selectedExecution, executionPaused, showToast, handleRefresh]);
-    
-    const handleExtendPause = useCallback(async () => {
-        const currentExecution = resolveCurrentExecution(executions, selectedExecution);
-        
-        if (!currentExecution?.execution_id) return;
-        
-        try {
-            const result = await api.post(`/execution-extend?id=${currentExecution.execution_id}`, {});
-            if (result.error) {
-                showToast(getApiErrorMessage(result), 'error');
-            } else {
-                showToast('Pause extended by 12 hours', 'success');
-            }
-        } catch (e: unknown) {
-            showToast(`Failed to extend pause: ${e instanceof Error ? e.message : String(e)}`, 'error');
-        }
-    }, [executions, selectedExecution, showToast]);
+    }, [selectedPipeline, executions, selectedExecution, executionPaused, setExecutionPaused, showToast, handleRefresh]);
     
     // ========== Task Actions ==========
     const handleTaskAction = useCallback((action: string, task: Task | null = null) => {
@@ -236,7 +224,7 @@ export function usePipelineActions({
             },
             restart: {
                 title: 'Restart Task',
-                message: `Restart "${targetTask.task_name}"? This will stop the current execution and start fresh.`,
+                message: `Restart "${targetTask.task_name}"? It runs again from the start.`,
                 icon: <RotateCcw size={20} className="text-blue-500" />,
                 confirmText: 'Restart',
                 confirmStyle: 'btn-primary'
@@ -265,7 +253,7 @@ export function usePipelineActions({
             });
             taskContext = {
                 error: targetTask.error ?? null,
-                attempt: targetTask.attempt ?? 0,
+                restarts: targetTask.restarts ?? 0,
                 retryAttempt: targetTask.retry_attempt ?? 0,
                 maxRetries: targetTask.max_retries ?? 0,
                 directDownstream,
@@ -273,6 +261,7 @@ export function usePipelineActions({
         }
 
         onSelectTask(targetTask);
+        setWithDependants(false);
         setModal({
             isOpen: true,
             action,
@@ -414,30 +403,22 @@ export function usePipelineActions({
         }
         
         if (action === 'stopPipeline') {
-            const incompleteTasks = tasks.filter(t => 
-                !TASK_SETTLED_STATUSES.includes(t.status)
-            );
-            
-            // api.post answers with { ok: false, error } instead of throwing: read each answer, or a
-            // failed stop goes unseen (/execution-stop answered 500 on every run until 1.2.0).
-            const failures: string[] = [];
-            for (const task of incompleteTasks) {
-                if (task.execution_name) {
-                    const result = await api.post(`/task-stop?name=${task.execution_name}`, {});
-                    if (result.error) failures.push(`${task.task_name ?? task.execution_name}: ${getApiErrorMessage(result)}`);
-                }
-            }
-            
+            // One Stop of the run: its stop mark, which the engine carries out, dependants first (ADR #137 §4).
+            // Stopping each task from the browser first let the engine decide their dependants in between: a
+            // task that should have stopped started (the review of TR-6).
             const currentExecution = resolveCurrentExecution(executions, selectedExecution);
-            
             const execId = currentExecution?.execution_id || selectedExecution?.execution_id;
             if (execId) {
+                // api.post answers with { ok: false, error } instead of throwing: read the answer, or a failed
+                // stop goes unseen (/execution-stop answered 500 on every run until 1.2.0).
                 const result = await api.post(`/execution-stop?pipeline_execution=${encodeURIComponent(execId)}`, {});
-                if (result.error) failures.push(`the run: ${getApiErrorMessage(result)}`);
-            }
-            if (failures.length > 0) {
-                logger.error('actions', 'Stop did not complete', failures);
-                showToast(`Stop did not complete — ${failures.join('; ')}`, 'error');
+                if (result.error) {
+                    logger.error('actions', 'Stop did not complete', result);
+                    showToast(`Stop did not complete — ${getApiErrorMessage(result)}`, 'error');
+                }
+            } else {
+                // No run to stop: say so, as Pause does, instead of closing the dialog as if it had (TR-8, P-5).
+                showToast('No active execution to stop', 'warning');
             }
             
             setModal(prev => ({ ...prev, isOpen: false }));
@@ -463,7 +444,8 @@ export function usePipelineActions({
             setModal(prev => ({ ...prev, isOpen: false }));
             return;
         }
-        const result = await api.post(endpoints[action], { date });
+        const body = action === 'restart' && withDependants ? { date, with_dependants: true } : { date };
+        const result = await api.post(endpoints[action], body);
         setModal(prev => ({ ...prev, isOpen: false }));
         if (result.error) {
             showToast(getApiErrorMessage(result), 'error');
@@ -483,9 +465,9 @@ export function usePipelineActions({
             setPendingAction(null);
         }
     }, [
-        modal.action, triggerParams, selectedPipeline, selectedTask, tasks, executions,
+        modal.action, triggerParams, selectedPipeline, selectedTask, executions,
         selectedExecution, date, setDate, setSelectedExecution,
-        showToast, invalidateAll
+        showToast, invalidateAll, withDependants
     ]);
     
     const closeModal = useCallback(() => {
@@ -501,12 +483,13 @@ export function usePipelineActions({
         setExecutionPaused,
         actionPending,
         pendingAction,
+        withDependants,
+        setWithDependants,
         
         // Pipeline actions
         handleRun,
         handleStop,
         handlePauseResume,
-        handleExtendPause,
         handleRefresh,
         
         // Task actions

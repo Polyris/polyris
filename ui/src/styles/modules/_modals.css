@@ -395,6 +395,13 @@
     flex-direction: column;
     gap: 1rem;
 }
+/* Why a waiting task waits (ADR #137 §1): the dispatcher's reasons as a list */
+.td-why-waits-reasons {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin: 0.25rem 0;
+}
+
 .td-error-section {
     background: var(--error-light);
     border: 1px solid var(--error);

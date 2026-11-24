@@ -7,7 +7,7 @@ directory's conftest can own the module name `conftest`.
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import yaml
 from botocore.exceptions import ClientError
@@ -21,23 +21,31 @@ TABLES = {
     "ASSET_EVENTS_TABLE": ("AssetEventsTable", "test-asset-events"),
     "PIPELINES_TABLE": ("PipelineRegistryTable", "test-pipeline-registry"),
     "ASSET_SUBSCRIPTIONS_TABLE": ("AssetSubscriptionsTable", "test-asset-subscriptions"),
+    "SPECS_TABLE": ("PipelineSpecsTable", "test-pipeline-specs"),
+    "TASK_EVENTS_TABLE": ("TaskEventsTable", "test-task-events"),
 }
 #: Variables each coordination function reads (the others' tables it never touches).
 FUNCTION_TABLES = {
-    "ReconcileFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE"),
+    "ReconcileFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
+                          "SPECS_TABLE", "TASK_EVENTS_TABLE"),
     "AssetFanoutFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
-                            "ASSET_SUBSCRIPTIONS_TABLE"),
+                            "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "TASK_EVENTS_TABLE"),
     "SweeperFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "ASSET_EVENTS_TABLE", "PIPELINES_TABLE",
-                        "ASSET_SUBSCRIPTIONS_TABLE"),
+                        "ASSET_SUBSCRIPTIONS_TABLE", "SPECS_TABLE", "TASK_EVENTS_TABLE"),
+    "StartRunFunction": ("TOKENS_TABLE", "SUBSCRIPTIONS_TABLE", "SPECS_TABLE"),
 }
 #: Environment a function reads beyond its tables.
+#: The run_task state machine by its name: a !Ref would close a dependency cycle (ADR #137 §1).
+RUN_TASK_ARN = {"!Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${Namespace}-${Stage}-polyris-dep-run-task-helper"}
 FUNCTION_ENV = {
-    "SweeperFunction": {"ASSET_FANOUT_FUNCTION": {"!Ref": "AssetFanoutFunction"}},
+    "SweeperFunction": {"ASSET_FANOUT_FUNCTION": {"!Ref": "AssetFanoutFunction"}, "RUN_TASK_ARN": RUN_TASK_ARN,
+                        "DISPATCHER_FUNCTION": {"!Ref": "ReconcileFunction"}},
+    "ReconcileFunction": {"RUN_TASK_ARN": RUN_TASK_ARN},
+    "AssetFanoutFunction": {"RUN_TASK_ARN": RUN_TASK_ARN},
 }
 
 NOW = datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc)
 RUN = "orders-run-2026-11-12-abcdef12"
-SHORT = RUN[-20:]   # "-2026-11-12-abcdef12", as the generated pipeline SFN derives it
 DATE = "2026-11-12"
 STARTED_AT = "2026-11-12T05:00:00.000Z"
 
@@ -95,7 +103,9 @@ class FakeSfn:
         self.started: List[Dict[str, Any]] = []
         self.failed: List[Dict[str, Any]] = []
         self.dead_tokens: set = set()
-        self.executions: Dict[str, str] = {}
+        self.executions: Dict[str, Any] = {}
+        self.described: List[str] = []
+        self.stopped: List[Dict[str, Any]] = []
         self.errors: Dict[str, Exception] = {}
 
     def _raise_if_set(self, operation: str) -> None:
@@ -125,39 +135,23 @@ class FakeSfn:
         self.started.append({"arn": stateMachineArn, "name": name, "input": json.loads(input)})
         return {"executionArn": f"{stateMachineArn}:{name}"}
 
+    def stop_execution(self, *, executionArn: str, error: str, cause: str) -> Dict[str, Any]:
+        self._raise_if_set("stop_execution")
+        self.stopped.append({"arn": executionArn, "error": error, "cause": cause})
+        return {"stopDate": "2026-11-12T06:00:00Z"}
+
     def describe_execution(self, *, executionArn: str) -> Dict[str, Any]:
+        """``executions`` maps an ARN to its status, or to the status with its ``error`` and ``cause``."""
         self._raise_if_set("describe_execution")
+        self.described.append(executionArn)
         if executionArn not in self.executions:
             raise client_error("ExecutionDoesNotExist", "DescribeExecution")
-        return {"executionArn": executionArn, "status": self.executions[executionArn]}
+        known = self.executions[executionArn]
+        return {"executionArn": executionArn, **(known if isinstance(known, dict) else {"status": known})}
 
 
 def execution_name(task: str, run: str = RUN, date: str = DATE) -> str:
     return f"{task}-{date}-{run[-20:]}"
-
-
-def task_row(task: str, *, deps: Optional[List[str]] = None, wait_for: Optional[List[Any]] = None,
-             status: str = "waiting", trigger_rule: str = "all_success", **extra: Any) -> Dict[str, Any]:
-    """A task row as the registration SFN's Save_Task_Record writes it."""
-    name = execution_name(task)
-    row: Dict[str, Any] = {
-        "execution_name": name,
-        "task_name": task,
-        "status": status,
-        "dependencies": json.dumps(deps or []),
-        "wait_for": json.dumps(wait_for or []),
-        "trigger_rule": trigger_rule,
-        "date": DATE,
-        "started_at": STARTED_AT,
-        "pipeline_name": "orders",
-        "pipeline_execution": RUN,
-        "pipeline_execution_short": SHORT,
-        "wait_token": f"token-{task}",
-        "orchestration_token": f"orchestration-{task}",
-        "wrapper_execution_arn": f"arn:aws:states:us-east-1:123456789012:execution:wrapper:{name}",
-    }
-    row.update(extra)
-    return row
 
 
 def fact(asset: str, key: str, *, event_time: str = "2026-11-12T04:00:00.000Z", **extra: Any) -> Dict[str, Any]:
@@ -176,7 +170,6 @@ def fact(asset: str, key: str, *, event_time: str = "2026-11-12T04:00:00.000Z", 
         "source_dag": "producer",
         "source_task": "build",
         "uri": f"s3://bucket/{asset}",
-        "fact_version": 2,
     }
     item.update(extra)
     return item

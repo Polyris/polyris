@@ -6,15 +6,16 @@ import { matchesSearch } from './search';
  * The pipelines sidebar as a flat list of lines, built from the pipeline list.
  *
  * Kept pure so every rule has a table test (`pipelineSidebar.test.ts`):
- * - pipelines that need the viewer (latest run failed, or waits for their
- *   decision) are pinned under "Needs attention", and stay in their group too;
+ * - pipelines that need the viewer (latest run failed, has a failed task while it
+ *   still runs, or waits for their decision) are pinned under "Needs attention", and
+ *   stay in their group too;
  * - groups come only from `DAG(group=)`, trimmed and compared without case; a
  *   pipeline without one goes to "Ungrouped", listed last. With no group at
  *   all, the list is flat;
  * - a search matches a pipeline's name and group; the matches keep their
  *   groups (all open), with no "Needs attention".
  *
- * A pipeline's `status` is its latest run within HISTORY_WINDOW_DAYS
+ * A pipeline's `status` is its latest run within RECENT_WINDOW_DAYS
  * (`utils/historyWindow.ts`), or 'idle' when it has none there.
  */
 
@@ -25,10 +26,8 @@ import { matchesSearch } from './search';
  */
 const FAILURE: Record<PipelineStatus, boolean> = {
     failed: true,
-    timed_out: true,
     running: false,
     aborted: false,
-    recovered: false,
     success: false,
     idle: false,
 };
@@ -41,9 +40,11 @@ export function isFailure(status: string | undefined): boolean {
     return !!status && Object.hasOwn(FAILURE, status) && FAILURE[status as PipelineStatus];
 }
 
-/** True when a pipeline needs the viewer: its latest run failed, or waits for their decision. */
-export function needsAttention(p: Pick<PipelineWithUI, 'status' | 'waiting_on'>): boolean {
-    return isFailure(p.status) || p.waiting_on === 'waiting_decision';
+/** True when a pipeline needs the viewer: its latest run failed, has a failed task while it still runs
+ *  (it ends only once every task has, ADR #137 §4), or waits for their decision. */
+export function needsAttention(p: Pick<PipelineWithUI, 'status' | 'waiting_on' | 'failed_tasks'>): boolean {
+    return isFailure(p.status) || p.waiting_on === 'waiting_decision'
+        || (p.status === 'running' && (p.failed_tasks ?? 0) > 0);
 }
 
 /** Group key of the pipelines that set no `group=`. Shown as "Ungrouped". */
@@ -149,3 +150,7 @@ export function buildSidebarLines(
     });
     return lines;
 }
+
+/** Why a pipeline is marked: the registry's format_version is missing or older than the platform reads
+ *  (`needs_redeploy` from /api/pipelines, ADR #137). */
+export const REDEPLOY_HINT = 'Redeploy needed: run polyris-deploy for this pipeline; its runs fail until then.';

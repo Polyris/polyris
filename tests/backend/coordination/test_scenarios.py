@@ -4,6 +4,14 @@ Each scenario checks both sides of a wake: the task starts once its
 conditions hold, and never before. They speak only the World API; a
 scenario whose code path has not landed yet is marked needs_binding(stage)
 and skipped (stages.py). Defect ids refer to defects.py.
+
+These scenarios ran on the engine of ADR #130 until TR-4 switched the
+generator to Start_Run (D115). They run on the engine of ADR #137 since TR-5
+bound the new run_task; the ones that wait for the operator actions
+(`rows-ops`, TR-6) or the upgrade (`rows-migration`, TR-8) say so. A scenario
+that tested machinery 1.3 removed (registration, the wrapper and its signals,
+notify_dependents) went with it. The tasks table's stream runs on its own
+here, as in AWS; test_scenarios_rows.py delivers it by hand to order passes.
 """
 
 import itertools
@@ -11,12 +19,19 @@ import itertools
 import pytest
 from dags import asset, chain, pipeline, waits_for
 
+from polyris.coordination import sweep
+
 DATE = "2026-11-12"
 defect = pytest.mark.defect
 needs_binding = pytest.mark.needs_binding
 
 A, B, C = asset("ns/a"), asset("ns/b"), asset("ns/c")
 WEEKLY = asset("ns/weekly", granularity="weekly")
+
+
+@pytest.fixture(autouse=True)
+def _tasks_stream_runs(world):
+    world.tasks_stream_runs = True
 
 
 # ── task dependencies ───────────────────────────────────────────────────
@@ -36,7 +51,7 @@ def test_a_downstream_task_starts_only_after_its_upstream_succeeds(world):
     assert world.status(run, "load") == "waiting"
     world.complete(run, "extract")
     assert world.running_tasks(run) == ["load"]
-    assert len(world.signals(run, "load")) == 1
+    assert world.task_runs(run, "load") == 1
 
 
 # ── pull: wait_for ──────────────────────────────────────────────────────
@@ -68,7 +83,7 @@ def test_and_of_two_assets_wakes_once_after_both_in_every_order(world, order):
         if run is not None and written != {"a", "b"}:
             assert world.running_tasks(run) == [], f"woke after {step!r} with only {sorted(written)} written"
     assert world.running_tasks(run) == ["consumer"]
-    assert len(world.signals(run, "consumer")) == 1
+    assert world.task_runs(run, "consumer") == 1
 
 
 @pytest.mark.parametrize("member", [A, B], ids=["a", "b"])
@@ -151,18 +166,19 @@ def test_a_repeated_hint_does_not_disturb_a_running_task(world):
     world.write_event(A, DATE)              # a second fact for the same partition
     world.deliver_hints()
     assert world.status(run, "consumer") == "running"
-    assert len(world.signals(run, "consumer")) == 1
+    assert world.task_runs(run, "consumer") == 1
     assert world.warnings() == []           # a repeated hint is a no-op, not an anomaly
 
 
+@defect("B-Q1")
 def test_a_dependency_wait_that_times_out_fails_the_task_once(world):
-    """D41: orchestration_timeout is the real maximum; the wrapper does not wait or register again."""
+    """D41: a wait for facts ends at its limit, 7 days by default (ADR #137 §5): the task fails once, with the
+    cause, and its run ends; it stayed RUNNING in 1.2 when the answer was skipped (F16, live)."""
     run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
-    world.time_out_registration(run, "consumer")
+    world.clock.advance(days=7, minutes=1)
+    world.sweep()
     assert world.status(run, "consumer") == "failed"
-    assert "Timed out waiting for dependencies" in str(world.row(run, "consumer")["error"])
-    # The run itself ends too: the failure handler answers the pipeline's token. It did not
-    # when the wrapper's input had no helper_failed, and the run stayed RUNNING (F16, live).
+    assert "waited past its limit" in str(world.row(run, "consumer")["error"])
     assert world.pipeline_status(run) == "FAILED"
     world.write_event(A, DATE)
     world.deliver_hints()
@@ -182,33 +198,24 @@ def test_mark_success_writes_the_fact_for_the_marked_runs_partition(world):
 
 
 @defect("B-M2")
-def test_a_fact_mark_success_cannot_record_is_reported_and_restart_records_it(world):
+def test_a_mark_success_whose_fact_cannot_be_recorded_records_nothing_and_a_restart_records_it(world):
+    """1.3: the facts are part of Mark Successful's transaction (invariant 12), so it applies whole or not at all,
+    and the console says it failed instead of reporting success."""
     produced = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), DATE)
-    world.inject_failure("PutItem", "AssetEventsTable", "AccessDeniedException", times=1)
-    response = world.mark_success(produced, "build")
-    assert list(response["failed_facts"]) == [A.name]
-    assert any(w["kind"] == "fact" and f"fact of asset {A.name} was not recorded" in w["error"]
-               for w in world.warnings())
+    world.deliver_task_hints()
+    world.complete(produced, "build", status="failed")
+    world.inject_failure("TransactWriteItems", "AssetEventsTable", "AccessDeniedException", times=1)
+    with pytest.raises(AssertionError, match=r"task-success → 5\d\d"):
+        world.mark_success(produced, "build")
+    assert world.status(produced, "build") == "waiting_decision"
     consumer = world.start_run(world.deploy(waits_for("c", [A])), DATE)
     assert world.status(consumer, "consumer") == "waiting"
+    world.clock.advance(seconds=1)
     world.restart(produced, "build")
+    world.deliver_task_hints()
     world.complete(produced, "build")
     world.deliver_hints()
     assert world.running_tasks(consumer) == ["consumer"]
-
-
-@defect("B-F1")
-def test_a_failed_fan_out_does_not_fail_the_producer(world):
-    producer = world.deploy(pipeline("producer", [("build", {"outlets": [A]})]))
-    world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
-    world.start_run(world.deploy(waits_for("c", [A])), DATE)
-    for table in ("DependencySubscriptionsTable", "AssetSubscriptionsTable"):
-        world.inject_failure("Query", table, "AccessDeniedException")
-    run = world.start_run(producer, DATE)
-    world.complete(run, "build")
-    world.deliver_hints()
-    assert world.status(run, "build") == "success"
-    assert world.pipeline_status(run) == "SUCCEEDED"         # the producer's run, not just its row
 
 
 # ── push ────────────────────────────────────────────────────────────────
@@ -269,23 +276,24 @@ def test_a_pushed_run_of_a_pipeline_with_variables_carries_the_facts_partition(w
 @defect("B-R2")
 def test_a_restart_never_lets_a_dependant_run_on_the_old_status(world):
     run = world.start_run(world.deploy(chain("orders", "a", "b")), DATE)
+    world.deliver_task_hints()
     world.complete(run, "a")
+    world.deliver_task_hints()
     world.complete(run, "b")
-    world.hold("DependencyWrapperSfn")
-    world.restart(run, "a")                                 # a's row is handed over; its new wrapper waits
-    world.restart(run, "b")
-    world.release_newest("DependencyWrapperSfn")            # b's new wrapper registers first
-    assert world.running_tasks(run) == [] and world.status(run, "b") == "waiting"
-    world.release("DependencyWrapperSfn")
-    assert world.running_tasks(run) == ["a"]
+    world.deliver_task_hints()
+    world.restart(run, "a")
+    world.restart(run, "b")                       # b's upstream waits again: b waits for it
+    world.deliver_task_hints()
+    assert world.running_tasks(run) == ["a"] and world.status(run, "b") == "waiting"
     world.complete(run, "a")
+    world.deliver_task_hints()
     assert world.running_tasks(run) == ["b"]
 
 
 @defect("B-D1")
 def test_every_task_of_a_run_crossing_midnight_gets_the_day_it_started(world):
     plain = world.deploy(pipeline("plain", [("a", {}), ("b", {}), ("c", {})]))
-    world.clock.jump_to(f"{DATE}T23:59:59.990Z")
+    world.clock.jump_to(f"{DATE}T23:59:59.998Z")   # the execution starts before midnight, its first states after
     run = world.start_bare(plain)
     assert run.date == DATE
     assert [(world.row(run, t) or {}).get("date") for t in ("a", "b", "c")] == [DATE] * 3
@@ -333,15 +341,6 @@ def test_two_push_consumers_with_the_same_task_id_on_one_day_both_run(world):
 # ── loud failures ───────────────────────────────────────────────────────
 
 
-@defect("B-G1")
-def test_a_failed_registration_fails_the_task_with_its_cause(world):
-    world.inject_failure("PutItem", "PipelineTokensTable", "AccessDeniedException",
-                         when=lambda params: params.get("Item", {}).get("status") == {"S": "waiting"})
-    run = world.start_run(world.deploy(chain("p", "extract")), DATE)
-    assert world.status(run, "extract") == "failed"
-    assert "AccessDeniedException" in world.row(run, "extract")["error"]
-
-
 @defect("B-U2")
 def test_a_consumer_registered_again_keeps_its_subscription_time(world):
     consumer = world.deploy(pipeline("pushed", [("report", {})], schedule=[A]))
@@ -369,21 +368,9 @@ def test_an_unreadable_fact_fails_no_waiting_task(world):
 def test_a_claim_whose_answer_is_lost_still_runs_the_task(world):
     orders = world.deploy(chain("orders", "extract"))
     world.inject_failure("UpdateItem", "PipelineTokensTable", "InternalServerError", times=1, after=True,
-                         when=lambda params: "deps_ready" in str(params.get("ExpressionAttributeValues", {}).get(":status")))
-    run = world.start_run(orders, DATE)     # extract's claim is written, then its answer fails: the wrapper retries
+                         when=lambda params: str(params.get("ConditionExpression", "")).startswith("#s = :deps_ready"))
+    run = world.start_run(orders, DATE)     # extract's claim is written, then its answer fails: run_task retries
     assert world.running_tasks(run) == ["extract"]
-
-
-@defect("B-S1")
-def test_a_failed_auto_skip_write_does_not_wake_dependants(world):
-    world.inject_failure("PutItem", "PipelineTokensTable", "AccessDeniedException",
-                         when=lambda params: params.get("Item", {}).get("status") == {"S": "skipped"})
-    run = world.start_run(world.deploy(chain("p", "extract", "load")), DATE, skip_tasks=["extract"])
-    # The skip could not be recorded, so the task fails visibly instead of vanishing.
-    assert world.status(run, "extract") == "failed"
-    assert "AccessDeniedException" in world.row(run, "extract")["error"]
-    assert world.running_tasks(run) == []
-    assert world.status(run, "load") != "running"
 
 
 # ── pause and restart ───────────────────────────────────────────────────
@@ -412,55 +399,6 @@ def test_resume_does_not_run_a_task_whose_assets_are_missing(world):
     assert world.running_tasks(run) == ["consumer"]
 
 
-@defect("B-P3")
-def test_a_task_that_saves_its_pause_token_while_resume_runs_is_released_by_the_sweeper(world):
-    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.hold("RunTaskHelperSfn")
-    world.complete(run, "extract")          # load is signalled; its run_task waits to start
-    world.pause(run)
-    world.hold("PauseWaiterSfn")
-    world.release("RunTaskHelperSfn")       # it reads the pause and enters its pause wait
-    world.resume(run)                       # before its token is saved, so resume cannot release it
-    world.release("PauseWaiterSfn")
-    assert world.running_tasks(run) == []  # held until its 12-hour pause heartbeat
-    world.clock.advance(minutes=11)
-    world.sweep()
-    assert world.running_tasks(run) == ["load"]
-    assert any(w["kind"] == "sweeper" and w["task_name"] == "load" for w in world.warnings())
-
-
-@defect("B-P4")
-@defect("B-RN1")
-def test_a_task_whose_pause_token_cannot_be_saved_fails_with_the_cause(world):
-    world.inject_failure("UpdateItem", "PipelineTokensTable", "AccessDeniedException",
-                         when=lambda params: "pause_token = :token" in params.get("UpdateExpression", ""))
-    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.hold("RunTaskHelperSfn")
-    world.complete(run, "extract")
-    world.pause(run)
-    world.release("RunTaskHelperSfn")       # it reads the pause; pause_waiter cannot save its token
-    assert world.status(run, "load") == "failed"
-    assert "could not enter its pause wait" in world.row(run, "load")["error"]
-    assert world.running_tasks(run) == []
-    # run_task fails without answering the run; the failure handler answers it (ADR #135).
-    # The helper_failed flag once told it not to, and the run stayed RUNNING (external review, 1.2.0).
-    assert world.pipeline_status(run) == "FAILED"
-
-
-def test_a_task_resume_could_not_check_is_woken_by_the_sweeper_without_a_miss(world):
-    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.pause(run)
-    world.complete(run, "extract")          # load is parked: its run is paused
-    world.clock.advance(minutes=30)
-    world.fail_signals("ThrottlingException", times=1)
-    world.resume(run)                       # the reconciler's signal to load is throttled: deferred
-    assert world.running_tasks(run) == []
-    world.clock.advance(minutes=6)
-    world.sweep()
-    assert world.running_tasks(run) == ["load"]
-    assert [w for w in world.warnings() if w["kind"] == "sweeper"] == []   # resume deferred it: no lost hint
-
-
 @defect("B-R1")
 def test_a_restarted_task_is_still_gated_on_its_assets(world):
     run = world.start_run(world.deploy(waits_for("p", [A.within(hours=1)])), DATE)
@@ -487,55 +425,113 @@ def test_a_lost_hint_is_recovered_by_the_sweeper_with_a_warning(world):
     assert any(w["kind"] == "sweeper" for w in world.warnings())
 
 
-def test_a_lost_notify_after_mark_success_warns_and_the_sweeper_wakes_the_dependant(world):
+def test_a_lost_hint_after_mark_success_heals_at_the_runs_next_check(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.fail_starts("NotifyDependentsSfn", "ThrottlingException", times=1)
+    world.deliver_task_hints()
+    world.lose_task_hint(run, "extract")          # the record of the Mark Successful never reaches the mapping
     world.mark_success(run, "extract")
+    world.deliver_task_hints()
     assert world.running_tasks(run) == []
-    [warning] = world.warnings()
-    assert (warning["kind"], warning["task_name"], warning["task_date"]) == ("notify", "extract", DATE)
-    world.clock.advance(minutes=40)
+    world.clock.advance(minutes=31)
     world.sweep()
+    world.deliver_task_hints()
     assert world.running_tasks(run) == ["load"]
 
 
-def test_a_wrapper_stopped_outside_polyris_is_aborted_with_an_explanation(world):
-    run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
-    world.stop_wrapper_externally(run, "consumer")
-    world.clock.advance(hours=74)           # past its liveness deadline: 3 x 24 h + 1 h (ADR #130 §3)
+def test_a_run_task_stopped_outside_polyris_fails_its_task_with_an_explanation(world):
+    """The dispatcher judges the execution at the row's liveness check (ADR #137 §1): it ended without an
+    outcome, so the task fails with how it ended, and the run ends; it stayed RUNNING in 1.2 (Z1, live)."""
+    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
+    world.stop_run_task_externally(run, "extract")
+    world.clock.advance(minutes=11)         # past the row's first liveness check, 10 minutes after its start
     world.sweep()
-    row = world.row(run, "consumer")
-    assert row["status"] == "aborted"
-    assert "can no longer be woken" in row["error"]
-    # No wrapper is left to tell the run, so the reconciler does; it stayed RUNNING before (Z1, 1.2.0 live).
+    row = world.row(run, "extract")
+    assert row["status"] == "failed"
+    assert "ended ABORTED (Console: stopped by hand) without recording an outcome" in row["error"]
     assert world.pipeline_status(run) == "FAILED"
 
 
-@defect("B-RN2")
-def test_a_stopped_wrapper_found_by_its_signal_ends_its_run(world):
-    """A fact wakes a task whose wrapper was stopped in the AWS console: the signal finds the token dead (Z1)."""
-    run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
-    world.stop_wrapper_externally(run, "consumer")
-    world.write_event(A, DATE)
-    world.deliver_hints()
-    assert world.status(run, "consumer") == "aborted"
+def test_a_sweep_judges_as_many_executions_as_its_calls_allow_and_the_next_one_the_rest(world, monkeypatch):
+    """Step Functions answers DescribeExecution from a bucket of 300 calls: 2,000 rows whose first liveness checks
+    came at once called it 2,001 times in one sweep (the TR-7 estimate, S5). A sweep makes sweep.DESCRIBES calls;
+    the rows past them stay due, and the next sweep judges them."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)          # a share of 2 rows a run, 2 calls kept for the runs (D141)
+    names = ("a", "b", "c")
+    run = world.start_run(world.deploy(pipeline("wide", [(name, {}) for name in names])), DATE)
+    for name in names:
+        world.stop_run_task_externally(run, name)
+    world.clock.advance(minutes=11)
+    world.sweep()
+    assert sorted(world.status(run, name) for name in names) == ["failed", "failed", "running"]
+    world.clock.advance(minutes=5)
+    world.sweep()
+    assert [world.status(run, name) for name in names] == ["failed"] * 3
     assert world.pipeline_status(run) == "FAILED"
+
+
+LARGE = [f"t{i:02d}" for i in range(16)]       # 16 long-running rows against a share of 2 a sweep: 2,000 against 50
+
+
+def _sweeps(world, hours: int) -> None:
+    for _ in range(hours * 12):
+        world.clock.advance(minutes=5)
+        world.sweep()
+
+
+@pytest.fixture
+def a_large_run_and_a_later_one(world, monkeypatch):
+    """A run with more long-running rows than its share of a sweeper run's calls, and a run started a minute later
+    whose run_task is gone (TR-10: A-1, B-2, R10-1). One large run took every call: the rows past its first
+    1,200 and every later run were never judged."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)
+    large = world.start_run(world.deploy(pipeline("large", [(name, {}) for name in LARGE])), DATE)
+    world.clock.advance(minutes=1)
+    small = world.start_run(world.deploy(pipeline("small", [("victim", {})])), DATE)
+    world.stop_run_task_externally(small, "victim")
+    yield large, small
+    for name in world.running_tasks(large):
+        world.complete(large, name)
+
+
+def test_a_dead_run_task_of_a_later_run_is_found_while_a_large_run_runs_long(world, a_large_run_and_a_later_one):
+    large, small = a_large_run_and_a_later_one
+    _sweeps(world, 1)
+    assert world.status(small, "victim") == "failed"
+
+
+def test_every_running_row_of_a_large_run_is_judged(world, a_large_run_and_a_later_one):
+    """Its rows get calls the longest due first: none waits for ever behind rows judged before (D141)."""
+    large, _ = a_large_run_and_a_later_one
+    _sweeps(world, 2)
+    assert [name for name in LARGE if "last_check" not in (world.row(large, name) or {})] == []
+
+
+def test_a_large_run_stopped_in_the_aws_console_is_stopped_by_the_engine(world, monkeypatch):
+    """The run's own execution takes its call first in each check of the run (D141): a stop in the AWS console, or
+    by polyris-destroy, is seen at the next sweep, however many rows the run has."""
+    monkeypatch.setattr(sweep, "DESCRIBES", 8)
+    large = world.start_run(world.deploy(pipeline("large", [(name, {}) for name in LARGE])), DATE)
+    _sweeps(world, 1)
+    world.stop_run_externally(large)
+    world.plant(f"invariant 8: the execution of {large.name} ended while "
+                + ", ".join(large.execution_name(name) for name in LARGE) + " were not final")
+    _sweeps(world, 1)
+    assert {world.status(large, name) for name in LARGE} == {"stopped"}
 
 
 @defect("B-F3")
-def test_a_fact_that_cannot_be_recorded_reaches_the_bell(world):
-    """The work is done, so the row stays success; its fact is not, so the consumer cannot
-    start, and the bell says which asset and why. Nothing said so before (external review, 1.2.0).
-    The run ends FAILED: it did not deliver its assets (maintainer decision, 2026-11-14)."""
-    world.inject_failure("PutItem", "AssetEventsTable", "AccessDeniedException")
+def test_a_success_whose_fact_cannot_be_recorded_waits_for_a_decision(world):
+    """The status, the output and the facts are one transaction (ADR #137 §1, invariant 12): when a fact cannot
+    be written, nothing of the success is, and the task waits for a decision with the cause. 1.2 wrote the row
+    success and its fact apart, and the consumer never started (external review, 1.2.0)."""
+    world.inject_failure("TransactWriteItems", "AssetEventsTable", "AccessDeniedException")
     producer = world.start_run(world.deploy(pipeline("producer", [("build", {"outlets": [A]})])), DATE)
     consumer = world.start_run(world.deploy(waits_for("consumer-p", [A])), DATE)
     world.complete(producer, "build")
-    assert world.status(producer, "build") == "success"
+    row = world.row(producer, "build")
+    assert row["status"] == "waiting_decision"
+    assert "its success could not be recorded" in row["error"] and "AccessDeniedException" in row["error"]
     assert world.status(consumer, "consumer") == "waiting"
-    [warning] = [w for w in world.warnings() if w["kind"] == "fact"]
-    assert f"asset facts ({A.name})" in warning["error"] and "AccessDeniedException" in warning["error"]
-    assert world.pipeline_status(producer) == "FAILED"
 
 
 @defect("B-U4")
@@ -558,61 +554,26 @@ def test_the_catch_up_starts_no_run_that_a_cascade_none_backfill_completed(world
 
 @defect("B-S2")
 def test_stopping_a_run_ends_its_execution(world):
-    """The console's Stop: the run's execution first, then its wrappers, then the rows. The route
-    called a repository method that never existed, answered 500 and stopped nothing, so the
-    run stayed RUNNING (external review, round 2; the same in 1.1.4)."""
+    """The console's Stop writes the run's stop mark; the engine stops the rows, the run's execution, and answers.
+    The 1.2 route called a repository method that never existed and stopped nothing (external review, round 2)."""
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    assert world.stop_run(run)["message"] == "Execution stopped"
+    world.deliver_task_hints()
+    assert world.stop_run(run)["stopping"] is True
+    world.deliver_task_hints()
     assert world.pipeline_status(run) == "ABORTED"
     assert (world.status(run, "extract"), world.status(run, "load")) == ("stopped", "stopped")
 
 
-@defect("B-R3")
-def test_a_restart_that_cannot_start_its_wrapper_says_so_and_can_be_repeated(world):
-    """The console answered "Task restarted" while nothing started, and nothing said why
-    (external review, round 2). Now the bell names the cause, and a second restart runs the task."""
-    run = world.start_run(world.deploy(chain("orders", "extract")), DATE)
-    world.complete(run, "extract", status="failed")
-    world.fail_starts("DependencyWrapperSfn", "StateMachineDoesNotExist", times=1)
-    world.restart(run, "extract")
-    assert world.status(run, "extract") == "stopped"
-    [warning] = [w for w in world.warnings() if "restart could not start the task" in str(w.get("error"))]
-    assert warning["kind"] == "coordination" and "StateMachineDoesNotExist" in warning["error"]
-    world.restart(run, "extract")
-    world.complete(run, "extract")
-    assert world.status(run, "extract") == "success"
-
-
-@defect("B-RN3")
-def test_a_rule_skip_whose_run_cannot_be_told_says_so(world):
-    """The wrapper's skip answer caught every error and went on: the task was skipped, its run stayed
-    RUNNING and nothing said so (architect and break review, 1.2.0)."""
-    run = world.start_run(world.deploy(pipeline("orders", [("extract", {}), ("load", {"trigger_rule": "all_skipped"})],
-                                                [("extract", "load")])), DATE)
-    world.fail_signals("AccessDeniedException", times=3,         # the skip answer and its two retries
-                       when=lambda call: '"status":"skipped"' in call.get("output", ""))
-    world.complete(run, "extract")                              # all_skipped can no longer hold: a rule skip
-    assert world.status(run, "load") == "skipped"
-    [warning] = [w for w in world.warnings() if "run could not be told" in str(w.get("error"))]
-    assert warning["kind"] == "coordination" and "AccessDeniedException" in warning["error"]
-
-
 @defect("B-RN4")
-@pytest.mark.parametrize("action,status,call", [
-    ("skip", "skipped", "send_task_success"),
-    ("mark_success", "success", "send_task_success"),
-    ("fail_task", "failed", "send_task_failure"),
-    ("stop_task", "aborted", "send_task_failure"),
-])
-def test_a_console_action_whose_run_cannot_be_told_says_so(world, action, status, call):
-    """The console answers the run itself. Stop logged a failed answer and the others answered 500
-    after the row had changed, which no retry could repeat; the run stayed RUNNING (architect review)."""
+@pytest.mark.parametrize("action, status", [("skip", "skipped"), ("fail_task", "failed"), ("mark_success", "success"),
+                                            ("stop_task", "stopped")])
+def test_a_console_action_whose_timeline_cannot_be_written_still_applies(world, action, status):
+    """1.3: the console answers no run; what follows its transaction (the timeline) is best effort, and a failure
+    there must not answer 500 after the row has changed (architect review)."""
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)    # load waits for extract
-    world.fail_signals("AccessDeniedException", times=1, call=call)
+    world.inject_failure("PutItem", "TaskEventsTable", "ProvisionedThroughputExceededException")
     getattr(world, action)(run, "load")
     assert world.status(run, "load") == status
-    [warning] = [w for w in world.warnings() if "run could not be told" in str(w.get("error"))]
-    assert "AccessDeniedException" in warning["error"] and "states:SendTask" in warning["error"]
 
 
 @defect("B-M3")
@@ -650,50 +611,28 @@ def test_a_push_whose_stream_record_was_lost_is_started_by_the_catch_up(world):
 
 @defect("B-N1")
 def test_a_warning_about_an_old_partition_reaches_the_bell(world):
-    run = world.start_run(world.deploy(waits_for("p", [A])), "2026-10-13")
-    world.stop_wrapper_externally(run, "consumer")
-    world.clock.advance(days=4)
-    world.sweep()
-    assert any(w["kind"] == "zombie" and w["task_date"] == "2026-10-13" for w in world.warnings())
+    """The bell finds a warning by when it was written, whatever the date of its run (records.warning_item)."""
+    run = world.start_run(world.deploy(chain("orders", "extract", "load")), "2026-10-13")
+    world.lose_task_hint(run, "extract")           # the record of extract's success never reaches the dispatcher
+    world.complete(run, "extract")
+    world.clock.advance(minutes=30)
+    world.sweep()                                  # its run row's check finds the lost wake-up, and says so
+    assert any(w["kind"] == "sweeper" and w["task_date"] == "2026-10-13" for w in world.warnings())
 
 
 # ── the matrix rows of COORDINATION_DESIGN §4.2 not pinned above ─────────
 
 
 @defect("B-O1")
-def test_an_operator_skip_holds_when_the_wrapper_could_not_be_stopped(world):
+def test_an_operator_skip_holds_when_the_run_task_could_not_be_stopped(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
+    world.deliver_task_hints()
     world.fail_stops("ThrottlingException", times=1)
-    world.skip(run, "load")                 # the console cannot stop load's wrapper, which goes on waiting
-    world.time_out_registration(run, "load")    # orchestration_timeout later it registers again
-    world.complete(run, "extract")
-    assert world.status(run, "load") == "skipped"
-    assert world.running_tasks(run) == []
-    assert world.wrapper(run, "load").status == "SUCCEEDED"   # it ended as superseded
-
-
-@defect("B-O2")
-def test_a_wrapper_a_restart_replaced_never_takes_the_row_back(world):
-    run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.fail_stops("ThrottlingException", times=10)      # no wrapper can be stopped
-    world.skip(run, "load")
-    world.restart(run, "load")              # a new wrapper takes over; the old one still waits
-    world.complete(run, "extract")
-    assert world.running_tasks(run) == ["load"]             # the new wrapper runs it
-    world.time_out_registration(run, "load")                # the old wrapper's wait ends
-    assert world.wrapper(run, "load").status == "SUCCEEDED"   # superseded: it changed nothing
-    assert (world.status(run, "load"), world.task_runs(run, "load")) == ("running", 1)
-
-
-@defect("B-O3")
-def test_a_pre_upgrade_wrapper_never_runs_a_task_an_operator_decided(world):
-    run = world.start_run(world.deploy(chain("orders", "extract", "load"), before_upgrade=True), DATE)
-    world.fail_stops("ThrottlingException", times=10)
-    world.skip(run, "load")                 # the console cannot stop load's v1.1.4 wrapper
-    world.time_out_registration(run, "load")    # that wrapper retries its wait and registers again
-    world.complete(run, "extract")
-    assert world.status(run, "load") == "skipped"
-    assert world.task_runs(run, "load") == 0
+    world.skip(run, "extract")                    # its run_task cannot be stopped and runs on
+    world.complete(run, "extract")                # its late success is fenced out (invariant 5)
+    world.deliver_task_hints()
+    assert world.status(run, "extract") == "skipped"
+    assert world.running_tasks(run) == ["load"]
 
 
 @defect("B-O4")
@@ -711,23 +650,23 @@ def test_run_task_never_starts_a_task_an_operator_decided_after_its_wait(world):
 @defect("B-O5")
 def test_a_task_an_operator_decided_while_paused_is_never_released_to_run(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.hold("RunTaskHelperSfn")
-    world.complete(run, "extract")          # load is claimed; its run_task waits to take a step
+    world.deliver_task_hints()
     world.pause(run)
-    world.release("RunTaskHelperSfn")       # run_task finds the run paused and holds load
+    world.complete(run, "extract")
+    world.deliver_task_hints()
     assert world.status(run, "load") == "waiting_paused"
-    world.fail_stops("ThrottlingException", times=10)
-    world.skip(run, "load")                 # the console cannot stop load's run_task
-    world.resume(run)                       # resume releases only the tasks still held
-    world.time_out_pause_wait(run, "load")  # 12 hours later the pause wait's heartbeat runs out
+    world.skip(run, "load")
+    world.resume(run)
+    world.deliver_task_hints()
     assert (world.status(run, "load"), world.running_tasks(run)) == ("skipped", [])
 
 
-def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_it(world):
+def test_an_operator_skip_while_the_task_waits_never_runs_it(world):
     run = world.start_run(world.deploy(chain("orders", "extract", "load")), DATE)
-    world.skip(run, "load")                 # while load still waits for extract
-    assert world.wrapper(run, "load").status == "ABORTED"   # the console stops it
+    world.deliver_task_hints()
+    world.skip(run, "load")                       # while load still waits for extract
     world.complete(run, "extract")
+    world.deliver_task_hints()
     assert world.status(run, "load") == "skipped"
     assert world.running_tasks(run) == []
 
@@ -743,10 +682,13 @@ def test_an_operator_skip_while_the_task_waits_ends_its_wrapper_without_running_
 def test_each_trigger_rule_after_an_upstream_failure_or_skip(world, rule, outcome, expected):
     run = world.start_run(world.deploy(pipeline("orders", [("extract", {}), ("load", {"trigger_rule": rule})],
                                                 [("extract", "load")])), DATE)
+    world.deliver_task_hints()
     if outcome == "failed":
         world.complete(run, "extract", status="failed")
+        world.fail_task(run, "extract")           # the operator's decision makes the failure final (ADR #114)
     else:
         world.skip(run, "extract")
+    world.deliver_task_hints()
     if expected is None:
         assert world.running_tasks(run) == ["load"]
     else:
@@ -776,18 +718,6 @@ def test_two_runs_of_one_task_wake_independently(world):
     assert (world.running_tasks(first), world.running_tasks(second)) == (["extract"], ["load"])
     world.complete(first, "extract")
     assert world.running_tasks(first) == ["load"]
-
-
-@defect("B-G2")
-@pytest.mark.parametrize("error", ["CoordinationTransient", "Sandbox.Timedout", "Lambda.Unknown"])
-def test_a_registration_that_cannot_reach_the_reconciler_leaves_the_task_to_the_sweeper(world, error):
-    world.write_event(A, DATE)              # the asset is there before the run starts
-    world.deliver_hints()
-    world.fail_invokes("ReconcileFunction", times=20, error=error)   # every retry of registration's call fails
-    run = world.start_run(world.deploy(waits_for("p", [A])), DATE)
-    assert (world.status(run, "consumer"), world.running_tasks(run)) == ("waiting", [])
-    world.sweep()
-    assert world.running_tasks(run) == ["consumer"]
 
 
 def test_a_daily_and_weekly_schedule_runs_daily_with_the_latest_weekly_fact(world):

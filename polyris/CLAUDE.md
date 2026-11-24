@@ -11,8 +11,11 @@ Each column on the `pipeline-registry` row has an owner — either `polyris-depl
 (the CLI) or the generated pipeline SFN (which refreshes metadata on every run,
 including `register_only=true` self-registrations). `registered_at` means "last
 polyris-deploy" and is owned by the CLI; `sfn_arn`, `description`,
-`pipeline_group`, `tasks`, `dag`, `schedule`, `asset_schedule`, and
-`last_execution` are owned by the runtime.
+`pipeline_group`, `schedule`, `asset_schedule`, and
+`last_execution`, `spec_id` and `task_count` are owned by the runtime.
+`format_version` (`task_spec.REGISTRY_FORMAT_FIELD`) is deploy-owned, written
+with `registered_at`: the console compares it with `task_spec.FORMAT_VERSION`
+to mark a pipeline "redeploy needed" (ADR #137, *Migration*).
 
 Rules:
 1. `_build_registration_chain`'s `Register_Pipeline` state must be a DynamoDB
@@ -23,28 +26,16 @@ Rules:
 2. The runtime `Register_Pipeline` state's `UpdateExpression` must only mention
    runtime-owned fields. Never add `registered_at` or any future deploy-stamp
    there.
-3. Deploy-owned fields are written exclusively from `deploy.py`
+3. Deploy-owned fields (`registered_at`, `format_version`) are written exclusively from `deploy.py`
    (`_stamp_registered_at`), as a direct boto3 `UpdateItem` on
    `pipeline-registry` right after a successful CloudFormation deploy — before
    the register_only SFN kick. Errors route through the standard
    `(ClientError, BotoCoreError)` → red `❌` → `sys.exit(1)` pattern so the
    operator sees the failure in the same style as every other deploy step.
 
-4. `sam/sfn_templates/helpers/register_pipeline/sfn.tpl.json` (the orphaned
-   `polyris-register-pipeline` EXPRESS SFN, deployed but not called by any current
-   code path) has been migrated to `updateItem` for the same reason. Using `putItem`
-   is a landmine: a `putItem` without `registered_at` in its `Item` does NOT
-   preserve the field — it DELETES it, because `putItem` replaces the entire row.
-   The correct mitigation is `updateItem`, which only touches named attributes.
-   Do not revert this SFN back to `putItem`.
-
-Covered by `tests/sdk/test_deploy_registered_at.py` — all three checks are
-pinned there: (1) generated pipeline SFN omits `registered_at`; (2) CLI writes
-it via `_stamp_registered_at`; (3) orphaned helper SFN's `RegisterPipeline`
-state uses `updateItem` and does not write `registered_at`. Note: the same
-`.tpl.json` file writes `registered_at` in its `WriteSubscription` state to the
-`asset_subscriptions` table — that is a different field on a different table and
-is intentional.
+Covered by `tests/sdk/test_deploy_registered_at.py` — both checks are pinned
+there: (1) generated pipeline SFN omits `registered_at`; (2) CLI writes it via
+`_stamp_registered_at`.
 
 ## Context managers that push/pop shared state must save and restore, never just clear
 
@@ -171,24 +162,21 @@ After adding a member: run `python -m polyris.codegen.sync_enums` to regenerate
 the four downstream files. A bare string literal on either side (generator or
 template) fails `tests/sdk/test_task_config_contract.py`.
 
-## New wrapper input fields require three-file updates + snapshot regeneration
+## A new task field goes through the task's spec (ADR #137 §8, §9)
 
-Any field that must flow from the SDK through every task execution and be written to
-DynamoDB requires changes in **all three** of these places in the same commit:
+A run's tasks are rows that `Start_Run` writes from the pipeline's task specs; no task
+field reaches a task through the pipeline's state machine any more (its registration
+removes the `tasks` and `dag` that 1.2 wrote in the registry, ADR #137 §8).
+A field that must reach the engine changes these places in the same commit:
 
-1. `generators.py` → `_build_wrapper_input` — include the field in the dict returned
-   for each task's SFN input.
-2. `sam/sfn_templates/dependency_wrapper/sfn.tpl.json` → `Arguments.Input` block of
-   the registration_helper call — thread the field through using JSONata so it is
-   forwarded to the helper SFN.
-3. `sam/sfn_templates/helpers/registration/sfn.tpl.json` → DDB `PutItem` — write the
-   field to the `pipeline-tokens` table so it is queryable later.
+1. `polyris/constants.py` → `TaskSpecKey` (then `python -m polyris.codegen.sync_enums`),
+   and `generators._task_spec` / `_step_spec`, which write it.
+2. If the dispatcher decides on it: `task_spec.READINESS_KEYS`, so `Start_Run` copies it
+   onto each task row's `readiness`.
+3. If `run_task` needs it: `run_task_input.Key` and `run_task_input.build`.
 
-Missing any one of the three means the field arrives in the SFN execution context but
-is never persisted, or is persisted but never populated, or is populated only for
-directly-started executions and not for SDK-generated ones.
-
-After changing `_build_wrapper_input`, regenerate snapshots:
+Each definition names its spec version by a fingerprint of the specs, so a spec change
+moves the snapshots. Regenerate them:
 ```bash
 SNAPSHOT_UPDATE=1 python -m pytest tests/sdk/test_asl_snapshots.py tests/sdk/test_asl_snapshots_steps.py
 python -m pytest tests/sdk/test_asl_snapshots.py  # verify
@@ -270,14 +258,14 @@ value a user might want to set via `DAG(default_args={...})`.
 The `dag()` function in `helpers.py` accepts `**kwargs` to stay compatible with
 `DAG` fields added in the future. Every call to `DAG(...)` inside its `wrapper`
 must end with `**kwargs` — omitting it silently drops any field not listed
-explicitly in the decorator signature (e.g. `group`, `variables`, `doc_md`,
-`default_timeout`). The user sees no error; the field just resets to its
+explicitly in the decorator signature (e.g. `group`, `variables`, `tags`).
+The user sees no error; the field just resets to its
 dataclass default.
 
 ## All DynamoDB write states in `_build_registration_chain` must carry Retry + Catch
 
-`Register_Pipeline`, `Save_DAG_Snapshot`, and `WriteSubscription` (inside
-`Register_Asset_Subscriptions` Map) are all DynamoDB `putItem` states.
+`Register_Pipeline` and `WriteSubscription` (inside
+`Register_Asset_Subscriptions` Map) are DynamoDB write states.
 A `ThrottlingException` on any of them aborts the entire registration flow
 before tasks start and, without a `_notify_warn_` Catch path, the failure is
 invisible in the UI.
@@ -293,7 +281,7 @@ single shared definition — don't inline a one-off retry dict.
 
 ## Wrapper step retry policy lives in `_add_retry_config`, not duplicated inline
 
-`_build_task_config_and_arn` (Task path) and `_build_step_branch` (wrapper-step
+`_build_task_config_and_arn` (Task path) and `_build_step_config_and_arn` (wrapper-step
 path) must both call `_add_retry_config` to thread the retry contract into
 `task_config`. Never inline the `if task.retries: task_config[...] = ...` block
 again — that's the duplication that caused `LambdaTask(retries=3)` used as a
@@ -605,8 +593,8 @@ Never write raw `\033[...m` escape codes outside `_ansi.py`.
 
 CLI output is plain terminal text, not Markdown: never wrap a command in backticks — a terminal
 prints them literally. Highlight it instead: `f"Run {c('polyris-destroy', CYAN)} first"`.
-`tests/sdk/test_cli_output_no_markdown.py` enforces this for `up.py`, `cfn_changeset.py` and
-`platform.py`; extend its `MODULES` list when you add a CLI module.
+`tests/sdk/test_cli_output_no_markdown.py` enforces this for `up.py`, `upgrade.py`, `cfn_changeset.py`
+and `platform.py`; extend its `MODULES` list when you add a CLI module.
 
 ---
 
