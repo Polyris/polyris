@@ -211,6 +211,10 @@ The pipeline page guessed a run's pause from task rows that had become `waiting_
 
 The pipelines sidebar keeps its rows still while the pointer or the focus is in the list. A blur releases the focus hold, but a focused row that unmounts fires no blur: when every listed pipeline was gone, the list stayed held, empty, while new pipelines arrived. Release the hold on that path too (`a held list that lost every row lets go`), and list each way the reason for a hold can end before you add one.
 
+## A notification is named by what it is, on every surface
+
+The bell's pop-up called every warning "Pipeline Failed" while its list and the browser notification named it by its kind (1.3 live smoke). `notificationTitle` in `Notifications.tsx` names a notification for the pop-up and the browser notification; a new surface calls it, never a ternary of its own (`names a warning toast by its kind, not as a failed pipeline`).
+
 ## Dead computed values are bugs waiting to happen
 
 If a `useMemo` or derived value is never used in the render tree, remove it

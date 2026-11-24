@@ -264,6 +264,16 @@ describe('Notifications', () => {
             expect(screen.getByText('Pipeline Failed')).toBeInTheDocument();
         });
 
+        it('names a warning toast by its kind, not as a failed pipeline', () => {
+            mockQueryData.current = [createNotification({
+                id: 'w4', type: 'warning', kind: 'coordination', pipeline_name: '', task_name: '', time_ago: 'just now',
+            })];
+            render(<Notifications onNavigate={onNavigate} />);
+            expect(screen.getByText('Coordination problem')).toBeInTheDocument();
+            expect(screen.getByText('Task coordination • just now')).toBeInTheDocument();
+            expect(screen.queryByText('Pipeline Failed')).not.toBeInTheDocument();
+        });
+
         it('limits toasts to 3', () => {
             mockQueryData.current = Array.from({ length: 5 }, (_, i) => 
                 createNotification({ id: `n${i}`, pipeline_name: `pipeline-${i}` })

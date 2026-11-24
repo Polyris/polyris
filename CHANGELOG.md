@@ -104,6 +104,7 @@ Until 2.0, a minor release may change how runs behave, remove console routes, st
 
 ### Fixed
 
+- The bell's pop-up called every warning "Pipeline Failed". It names a warning by its kind, as the bell's list does, and a warning about a run itself names the run's pipeline.
 - The Tasks tab filtered to a pipeline read 101 runs for each page, about 200,000 task rows for a pipeline of 2,000 tasks and longer than the console's 30 seconds. It reads whole dates until the page is full.
 - On a task of an hourly, weekly or monthly run, the console's Skip, Fail, Mark Successful, Stop and Restart answered `Task not found`. The routes recognized a row's key by a daily date in it, and searched for any other key as a task's name; they now look the key up first.
 

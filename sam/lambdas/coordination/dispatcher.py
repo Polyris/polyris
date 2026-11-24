@@ -886,9 +886,10 @@ class Dispatcher:
                 log.error("dispatcher", "an asset pointer could not be deleted", pointer=pointer, error=str(exc))
 
     def _warn(self, run: dispatch.RunView, *, subject: str, task: str, item: Mapping[str, Any], error: str) -> None:
+        # A warning about the run itself has no task row: the run row names its pipeline, which the bell shows.
         warning = records.warning_item(
             kind=WarningKind.COORDINATION, execution_name=subject, task_name=task,
-            pipeline_name=str(item.get(task_row.PIPELINE, "")), pipeline_execution=run.execution,
+            pipeline_name=str(item.get(task_row.PIPELINE) or run.pipeline), pipeline_execution=run.execution,
             task_date=run.date, error=error, now=self.clock())
         log.error("dispatcher", "warning", run=run.key, subject=subject, error=error)
         try:

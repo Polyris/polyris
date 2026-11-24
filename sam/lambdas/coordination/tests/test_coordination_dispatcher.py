@@ -615,6 +615,8 @@ def test_an_execution_that_cannot_be_described_judges_nothing(world, code, warne
     extract, run = item(world, key("extract")), item(world, RUN_KEY)
     assert extract["status"] == "deps_ready" and "last_check" not in extract and "stop" not in run
     assert bool(warnings(world)) is warned
+    # A warning about the run's own execution has no task row; it names the run's pipeline for the bell.
+    assert all(w["pipeline_name"] == "orders" for w in warnings(world))
     world.sfn.errors["describe_execution"] = client_error("ThrottlingException", "DescribeExecution")
 
 

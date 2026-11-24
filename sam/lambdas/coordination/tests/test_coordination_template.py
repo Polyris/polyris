@@ -342,27 +342,34 @@ def test_sweeper_role_allows_every_call_and_its_own_grants_are_all_used(
     assert own - used == set(), "the sweeper's own grants that no call uses"
 
 
-def test_the_sweeper_judges_only_the_platforms_executions(resources):
-    """DescribeExecution is the sweeper's alone, on run_task's executions and the pipelines', which polyris-deploy
-    names ${Namespace}-${Stage}-polyris-{dag_id} (ADR #137 §1, §4)."""
+def test_the_engines_grants_on_executions_cover_a_pipeline_of_any_namespace(resources):
+    """The sweeper describes, and the dispatcher stops, run_task's executions and the pipelines' (ADR #137 §1, §4).
+    A pipeline takes the namespace and stage of its own config.py: the examples' polyris-ex on a platform named
+    polyris-dev-oss had every check of its runs denied (1.3 live smoke, D137)."""
+    from fnmatch import fnmatch
+
     from polyris import DAG, task
     from polyris.deploy import _generate_cfn_template
 
-    [statement] = [s for s in _statements(resources, "SweeperRole", managed=False)
-                   if s["Action"] == ["states:DescribeExecution"]]
-    [arn] = statement["Resource"]
-    prefix = "${Namespace}-${Stage}-polyris-"
-    assert arn["!Sub"] == "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:" + prefix + "*:*"
-    assert resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"].startswith(prefix)
+    [describe] = [s for s in _statements(resources, "SweeperRole", managed=False)
+                  if s["Action"] == ["states:DescribeExecution"]]
+    [stop] = [s for s in _statements(resources, "ReconcileRole") if s["Action"] == ["states:StopExecution"]]
+    execution = "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:"
+    for statement in (describe, stop):
+        [arn] = statement["Resource"]
+        assert arn["!Sub"] == execution + "*-polyris-*:*"
     with DAG("orders") as dag:
         @task.lambda_function(function_name="extract")
         def extract() -> None:
             return None
         extract()
-    pipeline = _generate_cfn_template(dag, namespace="acme", stage="dev", region="us-east-1",
+    pipeline = _generate_cfn_template(dag, namespace="other", stage="qa", region="us-east-1",
                                       role_arn="arn:aws:iam::1:role/r", start_run_function_arn="arn:start-run",
                                       registry_table="r", tokens_table="t", asset_subscriptions_table="a")
-    assert pipeline["Resources"]["PipelineStateMachine"]["Properties"]["StateMachineName"] == "acme-dev-polyris-orders"
+    name = pipeline["Resources"]["PipelineStateMachine"]["Properties"]["StateMachineName"]
+    run_task = resources["RunTaskHelperSfn"]["Properties"]["Name"]["!Sub"].replace("${Namespace}-${Stage}", "acme-dev")
+    for machine in (name, run_task):
+        assert fnmatch(f"{machine}:orders-run-2026-11-24-1a2b3c4d", "*-polyris-*:*"), machine
 
 
 def test_start_run_role_allows_exactly_the_calls_the_code_makes_and_every_read_is_consistent(

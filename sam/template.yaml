@@ -1440,13 +1440,14 @@ Resources:
               - states:SendTaskSuccess
               - states:SendTaskFailure
             Resource: "*"
-          # A stop of a run ends a stopped row's run_task and the run's own execution (ADR #137 §4); both state
-          # machines are named ${Namespace}-${Stage}-polyris-*.
+          # A stop of a run ends a stopped row's run_task and the run's own execution (ADR #137 §4). A pipeline
+          # takes the namespace and stage of its own config.py, not always the platform's (D137): every polyris
+          # state machine is named {namespace}-{stage}-polyris-*, and the code stops only what its rows record.
           - Effect: Allow
             Action:
               - states:StopExecution
             Resource:
-              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-*:*"
+              - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*-polyris-*:*"
 
   ReconcileRole:
     Type: AWS::IAM::Role
@@ -1621,12 +1622,12 @@ Resources:
                 Resource:
                   - !Sub "${PipelineTokensTable.Arn}/index/attention-index"
               # Its passes alone judge executions (ADR #137 §1, §4): a started row's run_task, and the
-              # run's own execution; both state machines are named ${Namespace}-${Stage}-polyris-*.
+              # run's own execution, of a pipeline whose namespace and stage may differ from the platform's (D137).
               - Effect: Allow
                 Action:
                   - states:DescribeExecution
                 Resource:
-                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${Namespace}-${Stage}-polyris-*:*"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*-polyris-*:*"
               # Releasing the lease row and dropping push retry rows; writes the policy allows.
               - Effect: Allow
                 Action:
