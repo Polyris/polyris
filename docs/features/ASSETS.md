@@ -85,11 +85,11 @@ Each successful producer run records a fact of the asset, dated by the run's dat
 
 A daily consumer of a weekly asset therefore uses the latest version from this week or the last one, and a run for a past date waits for a fact of its own date, never today's (ADR #130).
 
-A run's date is a day, such as `2026-01-12`; facts of hourly, weekly and monthly assets come from such runs too. A `wait_for` task in a run dated otherwise, for example `20260112`, fails with `CoordinationError` and the cause.
+A run's date is a day, such as `2026-01-12`, or the key of an hourly, weekly or monthly partition (`2026-01-12T06`, `2026-W03`, `2026-01`), which counts as its first day. A `wait_for` task in a run dated otherwise, for example `20260112`, fails with the cause.
 
 ### Schema Declaration
 
-Declare a column schema directly in the asset definition. The schema is stored with the asset in the pipeline registry.
+Declare a column schema directly in the asset definition. The schema is stored with the asset in the pipeline's task specs.
 
 **Recommended form: `Column` + `types`.**
 
@@ -136,7 +136,7 @@ shadowing Python builtins or stdlib modules.
 |------------------|---------|-----------------------------------------------------------|
 | `nullable`       | `True`  | Whether the column may contain `NULL`.                    |
 | `primary_key`    | `False` | Column is part of the primary key.                        |
-| `partition_key`  | `False` | Column partitions the asset (shown on Partitions tab).    |
+| `partition_key`  | `False` | Column partitions the asset.                              |
 | `unique`         | `False` | Values must be unique.                                    |
 | `description`    | `""`    | Human-readable description.                               |
 | `default`        | `None`  | JSON-serializable default value.                          |
@@ -160,23 +160,21 @@ Asset(name="retail/orders", schema=[
 All three forms are normalized to `List[Column]` internally. You can mix them
 in a single declaration if you are migrating gradually.
 
-**Schema conflict detection:** the same asset can be declared in multiple
-pipelines with different schemas — say a producer declares 8 columns and a
-consumer declares 3. The backend keeps the richer schema (more columns) and
-emits a warning to CloudWatch Logs. Reconcile the divergent declaration
-based on the warning.
+**Schema conflict detection:** the same asset can be declared in multiple pipelines with different schemas — say a producer declares 8 columns and a consumer declares 3. `polyris-validate --all` warns about each such asset: a column declared with two types, or a different number of columns. Reconcile the divergent declaration based on the warning.
 
 ### Glue Catalog Reference
 
 Link an asset to a table in **AWS Glue Data Catalog**. The Glue Data Catalog
 has a three-level structure that maps to Polyris fields as follows:
 
-| AWS Glue concept              | Maps to                          | Default                    |
-|-------------------------------|----------------------------------|----------------------------|
-| **Region**                    | `glue_region`                    | Lambda's own region        |
-| **Glue Data Catalog ID**      | `glue_catalog`                   | Lambda's own AWS account   |
-| **Database**                  | first half of `glue_table`       | (no default — be explicit) |
-| **Table**                     | second half of `glue_table`      | (no default — be explicit) |
+| AWS Glue concept              | Maps to                          |
+|-------------------------------|----------------------------------|
+| **Region**                    | `glue_region`                    |
+| **Glue Data Catalog ID**      | `glue_catalog`                   |
+| **Database**                  | first half of `glue_table`       |
+| **Table**                     | second half of `glue_table`      |
+
+The fields are stored with the asset in the pipeline's task specs.
 
 A Glue Data Catalog ID **is** the 12-digit AWS account ID — there is one
 Glue Data Catalog per AWS account per region. The full ARN looks like:
@@ -195,7 +193,7 @@ orders = Asset(
     glue_table="analytics.orders",          # database=analytics, table=orders
 )
 
-# Cross-account (Lambda's account ≠ catalog account)
+# Cross-account (the catalog belongs to another AWS account)
 orders = Asset(
     name="retail/orders",
     glue_table="analytics.orders",
@@ -310,8 +308,7 @@ carry over.
 **Naming note.** If `name=` is omitted, `from_pydantic` falls back to
 the model's class name (`Order` → `name="Order"`). This is convenient
 for quick prototypes but produces a CamelCase asset name with no group
-— in production you almost always want an explicit `name="domain/asset"`
-so the asset shows up grouped (e.g. under `retail/`) on the assets page.
+— in production you almost always want an explicit `name="domain/asset"`.
 
 **From an existing Glue Catalog table (deploy-time fetch):**
 
@@ -344,7 +341,7 @@ with DAG("etl", schedule="@daily") as dag:
 
 **What happens:**
 1. Task completes successfully
-2. `run_task_helper` records a fact for each outlet, for the run's partition
+2. `run_task` records a fact for each outlet, for the run's partition, in the same write as the task's success
 3. The `asset-events` stream hands the fact to `AssetFanout`, which wakes the tasks waiting on the asset and starts the pipelines scheduled on it
 
 ---
@@ -378,7 +375,7 @@ A run's name is derived from the consumer, the date and the kind of trigger, so 
 
 A consumer reacts only to facts recorded after its first deploy. Deploying a new consumer does not start it for facts that already exist; its first run starts with the next fact.
 
-Remove an asset from a consumer's `schedule` and redeploy, and that asset no longer starts it: the old subscription is deleted the next time the asset records a fact. The same holds for a consumer you move to a cron schedule. A consumer you destroy loses its subscription the first time a fact would start it: that start fails, and the bell shows it once.
+Remove an asset from a consumer's `schedule` and redeploy, and that asset no longer starts it: the old subscription is deleted the next time the asset records a fact. The same holds for a consumer you move to a cron schedule. `polyris-destroy` deletes a consumer's subscriptions with its stack.
 
 ---
 
@@ -544,11 +541,10 @@ The Task Detail modal shows a task's `wait_for` assets as a labelled
 section, with the freshness constraint as a badge:
 
 ```
-Dependencies:        None (no task dependencies)
-Asset Dependencies:  acme/weekly-complete (192h)
+Asset Dependencies:  acme/weekly-complete  8d
 ```
 
-`192h` = 8 days (whatever was declared in `.within(...)`).
+The badge shows the window declared in `.within(...)`: in days when it is a whole number of days, otherwise in hours. A `.consecutive(days=7)` condition shows `7d` with a calendar icon.
 
 ### How it works
 
@@ -589,7 +585,7 @@ The DynamoDB tables involved:
 | Table | Purpose |
 |-------|---------|
 | `asset-events` | Every fact (PK: `asset_name`, SK: `event_time`), with the partition it belongs to; the `asset-partition-index` finds facts by partition date |
-| `dependency-subscriptions` | Per-run pointers: `asset:<name>` → each waiting task of a run whose `wait_for` names the asset |
+| `dep-subscriptions` | Per-run pointers: `asset:<name>` → each waiting task of a run whose `wait_for` names the asset |
 | `asset-subscriptions` | Pipelines scheduled on an asset (PK: `asset_name`, SK: `pipeline_name`) |
 
 Everything is created by `polyris-up` (or a from-source `sam deploy`) — no manual steps.

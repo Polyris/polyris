@@ -1,6 +1,6 @@
 """Assets — trigger on every event, not once per day (EXPERIMENTAL).
 
-⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
+⚠️  Assets are experimental: the API may change. List each asset's producers and consumers with `polyris-output --assets`.
 
 Companion to `12_assets_schedule_trigger` — same trigger asset (`clean/orders`, produced
 by `11_assets_outlets_inlets`'s `orders-clean`), different subscription shape, so you
@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)
 # NOTE: placeholder ARN — replace with your own state machine before deploying.
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
-# Same asset name as produced in 11_assets_outlets_inlets — this is what links the lineage.
+# Same asset name as produced in 11_assets_outlets_inlets — this is what links the two pipelines.
 clean_orders = Asset("clean/orders", uri="s3://polyris-example/clean/orders/", group="processed")
 
 with DAG(

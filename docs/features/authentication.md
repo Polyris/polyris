@@ -26,8 +26,8 @@ This document describes how the polyris Console authenticates users via AWS Cogn
 - **AWS Amplify SDK** - handles the Cognito auth flow (login, MFA challenge, refresh)
 - **Admin-only user creation** - No self-registration, users must be created by administrators
 - **Auth at the Lambda gate** - the `console-api` Lambda verifies a Cognito token **offline** (RS256 against the pool JWKS, bound to this deployment's app client) on every non-public request when `AUTH_ENABLED=true`
-- **MFA support** - Optional TOTP-based multi-factor authentication
-- **Strong password policies** - 12+ characters with mixed case, numbers, and symbols
+- **TOTP sign-in** - the login page handles a TOTP challenge; the user pool is created with MFA off
+- **Password policy** - 12+ characters with upper- and lowercase letters and a number
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ Before enabling authentication, ensure you have:
         │  Amplify.Auth                                                    │ verify JWT (JWKS)
         ▼                                                                  │
 ┌───────────────────────────────────────────────────────┐                 │
-│     {namespace}-{stage}-polyris-console-users         │◀────────────────┘
+│     {namespace}-{stage}-polyris-console               │◀────────────────┘
 │  - Admin-only user creation                           │
 │  - Secure Remote Password (SRP) protocol              │
 │  - Automatic token refresh                            │
@@ -60,15 +60,14 @@ All Cognito resources follow the pattern `{namespace}-{stage}-polyris-{resource}
 
 | Resource | Name Pattern |
 |----------|--------------|
-| User Pool | `{namespace}-{stage}-polyris-console-users` |
+| User Pool | `{namespace}-{stage}-polyris-console` |
 | App Client | `{namespace}-{stage}-polyris-console-client` |
-| User Groups | `admins`, `viewers` |
 
-All resources are tagged with `Environment = "polyris"`.
+The user pool carries the tags `polyris:namespace`, `polyris:stage` and `polyris:component`.
 
 ## Enabling Authentication
 
-**Installed with `polyris-up`:** auth is on by default, and `--admin-email` creates the first user. Self sign-up is disabled: every Cognito user gets full console access, so only an admin creates users (see *User Management* below). If your stack ran with self sign-up enabled, check who has an account and revoke what you don't recognise: `aws cognito-idp list-users --user-pool-id <CognitoUserPoolId>`, then `admin-delete-user` for unknown users and revoke their personal access tokens in the console. To turn it on for an existing stack:
+**Installed with `polyris-up`:** auth is on by default, and `--admin-email` creates the first user. Self sign-up is disabled: every Cognito user gets full console access, so only an admin creates users (see *User Management* below). If your stack ran with self sign-up enabled, check who has an account and revoke what you don't recognise: `aws cognito-idp list-users --user-pool-id <CognitoUserPoolId>`, then `admin-delete-user` for unknown users. To turn it on for an existing stack:
 
 ```bash
 polyris-up --param EnableCognitoAuth=true --admin-email admin@yourcompany.com
@@ -97,36 +96,13 @@ cd sam
 sam build && sam deploy
 ```
 
-### Step 3: Get Auth Configuration
-
-After `sam deploy` completes, get outputs:
+### Step 3: Rebuild and upload the UI
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name polyris-dev \
-  --query "Stacks[0].Outputs" \
-  --output table
+cd ui && npm ci && npm run build && ./deploy.sh polyris-dev us-east-1
 ```
 
-Output example:
-```json
-{
-  "enabled": true,
-  "userPoolId": "us-east-1_abc123XYZ",
-  "clientId": "7abcdef123456789ghijklmnop",
-  "region": "us-east-1"
-}
-```
-
-### Step 4: Configure Environment Variables
-
-Get the env vars from CloudFormation outputs:
-
-```bash
-cd ui && ./deploy.sh
-```
-
-`ui/deploy.sh` reads CloudFormation outputs and generates `config.js` automatically.
+`ui/deploy.sh <stack-name> <region>` reads the stack's outputs and writes `config.js` with the Cognito settings. A local build reads them from these variables instead:
 
 | Variable | Value |
 |----------|-------|
@@ -143,7 +119,7 @@ cp .env.example .env.local
 # Edit with your Cognito values
 ```
 
-### Step 5: Create First User
+### Step 4: Create First User
 
 ```bash
 # Get User Pool ID from aws cloudformation describe-stacks --stack-name polyris-dev --query "Stacks[0].Outputs"
@@ -156,12 +132,6 @@ aws cognito-idp admin-create-user \
   --username admin@yourcompany.com \
   --user-attributes Name=email,Value=admin@yourcompany.com \
   --temporary-password "TempPassword123!"
-
-# Add to admins group
-aws cognito-idp admin-add-user-to-group \
-  --user-pool-id $USER_POOL_ID \
-  --username admin@yourcompany.com \
-  --group-name admins
 ```
 
 ## Disabling Authentication
@@ -207,7 +177,7 @@ Users can only be created by administrators. There are two methods:
 #### Method 1: AWS Console (Recommended)
 
 1. **Go to AWS Console** → Cognito → User pools
-2. **Select your user pool** (e.g., `mycompany-dev-polyris-console-users`)
+2. **Select your user pool** (e.g., `mycompany-dev-polyris-console`)
 3. **Click "Users"** in the left sidebar
 4. **Click "Create user"** button
 5. **Fill in the form:**
@@ -217,13 +187,6 @@ Users can only be created by administrators. There are two methods:
    - **Temporary password:** Set or generate one
    - ✅ **Mark email address as verified**
 6. **Click "Create user"**
-
-After creating the user, add them to a group:
-
-1. **Go to "Groups"** in the left sidebar
-2. **Click "admins"** (or "viewers" for read-only)
-3. **Click "Add user to group"**
-4. **Select the user** and confirm
 
 #### Method 2: AWS CLI
 
@@ -241,22 +204,9 @@ aws cognito-idp admin-create-user \
       Name=email_verified,Value=true \
   --temporary-password "TempPassword123!" \
   --message-action SUPPRESS  # Remove to send email invitation
-
-# Add user to admins group
-aws cognito-idp admin-add-user-to-group \
-  --user-pool-id $USER_POOL_ID \
-  --username user@example.com \
-  --group-name admins
 ```
 
-### User Groups
-
-Two groups are created by default:
-
-| Group | Description | Precedence |
-|-------|-------------|------------|
-| `admins` | Full access to console | 0 |
-| `viewers` | Read-only access (future) | 10 |
+Every user has full access to the console.
 
 ### Listing Users
 
@@ -300,7 +250,6 @@ When a new user first logs in:
    - Uppercase letter
    - Lowercase letter  
    - Number
-   - Special character
 4. If MFA is enabled, user may be prompted to set up TOTP
 
 ## Security Features
@@ -308,7 +257,7 @@ When a new user first logs in:
 ### Password Policy
 
 - Minimum length: 12 characters
-- Requires: uppercase, lowercase, numbers, symbols
+- Requires: uppercase, lowercase, numbers
 - Temporary password validity: 7 days
 
 ### Token Management (Amplify)
@@ -316,11 +265,11 @@ When a new user first logs in:
 - Access tokens expire after 1 hour (configurable)
 - Refresh tokens valid for 30 days (configurable)
 - **Automatic token refresh** handled by Amplify SDK
-- Token revocation on sign out (global)
+- Sign-out clears the tokens from this browser
 
 ### MFA Configuration
 
-MFA can be configured as:
+The user pool is created with MFA `OFF` (`MfaConfiguration` in `sam/template.yaml`). Cognito offers:
 - `OFF` - No MFA
 - `OPTIONAL` - Users can enable MFA
 - `ON` - MFA required for all users
@@ -336,20 +285,17 @@ the API — no per-route opt-in needed.
 
 ### Public routes (never require auth)
 
-Exactly three prefixes are always public, regardless of the `AUTH_ENABLED`
-setting:
+These paths are always public, regardless of the `AUTH_ENABLED` setting:
 
 | Path | Why public |
 |------|-----------|
 | `GET /api/health` and `GET /api/health/live` | Probes and monitors must work without credentials. Without a valid token, `/api/health` answers the status words only; its details (messages, resource names, `findings`) need one |
 | `GET /api/metrics` | Ops metrics endpoint; scraped by monitoring agents |
-| `GET /api/action/*` | Link-button callbacks (skip / fail / restart) — delivered without a bearer token; the mutations they allow are documented in [ADR #66](../reference/adr-66-per-token-scopes.md) |
 
-### Everything else requires a Cognito bearer token (or a PAT)
+### Everything else requires a Cognito bearer token
 
 All other routes — pipelines, tasks, executions, settings, notifications
-— require `Authorization: Bearer <cognito-access-token>`. PAT (Personal Access
-Token) support is available; see [ADR #65](../reference/adr-65-api-tokens-and-auth-enforcement.md).
+— require `Authorization: Bearer <cognito-access-token>`.
 
 Full route inventory: [../operations/API.md](../operations/API.md).
 

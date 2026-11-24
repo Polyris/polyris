@@ -46,11 +46,7 @@ version it ran with (ADR #137 §8).
 overwritten by pipeline runs. The Console's "Deployed at X" reflects the last
 actual deploy, not the last run.
 
-**On destroy** (`polyris-destroy`): deletes the CloudFormation stack
-(removes the pipeline StateMachine and EventBridge schedule), stopping the
-pipeline's running runs until the stack is gone. DynamoDB entries
-(`pipeline_registry`, `asset_subscriptions`) are not removed automatically —
-delete the items directly via the AWS Console / CLI if needed.
+**On destroy** (`polyris-destroy`): deletes the CloudFormation stack (removes the pipeline StateMachine and EventBridge schedule), stopping the pipeline's running runs until the stack is gone. Then it deletes the pipeline's `pipeline_registry` item and its `asset_subscriptions` items, so the Console no longer lists it.
 
 ## Self-Healing Registration
 
@@ -73,8 +69,7 @@ Check_Register_Only
                 and each direct step runs as a branch beside it
 ```
 
-This ensures metadata stays current even if DynamoDB items were deleted manually
-or subscriptions expired (TTL).
+This ensures metadata stays current even if DynamoDB items were deleted manually.
 
 Note: the self-healing run does **not** update `registered_at`. Only
 `polyris-deploy` writes that field — so "Deployed at" always reflects the last
@@ -122,7 +117,7 @@ polyris-register --name my-pipeline --profile dev --role-arn arn:aws:iam::456:ro
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--name` | `-n` | Pipeline name (alternative to ARN) |
-| `--region` | `-r` | AWS region (default: us-east-1) |
+| `--region` | `-r` | AWS region (default: the ARN's region; with `--name`, the region of your AWS profile or environment) |
 | `--profile` | `-p` | AWS profile from ~/.aws/credentials or ~/.aws/config |
 | `--role-arn` | | IAM role ARN to assume |
 | `--namespace` | | Namespace prefix for pipeline search |
@@ -149,8 +144,8 @@ Registration triggered.
 ```
 
 > **Note:** `polyris-register` does **not** write `registered_at`. It triggers the
-> pipeline's register-only SFN execution, which refreshes runtime metadata (tasks, dag,
-> schedule, etc.) but never touches deploy-owned fields. If you use `polyris-register`
+> pipeline's register-only SFN execution, which refreshes runtime metadata (schedule,
+> spec version, etc.) but never touches deploy-owned fields. If you use `polyris-register`
 > as a recovery step instead of re-running `polyris-deploy`, the Console's "Deployed at"
 > will remain at the timestamp of the last actual deploy — or absent entirely if the
 > pipeline was never deployed before.
@@ -190,7 +185,7 @@ deploy:
 ### Asset triggers not working
 
 1. Check `asset_subscriptions` table in DynamoDB
-2. Verify `asset_schedule` in pipeline definition
+2. Verify that the DAG's `schedule=` names the assets
 3. Run `polyris-register --name <pipeline>`
 
 ### "Profile not found" error

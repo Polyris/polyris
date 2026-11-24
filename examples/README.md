@@ -13,7 +13,7 @@ composite end-to-end run).
 | [`01_single_task`](01_single_task/dag.py) | The smallest pipeline — one scheduled task |
 | [`02_linear_chain`](02_linear_chain/dag.py) | `extract → transform → load`; passing data between tasks |
 | [`03_fan_in`](03_fan_in/dag.py) | Parallel tasks + a `trigger_rule` (`all_done`) |
-| [`04_task_types`](04_task_types/dag.py) | Six AWS task types: `sfn`, `lambda_`, `glue`, `athena`, `ecs`, `batch` + `default_args` + cross-account `role` (`emr` is supported too but omitted here — it needs a live cluster) |
+| [`04_task_types`](04_task_types/dag.py) | Six AWS task types: `sfn`, `lambda`, `glue`, `athena`, `ecs`, `batch` + `default_args` (`emr` is supported too but omitted here — it needs a live cluster) |
 | [`05_chain_cross_downstream`](05_chain_cross_downstream/dag.py) | Fan-out / fan-in, trigger rules, `chain()` / `cross_downstream()` |
 | [`06_direct_steps`](06_direct_steps/dag.py) | Direct service steps (`Wait`, `Pass`, `SNS`, `SQS`, `S3`), `wait_before`, `rate(...)`, `variables` |
 | [`07_dag_and_task_settings`](07_dag_and_task_settings/dag.py) | Retries + backoff, timeouts, `skip_on_backfill`, an active window |
@@ -25,7 +25,7 @@ composite end-to-end run).
 | [`13_assets_wait_for`](13_assets_wait_for/dag.py) | `wait_for=[asset]` — a task pauses for asset freshness (pull model) *(experimental)* |
 | [`14_assets_and_or`](14_assets_and_or/dag.py) | AND vs OR trigger logic with two independent assets *(experimental)* |
 | [`15_assets_every_event`](15_assets_every_event/dag.py) | `AssetAny([x])` for one asset — trigger on every event, no day dedup *(experimental)* |
-| [`16_xcom_showcase`](16_xcom_showcase/dag.py) | Every 1.0.0 XCom path in one pipeline — `xcom.get()`, `xcom.push()`, primitive fix, loud errors, Console per-upstream cards |
+| [`16_xcom_showcase`](16_xcom_showcase/dag.py) | Every XCom path in one pipeline — `xcom.get()`, `xcom.push()`, primitive return values, typed errors, the console's per-upstream input cards |
 | [`17_all_task_types_xcom`](17_all_task_types_xcom/dag.py) | End-to-end XCom smoke — every task type (Lambda, Glue Spark, Glue pythonshell, Athena, ECS, Batch, SFN) reads upstream and writes output |
 
 ## Run one locally
@@ -41,11 +41,11 @@ polyris-output --mermaid         # a Mermaid diagram you can paste anywhere
 polyris-output --json            # the Step Functions definition and its task specs
 ```
 
-Each `@task.sfn` invokes an existing Step Functions state machine, so the ARNs
-in these files are placeholders — they're fine for local validation; replace
-them with your own before deploying.
+Each task calls an existing AWS resource. The ARNs and names in these files point at the resources of [testing-infra](testing-infra/README.md) in account `000000000000`: they're fine for local validation; deploy that stack or replace them with your own before deploying.
 
 ## Deploy one for real
+
+First set `stack_name`, `namespace` and `account_id` in [config.py](config.py) to your platform's: `polyris-deploy` refuses an account other than `account_id`.
 
 ```bash
 cd examples/02_linear_chain

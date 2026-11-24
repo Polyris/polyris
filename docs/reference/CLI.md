@@ -2,7 +2,7 @@
 
 All polyris commands. Run from your pipeline directory unless noted.
 
-`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag`, a helper function, or other files it runs — and not one that a module it imports makes. While the file runs, its folder and then the folder above it come first on `sys.path`, and `sys.exit(0)` ends it normally. Each DAG is one stack, so a `dag_id` made twice is refused. With `--all`, both commands load the folders directly in the current directory — each in its own Python process, so one folder's modules never reach another's — and in each, `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files: a Glue script that imports only `xcom` is never run, whatever its comments say. Both warn about a pipeline file in the current directory itself or deeper, which `--all` does not load, and refuse a `dag_id` that two files make.
+`polyris-validate`, `polyris-deploy`, `polyris-output` and `polyris-local` read a pipeline file the same way, so a file that validates also deploys. A pipeline is every DAG the file's code makes — with or without `with`, through `@dag`, a helper function, or other files it runs — and not one that a module it imports makes. While the file runs, its folder and then the folder above it come first on `sys.path`, and `sys.exit(0)` ends it normally. Each DAG is one stack, so a `dag_id` made twice is refused. With `--all`, both commands load the folders directly in the current directory, each in its own Python process, so one folder's modules never reach another's. In each folder they load `dag.py` and every `.py` whose code imports `DAG`, `dag` or `Pipeline` from polyris, except test files: a Glue script that imports only `xcom` is never run, whatever its comments say. Both warn about a pipeline file in the current directory itself or deeper, which `--all` does not load, and refuse a `dag_id` that two files make.
 
 ---
 
@@ -13,7 +13,7 @@ Each command is a separate console script — run any with `--help` for options.
 
 ```bash
 polyris              # print the command index
-polyris --version    # print the installed version, e.g. "polyris 1.2.2"
+polyris --version    # print the installed version, e.g. "polyris 1.3.0"
 ```
 
 The installed version is also the platform version `polyris-up` installs, so quote it in a bug report.
@@ -104,6 +104,7 @@ polyris-init my-pipeline --dir ./pipelines
 | `name` | Pipeline name (optional with `--project` or `-i`) |
 | `--project` | Generate `pipelines/config.py` (creates `pipelines/` if missing) |
 | `--hello` | Scaffold a pipeline that calls the platform's built-in test Step Function — deploys and runs without edits. Finds the platform like `polyris-deploy` does; accepts `--profile`, `--region`, `--stack` |
+| `--cfn` | Create CloudFormation-ready files (default) |
 | `--local` | Create pipeline without AWS (for exploring DSL) |
 | `--schedule` | Cron schedule (default: `@daily`) |
 | `--dir` | Base directory (default: `.`) |
@@ -267,6 +268,7 @@ polyris-deploy --only dir1 dir2 --select my-dag-id
 | Option | Description |
 |--------|-------------|
 | `--stage` | Deployment stage (default: from `config.py DEFAULT_STAGE`) |
+| `--stack` | Platform stack to read outputs from (default: `config.py` `ENVIRONMENTS[stage].stack_name`, or the one `polyris-up` platform in the region) |
 | `--profile` | AWS profile (default: from `config.py` or AWS default) |
 | `--file` | Pipeline file (default: `dag.py`). Not used with `--all`/`--only` |
 | `--dry-run` | Preview CloudFormation changes without deploying |
@@ -346,3 +348,19 @@ polyris-register --name my-pipeline --json
 | `--namespace` | Namespace prefix for pipeline search |
 | `--role-arn` | IAM role ARN to assume (cross-account) |
 | `--json` | Output result as JSON |
+
+---
+
+## polyris-build-lambda
+
+Copy the `xcom` helpers into a Lambda handler's folder, so the handler can `from polyris import xcom` without installing polyris in its package. Rebuild the package after you upgrade polyris.
+
+```bash
+polyris-build-lambda lambdas/load_orders          # writes lambdas/load_orders/polyris/
+polyris-build-lambda lambdas/load_orders --force  # replace an existing polyris/ folder
+```
+
+| Option | Description |
+|--------|-------------|
+| `dir` | The Lambda handler's folder (positional) |
+| `--force` | Overwrite an existing `polyris/` folder |

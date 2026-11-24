@@ -38,10 +38,7 @@ state machine must already exist, created by your own provisioning tool (SAM,
 CDK, Terraform, hand-created). Same for Lambda / Glue / ECS / Athena / EMR /
 Batch — polyris expects them there and calls them by AWS identifier.
 
-The one thing polyris deploys is your pipeline itself — a set of orchestration
-state machines that glue your existing resources into a DAG. For the split
-between the platform and your workloads, see
-[INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-the-platform-vs-your-workloads).
+The one thing polyris deploys is your pipeline itself — a state machine that runs your existing resources as a DAG. For the split between the platform and your workloads, see [INFRASTRUCTURE.md § The one distinction that matters](../deployment/INFRASTRUCTURE.md#the-one-distinction-that-matters-the-platform-vs-your-workloads).
 
 ### `namespace` is a resource-naming prefix, not a DSL concept
 
@@ -108,27 +105,16 @@ with DAG(
     def retried_task(): pass
 ```
 
-### Alerts Configuration
-
-> **Removed.** The `alerts=` argument has been removed — passing
-> `alerts={...}` now raises a `TypeError`. Remove it from your DAGs. Alert
-> delivery moved out of the DSL:
->
-> - **Browser notifications** (in-app) are automatic and free — no setup.
-> - Alert config is not part of the DSL — there is no `alerts=` argument.
->
-> `DAG` has no `alerts=` argument — passing `alerts={...}` now raises
-> a `TypeError`. Configure alerts in Settings → Alerts instead.
-
 ## Schedule Options
 
 ### Time-Based (EventBridge)
 
 ```python
 # Presets
-DAG(schedule="@daily")      # cron(0 0 * * ? *)
-DAG(schedule="@hourly")     # cron(0 * * * ? *)
-DAG(schedule="@weekly")     # cron(0 0 ? * SUN *)
+DAG(schedule="@daily")      # rate(1 day)
+DAG(schedule="@hourly")     # rate(1 hour)
+DAG(schedule="@weekly")     # rate(7 days)
+DAG(schedule="@monthly")    # cron(0 0 1 * ? *)
 
 # Custom cron
 DAG(schedule="cron(0 8 * * ? *)")   # 8:00 UTC daily
@@ -137,6 +123,8 @@ DAG(schedule="cron(0 8 * * ? *)")   # 8:00 UTC daily
 DAG(schedule="rate(6 hours)")
 DAG(schedule="rate(1 day)")
 ```
+
+A `rate(...)` schedule, and the `@daily`, `@hourly` and `@weekly` presets with it, fires at intervals counted from when `polyris-deploy` created the schedule, not at midnight UTC. To run at a fixed time, use `cron(...)`.
 
 ### Asset-Based (Cross-Pipeline Triggers)
 
@@ -257,14 +245,14 @@ Runs an existing ECS task definition.
 
 **Required:**
 - `cluster` (str) — ECS cluster name.
-- `task_definition` (str) — Task definition name (`name` or `name:revision`).
+- `task_definition` (str) — Task definition family name, without a `:N` revision: each run uses the latest active revision.
 
 **Type-specific (optional):**
 - `launch_type` (str, default `"FARGATE"`) — `FARGATE` or `EC2`.
 - `subnets` (list[str]) — **Required if `launch_type="FARGATE"`** (Fargate runs
   in an ENI).
 - `security_groups` (list[str]).
-- `assign_public_ip` (str, `"ENABLED"` / `"DISABLED"`).
+- `assign_public_ip` (str, default `"DISABLED"`) — `"ENABLED"` or `"DISABLED"`.
 - `container_overrides` (dict) — Passed through to `RunTask`.
 
 ```python
@@ -347,7 +335,7 @@ def spark_job():
 Submits an existing Batch job definition to a job queue.
 
 **Required:**
-- `job_definition` (str) — Batch job definition (`name` or `arn`).
+- `job_definition` (str) — Batch job definition name, without a `:N` revision: each run uses the latest active revision.
 - `job_queue` (str) — Batch job queue (`name` or `arn`).
 
 **Type-specific (optional):**
@@ -418,6 +406,7 @@ def my_task():
 | A task's spec with its upstreams' statuses | 256 KB | The input also carries each upstream's status, about 50 bytes and its name per upstream, so a wide fan-in counts |
 | A task's upstreams × its attempts | 22,500 history events | Each attempt reads every upstream's output, about 7 events each, and Step Functions caps an execution at 25,000 events: with `retries=3`, about 800 upstreams |
 | An ECS task's container overrides | 8,192 characters | ECS's limit, measured with the environment the platform adds to each container override, the upstreams' statuses included |
+| A Batch task's `SubmitJob` request | 30 KiB | Batch's limit, measured with the environment the platform adds, the upstreams' statuses included |
 | The specs together | 16 MB | A run's first step reads every spec of the pipeline at once |
 | `task_id` | 128 bytes, and no leading `_` | Operator requests name a task in full; `_` starts the platform's own rows |
 | The definition | 1 MB | Step Functions' limit, measured as `polyris-deploy` sends it |
@@ -659,7 +648,7 @@ Both are DAG-level dicts, and at first glance they look the same. They aren't.
 | What is it FOR? | Task **execution policy** — retry, timeout, role | Runtime **data** the task code / templates can read |
 | Fixed at DAG-definition time? | Yes | Yes (though values can be JSONata expressions computed at run start) |
 | Read by polyris internals? | Yes — merged into every task's common-parameter defaults | No — passed through to tasks as-is |
-| Read by your task code? | No | Yes (via templates / xcom pull) |
+| Read by your task code? | No | Yes: a Lambda or `@task.sfn` task gets each variable as a key of its input (`event["batch_size"]`) |
 | Example | `{"retries": 3, "execution_timeout": timedelta(hours=4)}` | `{"batch_size": 500, "environment": "prod"}` |
 
 **Rule of thumb.** If it configures HOW a task runs, use `default_args`. If it's
@@ -678,15 +667,13 @@ with DAG(
     ...
 ```
 
-`variables` values may be static strings/numbers, or JSONata expressions (the
-`{% ... %}` form) evaluated when the pipeline execution starts — the resolved
-values are then available to every task in the run.
+`variables` values may be static strings/numbers, or JSONata expressions (the `{% ... %}` form) evaluated when the pipeline execution starts. Each Lambda and `@task.sfn` task of the run gets the resolved values as keys of its input.
 
 ### Date variables
 
 A run has one date, the same for every task (ADR #133). It is the date the run was started for: the one you pick in the console, or, for a run an asset started, the date of that asset's fact. A run its schedule started gets the UTC day the schedule fired it for, even if it started after midnight; a run started any other way gets the UTC day it started.
 
-Every task's `variables` also carry the run's date in several forms; a variable of yours with the same name wins. For a run dated 2025-07-25:
+The input of a Lambda or `@task.sfn` task also carries the run's date in several forms; a variable of yours with the same name wins. A Glue job, an ECS task or a Batch job gets the run's date as the environment variable `POLYRIS_RUN_DATE` (a Glue job: the argument `--POLYRIS_RUN_DATE`). For a run dated 2025-07-25:
 
 | Variable | Value |
 |----------|-------|

@@ -8,7 +8,7 @@ how each task type consumes the output of its upstream (xcom):
 * A task sends data by returning it. Downstream tasks receive it two ways:
   - **Lambda / Step Functions** get upstream outputs injected into their input
     automatically — read ``event["upstream"]["<task>"]["output"]``. No IAM needed.
-  - **Glue / ECS / Batch / Athena / EMR** read it explicitly with
+  - **Glue / ECS / Batch / EMR** read it explicitly with
     ``xcom.pull("<task>")`` (attach the published task-read IAM policy). This also
     works for large outputs and is the same call in every container.
 * The run's logical date reaches every task the same way: ``event["variables"]``
@@ -125,12 +125,12 @@ with DAG(
         """
         pass
 
-    # A nested Step Function in another account (cross-account role).
+    # A nested Step Function.
     @task.sfn(
         arn="arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn",
     )
     def publish():
-        """Publish results through a nested, cross-account workflow."""
+        """Publish results through a nested workflow."""
         pass
 
     # Dependencies — function-call style for the linear spine, `>>` for the fan-in.

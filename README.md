@@ -4,9 +4,7 @@
 
 For teams on AWS who want scheduled data pipelines without running Airflow.
 
-Serverless orchestration on AWS Step Functions. When a task fails, polyris
-waits for a human decision (retry / mark success / skip / fail) instead of
-nuking the run. Fix it inline, in the same execution.
+You write a pipeline in Python. Each task's work runs in AWS Step Functions, which calls your Glue jobs, Lambda functions, containers or queries; there is no server to keep running, and everything stays in your AWS account. When a task fails, the run waits for your decision — retry, mark success, skip or fail — and goes on from there, in the same execution.
 
 ```python
 from polyris import DAG, task
@@ -26,26 +24,35 @@ with DAG("orders-etl", schedule="@daily") as dag:
     extract() >> transform() >> load()
 ```
 
-`polyris-deploy` compiles this to a Step Functions state machine and hands
-it to AWS. Pay per run — see [Cost](#cost) for the breakdown.
+`polyris-deploy` writes each task's spec to DynamoDB and deploys the pipeline's state machine and schedule with CloudFormation. A run writes its tasks as rows in DynamoDB. The polyris dispatcher, a Lambda function woken by changes to those rows, starts each task once its upstream tasks and the data it waits for allow it. Step Functions runs the task's work, with its retries and timeout. The scheduling is polyris code in this repository, explained in [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md). Pay per run — see [Cost](#cost) for the breakdown.
 
 ## Why polyris
 
-Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres
-metadata DB running 24/7. polyris compiles pipelines to Step Functions —
-here is how the operations differ:
+Airflow, Dagster, and Prefect need a scheduler, workers, and a Postgres metadata DB running 24/7. polyris has no server: its dispatcher is a Lambda function that wakes when a task's row changes, and Step Functions runs every task's work. Here is how the operations differ:
 
 | | polyris | Airflow / Dagster / Prefect |
 |---|---|---|
 | **When a task fails** | The run waits for your decision — retry, mark success, skip, fail — then continues in the same execution. Upstream tasks that already succeeded don't re-run. | Retry policy; then you clear the task and re-run it from the UI or CLI. |
 | **Debugging a run** | The polyris console shows each task's status, why it waits and its timeline; each task's work is a Step Functions execution with its history in the AWS Console. Familiar to anyone on-call for AWS. | Scheduler UI + per-task logs, one dashboard per orchestrator. |
 | **Where state lives** | DynamoDB — pay per request, no schema to migrate, no cluster to administer. | Postgres you host, patch, and upgrade. |
-| **Assets & lineage** | First-class: `outlets=` / `wait_for=` / asset-triggered schedules — same model as Dagster. | Native in Dagster; add-on or missing in Airflow / Prefect. |
+| **Assets** | `outlets=`, `wait_for=` and asset-triggered schedules, experimental; `polyris-output --assets` lists each asset's producers and consumers. | Native in Dagster; Airflow 3 has assets too. |
 
-Full DSL reference — `retries`, `trigger_rule`, seven task types (`sfn`,
-`lambda`, `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules,
-`wait_for` freshness checks, `xcom` data passing — in
-[DSL.md](docs/features/DSL.md).
+Full DSL reference — `retries`, `trigger_rule`, seven task types (`sfn`, `lambda`, `glue`, `ecs`, `athena`, `emr`, `batch`), asset schedules, `wait_for` freshness checks, `xcom` data passing — in [DSL.md](docs/features/DSL.md).
+
+### polyris or Amazon MWAA Serverless
+
+MWAA Serverless runs Airflow 3 with no environment to keep running, so it serves the same teams. Where the two differ:
+
+| | polyris | Amazon MWAA Serverless |
+|---|---|---|
+| **Pipelines** | Python | YAML in the DAG Factory format; Python DAGs can be converted |
+| **A task's work** | Step Functions calls Glue, Lambda, ECS, Batch, Athena, EMR or a state machine directly | Each task gets its own compute, provisioned before the task starts |
+| **A failed task** | Waits in the run for your decision: retry, mark success, skip or fail | Airflow's retries; the hosted Airflow UI has a subset of its features |
+| **Integrations** | Seven task types | Airflow operators: AWS, Python, Bash, provider packages and your own |
+| **Where it runs** | A platform you install in your own account; open source | A service AWS runs; tasks can run in your VPC |
+| **Billing** | Per state transition, function call and request: see [Cost](#cost) | Per task for its duration, $0.08 an hour, at least one minute |
+
+Choose MWAA Serverless for Airflow's operators with nothing to install or upgrade. Choose polyris for Python pipelines over the AWS services you already run, a console that acts on a live run, and nothing outside your account.
 
 ## Install
 
@@ -93,11 +100,11 @@ from my_pipeline import dag                # your DAG object
 validate(dag)                              # DAG structure
 dry_run(dag)                               # Execution plan
 result = run(dag, mock=True)               # Mock execution
-print(result.summary())                    # ✅ 3 succeeded, ❌ 0 failed
+print(result.summary())                    # ✅ 3 succeeded, ❌ 0 failed, ⏭️ 0 skipped
 ```
 
-Or browse [examples/](examples/) — 15 self-contained pipelines from
-hello-world through assets and lineage.
+Or browse [examples/](examples/) — 17 self-contained pipelines from
+hello-world through assets.
 
 ## Documentation
 
@@ -129,9 +136,9 @@ hello-world through assets and lineage.
 │       └── dag.py                # Pipeline definition
 │
 ├── sam/                          # Shared AWS infrastructure
-│   ├── template.yaml             # SAM template — all AWS resources
+│   ├── template.yaml             # SAM template — all AWS resources, 5 SFN definitions (2 orchestration + 3 test)
 │   ├── lambdas/                  # 8 Lambda functions
-│   └── sfn_templates/            # 5 SFN definitions (2 orchestration + 3 test)
+│   └── sfn_templates/            # The 2 orchestration definitions: run_task, bulk_backfill
 │
 ├── polyris/                      # Python DSL library
 │   ├── dag.py                    # DAG class
@@ -164,10 +171,7 @@ spend; polyris does not add a percentage on top.
 
 Every resource in a polyris stack carries `polyris:` tags, so Cost Explorer can show what polyris costs per installation and stage: see [Track costs](docs/how-to/manage-the-platform.md#track-costs).
 
-Compared to **Amazon MWAA** (managed Airflow) — the smallest `mw1.small`
-environment alone starts at ~$350/month for the environment fee before
-workers or metadata storage — polyris runs the same orchestration workload
-for roughly two orders of magnitude less.
+**Amazon MWAA** with an environment costs $0.29 an hour for its smallest class, `mw1.micro`: about $210 a month whether or not a pipeline runs, 50 to 100 times the small deployment above. **MWAA Serverless** bills each task for its duration, $0.08 an hour with a one-minute minimum: about $4 a month for the small deployment if every task finishes within a minute, and more for tasks that run longer. What polyris costs grows with the steps of a run, not with how long they take: a task that waits an hour for its Glue job costs about what a one-minute task does.
 
 *Numbers are estimates at AWS list prices in us-east-1 as of November 2026 — check AWS
 pricing pages for current figures.*

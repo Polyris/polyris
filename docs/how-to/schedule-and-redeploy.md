@@ -27,9 +27,9 @@ EventBridge Scheduler fires on the **next matching wall-clock instant after the 
 - `schedule="cron(0 8 * * ? *)"` deployed at 07:30 UTC → first run at 08:00 UTC same day.
 - Same schedule deployed at 08:30 UTC → first run at 08:00 UTC *next* day. It doesn't back-fill a missed slot.
 - `schedule="rate(1 hour)"` deployed at 12:37 UTC → first run at approximately 13:37 UTC (rate expressions fire "every N units *from now*"; the first tick lands one full period after `ENABLED`).
-- `schedule="@daily"` = `cron(0 0 * * ? *)` = midnight UTC.
+- `schedule="@daily"` = `rate(1 day)`: the first run comes a day after the schedule is created, then every 24 hours. For midnight UTC, write `schedule="cron(0 0 * * ? *)"`.
 
-If you need history for dates before deploy, start the pipeline manually for each date you want to fill in — either from the Console UI's Pipelines page (Actions → Run) or by calling Step Functions `StartExecution` directly with `{"current_date": "YYYY-MM-DD"}`.
+If you need history for dates before deploy, start the pipeline manually for each date you want to fill in. Press **Run** on the pipeline's page in the console and set `current_date` in its input, or call Step Functions `StartExecution` with `{"current_date": "YYYY-MM-DD"}`.
 
 ## Pause and resume a schedule
 
@@ -70,7 +70,7 @@ You're at a pipeline that has one or more runs currently executing. You `polyris
 
 > Existing executions started before the update do not use the new definition. They continue with the definition they were started with.
 
-Practical consequence: a change to task retry policy, trigger rule, or DAG topology takes effect on the **next** run. In-flight runs finish with the old policy. If you added `retries=3` to a task, the task that's currently on attempt 1 does not gain retries.
+The state machine holds the run's start and its direct steps; the tasks come from the spec version the run started with (below). Either way, a change takes effect on the **next** run. If you added `retries=3` to a task, the task that's currently on attempt 1 does not gain retries.
 
 ### The schedule expression updates. It affects the next tick.
 

@@ -56,9 +56,9 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 
 | Logical name | Behaviour |
 |--------------|-----------|
-| `polyris-test-success` | Succeeds immediately |
-| `polyris-test-failure` | Fails immediately |
-| `polyris-test-quick` | Waits 1s then succeeds |
+| `polyris-test-success` | Waits 20s then succeeds |
+| `polyris-test-failure` | Waits 20s then fails |
+| `polyris-test-quick` | Waits 5s then succeeds |
 
 ### Lambda functions (8)
 
@@ -68,7 +68,7 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 | `polyris-reconcile` | The tasks table's stream | The dispatcher (ADR #137): passes over a run's rows, decides each waiting row (trigger rule, `wait_for` assets, pause), starts its `run_task`, and answers the run once every row is final |
 | `polyris-asset-fanout` | `asset-events` stream | Wakes the tasks waiting on a new asset fact and starts the pipelines scheduled on that asset |
 | `polyris-sweeper` | EventBridge Scheduler, every 5 minutes | Makes one full pass of the dispatcher over each run that is due, so a lost wake-up hint delays a task instead of losing it (ADR #137 §7). Its passes alone check executions: a task whose `run_task` ended without an outcome fails, and the engine stops a run whose execution ended before its answer or that never became active. Stops the rows of a run whose run row is missing. Retries failed push starts, hourly replays the pushes of recent facts, and reports the engine's health, both streams and their mappings included (ADR #130 §8, ADR #137 §6) |
-| `polyris-start-run` | Each pipeline run, after its registration (`lambda:invoke.waitForTaskToken`) | Reads the run's task specs, writes the run row with the run's task token, the run's input and one row per task, then marks the run active (ADR #137 §1) |
+| `polyris-start-run` | Each pipeline run, after its registration (`lambda:invoke.waitForTaskToken`) | Reads the run's task specs, writes the run row with the run's token, the run's input and one row per task, then marks the run active (ADR #137 §1) |
 | `polyris-notify` | `run_task` | Publishes alerts through the configured notification channels |
 | `polyris-ui-bootstrap` | CustomResource, stacks installed by `polyris-up` | Copies the prebuilt Console UI from the artifacts bucket into `ConsoleUiBucket`, deletes files of the previous build, writes `config.js` from the stack's values, invalidates CloudFront. Absent on a from-source `sam deploy` (there `ui/deploy.sh` uploads the UI) |
 | `polyris-bucket-cleanup` | CustomResource on stack delete | Empties `ResultsBucket` + `ConsoleUiBucket` so CFN can delete them |
@@ -77,11 +77,11 @@ Every resource name below is prefixed with `${Namespace}-${Stage}-polyris-` — 
 
 | Logical name | Contents |
 |--------------|----------|
-| `polyris-pipeline-tokens` | The runtime store. One row per task execution — status, timings, xcom output, `waitForTaskToken` tokens. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output, and the coordination rows the sweeper keeps (`_engine_health`, `_sweeper_lease`, warnings). Its sparse `attention-index` lists the rows that need attention by due time: waiting tasks, tasks held in their pause wait, push retries, warnings. Its sparse `run-start-index` lists the run rows by the day each run started, newest first, for the console's run lists (ADR #137 §5). Its stream, with both images, wakes the dispatcher when a row changes (ADR #137 §7). Hottest table |
+| `polyris-pipeline-tokens` | The runtime store. One row per task of each run — status, timings, readiness — and one run row per run with the run's token, stop mark and pauses. Also one row per `output#{pipeline}#{task}#{date}` for xcom canonical output, and the coordination rows the sweeper keeps (`_engine_health`, `_sweeper_lease`, warnings). Its sparse `attention-index` lists the rows that need attention by due time: waiting tasks, tasks held in their pause wait, push retries, warnings. Its sparse `run-start-index` lists the run rows by the day each run started, newest first, for the console's run lists (ADR #137 §5). Its stream, with both images, wakes the dispatcher when a row changes (ADR #137 §7). Hottest table |
 | `polyris-pipeline-registry` | One row per deployed pipeline: its state machine, schedule, the spec version it runs (`spec_id`, `task_count`) and the format it was deployed with |
 | `polyris-pipeline-specs` | Every task's spec, which `polyris-deploy` writes before the pipeline's stack: each spec text once under `{pipeline}#text` by its sha256, and each version under `{pipeline}#{fingerprint}` naming its tasks' texts. Never changes, never expires. The Console draws a pipeline's graph from it |
 | `polyris-dep-subscriptions` | One pointer per waiting task and per `wait_for` asset it waits on. Read by asset-fanout; deleted once the task has left its wait |
-| `polyris-task-events` | Append-only audit trail of task lifecycle events (queued, started, succeeded, failed, restarted, manually-resolved). Feeds the Console's per-task History tab |
+| `polyris-task-events` | Append-only audit trail of task lifecycle events (dependency decisions, started, auto-retried, finished, operator decisions). Feeds the Console's per-task History tab |
 | `polyris-asset-events` | Append-only asset facts, one per materialisation, with the partition each belongs to (`asset-partition-index` finds them by partition date). Its stream feeds asset-fanout, which wakes `wait_for` tasks and starts asset-scheduled pipelines |
 | `polyris-asset-subscriptions` | (asset, downstream_pipeline) edges — the asset-DAG's dependency graph |
 | `polyris-api-tokens` | Personal access tokens for the Console REST API (alternative to Cognito login) |
@@ -165,7 +165,7 @@ A common admin/developer question during an incident. Table maps concepts to con
 | "What did the upstream task return?" | `polyris-pipeline-tokens` DDB, key = `output#{pipeline}#{task}#{date}`, field `result` — or the Console UI's Task Detail → Output tab |
 | "Where's the large XCom payload the task pushed?" | `polyris-results` S3 bucket, at the `_s3_ref` path the DDB `result` field points to |
 | "Why did the Console API return 500?" | `/aws/lambda/polyris-console-api` log group, filter by request ID from the browser response |
-| "Which tasks depend on this one?" | `polyris-dep-subscriptions` DDB (GSI: `subscriber-index`) |
+| "Which tasks depend on this one?" | The pipeline's graph in the Console, or `polyris-output --graph` in the pipeline's folder |
 | "Why is this task still waiting?" | The task's row in `polyris-pipeline-tokens`: `reasons` says what it waits for, as the dispatcher recorded it. The `/aws/lambda/polyris-reconcile` log group has one line per pass and one per row the pass changed |
 | "Is task coordination healthy?" | The **System** pill in the Console header, or `GET /api/health` → `checks.coordination.status` |
 | "When did this task last transition to `failed`?" | `polyris-task-events` DDB, query by `task_run_id` |
@@ -229,7 +229,7 @@ in `samconfig.toml`):
 | Parameter | Applies to | Default | Why |
 |---|---|---|---|
 | `SfnLogLevel` | `run_task` and `bulk_backfill` | `ERROR` | These run for every task of every run — full logging is expensive |
-| `SfnExpressLogLevel` | The three demo state machines (`test-*`) | `ALL` | They run in a second; full logging is cheap and useful |
+| `SfnExpressLogLevel` | The three demo state machines (`test-*`) | `ALL` | They run in seconds; full logging is cheap and useful |
 
 ## What the stack does NOT deploy
 
@@ -237,6 +237,6 @@ Explicit non-scope, in case you're auditing:
 
 - **Your data plane.** No S3 buckets for your raw / bronze / silver / gold tables. No Glue databases (except a shared workgroup in the `examples/testing-infra/` companion stack, not the main stack).
 - **Your task compute.** No Lambda functions, Glue jobs, ECS clusters, Batch queues, EMR clusters for your workloads. See [DSL.md](../features/DSL.md#how-polyris-relates-to-aws).
-- **EventBridge rules for your pipeline schedules.** Each pipeline's `polyris-deploy` creates the EventBridge rule in its own per-pipeline CFN stack, not in the main polyris stack.
+- **Schedules for your pipelines.** Each pipeline's `polyris-deploy` creates its EventBridge Scheduler schedule in its own per-pipeline CFN stack, not in the main polyris stack.
 - **VPCs, subnets, security groups.** Polyris runs Lambdas without VPC attachment. If your Glue/ECS/Batch tasks need VPC access, that's your infra — see the AWS docs for those services.
-- **KMS keys.** All polyris data uses AWS-managed keys by default. To use a customer-managed KMS key, override the encryption config on the DDB tables and S3 buckets via CFN parameter (not enabled by default — see `sam/template.yaml`).
+- **KMS keys.** All polyris data uses the default encryption of DynamoDB and S3, with keys AWS owns. No template parameter sets a customer-managed KMS key: for one, add an encryption config to the DDB tables and S3 buckets in `sam/template.yaml` and deploy from source ([FROM_SOURCE.md](FROM_SOURCE.md)).

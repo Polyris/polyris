@@ -35,16 +35,7 @@ The polyris Web Console is a React-based single-page application for monitoring 
 | View | Description |
 |------|-------------|
 | **Pipelines** | Main view with DAG visualization |
-| **Tasks** | All task instances across pipelines |
-| **Runs** | Pipeline execution history |
-
-### Pipeline View Modes
-
-| Mode | Description |
-|------|-------------|
-| **🔀 DAG** | Interactive graph (React Flow) |
-| **📊 Gantt** | Timeline of task execution |
-| **📅 Calendar** | Historical executions by date |
+| **History** | Runs and tasks across pipelines, with a **Runs** / **Tasks** toggle |
 
 ---
 
@@ -53,20 +44,20 @@ The polyris Web Console is a React-based single-page application for monitoring 
 ### Pipelines sidebar
 
 The sidebar lists every registered pipeline, one line each. It reads the runs of the last 14 days:
-- **Status icon** — the latest run's status (success, failed, running, aborted); for a running run that waits for an operator, a question mark (a decision) or a pause sign; a small hollow circle when the pipeline has no run in those 14 days. A run is running until every task has finished; its name and hover say how many tasks failed. Only runs started on 1.3 count, so after the upgrade a pipeline's status appears with its first run.
+- **Status icon** — the latest run's status (success, failed, running, aborted). A running run that waits for an operator shows a question mark (a decision) or a pause sign. A pipeline with no run in those 14 days shows a small hollow circle. A run is running until every task has finished; its name and hover say how many tasks failed. Only runs started on 1.3 count, so after the upgrade a pipeline's status appears with its first run.
 - **Pipeline name** — truncated; hover for the full name and schedule
 - **Run sparkline** — up to the last 10 runs, oldest on the left, coloured by status; empty slots are a faint track, so the newest run is always the rightmost bar. Hover it, or read the row with a screen reader, for the runs spelled out
 - **Schedule** — see the table below; hidden on tablets, where the sidebar is narrow
 
 The row of the open pipeline is highlighted; when the pipeline is listed twice, under **Needs attention** and in its group, only the first row you can see is.
 
-**Needs attention.** Pipelines whose latest run failed, timed out, waits for your decision, or is still running with a failed task are also listed on top. A run that is running without a failed task or a decision to wait for, a paused run or an aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
+**Needs attention.** Pipelines whose latest run failed, waits for your decision, or is still running with a failed task are also listed on top. A run that is running without a failed task or a decision to wait for, a paused run or an aborted run does not put a pipeline there: a stop is not a failure (ADR #112). Click the header to fold the section; its count stays.
 
 **Groups.** Set `group=` on the `DAG` to list a pipeline under that group ([DSL reference](../features/DSL.md#dag-parameters)); groups are compared without case. Pipelines without a group go under **Ungrouped**, at the bottom. When no pipeline sets a group, the list is flat. Click a group to fold it, or use the button next to the count to fold or unfold all of them; the console remembers folded groups in this browser. A folded group still shows how many of its pipelines need attention, and is highlighted when it holds the open pipeline. A group you add shows after the pipeline's next deploy or run.
 
 **Search.** Type to filter by pipeline name or group; every word must match. While you search, the sidebar shows the matches only, in their groups, all open. Enter opens the first match. The command palette (`⌘K`) matches pipeline names the same way.
 
-While the pointer or the keyboard focus is in the list, a refresh updates statuses, sparklines and a folded group's count in place, but does not move or add rows, so a row does not shift under your click; only a pipeline that is gone leaves at once. The rows follow once the pointer and the focus have left the list; opening a pipeline from the keyboard counts as leaving it. When a refresh fails, the list stays and a line above it says from when its statuses are; when some runs could not be read or Step Functions could not confirm a running one, it says a status may be out of date. Why a refresh fails is said by the **System** status in the header: amber **no connection** or **API error**, with the reason in its panel.
+While the pointer or the keyboard focus is in the list, a refresh updates statuses, sparklines and a folded group's count in place. It does not move or add rows, so a row does not shift under your click; only a pipeline that is gone leaves at once. The rows follow once the pointer and the focus have left the list; opening a pipeline from the keyboard counts as leaving it. When a refresh fails, the list stays and a line above it says from when its statuses are. When some runs could not be read, the line says a status may be out of date; after an upgrade, it says while the index of runs is still being built. Why a refresh fails is said by the **System** status in the header: amber **no connection** or **API error**, with the reason in its panel.
 
 Schedule formatting:
 | Expression | Display |
@@ -78,8 +69,6 @@ Schedule formatting:
 | Anything else | as written, cut to fit the row |
 | `schedule=[asset]` | `on` and the asset, e.g. `on raw_orders`; with several, `on 3 assets` (hover for them, e.g. `on (a & b) \| c`) |
 | No schedule | `manual` |
-
-> Schedule appears after pipelines are re-deployed so the registry gets the `schedule` field.
 
 ### DAGGraph (React Flow)
 
@@ -101,20 +90,6 @@ Interactive pipeline visualization:
 | stopped | Gray |
 | waiting_paused | Yellow |
 
-### GanttChart
-
-Timeline visualization:
-- Shows task start/end times
-- Duration bars
-- Parallel execution visible
-
-### CalendarView
-
-Historical view:
-- Click date to view executions
-- Status indicators per day
-- Quick navigation
-
 ## Task Actions
 
 ### Task Detail Modal
@@ -125,18 +100,22 @@ Click any task to open the detail modal with:
 - **Duration** — Execution time
 - **Status** — Current task status
 - **Dependencies** — Number of upstream task dependencies
+- **Why it waits** — For a waiting task: the reasons the engine recorded and since when, the deadline of its wait or decision, when its `wait_before` countdown ends, and what its trigger rule makes of its upstreams
 - **Attempt** — Two chips when retries have occurred: ↻ N (manual Restarts) and ⭮ N/M (in-SFN auto-retry index / max retries). Hidden when `restarts=0` and `retry_attempt=0`.
 - **Execution Name** — Full execution identifier
+- **Child Pipeline** — For a task that runs another pipeline, a link to it
 - **Pipeline Execution** — Parent pipeline execution
 - **Started/Finished** — Timestamps
-- **Dependencies** — List of upstream tasks (if any)
 - **Asset Dependencies** — Assets this task waits for via `wait_for` (with freshness constraint)
 - **Trigger Rule** — When task triggers (if not `all_success`)
-- **AWS Console** — Links to Step Functions executions
+- **AWS Console** — Links to the task's `run_task` execution, and to the task's own execution when it is a Step Functions task
+- **Task Type** — The kind of task (`sfn`, `lambda`, `glue`, …)
 
 **History Tab:**
-- Previous executions of this task
-- Status, duration, timestamps
+- The task's timeline: its dependency decisions, starts, automatic retries, the end and any operator's decision, each with its time
+
+**Input / Output Tab:**
+- The variables and upstream outputs the task read, and its stored output
 
 **Actions Tab:**
 - Skip, Fail, Mark Successful, Stop, Restart buttons
@@ -167,14 +146,12 @@ The page reads a pause and a Stop from the run itself: it offers Resume as soon 
 
 ## Auto-Refresh
 
-The UI uses polling for updates:
+The UI polls for updates while the **Auto** toggle in the header is on; click it to pause polling.
 
 | State | Interval |
 |-------|----------|
-| Active (tasks running) | 3 seconds |
-| Idle (no active tasks) | 30 seconds |
-
-The UI automatically detects when tasks are running and increases polling frequency.
+| A task of the open run counts down its `wait_before` | 15 seconds |
+| Otherwise | 30 seconds |
 
 ---
 
@@ -199,8 +176,9 @@ further: each page reads a bounded number of tasks.
 ### Tasks View
 - **Pipeline** — Filter by pipeline name
 - **Status** — Filter by task status (the Status cell also shows compact retry chips: ↻ for manual Restart, ⭮ for auto-retry)
-- **Source** — Trigger origin: Console, Schedule or Asset
 - **Date** — Filter by execution date
+
+The **Source** column shows what started the run: Console, Schedule or Asset.
 
 ### Runs View
 A single table of pipeline executions (ADR #95). A run is running until every task has
@@ -217,11 +195,11 @@ A run started before 1.3 with a task left unfinished shows `stale`, and so does 
 
 Press **?** or click Help to see:
 
-### Icons Legend
-All status icons explained
+### Shortcuts
+Every keyboard shortcut, grouped by where it applies
 
-### API Reference
-Quick reference for REST API endpoints
+### Icons
+All status icons explained
 
 ---
 
@@ -254,15 +232,15 @@ The Help modal (`?`) lists every shortcut. The most used:
 ## Technical Stack
 
 - **React 19** — UI framework
-- **Next.js 16** — App Router, server-side API proxy
+- **Next.js 16** — App Router, built as a static export
 - **TypeScript** — Type safety
 - **React Query 5** (`@tanstack/react-query`) — Server state, caching, refetch
 - **Zustand 5** — UI state management (navigation, modals, filters)
 - **ReactFlow 11** — DAG visualization
 - **dagre** — Automatic graph layout
 - **Tailwind CSS 3 + shadcn/ui** — Styling and UI primitives
-- **CSS Modules** — Component-scoped styles, theme-aware variants
-- **Vitest + Testing Library** — 536+ tests (unit + integration)
+- **Global CSS** — BEM-prefixed classes per surface, theme-aware variants
+- **Vitest + Testing Library** — unit and integration tests
 
 ---
 
@@ -273,12 +251,12 @@ Server data and UI state are deliberately separated:
 | Layer | Tool | What it holds |
 |-------|------|--------------|
 | **Server state** | React Query 5 | Pipeline list, task details, metrics, notifications, system status. Caching, background refetch, optimistic updates. |
-| **UI state** | Zustand 5 (`useAppStore`) | Selected pipeline, date, view mode, theme, modal visibility, filters (27 fields total). |
+| **UI state** | Zustand 5 (`useAppStore`) | Selected pipeline, date, view mode, theme, modal visibility, filters. |
 | **URL state** | `useStoreInit` | Bidirectional URL ↔ store sync (`?pipeline=x&date=2025-01-15&view=dag`). |
 
 **Performance pattern:** All components use `useShallow` selectors to subscribe to only the specific store fields they need, preventing unnecessary re-renders when unrelated state changes.
 
-React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, detail, executions, metrics, mutations), `useGlobalQueries.ts` (all-tasks, all-runs, notifications, consecutive progress), `useSystemStatusQuery.ts` (the System pill: `/api/health` as a tagged state, and a failed pipelines read as `connection`).
+React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipelines, a pipeline's tasks, its runs), `useGlobalQueries.ts` (all tasks, all runs, task events, notifications), `useSystemStatusQuery.ts` (the System pill: `/api/health` as a tagged state, and a failed pipelines read as `connection`).
 
 ---
 
@@ -286,24 +264,20 @@ React Query hooks live in `hooks/queries/` — `usePipelineQueries.ts` (pipeline
 
 ```
 App.tsx
+├── AppNav               — left rail: Pipelines, History, account menu, theme toggle
 ├── PipelinesSidebar     — pipeline list, groups, search, sparklines, schedule
-├── Header               — date picker, view mode tabs, System status pill, theme toggle, modals
-├── Notifications        — real-time notification panel
+├── Header               — breadcrumbs, System status pill, auto-refresh toggle, notifications
 ├── CommandPalette       — ⌘K fuzzy search across pipelines + actions
+├── HelpModal            — shortcuts and icons
 └── Main content (switches on mainView)
-    ├── PipelineDetail   — DAG/Gantt/Calendar + execution selector
+    ├── PipelineDetail   — DAG, date picker, run selector, run actions
     │   ├── DAGGraphFlow         — ReactFlow + dagre layout, status coloring
-    │   ├── GanttChart           — timeline bars with click-to-select
-    │   ├── CalendarView         — monthly execution grid
-    │   ├── TaskDetailModal/     — split into 6 sub-components:
-    │   │   ├── TaskDetailModal  — tabs (Details/Dependencies/Events), actions
-    │   │   ├── ConsecutiveProgress — consecutive asset date progress bars
-    │   │   ├── DependencyStatusList — upstream/downstream with trigger rules
-    │   │   ├── ErrorDisplay     — formatted error output
-    │   │   ├── LiveDuration     — real-time duration for running tasks
-    │   │   └── helpers.ts       — evaluateDepStatus, trigger rule logic
-    ├── AllTasksView     — cross-pipeline task table with filters
-    └── AllRunsView      — Run/Activity feed of pipeline executions, with filters
+    │   └── TaskDetailModal/     — tabs Details, History, Input / Output, Actions
+    │       ├── ErrorDisplay     — formatted error output
+    │       ├── LiveDuration     — real-time duration for running tasks
+    │       └── OutputCard       — the task's stored output
+    ├── AllTasksView     — History → Tasks: cross-pipeline task table with filters
+    └── AllRunsView      — History → Runs: pipeline runs, with filters
 ```
 
 `TaskDetailModal` is **lazy-loaded** via `React.lazy()` + `Suspense` in PipelineDetail to reduce initial bundle (~50KB deferred).
@@ -334,11 +308,9 @@ The console implements WCAG-aligned accessibility across all interactive compone
 ## Testing
 
 ```bash
-npm test -- --run                   # All 536+ tests
+npm test -- --run                   # All tests
 npm test -- --run src/components/DAGGraphFlow.test.tsx  # Single file
 ```
-
-**Coverage:** 35 test files covering all major components, hooks, stores, and queries.
 
 **Test infrastructure (`src/test/`):**
 
@@ -375,8 +347,7 @@ CloudFormation output + `/api`.
 
 ## Deployment
 
-- **Deployment** — S3 + CloudFront via `./ui/deploy.sh`
-- **Option B** — CloudFront + S3 (all in AWS)
+`polyris-up` installs the console with the platform: S3 + CloudFront, with `config.js` written from the stack's outputs. From a checkout, `ui/deploy.sh <stack> <region>` uploads the output of `npm run build` to the console's bucket.
 
 ---
 
@@ -474,7 +445,7 @@ NEXT_PUBLIC_COGNITO_REGION=us-east-1
 ### DAG View
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  📋 acme-daily              🔀 DAG  📊 Gantt  📅 Cal │
+│  📋 acme-daily                                          │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
 │    ┌─────────┐     ┌─────────┐     ┌─────────┐         │

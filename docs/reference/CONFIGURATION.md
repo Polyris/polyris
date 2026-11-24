@@ -67,7 +67,7 @@ the fields *inside* each stage's dict, plus the module-level `DEFAULT_STAGE`.
 | `region` | `polyris-deploy` | The AWS region of the SAM stack. All SDK calls use this. |
 | `profile` | `polyris-deploy` | Named profile from `~/.aws/credentials`. Optional. |
 | `account_id` | `polyris-deploy` | Guard — `polyris-deploy` runs `sts:GetCallerIdentity` and refuses to deploy if credentials point at a different account. Optional but recommended. |
-| `roles` | task code (at runtime) | Runtime role ARNs referenced by pipeline tasks via `@task.sfn(role="etl")`. Not used at deploy time. |
+| `roles` | `polyris-deploy`, `polyris-validate` | Role ARNs a task names by key (`@task.sfn(role="etl")`). `polyris-deploy` puts the ARN in the generated pipeline; `polyris-validate` rejects a key that is not here. `POLYRIS_ROLE_<KEY>` overrides one. |
 | `DEFAULT_STAGE` (module-level) | `polyris-deploy` | The stage KEY picked when `--stage` is not passed. Must be one of the `ENVIRONMENTS` keys. |
 
 ---
@@ -91,7 +91,7 @@ live in different repositories.
 Per field, in order:
 
 1. **CLI arguments** — `--stage`, `--stack`, `--region`, `--profile`
-2. **Environment variables** — `POLYRIS_STAGE`, `POLYRIS_STACK`, `POLYRIS_REGION`, `POLYRIS_PROFILE`, `AWS_REGION`, `AWS_PROFILE`
+2. **Environment variables** — `POLYRIS_STAGE`, `POLYRIS_STACK`, `POLYRIS_NAMESPACE`, `POLYRIS_REGION`, `POLYRIS_PROFILE`, `AWS_REGION`, `AWS_PROFILE`
 3. **config.py** — `ENVIRONMENTS[stage]`
 
 `polyris-deploy` reads the `config.py` that `POLYRIS_CONFIG` names, or else the first `config.py` with `ENVIRONMENTS` from the current directory up to the project root (`.git` or `pyproject.toml`). If it cannot use a config you pointed it at, it stops with the reason before any AWS call (ADR #134). That happens when `POLYRIS_CONFIG` names a missing file, a file without `ENVIRONMENTS` or one that does not parse, and when a `config.py` it found does not parse or fails when run.
@@ -127,7 +127,6 @@ ENVIRONMENTS = {
     "prod": {
         "stack_name": "mycompany-prod",
         "namespace": "mycompany",
-        "stage": "prod",
         "region": "us-east-1",
         "roles": {
             "etl": "arn:aws:iam::123456789012:role/etl-execution-role",

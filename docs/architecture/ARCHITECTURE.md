@@ -52,8 +52,8 @@ These are the load-bearing decisions the rest of the architecture follows from.
    execution with an inspectable history.
 
 3. **Asset-centric, not just task-aware.** Tasks declare the data assets they
-   produce (`outlets`). Assets form a graph with lineage and partitions, and
-   that graph — not just the task DAG — drives cross-pipeline triggering.
+   produce (`outlets`). An asset links the pipelines that produce and consume it,
+   by partition, and those links — not just the task DAG — drive cross-pipeline triggering.
 
 4. **Data passes through a canonical output store.** Tasks do not hand data to
    each other in-process. Each task writes its result to a stable key
@@ -119,7 +119,7 @@ run_task — one execution per attempt of a task's work
      ├─ success ─► Record_Success: one transaction of the status, output#
      │             and a fact per outlet (asset-events)
      └─ failure after its retries ─► waiting_decision, with the cause and the
-                                     decision's deadline; the notify Lambda alerts
+                                     decision's deadline
 ```
 
 ### Flow 3: How task B learns that task A finished
@@ -163,12 +163,11 @@ asset-fanout Lambda
 
 A fact's partition is the partition of the run that produced it; Mark Successful records it for the marked run's date. A task is woken only when a fact serves its own run's date (hourly and daily: that date; weekly and monthly: its period or the one before).
 
-### Flow 5: Failure → decision → alert
+### Flow 5: Failure → decision
 
 ```
 The task's work fails after its retries (run_task)
      ├─ the row ─► waiting_decision, with the cause and the decision's deadline
-     ├─ notify Lambda ─► the pipeline's alert channels, if it has any
      └─ the operator decides in the console: Restart, Skip, Fail, Mark Successful
           └─ no decision by the deadline ─► the dispatcher fails the task
 A final failure decides the dependants by their rules (ADR #138); the run ends once
@@ -190,7 +189,7 @@ dynamodb.update_item (direct boto3 call from deploy.py)
      ▼
 sfn.start_execution(register_only=true)  ← fire-and-forget
      ├─ Register_Pipeline ──────► pipeline_registry [updateItem: sfn_arn, spec_id, task_count, ...]
-     └─ RegisterAssetSubscriptions (if asset triggers)
+     └─ Register_Asset_Subscriptions (if asset triggers)
           └─ Map ──────────────► asset_subscriptions [putItem]
 ```
 
@@ -213,7 +212,6 @@ CloudFormation delete_stack ◄── until the stack is gone: stop the pipeline
 | The **System** pill in the console header is amber | "no connection" or "API error": its panel, and the console API's logs for `/api/pipelines`. Else its panel, or `GET /api/health` with a valid token → `findings`; sweeper logs | `pipeline_tokens` — the `_engine_health` row |
 | `wait_for` task not woken | asset_fanout and reconcile logs (`execution_name`) | `asset_events` — a fact for the run's partition? `dependency_subscriptions` — `asset:{name}` pointer? |
 | Asset trigger didn't fire | `/aws/lambda/{namespace}-{stage}-polyris-asset-fanout` logs | `asset_events` + `asset_subscriptions` |
-| No alert delivered on failure | run_task's execution: its notify call | The pipeline's alert config in the registry; the row's `notification_failed` |
 | Pipeline not in UI after deploy | Check `polyris-deploy` output for registration step | `pipeline_registry` — is a row present for the pipeline name? |
 | Wrong DAG in UI for old execution | Check `dag_source` in API response | `run`: the run row's `spec_id` in `pipeline-specs`; `snapshot` (a run started before 1.3): `dag_snapshot::{execution}` in `pipeline_tokens` |
 | Wrong trigger_rule result | The task's timeline: the dispatcher's decision and its reasons | reconcile logs for the run |
@@ -279,7 +277,7 @@ One-line inventory — for what each one does see
 | `asset-fanout` | Takes new facts to the runs that wait for them, and starts the pipelines scheduled on them |
 | `sweeper` | Every 5 minutes: a pass over each due run, push retries and catch-up, the engine's self-check |
 | `console-api` | The console's REST API |
-| `notify` | Delivers alerts: `run_task` and the console invoke it |
+| `notify` | The function `run_task` invokes when a task fails and when it recovers |
 
 ---
 
@@ -341,11 +339,11 @@ The web console follows a clear data separation pattern:
 │  │              │  │              │  │               │ │
 │  │ • Pipelines  │  │ • Navigation │  │ ?pipeline=x   │ │
 │  │ • Tasks      │◄─┤ • Modals     │◄─┤ &date=...     │ │
-│  │ • Assets     │  │ • Filters    │  │ &view=dag     │ │
-│  │ • Metrics    │  │ • Theme      │  │               │ │
+│  │ • Runs       │  │ • Filters    │  │ &view=dag     │ │
+│  │ • Health     │  │ • Theme      │  │               │ │
 │  └──────┬───────┘  └──────────────┘  └───────────────┘ │
 │         │                                                │
-│  Next.js API Proxy (/api/[...path])                     │
+│  fetch from the static export, straight to the API      │
 └─────────┼───────────────────────────────────────────────┘
           │
           ▼

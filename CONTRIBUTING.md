@@ -5,7 +5,7 @@
 | Tool | Version | Notes |
 |------|---------|-------|
 | Python | 3.11+ | All Lambdas run on 3.12 |
-| Node.js | 22+ | LTS recommended; minimum 18.18 for Next.js 16 |
+| Node.js | 22+ | LTS recommended; minimum 20.19, which Vite needs |
 | AWS SAM CLI | latest | For infrastructure deployment |
 | AWS CLI | 2.x | For local testing |
 | Make | any | For convenience commands |
@@ -22,7 +22,7 @@ No AWS credentials needed for running tests locally (uses pytest-mock `mocker` f
 | jsonata | 2.0+ (npm) | SFN template expression tests |
 | next | 16.x | UI framework (App Router) |
 | react | 19.x | UI library |
-| vitest | 2.x | UI testing |
+| vitest | 4.x | UI testing |
 
 ---
 
@@ -79,9 +79,7 @@ npm run dev
 # → http://localhost:3000
 ```
 
-**Note:** UI needs a backend API. Options:
-1. Point to a deployed environment (set `NEXT_PUBLIC_API_URL` in `.env.local`; see `docs/operations/UI.md`)
-2. Run with mock data (not yet implemented)
+**Note:** UI needs a backend API: point it to a deployed environment (set `NEXT_PUBLIC_API_URL` in `.env.local`; see `docs/operations/UI.md`).
 
 ---
 
@@ -146,17 +144,17 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 |------|-----------|----------|---------------|
 | SDK core (DAG, tasks, DSL) | `tests/sdk/test_smoke.py` | `pytest tests/sdk/` | DAG structure, dependencies, ASL generation, constants |
 | ASL snapshots | `tests/sdk/test_asl_snapshots.py` | `pytest tests/sdk/` | Golden file comparison of generated Step Functions JSON |
-| Template features | `tests/sdk/test_templates.py` | `pytest tests/sdk/` | orchestration_timeout, route table, run_task resilience |
-| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | All 24 free console_api routes registered and callable |
-| Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The 5 trigger rules, their aliases and the unknown-rule fallback |
-| SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for all 13 templates |
-| JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, 550 expressions compile |
-| coordination Lambdas | `sam/lambdas/coordination/tests/` | `PYTHONPATH=. pytest tests/` | reconcile, asset-fanout, IAM grants against recorded calls |
+| Template features | `tests/sdk/test_templates.py` | `pytest tests/sdk/` | All 24 free console_api routes registered and callable, orchestration_timeout, run_task Catch |
+| API routes | `tests/backend/test_api_routes.py` | `pytest tests/backend/` | Route handlers' answers |
+| Trigger rules | `tests/sdk/test_coordination_trigger_rules.py` | `pytest tests/sdk/` | The nine trigger rules' truth table, and an unknown rule failing its task |
+| SFN flow graphs | `tests/sdk/test_sfn_flow.py` | `pytest tests/sdk/` | State references, reachability, Catch, cycles for every template in `sam/sfn_templates/` |
+| JSONata expressions | `tests/sfn_jsonata/` | `cd tests/sfn_jsonata && npm test` | Default fallbacks, type conversions, conditionals, every expression compiles |
+| coordination Lambdas | `sam/lambdas/coordination/tests/` | `PYTHONPATH=.:../../.. pytest tests/` | The dispatcher, start-run, asset-fanout, the sweeper, IAM grants against recorded calls |
 | Coordination scenarios | `tests/backend/coordination/` | `pytest tests/backend/coordination/` | Whole runs through the real SFN templates and Lambdas on moto |
-| console_api Lambda | `sam/lambdas/console_api/tests/` | `PYTHONPATH=. pytest` | API routes, query/scan pagination, validation |
-| UI hooks | `ui/src/hooks/*.test.{js,jsx}` | `npm test` | React hooks, state management |
+| console_api Lambda | `sam/lambdas/console_api/tests/` | `PYTHONPATH=.:../../.. pytest` | API routes, query/scan pagination, validation |
+| UI hooks | `ui/src/hooks/*.test.{ts,tsx}` | `npm test` | React hooks, state management |
 
-**Note:** `pip install -e ".[dev]"` installs: pytest, pytest-cov, ruff, mypy. Lambda tests only need pytest and boto3.
+**Note:** `pip install -e ".[dev]"` installs pytest, pytest-cov, pytest-mock, moto, ruff, mypy and the boto3 type stubs; the Lambda suites need nothing more.
 
 ### Local Lambda Development
 
@@ -164,10 +162,10 @@ git checkout -- sam/lambdas/console_api/requirements.txt sam/lambdas/coordinatio
 cd sam/lambdas/coordination
 
 # Run tests against moto tables built from sam/template.yaml
-PYTHONPATH=. pytest tests/ -v
+PYTHONPATH=.:../../.. pytest tests/ -v
 
 # One file
-PYTHONPATH=. pytest tests/test_coordination_dispatcher.py -v
+PYTHONPATH=.:../../.. pytest tests/test_coordination_dispatcher.py -v
 ```
 
 ---
@@ -180,8 +178,9 @@ PYTHONPATH=. pytest tests/test_coordination_dispatcher.py -v
 > `console_api/ee/{team,enterprise}/`; everything else is public and the public
 > build ships without `ee/`. Two boundaries: **free↔paid** is a physical strip;
 > **Team↔Enterprise** is a runtime entitlement (`POLYRIS_TIER` + `can()`). Before
-> adding a feature, decide the tier (authoring/basic-read = free; ops/intervention
-> = Team; governance/cost/SSO = Enterprise). The checklists below cover the free
+> adding a feature, decide the tier (authoring, basic read, running and live-run
+> intervention = free; operations and observability = Team; governance/cost/SSO
+> = Enterprise). The checklists below cover the free
 > (public) surface. The **`add-aws-service`** skill in
 > [`.claude/skills/`](.claude/skills) walks adding a new AWS service to the DSL.
 > See ADR #97 (plugin route registration), #98 (open-core split structure), and

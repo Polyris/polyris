@@ -116,6 +116,7 @@ Everything under `docs/`, plus: `README.md`, `CHANGELOG.md`, docstrings on publi
 - **"I'll write a stub `docs/features/Z.md` that says 'planned'."** No. A stub is an advertisement.
 - **"I'll leave `foo`/`bar` in the example."** No. The reader copies verbatim, gets an error, loses faith.
 - **"I'll use 'workflow' here and 'pipeline' there."** No. Two words = two concepts to the reader.
+- **"The console renders it, so I'll document it."** Check where it comes from first. A view, tab or button that the free UI reaches through `@/ee-active.generated` (`paidSurface`) is not in this build: describe only what `ui/src` outside `src/ee` renders, and only the routes `console_api/main.py` registers. The docs audit after 1.3 removed several such descriptions.
 
 ## Back-compat aliases are documented once, at the point of the alias
 

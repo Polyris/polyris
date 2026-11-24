@@ -1,10 +1,10 @@
-"""Assets — cross-pipeline lineage and asset-triggered runs (EXPERIMENTAL).
+"""Assets — a pipeline that another pipeline's asset triggers (EXPERIMENTAL).
 
-⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
+⚠️  Assets are experimental: the API may change. List each asset's producers and consumers with `polyris-output --assets`.
 
 This pipeline consumes `clean/orders` — the asset **produced by the
 `11_assets_outlets_inlets` pipeline** — and produces `analytics/orders_daily`. Because the
-two pipelines share an Asset by name, Polyris links them into one lineage graph:
+two pipelines share an Asset by name, a run of the first that produces it starts the second:
 
     (orders-clean)  extract -> transform --produces--> clean/orders
                                                             |
@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)
 # NOTE: placeholder ARN — replace with your own state machine before deploying.
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
-# Same asset name as produced in 11_assets_outlets_inlets — this is what links the lineage.
+# Same asset name as produced in 11_assets_outlets_inlets — this is what links the two pipelines.
 clean_orders = Asset("clean/orders", uri="s3://polyris-example/clean/orders/", group="processed")
 orders_daily = Asset("analytics/orders_daily", uri="s3://polyris-example/analytics/orders_daily/", group="aggregated")
 

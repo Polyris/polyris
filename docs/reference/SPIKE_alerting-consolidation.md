@@ -1,6 +1,6 @@
 # Spike: alerting consolidation master plan
 
-> **Historical design doc — spike-frozen at write time.** Kept for
+> **Historical analysis @ v0.93.** Spike-frozen design doc, kept for
 > git-history readability. For current alerts behaviour, see
 > [`docs/features/alerts.md`](../features/alerts.md).
 

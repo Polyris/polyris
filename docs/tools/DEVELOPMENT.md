@@ -22,15 +22,18 @@ valid, error = validate_date('invalid')     # (False, 'Date must be in YYYY-MM-D
 ### All Tests
 
 ```bash
-make test              # Runs: test-sdk + test-lambdas + test-sfn-jsonata + test-ui
+make test              # Runs: test-sdk + test-backend + test-integration + test-docs + test-lambdas + test-sfn-jsonata + test-ui
 make check             # Runs: lint + generated-code drift + typecheck + smoke-pipelines + test
 ```
 
 ### Python SDK Tests
 
 ```bash
-# All SDK tests (smoke, snapshots, flow, templates, trigger rules, api routes)
-pytest tests/ -v --ignore=tests/integration/
+# SDK, backend and integration tests (smoke, snapshots, flow, templates, trigger rules, api routes)
+python -m pytest tests/sdk tests/backend tests/integration -v
+
+# Docs drift tests: their own session, since next to tests/backend `tests` resolves to console_api's test package
+make test-docs
 
 # Specific test files
 pytest tests/sdk/test_smoke.py -v              # Core: DAG structure, ASL generation
@@ -52,17 +55,18 @@ Catches: broken defaults, type conversion bugs, conditional logic errors.
 ```bash
 cd tests/sfn_jsonata
 npm install    # first time only
-npm test       # 34 tests + 550 expression compilation smoke test
+npm test       # expression tests, then a compile check of every expression in the templates
 ```
 
 ### Lambda Unit Tests
 
 ```bash
-# coordination (reconcile, asset-fanout; moto tables built from sam/template.yaml)
-cd sam/lambdas/coordination && PYTHONPATH=. pytest tests/ -v
+# Every Lambda suite, with no AWS profile, region or credentials, as CI runs them
+make test-lambdas
 
-# console_api (API routes, pagination, validation)
-cd sam/lambdas/console_api && PYTHONPATH=. pytest tests/ -v
+# One suite: the Lambda's folder and the checkout's root on PYTHONPATH
+cd sam/lambdas/coordination && PYTHONPATH=.:../../.. python3 -m pytest tests/ -v   # dispatcher, start-run, asset-fanout, sweeper
+cd sam/lambdas/console_api && PYTHONPATH=.:../../.. python3 -m pytest tests/ -v    # API routes, pagination, validation
 ```
 
 ### UI Tests
@@ -81,11 +85,13 @@ All tests run automatically on push/PR to main via GitHub Actions (`.github/work
 
 | Job | What runs |
 |-----|-----------|
-| **Python 3.11/3.12** | ruff lint, mypy, smoke tests, `pytest tests/`, trigger rules, pipeline imports |
+| **Python 3.11/3.12** | ruff lint, mypy, SDK, backend, integration and docs tests, the coverage floor, generated-code drift, the open-core guard, pipeline imports |
 | **Lambda Tests** | Syntax check, logger sync, every Lambda suite (console_api, coordination, bucket_cleanup, …) |
 | **SFN Templates** | ASL JSON validation, `test_sfn_flow.py` (graph integrity), JSONata expression tests |
 | **SAM** | `cfn-lint sam/template.yaml` |
-| **UI** | npm lint, typecheck, `vitest run`, `next build` |
+| **UI** | npm lint, typecheck, `vitest run`, `next build`, the open-core build guard |
+| **Platform archive** | `sam build` and the release archive `polyris-up` deploys |
+| **Docs** | link check (lychee) and prose lint (Vale) |
 
 ---
 

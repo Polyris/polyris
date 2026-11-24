@@ -94,7 +94,7 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
      --filter-pattern '"<execution_name>"'
    ```
    The execution name is in the task modal: `{task}-{date}-{run suffix}`.
-2. **Dependencies tab** in the task modal: are the upstream tasks finished, in a state the trigger rule accepts?
+2. **Why it waits** in the task modal's Details tab: what its trigger rule makes of its upstreams, and the status of each.
 3. **Assets:** a `wait_for` asset needs a fact that serves the run's date (see [ASSETS.md § Granularity](../features/ASSETS.md#granularity)). A fact for another date, today's for instance, does not count.
 4. **Engine health:** an amber **System** pill in the console's header, or `checks.coordination.status` = `unhealthy` in `GET /api/health`, means waiting tasks may not be re-checked; see [The System pill says "needs attention"](#the-system-pill-says-needs-attention).
 5. **Paused run:** a ready task of a paused run waits as `waiting_paused` until you resume the run.
@@ -137,9 +137,9 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
 **This is expected behavior** when `trigger_rule="all_success"` (default) and an upstream failed.
 
 **Options:**
-1. Fix and restart the failed upstream
-2. Skip the failed upstream (task will re-evaluate)
-3. Change `trigger_rule` to `all_done`
+1. Fix the cause, then restart the failed upstream and tick *Also rerun the dependants its failure or stop decided*: the task waits for the upstream's new outcome.
+2. Skip the failed upstream, then restart this task: it decides again from its upstreams.
+3. Change `trigger_rule` to `all_done` and redeploy, for later runs.
 
 ---
 
@@ -149,11 +149,7 @@ curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_executi
 `none_skipped`) resolves `skipped`, and the run still shows `success`, even though
 nothing upstream failed.
 
-**This is expected behavior (ADR #115).** The task's trigger condition never
-occurred — e.g. an `all_skipped` task with no skipped upstreams has nothing to react to.
-Before this fix, this case incorrectly showed `upstream_failed` (red) and marked the
-whole run `aborted`; it now correctly resolves as a no-op. No action needed — this is
-not an error.
+**This is expected behavior (ADR #115).** The task's trigger condition never occurred — e.g. an `all_skipped` task with no skipped upstreams has nothing to react to. No action needed — this is not an error.
 
 ---
 
@@ -162,8 +158,7 @@ not an error.
 **Symptoms:** An `all_success` task (the default) resolves `skipped` instead of
 running, and its upstream dependency is itself `skipped` — not failed.
 
-**This is expected behavior (ADR #115).** A skipped upstream now cascades through
-`all_success`, instead of silently counting as "OK to continue."
+**This is expected behavior (ADR #115).** A skip by a trigger rule cascades through `all_success`.
 Check *why* the upstream was skipped:
 1. If an operator skipped it (task action), or the run did (`skip_tasks`), the skip
    does **not** cascade. So if you're seeing this, the skip likely came from a
@@ -265,10 +260,7 @@ A grey **System · status unknown** means the console could not read `/api/healt
 
 ### "SAM stack '…' is missing required outputs" error
 
-**Symptoms:** `polyris-deploy` fails with the SAM stack missing outputs
-(`StartRunFunctionArn`, `OrchestrationRoleArn`, …). Historically this
-error was "SSM parameter not found"; polyris-deploy no longer reads SSM,
-it reads the SAM stack's CloudFormation Outputs directly.
+**Symptoms:** `polyris-deploy` fails with the SAM stack missing outputs (`StartRunFunctionArn`, `OrchestrationRoleArn`, …). It reads them from the platform stack's CloudFormation outputs.
 
 **Check:**
 1. Shared infrastructure is deployed and the outputs are present:
@@ -287,9 +279,6 @@ it reads the SAM stack's CloudFormation Outputs directly.
 2. The stack you're pointing at is the SAM stack, not a pipeline stack.
    `config.py`'s `stack_name` must match `sam/samconfig.toml`'s
    `stack_name`.
-
-3. If outputs are missing, the stack was built from an older polyris/SAM
-   version. Redeploy `sam/` from the current repo.
 
 ---
 
@@ -338,7 +327,7 @@ aws cloudformation list-stacks \
 2. CORS is configured on API Gateway
 3. Browser console for errors (F12 → Console)
 
-**Fix:** Run `./ui/deploy.sh` to regenerate `config.js`. For local dev, check `ui/public/config.js` or `ui/.env.local`.
+**Fix:** Run `polyris-up` again, which rewrites `config.js` from the stack's outputs; on a stack deployed from a checkout, run `ui/deploy.sh`. For local dev, check `ui/public/config.js` or `ui/.env.local`.
 
 ---
 
@@ -346,7 +335,7 @@ aws cloudformation list-stacks \
 
 **Symptoms:** Need to manually refresh to see changes.
 
-**Check:** Polling is enabled (default 30s, 3s when active tasks).
+**Check:** The **Auto** toggle in the header is on: it polls every 30 seconds, and every 15 seconds while a task counts down its `wait_before`.
 
 **Fix:** Check browser console for polling errors. May indicate API issues.
 
@@ -378,7 +367,7 @@ aws cloudformation list-stacks \
 curl -X POST "${API_URL}/api/execution-stop?pipeline_execution={pipeline_execution}" \
   -H "Authorization: Bearer $TOKEN"
 
-# Via AWS CLI:
+# Via AWS CLI (the engine stops the run's tasks at its next check of the run, up to 30 minutes later):
 aws stepfunctions stop-execution --execution-arn "arn:aws:states:..."
 ```
 
@@ -403,7 +392,7 @@ curl -X POST ${API_URL}/api/task-success?name={execution_name} \
 ### Force restart pipeline for date
 
 ```bash
-# Via Console UI: Pipeline → Run button → select date
+# Via Console UI: Pipeline → Run button → set "current_date" in the parameters
 
 # Via API:
 curl -X POST ${API_URL}/api/pipeline-run?name={name} \
@@ -423,7 +412,7 @@ curl -X POST ${API_URL}/api/pipeline-run?name={name} \
 
 **Fix:** Install the SDK into the Python environment your shell is using.
 Pick a git tag from [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
-(e.g. `v1.0.1`) and substitute it for `<VERSION>` below.
+(e.g. `v1.3.0`, the version of your platform) and substitute it for `<VERSION>` below.
 
 ```bash
 # Option A — from a git tag (recommended for pipeline repos)
@@ -440,15 +429,15 @@ If you're using a virtualenv, activate it first (`source .venv/bin/activate`),
 then run the install command. `which python && which polyris-deploy` should
 point into the same `bin/` directory as the venv.
 
-### `KeyError: 'dev'` or stage not found
+### `Unknown stage 'dev'`
 
-Your `config.py` is missing the stage. Add it to `ENVIRONMENTS`:
+`polyris-deploy` stops with `Unknown stage 'dev'. Configured stages: [...]` when your `config.py` has no such stage. Add it to `ENVIRONMENTS`; the key is the stage name:
 
 ```python
 ENVIRONMENTS = {
     "dev": {
+        "stack_name": "myorg-dev",
         "namespace": "myorg",
-        "stage": "dev",
         "region": "us-east-1",
     },
 }

@@ -41,13 +41,13 @@ with DAG(
 
     @task.sfn(arn=ARN, trigger_rule="all_done")
     def merge():
-        """Combine all three sources once they've all reached a terminal
-        state (success or skip).
+        """Combine all three sources once each is final: success, skip or
+        failure.
 
         A fan-in task reads *every* upstream's output from ``upstream`` (keyed by
-        task name), so must tolerate a missing/skipped one — a genuinely failed
-        upstream pauses for a decision before `merge` would even be evaluated
-        (ADR #114)::
+        task name), so must tolerate an upstream without output, a skipped or
+        failed one. A failed upstream waits for a decision first, so `merge`
+        runs after it (ADR #114)::
 
             orders    = $states.input.upstream.extract_orders.output
             returns   = $states.input.upstream.extract_returns.output

@@ -231,13 +231,11 @@ Onboard a Console user:
 ```bash
 aws cognito-idp admin-create-user \
   --user-pool-id "$(aws cloudformation describe-stacks \
-    --stack-name polyris \
+    --stack-name polyris-dev \
     --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' \
     --output text)" \
   --username alice@example.com \
-  --user-attributes Name=email,Value=alice@example.com Name=email_verified,Value=true \
-  --temporary-password 'TempPass!23' \
-  --message-action SUPPRESS
+  --user-attributes Name=email,Value=alice@example.com Name=email_verified,Value=true
 ```
 
 Cognito emails the user a one-time password; the Console UI forces them to change it on first login.
@@ -277,9 +275,9 @@ Engineers investigating a failing pipeline need read access to CloudWatch logs, 
 
 ### Pipeline task role
 
-The runtime role polyris creates for your task Lambdas / Glue / ECS / Batch containers. Polyris configures this automatically during install — you don't manage it directly. If a pipeline task needs additional permissions beyond the defaults (e.g. read from a specific S3 bucket, invoke a specific external Lambda), attach them to `${Namespace}-${Stage}-polyris-default-task-role` in the AWS console or via a follow-up CFN stack.
+The role `run_task` assumes to start a task in the platform's account (`role="same"`, the default): it invokes your Lambda, starts your Glue job, ECS task, Batch job, Athena query, EMR step or state machine. Your workload itself runs under its own execution role. Polyris configures this role automatically during install — you don't manage it directly. If a pipeline task needs additional permissions beyond the defaults (e.g. read from a specific S3 bucket, invoke a specific external Lambda), attach them to `${Namespace}-${Stage}-polyris-default-task-role` in the AWS console or via a follow-up CFN stack.
 
-Default coverage (as of 1.0.1): Athena queries + Glue Data Catalog CRUD + basic S3 + task-service `StartJobRun` / `RunTask` / `SubmitJob` etc. Full list: [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam).
+Default coverage: Athena queries + Glue Data Catalog CRUD + basic S3 + task-service `StartJobRun` / `RunTask` / `SubmitJob` etc. Full list: [DATA_PASSING.md#iam](../features/DATA_PASSING.md#iam).
 
 ## Remove — `polyris-down` / stack teardown
 
@@ -303,10 +301,10 @@ Eleven IAM roles the stack creates during Install. Every role's `RoleName` start
 | Role | Trust principal | Purpose |
 |------|-----------------|---------|
 | `polyris-orchestration-role` | Step Functions | Runs `run_task`, `bulk_backfill` and the pipelines' state machines. Reads/writes to pipeline-tokens DDB, invokes task Lambdas, starts `run_task` and the tasks' state machines, writes CloudWatch logs. Highest-privilege role in the stack — it's the "conductor" |
-| `polyris-default-task-role` | Cross-account trust (from orchestration-role) | The runtime task role. Assumed by task Lambdas / Glue / ECS / Batch when `run_task` starts a task. Covers Athena + Glue + S3 + task-service `StartJobRun` / `RunTask` |
+| `polyris-default-task-role` | Cross-account trust (from orchestration-role) | The runtime task role. Assumed by `run_task` to start a task in the platform's account. Covers Athena + Glue + S3 + task-service `StartJobRun` / `RunTask` |
 | `polyris-console-api-role` | Lambda | Serves the REST API behind the Console UI. Reads DDB tables, starts a pipeline's run, writes operator actions and stops a stopped task's `run_task`; it asks Step Functions nothing about a run, whose status the run row holds (ADR #137 §5) |
 | `polyris-reconcile-role` | Lambda | The dispatcher (ADR #137): passes over a run's rows when the tasks table's stream wakes it, decides each row and starts its `run_task`. Its own grant reads that stream; the rest is the `polyris-reconcile` policy below |
-| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions; makes one narrow pass of the dispatcher over each run with a waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset, reading each one's registry entry (`GetItem`). It deletes a push subscription whose pipeline is no longer scheduled on the asset |
+| `polyris-asset-fanout-role` | Lambda | Reads the `asset-events` stream, the `asset:{name}` subscriptions and the push subscriptions. Makes one narrow pass of the dispatcher over each run with a waiting task (the `polyris-reconcile` policy) and starts the pipelines scheduled on the asset, reading each one's registry entry (`GetItem`). It deletes a push subscription whose pipeline is no longer scheduled on the asset |
 | `polyris-sweeper-role` | Lambda | Every 5 minutes, makes one full pass of the dispatcher over each run that is due (ADR #137 §7), with the `polyris-reconcile` policy. It reads the attention index and keeps its lease and health rows. Its passes alone judge executions with `states:DescribeExecution` on the executions of polyris state machines (`*-polyris-*`): a task's `run_task` and the run's execution, whose pipeline may have a namespace and stage of its own. It retries or catches up push starts: reads `asset-subscriptions` and each consumer's registry entry (`GetItem`), starts the pipelines scheduled on an asset and deletes the subscriptions their pipelines no longer have. It checks both streams and their mappings (`dynamodb:DescribeTable` on `asset-events` and `pipeline-tokens`, `lambda:ListEventSourceMappings`) |
 | `polyris-sweeper-schedule-role` | EventBridge Scheduler | Invokes the sweeper function, and nothing else |
 | `polyris-start-run-role` | Lambda | Starts a run (ADR #137 §1). It reads the run's task specs from `pipeline-specs` (`Query`, `BatchGetItem`). It writes the run row, the run's input and one row per task to `pipeline-tokens` with conditional `PutItem` and `UpdateItem`, and reads a refused write back with `GetItem`. It writes the `asset:{name}` pointers of tasks with `wait_for` to `dep-subscriptions` |
@@ -316,7 +314,7 @@ Eleven IAM roles the stack creates during Install. Every role's `RoleName` start
 
 Three AWS::IAM::ManagedPolicy resources the stack also creates. One is the dispatcher's own:
 
-- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs: run rows, task rows and the run's input, asset facts, warnings, and in `pipeline-specs` a run's task names (`Query`) and one task's spec at its start (`GetItem`). It queries `pipeline-execution-index` only for a run whose run row is missing, to stop that run's rows, and puts each decision's event in the task's timeline (`task-events`). A decision is one transaction, so `dynamodb:ConditionCheckItem` too. In the `asset:` pointers table it deletes a row's pointers once the row has left its wait, and writes them again for a row that waits again after a Restart (`DeleteItem`, `PutItem`). `states:StartExecution` of the `run_task` state machine only, `states:SendTaskSuccess`/`SendTaskFailure` to answer a run, and `states:StopExecution` of the executions of polyris state machines (`*-polyris-*`), for a Stop of a run: a stopped row's `run_task` and the run's own execution, whose pipeline may have a namespace and stage of its own. Every pipeline `polyris-deploy` deploys is named `{namespace}-{stage}-polyris-{dag_id}`, so the pattern covers it; IAM no longer keeps two platforms of one account apart, and the engine acts only on the executions its own rows record. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
+- `${Namespace}-${Stage}-polyris-reconcile` — what the dispatcher reads and writes, wherever it runs: run rows, task rows and the run's input, asset facts, warnings, and in `pipeline-specs` a run's task names (`Query`) and one task's spec at its start (`GetItem`). It queries `pipeline-execution-index` only for a run whose run row is missing, to stop that run's rows, and puts each decision's event in the task's timeline (`task-events`). A decision is one transaction, so `dynamodb:ConditionCheckItem` too. In the `asset:` pointers table it deletes a row's pointers once the row has left its wait, and writes them again for a row that waits again after a Restart (`DeleteItem`, `PutItem`). `states:StartExecution` of the `run_task` state machine only, and `states:SendTaskSuccess`/`SendTaskFailure` to answer a run. `states:StopExecution` of the executions of polyris state machines (`*-polyris-*`), for a Stop of a run: a stopped row's `run_task` and the run's own execution, whose pipeline may have a namespace and stage of its own. Every pipeline `polyris-deploy` deploys is named `{namespace}-{stage}-polyris-{dag_id}`, so the pattern covers it; IAM no longer keeps two platforms of one account apart, and the engine acts only on the executions its own rows record. Attached to `polyris-reconcile-role`, `polyris-asset-fanout-role` and `polyris-sweeper-role`.
 
 Two are published for user pipeline tasks that need them:
 

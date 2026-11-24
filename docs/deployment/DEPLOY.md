@@ -48,7 +48,7 @@ bulk-mode (`--all`/`--only`) discovery rules and failure-handling behavior.
 For each pipeline:
 - `AWS::StepFunctions::StateMachine` — the pipeline
 - `AWS::Logs::LogGroup` — CloudWatch logs
-- `AWS::Scheduler::Schedule` — EventBridge Scheduler (if `schedule` is a cron/rate string; not created for asset-triggered or `schedule=None` pipelines)
+- `AWS::Scheduler::Schedule` and the `AWS::IAM::Role` it starts the state machine with — EventBridge Scheduler (if `schedule` is a cron/rate string; not created for asset-triggered or `schedule=None` pipelines)
 
 State is managed by CloudFormation — create, update, and delete handled automatically.
 

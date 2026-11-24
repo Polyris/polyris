@@ -1,15 +1,14 @@
 """Realistic pipeline — a plausible daily analytics run, end to end.
 
 This is what a real polyris pipeline tends to look like: a mix of services, a
-sensible dependency graph, retry/timeout defaults, and a cross-account publish
-at the end. Nothing exotic — it just puts the pieces from the earlier examples
+sensible dependency graph, retry/timeout defaults, and a publish at the end. Nothing exotic — it just puts the pieces from the earlier examples
 together the way you actually would.
 
 Flow:
     ingest (Lambda)
       → clean (Glue) → aggregate (Athena) → build_report (Batch)
       → validate_freshness (Lambda)
-    build_report + validate_freshness → publish (cross-account SFN)
+    build_report + validate_freshness → publish (nested SFN)
 
 Run it locally (no AWS):  polyris-validate -v
 """
@@ -93,7 +92,7 @@ with DAG(
         arn="arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn",
     )
     def publish():
-        """Publish the report via a nested, cross-account workflow."""
+        """Publish the report via a nested workflow."""
         pass
 
     # Wire the graph.

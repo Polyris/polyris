@@ -1,6 +1,6 @@
 """Assets — waiting on a cross-pipeline asset, pull model (EXPERIMENTAL).
 
-⚠️  Assets are experimental: the API may change. Inspect lineage with `polyris-output --graph`.
+⚠️  Assets are experimental: the API may change. List each asset's producers and consumers with `polyris-output --assets`.
 
 Two ways a pipeline can depend on another pipeline's asset — pick whichever
 fits the case:
@@ -11,9 +11,9 @@ fits the case:
     react immediately and has nothing useful to do otherwise.
 
   PULL (wait_for=[asset], this example)
-    The pipeline keeps its OWN schedule (here: manual/on-demand, could just
-    as well be `@daily`) and a specific TASK inside it pauses at the
-    dependency-check step until the asset is fresh enough, then continues.
+    The pipeline keeps its OWN schedule (here `@daily`) and a specific TASK
+    inside it waits, once its upstream tasks allow it, until the asset is
+    fresh enough, then runs.
     Good when the consumer has other, asset-independent work to do first
     (so it shouldn't wait from the very start of the run), or when you want
     a freshness *window* rather than "fires on every single update."
@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore", category=polyris.ExperimentalWarning)
 # NOTE: placeholder ARN — replace with your own state machine before deploying.
 ARN = "arn:aws:states:us-east-1:000000000000:stateMachine:polyris-test-sfn"
 
-# Same asset name as produced in 12_assets_schedule_trigger — this is what links the lineage.
+# Same asset name as produced in 12_assets_schedule_trigger — this is what links the two pipelines.
 orders_daily = Asset("analytics/orders_daily", uri="s3://polyris-example/analytics/orders_daily/", group="aggregated")
 
 with DAG(
@@ -50,9 +50,9 @@ with DAG(
 
     @task.sfn(arn=ARN, wait_for=[orders_daily.within(hours=24)])
     def build_summary():
-        """Pauses at registration until analytics/orders_daily has updated in
-        the last 24h, then reads it and builds the summary. If it's already
-        fresh when this task registers, it proceeds immediately — no wait."""
+        """Waits until analytics/orders_daily has updated in the last 24h,
+        then reads it and builds the summary. If it's already fresh when the
+        run reaches this task, it starts at once — no wait."""
         pass
 
     build_summary()

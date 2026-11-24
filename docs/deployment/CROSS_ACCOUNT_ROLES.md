@@ -14,7 +14,6 @@ Polyris supports executing tasks in different AWS accounts via cross-account IAM
 ENVIRONMENTS = {
     "prod": {
         "namespace": "mycompany",
-        "stage": "prod",
         "region": "us-east-1",
         "roles": {
             "etl":       "arn:aws:iam::111111111111:role/etl-execution-role",
@@ -49,7 +48,7 @@ default) runs in the orchestration account.
 
 ### 3. IAM trust policy in target account
 
-The target account role must trust your Polyris orchestration role:
+The target account role must trust the orchestration role of your polyris platform, `<namespace>-<stage>-polyris-orchestration-role`, which runs `run_task` (here in account `123456789012`):
 
 ```json
 {
@@ -57,7 +56,7 @@ The target account role must trust your Polyris orchestration role:
   "Statement": [{
     "Effect": "Allow",
     "Principal": {
-      "AWS": "arn:aws:iam::YOUR_ACCOUNT:role/YOUR_ORCHESTRATION_ROLE"
+      "AWS": "arn:aws:iam::123456789012:role/mycompany-prod-polyris-orchestration-role"
     },
     "Action": "sts:AssumeRole"
   }]

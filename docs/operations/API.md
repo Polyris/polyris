@@ -51,6 +51,9 @@ Response (with `stats=true`):
       "description": "Daily pipeline",
       "group": "acme",
       "schedule": "cron(0 10 ? * MON *)",
+      "asset_schedule": null,
+      "registered_at": "2026-02-10T09:14:22.031Z",
+      "needs_redeploy": false,
       "status": "running",
       "waiting_on": "waiting_decision",
       "failed_tasks": 1,
@@ -72,6 +75,7 @@ Fields `recent_runs`, `sla`, `waiting_on` and `failed_tasks` are filled only whe
 - `recent_runs` are the last 10 of those runs whose logical date is within the 14 days, newest first by date, then by start.
 - `status` is the latest run's status, `idle` when there is none: `running` until every task of the run has finished, with `failed_tasks` counting the ones that failed, then `success`, `failed` or `aborted`. It comes from the run row's summary; the console asks Step Functions nothing about a run, so a run stopped in the AWS console shows `running` until the engine's next check of it, up to about 30 minutes.
 - `waiting_on` is `waiting_decision` or `waiting_paused` when the latest run is running but waits for an operator, else `null`.
+- `needs_redeploy` is `true` for a pipeline deployed before 1.3 or with an older format: its runs fail until you run `polyris-deploy` for it again.
 - `stats_incomplete` is `true` when a start day could not be read: some statuses may be out of date. `index_building` is `true` while DynamoDB builds `run-start-index` after an upgrade, about 8 minutes on a large table; the statuses show once it is ready. A call the console API is not allowed to make fails the request with a 500 instead, and so does a pipeline registry it cannot read.
 
 ### Get Pipeline Status
@@ -80,23 +84,17 @@ Fields `recent_runs`, `sla`, `waiting_on` and `failed_tasks` are filled only whe
 GET /api/pipeline-status?name={pipeline_name}&date={YYYY-MM-DD}&pipeline_execution={execution_name}
 ```
 
-Returns one run's tasks: the run named by `pipeline_execution`, or else the latest run of `date` (today by default),
-found through the pipeline's task rows of that date (`pipeline-date-index`; ADR #137 §5). `selected_execution` names
-the run, `null` when the date has none. Each task's status is the one its row holds: the console asks Step Functions
-nothing about a run. `run` says what the run row holds and the task rows do not: `paused`, whether a pause holds the
-run, and `stopping`, whether a Stop of it is in progress (ADR #137 §3, §5); `null` for a run started before 1.3.
-Each task names its latest `run_task` execution in `run_task_arn` (here and in `/api/tasks`), and its output is read
-from the date's store, never from the task's row.
+Returns one run's tasks: the run named by `pipeline_execution`, or else the latest run of `date` (today by default), found through the pipeline's task rows of that date (`pipeline-date-index`; ADR #137 §5). `selected_execution` names the run, `null` when the date has none. Each task's status is the one its row holds: the console asks Step Functions nothing about a run.
 
-A task that waits (`waiting`, `waiting_paused`, `waiting_decision`) also says why (ADR #137 §1): `reasons`, the
-reasons the engine recorded, and `reasons_at`, since when; `countdown_end`, when a ready task's `wait_before`
-countdown ends and it starts; `deadline`, when its wait or its decision fails, `null` while a pause holds it or the
-task counts down; and, while it waits for its upstreams, `dependency_verdict`: what its trigger rule makes of them
-(`verdict`, `reason`, and per upstream its `name`, `status` and what it `counts_as`).
+`run` says what the run row holds and the task rows do not (ADR #137 §3, §5). `paused` says whether a pause holds the run, and `stopping` whether a Stop of it is in progress. For a run started before 1.3, `run` is `null`. Each task names its latest `run_task` execution in `run_task_arn` (here and in `/api/tasks`), and its output is read from the date's store, never from the task's row.
 
-A run started before 1.3 has no run row, and 1.3 finishes none of its rows: a task row of such a run that is not
-final carries `"stale": true` here, in `/api/tasks` and in `/api/execution-children`, and such a run shows the status
-`stale` in the run lists of a date (ADR #137, *Migration*).
+A task that waits (`waiting`, `waiting_paused`, `waiting_decision`) also says why (ADR #137 §1):
+- `reasons`, the reasons the engine recorded, and `reasons_at`, since when;
+- `countdown_end`, when a ready task's `wait_before` countdown ends and it starts;
+- `deadline`, when its wait or its decision fails, `null` while a pause holds it or the task counts down;
+- while it waits for its upstreams, `dependency_verdict`: what its trigger rule makes of them (`verdict`, `reason`, and per upstream its `name`, `status` and what it `counts_as`).
+
+A run started before 1.3 has no run row, and 1.3 finishes none of its rows (ADR #137, *Migration*). A task row of such a run that is not final carries `"stale": true` here, in `/api/tasks` and in `/api/execution-children`. Such a run shows the status `stale` in the run lists of a date.
 
 ### Get Pipeline Executions
 
@@ -120,7 +118,7 @@ DynamoDB builds `run-start-index` after an upgrade, the history and a range answ
 ### Get Pipeline DAG
 
 ```http
-GET /api/pipeline-dag?name={pipeline_name}&pipeline_execution={execution_name}
+GET /api/pipeline-dag?name={pipeline_name}&pipeline_execution={execution_name}&date={YYYY-MM-DD}
 ```
 
 Returns DAG structure with lookup priority:
@@ -137,7 +135,7 @@ Response includes `dag_source` field: `'run'` | `'snapshot'` | `'registry'` | `'
 POST /api/pipeline-run?name={pipeline_name}
 ```
 
-Body (optional): `{"input": {"current_date": "2026-01-15", "custom_var": "value"}}`. `current_date` is the run's date (today when absent); the other keys become the run's variables.
+Body (optional): `{"input": {"current_date": "2026-01-15", "skip_tasks": ["load_inventory"], "custom_var": "value"}}`. `current_date` is the run's date (today when absent); `skip_tasks` names tasks the run starts as skipped; the other keys become the run's variables. The answer names the execution (`execution_arn`, `started_at`).
 
 ## Tasks
 
@@ -155,7 +153,7 @@ one page at a time:
   "tasks": [ /* … */ ],
   "count": 100,
   "next": "2026-07-14T09:12:03.114Z",   // cursor for the older page; null = nothing older
-  "filters": { "status": "", "date": "", "pipeline": "" }
+  "filters": { "status": null, "date": null, "pipeline": null }
 }
 ```
 
@@ -174,6 +172,8 @@ Where a page reads from depends on the filters:
 - `date` — the tasks of that logical date, with no window, runs from before 1.3 included.
   A day (`YYYY-MM-DD`) also finds the runs of hourly, weekly and monthly pipelines whose
   hour, week or month falls on it.
+
+While DynamoDB builds `run-start-index` after an upgrade, a read without `date` answers 503 with `"code": "INDEX_BUILDING"`.
 
 ### Get Task Config
 
@@ -211,12 +211,9 @@ POST /api/task-stop?name={execution_name}       # Stop an unfinished task: it en
 POST /api/task-restart?name={execution_name}    # Run a finished or undecided task again
 ```
 
-Every action accepts an optional body `{"reason": "..."}`; `task-restart` also takes `{"with_dependants": true}`,
-which reruns the dependants that a failure or a stop decided. An action on a running task stops its work too. Each
-answers 409 when the task's status allows no such action, for a task of a run started before 1.3, and for a Restart
-while a Stop of its run is in progress or once its run started more than nine months ago (a year less 90 days).
-A Stop of a run whose stop is done starts a new stop, and `/api/execution-pause` refuses only while a stop is in
-progress.
+Every action accepts an optional body `{"reason": "Data fixed upstream"}`; `task-restart` also takes `{"with_dependants": true}`, which reruns the dependants that a failure or a stop decided. An action on a running task stops its work too.
+
+Each action answers 409 for a task of a run started before 1.3, and when the task's status allows no such action. A Restart also answers 409 while a Stop of its run is in progress, and once its run started more than nine months ago (a year less 90 days). A Stop of a run whose stop is done starts a new stop, and `/api/execution-pause` refuses only while a stop is in progress.
 
 ---
 
@@ -256,13 +253,7 @@ Returns pipeline runs, `started_at`-descending:
 Paging: pass the previous response's `next` back as `before` to get the rows older
 than it; `next` is opaque (see `/api/tasks`). `next: null` means the feed is exhausted.
 
-A run's status comes from its run row's summary of its tasks (ADR #137 §4): `running`
-until every task has finished, with `failed_tasks` counting the ones that failed, then
-`success`, `failed` or `aborted` (a stop or an `upstream_failed` without a failure); a
-failed direct step makes a finished run `failed`. `finished_at` and `duration_ms` are
-set once the run has finished. The console asks Step Functions nothing about a run: the
-engine keeps the run row true, and a run stopped in the AWS console shows `running` until
-the engine's next check of it, up to about 30 minutes.
+A run's status comes from its run row's summary of its tasks (ADR #137 §4). It is `running` until every task has finished, with `failed_tasks` counting the ones that failed. Then it is `success`, `failed` or `aborted` (a stop or an `upstream_failed` without a failure); a failed direct step makes a finished run `failed`. `finished_at` and `duration_ms` are set once the run has finished. The console asks Step Functions nothing about a run: the engine keeps the run row true, and a run stopped in the AWS console shows `running` until the engine's next check of it, up to about 30 minutes.
 
 Filter semantics:
 - `status` — literal match against that status.
@@ -293,8 +284,10 @@ started before 1.3 takes none of them (409).
 ### Execution Info
 
 ```http
-GET /api/execution-children?id={execution_name}
+GET /api/execution-children?id={pipeline_execution}
 ```
+
+The run's tasks, each with `execution_name`, `task_name`, `status`, `date`, `started_at` and `finished_at` (and `"stale": true` for an unfinished task of a run started before 1.3).
 
 ---
 
@@ -304,10 +297,7 @@ GET /api/execution-children?id={execution_name}
 GET /api/notifications?limit=20&hours=4
 ```
 
-Read from the attention index (ADR #137 §6), whatever the date of the run: every task
-that failed within the last `hours`, by when it failed, and every task that waits for a
-decision (`"type": "decision_required"`), with the `deadline` at which it fails on its
-own, `null` while its run is paused. One notification per run, a decision request over a
+Read from the attention index (ADR #137 §6), whatever the date of the run: every task that failed within the last `hours` (default 24, at most 168), by when it failed. Every task that waits for a decision (`"type": "decision_required"`) comes too, with the `deadline` at which it fails on its own, `null` while its run is paused. `limit` caps the list (default 10, at most 50). One notification per run, a decision request over a
 failure. Its `id` names the event, the task's failure or its decision request, not the run:
 the console keeps "read" and "cleared" by it, and a run may fail and ask again. A pause or a
 resume moves a request's deadline, and with it the `id`. The decision requests come first, the most urgent first; then failures, warnings
@@ -324,8 +314,7 @@ listed.
 GET /api/settings/decision-timeout
 ```
 
-How long a failed task waits on a human decision before the configured fallback
-applies (ADR #114).
+`{"decision_timeout_seconds": 18000}`: how long a failed task waits for an operator's decision before the engine fails it (ADR #114).
 
 ---
 
@@ -365,15 +354,20 @@ Every finding has a `title`; the other fields appear only when they apply. `chan
 
 ## Error Responses
 
+An error of authentication, routing or a missing parameter has a code:
+
 ```json
 {"error": "ERROR_CODE", "message": "Human readable message", "request_id": "abc123"}
 ```
 
+A route's own error carries the message in `error`, sometimes with more fields (`{"error": "Pipeline my-pipeline not found", ...}`).
+
 | Code | Meaning |
 |------|---------|
 | 200 | Success |
-| 202 | Accepted (async) |
 | 400 | Bad request / validation error |
+| 401 | Missing or invalid token |
 | 404 | Resource not found |
 | 409 | Conflict (race condition, e.g. restart non-terminal task) |
 | 500 | Internal error |
+| 503 | The run index is still being built (`INDEX_BUILDING`), a spec version cannot be read, or `/api/health` finds DynamoDB or Step Functions unreachable |

@@ -1,7 +1,7 @@
 """Manual (on-demand) pipeline — no schedule.
 
 Omit `schedule` (or pass `schedule=None`) and the pipeline is never triggered
-automatically: no EventBridge rule is created. It runs only when you start it
+automatically: no EventBridge Scheduler schedule is created. It runs only when you start it
 by hand — from the console's **Run** button or the API.
 
 Use this for pipelines you kick off yourself: ad-hoc loads, one-off migrations,

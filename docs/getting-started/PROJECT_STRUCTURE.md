@@ -5,8 +5,8 @@ This guide covers different ways to organize polyris projects.
 ## Installation
 
 ```bash
-# Replace <VERSION> with a real tag from
-# https://github.com/Polyris/polyris/tags (e.g. v1.0.1).
+# Replace <VERSION> with your platform's version, a tag from
+# https://github.com/Polyris/polyris/tags (e.g. v1.3.0).
 pip install "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
 ```
 
@@ -19,13 +19,8 @@ Best for: Small teams, getting started, monorepo setups.
 ```
 mycompany-data/
 ├── pyproject.toml              # Python packaging + dev tools
-├── sam/
-│   └── shared/                 # Shared infrastructure
-│       ├── template.yaml       # SAM template
-│       └── samconfig.toml
-│
-├── pipelines/                  # (whole directory is gitignored — real
-│   ├── config.py               #  account_id / profile stay out of git)
+├── pipelines/
+│   ├── config.py               # gitignored: real account_id / profile stay out of git
 │   ├── acme-daily/
 │   │   └── dag.py
 │   └── nexus-hourly/
@@ -41,8 +36,8 @@ mycompany-data/
 # pipelines/config.py
 ENVIRONMENTS = {
     "dev": {
+        "stack_name": "mycompany-dev",
         "namespace": "mycompany",
-        "stage": "dev",
         "region": "us-east-1",
     },
 }
@@ -53,7 +48,7 @@ DEFAULT_STAGE = "dev"
 **Workflow:**
 ```bash
 # 1. Install the platform (one-time)
-polyris-up --namespace myorg --stage dev
+polyris-up --namespace mycompany --stage dev
 
 # 2. Create pipeline
 cd pipelines
@@ -70,23 +65,13 @@ polyris-deploy
 
 Best for: Multiple teams, separate ownership.
 
+The platform team installs the platform with `polyris-up`; each data team keeps its pipelines in a repository of its own:
+
 ```
-# Repo 1: polyris library (PyPI)
-polyris/
-├── polyris/
-└── pyproject.toml
-
-# Repo 2: Infrastructure (platform team)
-polyris-infra/
-└── sam/
-    ├── dev/shared/
-    └── prod/shared/
-
-# Repo 3: Pipelines (data team)
 data-pipelines/
 ├── pyproject.toml              # Python packaging
-├── pipelines/                  # gitignored: config.py carries real
-│   ├── config.py               # account_id / profile
+├── pipelines/
+│   ├── config.py               # gitignored: carries real account_id / profile
 │   ├── acme-daily/
 │   └── nexus-hourly/
 └── .github/workflows/ci.yml
@@ -125,7 +110,7 @@ with DAG(
     
     extract() >> load()
 
-# Deploy: polyris-deploy --stage $STAGE
+# Deploy: POLYRIS_STAGE=prod polyris-deploy
 ```
 
 ---
@@ -191,8 +176,8 @@ jobs:
 ```python
 # pipelines/config.py
 ENVIRONMENTS = {
-    "dev": {"namespace": "mycompany", "stage": "dev", "region": "us-east-1"},
-    "prod": {"namespace": "mycompany", "stage": "prod", "region": "us-east-1"},
+    "dev": {"stack_name": "mycompany-dev", "namespace": "mycompany", "region": "us-east-1"},
+    "prod": {"stack_name": "mycompany-prod", "namespace": "mycompany", "region": "us-east-1"},
 }
 DEFAULT_STAGE = "dev"
 ```
@@ -216,6 +201,8 @@ import os
 STAGE = os.environ.get("POLYRIS_STAGE", "dev")
 f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-task"
 ```
+
+> **Note:** `--stage` does not reach `dag.py`: it picks the stage's config, while the code above reads `POLYRIS_STAGE`. When a pipeline's code reads the stage, set `POLYRIS_STAGE` instead of passing `--stage`.
 
 ---
 

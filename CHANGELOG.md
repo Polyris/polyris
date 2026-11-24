@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Fixed
+
+- The docs match what 1.3 ships: the console as this repository builds it, the engine of 1.3 instead of 1.2's wrappers and task tokens, the routes and their fields, the CLI's commands and flags, and an authentication guide whose steps run. The schedule presets say when they fire: `@daily` runs every 24 hours from when the schedule is created, not at midnight. The README describes how a run works and compares polyris with Amazon MWAA Serverless.
+
 ## v1.3.0 - 2026-11-24
 
 Until 2.0, a minor release may change how runs behave, remove console routes, stack outputs and DSL parameters that had no effect, add deploy-time limits, and require upgrade steps. Each such change is listed under "Breaking", and `polyris-up` checks the upgrade's preconditions itself.

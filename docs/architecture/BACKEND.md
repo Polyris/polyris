@@ -4,7 +4,7 @@
 
 The backend consists of:
 - **Step Function state machines** (5 total) — 2 orchestration + 3 test SFNs. Full inventory + purpose per SM: [../deployment/INFRASTRUCTURE.md#step-functions-state-machines-5](../deployment/INFRASTRUCTURE.md#step-functions-state-machines-5)
-- **Lambda functions** (8) — console API, reconcile (the dispatcher), asset fan-out, sweeper, run start, alert delivery, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
+- **Lambda functions** (8) — console API, reconcile (the dispatcher), asset fan-out, sweeper, run start, notify, plus 2 custom-resource Lambdas (UI bootstrap, bucket cleanup)
 - **DynamoDB tables** (8) — state, metadata, task specs, event history
 - **EventBridge Scheduler** — per-pipeline schedules (`AWS::Scheduler::Schedule`, one per scheduled DAG)
 
@@ -34,7 +34,7 @@ Start
   ├─▶ Route by task_type: sfn, lambda, glue, ecs, athena, emr, batch, http, …
   │     └─▶ retries within the task's own retries
   └─▶ Record the outcome: the status, the output (output#) and the asset facts
-        in one transaction; a failure alerts through the notify function
+        in one transaction
 ```
 
 It answers no run: the dispatcher answers a run once every row is final (ADR #137 §4).
@@ -58,11 +58,11 @@ REST API handler:
 
 ### 2. reconcile (the dispatcher)
 
-The dispatcher (ADR #137 §1, §7). The tasks table's stream wakes it with a run's rows; it makes a full pass over the run: decides each waiting row from the rows and facts (trigger rules, ADR #138; `wait_for` assets; a pause; deadlines), starts each ready row's `run_task`, carries out the requests on the run row (a Restart's renewal and reset), and answers the run once every row is final. AssetFanout and the sweeper make passes of the same code.
+The dispatcher (ADR #137 §1, §7). The tasks table's stream wakes it with a run's rows, and it makes a full pass over the run. It decides each waiting row from the rows and facts (trigger rules, ADR #138; `wait_for` assets; a pause; deadlines) and starts each ready row's `run_task`. It carries out the requests on the run row (a Restart's renewal and reset), and answers the run once every row is final. AssetFanout and the sweeper make passes of the same code.
 
 ### 3. start_run
 
-The state that starts a run's tasks, after its registration (`lambda:invoke.waitForTaskToken`, ADR #137 §1): reads the run's task specs, writes the run row with the run's token, the run's input, one row per task and the `asset:` pointers, then marks the run active.
+The state that starts a run's tasks, after its registration (`lambda:invoke.waitForTaskToken`, ADR #137 §1). It reads the run's task specs and writes the run row with the run's token, the run's input, one row per task and the `asset:` pointers. Then it marks the run active.
 
 ### 4. asset_fanout
 
@@ -77,13 +77,13 @@ Reads the `asset_events` stream, new facts only (ADR #130 §6.1).
 An EventBridge schedule runs it every 5 minutes (ADR #130 §8, ADR #137 §7). One run at a time holds the `_sweeper_lease` row, within a time budget.
 
 - Takes the due entries of the `waiting` and `decision` kinds from `attention-index`, run rows included, earliest first, groups them by run and makes one full pass of the dispatcher over each run, in its own process. The pass judges every row of the run from the row itself: a countdown that ended, a limit, a decision deadline, a start to try again
-- Its passes alone judge executions (`DescribeExecution`): a `deps_ready` or `running` row whose `run_task` ended without an outcome fails, one whose execution does not exist yet is no dead one, and a `deps_ready` row whose execution does not exist after 2 minutes is started again under its name. The engine stops a run whose execution ended before its answer, or that is still `creating` after `Start_Run`'s retry window, with the cause
+- Its passes alone judge executions (`DescribeExecution`). A `deps_ready` or `running` row whose `run_task` ended without an outcome fails; one whose execution does not exist yet is no dead one. A `deps_ready` row whose execution does not exist after 2 minutes is started again under its name. The engine stops a run whose execution ended before its answer, or that is still `creating` after `Start_Run`'s retry window, with the cause
 - After each check it moves the run row's due time on by the backoff (10, 20, then every 30 minutes) and clears `left_at`. A pass that fails moves it too, and warns once per run (`coordination`); a sweep in which most passes failed, and at least two, reports a failed step
 - A row whose wait the pass ended more than 5 minutes after it could have been decided had its hint lost: one `sweeper` warning per run and check, with the count and a few task names. A countdown that ended, and a row found while the run row carries `left_at`, are no lost hints
 - Rows whose run row is missing, such as those a 1.2 run left in flight, are stopped with the cause
 - Retries the push starts that failed transiently (`retry#` rows), from 5 minutes up to every hour; gives up after 24 h with a `push` warning
 - Hourly, replays the push branch for every fact of the last 48 h (a lost stream record); `_engine_health` keeps its progress
-- Ends with a self-check in `_engine_health`: the state of both streams and of their mappings (to asset-fanout and to the dispatcher), when each mapping last changed and its last result, the oldest overdue entry (a run row included), the number of runs whose check found lost hints, and the push retry backlog. It also records the names the console's findings use: its own function, asset-fanout, the dispatcher and their mappings, the asset-events and tasks tables, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
+- Ends with a self-check in `_engine_health`: the state of both streams and of their mappings (to asset-fanout and to the dispatcher), and when each mapping last changed and its last result. It also records the oldest overdue entry (a run row included), the number of runs whose check found lost hints, and the push retry backlog. It records the names the console's findings use too: its own function, asset-fanout, the dispatcher and their mappings, the asset-events and tasks tables, the region. `GET /api/health` judges it (`checks.coordination`, and `findings` for a verified caller), and the console's **System** pill shows the result
 
 ---
 
@@ -99,8 +99,9 @@ Task state tracking:
 | task_name | S | Task identifier |
 | pipeline_name | S | Pipeline identifier |
 | status | S | Current status |
-| dependencies | L | List of dependency task names |
-| trigger_rule | S | When to trigger |
+| pipeline_execution | S | The run's execution name |
+| readiness | S | JSON: what the dispatcher decides the task on (dependencies, trigger rule, `wait_before`, `wait_for`), copied from its spec by `Start_Run` |
+| generation | N | The owner's generation: every write to the row is fenced by it |
 | started_at | S | ISO timestamp |
 | finished_at | S | ISO timestamp |
 | error | S | Error message (if failed) |
@@ -117,12 +118,13 @@ expired.
 
 ### dependency_subscriptions
 
-Dependency callbacks:
+Per-run pointers to the tasks that wait for an asset:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | dependency_key | PK | `asset:{name}` for a `wait_for` asset |
 | subscriber | SK | The waiting task's execution_name |
+| run | S | The key of the waiting task's run row |
 | ttl | N | Auto-delete timestamp |
 
 ### task_events
@@ -133,7 +135,7 @@ Task history:
 |-----------|------|-------------|
 | task_run_id | PK | Task execution ID |
 | event_time | SK | ISO timestamp |
-| event_type | S | STARTED, TASK_FINISHED, etc. |
+| event_type | S | TASK_STARTED, TASK_FINISHED, DEPS_READY, etc. |
 | details | M | Event details |
 
 ### pipeline_registry

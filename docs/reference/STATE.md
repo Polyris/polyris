@@ -8,20 +8,11 @@ Update it when something moves. Paths here are checked by
 
 ---
 
-**Version:** 1.2.3 · **Next milestone:** v1.3.0, tasks as rows (ADR #137)
+**Version:** 1.3.0, tasks as rows (`docs/reference/adr-137-tasks-as-rows.md`), released 2026-11-24
 
 ## In flight
 
-- **Tasks as rows** (`docs/reference/adr-137-tasks-as-rows.md`), on `feat/tasks-as-rows`,
-  ships as v1.3.0. Done: `Start_Run` writes a run's tasks as rows. The dispatcher, woken by
-  the tasks table's stream, decides each row from the rows and the facts and starts
-  `run_task`, and the sweeper checks every due run. The console's actions write rows.
-  `polyris-up` upgrades from 1.2 and stops what 1.2 left running, and 1.2's engine is gone.
-  Reviews of each part and of the whole branch are done, and their blockers fixed. The live
-  run (Principle #15) is under way: a dev stack upgraded from 1.2.1 runs the branch, and the
-  coordination smoke, its task scenarios included, passes on it. Scale and cost are estimated
-  on the harness, not run live: 2,000 tasks hold once four limits were fixed. Left: the
-  release rehearsal, then the release.
+- Nothing recorded since the v1.3.0 release.
 
 ## Decided, not done
 
@@ -46,7 +37,4 @@ Update it when something moves. Paths here are checked by
 
 ## Before tagging
 
-Principle #15 is not optional: deploy to dev and run a live smoke. The last passes
-touched the console's actions (`sam/lambdas/console_api/routes/tasks.py`,
-`polyris/coordination/actions.py`), the sweeper and `polyris-destroy` — write paths where
-a mock can lie. Run `make e2e-coordination`, and destroy a pipeline with a run in flight.
+Principle #15 is not optional: deploy to dev, run `make e2e-coordination`, and exercise one happy path per new feature in the console.

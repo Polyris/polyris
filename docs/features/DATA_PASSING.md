@@ -9,12 +9,7 @@ end-to-end design rationale, see
 
 ## Requires
 
-`polyris >= 1.3.0` in your task deployment bundles: a Lambda's package
-(`polyris-build-lambda`), a Glue job's wheel (`--extra-py-files`), an ECS or
-Batch image. Rebuild them when you upgrade to 1.3. An older copy of `xcom`
-returns `None` for an upstream whose output the task's input could not hold (a
-fan-in over about 1,500 upstreams), raises for an upstream the run skipped, and
-can read an older run's output of the same date after an upstream failed.
+`polyris >= 1.3.0` in your task deployment bundles: a Lambda's package (`polyris-build-lambda`), a Glue job's wheel (`--extra-py-files`), an ECS or Batch image. Rebuild them when you upgrade to 1.3. An older copy of `xcom` returns `None` for an upstream whose output the task's input could not hold (a fan-in over about 1,500 upstreams). It also raises for an upstream the run skipped, and can read an older run's output of the same date after an upstream failed.
 
 ## Contents
 
@@ -177,12 +172,10 @@ and to holding `PolyrisTaskReadPolicy`. Neither can call `xcom.push()`:
 
 - **EMR** — `addStep.sync` has no `Environment` field to inject
   `POLYRIS_TASK_NAME` etc., and injecting via `HadoopJarStep.Args` would risk
-  breaking user Spark arg parsers. Deferred to a follow-up.
+  breaking user Spark arg parsers.
 - **Athena** — SQL can't execute arbitrary Python. Two patterns:
-  - Small values → set them on `variables=` at the DAG level and reference
-    from the query via templating.
-  - Otherwise → put a Lambda after Athena. The Lambda reads Athena's result
-    location from `event.upstream["athena_task"]["output"]["QueryExecutionId"]`,
+  - Values known at deploy time → interpolate them into `query_string` with a Python f-string. polyris passes the query to Athena as it is, and the decorator refuses `{{ ... }}` and `{% ... %}` in it.
+  - Otherwise → put a Lambda after Athena. The Lambda reads the query's id from `event["upstream"]["athena_task"]["output"]["QueryExecution"]["QueryExecutionId"]`,
     resolves the query result, and returns / pushes the actual value.
 
 To pass a value from an EMR / Athena task to downstream tasks, use one of the
@@ -378,17 +371,7 @@ needs to import it. Install it directly from a git tag.
 > [github.com/Polyris/polyris/tags](https://github.com/Polyris/polyris/tags)
 > (e.g. `v1.0.1`). Never pin to `main` in production.
 
-**Glue Spark ETL (`glueetl`)** — `--additional-python-modules` (accepts
-git+URL because it's a pip wrapper):
-
-```yaml
-DefaultArguments:
-  "--additional-python-modules": "polyris @ git+https://github.com/Polyris/polyris@<VERSION>"
-```
-
-**Glue Python Shell** — `--additional-python-modules` does NOT accept
-git+URL reliably on Python Shell jobs (see `polyris/CLAUDE.md` "Glue Python
-install" rule). Bake polyris into a wheel and pass via `--extra-py-files`:
+**Glue (Spark ETL and Python Shell)** — Glue does not install a git URL reliably: `--additional-python-modules` splits `polyris @ git+https://...` on its spaces and the job fails at launch. Bake polyris into a wheel and pass it via `--extra-py-files`, which both job types accept:
 
 ```yaml
 DefaultArguments:

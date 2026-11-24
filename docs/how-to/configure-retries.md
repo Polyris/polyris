@@ -19,7 +19,7 @@ When AWS says "the task itself failed" (Lambda returned a handler exception, Glu
 
 ## Retries pause the task, they don't erase the failure
 
-After the last retry fails, polyris does **not** propagate failure automatically (ADR #114). The task lands in `waiting_decision` and blocks pending a human choice in the Console:
+After the last retry fails, polyris does **not** propagate failure automatically (ADR #114). The task lands in `waiting_decision` and waits for a human choice in the Console; if nobody decides within the decision timeout, 5 hours by default, the task fails:
 
 - **Restart** — try the whole retry sequence again: the retries count from the first again, and the task's ↻ goes up by one
 - **Skip** — mark the task `skipped`; downstream rules honor it
@@ -57,7 +57,7 @@ def fetch_orders():
     pass
 ```
 
-Waits: ~15-30s, ~30-60s, ~60-120s, ~120-240s, ~300-600s (jitter halves each range's floor). Jitter matters when several tasks retry against the same rate-limited endpoint — without it they all resume at the same second and re-trigger the limit. Total wait budget: ~15 minutes worst case.
+Waits: ~15-30s, ~30-60s, ~60-120s, ~120-240s, ~240-480s (jitter halves each range's floor). Jitter matters when several tasks retry against the same rate-limited endpoint — without it they all resume at the same second and re-trigger the limit. Total wait budget: ~15 minutes worst case.
 
 ### Task depends on another service that's briefly down
 
@@ -72,7 +72,7 @@ def daily_etl():
     pass
 ```
 
-Waits: 2m, 4m, 8m. Simple exponential without jitter — this is one task, no herd concern. Third failure pauses for human review (usually the dependency's real outage).
+Waits: 2m, 4m, 8m. Simple exponential without jitter — this is one task, no herd concern. The fourth failure waits for human review (usually the dependency's real outage).
 
 ### Task is expensive; retrying blindly costs money
 
@@ -139,14 +139,14 @@ with DAG(
 
 ## Debugging retry behavior
 
-- Console → Task Detail → **Timeline** tab shows every dispatch: one `TASK STARTED` event for the first dispatch, then one `AUTO RETRY` event per automatic retry. If you configured `retries=3` and see only two `AUTO RETRY` events, either the task succeeded on that retry, or a human acted on the pause before the third retry.
+- Console → Task Detail → **History** tab shows every dispatch: one **Started** event for the first dispatch, then one **Auto-retry** event per automatic retry. If you configured `retries=3` and see only two **Auto-retry** events, either the task succeeded on that retry, or a human acted on the pause before the third retry.
 - Console → Task Detail → **Details** tab → **Attempt** stat tile shows two chips when retries have occurred:
   - ↻ N — number of manual Restarts (bumps only when an operator clicks Restart)
   - ⭮ N/M — current in-SFN retry index / max retries configured
   - Neither chip appears when the task was never restarted and has had no auto-retry.
 - Console → **Tasks** view → **Status** column shows the same chips inline for at-a-glance visibility across all tasks.
-- The **Status** cell also shows a countdown timer while `run_task` waits between retries — the same timer used for `wait_before` delays.
-- CloudWatch log group `/aws/states/polyris-run-task-helper` — filter by execution ARN to see the retry loop's state transitions (`Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt` state entries).
+- The task's node in the pipeline graph shows a countdown while `run_task` waits between retries — the same countdown as for `wait_before` delays.
+- The task's `run_task` execution in the Step Functions console (the task's **AWS Console** link) shows the retry loop's states: `Prepare_Retry_Wait`, `Wait_Before_Retry`, `Save_Retry_Attempt`.
 
 ## Related
 
