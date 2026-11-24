@@ -171,8 +171,8 @@ class Asset:
         glue_region: Optional AWS region (e.g. "eu-west-1"). The Glue
                      Data Catalog is per-region, so a catalog in another
                      region requires a region-pinned boto3 client. Empty
-                     means "the Console API Lambda's own region". Maps
-                     to `region_name` of the boto3 client.
+                     means the region of the AWS session that reads it.
+                     Maps to `region_name` of the boto3 client.
 
         Note on Athena: Amazon Athena's UI shows a four-level hierarchy
         (Data source → Catalog → Database → Table), where "Data source"
@@ -508,8 +508,7 @@ class Asset:
         """Create an Asset whose `schema` is fetched from AWS Glue Catalog.
 
         The `glue_table`, `catalog_id`, and `region` arguments are also stored
-        on the resulting Asset, so the runtime drift-detection path (ADR #43)
-        works on this asset out of the box without re-typing them.
+        on the resulting Asset and in its task specs.
 
         Example:
             orders = Asset.from_glue_table(
@@ -519,13 +518,11 @@ class Asset:
             )
 
         Cross-account: pass `catalog_id="<account-id>"`. The provided account
-        must grant `glue:GetTable` to the caller; the deploy-time call uses
-        the developer's local credentials, the runtime drift-detection call
-        uses the Console API Lambda's role.
+        must grant `glue:GetTable` to the caller, which is you: the call
+        runs with your local credentials when the pipeline file loads.
 
         Cross-region: pass `region="eu-west-1"`. The value is stored in
-        `glue_region` on the resulting Asset so backend drift detection
-        queries the correct region.
+        `glue_region` on the resulting Asset.
 
         Default name behaviour:
             - Local catalog (no `catalog_id`):         "{database}.{table}"

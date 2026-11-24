@@ -110,7 +110,7 @@ with DAG(
     
     extract() >> load()
 
-# Deploy: POLYRIS_STAGE=prod polyris-deploy
+# Deploy: polyris-deploy --stage prod
 ```
 
 ---
@@ -202,7 +202,7 @@ STAGE = os.environ.get("POLYRIS_STAGE", "dev")
 f"arn:aws:states:us-east-1:ACCOUNT_ID:stateMachine:myorg-{STAGE}-task"
 ```
 
-> **Note:** `--stage` does not reach `dag.py`: it picks the stage's config, while the code above reads `POLYRIS_STAGE`. When a pipeline's code reads the stage, set `POLYRIS_STAGE` instead of passing `--stage`.
+`polyris-deploy --stage prod` sets `POLYRIS_STAGE=prod` before it runs `dag.py`, so the code above and `config.stage` read the stage you deploy to.
 
 ---
 

@@ -1,6 +1,6 @@
 # 16 — XCom showcase
 
-**How-to guide.** How to deploy and run this example to see every 1.0.0 XCom
+**How-to guide.** How to deploy and run this example to see every XCom
 reader / writer path exercised in one pipeline. For the API specification, see
 [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md); for the
 design rationale, see
@@ -8,9 +8,9 @@ design rationale, see
 
 ## Prerequisites
 
-- polyris SAM stack deployed in the target AWS account (this example depends
+- The polyris platform installed in the target AWS account with `polyris-up` (this example depends
   on its managed policies and DDB tables).
-- `polyris >= 1.0.0` installed locally: `pip install polyris==1.0.0`.
+- polyris of the platform's version installed locally ([Install](../../README.md#install)).
 - Credentials for the target AWS account in `AWS_PROFILE` or default chain.
 
 ## Pipeline shape
@@ -60,18 +60,12 @@ producer" contrast but the `xcom.push()` demo still works if you upload
 
 ### Option B — dedicated resources (recommended for a clean demo)
 
-Create three Lambdas (`polyris-xcom-extract-dict`,
-`polyris-xcom-extract-primitive`, `polyris-xcom-report`) and one Glue job
-(`polyris-xcom-aggregate`). Paste the files from `lambda_handlers/` and
+Create three Lambdas (`polyris-test-xcom-extract-dict`,
+`polyris-test-xcom-extract-primitive`, `polyris-test-xcom-report`) and one Glue job
+(`polyris-test-xcom-aggregate`), the names `dag.py` uses. Paste the files from `lambda_handlers/` and
 `glue_scripts/` respectively.
 
-The `report` Lambda's deployment zip must include `polyris>=1.0.0`
-(pip install into the deployment directory).
-
-The Glue job needs `polyris>=1.0.0` on the Spark cluster:
-
-- Glue Job details → Job parameters →
-  `--additional-python-modules` = `polyris==1.0.0`
+The `report` Lambda's zip needs the SDK: build it with `polyris-build-lambda`. The Glue job needs it as a wheel in `--extra-py-files`. Both are in [Installing polyris SDK in Glue / ECS / Batch / EMR](../../docs/features/DATA_PASSING.md#installing-polyris-sdk-in-glue--ecs--batch--emr).
 
 ## Step 2 — attach IAM
 
@@ -79,10 +73,10 @@ Attach the polyris-published managed policies to each function / job role:
 
 | Role | `PolyrisTaskReadPolicy` | `PolyrisTaskWritePolicy` |
 |------|:-----------------------:|:------------------------:|
-| `polyris-xcom-extract-dict`      | not needed (returns via `return`) | not needed |
-| `polyris-xcom-extract-primitive` | not needed (returns via `return`) | not needed |
-| `polyris-xcom-report`            | **required** (calls `xcom.get()`) | not needed |
-| `polyris-xcom-aggregate` (Glue role) | not needed for this demo | **required** (calls `xcom.push()`) |
+| `polyris-test-xcom-extract-dict`      | not needed (returns via `return`) | not needed |
+| `polyris-test-xcom-extract-primitive` | not needed (returns via `return`) | not needed |
+| `polyris-test-xcom-report`            | **required** (calls `xcom.get()`) | not needed |
+| `polyris-test-xcom-aggregate` (Glue role) | not needed for this demo | **required** (calls `xcom.push()`) |
 
 CFN import syntax:
 
@@ -92,7 +86,7 @@ ManagedPolicyArns:
   - !ImportValue myorg-dev-polyris-task-write-policy   # Glue role only
 ```
 
-Replace `myorg-dev` with your polyris SAM stack's `${Namespace}-${Stage}`.
+Replace `myorg-dev` with your platform's `${Namespace}-${Stage}`.
 Full IAM contract:
 [`docs/features/DATA_PASSING.md#iam`](../../docs/features/DATA_PASSING.md#iam).
 
@@ -182,4 +176,3 @@ polyris-deploy --destroy     # removes the pipeline stack
 
 - API specification: [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md)
 - Design rationale: [`docs/reference/adr-123-xcom-reliable-data-passing.md`](../../docs/reference/adr-123-xcom-reliable-data-passing.md)
-- `CHANGELOG.md` — 1.0.0 entry lists every added / fixed / breaking-risk item.

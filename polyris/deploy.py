@@ -76,7 +76,7 @@ from .platform import (
     parameters_of,
     select_platform_stack,
 )
-from .config import ConfigError
+from .config import ConfigError, use_stage
 from .config import config as polyris_config
 from ._ansi import c as _c, colorize_parser, BOLD, BOLD_GREEN, CYAN
 from .resource_check import (
@@ -90,66 +90,6 @@ from .resource_check import (
 # =============================================================================
 # CFN Template Generation
 # =============================================================================
-
-
-def _check_glue_granularity_drift(dag: DAG, *, region: Optional[str], profile: Optional[str]) -> None:
-    """Advisory check: compare each Glue-backed asset's declared granularity
-    to what its Glue PartitionKeys suggest (ADR #50).
-
-    Prints warnings on mismatch but never fails — the declared value always
-    wins. Users with naming conventions that don't match the inference
-    heuristics (or who know their data better than the heuristics) are
-    expected to ignore the warning.
-    """
-    try:
-        from .adapters.glue import (
-            fetch_glue_partition_keys,
-            infer_granularity_from_partition_keys,
-        )
-    except ImportError:
-        return  # boto3 missing — skip silently
-
-    seen: dict = {}
-    for task in getattr(dag, "tasks", []):
-        for outlet in getattr(task, "outlets", []) or []:
-            glue_table = getattr(outlet, "glue_table", "")
-            if not glue_table or "." not in glue_table:
-                continue
-            seen.setdefault(outlet.name, outlet)
-
-    if not seen:
-        return
-
-    print("\nChecking Glue-declared granularity for assets...")
-    for asset_name, asset in seen.items():
-        glue_table = asset.glue_table
-        db, _, tbl = glue_table.partition(".")
-        declared = getattr(asset, "granularity", "daily")
-        try:
-            keys = fetch_glue_partition_keys(
-                db,
-                tbl,
-                catalog_id=getattr(asset, "glue_catalog", "") or None,
-                region=getattr(asset, "glue_region", "") or region,
-            )
-        except Exception as e:
-            print(f"  ? {asset_name}: could not read Glue ({type(e).__name__})")
-            continue
-
-        inferred = infer_granularity_from_partition_keys(keys)
-        if inferred is None:
-            print(f"  • {asset_name}: declared {declared}, Glue keys {keys or '(none)'} (no inference)")
-            continue
-
-        if inferred == declared:
-            print(f"  ✓ {asset_name}: declared {declared}, Glue confirms")
-        else:
-            print(
-                f"  ⚠ {asset_name}: declared {declared} but Glue partition "
-                f"keys {keys} suggest {inferred}. "
-                f"If your declaration is correct, ignore this. Otherwise "
-                f"update granularity={inferred!r} in your Asset(...)."
-            )
 
 
 def _generate_cfn_template(
@@ -1211,11 +1151,12 @@ def deploy_directory(
     return results
 
 
-def _check_dag_ids(target_dirs: "List[str]", select: Optional[str]) -> "Tuple[List[str], dict]":
+def _check_dag_ids(target_dirs: "List[str]", select: Optional[str],
+                   stage: Optional[str] = None) -> "Tuple[List[str], dict]":
     """The dag_ids (``select`` alone, when given) that two files across ``target_dirs`` make,
     and the directories whose dag_ids could not be read, with why.
 
-    Each directory's files load in its own process, without deploying. A file that does not
+    Each directory's files load in its own process, under ``stage``, without deploying. A file that does not
     load is reported by the deploy that follows; a directory whose process ended without
     answering is not deployed, since its dag_ids were not checked."""
     made: "List[Tuple[str, str]]" = []
@@ -1224,7 +1165,7 @@ def _check_dag_ids(target_dirs: "List[str]", select: Optional[str]) -> "Tuple[Li
     folders = [(d, files) for d, files in folders if files]
     print(f"Checking the dag_ids of {len(folders)} folder(s)...")
     for dir_name, files in folders:
-        answer = folder_process.run("collect", {"files": files}, output="none")
+        answer = folder_process.run("collect", {"files": files, "stage": stage}, output="none")
         if answer.error is not None:
             unchecked[dir_name] = answer.error
             continue
@@ -1260,7 +1201,7 @@ def _run_bulk(
     results: "List[BulkResult]" = []
     target_dirs = sorted(set(target_dirs))  # --only a a: one directory, deployed once
     with folder_process.sigterm_stops_children():
-        twice, unchecked = _check_dag_ids(target_dirs, select)
+        twice, unchecked = _check_dag_ids(target_dirs, select, stage)
         if twice:
             for message in twice:
                 print(f"❌ {message}")
@@ -1309,7 +1250,7 @@ Examples:
   polyris-deploy --only dir1 --select my-dag  # Bulk + pick one DAG per directory
         """,
     )
-    parser.add_argument("--stage", help="Deployment stage (default: from config.py DEFAULT_STAGE)")
+    parser.add_argument("--stage", help="Deployment stage (default: from config.py DEFAULT_STAGE); the pipeline file reads it as POLYRIS_STAGE")
     parser.add_argument(
         "--stack",
         help="SAM CloudFormation stack to read outputs from (default: from config.py ENVIRONMENTS[stage].stack_name)",
@@ -1378,7 +1319,8 @@ def _dispatch(args: argparse.Namespace, destroy: bool) -> None:
         print(f"❌ Pipeline file not found: {pipeline_file}")
         sys.exit(1)
 
-    # Load DAGs
+    # Load DAGs, under the stage of the deploy (config.use_stage)
+    use_stage(args.stage)
     print(f"Loading pipeline: {_c(str(pipeline_file), CYAN)}")
     dags = _load_dag_from_file(pipeline_file)
 

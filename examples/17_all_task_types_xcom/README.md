@@ -1,7 +1,7 @@
 # 17 — All task types × XCom (end-to-end smoke)
 
 **How-to guide.** How to deploy and run this pipeline to verify every polyris
-1.0.0 task type participates in XCom bidirectionally. For the API spec, see
+task type participates in XCom bidirectionally. For the API spec, see
 [`docs/features/DATA_PASSING.md`](../../docs/features/DATA_PASSING.md).
 
 Companion narrower demo of just the reader/writer surface:
@@ -30,7 +30,7 @@ The chain terminates at `publish_sfn`; its Output contains the final
 
 ## What's excluded and why
 
-- **EMR** — `xcom.push()` is not supported for EMR in 1.0.0 (see
+- **EMR** — `xcom.push()` is not supported for EMR (see
   [DATA_PASSING.md](../../docs/features/DATA_PASSING.md#emr-and-athena--reads-yes-xcompush-no)).
   A pipeline requiring "every task fully participates" cannot include EMR.
 
@@ -55,7 +55,7 @@ participation is:
   is the documented Lambda-after-Athena pattern.
 
 The Console banner will flag `summary_athena`'s output as AWS metadata — that
-is expected and correct for Athena in 1.0.0.
+is expected and correct for Athena.
 
 ## Files
 
@@ -79,9 +79,9 @@ is expected and correct for Athena in 1.0.0.
 
 ## Prerequisites
 
-- polyris SAM stack deployed in the target AWS account (this pipeline uses
+- The polyris platform installed in the target AWS account with `polyris-up` (this pipeline uses
   `PolyrisTaskReadPolicy` + `PolyrisTaskWritePolicy` published by that stack).
-- `polyris >= 1.0.0` installed locally.
+- polyris of the platform's version installed locally ([Install](../../README.md#install)).
 - The eight AWS resources this DAG references. The shared
   `examples/testing-infra/test-resources.yaml` provisions a subset of these
   under `polyris-test-*` names; the rest need to be added — see
@@ -105,10 +105,10 @@ New (add to `testing-infra/test-resources.yaml` or a companion stack):
 | Task | Resource | Notes |
 |------|----------|-------|
 | `seed_lambda` | Lambda `polyris-test-xcom-all-seed` | inline handler — see `lambda_handlers/seed.py`; no SDK |
-| `transform_spark` | Glue Spark job `polyris-test-xcom-all-transform-spark` | `Command.Name = glueetl`, `GlueVersion = 5.0` (Python 3.11, matches polyris `requires-python`), `DefaultArguments: --extra-py-files: s3://…/polyris-1.0.0-*.whl`, PolyrisTaskRead/Write policies |
-| `aggregate_pyshell` | Glue pythonshell job `polyris-test-xcom-all-aggregate-pyshell` | `Command.Name = pythonshell`, `DefaultArguments: --extra-py-files: s3://…/polyris-1.0.0-*.whl`, PolyrisTaskRead/Write |
+| `transform_spark` | Glue Spark job `polyris-test-xcom-all-transform-spark` | `Command.Name = glueetl`, `GlueVersion = 5.0` (Python 3.11, matches polyris `requires-python`), `DefaultArguments: --extra-py-files: s3://…/polyris-1.3.0-*.whl`, PolyrisTaskRead/Write policies |
+| `aggregate_pyshell` | Glue pythonshell job `polyris-test-xcom-all-aggregate-pyshell` | `Command.Name = pythonshell`, `DefaultArguments: --extra-py-files: s3://…/polyris-1.3.0-*.whl`, PolyrisTaskRead/Write |
 | `summary_athena` | Table `analytics.silver_stats` with column `silver_count` | pre-populated for the demo; the query is deterministic |
-| `resolve_athena` | Lambda `polyris-test-xcom-all-resolve-athena` | `polyris>=1.0.0` in zip, PolyrisTaskRead + `athena:GetQueryResults` + `s3:GetObject` on workgroup output |
+| `resolve_athena` | Lambda `polyris-test-xcom-all-resolve-athena` | the SDK in its zip (`polyris-build-lambda`), PolyrisTaskRead + `athena:GetQueryResults` + `s3:GetObject` on workgroup output |
 | `compute_ecs` | ECS TaskDefinition `polyris-test-xcom-all-compute` | Python-capable image (see `ecs_task_code/compute.py` docstring for Dockerfile sketch), PolyrisTaskRead/Write on the task role |
 | `render_batch` | Batch JobDefinition `polyris-test-xcom-all-render` | Python-capable image (same Dockerfile pattern as ECS), PolyrisTaskRead/Write |
 | `publish_sfn` | Nested state machine `polyris-test-xcom-all-publish` | definition from `sfn_definitions/publish.json` |
@@ -150,13 +150,13 @@ the DAG panel). Every card should be green with a small dict as the value:
 8. `publish_sfn` → `{"published_url", "score"}` — the final chain output.
 
 Every task's **Input** tab should show the previous task's Output under
-`upstream.<task>.output`. The Console's per-upstream card grammar (1.0.0)
+`upstream.<task>.output`. The Console's per-upstream card
 renders each hop as one row with a green stripe.
 
 ## This is a smoke test — not a production pattern
 
 The ECS / Batch containers in this example use a **runtime install** pattern:
-`python:3.12` base image → `pip install 'polyris @ git+https://github.com/Polyris/polyris@v1.0.0'`
+`python:3.12` base image → `pip install 'polyris @ git+https://github.com/Polyris/polyris@v1.3.0'`
 at container start → run inline `xcom.get()` / `xcom.push()` code. This is
 fine for smoke-testing that `run_task` injects `POLYRIS_*` env vars and
 `xcom.push()` reaches DDB end-to-end, but it has multiple runtime failure
@@ -180,15 +180,15 @@ Sketch:
 
 ```dockerfile
 FROM python:3.12-slim
-RUN pip install --no-cache-dir polyris==1.0.0
+RUN pip install --no-cache-dir 'polyris @ git+https://github.com/Polyris/polyris@v1.3.0'
 COPY compute.py /app/compute.py
 CMD ["python", "/app/compute.py"]
 ```
 
 ```bash
-docker build -t <your-account>.dkr.ecr.<region>.amazonaws.com/polyris-compute:1.0.0 .
+docker build -t <your-account>.dkr.ecr.<region>.amazonaws.com/polyris-compute:1.3.0 .
 aws ecr get-login-password ... | docker login ...
-docker push <your-account>.dkr.ecr.<region>.amazonaws.com/polyris-compute:1.0.0
+docker push <your-account>.dkr.ecr.<region>.amazonaws.com/polyris-compute:1.3.0
 ```
 
 Then point `AWS::ECS::TaskDefinition.ContainerDefinitions[].Image` at that

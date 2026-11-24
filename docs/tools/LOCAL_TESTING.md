@@ -62,7 +62,6 @@ result = dry_run(dag, show_asl=False, show_mermaid=True)
 
 result = run(dag, mock=True)
 result = run(dag, mock=True, task_mocks={'extract': {'records': 100}})
-result = run(dag, localstack=True)  # requires LocalStack at localhost:4566
 ```
 
 ### `ExecutionResult`

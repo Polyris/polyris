@@ -111,10 +111,10 @@ with DAG(
 
 ```python
 # Presets
-DAG(schedule="@daily")      # rate(1 day)
-DAG(schedule="@hourly")     # rate(1 hour)
-DAG(schedule="@weekly")     # rate(7 days)
-DAG(schedule="@monthly")    # cron(0 0 1 * ? *)
+DAG(schedule="@hourly")     # cron(0 * * * ? *)    every hour, on the hour
+DAG(schedule="@daily")      # cron(0 0 * * ? *)    00:00 UTC
+DAG(schedule="@weekly")     # cron(0 0 ? * MON *)  Monday 00:00 UTC
+DAG(schedule="@monthly")    # cron(0 0 1 * ? *)    the 1st, 00:00 UTC
 
 # Custom cron
 DAG(schedule="cron(0 8 * * ? *)")   # 8:00 UTC daily
@@ -124,7 +124,7 @@ DAG(schedule="rate(6 hours)")
 DAG(schedule="rate(1 day)")
 ```
 
-A `rate(...)` schedule, and the `@daily`, `@hourly` and `@weekly` presets with it, fires at intervals counted from when `polyris-deploy` created the schedule, not at midnight UTC. To run at a fixed time, use `cron(...)`.
+Each preset fires at the start of its period in UTC, the period whose partition its run takes. A `rate(...)` schedule fires at intervals counted from when `polyris-deploy` created the schedule; to run at a fixed time, use `cron(...)` or a preset.
 
 ### Asset-Based (Cross-Pipeline Triggers)
 

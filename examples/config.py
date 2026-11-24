@@ -23,7 +23,7 @@ credentials are used).
 #   polyris-deploy --stage dev --region us-west-2
 #
 #   # Deploy the console UI to the same environment:
-#   cd ui && ./deploy.sh --stage dev
+#   cd ui && npm run build && ./deploy.sh <stack_name> <region>
 """
 
 # ─────────────────────────────────────────────────────────────────────
@@ -38,8 +38,8 @@ ENVIRONMENTS = {
         # (from sam/samconfig.toml → stack_name = "...").
         #
         # Read by:
-        #   - polyris-deploy  → describe_stacks(<stack_name>) for wrapper ARN,
-        #                       role ARN, DynamoDB table names, results bucket.
+        #   - polyris-deploy  → describe_stacks(<stack_name>) for the Start_Run
+        #                       function, role ARN, DynamoDB table names, results bucket.
         #   - ui/deploy.sh    → describe_stacks(<stack_name>) for the S3 bucket,
         #                       CloudFront distribution, Cognito IDs.
         #

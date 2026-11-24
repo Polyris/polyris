@@ -80,7 +80,7 @@ export function TaskDetailModal({
     // first letter of tab content. Enabled only when modal is open.
     useKeyboardShortcuts({
         'd': () => setActiveTab('details'),
-        't': () => setActiveTab('timeline'),
+        'h': () => setActiveTab('timeline'),  // the History tab
         'a': () => setActiveTab('actions'),
         'o': () => setActiveTab('output'),
     }, { enabled: !!task });

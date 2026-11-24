@@ -25,6 +25,7 @@ vi.mock('@/utils/icons', () => ({
     Download: () => null,
     Rocket: () => null,
     CheckCircle2: () => null,
+    HelpCircle: () => null,
     AlertTriangle: () => null,
     Clock: () => null,
     Zap: () => null,
@@ -114,6 +115,15 @@ describe('HelpModal', () => {
         });
     });
 
+    it('the Icons tab names the task statuses that 1.3 writes', () => {
+        // It listed Waiting Delay, which 1.3 removed, and no Needs decision, the state a failed task
+        // waits in (the docs audit after 1.3). The asset staleness legend belongs to the assets view.
+        const { container } = render(<HelpModal isOpen onClose={vi.fn()} />);
+        fireEvent.keyDown(document, { key: 'i' });
+        expect(container.textContent).toMatch(/Needs decision/);
+        expect(container.textContent).not.toMatch(/Waiting Delay|Pending|Aborted|Asset Staleness/);
+    });
+
     describe('KeyboardShortcutsTab content', () => {
         it('shows grouped bindings by surface type', () => {
             const { container } = render(<HelpModal isOpen onClose={vi.fn()} />);
@@ -130,6 +140,14 @@ describe('HelpModal', () => {
             // Asset detail tabs are a paid surface — the whole group is dropped
             // in OSS rather than listing six keys that do nothing (#19).
             expect(container.textContent).not.toMatch(/Asset detail tabs/);
+        });
+
+        it('names the task detail tabs by the keys the modal binds', () => {
+            // It listed T for a Timeline tab, which is called History, and no key for Input / Output.
+            const { container } = render(<HelpModal isOpen onClose={vi.fn()} />);
+            expect(container.textContent).toMatch(/History tab/);
+            expect(container.textContent).toMatch(/Input \/ Output tab/);
+            expect(container.textContent).not.toMatch(/Timeline tab/);
         });
 
         it('omits the Backfills-list row navigation keys in OSS', () => {

@@ -26,9 +26,9 @@ import {
     Loader2,
     SkipForward,
     PlayCircle,
-    Ban,
     StopCircle,
     Pause,
+    HelpCircle,
     Copy,
     ChevronDown,
     ChevronRight,
@@ -202,7 +202,8 @@ function KeyboardShortcutsTab() {
             title: 'Task Detail modal tabs',
             items: [
                 { key: 'D', action: 'Details tab' },
-                { key: 'T', action: 'Timeline tab' },
+                { key: 'H', action: 'History tab' },
+                { key: 'O', action: 'Input / Output tab' },
                 { key: 'A', action: 'Actions tab' },
             ],
         },
@@ -312,17 +313,17 @@ function IconsLegendTab() {
                         </div>
                     </div>
                     <div className="hm-help-item">
-                        <span className="hm-help-icon"><Loader2 size={20} className="text-blue-400" /></span>
-                        <div>
-                            <strong>Pending</strong>
-                            <p>Task queued — about to start.</p>
-                        </div>
-                    </div>
-                    <div className="hm-help-item">
                         <span className="hm-help-icon"><XCircle size={20} className="text-red-500" /></span>
                         <div>
                             <strong>Failed</strong>
                             <p>Task failed with an error.</p>
+                        </div>
+                    </div>
+                    <div className="hm-help-item">
+                        <span className="hm-help-icon"><HelpCircle size={20} className="text-amber-500" /></span>
+                        <div>
+                            <strong>Needs decision</strong>
+                            <p>Task failed and waits for you: retry, mark success, skip or fail it.</p>
                         </div>
                     </div>
                     <div className="hm-help-item">
@@ -336,7 +337,7 @@ function IconsLegendTab() {
                         <span className="hm-help-icon"><Clock size={20} className="text-gray-400" /></span>
                         <div>
                             <strong>Waiting</strong>
-                            <p>Task waiting for upstream dependencies.</p>
+                            <p>Task waits for its upstream tasks, its wait_before countdown or the data it waits for.</p>
                         </div>
                     </div>
                     <div className="hm-help-item">
@@ -354,62 +355,50 @@ function IconsLegendTab() {
                         </div>
                     </div>
                     <div className="hm-help-item">
-                        <span className="hm-help-icon"><Clock size={20} className="text-amber-500" /></span>
-                        <div>
-                            <strong>Waiting Delay</strong>
-                            <p>Waiting for scheduled delay (wait_before).</p>
-                        </div>
-                    </div>
-                    <div className="hm-help-item">
                         <span className="hm-help-icon"><Pause size={20} className="text-amber-500" /></span>
                         <div>
                             <strong>Paused</strong>
-                            <p>Waiting for manual approval.</p>
+                            <p>Its run is paused; the task starts after Resume.</p>
                         </div>
                     </div>
                     <div className="hm-help-item">
                         <span className="hm-help-icon"><StopCircle size={20} className="text-amber-600" /></span>
                         <div>
                             <strong>Stopped</strong>
-                            <p>Task was stopped manually.</p>
-                        </div>
-                    </div>
-                    <div className="hm-help-item">
-                        <span className="hm-help-icon"><Ban size={20} className="text-orange-500" /></span>
-                        <div>
-                            <strong>Aborted</strong>
-                            <p>Task was aborted due to pipeline stop.</p>
+                            <p>Stopped by you, or by a Stop of its run.</p>
                         </div>
                     </div>
                 </div>
             </div>
             
-            <div className="hm-help-section">
-                <h4>Asset Staleness</h4>
-                <div className="hm-help-grid">
-                    <div className="hm-help-item">
-                        <span className="hm-help-icon"><CheckCircle2 size={20} className="text-green-500" /></span>
-                        <div>
-                            <strong>Fresh</strong>
-                            <p>Asset updated within last 24 hours.</p>
+            {paidSurface.AssetsView && (
+                <div className="hm-help-section">
+                    <h4>Asset Staleness</h4>
+                    <div className="hm-help-grid">
+                        <div className="hm-help-item">
+                            <span className="hm-help-icon"><CheckCircle2 size={20} className="text-green-500" /></span>
+                            <div>
+                                <strong>Fresh</strong>
+                                <p>Asset updated within last 24 hours.</p>
+                            </div>
                         </div>
-                    </div>
-                    <div className="hm-help-item">
-                        <span className="hm-help-icon"><AlertTriangle size={20} className="text-amber-500" /></span>
-                        <div>
-                            <strong>Warning</strong>
-                            <p>Asset updated 24-48 hours ago.</p>
+                        <div className="hm-help-item">
+                            <span className="hm-help-icon"><AlertTriangle size={20} className="text-amber-500" /></span>
+                            <div>
+                                <strong>Warning</strong>
+                                <p>Asset updated 24-48 hours ago.</p>
+                            </div>
                         </div>
-                    </div>
-                    <div className="hm-help-item">
-                        <span className="hm-help-icon"><Clock size={20} className="text-red-500" /></span>
-                        <div>
-                            <strong>Stale</strong>
-                            <p>Asset not updated for more than 48 hours.</p>
+                        <div className="hm-help-item">
+                            <span className="hm-help-icon"><Clock size={20} className="text-red-500" /></span>
+                            <div>
+                                <strong>Stale</strong>
+                                <p>Asset not updated for more than 48 hours.</p>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
+            )}
         </>
     );
 }

@@ -899,11 +899,12 @@ describe('TaskDetailModal', () => {
 
     // ─── Keyboard shortcuts (v0.78.3, ADR #64; revised v0.78.5) ──────────
     // v0.78.5: numeric keys conflicted with global nav in App.tsx.
-    // Modal tabs now use letter keys: d=details, t=timeline, a=actions.
+    // Modal tabs use the first letter of each tab's name: d=Details, h=History,
+    // o=Input / Output, a=Actions (the help listed t=Timeline, a tab that is called History).
     describe('keyboard shortcuts', () => {
-        it('pressing "t" switches to timeline tab', () => {
+        it('pressing "h" switches to the History tab', () => {
             const { container } = render(<TaskDetailModal {...defaultProps} />);
-            fireEvent.keyDown(document, { key: 't' });
+            fireEvent.keyDown(document, { key: 'h' });
             const active = container.querySelector('.active');
             expect(active?.textContent).toMatch(/history/i);
         });
@@ -919,8 +920,8 @@ describe('TaskDetailModal', () => {
             const { container } = render(<TaskDetailModal {...defaultProps} task={null} />);
             // Sanity: nothing rendered
             expect(container.innerHTML).toBe('');
-            // Pressing "t" shouldn't error
-            fireEvent.keyDown(document, { key: 't' });
+            // Pressing "h" shouldn't error
+            fireEvent.keyDown(document, { key: 'h' });
         });
     });
 

@@ -217,8 +217,8 @@ def test_route_table_completeness():
     (incl. Team routes) is checked by ee/team/tests/test_route_table_ee.py,
     which only runs when `ee` is present.
     The asset console route `GET /api/assets` moved to Team (ADR #105); task
-    intervention (skip/fail/success/stop/restart[/retry]) and execution control
-    (stop/pause/resume/extend) are free (ADR #110). See ADR #98.
+    intervention (skip/fail/success/stop/restart) and execution control
+    (stop/pause/resume) are free (ADR #110). See ADR #98.
     """
     from main import ROUTES
 

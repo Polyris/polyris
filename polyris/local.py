@@ -19,7 +19,7 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List, Callable, Tuple, cast
+from typing import Dict, Any, Optional, List, Callable, Tuple
 from dataclasses import dataclass, field
 
 from contextlib import ExitStack
@@ -237,25 +237,19 @@ def dry_run(dag: DAG, show_asl: bool = False, show_mermaid: bool = True) -> Dict
 
 def run(
     dag: DAG,
+    *,
     mock: bool = True,
-    localstack: bool = False,
-    localstack_endpoint: str = "http://localhost:4566",
     task_mocks: Optional[Dict[str, Any]] = None,
     on_task_start: Optional[Callable[[str], None]] = None,
     on_task_complete: Optional[Callable[["TaskResult"], None]] = None,
 ) -> "ExecutionResult":
-    """
-    Run DAG locally.
+    """Run the DAG locally, each task with a mock result (``task_mocks``, or a success).
 
-    Modes:
-    - mock=True (default): Simulate execution with mock results.
-    - localstack=True: Execute against LocalStack (requires LocalStack running
-      at localhost:4566 — exercised by e2e/smoke, not unit tests).
+    A mock run is the only local run: a run of 1.3 needs the platform's engine, so the
+    LocalStack mode, which deployed the pipeline's state machine alone, could run no task and
+    is gone. ``mock`` stays for the calls that pass it.
     """
-    if localstack:
-        return _run_localstack(dag, localstack_endpoint, on_task_start, on_task_complete)  # pragma: no cover — requires LocalStack running at localhost:4566
-    else:
-        return _run_mock(dag, task_mocks or {}, on_task_start, on_task_complete)
+    return _run_mock(dag, task_mocks or {}, on_task_start, on_task_complete)
 
 
 def _run_mock(
@@ -380,114 +374,6 @@ def _run_mock(
     return execution_result
 
 
-def _run_localstack(  # pragma: no cover — requires LocalStack running at localhost:4566; exercised by e2e/smoke
-    dag: DAG,
-    endpoint: str,
-    on_task_start: Optional[Callable],
-    on_task_complete: Optional[Callable],
-) -> ExecutionResult:
-    """Run with LocalStack."""
-
-    print("=" * 60)
-    print(f"🐳 {c('LOCALSTACK EXECUTION:', BOLD)} {c(dag.dag_id, CYAN)}")
-    print(f"   Endpoint: {c(endpoint, CYAN)}")
-    print("=" * 60)
-    print()
-
-    try:
-        import boto3
-        from botocore.exceptions import ClientError, BotoCoreError
-    except ImportError:
-        print(c("❌ boto3 is required for LocalStack execution", RED))
-        print("   pip install boto3")
-        raise
-
-    start_time = datetime.now(timezone.utc)
-
-    # Create LocalStack clients
-    sfn = boto3.client(
-        'stepfunctions',
-        endpoint_url=endpoint,
-        region_name='us-east-1',
-        aws_access_key_id='test',
-        aws_secret_access_key='test',
-    )
-
-    # Generate and deploy state machine
-    asl_json = generate_step_function_json(dag)
-
-    try:
-        # Create or update state machine
-        sm_name = f"local-{dag.dag_id}"
-
-        # Try to delete existing
-        try:
-            existing = sfn.list_state_machines()
-            for sm in existing['stateMachines']:
-                if sm['name'] == sm_name:
-                    sfn.delete_state_machine(stateMachineArn=sm['stateMachineArn'])
-                    time.sleep(0.5)
-        except (ClientError, BotoCoreError) as e:
-            # SM might not exist yet, or LocalStack glitch — proceed to create
-            print(f"[local] {c('Skipped deleting old state machine:', YELLOW)} {e}")
-
-        # Create new
-        response = sfn.create_state_machine(
-            name=sm_name,
-            definition=asl_json,
-            roleArn='arn:aws:iam::000000000000:role/test-role',
-        )
-        sm_arn = response['stateMachineArn']
-        print(f"{c('✓ Created state machine:', BOLD_GREEN)} {c(sm_name, CYAN)}")
-
-        # Start execution with deterministic name
-        exec_name = f"{sm_name}-local-{start_time.strftime('%Y%m%d-%H%M%S')}"
-        exec_response = sfn.start_execution(
-            stateMachineArn=sm_arn,
-            name=exec_name,
-            input=json.dumps({'execution_date': start_time.isoformat()})
-        )
-        exec_arn = exec_response['executionArn']
-        print(f"{c('✓ Started execution:', BOLD_GREEN)} {c(exec_arn, CYAN)}")
-
-        # Poll for completion
-        while True:
-            status_response = sfn.describe_execution(executionArn=exec_arn)
-            status = status_response['status']
-
-            if status in ('SUCCEEDED', 'FAILED', 'TIMED_OUT', 'ABORTED'):
-                break
-
-            print(f"   ⏳ Status: {c(status, CYAN)}")
-            time.sleep(1)
-
-        end_time = datetime.now(timezone.utc)
-
-        # Get execution history for task results
-        history = sfn.get_execution_history(executionArn=exec_arn)
-        task_results = _parse_execution_history(cast(List[Dict[str, Any]], history['events']))
-
-        print()
-        print(f"✓ Execution completed: {status}")
-
-        return ExecutionResult(
-            dag_id=dag.dag_id,
-            status='success' if status == 'SUCCEEDED' else 'failed',
-            start_time=start_time,
-            end_time=end_time,
-            task_results=task_results,
-        )
-
-    except Exception as e:
-        print(f"❌ LocalStack execution failed: {e}")
-        return ExecutionResult(
-            dag_id=dag.dag_id,
-            status='failed',
-            start_time=start_time,
-            end_time=datetime.now(timezone.utc),
-        )
-
-
 def _evaluate_trigger_rule(task: Task, previous_results: List[TaskResult]) -> Tuple[str, str]:
     """The verdict of ``task``'s trigger rule over its upstreams' results, and why.
 
@@ -508,56 +394,6 @@ def _evaluate_trigger_rule(task: Task, previous_results: List[TaskResult]) -> Tu
 #: What a mock run records for a task its rule does not run; a pending upstream cannot finish here.
 _NOT_RUN = {trigger_rules.SKIP: "skipped", trigger_rules.UPSTREAM_FAILED: "upstream_failed",
             trigger_rules.FAIL: "failed", trigger_rules.WAIT: "skipped"}
-
-
-def _parse_execution_history(events: List[Dict]) -> List[TaskResult]:
-    """Parse SFN execution history into TaskResults."""
-    results = []
-    task_starts = {}
-
-    for idx, event in enumerate(events):
-        event_type = event['type']
-        timestamp = event['timestamp']
-
-        if 'TaskStateEntered' in event_type:
-            details = event.get('stateEnteredEventDetails', {})
-            task_id = details.get('name', 'unknown')
-            task_starts[task_id] = timestamp
-
-        elif 'TaskStateExited' in event_type:
-            details = event.get('stateExitedEventDetails', {})
-            task_id = details.get('name', 'unknown')
-            output = json.loads(details.get('output', '{}'))
-
-            results.append(TaskResult(
-                task_id=task_id,
-                status='success',
-                start_time=task_starts.get(task_id, timestamp),
-                end_time=timestamp,
-                output=output,
-            ))
-
-        elif 'TaskFailed' in event_type or 'ExecutionFailed' in event_type:
-            details = event.get('taskFailedEventDetails', event.get('executionFailedEventDetails', {}))
-            error = details.get('error', 'Unknown')
-            cause = details.get('cause', '')
-
-            # Try to find which task failed
-            task_id = 'unknown'
-            for e in reversed(events[:idx]):
-                if 'TaskStateEntered' in e.get('type', ''):
-                    task_id = e.get('stateEnteredEventDetails', {}).get('name', 'unknown')
-                    break
-
-            results.append(TaskResult(
-                task_id=task_id,
-                status='failed',
-                start_time=task_starts.get(task_id, timestamp),
-                end_time=timestamp,
-                error=f"{error}: {cause}",
-            ))
-
-    return results
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -587,7 +423,7 @@ def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs: Any) -> None:
 
     Args:
         dag_file: Path to Python file containing DAG
-        mode: One of 'dry-run', 'validate', 'mock', 'localstack'
+        mode: One of 'dry-run', 'validate', 'mock'
     """
     with ExitStack() as stack:
         dag = _load_dag_from_file(dag_file, stack)
@@ -598,8 +434,6 @@ def run_cli(dag_file: str, mode: str = 'dry-run', **kwargs: Any) -> None:
             validate(dag, **kwargs)
         elif mode == 'mock':
             run(dag, mock=True, **kwargs)
-        elif mode == 'localstack':
-            run(dag, localstack=True, **kwargs)  # pragma: no cover — requires LocalStack running at localhost:4566
         else:
             print(f"❌ Unknown mode: {mode}")
 
@@ -643,11 +477,6 @@ def main() -> None:
         help='simulate execution with mock results',
     )
     mode_group.add_argument(
-        '--localstack',
-        action='store_true',
-        help='execute against LocalStack (requires LocalStack running at localhost:4566)',
-    )
-    mode_group.add_argument(
         '--dry-run',
         dest='dry_run',
         action='store_true',
@@ -669,8 +498,6 @@ def main() -> None:
             sys.exit(0 if validate(dag)['valid'] else 1)
         elif args.mock:
             sys.exit(0 if run(dag, mock=True).status == 'success' else 1)
-        elif args.localstack:  # pragma: no cover — requires LocalStack running at localhost:4566
-            sys.exit(0 if run(dag, localstack=True).status == 'success' else 1)
         else:
             # Default: --dry-run (also reached when --dry-run is passed explicitly)
             sys.exit(0 if dry_run(dag, show_asl=args.asl)['valid'] else 1)

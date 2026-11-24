@@ -27,7 +27,7 @@ EventBridge Scheduler fires on the **next matching wall-clock instant after the 
 - `schedule="cron(0 8 * * ? *)"` deployed at 07:30 UTC → first run at 08:00 UTC same day.
 - Same schedule deployed at 08:30 UTC → first run at 08:00 UTC *next* day. It doesn't back-fill a missed slot.
 - `schedule="rate(1 hour)"` deployed at 12:37 UTC → first run at approximately 13:37 UTC (rate expressions fire "every N units *from now*"; the first tick lands one full period after `ENABLED`).
-- `schedule="@daily"` = `rate(1 day)`: the first run comes a day after the schedule is created, then every 24 hours. For midnight UTC, write `schedule="cron(0 0 * * ? *)"`.
+- `schedule="@daily"` = `cron(0 0 * * ? *)` = midnight UTC; `@hourly` fires on the hour and `@weekly` on Monday at midnight UTC.
 
 If you need history for dates before deploy, start the pipeline manually for each date you want to fill in. Press **Run** on the pipeline's page in the console and set `current_date` in its input, or call Step Functions `StartExecution` with `{"current_date": "YYYY-MM-DD"}`.
 

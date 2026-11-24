@@ -13,8 +13,8 @@ Use cases:
 - Testing registration flow
 
 Note: this command does NOT write `registered_at`. It triggers the pipeline SFN
-with register_only=true, which refreshes runtime metadata (tasks, dag, schedule,
-etc.) but never touches deploy-owned fields. The Console's "Deployed at" timestamp
+with register_only=true, which refreshes the fields a run owns (schedule, group,
+spec version and the like) but never touches deploy-owned fields. The Console's "Deployed at" timestamp
 is written exclusively by `polyris-deploy`.
 
 Authentication:
@@ -293,7 +293,7 @@ Authentication:
     parser.add_argument(
         '--region', '-r',
         default=None,
-        help='AWS region (default: from config.py or us-east-1)'
+        help='AWS region (default: the region of the ARN, or of your AWS profile)'
     )
     parser.add_argument(
         '--namespace',
@@ -323,7 +323,7 @@ Authentication:
     # and failures are reported as {"success": false, "error": ...}.
     if not sfn_arn and args.name:
         if not args.json:
-            print(f"🔍 Looking for pipeline '{args.name}' in {args.region}...")
+            print(f"🔍 Looking for pipeline '{args.name}' in {args.region or 'the region of your AWS profile'}...")
         try:
             sfn_arn = find_sfn_arn(
                 args.name,

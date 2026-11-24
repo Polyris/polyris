@@ -246,3 +246,20 @@ def test_sigterm_ends_this_process_through_python_only_inside_the_block():
     t.start()
     t.join()
     assert seen == [before]
+
+
+def test_a_folders_files_run_under_the_stage_of_its_request(tmp_path, monkeypatch):
+    """``polyris-deploy --all --stage prod``: a file that picks its ARNs by ``POLYRIS_STAGE`` saw
+    the shell's stage, or none, so a deploy to prod carried another stage's ARNs (the docs audit
+    after 1.3). The request names the stage, and it wins over the environment the process inherits."""
+    monkeypatch.setenv("POLYRIS_STAGE", "dev")
+    f = _write(tmp_path / "dag.py", """
+        import os
+        from polyris import DAG, config
+        with DAG(f"etl-{os.environ['POLYRIS_STAGE']}-{config.stage}", schedule="@daily"):
+            pass
+    """)
+    request, answer = tmp_path / "request.json", tmp_path / "answer.json"
+    request.write_text(json.dumps({"command": "collect", "files": [str(f)], "stage": "prod"}))
+    assert folder_process.main([str(request), str(answer)]) == 0
+    assert [i["dag_id"] for i in json.loads(answer.read_text())["infos"]] == ["etl-prod-prod"]

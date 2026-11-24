@@ -71,10 +71,14 @@ def main(argv: List[str]) -> int:
     request_path, answer_path = argv
     request = json.loads(Path(request_path).read_text())
     command = request.pop("command")
+    from .config import use_stage
+
+    use_stage(request.get("stage"))  # --stage names the stage of the folder's files too
     try:
         if command == "collect":
             from .validation import collect_folder
 
+            request.pop("stage", None)
             payload: Any = collect_folder(**request)
         elif command == "deploy":
             from .deploy import deploy_directory

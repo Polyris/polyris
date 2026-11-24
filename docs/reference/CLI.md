@@ -137,7 +137,6 @@ polyris-local --file other.py
 |--------|-------------|
 | `--validate` | Validate structure and exit 0/1 |
 | `--mock` | Simulate execution with mock results |
-| `--localstack` | Execute against LocalStack at localhost:4566 |
 | `--dry-run` | Show execution plan (default when no mode given) |
 | `--asl` | Include generated Step Functions JSON in dry-run output |
 | `--file`, `-f` | Pipeline file (default: `dag.py`) |
@@ -267,7 +266,7 @@ polyris-deploy --only dir1 dir2 --select my-dag-id
 
 | Option | Description |
 |--------|-------------|
-| `--stage` | Deployment stage (default: from `config.py DEFAULT_STAGE`) |
+| `--stage` | Deployment stage (default: from `config.py DEFAULT_STAGE`). The pipeline file reads it as `POLYRIS_STAGE` |
 | `--stack` | Platform stack to read outputs from (default: `config.py` `ENVIRONMENTS[stage].stack_name`, or the one `polyris-up` platform in the region) |
 | `--profile` | AWS profile (default: from `config.py` or AWS default) |
 | `--file` | Pipeline file (default: `dag.py`). Not used with `--all`/`--only` |

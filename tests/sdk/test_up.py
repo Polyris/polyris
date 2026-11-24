@@ -1487,7 +1487,8 @@ def test_up_lists_none_once_every_pipeline_is_redeployed(fake_cfn, platform_1_2,
 
     out = capsys.readouterr().out
     assert "older pipeline format" not in out and "polyris-deploy --select" not in out
-    assert "a first pipeline" in out
+    # An update said "Next — a first pipeline" to a platform of 22 pipelines (1.3.0 on dev)
+    assert "a first pipeline" not in out, "an update: the pipelines run as before"
 
 
 def test_up_with_nothing_to_change_still_lists_the_pipelines_to_redeploy(fake_cfn, platform_1_2, s3, tmp_path, capsys):

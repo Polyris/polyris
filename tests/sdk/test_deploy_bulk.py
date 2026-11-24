@@ -601,6 +601,45 @@ class TestBulkRealProcesses:
         assert "exited with code 0 before reporting" in capsys.readouterr().out
 
 
+class TestStageReachesThePipelineFile:
+    """``--stage`` names the stage of the pipeline file too: a file that picks its ARNs by
+    ``POLYRIS_STAGE`` took the shell's stage, or its default, under ``polyris-deploy --stage prod``
+    (the docs audit after 1.3)."""
+
+    def test_one_file(self, tmp_path, mocker, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "dev")
+        (tmp_path / "dag.py").write_text(textwrap.dedent("""
+            import os
+            from polyris import DAG, task
+
+            with DAG(f"etl-{os.environ['POLYRIS_STAGE']}", schedule="@daily") as dag:
+                @task.sfn(arn="arn:aws:states:us-east-1:123456789012:stateMachine:x")
+                def go():
+                    pass
+                go()
+        """))
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-deploy", "--stage", "prod"])
+        deploy.main()
+        assert deployed.call_args.kwargs["dag"].dag_id == "etl-prod"
+        assert deployed.call_args.kwargs["stage"] == "prod"
+
+    def test_every_folders_process_of_all(self, tmp_path, mocker, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYRIS_STAGE", "dev")
+        (tmp_path / "dir_a").mkdir()
+        _write_dag_file(tmp_path / "dir_a" / "dag.py", "dag-a")
+        deployed = mocker.patch("polyris.deploy.deploy_pipeline")
+        monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all", "--stage", "prod"])
+        requests = _folders_run_here(mocker)
+        with pytest.raises(SystemExit) as exc:
+            deploy.main()
+        assert exc.value.code == 0
+        assert [(r["command"], r["stage"]) for r in requests] == [("collect", "prod"), ("deploy", "prod")]
+        assert deployed.call_args.kwargs["stage"] == "prod"
+
+
 class TestMainCliBulkFlags:
     def test_all_and_only_are_mutually_exclusive(self, monkeypatch, capsys):
         monkeypatch.setattr("sys.argv", ["polyris-deploy", "--all", "--only", "dir1"])

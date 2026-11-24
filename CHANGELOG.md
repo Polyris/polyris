@@ -1,8 +1,17 @@
 ## Unreleased
 
+### Breaking
+
+- `polyris-local --localstack` and `run(dag, localstack=True)` are gone. They deployed the pipeline's state machine alone, and a run of 1.3 needs the platform's engine, so no task could run. Test locally with `polyris-local --mock`, or deploy to a stage. `polyris.local.run` takes its options by keyword.
+
 ### Fixed
 
-- The docs match what 1.3 ships: the console as this repository builds it, the engine of 1.3 instead of 1.2's wrappers and task tokens, the routes and their fields, the CLI's commands and flags, and an authentication guide whose steps run. The schedule presets say when they fire: `@daily` runs every 24 hours from when the schedule is created, not at midnight. The README describes how a run works and compares polyris with Amazon MWAA Serverless.
+- `@hourly`, `@daily` and `@weekly` fire at the start of each hour, of each day at 00:00 UTC and of each ISO week on Monday at 00:00 UTC, as the docs said and as `@monthly` did. They were `rate(...)` expressions, which count from when the schedule was created: `@daily` ran at the time of day of the deploy. A pipeline takes the new time at its next `polyris-deploy`.
+- `polyris-deploy --stage prod` sets `POLYRIS_STAGE` for the pipeline file, in each folder's process of `--all` too. A file that picks its ARNs by `POLYRIS_STAGE`, as the one `polyris-init` writes does, read the shell's stage or its default, so a deploy to prod carried another stage's ARNs.
+- The console's help lists the task statuses of 1.3: Needs decision is there, Waiting Delay, Pending and Aborted are gone, and a paused task waits for its run's Resume. In the task detail, `H` opens the History tab (it was `T`) and `O` opens Input / Output.
+- After an update, `polyris-up` no longer suggests "a first pipeline" to a platform that runs pipelines.
+- `polyris-register --name` without `--region` says it searches the region of your AWS profile, and its help no longer promises `us-east-1`.
+- The docs match what 1.3 ships: the console as this repository builds it, the engine of 1.3 instead of 1.2's wrappers and task tokens, the routes and their fields, the CLI's commands and flags, and an authentication guide whose steps run. The README describes how a run works and compares polyris with Amazon MWAA Serverless.
 
 ## v1.3.0 - 2026-11-24
 

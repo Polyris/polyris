@@ -93,7 +93,7 @@ def infer_cron_cadence(cron: Optional[str]) -> Optional[Granularity]:
             if n == 1:
                 return "daily"
             if n == 7:
-                return "weekly"  # rate(7 days) is polyris's @weekly preset
+                return "weekly"  # rate(7 days) runs once a week
             return None
         return None  # pragma: no cover -- _RATE_PATTERN only admits minute/hour/day units, all handled above, so this fallthrough is unreachable
 
