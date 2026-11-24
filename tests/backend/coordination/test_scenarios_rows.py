@@ -554,7 +554,7 @@ def test_a_dependant_another_failure_still_blocks_is_reset_once_and_the_request_
     world.fail_task(run, "mid")
     world.deliver_task_hints()
     world.restart_with_dependants(run, "extract")  # extract reruns; mid's own failure stays
-    world.deliver_task_hints()                     # load is reset, blocked again by mid at once, and left there
+    world.deliver_task_hints()                     # load stays: mid, its only upstream, is final and blocks it
     assert (world.status(run, "mid"), world.status(run, "load")) == ("failed", "upstream_failed")
     assert world.running_tasks(run) == ["extract"]
     assert not any(r.request_pending for r in world.rows_view().runs())
