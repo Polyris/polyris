@@ -238,7 +238,7 @@ No transition leads back to `creating`.
   - Only a pass that resets nothing clears the request, so a dependant decided while the reset runs is reset by a later pass.
 - Every action on a task is refused for a row that names no spec version: a row of a run from before 1.3, which no engine would act on (*Migration*). A Restart is refused as well while a Stop of its run is in progress. Mark Successful is refused while the task's outlets cannot be read, since its facts belong to the success (invariant 12).
 - A Restart is also refused once its run started more than a year ago, less 90 days (`RESTART_TTL_MARGIN`): about nine months. Nothing renews a run's rows, so the rerun has those 90 days to read what its run wrote: the upstreams' `output#` lives a year from its last write, and the run's history a year and 90 days from each write (§5). An older date runs again instead. Renewing the history at each Restart cost a write per row and per `output#` on every Restart of a run older than a day, for the rare one older than nine months (the review of TR-6).
-- An action on a task whose `run_task` is running stops that execution afterwards, as cleanup. A Lambda invocation runs on, but nothing records its result: the raised generation fences the stopped `run_task`.
+- An action on a task whose `run_task` is running stops that execution afterwards, as cleanup. A Lambda invocation runs on, but nothing records its result: the raised generation fences the stopped `run_task`. A stop that fails writes a `coordination` warning, as the dispatcher's does (§4): the work may run on.
 
 ### 4. How a run ends
 

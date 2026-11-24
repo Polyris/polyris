@@ -20,9 +20,10 @@ from boto3.dynamodb.conditions import Key, Attr
 from botocore.exceptions import ClientError, BotoCoreError
 
 from config import sfn, ASSET_EVENT_TTL_DAYS
-from polyris.constants import TaskConfigKey, TaskSpecKey
+from polyris.constants import TaskConfigKey, TaskSpecKey, WarningKind
 from polyris.coordination import actions, run_input, run_row, task_row
 from polyris.coordination.records import warning_item
+from polyris.executions import error_code
 from dal import asset_events_repo, executions_repo, specs_repo
 from dal.specs_repo import SpecsMissing
 from polyris.coordination.task_spec import SpecError
@@ -504,6 +505,22 @@ def get_task_events(execution_name: str, event: Dict) -> Dict:
     })
 
 
+def _warn_run_task_left_running(item: Dict, *, pipeline: str, task_name: str, date: str, action: str, operator: str,
+                                error: Exception) -> None:
+    """A `coordination` warning: an action ended a task whose run_task could not be stopped. Its id is the one the
+    dispatcher's stop of the same run_task writes, so the bell shows one warning. Best effort, as the action holds."""
+    try:
+        executions_repo.put(warning_item(
+            kind=WarningKind.COORDINATION, execution_name=f"{item['execution_name']}-stop", task_name=task_name,
+            pipeline_name=pipeline, pipeline_execution=str(item.get('pipeline_execution') or ''), task_date=date,
+            error=(f"{task_name}: {action} by {operator} could not stop its run_task, and its work may run on; "
+                   f"its result is not recorded: {error}"),
+            now=datetime.now(timezone.utc),
+        ))
+    except (ClientError, BotoCoreError) as e:
+        log.error(action, "Could not write the warning of a run_task left running", error=str(e))
+
+
 def _emit_marker_blocked_warn(
     pipeline_name: str, task_name: str, date: str,
     action_name: str, operator: str,
@@ -661,8 +678,12 @@ def _after_action(action: str, item: Dict, write: 'actions.ActionWrite', *, pipe
         try:
             sfn.stop_execution(executionArn=arn, error='Console', cause=f'stopped by {operator}')
         except (ClientError, BotoCoreError) as e:
-            # The fence keeps whatever it does next out of the row: its writes are conditional on its generation.
-            log.error(action, "Could not stop the task's run_task", arn=arn, error=str(e))
+            if not (isinstance(e, ClientError) and error_code(e) == 'ExecutionDoesNotExist'):    # it is gone already
+                # The fence keeps whatever it does next out of the row, but its work may run on: the bell says so,
+                # as for the dispatcher's stop (ADR #137 §4, Principle #38).
+                log.error(action, "Could not stop the task's run_task", arn=arn, error=str(e))
+                _warn_run_task_left_running(item, pipeline=pipeline, task_name=task_name, date=date, action=action,
+                                            operator=operator, error=e)
     if write.marker_blocked:
         _emit_marker_blocked_warn(pipeline, task_name, date, action, operator)
     resolve_pagerduty(item)

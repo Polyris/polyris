@@ -336,6 +336,7 @@ CODE_WRITERS = {
     ("coordination/asset_fanout.py", "_retry_later"): "push retry rows",
     ("coordination/asset_fanout.py", "_warn"): "warning rows (records.warning_item)",
     ("console_api/routes/tasks.py", "_emit_marker_blocked_warn"): "warning rows",
+    ("console_api/routes/tasks.py", "_warn_run_task_left_running"): "warning rows (records.warning_item)",
 }
 
 #: The paid overlay, when it is checked out next to this repository: its writers are classified too, under

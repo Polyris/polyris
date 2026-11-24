@@ -140,6 +140,36 @@ def test_an_action_on_a_running_task_stops_its_run_task(world, route):
     assert world.sfn.stop_execution.call_args.kwargs["executionArn"] == ARN
 
 
+def _warnings(world):
+    return [i for i in world.table.scan()["Items"] if i["execution_name"].startswith("_notify_warn_")]
+
+
+def test_an_action_that_cannot_stop_the_run_task_of_its_task_says_so_in_the_bell(world):
+    """Its work may run on, and a Restart would run a second copy: the failure is not only logged (Principle #38;
+    review of the branch, P-2). The warning has the id of the dispatcher's for the same stop."""
+    from botocore.exceptions import ClientError
+    seed(world, "running", run_task_helper_arn=ARN)
+    world.sfn.stop_execution.side_effect = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "StopExecution")
+
+    assert act(world, "fail_task")["statusCode"] == 200
+
+    [warning] = _warnings(world)
+    assert warning["execution_name"] == f"_notify_warn_coordination_{KEY}-stop"
+    assert "could not stop its run_task" in warning["error"] and "ThrottlingException" in warning["error"]
+    assert row(world)["status"] == "failed"
+
+
+def test_an_action_on_a_task_whose_run_task_is_gone_warns_of_nothing(world):
+    from botocore.exceptions import ClientError
+    seed(world, "running", run_task_helper_arn=ARN)
+    world.sfn.stop_execution.side_effect = ClientError(
+        {"Error": {"Code": "ExecutionDoesNotExist", "Message": "Execution Does Not Exist"}}, "StopExecution")
+
+    assert act(world, "fail_task")["statusCode"] == 200
+    assert _warnings(world) == []
+
+
 def test_a_stop_of_a_running_task_stops_its_run_task(world):
     seed(world, "running", run_task_helper_arn=ARN)
     assert act(world, "stop_task")["statusCode"] == 200
